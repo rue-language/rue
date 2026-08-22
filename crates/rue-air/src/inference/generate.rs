@@ -190,12 +190,30 @@ pub struct ExprInfo {
     pub ty: InferType,
     /// The span of this expression (for error reporting).
     pub span: Span,
+    /// Whether evaluation reaches its enclosing expression normally.
+    pub continues: bool,
 }
 
 impl ExprInfo {
     /// Create a new expression info.
     pub fn new(ty: InferType, span: Span) -> Self {
-        Self { ty, span }
+        Self {
+            ty,
+            span,
+            continues: true,
+        }
+    }
+
+    pub fn with_continues(ty: InferType, span: Span, continues: bool) -> Self {
+        Self {
+            ty,
+            span,
+            continues,
+        }
+    }
+
+    pub fn diverged(ty: InferType, span: Span) -> Self {
+        Self::with_continues(ty, span, false)
     }
 }
 
@@ -221,6 +239,8 @@ pub struct ConstraintGenerator<'a> {
     /// are later a sort key (`sort_unstable_by_key(Type::as_u32)`). The order
     /// is observable, so the hasher is not a free choice here.
     expr_types: HashMap<InstRef, InferType>,
+    /// Whether each generated expression reaches its next evaluation point.
+    expr_continues: HashMap<InstRef, bool>,
     /// Function signatures (for call type checking). `None` when the generator
     /// is driven by a lazy provider (`lazy`), which materializes signatures on
     /// demand; unit tests still supply an eager map.
@@ -395,6 +415,7 @@ impl<'a> ConstraintGenerator<'a> {
             type_vars: TypeVarAllocator::new(),
             constraints: Vec::with_capacity(rir_capacity),
             expr_types: HashMap::new(),
+            expr_continues: HashMap::new(),
             functions: Some(functions),
             builtin_structs: Some(builtin_structs),
             structs_by_file_name: None,
@@ -448,6 +469,7 @@ impl<'a> ConstraintGenerator<'a> {
             type_vars: TypeVarAllocator::new(),
             constraints: Vec::with_capacity(rir_capacity),
             expr_types: HashMap::new(),
+            expr_continues: HashMap::new(),
             functions: None,
             builtin_structs: None,
             structs_by_file_name: None,
@@ -952,6 +974,7 @@ impl<'a> ConstraintGenerator<'a> {
         Vec<TypeVarId>,
         Type,
         HashMap<InstRef, InferType>,
+        HashMap<InstRef, bool>,
         u32,
     ) {
         (
@@ -960,6 +983,7 @@ impl<'a> ConstraintGenerator<'a> {
             self.string_literal_vars,
             self.string_literal_default,
             self.expr_types,
+            self.expr_continues,
             self.type_vars.count(),
         )
     }
@@ -1018,6 +1042,7 @@ impl<'a> ConstraintGenerator<'a> {
     pub fn generate(&mut self, inst_ref: InstRef, ctx: &mut ConstraintContext) -> ExprInfo {
         let inst = self.rir.get(inst_ref);
         let span = inst.span;
+        let mut continues = true;
 
         let ty = match &inst.data {
             InstData::IntConst(_) => {
@@ -1066,20 +1091,20 @@ impl<'a> ConstraintGenerator<'a> {
             // concatenation (RUE-17 Phase 1, ADR-0035). Split out from the pure
             // arithmetic operators so it doesn't force an `is_integer`
             // constraint on String operands.
-            InstData::Add { lhs, rhs } => self.generate_add(*lhs, *rhs, ctx),
+            InstData::Add { lhs, rhs } => self.generate_add(inst_ref, *lhs, *rhs, ctx),
 
             // Binary arithmetic: both operands must have the same type, result is that type
             InstData::Sub { lhs, rhs }
             | InstData::Mul { lhs, rhs }
             | InstData::Div { lhs, rhs }
-            | InstData::Mod { lhs, rhs } => self.generate_binary_arith(*lhs, *rhs, ctx),
+            | InstData::Mod { lhs, rhs } => self.generate_binary_arith(inst_ref, *lhs, *rhs, ctx),
 
             // Bitwise operations: same as arithmetic
             InstData::BitAnd { lhs, rhs }
             | InstData::BitOr { lhs, rhs }
             | InstData::BitXor { lhs, rhs }
             | InstData::Shl { lhs, rhs }
-            | InstData::Shr { lhs, rhs } => self.generate_binary_arith(*lhs, *rhs, ctx),
+            | InstData::Shr { lhs, rhs } => self.generate_binary_arith(inst_ref, *lhs, *rhs, ctx),
 
             // Comparison operators: operands must match, result is bool
             InstData::Eq { lhs, rhs }
@@ -1090,6 +1115,7 @@ impl<'a> ConstraintGenerator<'a> {
             | InstData::Ge { lhs, rhs } => {
                 let lhs_info = self.generate(*lhs, ctx);
                 let rhs_info = self.generate(*rhs, ctx);
+                continues &= lhs_info.continues && rhs_info.continues;
                 // Operands must have the same type. (Chained comparisons are
                 // rejected at parse time — validate.rs, RUE-528 — so a
                 // comparison LHS reaching here is a legitimately
@@ -1102,6 +1128,10 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::And { lhs, rhs } | InstData::Or { lhs, rhs } => {
                 let lhs_info = self.generate(*lhs, ctx);
                 let rhs_info = self.generate(*rhs, ctx);
+                // Logical operators short-circuit. A diverging RHS does not
+                // eliminate the LHS path that skips it, so only divergence of
+                // the always-evaluated LHS removes normal continuation.
+                continues &= lhs_info.continues;
                 self.add_constraint(Constraint::equal(
                     lhs_info.ty,
                     InferType::Concrete(Type::BOOL),
@@ -1118,6 +1148,7 @@ impl<'a> ConstraintGenerator<'a> {
             // Unary negation: operand must be signed integer
             InstData::Neg { operand } => {
                 let operand_info = self.generate(*operand, ctx);
+                continues &= operand_info.continues;
                 // Result type is the same as operand type
                 let result_ty = operand_info.ty.clone();
                 // Must be a signed integer
@@ -1128,6 +1159,7 @@ impl<'a> ConstraintGenerator<'a> {
             // Logical NOT: operand must be bool
             InstData::Not { operand } => {
                 let operand_info = self.generate(*operand, ctx);
+                continues &= operand_info.continues;
                 self.add_constraint(Constraint::equal(
                     operand_info.ty,
                     InferType::Concrete(Type::BOOL),
@@ -1139,6 +1171,7 @@ impl<'a> ConstraintGenerator<'a> {
             // Bitwise NOT: operand must be integer
             InstData::BitNot { operand } => {
                 let operand_info = self.generate(*operand, ctx);
+                continues &= operand_info.continues;
                 let result_ty = operand_info.ty.clone();
                 // Must be an integer type (signed or unsigned)
                 self.add_constraint(Constraint::is_integer(result_ty.clone(), span));
@@ -1152,6 +1185,7 @@ impl<'a> ConstraintGenerator<'a> {
             // full checking (operand is Option, enclosing fn returns Option).
             InstData::Try { operand } => {
                 let operand_info = self.generate(*operand, ctx);
+                continues &= operand_info.continues;
                 match &operand_info.ty {
                     InferType::Concrete(ty) => ty
                         .as_enum()
@@ -1200,6 +1234,7 @@ impl<'a> ConstraintGenerator<'a> {
                 iter_elem: _,
             } => {
                 let init_info = self.generate(*init, ctx);
+                continues &= init_info.continues;
 
                 let var_ty = if let Some(type_syntax) = type_annotation {
                     // Explicit type annotation - use it and constrain init to
@@ -1285,13 +1320,17 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                 }
 
-                // Alloc produces unit type
+                // Alloc normally produces unit, but an initializer that
+                // cannot reach the binding never reaches that allocation.
+                // Preserve the declared binding type above while exposing
+                // bottom to the enclosing block.
                 InferType::Concrete(Type::UNIT)
             }
 
             // Assignment
             InstData::Assign { name, value } => {
                 let value_info = self.generate(*value, ctx);
+                continues &= value_info.continues;
                 // A local shadows a same-named parameter. Otherwise, constrain
                 // assignment against the declared parameter type too. Every
                 // `inout` whole assignment must be constrained before it can
@@ -1310,7 +1349,10 @@ impl<'a> ConstraintGenerator<'a> {
                     // A `str` target (ADR-0043 Phase 3, RUE-324) accepts a string
                     // literal (HM type `String`) by coercion; skip strict
                     // equality and let sema materialize the `str` on the store.
-                    if !self.is_slice_struct_type(target_ty.clone()) {
+                    if !self.is_slice_struct_type(target_ty.clone())
+                        && value_info.continues
+                        && !Self::is_never_concrete(&value_info.ty)
+                    {
                         // Constrain value to match variable type
                         self.add_constraint(Constraint::equal(value_info.ty, target_ty, span));
                     }
@@ -1322,19 +1364,25 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::PlaceSet { place, value } => {
                 let place_info = self.generate(*place, ctx);
                 let value_info = self.generate(*value, ctx);
-                self.add_constraint(Constraint::equal(place_info.ty, value_info.ty, span));
+                continues &= place_info.continues && value_info.continues;
+                if value_info.continues {
+                    self.add_constraint(Constraint::equal(place_info.ty, value_info.ty, span));
+                }
                 InferType::Concrete(Type::UNIT)
             }
 
             // Return statement
             InstData::Ret(value) => {
+                continues = false;
                 if let Some(val_ref) = value {
                     let value_info = self.generate(*val_ref, ctx);
                     // Constrain return value to match function return type. A
                     // `str` return (ADR-0043 Phase 3, RUE-324) accepts a string
                     // literal (HM type `String`) by coercion; skip strict
                     // equality there and let sema materialize the `str`.
-                    if !self.is_slice_struct_type(InferType::Concrete(ctx.return_type)) {
+                    if value_info.continues
+                        && !self.is_slice_struct_type(InferType::Concrete(ctx.return_type))
+                    {
                         self.add_constraint(Constraint::equal(
                             value_info.ty,
                             InferType::Concrete(ctx.return_type),
@@ -1355,9 +1403,13 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Accessor yield (ADR-0062): the yielded place must have the
             // accessor's declared element type `T` (the function's return
-            // type); the `yield` itself diverges like `return`.
+            // type). Accessor `yield` is represented with the never surface
+            // type, but its standalone accessor CFG preserves the yielded
+            // place as a distinguished reachable operand for call-site
+            // splicing, so it does not carry ordinary return divergence.
             InstData::Yield(value) => {
                 let value_info = self.generate(*value, ctx);
+                continues &= value_info.continues;
                 self.add_constraint(Constraint::equal(
                     value_info.ty,
                     InferType::Concrete(ctx.return_type),
@@ -1372,6 +1424,7 @@ impl<'a> ConstraintGenerator<'a> {
                 let function_key =
                     alias_target.or_else(|| self.function_by_file((span.file_id, *name)));
                 let args = self.rir.call_args(args);
+                let mut arg_diverged = false;
                 // `print(s)` / `println(s)` builtin free functions (RUE-1):
                 // generate the argument and yield unit. Semantic analysis
                 // validates the shared text family (`StrBuf`, `str`, `Str(N)`),
@@ -1381,9 +1434,9 @@ impl<'a> ConstraintGenerator<'a> {
                 // `fn print`/`fn println` (a user definition wins).
                 let is_print_builtin = function_key.is_none()
                     && matches!(self.interner.resolve(name), "print" | "println");
-                if is_print_builtin {
+                let result = if is_print_builtin {
                     for arg in args.iter() {
-                        self.generate(arg.value, ctx);
+                        arg_diverged |= !self.generate(arg.value, ctx).continues;
                     }
                     InferType::Concrete(Type::UNIT)
                 } else if let Some(func) = function_key.and_then(|key| self.func_sig(key)) {
@@ -1397,7 +1450,11 @@ impl<'a> ConstraintGenerator<'a> {
                         // Process all arguments once, collecting their inferred types
                         let arg_infos: Vec<ExprInfo> = args
                             .iter()
-                            .map(|arg| self.generate(arg.value, ctx))
+                            .map(|arg| {
+                                let info = self.generate(arg.value, ctx);
+                                arg_diverged |= !info.continues;
+                                info
+                            })
                             .collect();
 
                         // Build the type substitution map from comptime type arguments
@@ -1529,7 +1586,7 @@ impl<'a> ConstraintGenerator<'a> {
                         // panicking and process what we can.
                         // Still process all arguments to catch type errors within them
                         for arg in args.iter() {
-                            self.generate(arg.value, ctx);
+                            arg_diverged |= !self.generate(arg.value, ctx).continues;
                         }
                         // Return the declared return type (error will be caught in sema)
                         func.return_type.clone()
@@ -1537,6 +1594,7 @@ impl<'a> ConstraintGenerator<'a> {
                         // Generate constraints for each argument
                         for (arg, param_ty) in args.iter().zip(func.param_types.iter()) {
                             let arg_info = self.generate(arg.value, ctx);
+                            arg_diverged |= !arg_info.continues;
                             // Slice parameters coerce from an array argument
                             // (`borrow arr`); skip strict equality and let sema
                             // materialize the fat pointer (ADR-0043, RUE-322).
@@ -1554,9 +1612,15 @@ impl<'a> ConstraintGenerator<'a> {
                 } else {
                     // Unknown function - still process arguments for constraint generation
                     for arg in args.iter() {
-                        self.generate(arg.value, ctx);
+                        arg_diverged |= !self.generate(arg.value, ctx).continues;
                     }
                     InferType::Concrete(Type::ERROR)
+                };
+                if arg_diverged || Self::is_never_concrete(&result) {
+                    continues = false;
+                    result
+                } else {
+                    result
                 }
             }
 
@@ -1565,7 +1629,7 @@ impl<'a> ConstraintGenerator<'a> {
                 let intrinsic_name = self.interner.resolve(name);
                 let args = self.rir.intrinsic_args(args);
 
-                if intrinsic_name == "intCast"
+                let intrinsic_ty = if intrinsic_name == "intCast"
                     || intrinsic_name == "bitCast"
                     || intrinsic_name == "cast"
                 {
@@ -1585,6 +1649,7 @@ impl<'a> ConstraintGenerator<'a> {
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
                 } else if intrinsic_name == "panic" {
+                    continues = false;
                     // `@panic` diverges: it aborts the process and never returns,
                     // so its expression type is `!` (never), a control-transfer
                     // form that participates in never coercion (spec 3.4:2,
@@ -2018,14 +2083,23 @@ impl<'a> ConstraintGenerator<'a> {
                         self.generate(*arg_ref, ctx);
                     }
                     InferType::Var(self.fresh_var())
-                }
+                };
+                // Every intrinsic evaluates its operands strictly in source
+                // order.  Keep that control fact separate from the intrinsic's
+                // ordinary value type (notably `@assert`, which remains unit).
+                continues &= args
+                    .iter()
+                    .all(|arg_ref| self.expr_continues.get(&*arg_ref).copied().unwrap_or(true));
+                intrinsic_ty
             }
 
             InstData::InternalIntrinsic { intrinsic, args } => {
                 let args = self.rir.internal_intrinsic_args(args);
+                let mut args_continue = true;
                 for arg_ref in args {
-                    self.generate(arg_ref, ctx);
+                    args_continue &= self.generate(arg_ref, ctx).continues;
                 }
+                continues &= args_continue;
                 match intrinsic {
                     // The loop bound and next byte offset are usize (u64).
                     rue_rir::InternalIntrinsic::IterLen
@@ -2069,13 +2143,30 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::Block { instructions } => {
                 self.enter_scope(ctx);
                 let mut last_ty = InferType::Concrete(Type::UNIT);
+                let mut diverged = false;
                 let block_insts = self.rir.block_insts(instructions);
                 for block_inst_ref in block_insts.values() {
                     let info = self.generate(block_inst_ref, ctx);
-                    last_ty = info.ty;
+                    // Keep visiting unreachable instructions so inference can
+                    // report errors in them, but the first genuinely
+                    // diverging instruction makes every later tail
+                    // unreachable. The block therefore has the bottom type,
+                    // rather than the parser's synthetic unit tail. This is
+                    // the HM counterpart of sema's outgoing-state `⊥` and
+                    // lets a semicolon-terminated `@panic`/`return` inhabit
+                    // any surrounding value context.
+                    if !diverged {
+                        diverged = !info.continues;
+                        last_ty = info.ty;
+                    }
                 }
                 self.exit_scope(ctx);
-                last_ty
+                if diverged {
+                    continues = false;
+                    InferType::Concrete(Type::NEVER)
+                } else {
+                    last_ty
+                }
             }
 
             // Branch (if/else)
@@ -2085,6 +2176,7 @@ impl<'a> ConstraintGenerator<'a> {
                 else_block,
             } => {
                 let cond_info = self.generate(*cond, ctx);
+                continues &= cond_info.continues;
                 self.add_constraint(Constraint::equal(
                     cond_info.ty,
                     InferType::Concrete(Type::BOOL),
@@ -2120,7 +2212,14 @@ impl<'a> ConstraintGenerator<'a> {
                         None => InferType::Concrete(Type::UNIT),
                     };
                     self.record_type(inst_ref, result_ty.clone());
-                    return ExprInfo::new(result_ty, span);
+                    return ExprInfo::with_continues(
+                        result_ty,
+                        span,
+                        cond_info.continues
+                            && selected.is_none_or(|block| {
+                                self.expr_continues.get(&block).copied().unwrap_or(true)
+                            }),
+                    );
                 }
 
                 let then_info = self.generate(*then_block, ctx);
@@ -2132,8 +2231,9 @@ impl<'a> ConstraintGenerator<'a> {
                     // - If one branch is Never, the if-else takes the other branch's type
                     // - If both are Never, the result is Never
                     // - Otherwise, both must unify to the same type
-                    let then_is_never = matches!(&then_info.ty, InferType::Concrete(Type::NEVER));
-                    let else_is_never = matches!(&else_info.ty, InferType::Concrete(Type::NEVER));
+                    let then_is_never = !then_info.continues;
+                    let else_is_never = !else_info.continues;
+                    continues &= then_info.continues || else_info.continues;
 
                     match (then_is_never, else_is_never) {
                         (true, true) => {
@@ -2167,7 +2267,8 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                 } else {
                     // No else branch - the if expression has unit type
-                    // (or the then branch type if it's unit-compatible)
+                    // and retains the condition-false continuation even when
+                    // the then branch diverges.
                     InferType::Concrete(Type::UNIT)
                 }
             }
@@ -2175,6 +2276,7 @@ impl<'a> ConstraintGenerator<'a> {
             // While loop
             InstData::Loop { cond, body } => {
                 let cond_info = self.generate(*cond, ctx);
+                continues &= cond_info.continues;
                 self.add_constraint(Constraint::equal(
                     cond_info.ty,
                     InferType::Concrete(Type::BOOL),
@@ -2204,12 +2306,14 @@ impl<'a> ConstraintGenerator<'a> {
                 if has_break {
                     InferType::Concrete(Type::UNIT)
                 } else {
+                    continues = false;
                     InferType::Concrete(Type::NEVER)
                 }
             }
 
             // Break/Continue
             InstData::Break { value } => {
+                continues = false;
                 match value {
                     None => {
                         // Record the break against the innermost enclosing loop.
@@ -2229,7 +2333,10 @@ impl<'a> ConstraintGenerator<'a> {
                 }
                 InferType::Concrete(Type::NEVER)
             }
-            InstData::Continue => InferType::Concrete(Type::NEVER),
+            InstData::Continue => {
+                continues = false;
+                InferType::Concrete(Type::NEVER)
+            }
 
             // Match expression
             InstData::Match { scrutinee, arms } => {
@@ -2253,8 +2360,14 @@ impl<'a> ConstraintGenerator<'a> {
                     let body_info = self.generate(selected, ctx);
                     self.exit_scope(ctx);
                     self.record_type(inst_ref, body_info.ty.clone());
-                    return ExprInfo::new(body_info.ty, span);
+                    return ExprInfo::with_continues(
+                        body_info.ty,
+                        span,
+                        scrutinee_info.continues && body_info.continues,
+                    );
                 }
+
+                continues &= scrutinee_info.continues;
 
                 // Collect arm types, handling Never coercion
                 let mut arm_types: Vec<ExprInfo> = Vec::new();
@@ -2341,10 +2454,9 @@ impl<'a> ConstraintGenerator<'a> {
 
                 // Handle Never type coercion:
                 // Filter out Never arms and use the remaining non-Never types
-                let non_never_arms: Vec<_> = arm_types
-                    .iter()
-                    .filter(|info| !matches!(&info.ty, InferType::Concrete(Type::NEVER)))
-                    .collect();
+                let non_never_arms: Vec<_> =
+                    arm_types.iter().filter(|info| info.continues).collect();
+                continues &= arm_types.iter().any(|info| info.continues);
 
                 if non_never_arms.is_empty() {
                     // All arms diverge - result is Never
@@ -2388,6 +2500,7 @@ impl<'a> ConstraintGenerator<'a> {
                         .filter(|ty| ty.as_struct().is_some())
                 } else if let Some(module_ref) = module {
                     let module_info = self.generate(*module_ref, ctx);
+                    continues &= module_info.continues;
                     let module_id = match module_info.ty {
                         InferType::Concrete(ty) => ty.as_module(),
                         _ => None,
@@ -2414,6 +2527,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // (RUE-72)
                     for (field_name, value_ref) in fields.values() {
                         let value_info = self.generate(value_ref, ctx);
+                        continues &= value_info.continues;
                         if let Some(field_ty) = self.field_type_of(struct_ty, field_name) {
                             let expected = self.type_to_infer(field_ty);
                             // A `str` field (ADR-0043 Phase 3, RUE-324) accepts a
@@ -2436,7 +2550,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // with unresolved variables, which sema then reported as
                     // an internal compiler error (RUE-170).
                     for (_, value_ref) in fields.values() {
-                        self.generate(value_ref, ctx);
+                        continues &= self.generate(value_ref, ctx).continues;
                     }
                     InferType::Concrete(Type::ERROR)
                 }
@@ -2496,6 +2610,7 @@ impl<'a> ConstraintGenerator<'a> {
                 }
 
                 let base_info = self.generate(*base, ctx);
+                continues &= base_info.continues;
                 // When the base's struct type is already concrete, the field's
                 // declared type is known here — yield it so downstream
                 // constraints see the real type instead of a free variable.
@@ -2550,13 +2665,16 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::FieldSet { base, field, value } => {
                 let base_info = self.generate(*base, ctx);
                 let value_info = self.generate(*value, ctx);
+                continues &= base_info.continues && value_info.continues;
                 // Constrain the assigned value against the field's declared
                 // type, so a literal RHS is range-checked at the field's width
                 // instead of wrapping (`s.a = 300` with `a: u8` must be
                 // rejected rather than truncate to 44). (RUE-104)
                 if let Some(field_ty) = self.known_field_type(&base_info.ty, *field) {
                     let expected = self.type_to_infer(field_ty);
-                    self.add_constraint(Constraint::equal(value_info.ty, expected, span));
+                    if value_info.continues {
+                        self.add_constraint(Constraint::equal(value_info.ty, expected, span));
+                    }
                 }
                 InferType::Concrete(Type::UNIT)
             }
@@ -2589,8 +2707,10 @@ impl<'a> ConstraintGenerator<'a> {
                 } else {
                     // Get element type from first element, constrain rest to match
                     let first_info = self.generate(elements.get(0).unwrap(), ctx);
+                    continues &= first_info.continues;
                     for elem_ref in elements.values().skip(1) {
                         let elem_info = self.generate(elem_ref, ctx);
+                        continues &= elem_info.continues;
                         self.add_constraint(Constraint::equal(
                             elem_info.ty,
                             first_info.ty.clone(),
@@ -2613,6 +2733,7 @@ impl<'a> ConstraintGenerator<'a> {
             // and is resolved/diagnosed by sema.
             InstData::ArrayRepeat { value, count } => {
                 let value_info = self.generate(*value, ctx);
+                continues &= value_info.continues;
                 let resolved = match count {
                     RepeatCount::Literal(n) => Some(*n),
                     RepeatCount::Named(sym) => self
@@ -2632,6 +2753,7 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::IndexGet { base, index } => {
                 let base_info = self.generate(*base, ctx);
                 let index_info = self.generate(*index, ctx);
+                continues &= base_info.continues && index_info.continues;
                 // Index must be an integer type (signed or unsigned) per spec
                 // 7.1:7. A negative or out-of-range index is not a type error;
                 // it is caught at runtime by the bounds check (unsigned 64-bit
@@ -2666,14 +2788,17 @@ impl<'a> ConstraintGenerator<'a> {
                 self.add_constraint(Constraint::is_integer(index_info.ty, index_info.span));
 
                 let value_info = self.generate(*value, ctx);
+                continues &= base_info.continues && index_info.continues && value_info.continues;
 
                 // Constrain value type to match array element type
                 if let InferType::Array { element, .. } = &base_info.ty {
-                    self.add_constraint(Constraint::equal(
-                        value_info.ty,
-                        (**element).clone(),
-                        value_info.span,
-                    ));
+                    if value_info.continues {
+                        self.add_constraint(Constraint::equal(
+                            value_info.ty,
+                            (**element).clone(),
+                            value_info.span,
+                        ));
+                    }
                 }
 
                 InferType::Concrete(Type::UNIT)
@@ -2718,7 +2843,11 @@ impl<'a> ConstraintGenerator<'a> {
                     return {
                         let ty = self.generate_type_qualified_call(name, *method, args, span, ctx);
                         self.record_type(inst_ref, ty.clone());
-                        ExprInfo::new(ty, span)
+                        ExprInfo::with_continues(
+                            ty.clone(),
+                            span,
+                            self.call_args_continue(args) && !Self::is_never_concrete(&ty),
+                        )
                     };
                 }
 
@@ -2747,7 +2876,11 @@ impl<'a> ConstraintGenerator<'a> {
                         self.generate_call_on_reduced_type(member_ty, *method, args, span, ctx)
                 {
                     self.record_type(inst_ref, result.clone());
-                    return ExprInfo::new(result, span);
+                    return ExprInfo::with_continues(
+                        result.clone(),
+                        span,
+                        self.call_args_continue(args) && !Self::is_never_concrete(&result),
+                    );
                 }
 
                 // Generate type for receiver
@@ -2786,7 +2919,13 @@ impl<'a> ConstraintGenerator<'a> {
                         ));
                     }
                     self.record_type(inst_ref, return_type.clone());
-                    return ExprInfo::new(return_type, span);
+                    return ExprInfo::with_continues(
+                        return_type.clone(),
+                        span,
+                        receiver_info.continues
+                            && self.call_args_continue(args)
+                            && !Self::is_never_concrete(&return_type),
+                    );
                 }
 
                 // Resolve the call's result type from the receiver's type.
@@ -3051,6 +3190,9 @@ impl<'a> ConstraintGenerator<'a> {
                         }
                     }
                 };
+                continues &= receiver_info.continues
+                    && self.call_args_continue(args)
+                    && !Self::is_never_concrete(&result_type);
 
                 result_type
             }
@@ -3065,6 +3207,7 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::Comptime { expr } => {
                 // Generate constraints for the inner expression
                 let inner_info = self.generate(*expr, ctx);
+                continues &= inner_info.continues;
 
                 // Use a fresh variable so comptime can unify with expected type from context.
                 // The actual evaluation happens in sema where we know the final type.
@@ -3082,6 +3225,7 @@ impl<'a> ConstraintGenerator<'a> {
                     ctx.checked_depth += 1;
                 }
                 let inner_info = self.generate(*expr, ctx);
+                continues &= inner_info.continues;
                 {
                     ctx.checked_depth -= 1;
                 }
@@ -3102,12 +3246,15 @@ impl<'a> ConstraintGenerator<'a> {
 
         // Record the type for this expression
         self.record_type(inst_ref, ty.clone());
-        ExprInfo::new(ty, span)
+        continues &= self.expr_continues.get(&inst_ref).copied().unwrap_or(true);
+        self.expr_continues.insert(inst_ref, continues);
+        ExprInfo::with_continues(ty, span, continues)
     }
 
     /// Generate constraints for a binary arithmetic operation.
     fn generate_binary_arith(
         &mut self,
+        inst_ref: InstRef,
         lhs: InstRef,
         rhs: InstRef,
         ctx: &mut ConstraintContext,
@@ -3121,8 +3268,12 @@ impl<'a> ConstraintGenerator<'a> {
         // integer literal to `!` and then bogusly range-check it against `!`
         // (RUE-270). The result is `!`; the surrounding context coerces it.
         if Self::is_never_concrete(&lhs_info.ty) || Self::is_never_concrete(&rhs_info.ty) {
+            self.expr_continues
+                .insert(inst_ref, lhs_info.continues && rhs_info.continues);
             return InferType::Concrete(Type::NEVER);
         }
+        self.expr_continues
+            .insert(inst_ref, lhs_info.continues && rhs_info.continues);
 
         // Both operands must have the same type
         // Use a fresh type variable for the result
@@ -3162,12 +3313,15 @@ impl<'a> ConstraintGenerator<'a> {
     /// and result share a type that must be an integer.
     fn generate_add(
         &mut self,
+        inst_ref: InstRef,
         lhs: InstRef,
         rhs: InstRef,
         ctx: &mut ConstraintContext,
     ) -> InferType {
         let lhs_info = self.generate(lhs, ctx);
         let rhs_info = self.generate(rhs, ctx);
+        self.expr_continues
+            .insert(inst_ref, lhs_info.continues && rhs_info.continues);
 
         // A diverging operand (`!`, e.g. `1 + match n {}`) makes the whole
         // expression diverge; never coerces to any type (spec 3.4:3-4). Don't
@@ -3240,6 +3394,13 @@ impl<'a> ConstraintGenerator<'a> {
         self.string_literal_default
             .as_struct()
             .is_some_and(|id| &*self.type_pool.struct_def(id).name == "str")
+    }
+
+    fn call_args_continue(&self, args: &rue_rir::RirCallArgsRange) -> bool {
+        self.rir
+            .call_args(args)
+            .iter()
+            .all(|arg| self.expr_continues.get(&arg.value).copied().unwrap_or(true))
     }
 
     /// Generate constraints for a type-qualified call — an associated-function

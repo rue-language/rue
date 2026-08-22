@@ -224,6 +224,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
                 let operand_result = self.analyze_inst(air, *operand, ctx)?;
 
+                if !operand_result.continues {
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Neg(operand_result.air_ref),
+                        ty,
+                        span: inst.span,
+                    });
+                    return Ok(AnalysisResult::with_continues(air_ref, ty, false));
+                }
+
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Neg(operand_result.air_ref),
                     ty,
@@ -234,6 +243,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             InstData::Not { operand } => {
                 let operand_result = self.analyze_inst(air, *operand, ctx)?;
+
+                if !operand_result.continues {
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Not(operand_result.air_ref),
+                        ty: Type::BOOL,
+                        span: inst.span,
+                    });
+                    return Ok(AnalysisResult::with_continues(air_ref, Type::BOOL, false));
+                }
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Not(operand_result.air_ref),
@@ -259,6 +277,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
 
                 let operand_result = self.analyze_inst(air, *operand, ctx)?;
+
+                if !operand_result.continues {
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::BitNot(operand_result.air_ref),
+                        ty,
+                        span: inst.span,
+                    });
+                    return Ok(AnalysisResult::with_continues(air_ref, ty, false));
+                }
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::BitNot(operand_result.air_ref),
@@ -304,6 +331,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let lhs_result = self.analyze_inst(air, *lhs, ctx)?;
                 let rhs_result = self.analyze_inst(air, *rhs, ctx)?;
 
+                if !lhs_result.continues || !rhs_result.continues {
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::And(lhs_result.air_ref, rhs_result.air_ref),
+                        ty: Type::BOOL,
+                        span: inst.span,
+                    });
+                    return Ok(AnalysisResult::with_continues(air_ref, Type::BOOL, false));
+                }
+
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::And(lhs_result.air_ref, rhs_result.air_ref),
                     ty: Type::BOOL,
@@ -315,6 +351,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             InstData::Or { lhs, rhs } => {
                 let lhs_result = self.analyze_inst(air, *lhs, ctx)?;
                 let rhs_result = self.analyze_inst(air, *rhs, ctx)?;
+
+                if !lhs_result.continues || !rhs_result.continues {
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Or(lhs_result.air_ref, rhs_result.air_ref),
+                        ty: Type::BOOL,
+                        span: inst.span,
+                    });
+                    return Ok(AnalysisResult::with_continues(air_ref, Type::BOOL, false));
+                }
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Or(lhs_result.air_ref, rhs_result.air_ref),

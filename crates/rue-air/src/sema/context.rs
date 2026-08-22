@@ -584,6 +584,10 @@ pub(crate) struct AnalysisContext<'a> {
     /// This is populated by running constraint generation and unification
     /// before AIR emission.
     pub resolved_types: &'a AHashMap<InstRef, Type>,
+    /// Canonical normal-continuation facts produced by the same inference walk
+    /// as `resolved_types`. Semantic consumers use these facts rather than
+    /// rediscovering divergence from a construct's surface result type.
+    pub resolved_continues: &'a AHashMap<InstRef, bool>,
     /// Variables that have been moved (for affine type checking).
     /// Maps variable symbol to move state (supports partial/field-level moves).
     pub moved_vars: AHashMap<Spur, VariableMoveState>,
@@ -906,6 +910,7 @@ impl<'a> AnalysisContext<'a> {
             moved_scope_stack: self.moved_scope_stack.clone(),
             comptime_type_scope_stack: self.comptime_type_scope_stack.clone(),
             resolved_types: self.resolved_types,
+            resolved_continues: self.resolved_continues,
             moved_vars: self.moved_vars.clone(),
             warnings: Vec::new(),
             allow_unused_variables: self.allow_unused_variables,
@@ -951,6 +956,13 @@ impl<'a> AnalysisContext<'a> {
             }
         }
         self.resolved_types.get(&inst_ref).copied()
+    }
+
+    /// Return whether inference found a normal outgoing path for an
+    /// instruction. Missing entries occur only for instructions analyzed from
+    /// an inline overlay; their semantic result remains the fallback.
+    pub fn resolved_continues_of(&self, inst_ref: InstRef) -> Option<bool> {
+        self.resolved_continues.get(&inst_ref).copied()
     }
 
     /// Merge move states from two branches.
@@ -1101,6 +1113,10 @@ pub(crate) struct AnalysisResult {
     pub air_ref: AirRef,
     /// The synthesized type of this expression
     pub ty: Type,
+    /// Whether evaluation can reach the next instruction normally. This is
+    /// deliberately independent of `ty`: a call/initializer keeps its
+    /// declared value type even when evaluating an operand diverges.
+    pub continues: bool,
 }
 
 use crate::inst::AirRef;
@@ -1108,7 +1124,25 @@ use crate::inst::AirRef;
 impl AnalysisResult {
     #[must_use]
     pub fn new(air_ref: AirRef, ty: Type) -> Self {
-        Self { air_ref, ty }
+        Self {
+            air_ref,
+            ty,
+            continues: true,
+        }
+    }
+
+    #[must_use]
+    pub fn with_continues(air_ref: AirRef, ty: Type, continues: bool) -> Self {
+        Self {
+            air_ref,
+            ty,
+            continues,
+        }
+    }
+
+    #[must_use]
+    pub fn diverged(air_ref: AirRef, ty: Type) -> Self {
+        Self::with_continues(air_ref, ty, false)
     }
 }
 

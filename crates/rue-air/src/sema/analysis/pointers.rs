@@ -79,7 +79,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Create the intrinsic call instruction
         let air_ref = air.add_intrinsic(None, name, &[ptr_result.air_ref], pointee_type, span)?;
-        Ok(AnalysisResult::new(air_ref, pointee_type))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            pointee_type,
+            ptr_result.continues,
+        ))
     }
 
     /// Analyze @ptr_write / @ptr_write_unaligned intrinsic: writes value through
@@ -193,7 +197,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Type::UNIT,
             span,
         )?;
-        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            Type::UNIT,
+            ptr_result.continues && value_result.continues,
+        ))
     }
 
     /// Analyze @ptr_offset intrinsic: pointer arithmetic.
@@ -254,7 +262,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ptr_type,
             span,
         )?;
-        Ok(AnalysisResult::new(air_ref, ptr_type))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            ptr_type,
+            ptr_result.continues && offset_result.continues,
+        ))
     }
 
     /// Analyze @ptr_to_int intrinsic: converts pointer to u64.
@@ -295,7 +307,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Create the intrinsic call instruction (returns u64)
         let air_ref = air.add_intrinsic(None, name, &[ptr_result.air_ref], Type::U64, span)?;
-        Ok(AnalysisResult::new(air_ref, Type::U64))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            Type::U64,
+            ptr_result.continues,
+        ))
     }
 
     /// Analyze @int_to_ptr intrinsic: converts u64 to pointer.
@@ -366,7 +382,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Create the intrinsic call instruction
         let air_ref = air.add_intrinsic(None, name, &[addr_result.air_ref], result_type, span)?;
-        Ok(AnalysisResult::new(air_ref, result_type))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            result_type,
+            addr_result.continues,
+        ))
     }
 
     /// Analyze `@alloc(size, align)` and `@alloc_zeroed(size, align)`, the
@@ -423,7 +443,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             result_ty,
             span,
         )?;
-        Ok(AnalysisResult::new(air_ref, result_ty))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            result_ty,
+            size.continues && align.continues,
+        ))
     }
 
     /// Analyze `@realloc(p, old_size, align, new_size) -> ptr mut u8`
@@ -468,7 +492,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ptr.ty,
             span,
         )?;
-        Ok(AnalysisResult::new(air_ref, ptr.ty))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            ptr.ty,
+            ptr.continues && old_size.continues && align.continues && new_size.continues,
+        ))
     }
 
     /// Analyze `@resize(p, old_size, align, new_size) -> bool` (RUE-968), the
@@ -517,7 +545,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Type::BOOL,
             span,
         )?;
-        Ok(AnalysisResult::new(air_ref, Type::BOOL))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            Type::BOOL,
+            ptr.continues && old_size.continues && align.continues && new_size.continues,
+        ))
     }
 
     /// Analyze `@free(p, size, align)` (ADR-0059 Phase 3, RUE-961). The
@@ -555,7 +587,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Type::UNIT,
             span,
         )?;
-        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            Type::UNIT,
+            ptr.continues && size.continues && align.continues,
+        ))
     }
 
     /// Reject a comptime-constant allocator `align` argument that is zero or
@@ -631,7 +667,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Type::UNIT,
             span,
         )?;
-        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            Type::UNIT,
+            dst.continues && src.continues && size.continues,
+        ))
     }
 
     /// Analyze `@byte_set(dst: ptr mut u8, byte: u8, size: u64) -> ()`
@@ -669,7 +709,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Type::UNIT,
             span,
         )?;
-        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            Type::UNIT,
+            dst.continues && byte.continues && size.continues,
+        ))
     }
 
     fn require_intrinsic_type(
@@ -821,7 +865,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // same way (address of the operand place).
         let name = result_name;
         let air_ref = air.add_intrinsic(None, name, &[arg_result.air_ref], result_type, span)?;
-        Ok(AnalysisResult::new(air_ref, result_type))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            result_type,
+            arg_result.continues,
+        ))
     }
 
     /// Analyze `@field_ptr(s.field)` (RUE-301): a raw `ptr mut F` to a struct
@@ -900,8 +948,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Analyze all arguments and verify they are u64
         let mut arg_refs = Vec::with_capacity(args.len());
+        let mut continues = true;
         for (i, arg) in args.iter().enumerate() {
             let arg_result = self.analyze_inst(air, arg.value, ctx)?;
+            continues &= arg_result.continues;
             let arg_type = arg_result.ty;
 
             // All syscall arguments must be u64
@@ -921,7 +971,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Create the intrinsic call instruction
         let air_ref = air.add_intrinsic(None, name, &arg_refs, Type::I64, span)?;
-        Ok(AnalysisResult::new(air_ref, Type::I64))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            Type::I64,
+            continues,
+        ))
     }
 
     /// Analyze @target_arch() intrinsic - returns target CPU architecture enum.

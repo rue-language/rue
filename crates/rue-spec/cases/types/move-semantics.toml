@@ -1059,6 +1059,39 @@ compile_fail = true
 error_contains = "not consumed on all paths"
 
 [[case]]
+name = "linear_dead_suffix_after_panic_keeps_scope_state_coherent"
+spec = ["3.4:2", "3.8:32", "3.8:33"]
+description = "Dead-suffix ownership checking does not resurrect or leak a linear declaration"
+source = """
+linear struct MustUse { value: i32 }
+fn consume(m: MustUse) -> i32 { m.value }
+fn main() -> i32 {
+    @panic("dead suffix");
+    let m = MustUse { value: 1 };
+    consume(m);
+}
+"""
+exit_code = 101
+stderr_contains = "panic: dead suffix"
+
+[[case]]
+name = "linear_dead_suffix_before_reachable_typed_tail"
+spec = ["3.4:2", "3.8:32", "3.8:33"]
+description = "A final typed tail remains unreachable without changing linear obligations"
+source = """
+linear struct MustUse { value: i32 }
+fn consume(m: MustUse) -> i32 { m.value }
+fn main() -> i32 {
+    @panic("typed tail");
+    let m = MustUse { value: 1 };
+    consume(m);
+    42
+}
+"""
+exit_code = 101
+stderr_contains = "panic: typed tail"
+
+[[case]]
 name = "linear_consumed_one_match_arm_error"
 spec = ["3.8:50"]
 description = "Linear value consumed in only one match arm is an error"

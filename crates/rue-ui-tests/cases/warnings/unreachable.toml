@@ -33,6 +33,18 @@ warning_contains = ["unreachable"]
 expected_warning_count = 1
 
 [[case]]
+name = "unreachable_after_panic_statement"
+source = """
+fn main() -> i32 {
+    @panic("stop");
+    0
+}
+"""
+exit_code = 101
+warning_contains = ["unreachable"]
+expected_warning_count = 1
+
+[[case]]
 name = "no_warning_without_unreachable_code"
 source = """
 fn main() -> i32 {

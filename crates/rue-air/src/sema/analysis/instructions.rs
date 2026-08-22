@@ -72,11 +72,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 | InstData::IndexGet { .. }
                 | InstData::IndexSet { .. }
         );
-        if clears_result_expectation {
-            return ctx
-                .with_expected_type(None, |ctx| self.analyze_inst_dispatch(air, inst_ref, ctx));
+        let mut result = if clears_result_expectation {
+            ctx.with_expected_type(None, |ctx| self.analyze_inst_dispatch(air, inst_ref, ctx))?
+        } else {
+            self.analyze_inst_dispatch(air, inst_ref, ctx)?
+        };
+        if let Some(continues) = ctx.resolved_continues_of(inst_ref) {
+            result.continues = continues;
         }
-        self.analyze_inst_dispatch(air, inst_ref, ctx)
+        Ok(result)
     }
 
     fn analyze_inst_dispatch(

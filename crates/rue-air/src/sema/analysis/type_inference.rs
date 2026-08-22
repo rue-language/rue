@@ -33,7 +33,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// signatures, struct/enum types, method signatures) converted to InferType format.
     /// This avoids rebuilding these maps for each function, reducing O(n²) to O(n).
     ///
-    /// Returns a map from RIR instruction refs to their resolved concrete types.
+    /// Returns maps from RIR instruction refs to their resolved concrete types
+    /// and normal-continuation facts.
     pub(crate) fn run_type_inference(
         &mut self,
         infer_ctx: &InferenceContext,
@@ -42,7 +43,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         body: InstRef,
         type_subst: Option<&AHashMap<Spur, Type>>,
         value_subst: Option<&AHashMap<Spur, ConstValue>>,
-    ) -> CompileResult<(AHashMap<InstRef, Type>, InferenceBreakdown)> {
+    ) -> CompileResult<(
+        AHashMap<InstRef, Type>,
+        AHashMap<InstRef, bool>,
+        InferenceBreakdown,
+    )> {
         let precompute_started = Instant::now();
         // Pre-resolve `let`-bound comptime type aliases (`let P = F();` where
         // `F` returns `type`) so inference can see the concrete anonymous
@@ -138,6 +143,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             string_literal_vars,
             string_literal_default,
             expr_types,
+            expr_continues,
             type_var_count,
         ) = {
             let facts = self.inference_facts(infer_ctx);
@@ -248,6 +254,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 string_literal_vars,
                 string_literal_default,
                 expr_types,
+                expr_continues,
                 type_var_count,
             ) = cgen.into_parts();
             (
@@ -256,6 +263,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 string_literal_vars,
                 string_literal_default,
                 expr_types,
+                expr_continues,
                 type_var_count,
             )
         };
@@ -386,6 +394,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let unification_resolution_ns = elapsed_ns(unification_resolution_started);
         Ok((
             resolved_types,
+            expr_continues.into_iter().collect(),
             InferenceBreakdown {
                 precompute_ns,
                 precompute_structural_ns,

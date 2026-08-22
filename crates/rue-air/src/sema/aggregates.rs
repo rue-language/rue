@@ -129,11 +129,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // payload type (inference already constrained them; this is the final
         // legality check).
         let mut payload_refs: Vec<AirRef> = Vec::with_capacity(args.len());
+        let mut continues = true;
         for (i, arg) in args.iter().enumerate() {
             let expected = payload_types[i];
             let arg_result = ctx
                 .with_expected_type(Some(expected), |ctx| self.analyze_inst(air, arg.value, ctx))?;
             let actual = arg_result.ty;
+            continues &= arg_result.continues;
             if !self.types_compatible(actual, expected) && actual != Type::ERROR {
                 return Err(self.type_mismatch_error(
                     expected,
@@ -150,7 +152,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let _ = (&variant_name, &enum_name);
 
         let air_ref = air.add_enum_variant(enum_id, variant_index, &payload_refs, ty, span)?;
-        Ok(AnalysisResult::new(air_ref, ty))
+        Ok(AnalysisResult::with_continues(air_ref, ty, continues))
     }
 
     /// Validate the source operand type accepted by structural equality.
@@ -327,12 +329,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Look up the struct type
         // First check if it's a comptime type variable (e.g., `let Point = make_point(); Point { ... }`)
         let type_name_str = self.body_interner().resolve(&type_name).to_owned();
+        let mut continues = true;
         let struct_id = if let Some(head_ref) = ctor_head {
             // Inline type-constructor struct-literal head `F(args) { ... }`
             // (RUE-596, spec 4.14:23): the head call reduces to a concrete type
             // at comptime; construct as if the type had been bound to a name
             // first (`let P = F(args); P { .. }`).
             let head_result = self.analyze_inst(air, head_ref, ctx)?;
+            continues &= head_result.continues;
             let AirInstData::TypeConst(reduced_ty) = air.get(head_result.air_ref).data else {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
@@ -358,6 +362,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
         } else if let Some(module_ref) = module {
             let module_result = self.analyze_inst(air, module_ref, ctx)?;
+            continues &= module_result.continues;
             let Some(module_id) = module_result.ty.as_module() else {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
@@ -534,6 +539,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // Not an integer literal - analyze normally
                 self.analyze_inst(air, field_value, ctx)?
             };
+            continues &= field_result.continues;
 
             // An accessor result is a second-class borrowed place (ADR-0062):
             // capturing it as an aggregate member would store the borrow.
@@ -600,7 +606,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             struct_type,
             span,
         )?;
-        Ok(AnalysisResult::new(air_ref, struct_type))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            struct_type,
+            continues,
+        ))
     }
 
     /// Analyze module type member access: `module.StructName` or `module.EnumName`.
@@ -1182,8 +1192,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Analyze elements
         let mut air_elems = Vec::with_capacity(elem_refs.len());
+        let mut continues = true;
         for elem_ref in elem_refs {
             let elem_result = self.analyze_inst(air, elem_ref, ctx)?;
+            continues &= elem_result.continues;
             // An accessor result cannot be captured as an array element
             // (ADR-0062): the member would store a second-class borrow.
             self.reject_accessor_result_escape(
@@ -1196,7 +1208,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         let air_ref = air.add_array_init(&air_elems, array_type, span)?;
-        Ok(AnalysisResult::new(air_ref, array_type))
+        Ok(AnalysisResult::with_continues(
+            air_ref, array_type, continues,
+        ))
     }
 
     /// Analyze an array-repeat literal `[value; count]` (RUE-235).
@@ -1295,9 +1309,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // correctly, marking the array construction unreachable.
         if length == 0 {
             let block_ref = air.add_block(&[value_result.air_ref], air_ref, array_type, span)?;
-            return Ok(AnalysisResult::new(block_ref, array_type));
+            return Ok(AnalysisResult::with_continues(
+                block_ref,
+                array_type,
+                value_result.continues,
+            ));
         }
-        Ok(AnalysisResult::new(air_ref, array_type))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            array_type,
+            value_result.continues,
+        ))
     }
 
     // Enum operations: EnumDecl, EnumVariant

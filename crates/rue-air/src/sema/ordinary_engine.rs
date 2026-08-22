@@ -2070,7 +2070,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // for all expressions BEFORE emitting AIR.
         let expression_setup_ns =
             u64::try_from(expression_setup_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let (resolved_types, inference_breakdown) = self.run_type_inference(
+        let (resolved_types, resolved_continues, inference_breakdown) = self.run_type_inference(
             infer_ctx,
             return_type,
             params,
@@ -2123,6 +2123,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             moved_scope_stack: Vec::new(),
             comptime_type_scope_stack: Vec::new(),
             resolved_types: &resolved_types,
+            resolved_continues: &resolved_continues,
             moved_vars: AHashMap::new(),
             warnings: Vec::new(),
             allow_unused_variables: allow_unused_variable,
