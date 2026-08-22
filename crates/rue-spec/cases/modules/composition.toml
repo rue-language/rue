@@ -89,6 +89,54 @@ compile_fail = true
 error_contains = "E0436"
 
 [[case]]
+name = "same_file_duplicate_constant_error"
+spec = ["10.5:1"]
+description = "Two top-level const declarations with one name in ONE file produce E0418"
+source = """
+const LIMIT: i32 = 1;
+const LIMIT: i32 = 2;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0418", "duplicate constant"]
+
+[[case]]
+name = "same_file_duplicate_type_error"
+spec = ["10.5:1"]
+description = "Two top-level type declarations with one name in ONE file produce E0405"
+source = """
+struct Point { x: i32 }
+struct Point { y: i32 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0405", "duplicate type"]
+
+[[case]]
+name = "same_file_type_function_collision_error"
+spec = ["10.5:1"]
+description = "A type and a function sharing one name in ONE file collide across kinds (E0436)"
+source = """
+struct Point { x: i32 }
+fn Point() -> i32 { 2 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0436", "Point"]
+
+[[case]]
+name = "same_file_type_constant_collision_error"
+spec = ["10.5:1"]
+description = "A type and a constant sharing one name in ONE file collide across categories (E0436)"
+source = """
+enum Color { Red, Green }
+const Color: i32 = 1;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0436", "Color"]
+
+[[case]]
 name = "same_named_functions_qualified_calls_sum"
 spec = ["10.5:3"]
 description = "The 10.5:3 example: same-named functions in two modules, each call resolving in its own module"

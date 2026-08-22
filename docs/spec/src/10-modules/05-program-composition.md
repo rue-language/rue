@@ -29,10 +29,14 @@ diagnostic that points at `@import` and `--source-manifest`.
 {{ rule(id="10.5:1", cat="legality-rule") }}
 
 It is a compile-time error for one source file to define two top-level
-items with the same name, whether of the same kind (duplicate definition,
-E0436) or of different kinds (a `const` and a `fn` sharing a name, also
-E0436). This check is per-file: it never considers items in other loaded
-files.
+declarations with the same name among user-defined types (structs and enums),
+constants, and functions. Within one declaration category, any pair of
+user-defined type declarations (including a struct/enum pair) produces E0405,
+a const/const collision produces E0418, and a fn/fn collision produces E0436.
+A collision across those three declaration categories produces E0436. This
+check is per-file: it never considers items in other loaded files. Other
+constructs with distinct duplicate diagnostics, such as user-defined
+destructors (3.9:26), retain their own rules.
 
 {{ rule(id="10.5:2", cat="normative") }}
 

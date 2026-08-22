@@ -284,8 +284,8 @@ Notes:
   statements require `;`. Control-flow expressions (`if`, `match`, `while`,
   `loop`, `for`, `break`, `continue`, `return`) and bare blocks may appear as
   statements without a trailing semicolon.
-- There are no `impl` blocks: methods are declared inline inside the
-  `struct` body, after the fields.
+- There is no `impl`-block construct (`impl` remains reserved syntax; 2.4:2):
+  methods are declared inline inside the `struct` body, after the fields.
 - **Method receivers** may carry a mode: `inout self` (mutating receiver) or
   `borrow self` (read-only receiver); a bare `self` is by-value. This mirrors
   the `inout`/`borrow` parameter modes; `comptime self` is not permitted.
