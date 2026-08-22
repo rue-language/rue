@@ -126,7 +126,7 @@ error_contains = "cannot find module"
 
 [[case]]
 name = "both_forms_coexist_extensionless_names_facade"
-spec = ["10.1:5", "10.2:1"]
+spec = ["4.13:82", "10.1:5", "10.2:1"]
 description = "foo.rue and foo/_foo.rue may coexist; the extensionless import names the facade alone (E0708 is retired)"
 source = """
 fn main() -> i32 {
@@ -139,7 +139,7 @@ exit_code = 2
 
 [[case]]
 name = "both_forms_coexist_extension_names_file"
-spec = ["10.1:5", "10.2:1"]
+spec = ["4.13:82", "10.1:5", "10.2:1"]
 description = "With both forms present, the extensioned spelling reaches the file module"
 source = """
 fn main() -> i32 {
