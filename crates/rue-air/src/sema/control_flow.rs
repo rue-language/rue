@@ -1229,6 +1229,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let body_result = self.analyze_inst(air, *body, ctx)?;
             let body_type = body_result.ty;
 
+            // Payload bindings are ordinary locals living in the ARM scope,
+            // not in the body's own block scope, so the block-exit
+            // must-consume check never sees them (RUE-1603). Enforce the
+            // linear obligation here, exactly as `analyze_block` does before
+            // its pop: unconditionally (a diverging body discharges the
+            // obligation only by actually consuming the value on that path),
+            // per arm (this arm's own move state, before it is harvested
+            // below). Unnameable positions (RUE-1592) are registered in no
+            // scope and were already rejected up front when linear (E0486),
+            // so this visits exactly the named bindings.
+            self.check_unconsumed_linear_values(ctx)?;
+
             ctx.pop_scope();
             arm_move_states.push((std::mem::take(&mut ctx.moved_vars), body_type.is_never()));
 
