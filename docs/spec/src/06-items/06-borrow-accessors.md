@@ -106,7 +106,11 @@ an exclusive use conflicts with every active accessor loan. An
 exclusive use of the borrowed root — passing it `inout`, an `inout self`
 receiver access, assigning to it, or moving it — anywhere within the same full
 expression is rejected (E0259). `use(v.get_ref(i), g(inout v))` is ill-formed
-even though the read syntactically precedes the exclusive access.
+even though the read syntactically precedes the exclusive access. When the
+accessor result is itself re-borrowed as a `borrow` argument of the same call
+(`use(borrow v.get_ref(i), inout v)`), the conflict is caught by the general
+argument-exclusivity rule and surfaces as its diagnostic (E0430) rather than
+E0259; the program is rejected either way.
 
 {{ rule(id="6.6:11", cat="legality-rule") }}
 

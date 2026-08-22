@@ -5339,9 +5339,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             })
             .collect();
         // An `inout` loan on a root an accessor result borrows in the same
-        // full expression violates exclusivity (ADR-0062, E0259). Checked at
-        // frame construction (loans taken by earlier sibling arguments) and
-        // again by accessor expansion itself (the reverse nesting order).
+        // full expression violates exclusivity (ADR-0062, E0259). Checked
+        // three times: here at frame construction (loans taken earlier in the
+        // enclosing expression, e.g. by an already-analyzed sibling of an
+        // outer call), by accessor expansion's frame check (an accessor
+        // expanded under an outer call's live by-ref frame), and again after
+        // this argument list is analyzed (loans registered by THIS call's own
+        // accessor arguments — the direct sibling forms, RUE-1593).
         for arg in args.clone() {
             if !arg.is_inout() && !arg.is_borrow() {
                 continue;
@@ -5368,11 +5372,45 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if pushed {
             ctx.call_loaned_roots.push(frame);
         }
-        let result = self.analyze_call_args_coerced_inner(air, args, param_types, param_modes, ctx);
+        let result =
+            self.analyze_call_args_coerced_inner(air, args.clone(), param_types, param_modes, ctx);
         if pushed {
             ctx.call_loaned_roots.pop();
         }
-        result
+        let result = result?;
+        // Re-check after the argument list is analyzed (RUE-1593): an accessor
+        // expanded among THIS call's own arguments registered its loan in
+        // `ctx.expression_loans` only during the inner analysis, after the
+        // pre-frame check above ran. A direct sibling by-ref use of the same
+        // root — `use(v.get_ref(i), inout v)` or `use(inout v, v.get_ref(i))` —
+        // is an exclusive use of the borrowed root within the same full
+        // expression and is rejected in either argument order (spec 6.6:10,
+        // 6.6:16, E0259). Args whose place roots through an accessor chain
+        // (`f(inout v.get_mut(i))`) have no plain root variable here and are
+        // governed by accessor expansion's own frame check instead.
+        for arg in args {
+            if !arg.is_inout() && !arg.is_borrow() {
+                continue;
+            }
+            if let Some(root) = root_variable_of(self.body_rir_ref(), arg.value) {
+                if arg.is_inout() {
+                    self.reject_accessor_loan_conflict(
+                        root,
+                        "as `inout`",
+                        self.body_rir_ref().get(arg.value).span,
+                        ctx,
+                    )?;
+                } else {
+                    self.reject_accessor_shared_loan_conflict(
+                        root,
+                        "as `borrow`",
+                        self.body_rir_ref().get(arg.value).span,
+                        ctx,
+                    )?;
+                }
+            }
+        }
+        Ok(result)
     }
 
     /// The argument loop behind [`Self::analyze_call_args_coerced`], factored
