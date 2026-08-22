@@ -861,6 +861,7 @@ impl std::fmt::Debug for RootedCfgUnit {
 pub struct RootedCfgOutput {
     graph: RootedBodyGraph,
     pub(crate) cfgs: Vec<RootedCfgUnit>,
+    pub(crate) optimized_cfg_batch: crate::revisioned_query_database::OptimizedCfgBatchKey,
     pub(crate) warnings: Vec<CompileWarning>,
     pub(crate) work: crate::CanonicalSemanticWork,
     backend_work: BackendQueryWork,
@@ -5523,6 +5524,7 @@ impl CompilerSession {
         Ok(RootedCfgOutput {
             graph,
             cfgs,
+            optimized_cfg_batch: cfg_batch_key,
             warnings,
             work,
             backend_work,
@@ -5594,6 +5596,7 @@ impl CompilerSession {
         let RootedCfgOutput {
             graph,
             cfgs,
+            optimized_cfg_batch,
             warnings,
             work,
             backend_work: cfg_work,
@@ -5603,11 +5606,13 @@ impl CompilerSession {
         let codegen_keys = cfgs
             .iter()
             .map(|cfg| {
-                crate::codegen_query::CodegenUnitQueryKey::new(
+                crate::codegen_query::CodegenUnitQueryKey::new_with_batch(
                     cfg.optimized_cfg_key.clone(),
                     options.target,
                     request,
                     options.opt_level,
+                    (!cfg.record.durable_reuse_allowed)
+                        .then(|| std::sync::Arc::new(optimized_cfg_batch.clone())),
                 )
             })
             .collect::<Vec<_>>()

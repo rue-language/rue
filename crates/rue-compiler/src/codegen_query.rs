@@ -61,6 +61,11 @@ pub(crate) struct CodegenUnitQueryKey {
     /// used by lowering. It is excluded from `stable_identity`, but remains in
     /// memo equality so a different function body/configuration cannot alias.
     pub(crate) optimized_cfg: crate::cfg_query::OptimizedCfgQueryKey,
+    /// Rooted compilations carry the exact optimized-CFG batch that performed
+    /// Phase-2 general inlining. Codegen consumes that batch value so it never
+    /// re-queries the uninlined per-function terminal.
+    pub(crate) optimized_cfg_batch:
+        Option<Arc<crate::revisioned_query_database::OptimizedCfgBatchKey>>,
     /// Request-local transport for the deterministic test failure injection.
     /// Registered batch children run on worker threads, so thread-local test
     /// state is captured into the exact key at the host boundary.
@@ -71,11 +76,22 @@ pub(crate) struct CodegenUnitQueryKey {
 }
 
 impl CodegenUnitQueryKey {
+    #[cfg(test)]
     pub(crate) fn new(
         optimized_cfg: crate::cfg_query::OptimizedCfgQueryKey,
         target: rue_target::Target,
         request: rue_codegen::BackendArtifactRequest,
         optimization: rue_cfg::OptLevel,
+    ) -> Self {
+        Self::new_with_batch(optimized_cfg, target, request, optimization, None)
+    }
+
+    pub(crate) fn new_with_batch(
+        optimized_cfg: crate::cfg_query::OptimizedCfgQueryKey,
+        target: rue_target::Target,
+        request: rue_codegen::BackendArtifactRequest,
+        optimization: rue_cfg::OptLevel,
+        optimized_cfg_batch: Option<Arc<crate::revisioned_query_database::OptimizedCfgBatchKey>>,
     ) -> Self {
         let function = optimized_cfg.cfg.function.clone();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -92,6 +108,7 @@ impl CodegenUnitQueryKey {
         request.regalloc.hash(&mut hasher);
         request.asm.hash(&mut hasher);
         optimized_cfg.hash(&mut hasher);
+        optimized_cfg_batch.hash(&mut hasher);
         #[cfg(test)]
         let inject_failure = INJECT_CODEGEN_FAILURE.with(Cell::get);
         #[cfg(test)]
@@ -100,7 +117,8 @@ impl CodegenUnitQueryKey {
         let data_model = target.data_model();
         let code_model = CodeModel::for_target(target);
         let display_identity: Arc<str> = format!(
-            "{function:?};target={target:?};data-model={data_model:?};code-model={code_model:?};opt={optimization:?};backend={BACKEND_EPOCH};abi-layout={ABI_LAYOUT_EPOCH}"
+            "{function:?};target={target:?};data-model={data_model:?};code-model={code_model:?};opt={optimization:?};backend={BACKEND_EPOCH};abi-layout={ABI_LAYOUT_EPOCH};batch={}",
+            optimized_cfg_batch.is_some()
         )
         .into();
         Self {
@@ -113,6 +131,7 @@ impl CodegenUnitQueryKey {
             abi_layout_epoch: ABI_LAYOUT_EPOCH,
             request,
             optimized_cfg,
+            optimized_cfg_batch,
             #[cfg(test)]
             inject_failure,
             memo_hash,
@@ -132,6 +151,7 @@ impl PartialEq for CodegenUnitQueryKey {
             && self.abi_layout_epoch == other.abi_layout_epoch
             && self.request == other.request
             && self.optimized_cfg == other.optimized_cfg
+            && self.optimized_cfg_batch == other.optimized_cfg_batch
             && {
                 #[cfg(test)]
                 {
@@ -174,6 +194,7 @@ impl QueryKey for CodegenUnitQueryKey {
         self.request.regalloc.hash(hasher);
         self.request.asm.hash(hasher);
         self.optimized_cfg.stable_hash(hasher);
+        self.optimized_cfg_batch.hash(hasher);
         #[cfg(test)]
         self.inject_failure.hash(hasher);
     }
@@ -394,19 +415,44 @@ pub(crate) fn evaluate_codegen_unit(
         crate::cfg_query::OptimizedCfgQueryKey,
         crate::cfg_query::CfgValue,
     >,
+    optimized_cfg_batches: &QueryFamily<
+        crate::revisioned_query_database::OptimizedCfgBatchKey,
+        crate::revisioned_query_database::OptimizedCfgBatchOutput,
+    >,
     key: &CodegenUnitQueryKey,
 ) -> Result<QueryOutput<CodegenUnitValue>, QueryAbort> {
     context.check_canceled()?;
     context.record_work(rue_query::WorkItem::new("codegen.unit.attempts", 1));
-    let _nested = context.retain_nested_attempts_for(&["compiler.optimized-cfg"]);
-    let optimized = context.query_registered(optimized_cfgs, key.optimized_cfg.clone())?;
+    let _nested = context
+        .retain_nested_attempts_for(&["compiler.optimized-cfg", "compiler.optimized-cfg-batch"]);
+    let optimized = if let Some(batch) = &key.optimized_cfg_batch {
+        let batch = context.query_registered(optimized_cfg_batches, (**batch).clone())?;
+        let rue_query::QueryOutcome::Success(batch) = batch.outcome() else {
+            unreachable!("optimized CFG batch publishes typed values")
+        };
+        let index = key
+            .optimized_cfg_batch
+            .as_ref()
+            .and_then(|batch_key| {
+                batch_key
+                    .keys
+                    .iter()
+                    .position(|candidate| candidate == &key.optimized_cfg)
+            })
+            .expect("codegen optimized-CFG key belongs to its batch");
+        let value = batch.values[index].clone();
+        value
+    } else {
+        let terminal = context.query_registered(optimized_cfgs, key.optimized_cfg.clone())?;
+        let QueryOutcome::Success(value) = terminal.outcome() else {
+            unreachable!("OptimizedCfg publishes typed values")
+        };
+        value.clone()
+    };
     context.record_work(rue_query::WorkItem::new(
         "codegen.dependencies.optimized-cfg",
         1,
     ));
-    let QueryOutcome::Success(optimized) = optimized.outcome() else {
-        unreachable!("OptimizedCfg publishes typed values");
-    };
     if let crate::cfg_query::CfgValue::Failure { errors, .. } = optimized {
         return Ok(codegen_failure(errors.clone()));
     }

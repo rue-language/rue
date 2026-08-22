@@ -60,6 +60,7 @@ mod tests {
 
         let optimized_batch = crate::revisioned_query_database::OptimizedCfgBatchKey {
             keys: Arc::from([optimized.clone()]),
+            generation: 0,
         };
         let codegen_batch = crate::revisioned_query_database::CodegenUnitBatchKey {
             keys: Arc::from([codegen.clone()]),
@@ -70,7 +71,7 @@ mod tests {
         assert_eq!(
             optimized_batch.stable_identity(),
             format!(
-                "optimized-cfg-batch;units=1\u{1e}{}",
+                "optimized-cfg-batch;units=1\u{1e}{};generation=0",
                 optimized.shared_stable_identity()
             )
         );
@@ -2731,6 +2732,256 @@ mod tests {
             is_elf || is_macho,
             "should produce valid ELF or Mach-O binary"
         );
+    }
+
+    #[test]
+    fn phase2_free_function_inlining_is_structural_and_request_local() {
+        let snapshot = SourceSnapshot::single(
+            "<phase2-inline-structure>",
+            "fn add_one(x: i32) -> i32 { x + 1 } fn main() -> i32 { add_one(4) + add_one(5) }",
+        )
+        .unwrap();
+        let call_count = |output: &RootedCfgOutput, name: &str| {
+            output
+                .cfgs
+                .iter()
+                .find(|unit| unit.record.codegen.defined_symbol.ends_with(name))
+                .map(|unit| {
+                    unit.record
+                        .cfg
+                        .blocks()
+                        .iter()
+                        .flat_map(|block| block.insts.iter())
+                        .filter(|value| {
+                            matches!(
+                                unit.record.cfg.get_inst(**value).data,
+                                rue_cfg::CfgInstData::Call { .. }
+                            )
+                        })
+                        .count()
+                })
+                .unwrap_or_default()
+        };
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+
+        for opt_level in [rue_cfg::OptLevel::O0, rue_cfg::OptLevel::O1] {
+            let options = CompileOptions {
+                opt_level,
+                ..CompileOptions::default()
+            };
+            let output = session.rooted_cfg(&options).unwrap();
+            assert_eq!(call_count(&output, "main"), 2);
+            assert!(
+                output
+                    .cfgs
+                    .iter()
+                    .all(|unit| unit.record.durable_reuse_allowed)
+            );
+        }
+
+        for opt_level in [rue_cfg::OptLevel::O2, rue_cfg::OptLevel::O3] {
+            let options = CompileOptions {
+                opt_level,
+                ..CompileOptions::default()
+            };
+            let output = session.rooted_cfg(&options).unwrap();
+            assert_eq!(call_count(&output, "main"), 0);
+            assert!(
+                output
+                    .cfgs
+                    .iter()
+                    .find(|unit| unit.record.codegen.defined_symbol.ends_with("main"))
+                    .is_some_and(|unit| !unit.record.durable_reuse_allowed)
+            );
+            assert!(output.cfgs.iter().any(|unit| matches!(
+                &unit.function,
+                FunctionInstanceKey::Definition(definition) if definition.name() == "add_one"
+            )));
+            let first_generation = output.optimized_cfg_batch.generation;
+            let second = session.rooted_cfg(&options).unwrap();
+            assert_ne!(first_generation, second.optimized_cfg_batch.generation);
+            assert_eq!(call_count(&second, "main"), 0);
+            assert!(session
+                .rooted_cfg_executions()
+                .iter()
+                .any(|(function, execution)| matches!(function, FunctionInstanceKey::Definition(definition) if definition.name() == "add_one")
+                    && matches!(execution, rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined)));
+        }
+    }
+
+    #[test]
+    fn phase2_excludes_methods_from_general_inlining() {
+        let snapshot = SourceSnapshot::single(
+            "<phase2-method-exclusion>",
+            "struct Counter { value: i32, fn next(self) -> i32 { self.value + 1 } } fn main() -> i32 { Counter { value: 4 }.next() }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let output = session
+            .rooted_cfg(&CompileOptions {
+                opt_level: rue_cfg::OptLevel::O2,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        let main = output
+            .cfgs
+            .iter()
+            .find(|unit| unit.record.codegen.defined_symbol.ends_with("main"))
+            .unwrap();
+        assert!(main.record.durable_reuse_allowed);
+        assert!(
+            main.record
+                .cfg
+                .blocks()
+                .iter()
+                .flat_map(|block| block.insts.iter())
+                .any(|value| {
+                    matches!(
+                        main.record.cfg.get_inst(*value).data,
+                        rue_cfg::CfgInstData::Call { .. }
+                    )
+                })
+        );
+    }
+
+    #[test]
+    fn phase2_single_call_token_destructor_is_actually_inlined() {
+        let snapshot = SourceSnapshot::single(
+            "<phase2-token-inline>",
+            "struct Token { value: i32 } drop fn Token(self) { @dbg(self.value); } fn consume(token: Token) -> i32 { token.value + 1 } fn main() -> i32 { consume(Token { value: 7 }) }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let call_count = |output: &RootedCfgOutput| {
+            let record = &output
+                .cfgs
+                .iter()
+                .find(|unit| {
+                    matches!(&unit.function, FunctionInstanceKey::Definition(definition) if definition.name() == "main")
+                })
+                .unwrap()
+                .record;
+            record
+                .cfg
+                .blocks()
+                .iter()
+                .flat_map(|block| block.insts.iter())
+                .filter(|value| {
+                    matches!(
+                        record.cfg.get_inst(**value).data,
+                        rue_cfg::CfgInstData::Call { .. }
+                    )
+                })
+                .count()
+        };
+        let o0 = session
+            .rooted_cfg(&CompileOptions {
+                opt_level: rue_cfg::OptLevel::O0,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(call_count(&o0), 1);
+        assert!(o0.cfgs.iter().find(|unit| matches!(&unit.function, FunctionInstanceKey::Definition(definition) if definition.name() == "main")).unwrap().record.durable_reuse_allowed);
+        let o2 = session
+            .rooted_cfg(&CompileOptions {
+                opt_level: rue_cfg::OptLevel::O2,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(call_count(&o2), 0);
+        assert!(!o2.cfgs.iter().find(|unit| matches!(&unit.function, FunctionInstanceKey::Definition(definition) if definition.name() == "main")).unwrap().record.durable_reuse_allowed);
+        assert!(o2.cfgs.iter().any(|unit| matches!(
+            &unit.function,
+            FunctionInstanceKey::Definition(definition) if definition.name() == "consume"
+        )));
+    }
+
+    #[test]
+    fn phase2_codegen_consumes_the_exact_inlined_batch_on_both_backends() {
+        let snapshot = SourceSnapshot::single(
+            "<phase2-inline-codegen>",
+            "fn add_one(x: i32) -> i32 { x + 1 } fn main() -> i32 { add_one(4) }",
+        )
+        .unwrap();
+
+        for target in [Target::X86_64Linux, Target::Aarch64Linux] {
+            let options = CompileOptions {
+                target,
+                opt_level: rue_cfg::OptLevel::O2,
+                ..CompileOptions::default()
+            };
+            let mut session = CompilerSession::new();
+            session
+                .update_for_presentation(&snapshot)
+                .into_result()
+                .unwrap();
+
+            let first = session
+                .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+                .unwrap();
+            let main_cfg = first
+                .cfgs
+                .iter()
+                .find(|unit| matches!(&unit.function, FunctionInstanceKey::Definition(definition) if definition.name() == "main"))
+                .unwrap();
+            assert!(!main_cfg.record.durable_reuse_allowed);
+            assert!(
+                main_cfg
+                    .record
+                    .cfg
+                    .blocks()
+                    .iter()
+                    .flat_map(|block| block.insts.iter())
+                    .all(|value| !matches!(
+                        main_cfg.record.cfg.get_inst(*value).data,
+                        rue_cfg::CfgInstData::Call { .. }
+                    ))
+            );
+            let main_unit = first
+                .units
+                .iter()
+                .find(|unit| matches!(&unit.function, FunctionInstanceKey::Definition(definition) if definition.name() == "main"))
+                .unwrap();
+            let callee_unit = first
+                .units
+                .iter()
+                .find(|unit| matches!(&unit.function, FunctionInstanceKey::Definition(definition) if definition.name() == "add_one"))
+                .unwrap();
+            assert!(
+                main_unit
+                    .unit
+                    .relocations
+                    .iter()
+                    .all(|relocation| relocation.symbol != callee_unit.unit.defined_symbol),
+                "the {target} caller must not retain a relocation to its inlined callee: {:?}",
+                main_unit.unit.relocations
+            );
+
+            session
+                .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+                .unwrap();
+            let executions = session.codegen_executions();
+            assert!(executions.iter().any(|(function, execution)| {
+                matches!(function, FunctionInstanceKey::Definition(definition) if definition.name() == "main")
+                    && *execution == rue_query::RequestExecution::Computed
+            }), "{target}: {executions:?}");
+            assert!(executions.iter().any(|(function, execution)| {
+                matches!(function, FunctionInstanceKey::Definition(definition) if definition.name() == "add_one")
+                    && matches!(execution, rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined)
+            }), "{target}: {executions:?}");
+        }
     }
 
     #[test]

@@ -529,6 +529,11 @@ pub(crate) struct CfgRecord {
     pub(crate) warnings: Arc<[rue_error::CompileWarning]>,
     pub(crate) implicit_destructor_targets: Arc<[crate::TypeInstanceKey]>,
     pub(crate) implicit_destructor_dependencies_complete: bool,
+    /// General interprocedural inlining changes the caller's CFG in a
+    /// whole-program batch. Such a record is a backend result, not a durable
+    /// function-local CFG and must not be admitted to the durable retention
+    /// cone (ADR-0049 Phase 2).
+    pub(crate) durable_reuse_allowed: bool,
 }
 
 #[cfg(test)]
@@ -1513,6 +1518,7 @@ fn build_cfg(
             .into(),
         implicit_destructor_dependencies_complete: materialized.completeness.is_complete()
             && !output.anonymous_destructor_dependency_incomplete,
+        durable_reuse_allowed: true,
     }));
     let cfg_publication_ns = elapsed_ns(publication_started);
     tracing::event!(
@@ -1763,6 +1769,7 @@ pub(crate) fn evaluate_optimized_cfg(
                 .collect::<Vec<_>>()
                 .into(),
             implicit_destructor_dependencies_complete,
+            durable_reuse_allowed: record.durable_reuse_allowed,
         },
     ))
 }
@@ -1805,8 +1812,417 @@ fn optimize_cfg_without_accessors(
             implicit_destructor_targets: record.implicit_destructor_targets.clone(),
             implicit_destructor_dependencies_complete: record
                 .implicit_destructor_dependencies_complete,
+            durable_reuse_allowed: record.durable_reuse_allowed,
         },
     )
+}
+
+/// Apply ADR-0049 Phase 2 to one optimized-CFG batch. The batch is the only
+/// place where the complete reached set is available, so call discovery is
+/// deliberately performed over the actual CFG instruction arenas here. This
+/// keeps the semantic dependency graph out of the inlining decision and gives
+/// callers a single deterministic whole-set result for both backends.
+pub(crate) fn apply_general_inlining(
+    context: &QueryContext,
+    keys: &[OptimizedCfgQueryKey],
+    values: &[CfgValue],
+) -> Result<
+    (
+        Vec<CfgValue>,
+        std::collections::BTreeSet<crate::FunctionInstanceKey>,
+    ),
+    QueryAbort,
+> {
+    if keys.first().is_none_or(|key| {
+        key.opt_level == rue_cfg::OptLevel::O0 || key.opt_level == rue_cfg::OptLevel::O1
+    }) {
+        return Ok((values.to_vec(), std::collections::BTreeSet::new()));
+    }
+    context.check_canceled()?;
+
+    let mut records = std::collections::BTreeMap::new();
+    for (key, value) in keys.iter().zip(values) {
+        let CfgValue::Available(record) = value else {
+            return Ok((values.to_vec(), std::collections::BTreeSet::new()));
+        };
+        records.insert(key.cfg.function.clone(), record.clone());
+    }
+
+    // Keep every edge, including duplicate edges. The multiplicity is useful
+    // for deterministic call-site selection and makes the graph description
+    // honest even though SCC detection only needs its distinct neighbors.
+    let mut edges = std::collections::BTreeMap::<
+        crate::FunctionInstanceKey,
+        Vec<crate::FunctionInstanceKey>,
+    >::new();
+    let mut callsites = std::collections::BTreeMap::<
+        crate::FunctionInstanceKey,
+        Vec<(rue_cfg::CfgValue, crate::FunctionInstanceKey)>,
+    >::new();
+    let mut has_calls = std::collections::BTreeMap::new();
+    for (function, record) in &records {
+        let mut calls = Vec::new();
+        let mut any_call = false;
+        for block in record.cfg.blocks() {
+            for &value in &block.insts {
+                let rue_cfg::CfgInstData::Call { runtime, name, .. } =
+                    record.cfg.get_inst(value).data
+                else {
+                    continue;
+                };
+                any_call = true;
+                if runtime.is_some() {
+                    continue;
+                }
+                let Some(callee) = record.domains.callable_for_symbol(name) else {
+                    continue;
+                };
+                edges
+                    .entry(function.clone())
+                    .or_default()
+                    .push(callee.clone());
+                if records.contains_key(&callee) {
+                    calls.push((value, callee));
+                }
+            }
+        }
+        has_calls.insert(function.clone(), any_call);
+        callsites.insert(function.clone(), calls);
+    }
+
+    let mut graph = std::collections::BTreeMap::new();
+    for function in records.keys() {
+        graph.insert(
+            function.clone(),
+            edges
+                .get(function)
+                .into_iter()
+                .flatten()
+                .filter(|callee| records.contains_key(*callee))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+    }
+    let recursive = recursive_scc_nodes(&graph);
+    let eligible = |function: &crate::FunctionInstanceKey| {
+        let Some(record) = records.get(function) else {
+            return false;
+        };
+        if recursive.contains(function)
+            || has_calls.get(function).copied().unwrap_or(true)
+            || !phase2_size_eligible(record.cfg.value_count())
+        {
+            return false;
+        }
+        if !is_true_free_function(function) {
+            return false;
+        }
+        matches!(
+            &keys
+                .iter()
+                .find(|key| key.cfg.function == *function)
+                .map(|key| &key.cfg.semantic_input),
+            Some(CfgSemanticInput::Body { input, .. }) if !canonical_body(&input.canonical).is_accessor
+        )
+    };
+
+    let mut output = values.to_vec();
+    let mut changed = std::collections::BTreeSet::new();
+    for (index, key) in keys.iter().enumerate() {
+        context.check_canceled()?;
+        let function = &key.cfg.function;
+        let Some(sites) = callsites.get(function) else {
+            continue;
+        };
+        let selected = sites
+            .iter()
+            .filter(|(call, callee)| {
+                eligible(callee)
+                    && records.get(callee).is_some_and(|callee| {
+                        // CFG calls carry physical argument values. A
+                        // zero-width source parameter can therefore make
+                        // the physical count differ; the Phase-2 policy
+                        // excludes that ABI shape rather than handing it
+                        // to the source-parameter splice primitive.
+                        records.get(function).is_some_and(|caller| {
+                            caller
+                                .cfg
+                                .get_call_args(&caller.cfg.get_inst(*call).data)
+                                .len()
+                                == callee.cfg.source_param_abi().len()
+                        })
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if selected.is_empty() {
+            continue;
+        }
+        let CfgValue::Available(record) = &output[index] else {
+            continue;
+        };
+        let mut domains = record.domains.clone();
+        let mut strings = record.strings.to_vec();
+        let interner = match copy_interner_preserving_ordinals(&record.interner, || {
+            context.check_canceled()
+        }) {
+            Ok(interner) => Arc::new(interner),
+            Err(CfgInternerCopyFailure::Checkpoint(abort)) => return Err(abort),
+            Err(error) => {
+                output[index] = internal_failure(
+                    format!("general inlining interner isolation failed: {error}"),
+                    record.body_span,
+                );
+                continue;
+            }
+        };
+        let mut local_atoms = record.local_atoms.to_vec();
+        let mut local_atom_identities = local_atoms
+            .iter()
+            .map(|atom| atom.identity.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut symbol_mappings = record.codegen.symbol_mappings.as_ref().clone();
+        let mut foreign_symbols = record.codegen.foreign_symbols.as_ref().clone();
+        let materialization_warnings = record.materialization_warnings.to_vec();
+        let warnings = record.warnings.to_vec();
+        let mut implicit_destructor_targets = record
+            .implicit_destructor_targets
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut implicit_destructor_dependencies_complete =
+            record.implicit_destructor_dependencies_complete;
+        let mut current = record.cfg.clone();
+        let mut spliced = false;
+        let mut failed = None;
+        for (call, callee_function) in selected {
+            let Some(callee) = records.get(&callee_function) else {
+                continue;
+            };
+            let (callee_cfg, string_map) = match domains.import_accessor_cfg(
+                &callee.domains,
+                &callee.cfg,
+                &callee.interner,
+                &interner,
+                &mut strings,
+                callee.body_span,
+            ) {
+                Ok(value) => value,
+                Err(crate::durable_cfg::CfgDomainFailure::MissingStableType(_)) => {
+                    // A body-local type domain that is not present in the
+                    // caller cannot be imported without widening the caller's
+                    // immutable type pool. It is outside conservative Phase 2.
+                    continue;
+                }
+                Err(error) => {
+                    failed = Some(format!(
+                        "general inline CFG domain import failed: {error:?}"
+                    ));
+                    break;
+                }
+            };
+            let callee_cfg = match callee_cfg.finish_after_optimization(&record.type_pool) {
+                Ok(cfg) => cfg,
+                Err(error) => {
+                    failed = Some(format!(
+                        "imported general inline CFG failed verification: {error}"
+                    ));
+                    break;
+                }
+            };
+            for atom in callee.local_atoms.iter() {
+                let Some(dense_id) = string_map.get(&atom.dense_id).copied() else {
+                    failed = Some("general inline local atom has no imported string id".to_owned());
+                    break;
+                };
+                let mut atom = atom.clone();
+                atom.dense_id = dense_id;
+                if local_atom_identities.insert(atom.identity.clone()) {
+                    local_atoms.push(atom);
+                }
+            }
+            if failed.is_some() {
+                break;
+            }
+            symbol_mappings.extend(
+                callee
+                    .codegen
+                    .symbol_mappings
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone())),
+            );
+            foreign_symbols.extend(callee.codegen.foreign_symbols.iter().cloned());
+            implicit_destructor_targets.extend(callee.implicit_destructor_targets.iter().cloned());
+            implicit_destructor_dependencies_complete &=
+                callee.implicit_destructor_dependencies_complete;
+            let call_block = current
+                .blocks()
+                .iter()
+                .find(|block| block.insts.contains(&call))
+                .map(|block| block.id)
+                .ok_or_else(|| format!("general inline call site {call} is detached"));
+            let call_block = match call_block {
+                Ok(block) => block,
+                Err(error) => {
+                    failed = Some(error);
+                    break;
+                }
+            };
+            current = match rue_cfg::inline_call_in_block(
+                &current,
+                call,
+                call_block,
+                &callee_cfg,
+                &record.type_pool,
+            ) {
+                Ok(cfg) => cfg,
+                Err(error) => {
+                    failed = Some(format!("general inline splice failed: {error}"));
+                    break;
+                }
+            };
+            spliced = true;
+            context.record_work(rue_query::WorkItem::new("cfg.general-inline-splices", 1));
+        }
+        if let Some(error) = failed {
+            output[index] = internal_failure(error, record.body_span);
+            continue;
+        }
+        if !spliced {
+            continue;
+        }
+        let current = match rue_cfg::opt::optimize(current, key.opt_level, &record.type_pool) {
+            Ok(cfg) => cfg,
+            Err(error) => {
+                output[index] = internal_failure(
+                    format!("general inline reoptimization failed: {error:?}"),
+                    record.body_span,
+                );
+                continue;
+            }
+        };
+        let interner_retained_charge = frozen_interner_retained_charge(&interner);
+        output[index] = CfgValue::Available(Arc::new(CfgRecord {
+            air: record.air.clone(),
+            source_name: record.source_name.clone(),
+            num_locals: record.num_locals,
+            num_param_slots: record.num_param_slots,
+            cfg: current,
+            domains,
+            type_pool: record.type_pool.clone(),
+            interner,
+            interner_retained_charge,
+            strings: strings.into(),
+            local_atoms: local_atoms.into(),
+            local_aggregate_type_aliases: record.local_aggregate_type_aliases,
+            local_materialized_type_handles: record.local_materialized_type_handles,
+            codegen: Arc::new(CfgCodegenDomain {
+                defined_symbol: record.codegen.defined_symbol.clone(),
+                symbol_mappings: Arc::new(symbol_mappings),
+                foreign_symbols: Arc::new(foreign_symbols),
+            }),
+            materialization_warnings: materialization_warnings.into(),
+            body_span: record.body_span,
+            warnings: warnings.into(),
+            implicit_destructor_targets: implicit_destructor_targets
+                .into_iter()
+                .collect::<Vec<_>>()
+                .into(),
+            implicit_destructor_dependencies_complete,
+            durable_reuse_allowed: false,
+        }));
+        changed.insert(function.clone());
+    }
+    Ok((output, changed))
+}
+
+const PHASE2_VALUE_CAP: usize = 32;
+
+fn phase2_size_eligible(value_count: usize) -> bool {
+    value_count <= PHASE2_VALUE_CAP
+}
+
+fn is_true_free_function(function: &crate::FunctionInstanceKey) -> bool {
+    let definition = match function {
+        crate::FunctionInstanceKey::Definition(definition) => definition,
+        crate::FunctionInstanceKey::Specialization { base, .. } => {
+            let crate::FunctionInstanceKey::Definition(definition) = base.as_ref() else {
+                return false;
+            };
+            definition
+        }
+        crate::FunctionInstanceKey::AnonymousMember { .. }
+        | crate::FunctionInstanceKey::DropGlue(_) => return false,
+    };
+    definition.kind() == crate::StableDefinitionKind::Function
+}
+
+/// Return every node in a cyclic strongly-connected component. Duplicate
+/// edges are accepted because call-site multiplicity is a separate property;
+/// SCC membership only depends on reachability.
+fn recursive_scc_nodes<K: Clone + Ord>(
+    graph: &std::collections::BTreeMap<K, Vec<K>>,
+) -> std::collections::BTreeSet<K> {
+    let mut reverse = graph
+        .keys()
+        .cloned()
+        .map(|node| (node, Vec::new()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (caller, callees) in graph {
+        for callee in callees {
+            reverse
+                .get_mut(callee)
+                .expect("graph nodes are complete")
+                .push(caller.clone());
+        }
+    }
+    let mut visited = std::collections::BTreeSet::new();
+    let mut order = Vec::with_capacity(graph.len());
+    for start in graph.keys() {
+        if !visited.insert(start.clone()) {
+            continue;
+        }
+        // A frame retains the next edge index, so siblings are not marked
+        // visited until their predecessor has been fully explored.
+        let mut stack = vec![(start.clone(), 0usize)];
+        while let Some((node, next_index)) = stack.last_mut() {
+            let next = graph.get(node).and_then(|edges| edges.get(*next_index));
+            let Some(next) = next else {
+                let (node, _) = stack.pop().expect("DFS frame exists");
+                order.push(node);
+                continue;
+            };
+            *next_index += 1;
+            if visited.insert(next.clone()) {
+                stack.push((next.clone(), 0));
+            }
+        }
+    }
+    visited.clear();
+    let mut recursive = std::collections::BTreeSet::new();
+    for start in order.into_iter().rev() {
+        if !visited.insert(start.clone()) {
+            continue;
+        }
+        let mut component = Vec::new();
+        let mut stack = vec![start.clone()];
+        while let Some(node) = stack.pop() {
+            component.push(node.clone());
+            for next in reverse.get(&node).into_iter().flatten().rev() {
+                if visited.insert(next.clone()) {
+                    stack.push(next.clone());
+                }
+            }
+        }
+        let cyclic = component.len() > 1
+            || graph
+                .get(&start)
+                .is_some_and(|callees| callees.iter().any(|callee| callee == &start));
+        if cyclic {
+            recursive.extend(component);
+        }
+    }
+    recursive
 }
 
 fn finish_cfg_optimization(
@@ -2061,6 +2477,51 @@ mod accessor_graph_tests {
             validate_accessor_dag(&missing, |node| missing.contains_key(node), &mut work),
             Err(AccessorDagFailure::Cycle(0))
         ));
+    }
+
+    #[test]
+    fn general_inline_scc_detection_handles_cycles_diamonds_and_duplicates() {
+        let cases = [
+            (
+                std::collections::BTreeMap::from([(0, vec![0])]),
+                [0].as_slice(),
+            ),
+            (
+                std::collections::BTreeMap::from([(0, vec![1]), (1, vec![0])]),
+                &[0, 1][..],
+            ),
+            (
+                std::collections::BTreeMap::from([(0, vec![1, 2]), (1, vec![2]), (2, Vec::new())]),
+                &[][..],
+            ),
+            (
+                std::collections::BTreeMap::from([
+                    (0, Vec::new()),
+                    (1, Vec::new()),
+                    (2, Vec::new()),
+                ]),
+                &[][..],
+            ),
+            (
+                std::collections::BTreeMap::from([(0, vec![1, 1]), (1, vec![0])]),
+                &[0, 1][..],
+            ),
+        ];
+        for (graph, expected) in cases {
+            assert_eq!(
+                recursive_scc_nodes(&graph),
+                expected
+                    .iter()
+                    .copied()
+                    .collect::<std::collections::BTreeSet<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn phase2_policy_keeps_the_32_value_boundary_exact() {
+        assert!(phase2_size_eligible(PHASE2_VALUE_CAP));
+        assert!(!phase2_size_eligible(PHASE2_VALUE_CAP + 1));
     }
 
     #[test]
