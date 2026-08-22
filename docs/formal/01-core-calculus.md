@@ -456,11 +456,57 @@ one is always rejected.
 
 ### 5.3 Sequencing, discard, and the linear leak check
 
+Expression evaluation carries an outgoing state `Ω`, whose domain is the live
+ownership state or the distinguished bottom state:
+
 ```
-  Γ ; Σ ; Λ ⊢ e1 ⇒ T1 ⊣ Σ1         carries_linear(T1) = false        -- 3.8:64
+  Ω ::= Σ | ⊥
+```
+
+`Σ` means that evaluation can reach the next expression normally; `⊥` means
+that evaluation has no normal outgoing path. This is separate from the surface
+result type: a call with a diverging argument may retain its declared result
+type while producing `⊥`. The dead-source checker may still visit unreachable
+syntax for diagnostics, but those visits do not derive a reachable `Σ`.
+
+Strict evaluation contexts evaluate their hole before the surrounding
+construct can produce its value. Let `E_strict` range over the operand,
+receiver, argument, initializer, condition, index, and field/value positions of
+assignment, calls, aggregates, projections, strict operators, and intrinsics.
+Short-circuit `&&` and `||` are derived as conditionals (§2.4) and are not
+strict in their right operand. The generic propagation rule is:
+
+```
+  Γ ; Σ ; Λ ⊢ e ⇒ T ⊣ ⊥
+  ─────────────────────────────────────────────── (Strict-Bottom)
+  Γ ; Σ ; Λ ⊢ E_strict[e] ⇒ T_E ⊣ ⊥
+```
+
+`T_E` is the construct's ordinary surface result type (for example `unit` for
+assignment or `Tr` for a call); strict evaluation does not rewrite it to
+`never`. A non-strict context such as a sequence tail is not in `E_strict` and
+uses the explicit bottom rules below. This single rule covers assignment,
+aggregate construction, indexing/field access, call receivers and arguments,
+intrinsic operands, and control-flow conditions without duplicating one bottom
+rule per syntax form.
+
+```
+  Γ ; Σ ; Λ ⊢ e1 ⇒ T1 ⊣ Σ1         T1 ≠ never   carries_linear(T1) = false -- 3.8:64
   Γ ; Σ1 ; Λ ⊢ e2 ⇒ T2 ⊣ Σ2
   ─────────────────────────────────────────────────────────────────── (Seq)
   Γ ; Σ ; Λ ⊢ (e1 ; e2) ⇒ T2 ⊣ Σ2
+
+  Γ ; Σ ; Λ ⊢ e1 ⇒ T1 ⊣ ⊥
+  ─────────────────────────────────────────────────────────────────── (Seq-Bottom)
+  Γ ; Σ ; Λ ⊢ (e1 ; e2) ⇒ never ⊣ ⊥
+
+  Γ ; Σ ; Λ ⊢ e1 ⇒ T1 ⊣ Σ1       Γ, x:T1 ; Σ1[x ↦ Owned] ; Λ ⊢ e2 ⇒ T2 ⊣ Σ2
+  ───────────────────────────────────────────────────────────────────────────── (Let)
+  Γ ; Σ ; Λ ⊢ (let x = e1 ; e2) ⇒ T2 ⊣ Σ2
+
+  Γ ; Σ ; Λ ⊢ e1 ⇒ T1 ⊣ ⊥
+  ─────────────────────────────────────────────────────────────────── (Let-Bottom)
+  Γ ; Σ ; Λ ⊢ (let x = e1 ; e2) ⇒ never ⊣ ⊥
 ```
 
 Discarding a value whose type *carries a linear value* is ill-formed (`3.8:64` —
@@ -474,6 +520,15 @@ Linear` for every type — including enums, whose class is the payload join, and
 zero-length arrays, whose class never reaches Linear.
 `let x = e1 ; e2` is like `Seq` but binds `x` (with `x` Owned in Σ for `e2`) and
 imposes no discard check on `e1`.
+
+`(Seq-Bottom)` and `(Let-Bottom)` are the outgoing-state cases of sequencing:
+once `e1` diverges,
+there is no reachable tail and therefore no `Σ2` to propagate. The surface
+checker may still analyze `e2` to issue unreachable-code diagnostics and report
+ordinary errors in unreachable source, but that analysis does not create a
+reachable ownership path or change the block's `never` type. A semicolon after
+a diverging expression thus has the same result as a tail-position divergence;
+`@assert`, whose analyzed type is `unit`, does not satisfy this rule.
 
 The `@drop(p)` intrinsic is the deliberate, visible discharge of a value's drop
 obligation (`3.9`). For `Affine`/`Linear` operands it consumes the operand, runs
@@ -974,8 +1029,14 @@ and leave Σ unchanged, per §5.4.
       a_i = inout p    (mi = inout):   fully-owned(Σ_{i-1},p), p mutable; Σi = Σ_{i-1};  add (root(p), exclusive) to Λ_call   -- §5.4
   Λ_call is CONSISTENT  (law of exclusivity, §5.4)
   for every (r, _) in Λ_call: fully-owned(Σm,r)       -- loans begin at call entry, after all argument evaluation
+  Tr ≠ never
   ─────────────────────────────────────────────────────────────────────────────── (Call)
   Γ;Σ;Λ ⊢ g ( a1, ..., am ) ⇒ Tr ⊣ Σm
+
+  Γ ⊢ g : (T₁, ..., Tₘ) → Tr       m = |a₁, ..., aₘ|       Tr = never
+  Γ;Σᵢ₋₁;Λᵢ₋₁ ⊢ aᵢ ⇒ Uᵢ ⊣ Σᵢ    (1 ≤ i ≤ m), with Σ₀ = Σ and Λ₀ = Λ
+  ─────────────────────────────────────────────────────────────────────────────── (Call-Bottom)
+  Γ;Σ;Λ ⊢ g ( a1, ..., am ) ⇒ never ⊣ ⊥
 ```
 
 The result type is the callee's return type `Tr` (`4.10:5`); the argument count

@@ -95,6 +95,7 @@ pub(crate) struct CallOperands {
     pub(crate) args: Vec<AirCallArg>,
     /// `StorageLive` instructions to prefix onto the call, in operand order.
     pub(crate) temp_scope: Vec<AirRef>,
+    pub(crate) continues: bool,
 }
 
 // Place Building
@@ -155,6 +156,8 @@ pub(crate) struct PlaceTrace {
     /// result may also be written after the receiver and loan checks. Neither
     /// result may be moved out of when it would create an owner alias.
     via_accessor: bool,
+    /// Whether strict projection operands reached their result normally.
+    continues: bool,
 }
 
 #[derive(Clone)]
@@ -940,6 +943,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         is_borrow_param: true,
                         pending_stmts: Vec::new(),
                         via_accessor: true,
+                        continues: true,
                     }));
                 }
 
@@ -957,6 +961,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         is_borrow_param: false,
                         pending_stmts: Vec::new(),
                         via_accessor: false,
+                        continues: true,
                     }));
                 }
 
@@ -975,6 +980,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         is_borrow_param: matches!(param_info.mode, RirParamMode::Borrow),
                         pending_stmts: Vec::new(),
                         via_accessor: false,
+                        continues: true,
                     }));
                 }
 
@@ -1058,6 +1064,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         let index_result = self.analyze_inst(air, *index, ctx);
                         ctx.byref_arg_root = saved_byref_root;
                         let index_result = index_result?;
+                        trace.continues &= index_result.continues;
 
                         // A place trace can be built before the outer read or
                         // write path performs its normal index validation. Do
@@ -1147,6 +1154,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 is_borrow_param: !mutable,
                 pending_stmts: Vec::new(),
                 via_accessor: true,
+                continues: true,
             }));
         }
         // Peek the receiver type without emitting anything: only proceed when
@@ -1675,7 +1683,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // sanctioned way to discard a linear value; `let _` stays an error.
         let Some(name) = name else {
             self.reject_discarded_linear_value(var_type, init)?;
-            return Ok(AnalysisResult::new(init_result.air_ref, Type::UNIT));
+            return Ok(AnalysisResult::with_continues(
+                init_result.air_ref,
+                Type::UNIT,
+                init_result.continues,
+            ));
         };
 
         // Special case: comptime type variables
@@ -1781,7 +1793,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Return a block containing both StorageLive and Alloc
         let block_ref = air.add_block(&[storage_live_ref], alloc_ref, Type::UNIT, span)?;
-        Ok(AnalysisResult::new(block_ref, Type::UNIT))
+        Ok(AnalysisResult::with_continues(
+            block_ref,
+            Type::UNIT,
+            init_result.continues,
+        ))
     }
 
     /// Materialize a constant's evaluated value as an AIR instruction.
@@ -2351,7 +2367,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ty: Type::UNIT,
                     span,
                 });
-                return Ok(AnalysisResult::new(air_ref, Type::UNIT));
+                return Ok(AnalysisResult::with_continues(
+                    air_ref,
+                    Type::UNIT,
+                    value_result.continues,
+                ));
             }
         }
 
@@ -2425,7 +2445,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: Type::UNIT,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            Type::UNIT,
+            value_result.continues,
+        ))
     }
 
     /// Reject a move (full or partial) whose root is a by-ref parameter.
@@ -2916,7 +2940,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
             // Accessor guard statements (ADR-0062) run before the read.
             let air_ref = Self::finish_traced_value(air, &mut trace, air_ref, field_type, span)?;
-            return Ok(AnalysisResult::new(air_ref, field_type));
+            return Ok(AnalysisResult::with_continues(
+                air_ref,
+                field_type,
+                trace.continues,
+            ));
         }
 
         // Fallback: base is not a place (e.g., function call result)
@@ -3025,7 +3053,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // A future optimization could add explicit StorageDead at the right point.
         let block_ref =
             air.add_block(&[storage_live_ref, alloc_ref], value_ref, field_type, span)?;
-        Ok(AnalysisResult::new(block_ref, field_type))
+        Ok(AnalysisResult::with_continues(
+            block_ref,
+            field_type,
+            base_result.continues,
+        ))
     }
 
     /// Analyze an array index read.
@@ -3201,7 +3233,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
             // Accessor guard statements (ADR-0062) run before the read.
             let air_ref = Self::finish_traced_value(air, &mut trace, air_ref, elem_type, span)?;
-            return Ok(AnalysisResult::new(air_ref, elem_type));
+            return Ok(AnalysisResult::with_continues(
+                air_ref,
+                elem_type,
+                trace.continues,
+            ));
         }
 
         // Fallback: base is not an array place (e.g. function-call result, or
@@ -3379,7 +3415,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Note: We don't emit StorageDead here. The temporary will be cleaned up by
         // scope-based drop elaboration in the CFG builder.
         let block_ref = air.add_block(&[storage_live_ref, alloc_ref], read_ref, elem_type, span)?;
-        Ok(AnalysisResult::new(block_ref, elem_type))
+        Ok(AnalysisResult::with_continues(
+            block_ref,
+            elem_type,
+            base_result.continues && index_result.continues,
+        ))
     }
 
     /// Analyze a String byte index read: `s[i] -> u8` (RUE-17 Phase 2,
@@ -3488,7 +3528,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         )?;
         let call_ref =
             self.wrap_value_with_temp_scope(air, call_ref, Type::U8, span, temp_scope)?;
-        Ok(AnalysisResult::new(call_ref, Type::U8))
+        Ok(AnalysisResult::with_continues(
+            call_ref,
+            Type::U8,
+            base_result.continues && index_result.continues,
+        ))
     }
 
     /// Analyze a `str` byte index read: `s[i] -> u8` (ADR-0043 Phase 3,
@@ -3564,7 +3608,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Type::U8,
             span,
         )?;
-        Ok(AnalysisResult::new(call_ref, Type::U8))
+        Ok(AnalysisResult::with_continues(
+            call_ref,
+            Type::U8,
+            base_result.continues && index_result.continues,
+        ))
     }
 
     /// Analyze a slice read-index `s[i]` (ADR-0043, RUE-322).
@@ -3715,7 +3763,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .chain(std::iter::once(upper_assert_ref))
             .collect();
         let block_ref = air.add_block(&stmt_refs, elem_ref, elem_ty, span)?;
-        Ok(AnalysisResult::new(block_ref, elem_ty))
+        Ok(AnalysisResult::with_continues(
+            block_ref,
+            elem_ty,
+            base_result.continues && index_result.continues,
+        ))
     }
 
     /// Analyze a slice method call (ADR-0043, RUE-322). Only `.len()` is
@@ -3859,7 +3911,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: Type::UNIT,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            Type::UNIT,
+            value_result.continues,
+        ))
     }
 
     /// Analyze a field assignment through the shared place representation.
@@ -4025,7 +4081,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ty: Type::UNIT,
                 span,
             });
-            return Ok(AnalysisResult::new(air_ref, Type::UNIT));
+            return Ok(AnalysisResult::with_continues(
+                air_ref,
+                Type::UNIT,
+                value_result.continues,
+            ));
         }
 
         // Fallback: base is not a place (e.g., function call result)
@@ -4228,7 +4288,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ty: Type::UNIT,
                 span,
             });
-            return Ok(AnalysisResult::new(air_ref, Type::UNIT));
+            return Ok(AnalysisResult::with_continues(
+                air_ref,
+                Type::UNIT,
+                index_result.continues && value_result.continues,
+            ));
         }
 
         // Fallback: base is not a place
@@ -5428,6 +5492,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     {
         let mut air_args = Vec::with_capacity(args.len());
         let mut temp_scope: Vec<AirRef> = Vec::new();
+        let mut continues = true;
         for (i, arg) in args.enumerate() {
             // A `str` parameter (ADR-0043 Phase 3, RUE-324) is a first-class
             // 2-word value, not a `borrow`-materialized fat pointer. A string
@@ -5475,6 +5540,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let arg_result = self.analyze_inst(air, arg.value, ctx);
                 ctx.expected_type = prev_expected;
                 let arg_result = arg_result?;
+                continues &= arg_result.continues;
                 // `Str(N)` is a nominal fixed-capacity value, not a bare
                 // string view. Contextual literals materialize directly as
                 // the expected capacity above; every other value must retain
@@ -5595,6 +5661,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
             ctx.byref_arg_root = prev_byref_root;
             let mut arg_result = arg_result?;
+            continues &= arg_result.continues;
             if elaborates_borrow {
                 let span = self.body_rir_ref().get(arg.value).span;
                 let elaborated = self.elaborate_borrow_operand(
@@ -5682,6 +5749,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(CallOperands {
             args: air_args,
             temp_scope,
+            continues,
         })
     }
 

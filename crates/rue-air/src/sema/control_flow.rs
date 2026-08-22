@@ -94,7 +94,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ty: Type::NEVER,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, Type::NEVER))
+                Ok(AnalysisResult::diverged(air_ref, Type::NEVER))
             }
 
             InstData::Continue => {
@@ -121,7 +121,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ty: Type::NEVER,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, Type::NEVER))
+                Ok(AnalysisResult::diverged(air_ref, Type::NEVER))
             }
 
             InstData::Ret(inner) => {
@@ -219,6 +219,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx.push_scope();
             let then_result = self.analyze_inst(air, then_block, ctx)?;
             let then_type = then_result.ty;
+            let then_continues = then_result.continues;
             let then_span = self.body_rir_ref().get(then_block).span;
             ctx.pop_scope();
 
@@ -232,6 +233,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx.push_scope();
             let else_result = self.analyze_inst(air, else_b, ctx)?;
             let else_type = else_result.ty;
+            let else_continues = else_result.continues;
             let else_span = self.body_rir_ref().get(else_b).span;
             ctx.pop_scope();
 
@@ -239,19 +241,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let else_moves = ctx.moved_vars.clone();
 
             // Merge move states from both branches.
-            ctx.merge_branch_moves(
-                then_moves,
-                else_moves,
-                then_type.is_never(),
-                else_type.is_never(),
-            );
+            ctx.merge_branch_moves(then_moves, else_moves, !then_continues, !else_continues);
 
             // Compute the unified result type using never type coercion
-            let result_type = match (then_type.is_never(), else_type.is_never()) {
-                (true, true) => Type::NEVER,
-                (true, false) => else_type,
-                (false, true) => then_type,
-                (false, false) => {
+            let result_type = match (then_continues, else_continues) {
+                (false, false) => Type::NEVER,
+                (false, true) => else_type,
+                (true, false) => then_type,
+                (true, true) => {
                     // Neither diverges - types must match exactly
                     if !self.types_equivalent(then_type, else_type)
                         && !then_type.is_error()
@@ -287,7 +284,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ty: result_type,
                 span,
             });
-            Ok(AnalysisResult::new(air_ref, result_type))
+            Ok(AnalysisResult::with_continues(
+                air_ref,
+                result_type,
+                cond_result.continues && (then_result.continues || else_result.continues),
+            ))
         } else {
             // No else branch - result is Unit
             // The then branch must have unit type (spec 4.6:5)
@@ -301,7 +302,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             // Check that the then branch has unit type (or Never/Error)
             let then_type = then_result.ty;
-            if then_type != Type::UNIT && !then_type.is_never() && !then_type.is_error() {
+            if then_type != Type::UNIT && then_result.continues && !then_type.is_error() {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "()".to_string(),
@@ -319,7 +320,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let then_moves = ctx.moved_vars.clone();
 
             // For if-without-else:
-            if then_type.is_never() {
+            if !then_result.continues {
                 // Then-branch diverges - code after if only runs if cond was false
                 ctx.moved_vars = saved_moves;
             } else {
@@ -341,7 +342,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ty: Type::UNIT,
                 span,
             });
-            Ok(AnalysisResult::new(air_ref, Type::UNIT))
+            Ok(AnalysisResult::with_continues(
+                air_ref,
+                Type::UNIT,
+                cond_result.continues,
+            ))
         }
     }
 
@@ -445,7 +450,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: Type::UNIT,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            Type::UNIT,
+            cond_result.continues,
+        ))
     }
 
     /// Analyze an infinite loop.
@@ -482,6 +491,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // break-site snapshots still on the stack (see analyze_while_loop).
         ctx.pop_scope();
         let edge_record = ctx.loop_break_stack.pop().unwrap_or_default();
+        // Loop classification is purely syntactic (spec 4.8:21): a loop
+        // containing a targeting `break` is unit-typed even when that break
+        // is unreachable.
         let has_break = edge_record.broke;
         let (break_moves, continue_moves) = edge_record.merged_moves();
         // The back edge carries the fall-through state joined with the
@@ -547,7 +559,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: loop_ty,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, loop_ty))
+        Ok(AnalysisResult::with_continues(air_ref, loop_ty, has_break))
     }
 
     /// Validate an integer pattern literal against the scrutinee type and
@@ -928,7 +940,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Err(CompileError::new(ErrorKind::EmptyMatch, span));
             }
             let air_ref = air.add_match(scrutinee_result.air_ref, &[], Type::NEVER, span)?;
-            return Ok(AnalysisResult::new(air_ref, Type::NEVER));
+            return Ok(AnalysisResult::diverged(air_ref, Type::NEVER));
         }
 
         // Track patterns for exhaustiveness checking and duplicate detection
@@ -946,6 +958,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Analyze each arm (each arm gets its own scope)
         let mut air_arms = Vec::new();
         let mut result_type: Option<Type> = None;
+        let mut result_continues: Option<bool> = None;
 
         // Move state before any arm runs (after the scrutinee, whose moves
         // happen on every path). Arms are alternatives, not a sequence:
@@ -1242,15 +1255,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             self.check_unconsumed_linear_values(ctx)?;
 
             ctx.pop_scope();
-            arm_move_states.push((std::mem::take(&mut ctx.moved_vars), body_type.is_never()));
+            arm_move_states.push((std::mem::take(&mut ctx.moved_vars), !body_result.continues));
 
             // Update result type (handle Never type coercion)
             result_type = Some(match result_type {
                 None => body_type,
                 Some(prev) => {
-                    if prev.is_never() {
+                    if !result_continues.unwrap_or(true) {
                         body_type
-                    } else if body_type.is_never() {
+                    } else if !body_result.continues {
                         prev
                     } else if !self.types_equivalent(prev, body_type)
                         && !prev.is_error()
@@ -1267,6 +1280,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     }
                 }
             });
+            result_continues = Some(result_continues.unwrap_or(false) || body_result.continues);
 
             // Convert pattern to AIR pattern
             let air_pattern = match &pattern {
@@ -1341,6 +1355,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Join the arms' move states (union of non-diverging arms;
         // `full_move_on_all_paths` intersects for the linear must-consume
         // check). Matches are exhaustive, so the arms cover every path.
+        let continues = result_continues.unwrap_or(true);
         ctx.merge_arm_moves(arm_move_states);
 
         // Exhaustiveness checking
@@ -1379,7 +1394,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let final_type = result_type.unwrap_or(Type::UNIT);
 
         let air_ref = air.add_match(scrutinee_result.air_ref, &air_arms, final_type, span)?;
-        Ok(AnalysisResult::new(air_ref, final_type))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            final_type,
+            scrutinee_result.continues && continues,
+        ))
     }
 
     /// If `enum_id` names an `Option`-shaped enum — exactly two variants, a
@@ -2206,7 +2225,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: Type::NEVER, // Return expressions have Never type
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::NEVER))
+        Ok(AnalysisResult::diverged(air_ref, Type::NEVER))
     }
 
     /// Analyze a block expression.
@@ -2226,6 +2245,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Process all instructions in the block
         let mut statements = Vec::new();
         let mut last_result: Option<AnalysisResult> = None;
+        let mut diverged = false;
+        let mut diverged_context: Option<AnalysisContext> = None;
         let num_insts = inst_refs.len();
         for (i, inst_ref) in inst_refs.iter().copied().enumerate() {
             let is_last = i == num_insts - 1;
@@ -2274,22 +2295,58 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             if is_last {
                 last_result = Some(result);
+                if !result.continues && !diverged {
+                    diverged = true;
+                    diverged_context = Some(ctx.clone());
+                }
             } else {
                 // A non-final statement's value is discarded. Discarding a
                 // value that carries a linear value would implicitly drop it
                 // (`make_linear();` — RUE-176), which linearity forbids.
                 self.reject_discarded_linear_value(result.ty, inst_ref)?;
                 statements.push(result.air_ref);
+                // The remaining instructions are still analyzed above so
+                // unreachable-code diagnostics and ordinary semantic errors
+                // remain intact. Once a statement diverges, however, no tail
+                // reaches the block exit: its outgoing ownership state is
+                // bottom and its synthesized block type is Never, even when
+                // the parser supplied a synthetic unit tail.
+                if !result.continues && !diverged {
+                    diverged = true;
+                    diverged_context = Some(ctx.clone());
+                }
             }
         }
 
-        // Check for unconsumed linear values before popping scope
-        self.check_unconsumed_linear_values(ctx)?;
+        // Instructions after a diverging statement are analyzed for
+        // diagnostics, but their moves belong to no reachable path. Restore
+        // the state at the divergence before the block's scope checks and
+        // enclosing joins observe it.
+        // Check live obligations against the snapshot, while retaining the
+        // current context for dead-suffix diagnostics and append-only data.
+        let reachable_moves = diverged_context
+            .as_ref()
+            .map(|reachable| reachable.moved_vars.clone());
+        if let Some(reachable_context) = diverged_context.as_ref() {
+            self.check_unconsumed_linear_values(reachable_context)?;
+            // Keep the current context for diagnostics from declarations in
+            // the unreachable suffix. This is deliberately a second check:
+            // the snapshot proves reachable obligations, while the live
+            // context retains dead-suffix locals and their diagnostics.
+            self.check_unconsumed_linear_values(ctx)?;
+        } else {
+            self.check_unconsumed_linear_values(ctx)?;
+        }
 
         // Check for unused variables before popping scope
         self.check_unused_locals_in_current_scope(ctx);
 
-        // Pop scope to remove block-scoped variables.
+        if let Some(moves) = reachable_moves {
+            ctx.moved_vars = moves;
+        }
+        // Pop scope to remove block-scoped variables. The reachable move
+        // state is restored first so this frame removes dead locals and
+        // restores any shadowed outer bindings normally.
         ctx.pop_scope();
 
         // Handle empty blocks - they evaluate to Unit
@@ -2309,11 +2366,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Only create a Block instruction if there are statements;
         // otherwise just return the value directly (optimization)
         if statements.is_empty() {
-            Ok(last)
+            Ok(if diverged && last.continues {
+                AnalysisResult::diverged(last.air_ref, Type::NEVER)
+            } else {
+                last
+            })
         } else {
-            let ty = last.ty;
+            let ty = if diverged { Type::NEVER } else { last.ty };
             let air_ref = air.add_block(&statements, last.air_ref, ty, span)?;
-            Ok(AnalysisResult::new(air_ref, ty))
+            Ok(AnalysisResult::with_continues(air_ref, ty, !diverged))
         }
     }
 }

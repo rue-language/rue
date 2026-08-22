@@ -145,12 +145,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         args: &[AirCallArg],
         temp_scope: Vec<AirRef>,
         return_type: Type,
+        continues: bool,
         span: Span,
     ) -> CompileResult<AnalysisResult> {
         let air_ref = air.add_call(None, name, args, return_type, span)?;
         let air_ref =
             self.wrap_value_with_temp_scope(air, air_ref, return_type, span, temp_scope)?;
-        Ok(AnalysisResult::new(air_ref, return_type))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            return_type,
+            continues,
+        ))
     }
 
     /// Analyze an associated function call.
@@ -556,6 +561,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let CallOperands {
             args: air_args,
             temp_scope,
+            continues,
         } = self.analyze_call_operands(air, args_range, &param_types, &param_modes, false, ctx)?;
 
         // Handle generic function calls differently
@@ -764,11 +770,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             )?;
             let air_ref =
                 self.wrap_value_with_temp_scope(air, air_ref, return_type, span, temp_scope)?;
-            Ok(AnalysisResult::new(air_ref, return_type))
+            Ok(AnalysisResult::with_continues(
+                air_ref,
+                return_type,
+                continues && !return_type.is_never(),
+            ))
         } else {
             // Regular non-generic call
             let return_type = base_return_type;
-            self.emit_call_result(air, name, &air_args, temp_scope, return_type, span)
+            self.emit_call_result(
+                air,
+                name,
+                &air_args,
+                temp_scope,
+                return_type,
+                continues && !return_type.is_never(),
+                span,
+            )
         }
     }
 
@@ -918,6 +936,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // place instead of moving out of it (restored afterwards).
         let mut receiver_result =
             self.analyze_with_borrow_root(air, receiver, receiver_byref_root, ctx)?;
+        let receiver_continues = receiver_result.continues;
         let receiver_type = receiver_result.ty;
 
         // Handle module member access: module.function() becomes a direct function call
@@ -1255,9 +1274,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let call_name = self.method_symbol(struct_id, &method_name_str, true);
         let call_name_sym = self.body_interner().get_or_intern(&call_name);
 
-        let call =
-            self.emit_call_result(air, call_name_sym, &air_args, temp_scope, return_type, span)?;
-        Ok(AnalysisResult::new(call.air_ref, return_type))
+        let call = self.emit_call_result(
+            air,
+            call_name_sym,
+            &air_args,
+            temp_scope,
+            return_type,
+            receiver_continues && args_result.continues && !return_type.is_never(),
+            span,
+        )?;
+        Ok(call)
     }
 
     /// Analyze a module member call: `module.function(args)` becomes a direct function call.
@@ -1389,6 +1415,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let CallOperands {
             args: air_args,
             temp_scope,
+            continues,
         } = self.analyze_call_operands(air, args_range, &param_types, &param_modes, true, ctx)?;
 
         self.emit_call_result(
@@ -1397,6 +1424,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             &air_args,
             temp_scope,
             fn_info.return_type,
+            continues && !fn_info.return_type.is_never(),
             span,
         )
     }
@@ -1548,6 +1576,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let CallOperands {
             args: air_args,
             temp_scope,
+            continues,
         } = self.analyze_call_operands(
             air,
             args_range,
@@ -1565,6 +1594,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let call_name = self.method_symbol(struct_id, &function_name_str, false);
         let call_name_sym = self.body_interner().get_or_intern(&call_name);
 
-        self.emit_call_result(air, call_name_sym, &air_args, temp_scope, return_type, span)
+        self.emit_call_result(
+            air,
+            call_name_sym,
+            &air_args,
+            temp_scope,
+            return_type,
+            continues && !return_type.is_never(),
+            span,
+        )
     }
 }

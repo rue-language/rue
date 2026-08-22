@@ -1067,7 +1067,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 Type::NEVER,
                 span,
             )?;
-            return Ok(AnalysisResult::new(air_ref, Type::NEVER));
+            return Ok(AnalysisResult::diverged(air_ref, Type::NEVER));
         }
 
         // Panic borrows its message until the runtime call. Give a canonical
@@ -1099,7 +1099,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         )?;
         let air_ref =
             self.wrap_value_with_temp_scope(air, intrinsic_ref, Type::NEVER, span, temp_scope)?;
-        Ok(AnalysisResult::new(air_ref, Type::NEVER))
+        Ok(AnalysisResult::diverged(air_ref, Type::NEVER))
     }
 
     pub(super) fn analyze_assert_intrinsic(

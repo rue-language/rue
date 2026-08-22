@@ -141,7 +141,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         )?;
         let air_ref =
             self.wrap_value_with_temp_scope(air, call_ref, string_type, span, temp_scope)?;
-        Ok(AnalysisResult::new(air_ref, string_type))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            string_type,
+            lhs_result.continues && rhs_result.continues,
+        ))
     }
 
     /// Analyze the `print(s)` / `println(s)` builtin free functions (RUE-1).
@@ -272,7 +276,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         )?;
         let air_ref =
             self.wrap_value_with_temp_scope(air, call_ref, Type::UNIT, span, temp_scope)?;
-        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            Type::UNIT,
+            arg_result.continues,
+        ))
     }
 
     /// Analyze a binary arithmetic operator (+, -, *, /, %).
@@ -293,6 +301,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     {
         let lhs_result = self.analyze_inst(air, lhs, ctx)?;
         let rhs_result = self.analyze_inst(air, rhs, ctx)?;
+
+        if !lhs_result.continues || !rhs_result.continues {
+            let air_ref = air.add_inst(AirInst {
+                data: make_data(lhs_result.air_ref, rhs_result.air_ref),
+                ty: lhs_result.ty,
+                span,
+            });
+            return Ok(AnalysisResult::with_continues(
+                air_ref,
+                lhs_result.ty,
+                false,
+            ));
+        }
 
         // Verify the type is integer (HM should have enforced this, but check anyway)
         if !lhs_result.ty.is_integer() && !lhs_result.ty.is_error() && !lhs_result.ty.is_never() {
@@ -363,6 +384,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             (lhs_result, rhs_result)
         };
         let lhs_type = lhs_result.ty;
+
+        if !lhs_result.continues || !rhs_result.continues {
+            let air_ref = air.add_inst(AirInst {
+                data: make_data(lhs_result.air_ref, rhs_result.air_ref),
+                ty: Type::BOOL,
+                span,
+            });
+            return Ok(AnalysisResult::with_continues(air_ref, Type::BOOL, false));
+        }
 
         // Propagate Never/Error without additional type errors
         if lhs_type.is_never() || lhs_type.is_error() {
