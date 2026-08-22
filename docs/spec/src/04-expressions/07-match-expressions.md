@@ -254,7 +254,10 @@ Payload bindings inherit the scrutinee's access mode (ADR-0037/ADR-0038). A
 bare `match e` uses the scrutinee in value context: the matched arm's bindings
 **move** the payload out of the enum (or copy it, if the payload type is
 `Copy`). Each binding is in scope for its arm's body and shadows any outer
-binding of the same name.
+binding of the same name. A named payload binding is an ordinary local
+binding: one whose type carries a linear value (3.8:57) is subject to the
+must-consume obligation (3.8:32, 3.8:50) at the end of its arm, exactly as a
+`let` binding is at the end of its block.
 
 {{ rule(id="4.7:32") }}
 
