@@ -138,7 +138,7 @@ A linear type **MUST** be explicitly consumed. It is a compile-time error for a 
 
 {{ rule(id="3.8:33", cat="normative") }}
 
-Consuming a linear value is the same operation as moving it: any use of a linear value (3.8:76) consumes it. Passing it as a by-value argument (the function becomes the consumer), returning it (the caller becomes responsible for consuming it), and moving a field out of it (a partial move that destructures it, 3.8:22) are all uses, and therefore each consumes the value.
+Consuming a linear value is the same operation as moving it: any use of a linear value (3.8:76) consumes it. Passing it as a by-value argument (the function becomes the consumer) and returning it (the caller becomes responsible for consuming it) are both uses, and therefore each consumes the value. Moving a field out of a value whose struct type is declared `linear` *destructures* it: because the obligation belongs to the value itself and not to its contents (3.8:74), the field access consumes the whole value, and the other fields are dropped with it (subject to 3.8:60). A field access on a struct that is linear only by infection (3.8:58) is not a destructure; it is the ordinary partial move of 3.8:22, and the carrier's obligation is discharged sub-place by sub-place (3.8:60).
 
 {{ rule(id="3.8:34", cat="example") }}
 
@@ -227,7 +227,9 @@ fn main() -> i32 {
 
 {{ rule(id="3.8:60", cat="legality-rule") }}
 
-It is a compile-time error for a field access that consumes a linear value (destructuring, 3.8:33) to implicitly drop a *different* field that carries a linear value. Every struct level along the access path is checked. The access is a partial move of exactly the accessed field (3.8:22): sibling fields remain in place, and the residue — every field other than the accessed one, at each level — is dropped by the ordinary scope-exit walk of the destructured value's binding (3.9:2). A linear sibling in that residue would therefore be implicitly dropped at scope exit, which is what this rule rejects at the access itself.
+It is a compile-time error for a field access that *destructures* a value whose struct type is declared `linear` (3.8:33) to implicitly drop a *different* field that carries a linear value. Every declared-`linear` struct level along the access path is checked: destructuring consumption extracts the accessed field and drops the rest of the value, so a linear sibling in that residue would be silently dropped.
+
+A field access on a struct that is linear only by infection (3.8:58) does **not** destructure it. It is an ordinary partial move of exactly the accessed field (3.8:22): sibling fields remain accessible (3.8:22 for move-typed siblings, 3.8:28 for Copy ones), and the non-moved residue is dropped by the ordinary scope-exit walk of the binding (3.9:2). Such a carrier's must-consume obligation (3.8:32) attaches to its linear *sub-places* rather than to the carrier as a whole: it is discharged by consuming each linear sub-place on every path, and a linear sub-place left unconsumed is reported where it is dropped — at scope exit — not at a sibling's access. Consuming a linear sub-place therefore leaves the siblings, including any destructor they carry, to drop normally.
 
 {{ rule(id="3.8:61", cat="example") }}
 
@@ -240,12 +242,31 @@ fn sink(m: MustUse) -> i32 { m.value }
 
 fn main() -> i32 {
     let c = Container { inner: MustUse { value: 1 }, tag: 2 };
-    c.tag            // ERROR: would implicitly drop linear field 'inner'
+    c.tag            // ERROR: 'c.inner' is never consumed (reported at scope exit)
 }
 
 fn ok() -> i32 {
     let c = Container { inner: MustUse { value: 1 }, tag: 2 };
-    sink(c.inner)    // OK: extracts the linear field; 'tag' (non-linear) is dropped
+    sink(c.inner)    // OK: consumes the linear field; 'tag' (non-linear) is dropped
+}
+
+fn also_ok() -> i32 {
+    let c = Container { inner: MustUse { value: 1 }, tag: 2 };
+    let t = c.tag;   // OK: 'tag' is Copy, so reading it moves nothing (3.8:28)
+    sink(c.inner) + t
+}
+```
+
+The declared-`linear` case is the one this rule rejects at the access itself, because there the access really does drop the siblings:
+
+```rue
+linear struct MustUse { value: i32 }
+
+linear struct Pair { inner: MustUse, tag: i32 }
+
+fn main() -> i32 {
+    let p = Pair { inner: MustUse { value: 1 }, tag: 2 };
+    p.tag            // ERROR: destructuring 'p' would implicitly drop linear field 'inner'
 }
 ```
 

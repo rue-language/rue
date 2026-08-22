@@ -1386,7 +1386,24 @@ exit_code = 42
 [[case]]
 name = "linear_destructure_dropping_linear_field_error"
 spec = ["3.8:60"]
-description = "Field access that would implicitly drop a different linear field is rejected"
+description = "Destructuring a DECLARED-linear struct that would implicitly drop a different linear field is rejected at the access"
+source = """
+linear struct MustUse { value: i32 }
+
+linear struct Pair { inner: MustUse, tag: i32 }
+
+fn main() -> i32 {
+    let p = Pair { inner: MustUse { value: 1 }, tag: 2 };
+    p.tag
+}
+"""
+compile_fail = true
+error_contains = "would implicitly drop linear field 'inner'"
+
+[[case]]
+name = "infectious_carrier_unconsumed_field_reported_at_scope_exit"
+spec = ["3.8:60"]
+description = "Reading a Copy sibling of an infectious carrier does not destructure it; the unconsumed linear sub-place is reported at scope exit (RUE-1591)"
 source = """
 linear struct MustUse { value: i32 }
 
@@ -1398,7 +1415,110 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "would implicitly drop linear field 'inner'"
+error_contains = "'c.inner' still holds a linear value"
+
+[[case]]
+name = "infectious_carrier_copy_sibling_read_before_move"
+spec = ["3.8:28", "3.8:60"]
+description = "A Copy sibling of an infectious carrier may be read before the linear field is consumed (RUE-1591)"
+source = """
+linear struct MustUse { value: i32 }
+
+struct Container { inner: MustUse, tag: i32 }
+
+fn sink(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let c = Container { inner: MustUse { value: 40 }, tag: 2 };
+    let t = c.tag;
+    sink(c.inner) + t
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "infectious_carrier_copy_sibling_read_after_move"
+spec = ["3.8:22", "3.8:28"]
+description = "A Copy sibling stays Owned and readable after the linear field is partially moved out (RUE-1591)"
+source = """
+linear struct MustUse { value: i32 }
+
+struct Container { inner: MustUse, tag: i32 }
+
+fn sink(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let c = Container { inner: MustUse { value: 40 }, tag: 2 };
+    let s = sink(c.inner);
+    let t = c.tag;
+    s + t
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "infectious_carrier_move_sibling_still_usable"
+spec = ["3.8:22", "3.8:60"]
+description = "A move-typed sibling of an infectious carrier remains accessible after the linear field moves out (RUE-1591)"
+source = """
+linear struct MustUse { value: i32 }
+
+struct Payload { n: i32 }
+
+struct Container { inner: MustUse, rest: Payload }
+
+fn sink(m: MustUse) -> i32 { m.value }
+
+fn take(p: Payload) -> i32 { p.n }
+
+fn main() -> i32 {
+    let c = Container { inner: MustUse { value: 40 }, rest: Payload { n: 2 } };
+    sink(c.inner) + take(c.rest)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "infectious_carrier_whole_use_after_partial_move_error"
+spec = ["3.8:26", "3.8:60"]
+description = "An infectious carrier cannot be used as a whole once its linear field moved out (RUE-1591)"
+source = """
+linear struct MustUse { value: i32 }
+
+struct Container { inner: MustUse, tag: i32 }
+
+fn sink(m: MustUse) -> i32 { m.value }
+
+fn eat(c: Container) -> i32 { sink(c.inner) }
+
+fn main() -> i32 {
+    let c = Container { inner: MustUse { value: 1 }, tag: 2 };
+    let r = sink(c.inner);
+    eat(c) + r
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'c'"
+
+[[case]]
+name = "infectious_carrier_field_consumed_one_branch_error"
+spec = ["3.8:50", "3.8:60"]
+description = "A linear sub-place consumed on only one path leaves a residual obligation (RUE-1591)"
+source = """
+linear struct MustUse { value: i32 }
+
+struct Container { inner: MustUse, tag: i32 }
+
+fn sink(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let c = Container { inner: MustUse { value: 1 }, tag: 2 };
+    let n = 1;
+    if n > 0 { sink(c.inner) } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = "not consumed on all paths"
 
 [[case]]
 name = "linear_container_consumed_one_branch_error"
