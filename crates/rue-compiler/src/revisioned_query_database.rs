@@ -629,6 +629,7 @@ pub(crate) struct RevisionedQueryDatabase {
     backend_root: Arc<Mutex<PublishedBackendRoot>>,
     backend_root_publication_gate: BackendRootPublicationGate,
     next_backend_root_epoch: std::sync::atomic::AtomicU64,
+    next_optimized_cfg_batch_generation: std::sync::atomic::AtomicU64,
     /// Session-scoped injection shared with structured body-query children.
     /// Keeping it on the database avoids both thread-local scheduler escapes
     /// and cross-test interference between independent compiler sessions.
@@ -1420,6 +1421,10 @@ pub(crate) struct BackendRootCandidate {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct OptimizedCfgBatchKey {
     pub(crate) keys: Arc<[crate::cfg_query::OptimizedCfgQueryKey]>,
+    /// O2/O3 batches are request-local because their values may contain
+    /// rewritten callers. Child CFG terminals remain reusable; this token
+    /// prevents a rewritten whole-program result crossing request boundaries.
+    pub(crate) generation: u64,
 }
 
 impl QueryKey for OptimizedCfgBatchKey {
@@ -1429,6 +1434,7 @@ impl QueryKey for OptimizedCfgBatchKey {
             identity.push('\u{1e}');
             identity.push_str(&key.shared_stable_identity());
         }
+        identity.push_str(&format!(";generation={}", self.generation));
         identity
     }
 
@@ -1437,12 +1443,19 @@ impl QueryKey for OptimizedCfgBatchKey {
         for key in self.keys.iter() {
             key.stable_hash(hasher);
         }
+        self.generation.hash(hasher);
     }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct OptimizedCfgBatchOutput {
     pub(crate) values: Arc<[crate::cfg_query::CfgValue]>,
+    /// Functions whose batch result was changed by general inlining. Their
+    /// function-local CFG children are intentionally omitted from durable
+    /// backend retention for Phase 2. The active request may still transport
+    /// and pin these records for codegen; the request-local batch generation
+    /// ensures no successor can reuse that whole-program result.
+    pub(crate) non_reusable_functions: Arc<[crate::FunctionInstanceKey]>,
     /// Exact child leases acquired while the rooted batch evaluator still owns
     /// every request lease. The memoized root encapsulates these pins so
     /// retaining it also retains the scheduled children through publication.
@@ -14459,6 +14472,7 @@ impl RevisionedQueryDatabase {
                             .iter()
                             .zip(right.values.iter())
                             .all(|(left, right)| crate::cfg_query::cfg_value_equal(left, right))
+                        && left.non_reusable_functions == right.non_reusable_functions
                 },
                 move |context, _, key: &OptimizedCfgBatchKey| {
                     let fallbacks = backend_retention_fallbacks(
@@ -14479,21 +14493,6 @@ impl RevisionedQueryDatabase {
                         &optimized_cfgs_for_batch,
                         key.keys.iter(),
                     )?;
-                    let kind = if terminals
-                        .iter()
-                        .all(|terminal| terminal.kind() == QueryTerminalKind::Success)
-                    {
-                        QueryTerminalKind::Success
-                    } else {
-                        QueryTerminalKind::Failure
-                    };
-                    let retained_children = Arc::new(
-                        context
-                            .retain_observed_terminal_cones_from(&terminals, &fallbacks)
-                            .expect(
-                                "the registered optimized-CFG batch observes every selected child cone",
-                            ),
-                    );
                     let values = terminals
                         .iter()
                         .map(|terminal| {
@@ -14502,10 +14501,29 @@ impl RevisionedQueryDatabase {
                             };
                             value.clone()
                         })
-                        .collect::<Vec<_>>()
-                        .into();
+                        .collect::<Vec<_>>();
+                    let (values, non_reusable_functions) =
+                        crate::cfg_query::apply_general_inlining(context, key.keys.as_ref(), &values)?;
+                    let kind = if values.iter().all(|value| matches!(value, crate::cfg_query::CfgValue::Available(_))) {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    let retained_terminals = terminals
+                        .iter()
+                        .zip(values.iter())
+                        .filter(|(_, value)| matches!(value, crate::cfg_query::CfgValue::Available(record) if record.durable_reuse_allowed))
+                        .map(|(terminal, _)| terminal.clone())
+                        .collect::<Vec<_>>();
+                    let retained_children = Arc::new(
+                        context
+                            .retain_observed_terminal_cones_from(&retained_terminals, &fallbacks)
+                            .expect("general inlining batch observes every retained child cone"),
+                    );
+                    let values = values.into();
                     Ok(QueryOutput::success(OptimizedCfgBatchOutput {
                         values,
+                        non_reusable_functions: non_reusable_functions.into_iter().collect::<Vec<_>>().into(),
                         _retained_children: retained_children,
                     })
                     .with_terminal_kind(kind))
@@ -14513,6 +14531,7 @@ impl RevisionedQueryDatabase {
             )
             .expect("the OptimizedCfgBatch family has one canonical name");
         let optimized_cfgs_for_codegen = optimized_cfgs.clone();
+        let optimized_cfg_batches_for_codegen = optimized_cfg_batches.clone();
         #[cfg(test)]
         let codegen_evaluator_gate = Arc::new(Mutex::new(None::<Arc<TestCodegenEvaluatorGate>>));
         #[cfg(test)]
@@ -14548,6 +14567,7 @@ impl RevisionedQueryDatabase {
                     crate::codegen_query::evaluate_codegen_unit(
                         context,
                         &optimized_cfgs_for_codegen,
+                        &optimized_cfg_batches_for_codegen,
                         key,
                     )
                 },
@@ -16195,6 +16215,7 @@ impl RevisionedQueryDatabase {
             backend_root,
             backend_root_publication_gate: BackendRootPublicationGate::default(),
             next_backend_root_epoch: std::sync::atomic::AtomicU64::new(1),
+            next_optimized_cfg_batch_generation: std::sync::atomic::AtomicU64::new(1),
             #[cfg(test)]
             inject_body_transaction_failure,
             #[cfg(test)]
@@ -16613,7 +16634,16 @@ impl RevisionedQueryDatabase {
         OptimizedCfgBatchKey,
         QueryRequestAttempt<OptimizedCfgBatchOutput>,
     ) {
-        let key = OptimizedCfgBatchKey { keys };
+        let generation = if keys
+            .iter()
+            .any(|key| matches!(key.opt_level, rue_cfg::OptLevel::O2 | rue_cfg::OptLevel::O3))
+        {
+            self.next_optimized_cfg_batch_generation
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        } else {
+            0
+        };
+        let key = OptimizedCfgBatchKey { keys, generation };
         let attempt = self.runtime.request_registered(
             &self.optimized_cfg_batches,
             revision,
@@ -16735,7 +16765,18 @@ impl RevisionedQueryDatabase {
             .pin_terminal(terminal)
             .expect("optimized-CFG batch result belongs to the registered family");
         candidate.lease.lease(pin);
-        for optimized in key.keys.iter() {
+        let non_reusable = match terminal.outcome() {
+            rue_query::QueryOutcome::Success(output) => output
+                .non_reusable_functions
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            rue_query::QueryOutcome::Failure(_) => std::collections::BTreeSet::new(),
+        };
+        for optimized in key
+            .keys
+            .iter()
+            .filter(|optimized| !non_reusable.contains(&optimized.cfg.function))
+        {
             for cfg_key in
                 std::iter::once(&optimized.cfg).chain(optimized.accessor_dependencies.iter())
             {

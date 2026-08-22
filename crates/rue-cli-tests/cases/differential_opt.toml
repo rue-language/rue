@@ -1023,3 +1023,48 @@ fn main() -> i32 {
 """ }]
 stdout = ""
 exit_code = 1
+
+# ADR-0049 Phase 2: ordinary small free functions are inlined only at O2/O3.
+# Keep two call sites so the batch driver exercises deterministic multiplicity
+# and continuation wiring while the callee remains present for codegen.
+[[case]]
+name = "free_function_inlining_multiple_sites_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn add_one(x: i32) -> i32 { x + 1 }
+
+fn main() -> i32 {
+    let a = add_one(4);
+    let b = add_one(a);
+    @dbg(a);
+    @dbg(b);
+    b
+}
+""" }]
+stdout = "5\n6\n"
+exit_code = 6
+
+# A caller-domain nominal with a destructor is observable across the inline
+# boundary. The copied drop must stay inside the callee's inlined lifetime and
+# print before the caller's next statement at every optimization level.
+[[case]]
+name = "free_function_inlining_preserves_drop_order_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+struct Token {
+    value: i32,
+}
+drop fn Token(self) { @dbg(self.value); }
+
+fn consume(token: Token) -> i32 {
+    token.value + 1
+}
+
+fn main() -> i32 {
+    let result = consume(Token { value: 7 });
+    @dbg(result);
+    result
+}
+""" }]
+stdout = "7\n8\n"
+exit_code = 8
