@@ -2208,16 +2208,25 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                         ElementwiseConsumption::Complete => continue,
                         ElementwiseConsumption::NotElementwise => {}
                     }
+                    // Per-place residue (core §5.6, RUE-1591): a by-value
+                    // parameter of an infectious carrier is consumed by
+                    // consuming its linear sub-places; the rest is dropped by
+                    // the ordinary exit walk, exactly as for a local.
+                    let Some(residue) = self.residual_linear_place(p.ty, state, &mut Vec::new())
+                    else {
+                        continue;
+                    };
                     let name = self.body_interner().resolve(&p.name);
                     let err = linear_not_consumed_error(
                         name,
                         self.body_rir_ref().get(body).span,
-                        state.and_then(|s| s.full_move),
+                        Self::residue_consumed_on_some_path(state, &residue),
                     )
                     .with_note(format!(
                         "parameter '{name}' is passed by value, so this function owns it \
                          and must consume it (pass it on, return it, or destructure it)"
                     ));
+                    let err = self.note_residual_linear_place(err, p.name, &residue);
                     return Err(self.attach_infectious_linear_note(err, p.ty));
                 }
             }

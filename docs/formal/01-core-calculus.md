@@ -663,7 +663,10 @@ attaches to whatever linear content is still present. `carries_linear(T)` at
 the binding's type would over-reject the legal idiom of consuming exactly the
 linear part of an infectious carrier (`let h = Holder { t: token, n: 0 };
 consume(h.t);` — `class(Holder) = Linear` by the join, yet prose and compiler
-both let the non-linear residue drop). Precisely:
+both let the non-linear residue drop). The compiler reached this model in
+RUE-1591: it previously treated `consume(h.t)` on an infectious carrier as a
+whole-value destructuring consumption, which both leaked the residue's drop
+glue and over-rejected reads of a Copy sibling. Precisely:
 
 ```
   residual-linear(Σ, p, T) =
@@ -684,8 +687,11 @@ obligation belongs to the value itself, not its contents (`3.8:74` — "must be
 consumed regardless of what its fields hold"; the empty
 `linear struct MustUse` of `3.8:75` is the motivating case), so a husk whose
 linear field was moved out is still ill-formed to drop. The compiler currently
-diverges on exactly that husk case — it keys purely on residual content and
-accepts the drop (RUE-614); the core states the prose rule.
+diverges on exactly that husk case and accepts the drop (RUE-614): it models a
+field access on a declared-`linear` struct as a whole-value destructure, so the
+husk is `MovedOut` before this clause is ever consulted. The core states the
+prose rule. RUE-1591 confined that whole-value destructure to the declared case
+and left this divergence untouched.
 
 Parameters passed `inout`/`borrow`, and a destructor's own `self`, are exempt from
 the must-consume and drop obligations here (`3.8:62`): the caller (resp. the drop

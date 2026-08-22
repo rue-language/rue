@@ -1348,8 +1348,14 @@ pub enum ErrorKind {
     /// Linear struct cannot be marked @copy
     #[error("linear struct '{0}' cannot be marked @copy")]
     LinearStructCopy(String),
-    /// Field access destructures a linear struct, implicitly dropping another
-    /// field that carries a linear value
+    /// Field access destructures a **declared**-`linear` struct, implicitly
+    /// dropping another field that carries a linear value (spec 3.8:60).
+    ///
+    /// Only a declared-`linear` struct destructures whole-value this way. A
+    /// struct that is linear merely because a field carries a linear value
+    /// (infectious linearity, 3.8:58) takes an ordinary partial move on field
+    /// access, so its siblings survive and an unconsumed linear sub-place is
+    /// reported at scope exit by the must-consume family instead (RUE-1591).
     #[error(
         "accessing field '{accessed}' of linear struct '{struct_name}' would implicitly drop linear field '{dropped}'",
         struct_name = .0.struct_name,

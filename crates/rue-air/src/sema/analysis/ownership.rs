@@ -2468,15 +2468,44 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
-    /// Reject a field access that consumes (destructures) a linear struct
-    /// when the destructure would implicitly drop a *different* field that
-    /// itself carries a linear value (E0474, spec 3.8:58, RUE-40).
+    /// Whether `struct_id` names a struct **declared** `linear`, as opposed to
+    /// one that is linear only because a field carries a linear value
+    /// (infectious linearity, spec 3.8:58).
+    ///
+    /// The pool's `StructDef::is_linear` is the transitive join, so it cannot
+    /// tell the two apart on its own; [`Self::infectious_linear_reason`] names
+    /// the culprit field exactly when the join — and not the declaration — is
+    /// what made the struct linear, so `is_linear` without such a reason is
+    /// the declared case.
+    ///
+    /// The distinction is load-bearing (RUE-1591): whole-value destructuring
+    /// consumption (3.8:33, 3.8:74 — the obligation belongs to the VALUE
+    /// regardless of what its fields hold) applies to a declared-`linear`
+    /// struct only. An infectious carrier follows the ordinary partial-move
+    /// model of 3.8:22/3.8:28.
+    pub(crate) fn struct_declared_linear(&self, struct_id: StructId) -> bool {
+        self.body_type_pool().struct_def(struct_id).is_linear
+            && self.infectious_linear_reason(struct_id).is_none()
+    }
+
+    /// Reject a field access that consumes (destructures) a **declared**
+    /// `linear` struct when the destructure would implicitly drop a
+    /// *different* field that itself carries a linear value (E0474, spec
+    /// 3.8:60, RUE-40).
     ///
     /// Destructuring consumption (spec 3.8:33) extracts the accessed leaf
     /// field and drops everything else in the value. That implicit drop must
     /// not lose a linear value. Every struct level along the projection
     /// chain is checked: at each level, all fields other than the projected
     /// one are dropped.
+    ///
+    /// Only levels whose struct is declared `linear` destructure this way
+    /// (RUE-1591). A field access on an *infectious* carrier is an ordinary
+    /// partial move: the siblings stay Owned and their residue is dropped by
+    /// the scope-exit walk, so a linear sibling is caught by the residual
+    /// must-consume check ([`Self::residual_linear_place`], core §5.6)
+    /// instead of here — that is what lets `sink(c.inner)` keep a Copy
+    /// sibling readable while `c.tag` alone still fails.
     fn reject_linear_destructure_dropping_linear_field(
         &self,
         trace: &PlaceTrace,
@@ -2488,6 +2517,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 struct_id,
                 field_index,
             } = proj.proj
+                && self.struct_declared_linear(struct_id)
             {
                 let def = self.body_type_pool().struct_def(struct_id);
                 for (i, field) in def.fields.iter().enumerate() {
@@ -2686,14 +2716,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 trace.base_type
             };
 
-            let is_linear = parent_type
+            // Whole-value destructuring consumption (3.8:33) is the model for
+            // a struct DECLARED `linear` only: its obligation belongs to the
+            // value itself, whatever its fields hold (3.8:74). A struct that
+            // is linear merely because a field carries a linear value
+            // (infectious linearity, 3.8:58) follows the ORDINARY partial-move
+            // model instead (3.8:22/3.8:28, core §5.6): the accessed field
+            // moves, its siblings stay Owned and readable, and the non-moved
+            // residue is dropped by the scope-exit walk (3.8:60, 3.9:2). The
+            // linear obligation then lives on the linear sub-place and is
+            // discharged by consuming it — see `residual_linear_place`.
+            // Modelling the carrier as a whole-value consumption instead both
+            // leaked the siblings' drop glue and over-rejected Copy sibling
+            // reads (RUE-1591).
+            let is_declared_linear = parent_type
                 .as_struct()
-                .map(|id| self.body_type_pool().struct_def(id).is_linear)
-                .unwrap_or(false);
+                .is_some_and(|id| self.struct_declared_linear(id));
 
             // Move checking using the trace. `move_is_partial` selects the
             // MarkMoved marker's place component: absent for a whole-struct
-            // (linear) move, the accessed place for a field-path move
+            // (declared-linear) move, the accessed place for a field-path move
             // (RUE-62, RUE-157).
             //
             // A use as a by-ref call argument (`f(borrow o.f)`, `f(inout
@@ -2709,7 +2751,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // shared read (spec 4.8:26), so the binder may be read but not
             // moved out, whole-value or field-granular (RUE-259).
             if !is_byref_arg_use
-                && (is_linear || !self.is_type_copy(field_type))
+                && (is_declared_linear || !self.is_type_copy(field_type))
                 && matches!(trace.base, AirPlaceBase::Local(s) if air.is_borrow_slot(s))
             {
                 return Err(CompileError::new(
@@ -2735,8 +2777,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         ));
                     }
                 }
-            } else if is_linear {
-                // For linear types, field access consumes the entire struct
+            } else if is_declared_linear {
+                // For a declared-linear struct, field access destructures and
+                // so consumes the entire struct (3.8:33).
                 self.reject_accessor_place_move(&trace, field_type, span)?;
                 self.reject_linear_destructure_dropping_linear_field(&trace, span)?;
                 self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
@@ -4307,12 +4350,143 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ElementwiseConsumption::NotElementwise => {}
             }
 
+            // Per-place residue (core §5.6, spec 3.8:60, RUE-1591): consuming
+            // exactly the linear sub-places of an infectious carrier
+            // discharges its obligation, and the non-linear residue is left
+            // for the ordinary scope-exit drop walk.
+            let Some(residue) = self.residual_linear_place(local.ty, state, &mut Vec::new()) else {
+                continue;
+            };
+
             let name = self.body_interner().resolve(&*symbol);
-            let err = linear_not_consumed_error(name, local.span, state.and_then(|s| s.full_move));
+            let err = linear_not_consumed_error(
+                name,
+                local.span,
+                Self::residue_consumed_on_some_path(state, &residue),
+            );
+            let err = self.note_residual_linear_place(err, *symbol, &residue);
             return Err(self.attach_infectious_linear_note(err, local.ty));
         }
 
         Ok(())
+    }
+
+    /// Core §5.6 `residual-linear(Σ, p, T)`: the path (relative to the root
+    /// variable) of a sub-place of `p: T` that still holds an unconsumed
+    /// linear value under the move state `state`, or `None` when the
+    /// must-consume obligation is fully discharged.
+    ///
+    /// The leak check is keyed on the RESIDUAL ownership state, not on the
+    /// binding's type alone (RUE-1591): after a partial move the obligation
+    /// attaches to whatever linear content is still present, so consuming
+    /// exactly the linear part of an infectious carrier
+    /// (`let c = C { l: token, d: junk }; sink(c.l);`) is legal and the
+    /// non-linear residue (`c.d`, destructor and all) is dropped by the
+    /// ordinary scope-exit walk.
+    ///
+    /// Following the core's clauses:
+    /// - a place moved out on every path holds nothing — `None`;
+    /// - a **declared**-`linear` struct's obligation belongs to the value
+    ///   itself, not its contents (3.8:74), so a live one is always residue.
+    ///   A husk whose linear field was moved out is reached only through the
+    ///   moved-out clause above, which keeps the current husk acceptance
+    ///   (RUE-614, an open maintainer decision) unchanged;
+    /// - a struct otherwise recurses into the fields that carry a linear
+    ///   value;
+    /// - everything else (arrays, enums, scalars) falls back to the type's own
+    ///   obligation, because their sub-places are not tracked per place here.
+    ///   Whole-array element-wise consumption is checked separately by
+    ///   [`Self::check_array_elementwise_consumption`] before this runs.
+    ///
+    /// `path` is scratch space threaded through the recursion; it is restored
+    /// to its entry value before returning.
+    pub(crate) fn residual_linear_place(
+        &self,
+        ty: Type,
+        state: Option<&VariableMoveState>,
+        path: &mut Vec<Spur>,
+    ) -> Option<Vec<Spur>> {
+        if state.is_some_and(|s| Self::place_moved_on_all_paths(s, path)) {
+            return None;
+        }
+        let Some(struct_id) = ty.as_struct() else {
+            return self.type_requires_consumption(ty).then(|| path.clone());
+        };
+        if self.struct_declared_linear(struct_id) {
+            return Some(path.clone());
+        }
+        let def = self.body_type_pool().struct_def(struct_id);
+        for field in def.fields.iter() {
+            if !self.type_carries_linear(field.ty) {
+                continue;
+            }
+            path.push(self.body_interner().get_or_intern(&field.name));
+            let found = self.residual_linear_place(field.ty, state, path);
+            path.pop();
+            if found.is_some() {
+                return found;
+            }
+        }
+        None
+    }
+
+    /// The span at which the residual linear place was consumed on SOME path,
+    /// when it was — that selects the more precise "not consumed on all paths"
+    /// diagnostic (E0443) over the bare "was dropped" one (E0406).
+    ///
+    /// A whole-value move takes precedence: it is the coarser, more likely
+    /// intent. Otherwise the residue's own may-move span is what the author
+    /// needs to see — the branch where they DID consume it (RUE-1591).
+    pub(crate) fn residue_consumed_on_some_path(
+        state: Option<&VariableMoveState>,
+        residue: &[Spur],
+    ) -> Option<Span> {
+        let state = state?;
+        state.full_move.or_else(|| {
+            state
+                .partial_moves
+                .iter()
+                .find(|(p, _)| p == residue)
+                .map(|(_, span)| *span)
+        })
+    }
+
+    /// Whether `path` (or an ancestor prefix of it) was moved out on EVERY
+    /// non-diverging path reaching this point.
+    ///
+    /// Must-move, not may-move: a sub-place consumed in only one branch of an
+    /// `if` is still dropped on the other paths, so it does not discharge a
+    /// linear obligation. A whole-variable move subsumes every path under it
+    /// (`mark_path_moved(&[])` clears the partial sets for exactly that
+    /// reason).
+    fn place_moved_on_all_paths(state: &VariableMoveState, path: &[Spur]) -> bool {
+        if state.full_move_on_all_paths {
+            return true;
+        }
+        (1..=path.len()).any(|len| {
+            state
+                .partial_moves_on_all_paths
+                .contains(&path[..len].to_vec())
+        })
+    }
+
+    /// Name the sub-place that still carries the unconsumed linear value, so a
+    /// partially consumed carrier does not report a bare "consume the whole
+    /// value" diagnostic (RUE-1591). A residue at the root itself adds
+    /// nothing the message does not already say.
+    pub(crate) fn note_residual_linear_place(
+        &self,
+        err: rue_error::CompileError,
+        root_var: Spur,
+        residue: &[Spur],
+    ) -> rue_error::CompileError {
+        if residue.is_empty() {
+            return err;
+        }
+        let place = super::format_move_path(self.body_interner(), root_var, residue);
+        err.with_note(format!(
+            "'{place}' still holds a linear value; consume it (or the whole value)"
+        ))
     }
 
     /// Does dropping a value of this type discard a linear value, i.e. does
