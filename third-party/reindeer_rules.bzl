@@ -74,6 +74,11 @@ def _libtest2_scheduler_test():
     # remains executable regression coverage rather than an untested patch.
     native.rust_test(
         name = "libtest2-harness-scheduler-test",
+        # This is a Rue-maintained regression target, not an upstream test:
+        # keep its scheduler and filter-policy coverage in the canonical
+        # premerge selection even though the tier validator otherwise excludes
+        # vendored targets from first-party ownership checks.
+        labels = ["rue_test_tier_premerge"],
         srcs = [
             "vendor/libtest2-harness-0.0.3/src/case.rs",
             "vendor/libtest2-harness-0.0.3/src/cli.rs",

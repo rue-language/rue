@@ -289,6 +289,37 @@ test_rue_cli_examples_survive_case_chdir() {
   rm -rf "$sb"
 }
 
+# RUE-1739: the corpus wrappers must preserve the harness's non-zero result for
+# a typoed explicit name filter. The direct subprocess target separately proves
+# that the real binaries produce this diagnostic before scheduling any case.
+install_zero_filter_buck() {
+  local sb="$1"
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "run" ] && [[ "$*" = *rue1739_filter_must_not_match* ]]; then
+  echo "no tests matched the given filter(s): rue1739_filter_must_not_match" >&2
+  exit 101
+fi
+exit 0
+EOF
+  chmod +x "$sb/buck2"
+}
+
+test_rue_corpus_wrappers_reject_zero_filter() {
+  local sb; sb="$(make_rue_sandbox)"
+  install_zero_filter_buck "$sb"
+  local kind rc out
+  for kind in spec ui cli; do
+    rc=0
+    out="$(cd "$sb/work" && "$sb/scripts/rue" "$kind" rue1739_filter_must_not_match 2>&1)" || rc=$?
+    check "scripts/rue $kind: zero-filter run exits non-zero" \
+      "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+    check "scripts/rue $kind: zero-filter diagnostic is preserved" \
+      "$(grep -q 'no tests matched' <<<"$out" && echo 0 || echo 1)"
+  done
+  rm -rf "$sb"
+}
+
 # crates/clippy-gate.sh is the decision step behind every per-crate
 # <name>-clippy test (RUE-1153): the [clippy.txt] subtarget only captures
 # diagnostics, so this script decides pass/fail. Clean and warning-only files
@@ -1500,6 +1531,7 @@ test_fmt_uses_one_buck_run_and_preserves_paths
 test_rue_exec_resolves_from_caller_cwd
 test_rue_run_resolves_relative_output
 test_rue_cli_examples_survive_case_chdir
+test_rue_corpus_wrappers_reject_zero_filter
 test_clippy_gate_reads_diagnostics_and_fails_closed
 test_rue_named_test_tiers_delegate_to_testsh
 test_rue_quick_delegates_to_quick_testsh

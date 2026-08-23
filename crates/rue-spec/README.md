@@ -111,12 +111,14 @@ of being matched against test names (`section.id::case_name`):
 scripts/rue spec 4.2       # every case citing a paragraph in section 4.2
 scripts/rue spec 4.2:5     # only the cases citing paragraph 4.2:5
 scripts/rue spec --spec 4.2:5   # explicit form
-scripts/rue spec arithmetic     # ordinary libtest name filter, unchanged
+scripts/rue spec arithmetic     # ordinary libtest name filter
 ```
 
-A selector that matches no case exits non-zero. A filter that silently selects
-nothing is how a mistyped paragraph ID becomes false evidence that a rule is
-exercised.
+The shared libtest layer rejects an ordinary name filter that selects no cases.
+Spec paragraph selectors that select no cases are rejected by the spec runner's
+own validation as well. An unfiltered spec run that leaves no cases after its
+platform selection remains an error from the spec runner; this shared layer
+does not alter that policy.
 
 ### Platform Responsibility
 
