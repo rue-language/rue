@@ -16,6 +16,11 @@ Rue. The EBNF fragments that appear inline in Chapters 5 and 6 are
 the construct under discussion; where any of them differs from this appendix,
 this appendix governs.
 
+<!-- grammar-sync(id="2.1:26", production="INTEGER", role="appendix", relation="contains", symbol="byte_literal") -->
+<!-- grammar-sync(id="2.1:26", production="byte_literal", role="appendix") -->
+<!-- grammar-sync(id="2.1:26", production="byte_char", role="appendix") -->
+<!-- grammar-sync(id="2.1:6", production="escape_sequence", role="appendix") -->
+
 ```ebnf
 (* Program structure *)
 program        = { item } ;
@@ -210,7 +215,7 @@ field_init     = IDENT ":" expression      (* explicit *)
 
 (* Lexical elements *)
 IDENT          = ( letter | "_" ) { letter | digit | "_" } ;
-INTEGER        = dec_literal | hex_literal | oct_literal | bin_literal ;
+INTEGER        = byte_literal | dec_literal | hex_literal | oct_literal | bin_literal ;
 dec_literal    = digit { digit | "_" } ;
 hex_literal    = "0x" { hex_digit | "_" } ;   (* at least one hex_digit *)
 oct_literal    = "0o" { oct_digit | "_" } ;   (* at least one oct_digit *)
@@ -218,8 +223,10 @@ bin_literal    = "0b" { bin_digit | "_" } ;   (* at least one bin_digit *)
 hex_digit      = digit | "a" | ... | "f" | "A" | ... | "F" ;
 oct_digit      = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" ;
 bin_digit      = "0" | "1" ;
-STRING         = '"' { string_char | escape } '"' ;
-escape         = "\\" ( "\\" | '"' | "n" | "t" | "r" | "0" ) ;
+byte_literal   = "b'" ( byte_char | escape_sequence | "\'" ) "'" ;
+byte_char      = ? any ASCII character except "'" or "\" ? ; (* one ASCII byte; value 0–255 *)
+STRING         = '"' { string_char | escape_sequence } '"' ;
+escape_sequence = "\\" | "\"" | "\n" | "\t" | "\r" | "\0" ;
 BOOL           = "true" | "false" ;
 letter         = "a" | ... | "z" | "A" | ... | "Z" ;
 digit          = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;

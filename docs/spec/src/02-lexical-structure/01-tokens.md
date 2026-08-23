@@ -87,9 +87,13 @@ fn main() -> i32 {
 
 A byte literal is written `b'c'`, where `c` is a single ASCII character (other than `'` or `\`) or an escape sequence, and denotes the integer value of that byte (0–255). A byte literal *is* an integer literal: the integer-literal typing and representability rules (2.1:4) apply, so `b'a'` and `97` are interchangeable and a byte literal is typically written where a `u8` is expected. Byte literals accept the string-literal escape sequences (2.1:7) and additionally `\'` (a single quote).
 
+<!-- grammar-sync(id="2.1:26", production="INTEGER", role="source", relation="contains", symbol="byte_literal") -->
+<!-- grammar-sync(id="2.1:26", production="byte_literal", role="source") -->
+<!-- grammar-sync(id="2.1:26", production="byte_char", role="source") -->
+
 ```ebnf
 byte_literal = "b'" ( byte_char | escape_sequence | "\'" ) "'" ;
-byte_char = ? any ASCII character except "'" or "\" ? ;
+byte_char = ? any ASCII character except "'" or "\" ? ; (* one ASCII byte; value 0–255 *)
 ```
 
 {{ rule(id="2.1:27", cat="legality-rule") }}
@@ -115,6 +119,8 @@ fn main() -> i32 {
 {{ rule(id="2.1:6", cat="normative") }}
 
 A string literal is a sequence of characters enclosed in double quotes (`"`).
+
+<!-- grammar-sync(id="2.1:6", production="escape_sequence", role="source") -->
 
 ```ebnf
 string_literal = '"' { string_char } '"' ;
