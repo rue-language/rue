@@ -5331,7 +5331,7 @@ impl QueryRuntime {
             leases: Mutex::new(TaskLeases::default()),
             query_cache: Mutex::new(TaskQueryCache::default()),
             observed_handoffs: Mutex::new(Vec::new()),
-            checked_handoffs: Mutex::new(HashSet::new()),
+            checked_handoffs: Mutex::new(AHashSet::new()),
             #[cfg(test)]
             handoff_validation_visits: AtomicUsize::new(0),
             #[cfg(test)]
@@ -9247,7 +9247,7 @@ struct Task {
     /// Lifecycle identities whose complete dependency DAG has already been
     /// proven live by this rooted task. Every cached identity remains owned by
     /// an observed root lifecycle for the task's lifetime.
-    checked_handoffs: Mutex<HashSet<usize>>,
+    checked_handoffs: Mutex<AHashSet<usize>>,
     #[cfg(test)]
     handoff_validation_visits: AtomicUsize,
     /// Ordered-index probes used by structural amplification tests. One
@@ -10632,7 +10632,7 @@ impl Task {
             leases: Mutex::new(TaskLeases::default()),
             query_cache: Mutex::new(TaskQueryCache::default()),
             observed_handoffs: Mutex::new(Vec::new()),
-            checked_handoffs: Mutex::new(HashSet::new()),
+            checked_handoffs: Mutex::new(AHashSet::new()),
             #[cfg(test)]
             handoff_validation_visits: AtomicUsize::new(0),
             #[cfg(test)]
@@ -11126,7 +11126,7 @@ impl Task {
 
     fn validate_handoff(&self, handoff: &Arc<AttemptHandoffLifecycle>) -> bool {
         let mut checked = lock(&self.checked_handoffs);
-        let mut newly_checked = HashSet::new();
+        let mut newly_checked = AHashSet::new();
         if !self.validate_handoff_once(handoff, &checked, &mut newly_checked) {
             return false;
         }
@@ -11137,8 +11137,8 @@ impl Task {
     fn validate_handoff_once(
         &self,
         lifecycle: &Arc<AttemptHandoffLifecycle>,
-        checked: &HashSet<usize>,
-        newly_checked: &mut HashSet<usize>,
+        checked: &AHashSet<usize>,
+        newly_checked: &mut AHashSet<usize>,
     ) -> bool {
         let identity = Arc::as_ptr(lifecycle) as usize;
         if checked.contains(&identity) || !newly_checked.insert(identity) {
@@ -14962,7 +14962,7 @@ mod tests {
             leases: Mutex::new(TaskLeases::default()),
             query_cache: Mutex::new(TaskQueryCache::default()),
             observed_handoffs: Mutex::new(Vec::new()),
-            checked_handoffs: Mutex::new(HashSet::new()),
+            checked_handoffs: Mutex::new(AHashSet::new()),
             handoff_validation_visits: AtomicUsize::new(0),
             validation_endorsement_index_probes: AtomicUsize::new(0),
         };
@@ -15019,7 +15019,7 @@ mod tests {
             leases: Mutex::new(TaskLeases::default()),
             query_cache: Mutex::new(TaskQueryCache::default()),
             observed_handoffs: Mutex::new(Vec::new()),
-            checked_handoffs: Mutex::new(HashSet::new()),
+            checked_handoffs: Mutex::new(AHashSet::new()),
             handoff_validation_visits: AtomicUsize::new(0),
             validation_endorsement_index_probes: AtomicUsize::new(0),
         };
@@ -15298,7 +15298,7 @@ mod tests {
             leases: Mutex::new(TaskLeases::default()),
             query_cache: Mutex::new(TaskQueryCache::default()),
             observed_handoffs: Mutex::new(Vec::new()),
-            checked_handoffs: Mutex::new(HashSet::new()),
+            checked_handoffs: Mutex::new(AHashSet::new()),
             handoff_validation_visits: AtomicUsize::new(0),
             validation_endorsement_index_probes: AtomicUsize::new(0),
         });

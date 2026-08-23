@@ -6,10 +6,11 @@
 //! never recognize imports or choose resolution precedence. Plans remain a
 //! whole-graph compatibility projection for diagnostics and closure.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use ahash::AHashMap;
 use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind};
 use rue_span::FileId;
 
@@ -1977,7 +1978,7 @@ pub struct AcceptedReadManifest {
     /// observation, which is a scan of every entry per observation without an
     /// index. Derived state: it never participates in equality, hashing, or
     /// rendering, and clones share it because they are the same value.
-    by_physical_identity: Arc<std::sync::OnceLock<HashMap<PhysicalFileIdentity, IdentitySlot>>>,
+    by_physical_identity: Arc<std::sync::OnceLock<AHashMap<PhysicalFileIdentity, IdentitySlot>>>,
 }
 
 /// Where one physical identity lives in a manifest's segmented entry sequence,
@@ -2113,8 +2114,8 @@ impl AcceptedReadManifest {
     ) -> ManifestIdentityLookup<'_> {
         let mut visited = 0;
         let index = self.by_physical_identity.get_or_init(|| {
-            let mut index: HashMap<PhysicalFileIdentity, IdentitySlot> =
-                HashMap::with_capacity(self.entries.len());
+            let mut index: AHashMap<PhysicalFileIdentity, IdentitySlot> =
+                AHashMap::with_capacity(self.entries.len());
             for (segment, entries) in self.entries.segments().iter().enumerate() {
                 for (position, entry) in entries.iter().enumerate() {
                     visited += 1;
@@ -2796,7 +2797,6 @@ fn invalid_input(message: impl Into<String>) -> CompileError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn context(epoch: u64) -> ImportDiscoveryContext {
         ImportDiscoveryContext::new(epoch, "/project", Some("/sdk"), "all").unwrap()
@@ -2845,11 +2845,11 @@ mod tests {
                 entries
                     .iter()
                     .map(|(id, path, _, _)| (FileId::new(*id), (*path).into()))
-                    .collect::<HashMap<_, _>>(),
+                    .collect::<AHashMap<_, _>>(),
                 entries
                     .iter()
                     .map(|(id, _, logical, _)| (FileId::new(*id), (*logical).into()))
-                    .collect::<HashMap<_, _>>(),
+                    .collect::<AHashMap<_, _>>(),
             )
             .unwrap(),
             entries

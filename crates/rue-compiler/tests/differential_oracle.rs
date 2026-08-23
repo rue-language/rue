@@ -8,7 +8,8 @@
 //! final internal-linker executable bytes. This keeps the oracle on real
 //! production query paths through backend emission and object/link layout.
 
-use std::{collections::HashMap, fmt::Write as _, sync::Arc};
+use ahash::AHashMap;
+use std::{fmt::Write as _, sync::Arc};
 
 use rue_cfg::OptLevel;
 use rue_compiler::unstable::{
@@ -57,11 +58,11 @@ fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
     let physical = entries
         .iter()
         .map(|(id, path, _, _)| (FileId::new(*id), (*path).to_owned()))
-        .collect::<HashMap<_, _>>();
+        .collect::<AHashMap<_, _>>();
     let logical = entries
         .iter()
         .map(|(id, _, logical, _)| (FileId::new(*id), (*logical).to_owned()))
-        .collect::<HashMap<_, _>>();
+        .collect::<AHashMap<_, _>>();
     let metadata = SourceMetadata::new(FileId::new(root), physical, logical).unwrap();
     SourceSnapshot::new(
         metadata,

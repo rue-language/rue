@@ -4,8 +4,7 @@
 //! this module owns the common traversal, stack-depth tracking, and
 //! control-flow join bookkeeping.
 
-use std::collections::HashMap;
-
+use ahash::AHashMap;
 use rue_error::{CompileError, CompileResult};
 
 use crate::vreg::LabelId;
@@ -58,7 +57,7 @@ where
 struct StackVerifier<'a, A: StackVerifyAdapter> {
     adapter: &'a A,
     /// Stack depth at each label (for join point verification).
-    label_depths: HashMap<LabelId, i64>,
+    label_depths: AHashMap<LabelId, i64>,
     /// Current stack depth in bytes relative to the prologue-aligned stack.
     current_depth: i64,
 }
@@ -70,7 +69,7 @@ where
     fn new(adapter: &'a A) -> Self {
         Self {
             adapter,
-            label_depths: HashMap::new(),
+            label_depths: AHashMap::new(),
             current_depth: 0,
         }
     }

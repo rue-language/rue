@@ -15,8 +15,9 @@ use crate::unstable::{
     import_demand_frontier_for_roots, import_observation_ledger, publish_import_observation_batch,
 };
 use crate::*;
+use ahash::AHashMap;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
 
@@ -84,8 +85,8 @@ fn unrelated_module_snapshot_with_main_and_suffix(
     unrelated_modules: usize,
     suffix: &str,
 ) -> SourceSnapshot {
-    let mut physical = HashMap::new();
-    let mut logical = HashMap::new();
+    let mut physical = AHashMap::new();
+    let mut logical = AHashMap::new();
     let mut contents = Vec::new();
     physical.insert(FileId::DEFAULT, "main.rue".to_owned());
     logical.insert(FileId::DEFAULT, "main.rue".to_owned());

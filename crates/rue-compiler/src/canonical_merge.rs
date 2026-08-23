@@ -1,8 +1,8 @@
 //! Provenance-retaining canonical syntax assembly.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
+use ahash::AHashMap;
 use rue_error::{CompileError, CompileErrors, ErrorKind};
 use rue_span::Span;
 
@@ -179,11 +179,11 @@ fn duplicate_errors<'a>(
 ) -> Vec<CompileError> {
     let mut errors = Vec::new();
     for (physical_path, candidates) in modules {
-        let mut functions = HashMap::<&str, CandidateDef>::new();
-        let mut function_names = HashMap::<&str, CandidateDef>::new();
-        let mut type_names = HashMap::<&str, CandidateDef>::new();
-        let mut structs = HashMap::<&str, CandidateDef>::new();
-        let mut enums = HashMap::<&str, CandidateDef>::new();
+        let mut functions = AHashMap::<&str, CandidateDef>::new();
+        let mut function_names = AHashMap::<&str, CandidateDef>::new();
+        let mut type_names = AHashMap::<&str, CandidateDef>::new();
+        let mut structs = AHashMap::<&str, CandidateDef>::new();
+        let mut enums = AHashMap::<&str, CandidateDef>::new();
         for candidate in candidates {
             let name = candidate.name.as_ref();
             let definition = || CandidateDef {
@@ -284,7 +284,6 @@ fn invalid_input(message: impl Into<String>) -> CompileError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
 
     use rue_span::FileId;
 
@@ -296,11 +295,11 @@ mod tests {
         let physical = entries
             .iter()
             .map(|(id, path, _, _)| (FileId::new(*id), (*path).to_owned()))
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let logical = entries
             .iter()
             .map(|(id, _, logical, _)| (FileId::new(*id), (*logical).to_owned()))
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let metadata = SourceMetadata::new(FileId::new(root), physical, logical).unwrap();
         SourceSnapshot::new(
             metadata,

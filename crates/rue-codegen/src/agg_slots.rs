@@ -19,8 +19,7 @@
 //! convention decision. Physical-register and stack marshalling, sret
 //! readback, scheduling, and liveness remain architecture-specific.
 
-use std::collections::HashMap;
-
+use ahash::AHashMap;
 use rue_air::Type;
 use rue_air::layout::{PaddingRange, SLOT_BYTES};
 use rue_cfg::CfgValue;
@@ -39,7 +38,7 @@ pub(crate) trait SlotBackend: BoundsCheckBackend {
     fn ctx(&self) -> &CfgLowerContext<'_>;
 
     /// The aggregate slot cache (`struct_slot_vregs`).
-    fn slot_cache(&mut self) -> &mut HashMap<CfgValue, Vec<VReg>>;
+    fn slot_cache(&mut self) -> &mut AHashMap<CfgValue, Vec<VReg>>;
 
     /// Allocate a fresh virtual register.
     fn alloc_vreg(&mut self) -> VReg;

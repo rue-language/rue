@@ -13,6 +13,7 @@
 // - Debuggable: Can inspect intermediate IRs in tests
 
 use crate::*;
+use ahash::{AHashMap, AHashSet};
 
 #[cfg(test)]
 mod integration_tests {
@@ -938,22 +939,21 @@ mod integration_tests {
 
         #[test]
         fn text_runtime_shapes_survive_air_durability_and_cfg_lowering() {
-            use std::collections::{HashMap, HashSet};
             use std::sync::Arc;
 
             let root = FileId::new(1);
             let strbuf = FileId::new(2);
             let metadata = SourceMetadata::new_with_trusted_standard_library(
                 root,
-                HashMap::from([
+                AHashMap::from([
                     (root, "/project/main.rue".to_owned()),
                     (strbuf, "/project/std/strbuf.rue".to_owned()),
                 ]),
-                HashMap::from([
+                AHashMap::from([
                     (root, "main.rue".to_owned()),
                     (strbuf, "\0rue-std/strbuf.rue".to_owned()),
                 ]),
-                HashSet::from([strbuf]),
+                AHashSet::from([strbuf]),
             )
             .unwrap();
             let source = r#"

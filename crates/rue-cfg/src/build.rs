@@ -3,6 +3,7 @@
 //! This module converts the structured control flow in AIR (Branch, Loop)
 //! into explicit basic blocks with terminators.
 
+use ahash::{AHashMap, AHashSet};
 use lasso::{Spur, ThreadedRodeo};
 use rue_air::{
     AirArgMode, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
@@ -82,7 +83,7 @@ enum MovedSlot {
 /// element is determined by the type at that level.
 type FieldPath = Vec<u32>;
 type MovedPathKey = (MovedSlot, FieldPath);
-type MovedPathMap = std::collections::HashMap<MovedSlot, std::collections::HashSet<FieldPath>>;
+type MovedPathMap = AHashMap<MovedSlot, AHashSet<FieldPath>>;
 
 #[cfg(test)]
 #[derive(Debug, Clone, Default)]
@@ -102,7 +103,7 @@ struct MoveStateStats {
 #[derive(Debug, Clone, Default)]
 struct MoveState {
     /// Slots whose ENTIRE contents were moved out.
-    slots: std::collections::HashSet<MovedSlot>,
+    slots: AHashSet<MovedSlot>,
     /// `(slot, path)` pairs for field paths moved out (on EVERY tracked
     /// path) of a slot that is itself still live. Join: intersection.
     fields: MovedPathMap,
@@ -199,7 +200,7 @@ impl MoveState {
             .is_some_and(|paths| paths.contains(&key.1))
     }
     /// Field paths moved out of `slot` on EVERY tracked path.
-    fn moved_paths_of(&self, slot: MovedSlot) -> std::collections::HashSet<FieldPath> {
+    fn moved_paths_of(&self, slot: MovedSlot) -> AHashSet<FieldPath> {
         #[cfg(test)]
         self.record_slot_path_visits(self.fields.get(&slot).map_or(0, |paths| paths.len()));
         self.fields.get(&slot).cloned().unwrap_or_default()
@@ -207,7 +208,7 @@ impl MoveState {
 
     /// Field paths moved out of `slot` on SOME tracked path (superset of
     /// `moved_paths_of`).
-    fn maybe_moved_paths_of(&self, slot: MovedSlot) -> std::collections::HashSet<FieldPath> {
+    fn maybe_moved_paths_of(&self, slot: MovedSlot) -> AHashSet<FieldPath> {
         #[cfg(test)]
         self.record_slot_path_visits(self.maybe_fields.get(&slot).map_or(0, |paths| paths.len()));
         self.maybe_fields.get(&slot).cloned().unwrap_or_default()
@@ -226,7 +227,7 @@ impl MoveState {
                 let common = paths
                     .intersection(other_paths)
                     .cloned()
-                    .collect::<std::collections::HashSet<_>>();
+                    .collect::<AHashSet<_>>();
                 (!common.is_empty()).then_some((*slot, common))
             })
             .collect();
@@ -285,20 +286,20 @@ pub struct CfgBuilder<'a> {
     /// branch-divergent moves (moved in one arm only), conservative loop
     /// joins, and short-circuit edges drop-exactly-once at RUNTIME even
     /// where the static all-paths analysis must stay conservative.
-    drop_flags: std::collections::HashMap<MovedSlot, u32>,
+    drop_flags: AHashMap<MovedSlot, u32>,
     /// Per-field-path runtime drop flags (RUE-156): like `drop_flags`, but
     /// one flag per `(slot, field path)` with a field-level MarkMoved
     /// anywhere in the function. Armed when the slot is (re)initialized,
     /// cleared at the path's move site; `emit_partial_struct_drop` guards
     /// each possibly-moved field's drop with its flag.
-    field_drop_flags: std::collections::HashMap<MovedPathKey, u32>,
+    field_drop_flags: AHashMap<MovedPathKey, u32>,
     /// Slots with a whole-value MarkMoved anywhere in the AIR (pre-scanned),
     /// i.e. candidates for a drop flag.
-    ever_moved: std::collections::HashSet<MovedSlot>,
+    ever_moved: AHashSet<MovedSlot>,
     /// `(slot, field path)` pairs with a field-level MarkMoved anywhere in
     /// the AIR whose moved type needs drop (pre-scanned), i.e. candidates
     /// for a per-field drop flag.
-    ever_field_moved: std::collections::HashSet<MovedPathKey>,
+    ever_field_moved: AHashSet<MovedPathKey>,
     /// Slots (and struct field paths of any depth, RUE-62/RUE-157) whose
     /// contents have definitely been moved out on every path reaching the
     /// current lowering position. Drop elaboration skips these (the new
@@ -314,11 +315,11 @@ pub struct CfgBuilder<'a> {
     /// moving path skips it at runtime — drop exactly once on every path,
     /// and never a leak.
     moved: MoveState,
-    implicit_named_destructors: std::collections::HashSet<StructId>,
+    implicit_named_destructors: AHashSet<StructId>,
     /// Aggregate types whose destructor dependencies have already been
     /// discovered for this CFG body. Keeps repeated drops linear in the size
     /// of the reachable type graph rather than rewalking the same subgraphs.
-    implicit_destructor_types: std::collections::HashSet<Type>,
+    implicit_destructor_types: AHashSet<Type>,
     anonymous_destructor_dependency_incomplete: bool,
     callable_kind: AnalyzedCallableKind,
 }
@@ -362,7 +363,7 @@ fn derive_source_param_abi(builder: &CfgBuilder<'_>) -> Vec<SourceParamAbi> {
     // Slot -> source type. `param_drops` covers every Normal by-value parameter
     // (including unused ones); `Param` instructions supplement any used
     // parameter whose drop entry was cleared (destructor receivers).
-    let mut ty_at: std::collections::HashMap<u32, Type> = std::collections::HashMap::new();
+    let mut ty_at: AHashMap<u32, Type> = AHashMap::new();
     for &(slot, ty) in air.param_drops() {
         ty_at.entry(slot).or_insert(ty);
     }
@@ -602,13 +603,13 @@ impl<'a> CfgBuilder<'a> {
             allow_unreachable_code,
             errors: Vec::new(),
             scope_stack: vec![Vec::new()], // Start with one scope for the function body
-            drop_flags: std::collections::HashMap::new(),
-            field_drop_flags: std::collections::HashMap::new(),
-            ever_moved: std::collections::HashSet::new(),
-            ever_field_moved: std::collections::HashSet::new(),
+            drop_flags: AHashMap::new(),
+            field_drop_flags: AHashMap::new(),
+            ever_moved: AHashSet::new(),
+            ever_field_moved: AHashSet::new(),
             moved: MoveState::default(),
-            implicit_named_destructors: std::collections::HashSet::new(),
-            implicit_destructor_types: std::collections::HashSet::new(),
+            implicit_named_destructors: AHashSet::new(),
+            implicit_destructor_types: AHashSet::new(),
             anonymous_destructor_dependency_incomplete: false,
             callable_kind,
         };
@@ -2810,7 +2811,7 @@ impl<'a> CfgBuilder<'a> {
             .filter(|(s, _)| *s == key)
             .map(|(_, p)| p.clone())
             .collect();
-        // `ever_field_moved` is a `HashSet`, so its iteration order varies per
+        // `ever_field_moved` is a `AHashSet`, so its iteration order varies per
         // process. `set_field_drop_flag` allocates a hidden local the first time
         // it sees a path, which would make the flag slots — and therefore every
         // frame offset after them — depend on hash order. Sorting pins the
@@ -3199,8 +3200,8 @@ impl<'a> CfgBuilder<'a> {
         ty: Type,
         path: &mut FieldPath,
         projs: &mut Vec<Projection>,
-        definite: &std::collections::HashSet<FieldPath>,
-        maybe: &std::collections::HashSet<FieldPath>,
+        definite: &AHashSet<FieldPath>,
+        maybe: &AHashSet<FieldPath>,
         span: rue_span::Span,
     ) {
         let struct_def = self.type_pool.struct_def(struct_id);
@@ -3360,8 +3361,8 @@ impl<'a> CfgBuilder<'a> {
         array_ty: Type,
         path: &mut FieldPath,
         projs: &mut Vec<Projection>,
-        definite: &std::collections::HashSet<FieldPath>,
-        maybe: &std::collections::HashSet<FieldPath>,
+        definite: &AHashSet<FieldPath>,
+        maybe: &AHashSet<FieldPath>,
         span: rue_span::Span,
     ) {
         let TypeKind::Array(array_id) = array_ty.kind() else {
@@ -3543,7 +3544,6 @@ mod tests {
         SemanticLocalNominal, SemanticLocalNominalShape,
     };
     use rue_span::FileId;
-    use std::collections::HashSet;
     use std::sync::Arc;
 
     #[test]
@@ -3583,13 +3583,13 @@ mod tests {
         let target = MovedSlot::Local(777);
 
         state.stats.slot_path_visits.set(0);
-        assert_eq!(state.moved_paths_of(target), HashSet::from([vec![777]]));
+        assert_eq!(state.moved_paths_of(target), AHashSet::from([vec![777]]));
         assert_eq!(state.stats.slot_path_visits.get(), 1);
 
         state.stats.slot_path_visits.set(0);
         assert_eq!(
             state.maybe_moved_paths_of(target),
-            HashSet::from([vec![777]])
+            AHashSet::from([vec![777]])
         );
         assert_eq!(state.stats.slot_path_visits.get(), 1);
 
@@ -3622,10 +3622,13 @@ mod tests {
         right.mark_path(slot, right_only.clone());
 
         let joined = left.intersect(&right);
-        assert_eq!(joined.moved_paths_of(slot), HashSet::from([shared.clone()]));
+        assert_eq!(
+            joined.moved_paths_of(slot),
+            AHashSet::from([shared.clone()])
+        );
         assert_eq!(
             joined.maybe_moved_paths_of(slot),
-            HashSet::from([shared, left_only, right_only])
+            AHashSet::from([shared, left_only, right_only])
         );
     }
 

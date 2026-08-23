@@ -3496,7 +3496,7 @@ mod tests {
             .nodes()
             .iter()
             .map(std::mem::discriminant)
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<ahash::AHashSet<_>>();
         assert_eq!(variants.len(), 13, "fixture must cover every type node");
 
         let packed = pack(&source, &symbols, root);
@@ -4379,7 +4379,7 @@ mod tests {
         let variants = editor
             .iter()
             .map(|(_, instruction)| std::mem::discriminant(&instruction.data))
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<ahash::AHashSet<_>>();
         assert_eq!(variants.len(), 63, "fixture duplicated an InstData variant");
         let payload_stats = editor.payload_storage_stats();
         assert_eq!(RIR_PAYLOAD_FAMILY_NAMES.len(), 17);

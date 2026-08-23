@@ -7,7 +7,7 @@
 //! 12 registers each family directly with the runtime; native selection roots
 //! retain the current and last-good terminals.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::rc::Rc;
@@ -375,7 +375,7 @@ where
 }
 
 /// Wave-parsed modules awaiting their one canonical parse-query consumption.
-type ParseStage = Arc<Mutex<HashMap<ModuleId, crate::parsed_modules::StagedModuleParse>>>;
+type ParseStage = Arc<Mutex<AHashMap<ModuleId, crate::parsed_modules::StagedModuleParse>>>;
 
 #[cfg(test)]
 type DeclarationBodyPlanFailureInjection = Arc<
@@ -1412,7 +1412,7 @@ fn backend_retention_fallbacks(
 pub(crate) struct BackendRootCandidate {
     lease: rue_query::RetainedPinSet,
     functions: BTreeSet<crate::FunctionInstanceKey>,
-    cfg_keys: HashSet<crate::cfg_query::CfgQueryKey>,
+    cfg_keys: AHashSet<crate::cfg_query::CfgQueryKey>,
     optimized_cfg_terminals: usize,
     codegen_unit_terminals: usize,
     object_projection_terminals: usize,
@@ -2505,8 +2505,8 @@ struct ModuleInputStore {
     protected_revisions: BTreeSet<Revision>,
     retention_limit: usize,
     next_stamp: u64,
-    stamps: HashMap<ModuleInputLeaf, RetainedValueStamp>,
-    metadata_stamps: HashMap<ModuleMetadataLeaf, RetainedValueStamp>,
+    stamps: AHashMap<ModuleInputLeaf, RetainedValueStamp>,
+    metadata_stamps: AHashMap<ModuleMetadataLeaf, RetainedValueStamp>,
 }
 
 #[cfg(test)]
@@ -2531,8 +2531,8 @@ impl Default for ModuleInputStore {
             protected_revisions: BTreeSet::new(),
             retention_limit: MODULE_INPUT_REVISION_RETENTION,
             next_stamp: 1,
-            stamps: HashMap::new(),
-            metadata_stamps: HashMap::new(),
+            stamps: AHashMap::new(),
+            metadata_stamps: AHashMap::new(),
         }
     }
 }
@@ -3145,10 +3145,10 @@ struct ImportInputStore {
     /// two protected revisions beyond the ordinary recency window.
     protected_revisions: BTreeSet<Revision>,
     next_stamp: u64,
-    context_stamps: HashMap<ImportDiscoveryContext, RetainedValueStamp>,
-    provenance_stamps: HashMap<AcceptedReadManifestEntry, RetainedValueStamp>,
-    observation_stamps: HashMap<ImportObservation, RetainedValueStamp>,
-    topology_stamps: HashMap<AcceptedImportTopologyValue, RetainedValueStamp>,
+    context_stamps: AHashMap<ImportDiscoveryContext, RetainedValueStamp>,
+    provenance_stamps: AHashMap<AcceptedReadManifestEntry, RetainedValueStamp>,
+    observation_stamps: AHashMap<ImportObservation, RetainedValueStamp>,
+    topology_stamps: AHashMap<AcceptedImportTopologyValue, RetainedValueStamp>,
 }
 
 impl Default for ImportInputStore {
@@ -3157,10 +3157,10 @@ impl Default for ImportInputStore {
             revisions: VecDeque::new(),
             protected_revisions: BTreeSet::new(),
             next_stamp: 1,
-            context_stamps: HashMap::new(),
-            provenance_stamps: HashMap::new(),
-            observation_stamps: HashMap::new(),
-            topology_stamps: HashMap::new(),
+            context_stamps: AHashMap::new(),
+            provenance_stamps: AHashMap::new(),
+            observation_stamps: AHashMap::new(),
+            topology_stamps: AHashMap::new(),
         }
     }
 }
@@ -3198,7 +3198,7 @@ fn module_metadata_leaf_for_file(
     }
 }
 
-fn module_metadata_leaves(snapshot: &SourceSnapshot) -> HashMap<ModuleId, ModuleMetadataLeaf> {
+fn module_metadata_leaves(snapshot: &SourceSnapshot) -> AHashMap<ModuleId, ModuleMetadataLeaf> {
     let metadata = snapshot.metadata();
     metadata
         .file_ids()
@@ -3256,7 +3256,7 @@ fn import_input_error(message: impl Into<String>) -> CompileError {
 
 fn exact_value_stamp<T: Clone + Eq + Hash>(
     next_stamp: &mut u64,
-    values: &mut HashMap<T, RetainedValueStamp>,
+    values: &mut AHashMap<T, RetainedValueStamp>,
     value: &T,
 ) -> u64 {
     if let Some(retained) = values.get(value) {
@@ -3299,14 +3299,14 @@ fn lock_import_store(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn retain_stamp_value<T: Eq + Hash>(stamps: &mut HashMap<T, RetainedValueStamp>, value: &T) {
+fn retain_stamp_value<T: Eq + Hash>(stamps: &mut AHashMap<T, RetainedValueStamp>, value: &T) {
     stamps
         .get_mut(value)
         .expect("a published input view retains only values with assigned stamps")
         .retained_views += 1;
 }
 
-fn release_stamp_value<T: Eq + Hash>(stamps: &mut HashMap<T, RetainedValueStamp>, value: &T) {
+fn release_stamp_value<T: Eq + Hash>(stamps: &mut AHashMap<T, RetainedValueStamp>, value: &T) {
     let remove = {
         let retained = stamps
             .get_mut(value)
@@ -3817,7 +3817,7 @@ fn publish_module_inputs_delta(
                 .into_iter()
                 .map(|file_id| module_metadata_leaf_for_file(snapshot, file_id))
                 .map(|leaf| (leaf.module.clone(), leaf))
-                .collect::<HashMap<_, _>>()
+                .collect::<AHashMap<_, _>>()
         })
         .unwrap_or_else(|| module_metadata_leaves(snapshot));
     for source in new_sources {
@@ -11279,7 +11279,7 @@ impl RevisionedQueryDatabase {
         let declaration_body_plan_astgen_evaluations =
             Arc::new(std::sync::atomic::AtomicU64::new(0));
         let parse_store = module_store.clone();
-        let parse_stage: ParseStage = Arc::new(Mutex::new(HashMap::new()));
+        let parse_stage: ParseStage = Arc::new(Mutex::new(AHashMap::new()));
         let parse_stage_for_parse_modules = parse_stage.clone();
         let parse_identity_resolution = identity_resolution.clone();
         let parse_modules = runtime
@@ -17921,11 +17921,11 @@ impl BodyTransactionEvaluator {
                         let definition_tokens = analyzed
                             .definition_tokens
                             .into_iter()
-                            .collect::<std::collections::HashMap<_, _>>();
+                            .collect::<AHashMap<_, _>>();
                         let module_tokens = analyzed
                             .module_tokens
                             .into_iter()
-                            .collect::<std::collections::HashMap<_, _>>();
+                            .collect::<AHashMap<_, _>>();
                         let nested = analyzed
                             .referenced_specializations
                             .iter()
@@ -18254,11 +18254,11 @@ impl BodyTransactionEvaluator {
                         let definition_tokens = analyzed
                             .definition_tokens
                             .into_iter()
-                            .collect::<std::collections::HashMap<_, _>>();
+                            .collect::<AHashMap<_, _>>();
                         let module_tokens = analyzed
                             .module_tokens
                             .into_iter()
-                            .collect::<std::collections::HashMap<_, _>>();
+                            .collect::<AHashMap<_, _>>();
                         let definition = |token: &rue_air::SemanticDefinitionToken| {
                             definition_tokens
                                 .get(token)
@@ -18589,11 +18589,11 @@ impl BodyTransactionEvaluator {
                         let definition_tokens = analyzed
                             .definition_tokens
                             .into_iter()
-                            .collect::<std::collections::HashMap<_, _>>();
+                            .collect::<AHashMap<_, _>>();
                         let module_tokens = analyzed
                             .module_tokens
                             .into_iter()
-                            .collect::<std::collections::HashMap<_, _>>();
+                            .collect::<AHashMap<_, _>>();
                         let definition = |token: &rue_air::SemanticDefinitionToken| {
                             definition_tokens
                                 .get(token)
@@ -20809,7 +20809,7 @@ impl RevisionedQueryDatabase {
                     continue;
                 }
             };
-            let mut artifacts = HashMap::new();
+            let mut artifacts = AHashMap::new();
             let mut failed = false;
             for candidate in parsed.definitions().declaration_keys_in_source_order() {
                 let attempt = self.runtime.request_registered(
@@ -21661,8 +21661,8 @@ pub(crate) struct CompilerBodyDurableSource<'a> {
     provider: &'a CompilerBodyFactProvider<'a>,
     dynamic_anonymous: Rc<std::cell::RefCell<CanonicalAnonymousNominalRegistry>>,
     durable_payloads: Rc<std::cell::RefCell<BodyDurablePayloadCache>>,
-    source_paths: Rc<std::cell::RefCell<HashMap<crate::FileId, Arc<str>>>>,
-    source_locators: Rc<std::cell::RefCell<HashMap<ModuleId, rue_air::DurableBodySourceLocator>>>,
+    source_paths: Rc<std::cell::RefCell<AHashMap<crate::FileId, Arc<str>>>>,
+    source_locators: Rc<std::cell::RefCell<AHashMap<ModuleId, rue_air::DurableBodySourceLocator>>>,
 }
 
 struct ResolvedDeclarationCandidate {
@@ -21677,8 +21677,8 @@ impl<'a> CompilerBodyDurableSource<'a> {
         anonymous: &'a [crate::durable_semantics::DurableAnonymousNominal],
         owner_source: Option<(ModuleId, rue_air::DurableBodySourceLocator)>,
     ) -> Self {
-        let mut source_paths = HashMap::new();
-        let mut source_locators = HashMap::new();
+        let mut source_paths = AHashMap::new();
+        let mut source_locators = AHashMap::new();
         let mut dynamic_anonymous = CanonicalAnonymousNominalRegistry::default();
         dynamic_anonymous.extend(anonymous.iter().cloned());
         if let Some((module, locator)) = owner_source {
@@ -22978,11 +22978,8 @@ fn project_provider_anonymous_shape(
 
 fn project_provider_produced_anonymous_nominals(
     values: &[rue_air::SemanticProducedAnonymousNominal],
-    definitions: &std::collections::HashMap<
-        rue_air::SemanticDefinitionToken,
-        crate::StableDefinitionKey,
-    >,
-    modules: &std::collections::HashMap<rue_air::SemanticModuleToken, ModuleId>,
+    definitions: &AHashMap<rue_air::SemanticDefinitionToken, crate::StableDefinitionKey>,
+    modules: &AHashMap<rue_air::SemanticModuleToken, ModuleId>,
 ) -> Result<
     crate::body_query::BodyProducedAnonymousNominals,
     rue_air::SemanticStableResolutionFailure,
@@ -25065,14 +25062,9 @@ pub(crate) mod test_support {
     /// durable source vocabulary. Reads r2's stable-keyed metadata by key — the
     /// pool consults it on demand (dedup / poison), the O(consumed) shape.
     pub(crate) struct DurableDeclSource {
-        by_key: std::collections::HashMap<
-            StableDefinitionKey,
-            crate::durable_semantics::DurableDeclarationSemantic,
-        >,
-        anon_by_identity: std::collections::HashMap<
-            crate::AnonymousNominalKey,
-            crate::durable_semantics::DurableAnonymousNominal,
-        >,
+        by_key: AHashMap<StableDefinitionKey, crate::durable_semantics::DurableDeclarationSemantic>,
+        anon_by_identity:
+            AHashMap<crate::AnonymousNominalKey, crate::durable_semantics::DurableAnonymousNominal>,
     }
 
     impl DurableDeclSource {
@@ -25081,7 +25073,7 @@ pub(crate) mod test_support {
         ) -> Self {
             Self {
                 by_key: decls.iter().map(|d| (d.key.clone(), d.clone())).collect(),
-                anon_by_identity: std::collections::HashMap::new(),
+                anon_by_identity: AHashMap::new(),
             }
         }
 
@@ -25457,7 +25449,7 @@ mod tests {
         ImportObservation, PhysicalFileIdentity, SourceMetadata,
     };
     use rue_span::FileId;
-    use std::collections::{BTreeSet, HashMap};
+    use std::collections::BTreeSet;
 
     /// ADR-0076 §1/§4: one append-only equality space per revision, shared by
     /// every body of that revision, and retired once the revision leaves the
@@ -26157,11 +26149,11 @@ mod tests {
         let physical = entries
             .iter()
             .map(|(id, path, _, _)| (FileId::new(*id), (*path).to_owned()))
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let logical = entries
             .iter()
             .map(|(id, _, logical, _)| (FileId::new(*id), (*logical).to_owned()))
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let metadata = SourceMetadata::new(FileId::new(root), physical, logical).unwrap();
         SourceSnapshot::new(
             metadata,
@@ -26323,9 +26315,9 @@ mod tests {
         strbuf_source: Option<(FileId, &str)>,
     ) -> SourceSnapshot {
         let root = FileId::new(1);
-        let mut physical = HashMap::from([(root, "/project/main.rue".to_owned())]);
-        let mut logical = HashMap::from([(root, "main.rue".to_owned())]);
-        let mut trusted = std::collections::HashSet::new();
+        let mut physical = AHashMap::from([(root, "/project/main.rue".to_owned())]);
+        let mut logical = AHashMap::from([(root, "main.rue".to_owned())]);
+        let mut trusted = AHashSet::new();
         let mut sources = vec![(root, Arc::new(root_source.to_owned()))];
         if let Some((option, source)) = option_source {
             physical.insert(option, "/sdk/option.rue".to_owned());
@@ -27734,18 +27726,17 @@ fn main() -> i32 {
             ComptimeCallQueryKey, ComptimeCallResultProjection as ResultProjection,
             SemanticNucleusKey as Key, SemanticNucleusValue as V,
         };
-        use std::collections::HashSet;
 
         // The freestanding fallible-intrinsic program plus the trusted Option
         // module the host published on the successor. `main.rue` names a bare
         // `@parse_i64`, which is the reason the demand was emitted upstream.
         let root = FileId::new(1);
         let option = FileId::new(2);
-        let physical = HashMap::from([
+        let physical = AHashMap::from([
             (root, "/project/main.rue".to_owned()),
             (option, "/sdk/option.rue".to_owned()),
         ]);
-        let logical = HashMap::from([
+        let logical = AHashMap::from([
             (root, "main.rue".to_owned()),
             (option, crate::OPTION_MODULE_LOGICAL_PATH.to_owned()),
         ]);
@@ -27753,7 +27744,7 @@ fn main() -> i32 {
             root,
             physical,
             logical,
-            HashSet::from([option]),
+            AHashSet::from([option]),
         )
         .unwrap();
         let source = SourceSnapshot::new(
@@ -32395,8 +32386,8 @@ fn main() -> i32 {
     fn input_stamp_tables_follow_exact_retained_full_and_overlay_views() {
         const GENERATIONS: u64 = IMPORT_INPUT_REVISION_RETENTION as u64 + 32;
         fn assert_exact_values<T: Eq + Hash + std::fmt::Debug>(
-            actual: &HashMap<T, RetainedValueStamp>,
-            expected: &HashMap<T, usize>,
+            actual: &AHashMap<T, RetainedValueStamp>,
+            expected: &AHashMap<T, usize>,
         ) {
             assert_eq!(actual.len(), expected.len());
             for value in expected.keys() {
@@ -32527,10 +32518,10 @@ fn main() -> i32 {
             "the current view must keep its context stamp"
         );
 
-        let mut context_refs = HashMap::new();
-        let mut topology_refs = HashMap::new();
-        let mut provenance_refs = HashMap::new();
-        let mut observation_refs = HashMap::new();
+        let mut context_refs = AHashMap::new();
+        let mut topology_refs = AHashMap::new();
+        let mut provenance_refs = AHashMap::new();
+        let mut observation_refs = AHashMap::new();
         for view in &import_store.revisions {
             *context_refs.entry(view.context.clone()).or_insert(0) += 1;
             *topology_refs
@@ -32554,8 +32545,8 @@ fn main() -> i32 {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(module_store.revisions.len(), GENERATIONS as usize * 2);
-        let mut module_refs = HashMap::new();
-        let mut metadata_refs = HashMap::new();
+        let mut module_refs = AHashMap::new();
+        let mut metadata_refs = AHashMap::new();
         for view in &module_store.revisions {
             for source in view.snapshot.source_revision().modules() {
                 *module_refs
@@ -37273,7 +37264,6 @@ fn main() -> i32 {
             ComptimeCallResultProjection as ResultProjection, SemanticNucleusKey as Key,
             SemanticNucleusValue as V,
         };
-        use std::collections::HashSet;
 
         // The freestanding fallible-intrinsic program plus the trusted `Option`
         // module published at its trusted logical path. `main` names
@@ -37281,11 +37271,11 @@ fn main() -> i32 {
         // payloads and each maps directly to one exact comptime key.
         let root = FileId::new(1);
         let option = FileId::new(2);
-        let physical = HashMap::from([
+        let physical = AHashMap::from([
             (root, "/project/main.rue".to_owned()),
             (option, "/sdk/option.rue".to_owned()),
         ]);
-        let logical = HashMap::from([
+        let logical = AHashMap::from([
             (root, "main.rue".to_owned()),
             (option, crate::OPTION_MODULE_LOGICAL_PATH.to_owned()),
         ]);
@@ -37293,7 +37283,7 @@ fn main() -> i32 {
             root,
             physical,
             logical,
-            HashSet::from([option]),
+            AHashSet::from([option]),
         )
         .unwrap();
         let snapshot = SourceSnapshot::new(
@@ -38189,17 +38179,17 @@ fn main() -> i32 {
         let unknown_file = FileId::new(4);
         let metadata = SourceMetadata::new_with_trusted_standard_library(
             root_file,
-            HashMap::from([
+            AHashMap::from([
                 (root_file, "/project/main.rue".to_owned()),
                 (leaf_file, "/project/std/leaf.rue".to_owned()),
                 (sibling_file, "/project/helper.rue".to_owned()),
             ]),
-            HashMap::from([
+            AHashMap::from([
                 (root_file, "main.rue".to_owned()),
                 (leaf_file, "\0rue-std/leaf.rue".to_owned()),
                 (sibling_file, "helper.rue".to_owned()),
             ]),
-            std::collections::HashSet::from([leaf_file]),
+            AHashSet::from([leaf_file]),
         )
         .expect("trusted-std metadata is valid");
         let snapshot = SourceSnapshot::new(
@@ -38662,11 +38652,11 @@ fn main() -> i32 {
         let definition_tokens = analyzed
             .definition_tokens
             .into_iter()
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let module_tokens = analyzed
             .module_tokens
             .into_iter()
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let definition = |token: &rue_air::SemanticDefinitionToken| {
             definition_tokens
                 .get(token)

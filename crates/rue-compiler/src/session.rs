@@ -1,6 +1,7 @@
 //! In-process canonical parse, merge, and RIR query orchestration.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use ahash::{AHashMap, AHashSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use crate::{
@@ -3231,7 +3232,7 @@ impl CompilerSession {
 
         // Every predecessor accepted-read entry must appear byte-identical in the
         // successor manifest (altered old provenance rejected).
-        let new_reads: std::collections::HashSet<&crate::AcceptedReadManifestEntry> =
+        let new_reads: AHashSet<&crate::AcceptedReadManifestEntry> =
             accepted_reads.iter().collect();
         for old in state.accepted_reads.iter() {
             if !new_reads.contains(old) {
@@ -5471,8 +5472,8 @@ impl CompilerSession {
         // rendered strings, so it is decorated once per warning rather than
         // twice per comparison. The first module wins a duplicated file id,
         // matching the linear scan this replaces.
-        let mut module_ids: HashMap<rue_span::FileId, &str> =
-            HashMap::with_capacity(graph.modules.len());
+        let mut module_ids: AHashMap<rue_span::FileId, &str> =
+            AHashMap::with_capacity(graph.modules.len());
         for module in graph.modules.iter() {
             module_ids
                 .entry(module.file_id())
@@ -6187,15 +6188,15 @@ fn rooted_unused_function_warnings(
     /// candidates touch one module never indexes the rest.
     struct CandidateModule<'a> {
         module: &'a crate::parsed_modules::ParsedModule,
-        functions: Option<HashMap<rue_span::Span, &'a rue_parser::ast::Function>>,
+        functions: Option<AHashMap<rue_span::Span, &'a rue_parser::ast::Function>>,
     }
 
     // Candidate declarations are keyed by module and located by declaration
     // span, so both lookups are indexed rather than scanned per candidate. The
     // first module and the first item win a duplicated key, matching the linear
     // scans these replace.
-    let mut modules: HashMap<&crate::ModuleId, CandidateModule<'_>> =
-        HashMap::with_capacity(graph.modules.len());
+    let mut modules: AHashMap<&crate::ModuleId, CandidateModule<'_>> =
+        AHashMap::with_capacity(graph.modules.len());
     for module in graph.modules.iter() {
         modules
             .entry(module.module_id())
@@ -6233,7 +6234,7 @@ fn rooted_unused_function_warnings(
         };
         let functions = entry.functions.get_or_insert_with(|| {
             let items = &module.ast().items;
-            let mut spans = HashMap::with_capacity(items.len());
+            let mut spans = AHashMap::with_capacity(items.len());
             for item in items.iter() {
                 if let rue_parser::ast::Item::Function(function) = item {
                     spans.entry(function.span).or_insert(function);
@@ -7077,15 +7078,15 @@ mod tests {
         let option = FileId::new(2);
         let metadata = SourceMetadata::new_with_trusted_standard_library(
             root,
-            HashMap::from([
+            AHashMap::from([
                 (root, "/project/main.rue".to_owned()),
                 (option, "/project/std/option.rue".to_owned()),
             ]),
-            HashMap::from([
+            AHashMap::from([
                 (root, "main.rue".to_owned()),
                 (option, "\0rue-std/option.rue".to_owned()),
             ]),
-            HashSet::from([option]),
+            AHashSet::from([option]),
         )
         .unwrap();
         SourceSnapshot::new(
@@ -7098,10 +7099,8 @@ mod tests {
         .unwrap()
     }
 
-    use std::{
-        collections::{HashMap, HashSet},
-        sync::Arc,
-    };
+    use ahash::{AHashMap, AHashSet};
+    use std::sync::Arc;
 
     use rue_span::FileId;
 
@@ -7227,11 +7226,11 @@ mod tests {
         let physical = entries
             .iter()
             .map(|(id, path, _, _)| (FileId::new(*id), (*path).to_owned()))
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let logical = entries
             .iter()
             .map(|(id, _, logical, _)| (FileId::new(*id), (*logical).to_owned()))
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let metadata = SourceMetadata::new(FileId::new(root), physical, logical).unwrap();
         SourceSnapshot::new(
             metadata,
@@ -11699,7 +11698,7 @@ fn main() -> i32 {
             hash(&second_helper),
             "semantic versions of one function deliberately share the cheap memo partition"
         );
-        let mut exact = std::collections::HashMap::new();
+        let mut exact = AHashMap::new();
         exact.insert(first_helper, "first");
         exact.insert(second_helper, "second");
         assert_eq!(exact.len(), 2, "typed equality resolves the hash collision");

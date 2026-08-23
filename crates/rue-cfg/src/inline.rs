@@ -78,8 +78,7 @@
 //! returns produces no continuation edges, leaving the continuation
 //! unreachable — the RUE-347 divergence shape.
 
-use std::collections::HashMap;
-
+use ahash::AHashMap;
 use rue_air::{FrozenTypeInternPool, Type};
 use rue_span::Span;
 
@@ -205,7 +204,7 @@ struct Splice<'a> {
     value_base: u32,
     local_base: u32,
     block_base: u32,
-    redirects: &'a HashMap<u32, ParamRedirect>,
+    redirects: &'a AHashMap<u32, ParamRedirect>,
 }
 
 impl Splice<'_> {
@@ -321,7 +320,7 @@ pub fn inline_call_in_block(
             callee_params: params.len(),
         });
     }
-    let mut redirects: HashMap<u32, ParamRedirect> = HashMap::new();
+    let mut redirects: AHashMap<u32, ParamRedirect> = AHashMap::new();
     // Materialized by-value parameter regions: (base slot, argument, type).
     let mut materialized: Vec<(u32, CfgValue, Type)> = Vec::new();
     for (index, (param, arg)) in params.iter().zip(&call_args).enumerate() {
@@ -1017,12 +1016,11 @@ mod tests {
         ParamSlotModes, SourceParamAbi, StructDef, StructField, StructId, TypeInternPool,
     };
     use rue_span::FileId;
-    use std::collections::HashMap;
 
     /// A hand-built program: each function's drop-elaborated CFG, plus the
     /// shared type pool and interner the splice and its assertions need.
     struct Program {
-        cfgs: HashMap<&'static str, ValidatedCfg>,
+        cfgs: AHashMap<&'static str, ValidatedCfg>,
         type_pool: rue_air::FrozenTypeInternPool,
         interner: ThreadedRodeo,
     }
@@ -1030,7 +1028,7 @@ mod tests {
     impl Program {
         fn new(type_pool: rue_air::FrozenTypeInternPool, interner: ThreadedRodeo) -> Self {
             Self {
-                cfgs: HashMap::new(),
+                cfgs: AHashMap::new(),
                 type_pool,
                 interner,
             }

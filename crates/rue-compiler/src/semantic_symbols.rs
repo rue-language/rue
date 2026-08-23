@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(test)]
+use ahash::AHashMap;
+#[cfg(test)]
 use lasso::Spur;
 use lasso::ThreadedRodeo;
 #[cfg(test)]
@@ -199,7 +201,6 @@ fn invalid_input(message: impl Into<String>) -> CompileError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
 
     use rue_span::FileId;
 
@@ -211,11 +212,11 @@ mod tests {
         let physical = entries
             .iter()
             .map(|(id, path, _, _)| (FileId::new(*id), (*path).to_owned()))
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let logical = entries
             .iter()
             .map(|(id, _, logical, _)| (FileId::new(*id), (*logical).to_owned()))
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let metadata = SourceMetadata::new(FileId::new(root), physical, logical).unwrap();
         SourceSnapshot::new(
             metadata,

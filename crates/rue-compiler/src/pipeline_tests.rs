@@ -1,9 +1,9 @@
 use crate::*;
+use ahash::AHashMap;
 use std::sync::Arc;
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
 
     use rue_query::QueryKey;
 
@@ -1047,7 +1047,7 @@ mod tests {
         let metadata = SourceMetadata::from_sources(
             &sources,
             root,
-            HashMap::from([
+            AHashMap::from([
                 (root, "main.rue".to_owned()),
                 (library, "lib.rue".to_owned()),
             ]),
@@ -1937,11 +1937,11 @@ mod tests {
     fn diagnostic_attempt_key_includes_presentation_order() {
         let first = FileId::new(1);
         let second = FileId::new(2);
-        let physical = HashMap::from([
+        let physical = AHashMap::from([
             (first, "/project/first.rue".to_owned()),
             (second, "/project/second.rue".to_owned()),
         ]);
-        let logical = HashMap::from([
+        let logical = AHashMap::from([
             (first, "first.rue".to_owned()),
             (second, "second.rue".to_owned()),
         ]);
@@ -2226,7 +2226,7 @@ mod tests {
     #[test]
     fn documented_snapshot_session_embedding_carries_complete_identity() {
         let root = FileId::new(7);
-        let paths = std::collections::HashMap::from([(root, "src/main.rue".to_owned())]);
+        let paths = AHashMap::from([(root, "src/main.rue".to_owned())]);
         let metadata = SourceMetadata::new(root, paths.clone(), paths).unwrap();
         let snapshot = SourceSnapshot::new(
             metadata,
@@ -2266,8 +2266,7 @@ mod tests {
             SourceView::new("helper.rue", "fn helper() -> i32 { # }", helper),
             SourceView::new("main.rue", "fn main() -> i32 { $ }", root),
         ];
-        let metadata =
-            SourceMetadata::from_sources(&sources, root, std::collections::HashMap::new()).unwrap();
+        let metadata = SourceMetadata::from_sources(&sources, root, AHashMap::new()).unwrap();
         let snapshot = SourceSnapshot::from_sources(&sources, metadata.clone()).unwrap();
 
         let mut session = CompilerSession::new();
@@ -2289,8 +2288,8 @@ mod tests {
         let file_id = FileId::new(3);
         let metadata = SourceMetadata::new(
             file_id,
-            std::collections::HashMap::from([(file_id, "expected.rue".to_string())]),
-            std::collections::HashMap::from([(file_id, "stable.rue".to_string())]),
+            AHashMap::from([(file_id, "expected.rue".to_string())]),
+            AHashMap::from([(file_id, "stable.rue".to_string())]),
         )
         .unwrap();
         let sources = [SourceView::new("actual.rue", "$", file_id)];
@@ -2323,7 +2322,7 @@ mod tests {
         let metadata = SourceMetadata::from_sources(
             &sources,
             root,
-            std::collections::HashMap::from([
+            AHashMap::from([
                 (root, "main.rue".to_string()),
                 (helper, "helper.rue".to_string()),
             ]),
@@ -2388,7 +2387,7 @@ mod tests {
         let metadata = SourceMetadata::from_sources(
             &sources,
             root,
-            std::collections::HashMap::from([
+            AHashMap::from([
                 (root, "main.rue".to_string()),
                 (helper, "helper.rue".to_string()),
             ]),
@@ -2436,7 +2435,7 @@ mod tests {
         let metadata = SourceMetadata::from_sources(
             &sources,
             root,
-            std::collections::HashMap::from([
+            AHashMap::from([
                 (root, "main.rue".to_string()),
                 (helper, "helper.rue".to_string()),
             ]),
@@ -2551,12 +2550,9 @@ mod tests {
                 if reversed {
                     sources.reverse();
                 }
-                let metadata = SourceMetadata::from_sources(
-                    &sources,
-                    sources[0].file_id,
-                    std::collections::HashMap::new(),
-                )
-                .unwrap();
+                let metadata =
+                    SourceMetadata::from_sources(&sources, sources[0].file_id, AHashMap::new())
+                        .unwrap();
                 let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
                 let options = CompileOptions::default();
                 let canonical_errors = compile_snapshot(&snapshot, &options).unwrap_err();
@@ -2602,7 +2598,7 @@ mod tests {
             let metadata = SourceMetadata::from_sources(
                 &sources,
                 root,
-                std::collections::HashMap::from([
+                AHashMap::from([
                     (root, "main.rue".to_string()),
                     (helper, "helper.rue".to_string()),
                 ]),
@@ -3536,7 +3532,7 @@ mod tests {
             let source_metadata = SourceMetadata::from_sources(
                 &sources,
                 main_id,
-                std::collections::HashMap::from([
+                AHashMap::from([
                     (main_id, "main.rue".to_string()),
                     (left_id, "left.rue".to_string()),
                     (right_id, "right.rue".to_string()),
@@ -3649,7 +3645,7 @@ mod tests {
             let source_metadata = SourceMetadata::from_sources(
                 &sources,
                 FileId::new(1),
-                std::collections::HashMap::from([
+                AHashMap::from([
                     (FileId::new(1), "main.rue".to_string()),
                     (left_id, "left/shared.rue".to_string()),
                     (right_id, "right/shared.rue".to_string()),
@@ -3740,7 +3736,7 @@ mod tests {
         let source_metadata = SourceMetadata::from_sources(
             &sources,
             main_id,
-            std::collections::HashMap::from([
+            AHashMap::from([
                 (main_id, "main.rue".to_string()),
                 (struct_id, "left/clash.rue".to_string()),
                 (enum_id, "right/clash.rue".to_string()),
@@ -3826,12 +3822,8 @@ mod tests {
                 FileId::new(2),
             ),
         ];
-        let metadata = SourceMetadata::from_sources(
-            &sources,
-            FileId::new(1),
-            std::collections::HashMap::new(),
-        )
-        .unwrap();
+        let metadata =
+            SourceMetadata::from_sources(&sources, FileId::new(1), AHashMap::new()).unwrap();
         let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
         let (_, semantic, _) = test_frontend_snapshot(&snapshot, &CompileOptions::default())
             .expect("frontend should compile");

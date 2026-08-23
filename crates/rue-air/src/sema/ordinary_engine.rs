@@ -1546,7 +1546,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         Vec<CompileWarning>,
         Vec<String>,
         AHashSet<Spur>,
-        AHashSet<(StructId, Spur)>,
+        std::collections::HashSet<(StructId, Spur)>,
     )> {
         for (_, ty, _, is_comptime) in &param_info {
             reject_runtime_type_value(*ty, *is_comptime, span)?;
@@ -1635,7 +1635,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         Vec<CompileWarning>,
         Vec<String>,
         AHashSet<Spur>,
-        AHashSet<(StructId, Spur)>,
+        std::collections::HashSet<(StructId, Spur)>,
     )> {
         let symbol = self.storage.body_interner().get_or_intern(full_name);
         let identity = crate::FunctionInstanceKey::Definition(
@@ -1691,7 +1691,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         Vec<CompileWarning>,
         Vec<String>,
         AHashSet<Spur>,
-        AHashSet<(StructId, Spur)>,
+        std::collections::HashSet<(StructId, Spur)>,
     )> {
         for (_, ty, _, is_comptime) in &resolved_params {
             reject_runtime_type_value(*ty, *is_comptime, span)?;
@@ -1782,7 +1782,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         Vec<CompileWarning>,
         Vec<String>,
         AHashSet<Spur>,
-        AHashSet<(StructId, Spur)>,
+        std::collections::HashSet<(StructId, Spur)>,
     )> {
         let self_name = self.storage.body_interner().get_or_intern("self");
         let params = [(self_name, struct_type, RirParamMode::Normal, false)];
@@ -1873,7 +1873,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         Vec<String>,
         Vec<crate::LocalAtomRecord<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
         AHashSet<Spur>,
-        AHashSet<(StructId, Spur)>,
+        std::collections::HashSet<(StructId, Spur)>,
     )> {
         self.analyze_function_internal(
             infer_ctx,
@@ -1906,7 +1906,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         Vec<String>,
         Vec<crate::LocalAtomRecord<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
         AHashSet<Spur>,
-        AHashSet<(StructId, Spur)>,
+        std::collections::HashSet<(StructId, Spur)>,
     )> {
         self.analyze_function_internal(
             infer_ctx,
@@ -1943,7 +1943,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         Vec<String>,
         Vec<crate::LocalAtomRecord<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
         AHashSet<Spur>,
-        AHashSet<(StructId, Spur)>,
+        std::collections::HashSet<(StructId, Spur)>,
     )> {
         let expression_setup_started = Instant::now();
         let mut air = Air::new(return_type);
@@ -2133,7 +2133,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             comptime_type_vars,
             comptime_value_vars,
             referenced_functions: AHashSet::new(),
-            referenced_methods: AHashSet::new(),
+            referenced_methods: std::collections::HashSet::new(),
             byref_arg_root: None,
             call_loaned_roots: Vec::new(),
             in_loop_move_recheck: false,

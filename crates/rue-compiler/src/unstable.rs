@@ -4,6 +4,9 @@
 //! policy. These owned snapshots and opaque session products cannot be
 //! installed into a session or used as query keys.
 
+#[cfg(test)]
+use ahash::AHashMap;
+use ahash::AHashSet;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -905,7 +908,7 @@ impl crate::CompilerSession {
         let program = self.published_owner().cloned().ok_or_else(|| {
             invalid_input("presentation requires a published source revision".into())
         })?;
-        let mut seen = std::collections::HashSet::with_capacity(request.file_order.len());
+        let mut seen = AHashSet::with_capacity(request.file_order.len());
         for file_id in request.file_order {
             if !seen.insert(*file_id) {
                 return Err(invalid_input(format!(
@@ -1140,21 +1143,19 @@ mod codegen_unit_tests {
     use super::*;
 
     fn trusted_accessor_snapshot(root: &str, module: &str) -> crate::SourceSnapshot {
-        use std::collections::{HashMap, HashSet};
-
         let root_file = crate::FileId::new(1);
         let module_file = crate::FileId::new(2);
         let metadata = crate::SourceMetadata::new_with_trusted_standard_library(
             root_file,
-            HashMap::from([
+            AHashMap::from([
                 (root_file, "/project/main.rue".to_owned()),
                 (module_file, "/project/std/bridge.rue".to_owned()),
             ]),
-            HashMap::from([
+            AHashMap::from([
                 (root_file, "main.rue".to_owned()),
                 (module_file, "\0rue-std/bridge.rue".to_owned()),
             ]),
-            HashSet::from([module_file]),
+            AHashSet::from([module_file]),
         )
         .expect("trusted accessor fixture metadata is valid");
         crate::SourceSnapshot::new(

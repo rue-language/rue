@@ -20,10 +20,11 @@
 
 #[cfg(test)]
 use std::cell::Cell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::iter::Take;
 use std::ops::Deref;
 
+use ahash::{AHashMap, AHashSet};
 use fixedbitset::FixedBitSet;
 
 use crate::index_map::IndexMap;
@@ -174,7 +175,7 @@ pub trait LivenessAdapter {
         &self,
         idx: usize,
         inst: &Self::Inst,
-        label_to_idx: &HashMap<LabelId, usize>,
+        label_to_idx: &AHashMap<LabelId, usize>,
     ) -> SuccessorList;
 
     /// Return virtual registers read by `inst`.
@@ -274,7 +275,7 @@ pub fn fallthrough_successor(idx: usize, num_insts: usize) -> SuccessorList {
 }
 
 /// Successor list for an unconditional branch to `label`.
-pub fn branch_successor(label: LabelId, label_to_idx: &HashMap<LabelId, usize>) -> SuccessorList {
+pub fn branch_successor(label: LabelId, label_to_idx: &AHashMap<LabelId, usize>) -> SuccessorList {
     label_to_idx.get(&label).copied().into_iter().collect()
 }
 
@@ -283,7 +284,7 @@ pub fn branch_successor(label: LabelId, label_to_idx: &HashMap<LabelId, usize>) 
 pub fn conditional_successors(
     idx: usize,
     label: LabelId,
-    label_to_idx: &HashMap<LabelId, usize>,
+    label_to_idx: &AHashMap<LabelId, usize>,
     num_insts: usize,
 ) -> SuccessorList {
     let mut succs = SuccessorList::new();
@@ -329,7 +330,7 @@ pub fn analyze<I, R>(
     vreg_count: u32,
     vreg_classes: VRegClasses,
     get_label: impl Fn(&I) -> Option<LabelId>,
-    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> SuccessorList,
+    get_successors: impl Fn(usize, &I, &AHashMap<LabelId, usize>) -> SuccessorList,
     get_uses: impl Fn(&I) -> VRegList,
     get_defs: impl Fn(&I) -> VRegList,
     get_clobbers: impl Fn(&I) -> Vec<R>,
@@ -361,7 +362,7 @@ pub fn analyze_with_debug<I, R>(
     vreg_count: u32,
     vreg_classes: VRegClasses,
     get_label: impl Fn(&I) -> Option<LabelId>,
-    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> SuccessorList,
+    get_successors: impl Fn(usize, &I, &AHashMap<LabelId, usize>) -> SuccessorList,
     get_uses: impl Fn(&I) -> VRegList,
     get_defs: impl Fn(&I) -> VRegList,
     get_clobbers: impl Fn(&I) -> Vec<R>,
@@ -394,7 +395,7 @@ fn analyze_inner<I, R>(
     vreg_count: u32,
     vreg_classes: VRegClasses,
     get_label: impl Fn(&I) -> Option<LabelId>,
-    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> SuccessorList,
+    get_successors: impl Fn(usize, &I, &AHashMap<LabelId, usize>) -> SuccessorList,
     get_uses: impl Fn(&I) -> VRegList,
     get_defs: impl Fn(&I) -> VRegList,
     get_clobbers: impl Fn(&I) -> Vec<R>,
@@ -481,7 +482,7 @@ where
     );
 
     let debug = collect_debug.then(|| {
-        let bitset_to_hashset = |bs: &FixedBitSet| -> std::collections::HashSet<VReg> {
+        let bitset_to_hashset = |bs: &FixedBitSet| -> AHashSet<VReg> {
             bs.ones().map(|idx| VReg::new(idx as u32)).collect()
         };
         let instruction_liveness = (0..num_insts)
@@ -524,7 +525,7 @@ pub fn analyze_debug<I, R>(
     vreg_count: u32,
     vreg_classes: VRegClasses,
     get_label: impl Fn(&I) -> Option<LabelId>,
-    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> SuccessorList,
+    get_successors: impl Fn(usize, &I, &AHashMap<LabelId, usize>) -> SuccessorList,
     get_uses: impl Fn(&I) -> VRegList,
     get_defs: impl Fn(&I) -> VRegList,
 ) -> LivenessDebugInfo
@@ -553,8 +554,8 @@ where
 fn build_label_map<I>(
     instructions: &[I],
     get_label: impl Fn(&I) -> Option<LabelId>,
-) -> HashMap<LabelId, usize> {
-    let mut label_to_idx = HashMap::new();
+) -> AHashMap<LabelId, usize> {
+    let mut label_to_idx = AHashMap::new();
     for (idx, inst) in instructions.iter().enumerate() {
         if let Some(label) = get_label(inst) {
             label_to_idx.insert(label, idx);
@@ -566,8 +567,8 @@ fn build_label_map<I>(
 /// Build successor lists for each instruction.
 fn build_successor_lists<I>(
     instructions: &[I],
-    label_to_idx: &HashMap<LabelId, usize>,
-    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> SuccessorList,
+    label_to_idx: &AHashMap<LabelId, usize>,
+    get_successors: impl Fn(usize, &I, &AHashMap<LabelId, usize>) -> SuccessorList,
 ) -> Vec<SuccessorList> {
     instructions
         .iter()
@@ -950,7 +951,7 @@ where
 pub fn analyze_loops<I>(
     instructions: &[I],
     get_label: impl Fn(&I) -> Option<LabelId>,
-    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> SuccessorList,
+    get_successors: impl Fn(usize, &I, &AHashMap<LabelId, usize>) -> SuccessorList,
 ) -> LoopInfo {
     let num_insts = instructions.len();
 
@@ -1010,7 +1011,7 @@ mod tests {
     fn test_get_successors(
         idx: usize,
         inst: &TestInst,
-        label_to_idx: &HashMap<LabelId, usize>,
+        label_to_idx: &AHashMap<LabelId, usize>,
         num_insts: usize,
     ) -> SuccessorList {
         match inst {

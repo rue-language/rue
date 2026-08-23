@@ -384,7 +384,7 @@ pub struct ProviderOrdinaryBody<K, M> {
     pub warnings: Vec<rue_error::CompileWarning>,
     pub strings: Vec<String>,
     pub referenced_functions: AHashSet<Spur>,
-    pub referenced_methods: AHashSet<(StructId, Spur)>,
+    pub referenced_methods: std::collections::HashSet<(StructId, Spur)>,
     pub referenced_definitions: Vec<K>,
     pub referenced_values: Vec<K>,
     pub referenced_specializations:

@@ -6,10 +6,11 @@
 //! helps, and suggestions are intentionally not part of this parser policy's
 //! exact key.
 
-use std::collections::{HashMap, hash_map::RandomState};
+use std::collections::hash_map::RandomState;
 use std::fmt::{self, Write as _};
 use std::hash::{BuildHasher, Hash, Hasher};
 
+use ahash::AHashMap;
 use rue_error::{CompileError, ErrorKind};
 
 use crate::PARSER_DIAGNOSTIC_BUDGET;
@@ -45,7 +46,7 @@ fn fingerprint(state: &RandomState, error: &CompileError) -> u64 {
 pub(crate) struct ParserDiagnostics {
     retained: Vec<CompileError>,
     fingerprint_state: RandomState,
-    seen: HashMap<u64, Vec<usize>>,
+    seen: AHashMap<u64, Vec<usize>>,
     last_retained: Option<usize>,
     last_unretained: Option<CompileError>,
     summary_span: Option<rue_span::Span>,

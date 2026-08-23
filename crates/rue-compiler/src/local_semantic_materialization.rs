@@ -11,7 +11,10 @@
 use std::hash::Hash;
 use std::sync::Arc;
 
-use ahash::AHashSet;
+// Request-scoped selection maps keyed by stable identities. Typed equality
+// stays authoritative, so the hasher is only a bucket selector; fact selection
+// rebuilds these for every body on the fresh-compile path.
+use ahash::{AHashMap, AHashSet};
 
 use crate::durable_semantics::{
     DurableAnonymousNominal, DurableAnonymousNominalShape, DurableDeclarationPayload,
@@ -40,14 +43,14 @@ pub(crate) struct LocalFactSelectionIndexWork {
 /// cloned into each exact CFG memo key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SharedDeclarationFactIndex {
-    declarations: std::collections::HashMap<StableDefinitionKey, usize>,
+    declarations: AHashMap<StableDefinitionKey, usize>,
     destructors: Vec<Option<usize>>,
-    slice_sources: std::collections::HashMap<Arc<str>, crate::TypeInstanceKey>,
+    slice_sources: AHashMap<Arc<str>, crate::TypeInstanceKey>,
 }
 
 impl SharedDeclarationFactIndex {
     pub(crate) fn new(declarations: &[DurableDeclarationSemantic]) -> Self {
-        let mut declaration_index = std::collections::HashMap::with_capacity(declarations.len());
+        let mut declaration_index = AHashMap::with_capacity(declarations.len());
         let mut destructors = vec![None; declarations.len()];
         let named_types = declarations
             .iter()
@@ -62,8 +65,8 @@ impl SharedDeclarationFactIndex {
                     index,
                 )
             })
-            .collect::<std::collections::HashMap<_, _>>();
-        let mut slice_sources = std::collections::HashMap::new();
+            .collect::<AHashMap<_, _>>();
+        let mut slice_sources = AHashMap::new();
         let mut work = LocalFactSelectionIndexWork::default();
         for (index, declaration) in declarations.iter().enumerate() {
             match &declaration.payload {
@@ -132,10 +135,7 @@ impl SharedDeclarationFactIndex {
 pub(crate) struct LocalFactSelectionIndex<'facts> {
     declarations: &'facts [DurableDeclarationSemantic],
     shared: &'facts SharedDeclarationFactIndex,
-    anonymous: std::collections::HashMap<
-        &'facts crate::AnonymousNominalKey,
-        &'facts DurableAnonymousNominal,
-    >,
+    anonymous: AHashMap<&'facts crate::AnonymousNominalKey, &'facts DurableAnonymousNominal>,
 }
 
 impl<'facts> LocalFactSelectionIndex<'facts> {
@@ -145,7 +145,7 @@ impl<'facts> LocalFactSelectionIndex<'facts> {
         anonymous_nominals: &'facts [DurableAnonymousNominal],
     ) -> (Self, LocalFactSelectionIndexWork) {
         let mut work = LocalFactSelectionIndexWork::default();
-        let mut anonymous = std::collections::HashMap::with_capacity(anonymous_nominals.len());
+        let mut anonymous = AHashMap::with_capacity(anonymous_nominals.len());
         for nominal in anonymous_nominals {
             work.anonymous_nominals_scanned += 1;
             anonymous.insert(&nominal.identity, nominal);
@@ -276,7 +276,7 @@ impl RetainedCharge for LocalMaterializationIndexes {
 
 fn collect_slice_sources(
     ty: &crate::durable_semantics::DurableType,
-    output: &mut std::collections::HashMap<Arc<str>, crate::TypeInstanceKey>,
+    output: &mut AHashMap<Arc<str>, crate::TypeInstanceKey>,
     work: &mut LocalFactSelectionIndexWork,
 ) {
     use rue_air::SemanticImportType as T;
@@ -373,7 +373,7 @@ pub(crate) struct LocalMaterializationFactInterner {
     /// Indexes keyed by the identity of the two interned slices they are
     /// derived from. Once those slices are shared, pointer identity is an
     /// exact key: equal content is the same allocation.
-    indexes: std::collections::HashMap<(usize, usize), Arc<LocalMaterializationIndexes>>,
+    indexes: AHashMap<(usize, usize), Arc<LocalMaterializationIndexes>>,
     /// Closures selected, slices newly allocated, and slice requests served
     /// from a slice an earlier selection already built.
     pub(crate) selections: usize,
@@ -387,13 +387,13 @@ pub(crate) struct LocalMaterializationFactInterner {
 /// comparison, so a hash collision costs one comparison rather than sharing
 /// two slices that merely hash alike.
 struct SliceInterner<T> {
-    buckets: std::collections::HashMap<u64, Vec<Arc<[T]>>>,
+    buckets: AHashMap<u64, Vec<Arc<[T]>>>,
 }
 
 impl<T> Default for SliceInterner<T> {
     fn default() -> Self {
         Self {
-            buckets: std::collections::HashMap::new(),
+            buckets: AHashMap::new(),
         }
     }
 }
@@ -501,7 +501,7 @@ impl LocalMaterializationFacts {
     pub(crate) fn union<'a>(facts: impl IntoIterator<Item = &'a Self>) -> Self {
         fn extend_unique<'a, T: Clone + Eq + Hash>(
             destination: &mut Vec<T>,
-            seen: &mut std::collections::HashSet<&'a T>,
+            seen: &mut AHashSet<&'a T>,
             source: &'a [T],
         ) {
             for value in source {
@@ -512,19 +512,19 @@ impl LocalMaterializationFacts {
         }
 
         let mut declarations = Vec::new();
-        let mut seen_declarations = std::collections::HashSet::new();
+        let mut seen_declarations = AHashSet::new();
         let mut anonymous_nominals = Vec::new();
-        let mut seen_anonymous_nominals = std::collections::HashSet::new();
+        let mut seen_anonymous_nominals = AHashSet::new();
         let mut callables = Vec::new();
-        let mut seen_callables = std::collections::HashSet::new();
+        let mut seen_callables = AHashSet::new();
         let mut nominal_metadata = Vec::new();
-        let mut seen_nominal_metadata = std::collections::HashSet::new();
+        let mut seen_nominal_metadata = AHashSet::new();
         let mut modules = Vec::new();
-        let mut seen_modules = std::collections::HashSet::new();
+        let mut seen_modules = AHashSet::new();
         let mut builtin_nominals = Vec::new();
-        let mut seen_builtin_nominals = std::collections::HashSet::new();
+        let mut seen_builtin_nominals = AHashSet::new();
         let mut required_types = Vec::new();
-        let mut seen_required_types = std::collections::HashSet::new();
+        let mut seen_required_types = AHashSet::new();
         for facts in facts {
             extend_unique(
                 &mut declarations,

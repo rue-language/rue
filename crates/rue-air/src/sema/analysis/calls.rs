@@ -10,6 +10,7 @@ use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine
 use super::*;
 use crate::sema::NamedConstDependencyTargetEvent;
 use crate::sema::info::FunctionCallInfo;
+use ahash::AHashMap;
 
 fn module_display_name(path: &str) -> &str {
     std::path::Path::new(path)

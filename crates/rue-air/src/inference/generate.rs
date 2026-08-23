@@ -18,7 +18,6 @@ use crate::types::{ModuleId, StructId, TypeKind};
 use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, RepeatCount, Rir, RirTypeSyntaxNode, RirTypeSyntaxRef};
 use rue_span::{FileId, Span};
-use std::collections::HashMap;
 
 use ahash::AHashMap;
 use std::rc::Rc;
@@ -110,7 +109,7 @@ pub struct MethodSig {
 ///
 /// Constraint generation consults the thirteen declaration-universe families
 /// purely by key. Rather than eagerly project the whole universe into owned
-/// `HashMap`s before any body is analyzed (the O(universe)-per-body term
+/// `AHashMap`s before any body is analyzed (the O(universe)-per-body term
 /// RUE-1083 removes), the production path implements this trait over the frozen
 /// declaration state and materializes each consulted signature/type on first
 /// lookup. Every method answers exactly the same value the eager projection
@@ -238,9 +237,9 @@ pub struct ConstraintGenerator<'a> {
     /// decides the pool indices those array types receive, and those indices
     /// are later a sort key (`sort_unstable_by_key(Type::as_u32)`). The order
     /// is observable, so the hasher is not a free choice here.
-    expr_types: HashMap<InstRef, InferType>,
+    expr_types: std::collections::HashMap<InstRef, InferType>,
     /// Whether each generated expression reaches its next evaluation point.
-    expr_continues: HashMap<InstRef, bool>,
+    expr_continues: AHashMap<InstRef, bool>,
     /// Function signatures (for call type checking). `None` when the generator
     /// is driven by a lazy provider (`lazy`), which materializes signatures on
     /// demand; unit tests still supply an eager map.
@@ -414,8 +413,8 @@ impl<'a> ConstraintGenerator<'a> {
             interner,
             type_vars: TypeVarAllocator::new(),
             constraints: Vec::with_capacity(rir_capacity),
-            expr_types: HashMap::new(),
-            expr_continues: HashMap::new(),
+            expr_types: std::collections::HashMap::new(),
+            expr_continues: AHashMap::new(),
             functions: Some(functions),
             builtin_structs: Some(builtin_structs),
             structs_by_file_name: None,
@@ -468,8 +467,8 @@ impl<'a> ConstraintGenerator<'a> {
             interner,
             type_vars: TypeVarAllocator::new(),
             constraints: Vec::with_capacity(rir_capacity),
-            expr_types: HashMap::new(),
-            expr_continues: HashMap::new(),
+            expr_types: std::collections::HashMap::new(),
+            expr_continues: AHashMap::new(),
             functions: None,
             builtin_structs: None,
             structs_by_file_name: None,
@@ -957,7 +956,7 @@ impl<'a> ConstraintGenerator<'a> {
     }
 
     /// Get the expression type mapping.
-    pub fn expr_types(&self) -> &HashMap<InstRef, InferType> {
+    pub fn expr_types(&self) -> &std::collections::HashMap<InstRef, InferType> {
         &self.expr_types
     }
 
@@ -973,8 +972,8 @@ impl<'a> ConstraintGenerator<'a> {
         Vec<TypeVarId>,
         Vec<TypeVarId>,
         Type,
-        HashMap<InstRef, InferType>,
-        HashMap<InstRef, bool>,
+        std::collections::HashMap<InstRef, InferType>,
+        AHashMap<InstRef, bool>,
         u32,
     ) {
         (

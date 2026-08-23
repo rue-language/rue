@@ -408,7 +408,7 @@ fn snapshot_matches_source_attempt(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use ahash::AHashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use rue_span::FileId;
@@ -460,8 +460,8 @@ mod tests {
         SourceSnapshot::new(
             SourceMetadata::new(
                 root,
-                HashMap::from([(root, "/p/main.rue".to_owned())]),
-                HashMap::from([(root, "main.rue".to_owned())]),
+                AHashMap::from([(root, "/p/main.rue".to_owned())]),
+                AHashMap::from([(root, "main.rue".to_owned())]),
             )
             .unwrap(),
             vec![(root, Arc::new(text.to_owned()))],
@@ -564,11 +564,11 @@ mod tests {
         let other = FileId::new(2);
         let metadata = SourceMetadata::new(
             root,
-            HashMap::from([
+            AHashMap::from([
                 (root, "/p/main.rue".to_owned()),
                 (other, "/p/other.rue".to_owned()),
             ]),
-            HashMap::from([
+            AHashMap::from([
                 (root, "main.rue".to_owned()),
                 (other, "other.rue".to_owned()),
             ]),

@@ -6,8 +6,7 @@
 //! session. Whole-program presentation composes these same artifacts rather
 //! than invoking a second module-wide lowering authority.
 
-use std::collections::{HashMap, HashSet};
-
+use ahash::{AHashMap, AHashSet};
 use lasso::{Spur, ThreadedRodeo};
 
 use rue_parser::ast::{ConstDecl, DropFn, ExternBlock, ExternFn};
@@ -78,7 +77,7 @@ pub struct AstGen<'a> {
     /// minting a second, drift-prone anchor from its own `structural_path`; a
     /// missing or kind-mismatched lookup fails closed as an internal error.
     anonymous_anchors:
-        HashMap<rue_span::Span, (crate::AnonymousTypeSiteKind, crate::RirStructuralAnchor)>,
+        AHashMap<rue_span::Span, (crate::AnonymousTypeSiteKind, crate::RirStructuralAnchor)>,
     authoritative_anonymous_anchors: bool,
     /// Nesting depth of semantic producer roots. A transported authoritative
     /// table belongs to the outer exact declaration only; method bodies nested
@@ -163,7 +162,7 @@ impl<'a> AstGen<'a> {
             for_counter: 0,
             compound_counter: 0,
             structural_path: Vec::new(),
-            anonymous_anchors: HashMap::new(),
+            anonymous_anchors: AHashMap::new(),
             authoritative_anonymous_anchors: false,
             producer_root_depth: 0,
             normalize_symbol: Box::new(normalize_symbol),
@@ -192,7 +191,7 @@ impl<'a> AstGen<'a> {
         >,
     ) -> Result<(), crate::RirPayloadBuildError> {
         self.authoritative_anonymous_anchors = true;
-        let mut seen_anchors = HashSet::new();
+        let mut seen_anchors = AHashSet::new();
         for (span, kind, anchor) in anchors {
             if self.anonymous_anchors.contains_key(&span) || !seen_anchors.insert(anchor.clone()) {
                 return Err(crate::RirPayloadBuildError::InvalidBuilderInput {
@@ -3700,9 +3699,9 @@ mod tests {
         }
     }
 
-    fn inst_kind_counts(source: &str) -> std::collections::HashMap<&'static str, usize> {
+    fn inst_kind_counts(source: &str) -> AHashMap<&'static str, usize> {
         let (rir, _) = gen_rir(source);
-        let mut counts = std::collections::HashMap::new();
+        let mut counts = AHashMap::new();
         for (_, instruction) in rir.iter() {
             let kind = match &instruction.data {
                 InstData::Call { .. } => "call",

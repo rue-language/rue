@@ -1480,6 +1480,7 @@ mod tests {
     };
     use crate::reg_class::RegClass;
     use crate::regalloc::{Allocation, RegAllocBackend, RematerializeOp};
+    use ahash::AHashSet;
 
     #[test]
     fn the_register_file_is_general_purpose_only() {
@@ -2457,7 +2458,7 @@ mod tests {
         assert_eq!(num_spills, 5);
 
         // Collect all unique stack offsets used in loads/stores
-        let mut offsets = std::collections::HashSet::new();
+        let mut offsets = AHashSet::new();
         for inst in mir.instructions() {
             match inst {
                 X86Inst::MovMR {

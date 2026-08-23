@@ -25,8 +25,7 @@
 //! any realistic function. The separation is handled automatically by the
 //! respective methods.
 
-use std::collections::HashMap;
-
+use ahash::AHashMap;
 use lasso::ThreadedRodeo;
 use rue_air::{FrozenTypeInternPool, TypeKind};
 use rue_cfg::{BlockId, Cfg, CfgValue, Type, ValidatedCfg};
@@ -87,9 +86,9 @@ pub struct CfgLower<'a> {
     symbols: crate::MachineSymbolResolver<'a>,
     mir: X86Mir,
     /// Maps CFG values to vregs
-    value_map: HashMap<CfgValue, VReg>,
+    value_map: AHashMap<CfgValue, VReg>,
     /// Maps block parameters to vregs (block_id, param_index) -> vreg
-    block_param_vregs: HashMap<(BlockId, u32), VReg>,
+    block_param_vregs: AHashMap<(BlockId, u32), VReg>,
     /// Next inline label ID for generating unique labels.
     ///
     /// Inline labels (for overflow checks, bounds checks, etc.) use IDs from
@@ -98,17 +97,17 @@ pub struct CfgLower<'a> {
     /// Function name (needed to detect main function)
     fn_name: &'a str,
     /// Maps StructInit CFG values to their field vregs
-    struct_slot_vregs: HashMap<CfgValue, Vec<VReg>>,
+    struct_slot_vregs: AHashMap<CfgValue, Vec<VReg>>,
     /// Maps by-reference parameter indices to their pointer vregs.
     /// For by-ref params, the slot contains a pointer to the caller's memory.
     /// This map stores the vreg holding that pointer so Store can use it.
-    by_ref_param_ptrs: HashMap<u32, VReg>,
+    by_ref_param_ptrs: AHashMap<u32, VReg>,
     /// Maps register-only by-value parameter indices (RUE-1170) to the vreg
     /// their entry copy defined. These vregs are read-only for the rest of
     /// the function — every consumer copies before mutating, the same
     /// invariant that lets CSE key repeated `Param` reads (RUE-914) — so a
     /// single vreg serves every read.
-    param_reg_vregs: HashMap<u32, VReg>,
+    param_reg_vregs: AHashMap<u32, VReg>,
 }
 
 impl crate::call_plan::CallMaterializer for CfgLower<'_> {
@@ -250,7 +249,7 @@ impl<'a> CfgLower<'a> {
     ) -> Self {
         let num_params = cfg.num_params();
 
-        // Pre-calculate capacity hints to reduce HashMap reallocations
+        // Pre-calculate capacity hints to reduce AHashMap reallocations
         let num_values = cfg.value_count();
         let num_blocks = cfg.blocks().len();
         // Estimate ~4 block params per block on average
@@ -265,13 +264,13 @@ impl<'a> CfgLower<'a> {
             interner,
             symbols,
             mir: X86Mir::new(),
-            value_map: HashMap::with_capacity(num_values),
-            block_param_vregs: HashMap::with_capacity(estimated_block_params),
+            value_map: AHashMap::with_capacity(num_values),
+            block_param_vregs: AHashMap::with_capacity(estimated_block_params),
             next_label: 0,
             fn_name: cfg.fn_name(),
-            struct_slot_vregs: HashMap::with_capacity(estimated_struct_inits),
-            by_ref_param_ptrs: HashMap::with_capacity(estimated_by_ref_params),
-            param_reg_vregs: HashMap::new(),
+            struct_slot_vregs: AHashMap::with_capacity(estimated_struct_inits),
+            by_ref_param_ptrs: AHashMap::with_capacity(estimated_by_ref_params),
+            param_reg_vregs: AHashMap::new(),
         }
     }
 
@@ -3154,7 +3153,7 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
     fn ctx(&self) -> &crate::cfg_lower::CfgLowerContext<'_> {
         &self.ctx
     }
-    fn slot_cache(&mut self) -> &mut std::collections::HashMap<CfgValue, Vec<VReg>> {
+    fn slot_cache(&mut self) -> &mut AHashMap<CfgValue, Vec<VReg>> {
         &mut self.struct_slot_vregs
     }
     fn alloc_vreg(&mut self) -> VReg {

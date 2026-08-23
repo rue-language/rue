@@ -1,5 +1,6 @@
 use crate::queries::CompileState;
 use crate::*;
+use ahash::AHashMap;
 
 // Test-only projections. Production consumers query CompilerSession artifacts.
 
@@ -185,7 +186,7 @@ pub(crate) fn test_compile_sources(
         .first()
         .map(|source| source.file_id)
         .unwrap_or(FileId::DEFAULT);
-    let metadata = SourceMetadata::from_sources(sources, root, std::collections::HashMap::new())
+    let metadata = SourceMetadata::from_sources(sources, root, AHashMap::new())
         .map_err(CompileErrors::from)?;
     test_compile_sources_with_metadata(sources, &metadata, options)
 }
@@ -474,8 +475,7 @@ fn invalid_fixture(message: &str) -> CompileErrors {
 /// at most once. Production body analysis consumes the durable facts directly.
 #[derive(Default)]
 pub(crate) struct ProviderMaterialization {
-    nominals:
-        std::collections::HashMap<crate::StableDefinitionKey, crate::DurableDeclarationPayload>,
+    nominals: AHashMap<crate::StableDefinitionKey, crate::DurableDeclarationPayload>,
 }
 
 impl ProviderMaterialization {

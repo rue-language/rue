@@ -24,6 +24,7 @@ use std::fmt;
 const _: () = assert!(std::mem::size_of::<CfgInst>() <= 48);
 const _: () = assert!(std::mem::size_of::<CfgInstData>() <= 32);
 
+use ahash::AHashSet;
 use lasso::{Key, Spur, ThreadedRodeo};
 use rue_air::{EnumId, ParamSlotModes, StructId, Type};
 use rue_span::Span;
@@ -746,7 +747,7 @@ pub struct Cfg {
     /// `Const` and the constant is dereferenced as an address — the verified
     /// RUE-521 O1+ segfault. By-ref call arguments are the analogous
     /// per-instruction escape, handled directly in constopt's scan.
-    address_taken_slots: std::collections::HashSet<u32>,
+    address_taken_slots: AHashSet<u32>,
     /// Parameter ABI slots whose ADDRESS escapes through an address-taking
     /// intrinsic (`@raw` / `@raw_mut` / `@field_ptr` applied to a parameter),
     /// recorded at construction like `address_taken_slots`. A by-value
@@ -755,7 +756,7 @@ pub struct Cfg {
     /// from the parameter's storage can mutate it (`@ptr_write`), so reads
     /// on either side of such a write are NOT interchangeable. Passes that
     /// treat parameter reads as pure must consult this set.
-    address_taken_params: std::collections::HashSet<u32>,
+    address_taken_params: AHashSet<u32>,
     /// Grouped per-source-parameter ABI descriptors (ADR-0052 phase 5.8,
     /// RUE-1005), derived at construction from the AIR parameter types and the
     /// per-slot by-reference vector. Empty for a directly constructed CFG
@@ -1325,8 +1326,8 @@ impl Cfg {
             num_params,
             fn_name,
             param_modes: param_modes.into(),
-            address_taken_slots: std::collections::HashSet::new(),
-            address_taken_params: std::collections::HashSet::new(),
+            address_taken_slots: AHashSet::new(),
+            address_taken_params: AHashSet::new(),
             source_param_abi: Vec::new(),
             capacity_exceeded: None,
         }

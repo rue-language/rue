@@ -1,11 +1,11 @@
 //! Canonical, provenance-safe lowering from parsed modules to RIR.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::Instant;
 
+use ahash::AHashMap;
 use lasso::Key;
 use rue_error::{CompileError, ErrorKind};
 use rue_rir::{
@@ -77,7 +77,7 @@ pub(crate) struct CandidateModuleRirOutput {
     work: CanonicalRirWork,
     #[cfg(test)]
     declaration_roots:
-        HashMap<crate::declaration_candidate::DeclarationCandidateKey, ModuleDeclarationRoot>,
+        AHashMap<crate::declaration_candidate::DeclarationCandidateKey, ModuleDeclarationRoot>,
 }
 
 #[cfg(test)]
@@ -939,7 +939,7 @@ fn candidate_root_index(
     symbols: &SemanticSymbolUniverse,
     item_roots: &[rue_rir::AstGenItemRoots],
 ) -> Result<
-    HashMap<crate::declaration_candidate::DeclarationCandidateKey, ModuleDeclarationRoot>,
+    AHashMap<crate::declaration_candidate::DeclarationCandidateKey, ModuleDeclarationRoot>,
     &'static str,
 > {
     use crate::declaration_candidate::DeclarationCandidateCategory as Category;
@@ -1010,7 +1010,7 @@ fn candidate_root_index(
         return Err("AstGen emitted instructions outside every declaration interval");
     }
 
-    let mut index = HashMap::with_capacity(keys.len());
+    let mut index = AHashMap::with_capacity(keys.len());
     for (key, emitted) in keys.into_iter().zip(emitted) {
         let instruction = rir.get(emitted.declaration);
         if instruction.span.file_id != module.file_id() {
@@ -1168,7 +1168,7 @@ fn project_candidate_span(
 
 pub(crate) fn compose_module_rir_from_candidate_artifacts(
     module: std::sync::Arc<crate::parsed_modules::ParsedModule>,
-    artifacts: &HashMap<
+    artifacts: &AHashMap<
         crate::declaration_candidate::DeclarationCandidateKey,
         Arc<DeclarationBodyPlanArtifacts>,
     >,
@@ -1182,7 +1182,7 @@ pub(crate) fn compose_module_rir_from_candidate_artifacts(
     let symbols = SemanticSymbolUniverse::from_modules(std::slice::from_ref(&module));
     let mut editor = RirEditor::new();
     #[cfg(test)]
-    let mut declaration_roots = HashMap::with_capacity(artifacts.len());
+    let mut declaration_roots = AHashMap::with_capacity(artifacts.len());
     let mut work = CanonicalRirWork {
         modules_visited: 1,
         items_visited: module.definitions().rir_recipes().len(),
@@ -1611,7 +1611,6 @@ pub(crate) fn project_candidate_module_rirs_with_work(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     use rue_rir::RirPrinter;
@@ -1696,7 +1695,7 @@ extern "C" { fn getpid() -> i32; }
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(&source).unwrap();
         let module = parsed.modules()[0].clone();
         let old = lower_module_rir_with_work(module.clone()).unwrap();
-        let mut artifacts = HashMap::new();
+        let mut artifacts = AHashMap::new();
         let mut categories = Vec::new();
         for key in module.definitions().declaration_keys_in_source_order() {
             categories.push(key.category);
@@ -1758,7 +1757,7 @@ fn target(inout values: [i32; 4]) -> type {
                 let artifact = lower_parsed_declaration_body_plan(&module, key, || Ok(())).unwrap();
                 (key.clone(), Arc::new(artifact))
             })
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let target_key = artifacts
             .keys()
             .find(|key| key.name.as_ref() == "target")
@@ -1823,11 +1822,11 @@ fn target(inout values: [i32; 4]) -> type {
         let physical = entries
             .iter()
             .map(|(id, path, _, _)| (FileId::new(*id), (*path).to_owned()))
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let logical = entries
             .iter()
             .map(|(id, _, logical, _)| (FileId::new(*id), (*logical).to_owned()))
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let metadata = SourceMetadata::new(FileId::new(root), physical, logical).unwrap();
         SourceSnapshot::new(
             metadata,

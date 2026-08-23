@@ -7,7 +7,7 @@
 //! (`provider_body_host`); no whole-program driver lives here.
 
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashSet;
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{

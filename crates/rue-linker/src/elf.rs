@@ -8,8 +8,6 @@
 //! Supports both ELF64 (Linux) and Mach-O 64-bit (macOS) formats.
 //! The format is auto-detected based on magic bytes.
 
-use std::collections::HashMap;
-
 use crate::constants::{
     // Mach-O constants
     ARM64_RELOC_ADDEND,
@@ -82,6 +80,7 @@ use crate::constants::{
     STT_OBJECT,
     STT_SECTION,
 };
+use ahash::AHashMap;
 
 /// Helper to read a u16 from a byte slice at a given offset.
 /// Panics if offset + 2 > slice.len(), so caller must ensure bounds.
@@ -150,7 +149,7 @@ pub struct ObjectFile {
     /// All symbols (both defined and undefined).
     pub symbols: Vec<Symbol>,
     /// Section name to index mapping.
-    pub section_map: HashMap<String, usize>,
+    pub section_map: AHashMap<String, usize>,
     /// The machine architecture this object was compiled for. The linker
     /// validates this against the link target — without it, an "aarch64"
     /// binary could silently embed x86 code (RUE-131 item 10, RUE-36).
@@ -487,7 +486,7 @@ impl ObjectFile {
 
         // Parse load commands to find segments and symbol table
         let mut sections = Vec::new();
-        let mut section_map = HashMap::new();
+        let mut section_map = AHashMap::new();
         let mut symtab_offset = 0usize;
         let mut symtab_count = 0usize;
         let mut strtab_offset = 0usize;
@@ -999,7 +998,7 @@ impl ObjectFile {
             0
         };
         let mut sections = Vec::with_capacity(section_capacity);
-        let mut section_map = HashMap::with_capacity(section_capacity);
+        let mut section_map = AHashMap::with_capacity(section_capacity);
         let mut symtab_idx = None;
         let mut strtab_idx = None;
 
