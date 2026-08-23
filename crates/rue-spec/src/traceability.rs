@@ -879,6 +879,353 @@ fn is_spec_marker(line: &str) -> bool {
         .is_some_and(|body| body.trim_start().starts_with("rule"))
 }
 
+/// A production declaration that must be kept identical between a normative
+/// chapter grammar block and Appendix A.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GrammarSyncMarker {
+    id: String,
+    production: String,
+    role: String,
+    relation: String,
+    symbol: Option<String>,
+}
+
+/// Parse the HTML-comment marker used for grammar consistency checks.
+///
+/// The marker is deliberately an HTML comment rather than a Zola shortcode:
+/// it is metadata for the traceability gate and must not become a rendered
+/// documentation feature. Its small, structured form also makes removing a
+/// mirrored production fail closed instead of relying on a substring search.
+fn parse_grammar_sync_marker(line: &str) -> Result<Option<GrammarSyncMarker>, String> {
+    let line = line.trim();
+    let Some(body) = line
+        .strip_prefix("<!--")
+        .and_then(|body| body.strip_suffix("-->"))
+        .map(str::trim)
+    else {
+        return Ok(None);
+    };
+    if !body.starts_with("grammar-sync") {
+        return Ok(None);
+    }
+    let body = body
+        .strip_prefix("grammar-sync(")
+        .and_then(|body| body.strip_suffix(')'))
+        .ok_or_else(|| "malformed grammar-sync marker".to_string())?;
+
+    let mut id = None;
+    let mut production = None;
+    let mut role = None;
+    let mut relation = None;
+    let mut symbol = None;
+    for argument in body.split(',') {
+        let (name, value) = argument
+            .trim()
+            .split_once('=')
+            .ok_or_else(|| "malformed grammar-sync marker argument".to_string())?;
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .filter(|value| !value.contains('"'))
+            .ok_or_else(|| {
+                format!(
+                    "grammar-sync marker argument `{}` must be a quoted string",
+                    name.trim()
+                )
+            })?
+            .to_string();
+        let slot = match name.trim() {
+            "id" => &mut id,
+            "production" => &mut production,
+            "role" => &mut role,
+            "relation" => &mut relation,
+            "symbol" => &mut symbol,
+            other => return Err(format!("unknown grammar-sync marker argument `{other}`")),
+        };
+        if slot.replace(value).is_some() {
+            return Err(format!(
+                "duplicate grammar-sync marker argument `{}`",
+                name.trim()
+            ));
+        }
+    }
+
+    let id = id.ok_or_else(|| "grammar-sync marker is missing `id`".to_string())?;
+    let valid_id = id.split_once(':').is_some_and(|(section, paragraph)| {
+        section.contains('.')
+            && section
+                .split('.')
+                .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric()))
+            && !paragraph.is_empty()
+            && paragraph.chars().all(|c| c.is_ascii_alphanumeric())
+    });
+    if !valid_id {
+        return Err(format!(
+            "invalid grammar-sync rule id `{id}` (expected X.Y:Z)"
+        ));
+    }
+    let production =
+        production.ok_or_else(|| "grammar-sync marker is missing `production`".to_string())?;
+    if production.is_empty()
+        || !production
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+    {
+        return Err(format!("invalid grammar-sync production `{production}`"));
+    }
+    let role = role.ok_or_else(|| "grammar-sync marker is missing `role`".to_string())?;
+    if !matches!(role.as_str(), "source" | "appendix") {
+        return Err(format!("unknown grammar-sync marker role `{role}`"));
+    }
+    let relation = relation.unwrap_or_else(|| "exact".to_string());
+    if !matches!(relation.as_str(), "exact" | "contains") {
+        return Err(format!("unknown grammar-sync marker relation `{relation}`"));
+    }
+    if relation == "contains" && symbol.is_none() {
+        return Err("grammar-sync `contains` marker is missing `symbol`".to_string());
+    }
+    if relation == "exact" && symbol.is_some() {
+        return Err("grammar-sync `exact` marker cannot specify `symbol`".to_string());
+    }
+    if let Some(symbol) = &symbol
+        && (symbol.is_empty()
+            || !symbol
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_'))
+    {
+        return Err(format!("invalid grammar-sync symbol `{symbol}`"));
+    }
+    Ok(Some(GrammarSyncMarker {
+        id,
+        production,
+        role,
+        relation,
+        symbol,
+    }))
+}
+
+/// Normalize one EBNF production for comparison while preserving its syntax.
+fn normalize_grammar_production(production: &str) -> String {
+    production.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Find a marked production in the next EBNF fence after a marker.
+fn parse_marked_grammar_production(
+    lines: &[&str],
+    marker_index: usize,
+    production: &str,
+    path: &Path,
+) -> Result<String, String> {
+    let mut fence = None;
+    for (index, line) in lines.iter().enumerate().skip(marker_index + 1) {
+        let trimmed = line.trim();
+        if trimmed == "```ebnf" {
+            fence = Some(index);
+            break;
+        }
+        if trimmed.starts_with("```") {
+            return Err(format!(
+                "{}:{}: grammar-sync marker must precede an EBNF block",
+                path.display(),
+                marker_index + 1
+            ));
+        }
+    }
+    let fence = fence.ok_or_else(|| {
+        format!(
+            "{}:{}: grammar-sync marker has no following EBNF block",
+            path.display(),
+            marker_index + 1
+        )
+    })?;
+
+    for (index, line) in lines.iter().enumerate().skip(fence + 1) {
+        let trimmed = line.trim();
+        if trimmed == "```" {
+            break;
+        }
+        let Some((lhs, _)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if lhs.trim() != production {
+            continue;
+        }
+
+        let mut declaration = trimmed.to_string();
+        let mut next_index = index + 1;
+        while !declaration.contains(';') {
+            let next = lines.get(next_index).copied();
+            let Some(next) = next else {
+                break;
+            };
+            declaration.push(' ');
+            declaration.push_str(next.trim());
+            next_index += 1;
+        }
+        if declaration.contains(';') {
+            return Ok(normalize_grammar_production(&declaration));
+        }
+    }
+
+    Err(format!(
+        "{}:{}: grammar-sync production `{production}` is missing from the following EBNF block",
+        path.display(),
+        marker_index + 1
+    ))
+}
+
+#[derive(Debug)]
+struct LocatedGrammarProduction {
+    path: std::path::PathBuf,
+    line: usize,
+    declaration: String,
+}
+
+type GrammarSyncKey = (String, String, String, Option<String>);
+
+fn grammar_sync_key(marker: &GrammarSyncMarker) -> GrammarSyncKey {
+    (
+        marker.id.clone(),
+        marker.production.clone(),
+        marker.relation.clone(),
+        marker.symbol.clone(),
+    )
+}
+
+fn grammar_declaration_contains_symbol(declaration: &str, symbol: &str) -> bool {
+    declaration
+        .split_once('=')
+        .is_some_and(|(_, rhs)| rhs.split_whitespace().any(|token| token == symbol))
+}
+
+/// Verify every marked normative production has an exact Appendix A mirror.
+///
+/// This is intentionally part of the existing traceability gate. A marker in
+/// the normative chapter is an obligation, so deleting the Appendix A marker
+/// or changing either EBNF declaration fails the same canonical check that
+/// already guards spec/test relationships.
+fn validate_grammar_consistency(spec_dir: &Path) -> Result<(), String> {
+    let mut sources: BTreeMap<GrammarSyncKey, Vec<LocatedGrammarProduction>> = BTreeMap::new();
+    let mut appendices: BTreeMap<GrammarSyncKey, Vec<LocatedGrammarProduction>> = BTreeMap::new();
+
+    let md_files = discover_files(spec_dir, "md").map_err(|error| {
+        format!(
+            "failed to discover specification files under {}: {error}",
+            spec_dir.display()
+        )
+    })?;
+    for path in md_files {
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("failed to read spec file {}: {error}", path.display()))?;
+        let lines: Vec<&str> = content.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            let Some(marker) = parse_grammar_sync_marker(line)
+                .map_err(|error| format!("{}:{}: {error}", path.display(), index + 1))?
+            else {
+                continue;
+            };
+            let declaration = if marker.relation == "contains" && marker.role == "source" {
+                String::new()
+            } else {
+                parse_marked_grammar_production(&lines, index, &marker.production, &path)?
+            };
+            let located = LocatedGrammarProduction {
+                path: path.clone(),
+                line: index + 1,
+                declaration,
+            };
+            let key = grammar_sync_key(&marker);
+            match marker.role.as_str() {
+                "source" => sources.entry(key).or_default().push(located),
+                "appendix" => appendices.entry(key).or_default().push(located),
+                _ => unreachable!("parse_grammar_sync_marker validates roles"),
+            }
+        }
+    }
+
+    for (key, source_markers) in &sources {
+        if source_markers.len() != 1 {
+            return Err(format!(
+                "grammar-sync {}:{} requires exactly one source marker, found {}",
+                key.0,
+                key.1,
+                source_markers.len()
+            ));
+        }
+        let source = &source_markers[0];
+        let appendix_markers = appendices.get(key).ok_or_else(|| {
+            format!(
+                "grammar-sync {}:{} has no Appendix A mirror (source at {}:{})",
+                key.0,
+                key.1,
+                source.path.display(),
+                source.line
+            )
+        })?;
+        if appendix_markers.len() != 1 {
+            return Err(format!(
+                "grammar-sync {}:{} requires exactly one Appendix A marker, found {}",
+                key.0,
+                key.1,
+                appendix_markers.len()
+            ));
+        }
+        let appendix = &appendix_markers[0];
+        if !appendix
+            .path
+            .ends_with(Path::new("appendices/A-grammar.md"))
+        {
+            return Err(format!(
+                "grammar-sync {}:{} appendix marker is not in Appendix A ({}:{})",
+                key.0,
+                key.1,
+                appendix.path.display(),
+                appendix.line
+            ));
+        }
+        match key.2.as_str() {
+            "exact" if source.declaration != appendix.declaration => {
+                return Err(format!(
+                    "grammar-sync {}:{} differs between {}:{} and {}:{}\n  source: {}\n  appendix: {}",
+                    key.0,
+                    key.1,
+                    source.path.display(),
+                    source.line,
+                    appendix.path.display(),
+                    appendix.line,
+                    source.declaration,
+                    appendix.declaration
+                ));
+            }
+            "exact" => {}
+            "contains" => {
+                let symbol = key.3.as_deref().expect("contains markers require symbols");
+                if !grammar_declaration_contains_symbol(&appendix.declaration, symbol) {
+                    return Err(format!(
+                        "grammar-sync {}:{} requires Appendix A production `{}` to contain `{symbol}` ({}:{})",
+                        key.0,
+                        key.1,
+                        key.1,
+                        appendix.path.display(),
+                        appendix.line
+                    ));
+                }
+            }
+            _ => unreachable!("parse_grammar_sync_marker validates relations"),
+        }
+    }
+    for key in appendices.keys() {
+        if !sources.contains_key(key) {
+            return Err(format!(
+                "grammar-sync {}:{} has an Appendix A marker without a source marker",
+                key.0, key.1
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Parse spec paragraphs from a markdown file. A rule id that was already
 /// registered (same file or an earlier one) is recorded in `duplicates` —
 /// last-writer-wins insertion silently REPLACED the earlier paragraph before,
@@ -997,6 +1344,8 @@ pub fn parse_spec_paragraphs(
 /// report.print_summary();
 /// ```
 pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> Result<TraceabilityReport, String> {
+    validate_grammar_consistency(spec_dir)?;
+
     // Parse spec paragraphs
     let (paragraphs, duplicate_rule_ids) = parse_spec_paragraphs(spec_dir)?;
 
@@ -1065,6 +1414,118 @@ pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> Result<Traceability
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grammar_sync_markers_parse_and_reject_unknown_roles() {
+        let marker = parse_grammar_sync_marker(
+            "<!-- grammar-sync(id=\"2.1:26\", production=\"byte_literal\", role=\"source\") -->",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(marker.id, "2.1:26");
+        assert_eq!(marker.production, "byte_literal");
+        assert_eq!(marker.role, "source");
+        assert_eq!(marker.relation, "exact");
+        assert_eq!(marker.symbol, None);
+        let derivation = parse_grammar_sync_marker(
+            "<!-- grammar-sync(id=\"2.1:26\", production=\"INTEGER\", role=\"source\", relation=\"contains\", symbol=\"byte_literal\") -->",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(derivation.relation, "contains");
+        assert_eq!(derivation.symbol.as_deref(), Some("byte_literal"));
+        assert!(
+            parse_grammar_sync_marker(
+                "<!-- grammar-sync(id=\"2.1:26\", production=\"byte_literal\", role=\"other\") -->"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn grammar_sync_requires_an_exact_appendix_mirror() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(spec_dir.path().join("appendices")).unwrap();
+        let source = r#"
+<!-- grammar-sync(id="2.1:26", production="byte_literal", role="source") -->
+```ebnf
+byte_literal = "b'" byte_char "'" ;
+```
+"#;
+        let appendix = r#"
+<!-- grammar-sync(id="2.1:26", production="byte_literal", role="appendix") -->
+```ebnf
+byte_literal = "b'" byte_char "'" ;
+```
+"#;
+        fs::write(spec_dir.path().join("source.md"), source).unwrap();
+        let appendix_path = spec_dir.path().join("appendices/A-grammar.md");
+        fs::write(&appendix_path, appendix).unwrap();
+        assert!(validate_grammar_consistency(spec_dir.path()).is_ok());
+
+        fs::write(
+            &appendix_path,
+            appendix.replace("byte_char", "escape_sequence"),
+        )
+        .unwrap();
+        let error = validate_grammar_consistency(spec_dir.path()).unwrap_err();
+        assert!(error.contains("differs"), "{error}");
+    }
+
+    #[test]
+    fn grammar_sync_rejects_a_missing_appendix_marker() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::write(
+            spec_dir.path().join("source.md"),
+            r#"
+<!-- grammar-sync(id="2.1:26", production="byte_literal", role="source") -->
+```ebnf
+byte_literal = "b'" byte_char "'" ;
+```
+"#,
+        )
+        .unwrap();
+        let error = validate_grammar_consistency(spec_dir.path()).unwrap_err();
+        assert!(error.contains("no Appendix A mirror"), "{error}");
+    }
+
+    #[test]
+    fn grammar_sync_requires_integer_to_derive_byte_literals() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(spec_dir.path().join("appendices")).unwrap();
+        fs::write(
+            spec_dir.path().join("source.md"),
+            r#"
+<!-- grammar-sync(id="2.1:26", production="INTEGER", role="source", relation="contains", symbol="byte_literal") -->
+"#,
+        )
+        .unwrap();
+        let appendix = spec_dir.path().join("appendices/A-grammar.md");
+        fs::write(
+            &appendix,
+            r#"
+<!-- grammar-sync(id="2.1:26", production="INTEGER", role="appendix", relation="contains", symbol="byte_literal") -->
+```ebnf
+INTEGER = byte_literal | dec_literal ;
+```
+"#,
+        )
+        .unwrap();
+        assert!(validate_grammar_consistency(spec_dir.path()).is_ok());
+
+        fs::write(
+            &appendix,
+            r#"
+<!-- grammar-sync(id="2.1:26", production="INTEGER", role="appendix", relation="contains", symbol="byte_literal") -->
+```ebnf
+INTEGER = dec_literal ;
+```
+"#,
+        )
+        .unwrap();
+        let error = validate_grammar_consistency(spec_dir.path()).unwrap_err();
+        assert!(error.contains("contain `byte_literal`"), "{error}");
+    }
 
     #[test]
     fn test_parse_spec_comment() {
