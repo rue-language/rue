@@ -203,36 +203,44 @@ fn nested_anonymous_identity() -> crate::AnonymousNominalKey<&'static str, &'sta
         StableProducerId, TypeInstanceKey,
     };
 
+    // Comptime arguments reach an anonymous key through the producer
+    // specialization that consumed them, which is the only place they live
+    // (RUE-1699). Both levels are specializations so the corpus still reaches
+    // a definition, a module, and a function-valued argument through them.
     let nested = AnonymousNominalKey {
         kind: AnonymousNominalKind::Struct,
-        producer: StableProducerId::Definition("nested-producer"),
-        anchor: rue_rir::RirStructuralAnchor::new(Vec::new()),
-        arguments: CanonicalArguments {
-            types: Arc::from([TypeInstanceKey::Module("nested-module")]),
-            values: Arc::new([]),
-        },
-    };
-    AnonymousNominalKey {
-        kind: AnonymousNominalKind::Struct,
-        producer: StableProducerId::Function(Node::new(FunctionInstanceKey::AnonymousMember {
-            owner: Node::new(TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(
-                Node::new(nested),
-            ))),
-            member: AnonymousMemberKey {
-                kind: AnonymousMemberKind::Method,
-                name: Arc::from("value"),
+        producer: StableProducerId::Function(Node::new(FunctionInstanceKey::Specialization {
+            base: Node::new(FunctionInstanceKey::Definition("nested-producer")),
+            arguments: CanonicalArguments {
+                types: Arc::from([TypeInstanceKey::Module("nested-module")]),
+                values: Arc::new([]),
             },
         })),
         anchor: rue_rir::RirStructuralAnchor::new(Vec::new()),
-        arguments: CanonicalArguments {
-            types: Arc::from([
-                TypeInstanceKey::Nominal(NominalInstanceKey::Named("outer-type")),
-                TypeInstanceKey::Module("outer-module"),
-            ]),
-            values: Arc::from([CanonicalArgumentValue::Function(Node::new(
-                FunctionInstanceKey::Definition("argument-function"),
-            ))]),
-        },
+    };
+    AnonymousNominalKey {
+        kind: AnonymousNominalKind::Struct,
+        producer: StableProducerId::Function(Node::new(FunctionInstanceKey::Specialization {
+            base: Node::new(FunctionInstanceKey::AnonymousMember {
+                owner: Node::new(TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(
+                    Node::new(nested),
+                ))),
+                member: AnonymousMemberKey {
+                    kind: AnonymousMemberKind::Method,
+                    name: Arc::from("value"),
+                },
+            }),
+            arguments: CanonicalArguments {
+                types: Arc::from([
+                    TypeInstanceKey::Nominal(NominalInstanceKey::Named("outer-type")),
+                    TypeInstanceKey::Module("outer-module"),
+                ]),
+                values: Arc::from([CanonicalArgumentValue::Function(Node::new(
+                    FunctionInstanceKey::Definition("argument-function"),
+                ))]),
+            },
+        })),
+        anchor: rue_rir::RirStructuralAnchor::new(Vec::new()),
     }
 }
 
@@ -926,10 +934,7 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     anon_struct_method_sigs: AHashMap<StructId, Vec<super::AnonMethodSig>>,
     anon_struct_captured_values: AHashMap<StructId, AHashMap<Spur, ConstValue>>,
     anon_struct_type_subst: AHashMap<StructId, AHashMap<Spur, Type>>,
-    active_anonymous_producer: Option<(
-        super::anon_structs::IssuedStableProducerId,
-        super::anon_structs::IssuedCanonicalArguments,
-    )>,
+    active_anonymous_producer: Option<super::anon_structs::IssuedStableProducerId>,
     body_work: BodyAnalysisWork,
     expression_breakdown: Option<ExpressionAnalysisBreakdown>,
     recovered_errors: Vec<CompileError>,
@@ -4338,14 +4343,8 @@ where
     }
     fn replace_active_anonymous_producer(
         &mut self,
-        producer: Option<(
-            super::anon_structs::IssuedStableProducerId,
-            super::anon_structs::IssuedCanonicalArguments,
-        )>,
-    ) -> Option<(
-        super::anon_structs::IssuedStableProducerId,
-        super::anon_structs::IssuedCanonicalArguments,
-    )> {
+        producer: Option<super::anon_structs::IssuedStableProducerId>,
+    ) -> Option<super::anon_structs::IssuedStableProducerId> {
         std::mem::replace(&mut self.active_anonymous_producer, producer)
     }
     fn body_rir_ref(&self) -> &Rir {
@@ -4354,12 +4353,7 @@ where
     fn body_inline_ctor_head_candidates(&self) -> usize {
         self.rir.rir_index().inline_ctor_head_candidates()
     }
-    fn active_anonymous_producer(
-        &self,
-    ) -> Option<&(
-        super::anon_structs::IssuedStableProducerId,
-        super::anon_structs::IssuedCanonicalArguments,
-    )> {
+    fn active_anonymous_producer(&self) -> Option<&super::anon_structs::IssuedStableProducerId> {
         self.active_anonymous_producer.as_ref()
     }
     fn body_declaration_type_observer(

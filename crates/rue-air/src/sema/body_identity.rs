@@ -901,9 +901,10 @@ fn anonymous_nominal_keys_canonically_equal<K: Eq, M: Eq>(
         function
     }
 
+    // The producer carries the comptime arguments the nominal was minted
+    // under, so comparing it compares them too (RUE-1699).
     left.kind == right.kind
         && left.anchor == right.anchor
-        && left.arguments == right.arguments
         && match (&left.producer, &right.producer) {
             (StableProducerId::Definition(left), StableProducerId::Definition(right)) => {
                 left == right
@@ -2193,12 +2194,13 @@ pub(in crate::sema) fn semantic_import_type_mentions_generic_parameter<K, M>(
             })
     }
 
+    // The producer is the whole reach of an anonymous key: the arguments it was
+    // minted under live inside that producer's specialization (RUE-1699).
     fn anonymous<K, M>(value: &crate::AnonymousNominalKey<K, M>) -> bool {
-        let producer = match &value.producer {
+        match &value.producer {
             crate::StableProducerId::Definition(_) => false,
             crate::StableProducerId::Function(value) => function_instance(value),
-        };
-        producer || arguments(&value.arguments)
+        }
     }
 
     fn function_instance<K, M>(value: &crate::FunctionInstanceKey<K, M>) -> bool {
@@ -3674,7 +3676,6 @@ mod tests {
             anchor: rue_rir::RirStructuralAnchor::new(vec![
                 rue_rir::RirStructuralPathSegment::AnonymousType(anchor_seg),
             ]),
-            arguments: CanonicalArguments::default(),
         }
     }
 
@@ -4545,7 +4546,6 @@ mod tests {
             anchor: rue_rir::RirStructuralAnchor::new(
                 Vec::<rue_rir::RirStructuralPathSegment>::new(),
             ),
-            arguments: CanonicalArguments::default(),
         };
 
         // Before registration, the anonymous arm fails closed.
@@ -4878,7 +4878,6 @@ mod tests {
             anchor: rue_rir::RirStructuralAnchor::new(vec![
                 rue_rir::RirStructuralPathSegment::AnonymousType(0),
             ]),
-            arguments: CanonicalArguments::default(),
         };
         let wrapped = AnonymousNominalKey {
             producer: StableProducerId::Function(Node::new(FunctionInstanceKey::Specialization {
@@ -5011,7 +5010,6 @@ mod tests {
             anchor: rue_rir::RirStructuralAnchor::new(vec![
                 rue_rir::RirStructuralPathSegment::AnonymousType(0),
             ]),
-            arguments: CanonicalArguments::default(),
         };
         let wrapped = AnonymousNominalKey {
             producer: StableProducerId::Function(Node::new(FunctionInstanceKey::Specialization {

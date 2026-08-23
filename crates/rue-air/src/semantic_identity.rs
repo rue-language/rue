@@ -318,12 +318,56 @@ pub enum StableProducerId<D, M> {
     Function(Node<FunctionInstanceKey<D, M>>),
 }
 
+/// Canonical identity of one anonymous nominal: the kind of type it is, the
+/// producer whose reduction minted it, and where in that producer's body it
+/// sits.
+///
+/// The comptime arguments the producer was applied to are deliberately *not* a
+/// field here. They used to be, next to a producer that already carried them,
+/// so the identity of one nesting level named the level below it twice. That
+/// made every identity a strict binary tree over a graph whose distinct nodes
+/// are merely linear in the nesting depth, and every walk of one -- relocation,
+/// the durable name encoding, the durable key encoding, structural equality,
+/// retained-size accounting -- doubled per level. A ten-deep `Pair(Pair(..))`
+/// cost a second, a twenty-deep one hung the compiler outright with no
+/// diagnostic, and the `MAX_SPECIALIZATION_ROUNDS` depth guard was permanently
+/// out of reach: `f(comptime T: type, ..)` calling `f(Pair(T), ..)` hung long
+/// before round 64 instead of reporting E1200 (RUE-1699).
+///
+/// Reading the arguments back off the producer keeps the identity relation
+/// exactly as it was, because the two were always minted together from one
+/// source: `canonical_function_producer` builds the producer *from* the
+/// arguments and the specialization boundary in `specialize.rs` does the same,
+/// while every producer that took no arguments paired itself with an empty
+/// stream. So `arguments` was never independent information -- it was either
+/// the producer specialization's own streams or empty.
+/// [`AnonymousNominalKey::producer_arguments`] is that read.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AnonymousNominalKey<D, M> {
     pub kind: AnonymousNominalKind,
     pub producer: StableProducerId<D, M>,
     pub anchor: rue_rir::RirStructuralAnchor,
-    pub arguments: CanonicalArguments<D, M>,
+}
+
+impl<D, M> AnonymousNominalKey<D, M> {
+    /// The comptime arguments this nominal's producer was applied to, or
+    /// `None` for a producer that took none: a plain definition, an
+    /// unspecialized function, an anonymous member, or drop glue.
+    ///
+    /// Callers that render or inspect those arguments read them here rather
+    /// than from a second copy; see the type's own documentation for why there
+    /// is no second copy to read.
+    pub fn producer_arguments(&self) -> Option<&CanonicalArguments<D, M>> {
+        match &self.producer {
+            StableProducerId::Definition(_) => None,
+            StableProducerId::Function(function) => match function.as_ref() {
+                FunctionInstanceKey::Specialization { arguments, .. } => Some(arguments),
+                FunctionInstanceKey::Definition(_)
+                | FunctionInstanceKey::AnonymousMember { .. }
+                | FunctionInstanceKey::DropGlue(_) => None,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -437,6 +481,10 @@ impl<D, M> AnonymousNominalKey<D, M> {
     /// Relocate the complete recursive identity graph without changing its
     /// language-level identity. Durable body projection and current-request
     /// validation deliberately share this traversal.
+    ///
+    /// The producer is the whole reach of the key: the comptime arguments it
+    /// was minted under live inside that producer's specialization, so this
+    /// walks each nesting level once (RUE-1699).
     pub fn try_map_identities<D2: std::hash::Hash, M2: std::hash::Hash, E>(
         &self,
         definition: &impl Fn(&D) -> Result<D2, E>,
@@ -453,7 +501,6 @@ impl<D, M> AnonymousNominalKey<D, M> {
                 )),
             },
             anchor: self.anchor.clone(),
-            arguments: self.arguments.try_map_identities(definition, module)?,
         })
     }
 }
@@ -479,7 +526,6 @@ impl<D: Clone + std::hash::Hash, M: Clone + std::hash::Hash> AnonymousNominalKey
                         kind: self.kind,
                         producer: StableProducerId::Function(Node::new(collapsed)),
                         anchor: self.anchor.clone(),
-                        arguments: self.arguments.clone(),
                     }),
                 }
             }
@@ -774,16 +820,23 @@ mod tests {
         use rue_rir::RirStructuralPathSegment as S;
 
         type T = TypeInstanceKey<&'static str, &'static str>;
+        // The comptime arguments hang off the producer specialization rather
+        // than off the key itself (RUE-1699), so the corpus reaches a nested
+        // edge the way a real identity does.
         let make = |definition, module, path| {
             T::Nominal(NominalInstanceKey::Anonymous(Node::new(
                 AnonymousNominalKey {
                     kind: AnonymousNominalKind::Struct,
-                    producer: StableProducerId::Definition(definition),
+                    producer: StableProducerId::Function(Node::new(
+                        FunctionInstanceKey::Specialization {
+                            base: Node::new(FunctionInstanceKey::Definition(definition)),
+                            arguments: CanonicalArguments {
+                                types: Arc::from([T::Module(module)]),
+                                values: Arc::new([]),
+                            },
+                        },
+                    )),
                     anchor: rue_rir::RirStructuralAnchor::new(path),
-                    arguments: CanonicalArguments {
-                        types: Arc::from([T::Module(module)]),
-                        values: Arc::new([]),
-                    },
                 },
             )))
         };

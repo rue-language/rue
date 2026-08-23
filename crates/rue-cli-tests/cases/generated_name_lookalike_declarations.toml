@@ -112,7 +112,7 @@ exit_code = 2
 # RUE-1193 reproducer: a source declaration spelled with the FULL generated
 # form, matching the digest the compiler mints for this module's own anonymous
 # struct. Before the fix both `n.get()` and `a.get()` were spelled
-# `__anon_struct_daa9....get` -- the source declaration's qualified definition
+# `__anon_struct_6dae....get` -- the source declaration's qualified definition
 # was emitted and never called -- so the program returned 2 + 2 = 4 with no
 # diagnostic. The exit code is the whole assertion: 41 + 2 = 43.
 #
@@ -125,10 +125,10 @@ exit_code = 2
 name = "source_declaration_matching_a_generated_digest_keeps_its_own_method"
 description = "A source __anon_struct_<32 hex> whose name equals a live generated anonymous type's digest still resolves to its own method (RUE-1193)."
 files = [{ path = "main.rue", source = """
-struct __anon_struct_daa98b889bc477390889f83e53d5c4c3 { x: i32, fn get(self) -> i32 { 41 } }
+struct __anon_struct_6dae8480031b5952791dab6a99fb6183 { x: i32, fn get(self) -> i32 { 41 } }
 fn A() -> type { struct { x: i32, fn get(self) -> i32 { 2 } } }
 fn main() -> i32 {
-    let n = __anon_struct_daa98b889bc477390889f83e53d5c4c3 { x: 0 };
+    let n = __anon_struct_6dae8480031b5952791dab6a99fb6183 { x: 0 };
     let T = A();
     let a: T = T { x: 0 };
     n.get() + a.get()

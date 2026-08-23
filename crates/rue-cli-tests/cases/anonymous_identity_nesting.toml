@@ -1,0 +1,221 @@
+# Nested type-constructor application and anonymous identity size (RUE-1699).
+#
+# The identity of an anonymous nominal used to name its comptime arguments
+# twice -- once directly, and once again inside the producer specialization
+# that had already consumed them -- so `Pair(Pair(...Pair(i32)...))` had an
+# identity that was a strict binary tree over a graph with one node per
+# nesting level. Every walk of it doubled per level: at ten levels a compile
+# took a second, at sixteen fifteen seconds, and at twenty the compiler ran
+# out of patience before it ran out of work, with no diagnostic at all.
+#
+# The second casualty was the depth guard itself. `MAX_SPECIALIZATION_ROUNDS`
+# is documented as bounding "ever-growing type instantiation such as
+# `f(Pair(T), ...)`", but a program shaped like that hung long before round 64,
+# so the guard could never fire. These cases pin both: deep nesting compiles,
+# and unbounded nesting is reported rather than hung on.
+
+[section]
+id = "cli.anonymous_identity_nesting"
+name = "Anonymous identity under nested instantiation"
+description = "Deeply nested type-constructor application compiles, stays type-distinct, and stays bounded."
+
+# Twenty levels. Only the type is named -- a *value* of it would have 2^20
+# fields -- which is exactly the shape that used to hang: identity work alone.
+# The bound is the ordinary CLI compile hang guard (180s, see
+# execution_contracts.toml); before this fix the same program exceeded it,
+# after it the compile takes a fraction of a second.
+[[case]]
+name = "twenty_levels_of_nesting_compile"
+description = "A twenty-deep nested type-constructor application compiles instead of hanging (RUE-1699)."
+files = [{ path = "main.rue", source = """
+fn Pair(comptime T: type) -> type {
+    struct { a: T, b: T }
+}
+
+fn main() -> i32 {
+    let Deep = Pair(Pair(Pair(Pair(Pair(Pair(Pair(Pair(Pair(Pair(Pair(Pair(Pair(Pair(Pair(Pair(Pair(Pair(Pair(Pair(i32))))))))))))))))))));
+    @dbg(20);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "20\n"
+exit_code = 0
+
+# The acceptance case for the guard that could not fire: `grow` instantiates
+# itself with a strictly larger type every round, so it must be reported at
+# the documented depth of 64 rather than expanded forever.
+[[case]]
+name = "self_growing_instantiation_reports_the_depth_limit"
+description = "A generic that reinstantiates itself with a bigger type reaches its E1200 depth limit instead of hanging (RUE-1699)."
+files = [{ path = "main.rue", source = """
+fn Pair(comptime T: type) -> type {
+    struct { a: T, b: T }
+}
+
+fn grow(comptime T: type, depth: i32) -> i32 {
+    if depth == 0 {
+        return 0;
+    }
+    grow(Pair(T), depth - 1)
+}
+
+fn main() -> i32 {
+    grow(i32, 1000)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1200", "exceeded the maximum nesting depth (64)"]
+
+# Two independent spellings of the same eight-deep nesting are one type: the
+# value built through the chained bindings is assigned to a binding whose type
+# came from a separate type function, and its innermost fields are read back.
+[[case]]
+name = "two_spellings_of_one_deep_nesting_are_one_type"
+description = "Eight-deep nesting reached two different ways is a single anonymous type (RUE-1699)."
+files = [{ path = "main.rue", source = """
+fn Pair(comptime T: type) -> type {
+    struct {
+        a: T,
+        b: T,
+        fn of(x: T) -> Self { Self { a: x, b: x } }
+    }
+}
+
+fn Eight(comptime T: type) -> type {
+    Pair(Pair(Pair(Pair(Pair(Pair(Pair(Pair(T))))))))
+}
+
+fn main() -> i32 {
+    let L1 = Pair(i32);
+    let L2 = Pair(L1);
+    let L3 = Pair(L2);
+    let L4 = Pair(L3);
+    let L5 = Pair(L4);
+    let L6 = Pair(L5);
+    let L7 = Pair(L6);
+    let L8 = Pair(L7);
+
+    let E = Eight(i32);
+    let built: L8 = L8.of(L7.of(L6.of(L5.of(L4.of(L3.of(L2.of(L1.of(4))))))));
+    let crossed: E = built;
+    @dbg(crossed.a.a.a.a.a.a.a.a);
+    @dbg(crossed.b.b.b.b.b.b.b.b);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "4\n4\n"
+exit_code = 0
+
+# Distinctness control: same depth, different leaf argument.
+[[case]]
+name = "deep_nestings_of_different_arguments_stay_distinct"
+description = "Eight-deep Pair over i32 and over u32 remain different types (RUE-1699)."
+files = [{ path = "main.rue", source = """
+fn Pair(comptime T: type) -> type {
+    struct {
+        a: T,
+        b: T,
+        fn of(x: T) -> Self { Self { a: x, b: x } }
+    }
+}
+
+fn Eight(comptime T: type) -> type {
+    Pair(Pair(Pair(Pair(Pair(Pair(Pair(Pair(T))))))))
+}
+
+fn main() -> i32 {
+    let L1 = Pair(i32);
+    let L2 = Pair(L1);
+    let L3 = Pair(L2);
+    let L4 = Pair(L3);
+    let L5 = Pair(L4);
+    let L6 = Pair(L5);
+    let L7 = Pair(L6);
+    let L8 = Pair(L7);
+
+    let U = Eight(u32);
+    let built: L8 = L8.of(L7.of(L6.of(L5.of(L4.of(L3.of(L2.of(L1.of(4))))))));
+    let crossed: U = built;
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+
+# Distinctness control: same leaf argument, one level of difference in depth.
+[[case]]
+name = "deep_nestings_of_different_depths_stay_distinct"
+description = "Seven-deep and eight-deep Pair over i32 remain different types (RUE-1699)."
+files = [{ path = "main.rue", source = """
+fn Pair(comptime T: type) -> type {
+    struct {
+        a: T,
+        b: T,
+        fn of(x: T) -> Self { Self { a: x, b: x } }
+    }
+}
+
+fn main() -> i32 {
+    let L1 = Pair(i32);
+    let L2 = Pair(L1);
+    let L3 = Pair(L2);
+    let L4 = Pair(L3);
+    let L5 = Pair(L4);
+    let L6 = Pair(L5);
+    let L7 = Pair(L6);
+    let L8 = Pair(L7);
+
+    let built: L8 = L8.of(L7.of(L6.of(L5.of(L4.of(L3.of(L2.of(L1.of(4))))))));
+    let shallower: L7 = built;
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+
+# Distinctness control: two type constructors with identical bodies stay
+# separate at depth, because the producer is part of the identity.
+[[case]]
+name = "identical_constructors_stay_distinct_at_depth"
+description = "Two identically shaped type constructors nested four deep remain different types (RUE-1699)."
+files = [{ path = "main.rue", source = """
+fn Pair(comptime T: type) -> type {
+    struct {
+        a: T,
+        b: T,
+        fn of(x: T) -> Self { Self { a: x, b: x } }
+    }
+}
+
+fn Twin(comptime T: type) -> type {
+    struct {
+        a: T,
+        b: T,
+        fn of(x: T) -> Self { Self { a: x, b: x } }
+    }
+}
+
+fn main() -> i32 {
+    let P1 = Pair(i32);
+    let P2 = Pair(P1);
+    let P3 = Pair(P2);
+    let P4 = Pair(P3);
+
+    let T1 = Twin(i32);
+    let T2 = Twin(T1);
+    let T3 = Twin(T2);
+    let T4 = Twin(T3);
+
+    let built: P4 = P4.of(P3.of(P2.of(P1.of(4))));
+    let crossed: T4 = built;
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]

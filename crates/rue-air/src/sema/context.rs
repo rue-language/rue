@@ -536,11 +536,12 @@ pub(crate) struct AnalysisContext<'a> {
     /// RIR body root of the definition producing values in this analysis.
     /// Anonymous structural anchors are relative to this producer.
     pub producer: InstRef,
-    /// Issuer-scoped canonical identity of that producer and its arguments.
-    /// Anonymous nominal allocation consumes these values directly; the RIR
-    /// handle above is traversal context only and never enters an entity key.
+    /// Issuer-scoped canonical identity of that producer. Anonymous nominal
+    /// allocation consumes this value directly; the RIR handle above is
+    /// traversal context only and never enters an entity key. The comptime
+    /// arguments the producer was applied to are read back off it rather than
+    /// carried alongside (RUE-1699).
     pub canonical_producer: super::anon_structs::IssuedStableProducerId,
-    pub canonical_producer_arguments: super::anon_structs::IssuedCanonicalArguments,
     /// Exact callable identity which owns local data atoms in this body.
     pub canonical_function_identity: super::anon_structs::IssuedFunctionInstanceKey,
     /// File that owns the function body currently being analyzed.
@@ -996,7 +997,6 @@ impl<'a> AnalysisContext<'a> {
         AnalysisContext {
             producer: self.producer,
             canonical_producer: self.canonical_producer.clone(),
-            canonical_producer_arguments: self.canonical_producer_arguments.clone(),
             canonical_function_identity: self.canonical_function_identity.clone(),
             current_file_id: self.current_file_id,
             locals: self.locals.clone(),

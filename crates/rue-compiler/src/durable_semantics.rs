@@ -320,7 +320,6 @@ mod tests {
                 rue_rir::RirStructuralPathSegment::Body,
                 rue_rir::RirStructuralPathSegment::AnonymousType(0),
             ]),
-            arguments: crate::CanonicalArguments::default(),
         }
     }
 

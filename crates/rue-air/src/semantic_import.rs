@@ -2372,7 +2372,6 @@ mod tests {
                     rue_rir::RirStructuralPathSegment::Body,
                     rue_rir::RirStructuralPathSegment::AnonymousType(0),
                 ]),
-                arguments: crate::CanonicalArguments::default(),
             }),
         ];
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2895,7 +2894,6 @@ mod tests {
                 rue_rir::RirStructuralPathSegment::Body,
                 rue_rir::RirStructuralPathSegment::AnonymousType(0),
             ]),
-            arguments: crate::CanonicalArguments::default(),
         };
         nominals.push(SemanticLocalNominal {
             key: NominalInstanceKey::Anonymous(Node::new(anonymous.clone())),
@@ -3433,7 +3431,6 @@ mod tests {
                 rue_rir::RirStructuralPathSegment::Body,
                 rue_rir::RirStructuralPathSegment::AnonymousType(0),
             ]),
-            arguments: crate::CanonicalArguments::default(),
         }
     }
 

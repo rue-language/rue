@@ -2130,7 +2130,6 @@ mod tests {
                 RirStructuralPathSegment::Body,
                 RirStructuralPathSegment::AnonymousType(0),
             ]),
-            arguments: crate::CanonicalArguments::default(),
         };
         let nominal = DurableAnonymousNominal::new(
             identity.clone(),
