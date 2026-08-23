@@ -59,16 +59,17 @@ impl WatchFingerprint {
     }
 }
 
-/// One accepted filesystem path and its content fingerprint.
+/// One load-bearing filesystem observation and its expected fingerprint.
 ///
 /// `requested_path` is retained separately from `canonical_path`: the watcher
 /// must notice an import alias being deleted or retargeted even though the
-/// canonical file may still exist.
+/// canonical file may still exist. `None` records a candidate whose absence
+/// selected a later resolution candidate, so its appearance is also a change.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WatchInput {
     requested_path: PathBuf,
     canonical_path: PathBuf,
-    fingerprint: WatchFingerprint,
+    expected_fingerprint: Option<WatchFingerprint>,
 }
 
 impl WatchInput {
@@ -80,7 +81,18 @@ impl WatchInput {
         Self {
             requested_path,
             canonical_path,
-            fingerprint,
+            expected_fingerprint: Some(fingerprint),
+        }
+    }
+
+    /// Construct an input whose expected state is that the path does not
+    /// exist. The watcher must retain this negative observation so creating
+    /// the candidate invalidates the current compilation.
+    pub fn expected_absence(path: PathBuf) -> Self {
+        Self {
+            canonical_path: path.clone(),
+            requested_path: path,
+            expected_fingerprint: None,
         }
     }
 
@@ -92,8 +104,8 @@ impl WatchInput {
         &self.canonical_path
     }
 
-    pub fn fingerprint(&self) -> WatchFingerprint {
-        self.fingerprint
+    pub fn expected_fingerprint(&self) -> Option<WatchFingerprint> {
+        self.expected_fingerprint
     }
 }
 
@@ -733,6 +745,10 @@ pub(crate) struct ImportDiscoveryResult {
     pub(crate) resolution: SourceResolutionInputs,
     /// Canonical physical reads accepted while assembling `source_snapshot`.
     pub(crate) read_manifest: AcceptedReadManifest,
+    /// Candidate paths observed absent while resolving the committed import
+    /// graph. These negative observations are load-bearing when a later
+    /// candidate won resolution, because creating one changes that winner.
+    observed_absent_paths: Vec<PathBuf>,
     /// Canonical import topology and diagnostics published by the compiler.
     pub(crate) revision: Arc<ImportDiscoveryView>,
     #[cfg(test)]
@@ -767,7 +783,8 @@ pub(crate) struct SourceResolutionInputs {
 
 impl ImportDiscoveryResult {
     pub(crate) fn watch_inputs(&self) -> Vec<WatchInput> {
-        let mut paths = Vec::with_capacity(self.read_manifest.len() + 1);
+        let mut paths =
+            Vec::with_capacity(self.read_manifest.len() + self.observed_absent_paths.len() + 1);
         for entry in self.read_manifest.iter() {
             let source = self
                 .source_snapshot
@@ -783,6 +800,12 @@ impl ImportDiscoveryResult {
                 fingerprint,
             ));
         }
+        paths.extend(
+            self.observed_absent_paths
+                .iter()
+                .cloned()
+                .map(WatchInput::expected_absence),
+        );
         if let Some(manifest) = &self.source_manifest {
             paths.push(WatchInput::new(
                 manifest.path.clone(),
@@ -811,6 +834,8 @@ struct ClosedDiscovery {
     /// `ImportDiscoveryResult::input_revision` frontier-round assertions.
     #[cfg_attr(not(test), allow(dead_code))]
     input_revision: ImportInputRevision,
+    /// Candidate paths whose absence was observed by this closed revision.
+    observed_absent_paths: Vec<PathBuf>,
     /// The final empty rooted frontier that witnessed closure — the closure
     /// witness a same-generation trusted-toolchain successor continues from.
     witness: ImportDemandFrontier,
@@ -1305,10 +1330,17 @@ fn drive_import_discovery_to_close(
             }
         }
     };
+    let observed_absent_paths = import_observation_ledger(staging, input_revision)
+        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?
+        .iter()
+        .filter(|observation| matches!(observation.status(), ImportObservationStatus::Absent))
+        .map(|observation| PathBuf::from(observation.request().requested_path()))
+        .collect::<Vec<_>>();
     Ok(ClosedDiscovery {
         snapshot,
         closed,
         input_revision,
+        observed_absent_paths,
         witness,
         witness_discharge: WitnessDischarge {
             cumulative: cumulative_witness_closures,
@@ -1410,6 +1442,7 @@ pub(crate) fn discover_and_load_imports(
         source_snapshot: close.snapshot,
         resolution: SourceResolutionInputs { root_path, context },
         read_manifest: assembler.accepted_read_manifest(),
+        observed_absent_paths: close.observed_absent_paths,
         revision: close.closed,
         #[cfg(test)]
         input_revision: close.input_revision,
@@ -1492,6 +1525,7 @@ pub(crate) fn reload_from_filesystem(
     )?;
     result.source_snapshot = close.snapshot;
     result.read_manifest = assembler.accepted_read_manifest();
+    result.observed_absent_paths = close.observed_absent_paths;
     result.revision = close.closed;
     result.assembler = assembler;
     result.witness = close.witness;
@@ -1620,6 +1654,7 @@ pub(crate) fn acquire_reached_toolchain_modules(
                 result.source_snapshot = reclosed.snapshot;
                 result.revision = reclosed.closed;
                 result.read_manifest = result.assembler.accepted_read_manifest();
+                result.observed_absent_paths = reclosed.observed_absent_paths;
                 result.witness = reclosed.witness;
                 #[cfg(test)]
                 {
@@ -2849,6 +2884,30 @@ mod tests {
         // facade the second candidate resolves to. Publishing per hop minted
         // separate revisions for the same reads.
         assert_eq!(result.input_revision.frontier_round(), 1);
+    }
+
+    #[test]
+    fn watch_inputs_include_absent_vendored_std_candidate() {
+        let project = TestDir::new("watch-absent-vendored-std-project");
+        let stdlib = TestDir::new("watch-absent-vendored-std-toolchain");
+        let main = project.write(
+            "main.rue",
+            r#"const std = @import("std"); fn main() -> i32 { 0 }"#,
+        );
+        stdlib.write("_std.rue", "pub fn std_value() -> i32 { 1 }");
+        let std_root = fs::canonicalize(&stdlib.path).unwrap();
+        let result =
+            discover_and_load_imports(main.to_str().unwrap(), None, Some(&std_root)).unwrap();
+        let expected = project.path.join("std/_std.rue");
+
+        assert!(
+            result.watch_inputs().iter().any(|input| {
+                input.expected_fingerprint().is_none()
+                    && input.requested_path() == expected.as_path()
+            }),
+            "watch inputs must retain the absent vendored candidate: {}",
+            expected.display()
+        );
     }
 
     /// ADR-0075 stamp atomicity: a wave publishes one revision covering reads

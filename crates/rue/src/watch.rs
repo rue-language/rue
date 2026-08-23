@@ -278,6 +278,12 @@ where
     inputs.iter().any(|input| {
         let requested = input.requested_path();
         let canonical = input.canonical_path();
+        if input.expected_fingerprint().is_none() {
+            return !matches!(
+                fs::canonicalize(requested),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            );
+        }
         if requested != canonical && fs::canonicalize(requested).ok().as_deref() != Some(canonical)
         {
             return true;
@@ -286,7 +292,7 @@ where
         let observed = canonical_fingerprints
             .entry(canonical.to_owned())
             .or_insert_with(|| read(canonical));
-        observed.as_ref() != Some(&input.fingerprint())
+        *observed != input.expected_fingerprint()
     })
 }
 
@@ -351,6 +357,39 @@ mod tests {
         let inputs = vec![WatchInput::new(path.clone(), path.clone(), fingerprint)];
         fs::remove_file(path).unwrap();
         assert!(inputs_changed(&inputs));
+    }
+
+    #[test]
+    fn expected_absence_is_unchanged_until_candidate_appears() {
+        let path = std::env::temp_dir().join(format!(
+            "rue-watch-expected-absence-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let inputs = vec![WatchInput::expected_absence(path.clone())];
+        assert!(!inputs_changed(&inputs));
+        fs::write(&path, b"new candidate").unwrap();
+        assert!(inputs_changed(&inputs));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn expected_absence_changes_when_a_non_file_candidate_appears() {
+        let path = std::env::temp_dir().join(format!(
+            "rue-watch-expected-absence-directory-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let inputs = vec![WatchInput::expected_absence(path.clone())];
+        fs::create_dir(&path).unwrap();
+        assert!(inputs_changed(&inputs));
+        fs::remove_dir(path).unwrap();
     }
 
     #[test]
