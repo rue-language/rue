@@ -90,6 +90,8 @@ fn local_semantic_materialization_is_an_inert_exact_fact_boundary() {
         "rue_air::SemanticImportEpoch::new_local(",
         ".materialize_local_body_with_types(",
         "FunctionInstanceKey::AnonymousMember",
+        "materialize_canonical_body_with_indexes(",
+        "materialize_semantic_body_with_indexes(",
     ] {
         assert!(
             local.contains(required),
@@ -104,6 +106,8 @@ fn local_semantic_materialization_is_an_inert_exact_fact_boundary() {
         "Mutex<",
         "RwLock<",
         "cache:",
+        "materialize_canonical_body(",
+        "materialize_semantic_body(",
     ] {
         assert!(
             !local.contains(forbidden),
@@ -160,8 +164,6 @@ fn cfg_queries_own_local_semantic_materialization_and_terminal_domains() {
     let database = include_str!("revisioned_query_database.rs");
     for required in [
         "CfgSemanticInput::Body",
-        "materialize_canonical_body(",
-        "materialize_semantic_body(",
         "synthesize_canonical_drop_glue(",
         "CfgDomainProjection::from_local_body(",
         "pub(crate) type_pool: rue_air::FrozenTypeInternPool",
@@ -173,6 +175,25 @@ fn cfg_queries_own_local_semantic_materialization_and_terminal_domains() {
         assert!(
             cfg.contains(required),
             "CFG ownership boundary lost: {required}"
+        );
+    }
+    for required in [
+        "crate::local_semantic_materialization::materialize_canonical_body_with_indexes(",
+        "crate::local_semantic_materialization::materialize_semantic_body_with_indexes(",
+    ] {
+        let live_calls = cfg
+            .lines()
+            .filter(|line| line.trim_start().starts_with(required))
+            .count();
+        assert_eq!(
+            live_calls, 1,
+            "CFG query must have exactly one live indexed materialization call: {required}"
+        );
+    }
+    for forbidden in ["materialize_canonical_body(", "materialize_semantic_body("] {
+        assert!(
+            !cfg.contains(forbidden),
+            "CFG query regained a direct materialization adapter call: {forbidden}"
         );
     }
     for forbidden in [

@@ -880,38 +880,6 @@ fn mangle_canonical_value(value: &crate::CanonicalArgumentValue) -> String {
     }
 }
 
-/// Materialize one canonical body from exact query facts.
-///
-/// The declaration and anonymous slices may contain only the facts required by
-/// this body. Missing transitive shapes/callables fail closed in `rue-air`;
-/// this adapter never widens the request by discovering a program universe.
-#[allow(dead_code)]
-pub(crate) fn materialize_canonical_body(
-    canonical: &crate::body_query::CanonicalBody,
-    body_span: rue_span::Span,
-    declarations: &[DurableDeclarationSemantic],
-    anonymous_nominals: &[DurableAnonymousNominal],
-    callable_facts: &[LocalCallableFact],
-    nominal_metadata: &[LocalNominalMetadataFact],
-    modules: &[ModuleId],
-    builtin_facts: &[LocalBuiltinNominalFact],
-    materialization_types: &[crate::durable_semantics::DurableType],
-) -> Result<LocalSemanticMaterialization, LocalMaterializationFailure> {
-    let indexes = LocalMaterializationIndexes::new(declarations, nominal_metadata);
-    materialize_canonical_body_with_indexes(
-        canonical,
-        body_span,
-        declarations,
-        anonymous_nominals,
-        callable_facts,
-        nominal_metadata,
-        modules,
-        builtin_facts,
-        materialization_types,
-        &indexes,
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn materialize_canonical_body_with_indexes(
     canonical: &crate::body_query::CanonicalBody,
@@ -950,35 +918,6 @@ pub(crate) fn materialize_canonical_body_with_indexes(
         builtin_facts,
         materialization_types,
         indexes,
-    )
-}
-
-#[allow(clippy::too_many_arguments, dead_code)]
-pub(crate) fn materialize_semantic_body(
-    identity: FunctionInstanceKey,
-    body: &rue_air::SemanticBody<StableDefinitionKey, ModuleId>,
-    body_span: rue_span::Span,
-    declarations: &[DurableDeclarationSemantic],
-    anonymous_nominals: &[DurableAnonymousNominal],
-    callable_facts: &[LocalCallableFact],
-    nominal_metadata: &[LocalNominalMetadataFact],
-    modules: &[ModuleId],
-    builtin_facts: &[LocalBuiltinNominalFact],
-    materialization_types: &[crate::durable_semantics::DurableType],
-) -> Result<LocalSemanticMaterialization, LocalMaterializationFailure> {
-    let indexes = LocalMaterializationIndexes::new(declarations, nominal_metadata);
-    materialize_semantic_body_with_indexes(
-        identity,
-        body,
-        body_span,
-        declarations,
-        anonymous_nominals,
-        callable_facts,
-        nominal_metadata,
-        modules,
-        builtin_facts,
-        materialization_types,
-        &indexes,
     )
 }
 
@@ -1212,6 +1151,34 @@ pub(crate) fn materialize_semantic_body_with_indexes(
         body_span,
         materialization_types,
     )?)
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn materialize_canonical_body_for_test(
+    canonical: &crate::body_query::CanonicalBody,
+    body_span: rue_span::Span,
+    declarations: &[DurableDeclarationSemantic],
+    anonymous_nominals: &[DurableAnonymousNominal],
+    callable_facts: &[LocalCallableFact],
+    nominal_metadata: &[LocalNominalMetadataFact],
+    modules: &[ModuleId],
+    builtin_facts: &[LocalBuiltinNominalFact],
+    materialization_types: &[crate::durable_semantics::DurableType],
+) -> Result<LocalSemanticMaterialization, LocalMaterializationFailure> {
+    let indexes = LocalMaterializationIndexes::new(declarations, nominal_metadata);
+    materialize_canonical_body_with_indexes(
+        canonical,
+        body_span,
+        declarations,
+        anonymous_nominals,
+        callable_facts,
+        nominal_metadata,
+        modules,
+        builtin_facts,
+        materialization_types,
+        &indexes,
+    )
 }
 
 /// Select the transitive nominal and callable closure needed to materialize one
@@ -1949,7 +1916,7 @@ mod tests {
             },
         };
         assert_eq!(
-            materialize_canonical_body(
+            materialize_canonical_body_for_test(
                 &canonical,
                 rue_span::Span::with_file(rue_span::FileId::new(3), 100, 200),
                 std::slice::from_ref(&declaration),
@@ -1966,7 +1933,7 @@ mod tests {
             .err(),
             Some(LocalMaterializationFailure::MissingNominalMetadata)
         );
-        let output = materialize_canonical_body(
+        let output = materialize_canonical_body_for_test(
             &canonical,
             rue_span::Span::with_file(rue_span::FileId::new(3), 100, 200),
             std::slice::from_ref(&declaration),
@@ -2038,7 +2005,7 @@ mod tests {
                 payload: DurableDeclarationPayload::Destructor,
             },
         ];
-        let error = materialize_canonical_body(
+        let error = materialize_canonical_body_for_test(
             &crate::body_query::CanonicalBody::Ordinary {
                 owner: function.clone(),
                 body: body(),
@@ -2118,7 +2085,7 @@ mod tests {
             .as_ref();
         assert!(destructor_symbol.ends_with(".__drop"));
 
-        materialize_canonical_body(
+        materialize_canonical_body_for_test(
             &crate::body_query::CanonicalBody::Ordinary {
                 owner: function,
                 body: body(),

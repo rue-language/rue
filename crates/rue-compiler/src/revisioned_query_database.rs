@@ -38707,18 +38707,19 @@ fn main() -> i32 {
             identity: instance,
             symbol: Arc::from(live_name.as_str()),
         };
-        let materialized = crate::local_semantic_materialization::materialize_canonical_body(
-            &canonical,
-            body_span,
-            &[],
-            &[],
-            std::slice::from_ref(&callable),
-            &[],
-            std::slice::from_ref(&module),
-            &[],
-            &[],
-        )
-        .expect("durable provider export materializes in a fresh local epoch");
+        let materialized =
+            crate::local_semantic_materialization::materialize_canonical_body_for_test(
+                &canonical,
+                body_span,
+                &[],
+                &[],
+                std::slice::from_ref(&callable),
+                &[],
+                std::slice::from_ref(&module),
+                &[],
+                &[],
+            )
+            .expect("durable provider export materializes in a fresh local epoch");
 
         assert_eq!(materialized.identity, live_identity);
         assert_eq!(materialized.name, live_name);
