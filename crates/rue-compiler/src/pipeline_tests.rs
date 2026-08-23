@@ -3975,4 +3975,78 @@ mod tests {
             err
         );
     }
+
+    /// RUE-1604: `StructDef::declared_linear` is the first-class record of the
+    /// source `linear` declaration, and the containment join never rewrites
+    /// it. Compiled end to end, every struct in every body-local frozen pool
+    /// must satisfy the join equation
+    /// `is_linear == declared_linear || (some field carries linear)`,
+    /// and each fixture struct must land in its expected quadrant — including
+    /// `H`, declared `linear` AND carrying a linear field, which the old
+    /// diagnostics-derived classification had to reconstruct indirectly.
+    #[test]
+    fn declared_linear_bit_matches_the_declaration_across_the_pipeline() {
+        let source = "linear struct Token { id: i64 }\n\
+             linear struct H { t: Token }\n\
+             struct Carrier { t: Token }\n\
+             struct Plain { x: i64 }\n\
+             fn use_token(t: Token) -> i64 { t.id }\n\
+             fn use_h(h: H) -> i64 { use_token(h.t) }\n\
+             fn use_c(c: Carrier) -> i64 { use_token(c.t) }\n\
+             fn main() -> i32 {\n\
+                 let p = Plain { x: 1 };\n\
+                 let total = use_h(H { t: Token { id: 2 } })\n\
+                     + use_c(Carrier { t: Token { id: 3 } })\n\
+                     + p.x;\n\
+                 if total == 6 { 0 } else { 1 }\n\
+             }\n";
+        let snapshot = SourceSnapshot::single("<declared-linear>", source).unwrap();
+        let (_, semantic, _) =
+            test_frontend_snapshot(&snapshot, &CompileOptions::default()).unwrap();
+
+        let expected: std::collections::HashMap<&str, (bool, bool)> = [
+            // (is_linear after the join, declared_linear)
+            ("Token", (true, true)),
+            ("H", (true, true)),
+            ("Carrier", (true, false)),
+            ("Plain", (false, false)),
+        ]
+        .into_iter()
+        .collect();
+        let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        let mut pools = 0usize;
+        for pool in semantic.type_pools() {
+            pools += 1;
+            for id in pool.all_struct_ids() {
+                let def = pool.struct_def(id);
+                let field_carries = def
+                    .fields
+                    .iter()
+                    .any(|field| pool.type_carries_linear(field.ty));
+                assert_eq!(
+                    def.is_linear,
+                    def.declared_linear || field_carries,
+                    "join equation violated for struct '{}'",
+                    def.name,
+                );
+                if let Some((name, &(is_linear, declared_linear))) =
+                    expected.get_key_value(def.name.as_ref())
+                {
+                    assert_eq!(
+                        (def.is_linear, def.declared_linear),
+                        (is_linear, declared_linear),
+                        "unexpected linearity bits for struct '{}'",
+                        def.name,
+                    );
+                    seen.insert(name);
+                }
+            }
+        }
+        assert!(pools > 0, "fixture produced no body-local type pools");
+        assert_eq!(
+            seen.into_iter().collect::<Vec<_>>(),
+            ["Carrier", "H", "Plain", "Token"],
+            "every fixture struct must be observed in some body-local pool"
+        );
+    }
 }

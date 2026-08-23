@@ -45,7 +45,12 @@ ALLOWANCES = {
     "crates/rue-air/src/sema/analysis/builtin_ops.rs": Allowance(1, "redundant error-recovery state check"),
     "crates/rue-air/src/sema/analysis/calls.rs": Allowance(1, "redundant parameter metadata width check"),
     "crates/rue-air/src/sema/analysis/intrinsics.rs": Allowance(1, "redundant intrinsic signature inventory check"),
-    "crates/rue-air/src/sema/analysis/ownership.rs": Allowance(1, "redundant non-negative arena-index check"),
+    "crates/rue-air/src/sema/analysis/ownership.rs": Allowance(
+        2,
+        "redundant non-negative arena-index check; redundant cross-check that"
+        " the authoritative declared-linear bit agrees with the old"
+        " diagnostics-derived classification (RUE-1604)",
+    ),
     "crates/rue-air/src/sema/body_identity.rs": Allowance(
         2, "redundant anonymous-identity publication and disjointness checks"
     ),

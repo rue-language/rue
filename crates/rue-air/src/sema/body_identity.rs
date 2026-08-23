@@ -946,6 +946,7 @@ where
                 ],
                 is_copy: true,
                 is_linear: false,
+                declared_linear: false,
                 destructor: None,
                 is_builtin: true,
                 is_pub: true,
@@ -1143,6 +1144,7 @@ where
                 ],
                 is_copy: true,
                 is_linear: false,
+                declared_linear: false,
                 destructor: None,
                 is_builtin: true,
                 is_pub: true,
@@ -1247,6 +1249,7 @@ where
                         ],
                         is_copy: true,
                         is_linear: false,
+                        declared_linear: false,
                         destructor: None,
                         is_builtin: true,
                         is_pub: true,
@@ -1342,6 +1345,10 @@ where
                         fields: Vec::new(),
                         is_copy: is_copy && !has_destructor,
                         is_linear,
+                        // `is_linear` here is still the declaration-time bit
+                        // carried verbatim by `DurableNominalBody::Struct`;
+                        // the containment join has not run yet.
+                        declared_linear: is_linear,
                         destructor: None,
                         is_builtin,
                         is_pub: is_public,
@@ -1388,6 +1395,7 @@ where
                         fields: resolved,
                         is_copy: is_copy && !has_destructor,
                         is_linear,
+                        declared_linear: is_linear,
                         destructor,
                         is_builtin,
                         is_pub: is_public,
@@ -1494,6 +1502,10 @@ where
                         fields: Vec::new(),
                         is_copy: is_copy && !has_destructor,
                         is_linear,
+                        // `is_linear` here is still the declaration-time bit
+                        // carried verbatim by `DurableNominalBody::Struct`;
+                        // the containment join has not run yet.
+                        declared_linear: is_linear,
                         destructor: None,
                         is_builtin,
                         is_pub: is_public,
@@ -1538,6 +1550,7 @@ where
                         fields: resolved,
                         is_copy: is_copy && !has_destructor,
                         is_linear,
+                        declared_linear: is_linear,
                         destructor,
                         is_builtin,
                         is_pub: is_public,
@@ -2027,6 +2040,7 @@ where
                 fields: Vec::new(),
                 is_copy: false,
                 is_linear: false,
+                declared_linear: false,
                 destructor: destructor.clone(),
                 is_builtin: false,
                 is_pub: false,
@@ -2061,6 +2075,7 @@ where
                 fields: resolved,
                 is_copy,
                 is_linear: false,
+                declared_linear: false,
                 destructor,
                 is_builtin: false,
                 is_pub: false,
@@ -3213,6 +3228,7 @@ mod tests {
                     fields: Vec::new(),
                     is_copy: true,
                     is_linear: false,
+                    declared_linear: false,
                     destructor: None,
                     is_builtin: false,
                     is_pub: true,
@@ -3260,6 +3276,7 @@ mod tests {
                     fields: Vec::new(),
                     is_copy: true,
                     is_linear: false,
+                    declared_linear: false,
                     destructor: None,
                     is_builtin: false,
                     is_pub: true,
@@ -3294,6 +3311,7 @@ mod tests {
                     fields: Vec::new(),
                     is_copy: true,
                     is_linear: false,
+                    declared_linear: false,
                     destructor: None,
                     is_builtin: false,
                     is_pub: true,
@@ -3905,6 +3923,7 @@ mod tests {
                 fields: Vec::new(),
                 is_copy,
                 is_linear,
+                declared_linear: is_linear,
                 destructor: None,
                 is_builtin: false,
                 is_pub,
@@ -3927,6 +3946,7 @@ mod tests {
                     .collect(),
                 is_copy,
                 is_linear,
+                declared_linear: is_linear,
                 destructor: None,
                 is_builtin: false,
                 is_pub,
@@ -3979,6 +3999,10 @@ mod tests {
         assert_eq!(a.name, b.name, "struct name");
         assert_eq!(a.is_copy, b.is_copy, "struct is_copy");
         assert_eq!(a.is_linear, b.is_linear, "struct is_linear");
+        assert_eq!(
+            a.declared_linear, b.declared_linear,
+            "struct declared_linear"
+        );
         assert_eq!(a.is_pub, b.is_pub, "struct is_pub");
         assert_eq!(a.is_builtin, b.is_builtin, "struct is_builtin");
         assert_eq!(a.destructor, b.destructor, "struct destructor");

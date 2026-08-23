@@ -4676,6 +4676,7 @@ mod tests {
             }],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: false,

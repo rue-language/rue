@@ -407,6 +407,10 @@ pub enum SemanticLocalNominalShape<K, M> {
         fields: Arc<[(Arc<str>, SemanticImportType<K, M>)]>,
         is_copy: bool,
         is_linear: bool,
+        /// Whether the struct was declared `linear` in source. Anonymous and
+        /// builtin nominals cannot be, so their producers pass `false`; the
+        /// named durable path carries the declaration bit verbatim.
+        declared_linear: bool,
         destructor: Option<FunctionInstanceKey<K, M>>,
     },
     Enum {
@@ -1260,6 +1264,7 @@ where
                             fields: vec![],
                             is_copy: false,
                             is_linear: false,
+                            declared_linear: false,
                             destructor: None,
                             is_builtin: false,
                             is_pub: nominal.is_public,
@@ -1309,6 +1314,7 @@ where
                 ],
                 is_copy: true,
                 is_linear: false,
+                declared_linear: false,
                 destructor: None,
                 is_builtin: true,
                 is_pub: true,
@@ -1440,6 +1446,7 @@ where
                             fields: Vec::new(),
                             is_copy: false,
                             is_linear: false,
+                            declared_linear: false,
                             destructor: None,
                             is_builtin: builtin_key.is_some(),
                             is_pub: nominal.is_public,
@@ -1671,6 +1678,7 @@ where
                     ],
                     is_copy: true,
                     is_linear: false,
+                    declared_linear: false,
                     destructor: None,
                     is_builtin: true,
                     is_pub: true,
@@ -1790,6 +1798,7 @@ where
                             ],
                             is_copy: true,
                             is_linear: false,
+                            declared_linear: false,
                             destructor: None,
                             is_builtin: true,
                             is_pub: true,
@@ -2041,12 +2050,14 @@ where
         fields: &[(Arc<str>, SemanticImportType<K, M>)],
         is_copy: bool,
         is_linear: bool,
+        declared_linear: bool,
     ) -> Result<(), SemanticImportFailure> {
         self.complete_nominal_struct(
             &NominalInstanceKey::Named(key.clone()),
             fields,
             is_copy,
             is_linear,
+            declared_linear,
         )
     }
 
@@ -2056,9 +2067,17 @@ where
         fields: &[(Arc<str>, SemanticImportType<K, M>)],
         is_copy: bool,
         is_linear: bool,
+        declared_linear: bool,
     ) -> Result<(), SemanticImportFailure> {
         self.type_pool.transaction(|type_pool| {
-            self.complete_nominal_struct_in_pool(type_pool, key, fields, is_copy, is_linear)
+            self.complete_nominal_struct_in_pool(
+                type_pool,
+                key,
+                fields,
+                is_copy,
+                is_linear,
+                declared_linear,
+            )
         })
     }
 
@@ -2069,6 +2088,7 @@ where
         fields: &[(Arc<str>, SemanticImportType<K, M>)],
         is_copy: bool,
         is_linear: bool,
+        declared_linear: bool,
     ) -> Result<(), SemanticImportFailure> {
         let LocalNominal::Struct(id) = self
             .nominals
@@ -2101,6 +2121,7 @@ where
                 fields,
                 is_copy,
                 is_linear,
+                declared_linear,
                 destructor: metadata.destructor,
                 is_builtin: metadata.is_builtin,
                 is_pub: metadata.is_pub,
@@ -2187,6 +2208,7 @@ where
                         fields,
                         is_copy,
                         is_linear,
+                        declared_linear,
                         destructor,
                     } => {
                         self.complete_nominal_struct_in_pool(
@@ -2195,6 +2217,7 @@ where
                             fields,
                             *is_copy,
                             *is_linear,
+                            *declared_linear,
                         )?;
                         if let Some(destructor) = destructor {
                             let symbol = self
@@ -2467,8 +2490,10 @@ mod tests {
             vec!["pkg/main.rue"],
         )
         .unwrap();
-        a.complete_struct(&"node", &[], false, false).unwrap();
-        b.complete_struct(&"node", &[], false, false).unwrap();
+        a.complete_struct(&"node", &[], false, false, false)
+            .unwrap();
+        b.complete_struct(&"node", &[], false, false, false)
+            .unwrap();
         let durable = ImportType::PtrConst(Box::new(ImportType::Nominal("node")));
         let ta = a.import_type(&durable).unwrap();
         let tb = b.import_type(&durable).unwrap();
@@ -2524,16 +2549,16 @@ mod tests {
             ImportType::PtrMut(Box::new(ImportType::Nominal("left"))),
         )];
         first
-            .complete_struct(&"left", &left_fields, false, false)
+            .complete_struct(&"left", &left_fields, false, false, false)
             .unwrap();
         first
-            .complete_struct(&"right", &right_fields, false, false)
+            .complete_struct(&"right", &right_fields, false, false, false)
             .unwrap();
         second
-            .complete_struct(&"right", &right_fields, false, false)
+            .complete_struct(&"right", &right_fields, false, false, false)
             .unwrap();
         second
-            .complete_struct(&"left", &left_fields, false, false)
+            .complete_struct(&"left", &left_fields, false, false, false)
             .unwrap();
         for key in ["left", "right"] {
             let ty = ImportType::Nominal(key);
@@ -2547,7 +2572,7 @@ mod tests {
         };
         assert!(first.type_pool().try_struct_def(left).is_some());
         assert_eq!(
-            first.complete_struct(&"left", &left_fields, false, false),
+            first.complete_struct(&"left", &left_fields, false, false, false),
             Err(SemanticImportFailure::NominalAlreadyComplete)
         );
     }
@@ -2606,7 +2631,7 @@ mod tests {
         ];
 
         assert_eq!(
-            epoch.complete_struct(&"node", &fields, false, false),
+            epoch.complete_struct(&"node", &fields, false, false, false),
             Err(SemanticImportFailure::InvalidStructuralType)
         );
         assert_eq!(epoch.type_pool().stats(), before);
@@ -2669,6 +2694,7 @@ mod tests {
                     )]),
                     is_copy: false,
                     is_linear: false,
+                    declared_linear: false,
                     destructor: None,
                 },
             },
@@ -2686,6 +2712,7 @@ mod tests {
                     )]),
                     is_copy: false,
                     is_linear: false,
+                    declared_linear: false,
                     destructor: None,
                 },
             },
@@ -2790,7 +2817,9 @@ mod tests {
             vec!["pkg/main.rue"],
         )
         .unwrap();
-        epoch.complete_struct(&"node", &[], false, false).unwrap();
+        epoch
+            .complete_struct(&"node", &[], false, false, false)
+            .unwrap();
         let values = [
             ImportType::Array {
                 element: Box::new(ImportType::PtrConst(Box::new(ImportType::Nominal("node")))),
@@ -2849,6 +2878,7 @@ mod tests {
                     fields: Arc::new([]),
                     is_copy: false,
                     is_linear: false,
+                    declared_linear: false,
                     destructor: None,
                 },
             })
@@ -2873,6 +2903,7 @@ mod tests {
                 fields: Arc::new([]),
                 is_copy: false,
                 is_linear: false,
+                declared_linear: false,
                 destructor: None,
             },
         });
@@ -3378,6 +3409,7 @@ mod tests {
                     fields: Arc::new([]),
                     is_copy: true,
                     is_linear: false,
+                    declared_linear: false,
                     destructor: None,
                 },
             }],
@@ -3423,6 +3455,7 @@ mod tests {
                 fields: Arc::new([]),
                 is_copy: false,
                 is_linear: false,
+                declared_linear: false,
                 destructor: None,
             },
         };
@@ -3497,6 +3530,7 @@ mod tests {
                     fields: Arc::new([]),
                     is_copy: false,
                     is_linear: false,
+                    declared_linear: false,
                     destructor: Some(identity.clone()),
                 },
             }],
@@ -3666,6 +3700,7 @@ mod tests {
                     fields: Arc::new([]),
                     is_copy: false,
                     is_linear: false,
+                    declared_linear: false,
                     destructor: None,
                 },
             },

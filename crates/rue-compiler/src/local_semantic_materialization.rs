@@ -1024,6 +1024,10 @@ pub(crate) fn materialize_semantic_body_with_indexes(
                     fields: fields.clone(),
                     is_copy: *is_copy,
                     is_linear: *is_linear,
+                    // The durable declaration payload carries the source
+                    // declaration bit verbatim; the infectious-containment
+                    // join happens later, in the completed local type pool.
+                    declared_linear: *is_linear,
                     destructor: destructor_for(&declaration.key),
                 },
             ),
@@ -1076,6 +1080,7 @@ pub(crate) fn materialize_semantic_body_with_indexes(
                         // derived by the completed local type pool.
                         is_copy: false,
                         is_linear: false,
+                        declared_linear: false,
                         destructor,
                     },
                 )
@@ -1120,6 +1125,10 @@ pub(crate) fn materialize_semantic_body_with_indexes(
                         .into(),
                     is_copy: fact.facts.is_copy,
                     is_linear: fact.facts.carries_linear,
+                    // `TypeFacts` has no declaration bit — `carries_linear` is
+                    // already the containment join. That is fine here: builtin
+                    // nominals are anonymous and can never be declared linear.
+                    declared_linear: false,
                     destructor: fact.facts.destructor.clone(),
                 },
             ),
@@ -1165,6 +1174,7 @@ pub(crate) fn materialize_semantic_body_with_indexes(
                     .into(),
                     is_copy: true,
                     is_linear: false,
+                    declared_linear: false,
                     destructor: None,
                 },
             ),
