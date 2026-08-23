@@ -1938,11 +1938,26 @@ pub(crate) fn apply_general_inlining(
         );
     }
     let recursive = recursive_scc_nodes(&graph);
+    // Membership and by-key lookup only; `records` keeps its ordered iteration
+    // above, and `recursive` its ordered construction. Both are probed once per
+    // call site below, where a `BTree` probe means walking a recursive identity.
+    let recursive_set: ahash::AHashSet<&crate::FunctionInstanceKey> = recursive.iter().collect();
+    let record_lookup: ahash::AHashMap<&crate::FunctionInstanceKey, _> = records.iter().collect();
+    // `eligible` is asked once per call site, and used to end in a linear scan
+    // of every key in the batch comparing recursive function identities. On
+    // Lattice that is 1,280 keys per question, and it made this pass the
+    // largest source of `FunctionInstanceKey` equality in the whole compile.
+    // The first match wins here exactly as `Iterator::find` did.
+    let mut key_by_function: ahash::AHashMap<&crate::FunctionInstanceKey, &OptimizedCfgQueryKey> =
+        ahash::AHashMap::with_capacity(keys.len());
+    for key in keys.iter() {
+        key_by_function.entry(&key.cfg.function).or_insert(key);
+    }
     let eligible = |function: &crate::FunctionInstanceKey| {
-        let Some(record) = records.get(function) else {
+        let Some(record) = record_lookup.get(function).copied() else {
             return false;
         };
-        if recursive.contains(function)
+        if recursive_set.contains(function)
             || has_calls.get(function).copied().unwrap_or(true)
             || !phase2_size_eligible(record.cfg.value_count())
         {
@@ -1952,9 +1967,8 @@ pub(crate) fn apply_general_inlining(
             return false;
         }
         matches!(
-            &keys
-                .iter()
-                .find(|key| key.cfg.function == *function)
+            &key_by_function
+                .get(function)
                 .map(|key| &key.cfg.semantic_input),
             Some(CfgSemanticInput::Body { input, .. }) if !canonical_body(&input.canonical).is_accessor
         )
@@ -1968,17 +1982,20 @@ pub(crate) fn apply_general_inlining(
         let Some(sites) = callsites.get(function) else {
             continue;
         };
+        // The caller's own record is the same for every site in this
+        // iteration, so it is resolved once rather than per site.
+        let caller_record = record_lookup.get(function).copied();
         let selected = sites
             .iter()
             .filter(|(call, callee)| {
                 eligible(callee)
-                    && records.get(callee).is_some_and(|callee| {
+                    && record_lookup.get(callee).copied().is_some_and(|callee| {
                         // CFG calls carry physical argument values. A
                         // zero-width source parameter can therefore make
                         // the physical count differ; the Phase-2 policy
                         // excludes that ABI shape rather than handing it
                         // to the source-parameter splice primitive.
-                        records.get(function).is_some_and(|caller| {
+                        caller_record.is_some_and(|caller| {
                             caller
                                 .cfg
                                 .get_call_args(&caller.cfg.get_inst(*call).data)
