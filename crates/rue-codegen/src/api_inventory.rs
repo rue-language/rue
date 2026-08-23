@@ -92,3 +92,14 @@ fn production_codegen_does_not_call_frozen_declaration_test_adapters() {
         }
     }
 }
+
+#[test]
+fn value_planning_uses_the_air_integer_semantics_kernel() {
+    let source = include_str!("value_plan.rs");
+    assert!(source.contains("ty.integer_semantics().map(Into::into)"));
+    assert!(source.contains("IntegerType::new"));
+    assert!(source.contains(".shift_count_mask()"));
+    assert!(!source.contains("TypeKind::I8 | TypeKind::U8 => 8"));
+    assert!(!source.contains("(8, true) => (i8::MIN"));
+    assert!(!source.contains("type_bits(ty) - 1"));
+}

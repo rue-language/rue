@@ -116,6 +116,7 @@ pub(super) fn validate_comptime_value_for_type_impl(
     Ok(())
 }
 use super::{DeferredOwnershipGate, DeferredOwnershipGateKind};
+use crate::integer_semantics::CheckedIntegerResult;
 use crate::specialize::MAX_SPECIALIZATION_ROUNDS;
 use crate::types::{ArrayLen, StructField, Type, TypeKind};
 
@@ -297,25 +298,8 @@ fn const_pattern_matches(pattern: &rue_rir::RirPatternView<'_>, scrut: ConstValu
 
 /// Check whether `value` is representable in integer type `ty`.
 pub(crate) fn const_int_fits(value: i128, ty: Type) -> bool {
-    match (ty.int_min(), ty.int_max()) {
-        (Some(min), Some(max)) => value >= min && value <= max,
-        _ => false,
-    }
-}
-
-/// Truncate `value` to the width of integer type `ty` (two's complement
-/// wrapping, sign-extended for signed types). Mirrors what the hardware does
-/// for operations defined to truncate (shifts, bitwise NOT on unsigned).
-fn truncate_to_type(value: i128, ty: Type) -> i128 {
-    let width = ty
-        .int_bit_width()
-        .expect("truncate_to_type called with non-integer type");
-    let mask = (1i128 << width) - 1;
-    let mut r = value & mask;
-    if ty.is_signed() && (r & (1i128 << (width - 1))) != 0 {
-        r -= 1i128 << width;
-    }
-    r
+    ty.integer_semantics()
+        .is_some_and(|integer| integer.fits_i128(value))
 }
 
 /// Build the E1200 error for a constant operation that would panic at runtime.
@@ -463,8 +447,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .filter(Type::is_integer)
     }
 
-    /// Finish an arithmetic operation: range-check `value` against the
-    /// expression's type.
+    /// Finish an arithmetic operation using the kernel's typed result and its
+    /// available raw mathematical result for diagnostics.
     ///
     /// - Typed: out-of-range results are a hard error (the operation would
     ///   panic at runtime, spec 8.1 / 4.14:4).
@@ -472,17 +456,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ///   expression non-evaluable (legacy checked-i64 semantics).
     fn finish_arith(
         &self,
-        value: Option<i128>,
+        result: CheckedIntegerResult,
         ty: Option<Type>,
         op: &str,
         span: Span,
     ) -> CompileResult<Option<ConstValue>> {
         match ty {
-            Some(ty) => match value {
-                Some(v) if const_int_fits(v, ty) => Ok(Some(ConstValue::Integer(v))),
+            Some(ty) => match result.checked() {
+                Some(v) => Ok(Some(ConstValue::Integer(v))),
                 _ => {
                     let ty_name = ty.safe_name_with_pool(Some(self.body_type_pool()));
-                    let detail = match value {
+                    let detail = match result.raw() {
                         Some(v) => format!("the result {} does not fit in {}", v, ty_name),
                         None => format!("the result does not fit in {}", ty_name),
                     };
@@ -496,7 +480,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ))
                 }
             },
-            None => match value {
+            None => match result.raw() {
                 Some(v) if v >= i128::from(i64::MIN) && v <= i128::from(i64::MAX) => {
                     Ok(Some(ConstValue::Integer(v)))
                 }
@@ -611,18 +595,27 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         ));
                     }
                 }
-                // Negated literals bypass the literal range check so that
-                // `-128` works for i8 (the magnitude alone exceeds i8::MAX).
-                let operand_value =
-                    if let InstData::IntConst(mag) = &self.body_rir_ref().get(*operand).data {
-                        Some(ConstValue::Integer(*mag as i128))
-                    } else {
-                        self.eval_const_expr(*operand, env)?
-                    };
-                match operand_value {
-                    Some(ConstValue::Integer(n)) => self.finish_arith(Some(-n), ty, "-", span),
-                    // Can't negate a boolean, type, or unit
-                    _ => Ok(None),
+                if let InstData::IntConst(magnitude) = &self.body_rir_ref().get(*operand).data {
+                    // The literal path uses mathematical magnitude semantics:
+                    // unlike an ordinary runtime value, `128` must not first
+                    // canonicalize to -128 before becoming `-128`.
+                    let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
+                        || CheckedIntegerResult::from_raw((*magnitude as i128).checked_neg()),
+                        |integer| integer.checked_neg_literal_report_i128(*magnitude as i128),
+                    );
+                    self.finish_arith(result, ty, "-", span)
+                } else {
+                    match self.eval_const_expr(*operand, env)? {
+                        Some(ConstValue::Integer(n)) => {
+                            let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
+                                || CheckedIntegerResult::from_raw(n.checked_neg()),
+                                |integer| integer.checked_neg_report_i128(n),
+                            );
+                            self.finish_arith(result, ty, "-", span)
+                        }
+                        // Can't negate a boolean, type, or unit
+                        _ => Ok(None),
+                    }
                 }
             }
 
@@ -641,21 +634,33 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Ok(None);
                 };
                 let ty = self.const_expr_type(env, inst_ref);
-                self.finish_arith(l.checked_add(r), ty, "+", span)
+                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
+                    || CheckedIntegerResult::from_raw(l.checked_add(r)),
+                    |integer| integer.checked_add_report_i128(l, r),
+                );
+                self.finish_arith(result, ty, "+", span)
             }
             InstData::Sub { lhs, rhs } => {
                 let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
                     return Ok(None);
                 };
                 let ty = self.const_expr_type(env, inst_ref);
-                self.finish_arith(l.checked_sub(r), ty, "-", span)
+                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
+                    || CheckedIntegerResult::from_raw(l.checked_sub(r)),
+                    |integer| integer.checked_sub_report_i128(l, r),
+                );
+                self.finish_arith(result, ty, "-", span)
             }
             InstData::Mul { lhs, rhs } => {
                 let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
                     return Ok(None);
                 };
                 let ty = self.const_expr_type(env, inst_ref);
-                self.finish_arith(l.checked_mul(r), ty, "*", span)
+                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
+                    || CheckedIntegerResult::from_raw(l.checked_mul(r)),
+                    |integer| integer.checked_mul_report_i128(l, r),
+                );
+                self.finish_arith(result, ty, "*", span)
             }
             InstData::Div { lhs, rhs } | InstData::Mod { lhs, rhs } => {
                 let is_div = matches!(&inst.data, InstData::Div { .. });
@@ -675,17 +680,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         None => Ok(None),
                     };
                 }
-                // Signed MIN / -1 (and MIN % -1) overflow at runtime, spec 8.1:3.
-                if r == -1 {
-                    match ty {
-                        Some(t) if t.is_signed() && Some(l) == t.int_min() => {
-                            return self.finish_arith(None, ty, op, span);
-                        }
-                        None if l == i128::from(i64::MIN) => return Ok(None),
-                        _ => {}
-                    }
+                // Untyped evaluation retains its historical i64 fallback;
+                // typed MIN / -1 trapping is owned by the kernel report.
+                if r == -1 && ty.is_none() && l == i128::from(i64::MIN) {
+                    return Ok(None);
                 }
-                self.finish_arith(Some(if is_div { l / r } else { l % r }), ty, op, span)
+                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
+                    || {
+                        CheckedIntegerResult::from_raw(if is_div {
+                            l.checked_div(r)
+                        } else {
+                            l.checked_rem(r)
+                        })
+                    },
+                    |integer| {
+                        if is_div {
+                            integer.checked_div_report_i128(l, r)
+                        } else {
+                            integer.checked_rem_report_i128(l, r)
+                        }
+                    },
+                );
+                self.finish_arith(result, ty, op, span)
             }
 
             // Comparison operations
@@ -791,21 +807,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 };
                 match self.const_expr_type(env, inst_ref) {
                     Some(ty) => {
-                        let width = ty
-                            .int_bit_width()
+                        let integer = ty
+                            .integer_semantics()
                             .expect("const_expr_type returned non-integer");
                         // Two's-complement AND masks negative amounts the same
                         // way the hardware masks the count register.
-                        let amt = (r & i128::from(width - 1)) as u32;
-                        let v = if is_shl {
-                            // Wrapping shift + truncation: the low `width`
-                            // bits are exact, which is all that survives.
-                            truncate_to_type(l.wrapping_shl(amt), ty)
-                        } else {
-                            // Value semantics make this arithmetic for signed
-                            // (negative l) and logical for unsigned (l >= 0).
-                            l >> amt
-                        };
+                        let v = integer.shift_i128(l, r, is_shl);
                         Ok(Some(ConstValue::Integer(v)))
                     }
                     None => {
@@ -833,7 +840,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Ok(None);
                 };
                 let v = match self.const_expr_type(env, inst_ref) {
-                    Some(ty) => truncate_to_type(!n, ty),
+                    Some(ty) => ty
+                        .integer_semantics()
+                        .expect("bitnot requires an integer type")
+                        .bitnot_i128(n),
                     None => !n,
                 };
                 Ok(Some(ConstValue::Integer(v)))

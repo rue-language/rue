@@ -18,6 +18,7 @@ pub mod drop_glue_names;
 pub mod ffi_predicates;
 mod inference;
 mod inst;
+pub mod integer_semantics;
 mod intern_pool;
 pub mod layout;
 mod module_registry;
@@ -59,6 +60,7 @@ pub use inst::{
     AirRef, AirSourceOrder, AirStructFields, AirTypeArgs, AirValidationContext, AirValidationError,
     AirValidationErrorKind, MAX_AIR_INSTRUCTIONS_PER_BODY, ValidatedAir,
 };
+pub use integer_semantics::IntegerType;
 pub use intern_pool::{
     EnumData, EnumDefEntry, FrozenTypeInternPool, MAX_COMPOSITE_TYPES, StructData, StructDefEntry,
     TypeData, TypeInternPool, TypeInternPoolStats, TypeValidationError,

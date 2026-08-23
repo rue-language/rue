@@ -88,3 +88,22 @@ fn cfg_uses_air_synthetic_type_identity_policy() {
         }
     }
 }
+
+#[test]
+fn constant_folding_uses_the_air_integer_semantics_kernel() {
+    let source = include_str!("opt/constfold.rs");
+    assert!(source.contains("integer_semantics()"));
+    assert!(source.contains("compare_u64"));
+    for helper in [
+        "fn type_bits(",
+        "fn is_signed(",
+        "fn sign_extend(",
+        "fn fits_in_signed_type(",
+        "fn fits_in_unsigned_type(",
+    ] {
+        assert!(
+            !source.contains(helper),
+            "const folding regained local helper {helper}"
+        );
+    }
+}

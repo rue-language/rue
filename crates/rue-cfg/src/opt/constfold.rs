@@ -17,8 +17,10 @@
 //! Arithmetic operations that would overflow at runtime are NOT folded.
 //! This ensures the runtime panic behavior is preserved.
 
+use std::cmp::Ordering;
+
 use crate::{Cfg, CfgInstData, CfgValue};
-use rue_air::{EnumId, Type, TypeKind};
+use rue_air::{EnumId, Type};
 
 /// Try to fold a single instruction if it operates on constants.
 /// Returns `true` if the instruction was replaced by a constant.
@@ -54,18 +56,18 @@ pub(super) fn fold_instruction(cfg: &mut Cfg, value: CfgValue) -> bool {
                 })
         }
         CfgInstData::WrappingAdd(lhs, rhs) => fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| {
-            Some(truncate_to_type(a.wrapping_add(b), ty))
+            Some(ty.integer_semantics()?.wrapping_add_u64(a, b))
         }),
         CfgInstData::WrappingSub(lhs, rhs) => {
             fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| {
-                Some(truncate_to_type(a.wrapping_sub(b), ty))
+                Some(ty.integer_semantics()?.wrapping_sub_u64(a, b))
             })
             // x wrapping_sub x is always zero and cannot trap.
             .or_else(|| (lhs == rhs).then_some(CfgInstData::Const(0)))
         }
         CfgInstData::WrappingMul(lhs, rhs) => {
             fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| {
-                Some(truncate_to_type(a.wrapping_mul(b), ty))
+                Some(ty.integer_semantics()?.wrapping_mul_u64(a, b))
             })
             // Wrapping multiplication never traps, so either zero operand
             // annihilates the result even when the other operand is dynamic.
@@ -99,19 +101,27 @@ pub(super) fn fold_instruction(cfg: &mut Cfg, value: CfgValue) -> bool {
         }
         CfgInstData::Lt(lhs, rhs) => {
             let lhs_ty = cfg.get_inst(*lhs).ty;
-            fold_comparison_signed(cfg, *lhs, *rhs, lhs_ty, |a, b| a < b, |a, b| a < b)
+            fold_comparison_ordered(cfg, *lhs, *rhs, lhs_ty, |ordering| {
+                ordering == Ordering::Less
+            })
         }
         CfgInstData::Gt(lhs, rhs) => {
             let lhs_ty = cfg.get_inst(*lhs).ty;
-            fold_comparison_signed(cfg, *lhs, *rhs, lhs_ty, |a, b| a > b, |a, b| a > b)
+            fold_comparison_ordered(cfg, *lhs, *rhs, lhs_ty, |ordering| {
+                ordering == Ordering::Greater
+            })
         }
         CfgInstData::Le(lhs, rhs) => {
             let lhs_ty = cfg.get_inst(*lhs).ty;
-            fold_comparison_signed(cfg, *lhs, *rhs, lhs_ty, |a, b| a <= b, |a, b| a <= b)
+            fold_comparison_ordered(cfg, *lhs, *rhs, lhs_ty, |ordering| {
+                ordering != Ordering::Greater
+            })
         }
         CfgInstData::Ge(lhs, rhs) => {
             let lhs_ty = cfg.get_inst(*lhs).ty;
-            fold_comparison_signed(cfg, *lhs, *rhs, lhs_ty, |a, b| a >= b, |a, b| a >= b)
+            fold_comparison_ordered(cfg, *lhs, *rhs, lhs_ty, |ordering| {
+                ordering != Ordering::Less
+            })
         }
 
         // Bitwise
@@ -138,9 +148,9 @@ pub(super) fn fold_instruction(cfg: &mut Cfg, value: CfgValue) -> bool {
         // `!v` flips all 64 stored bits, but the operation is defined at the
         // operand's width; truncate so the folded constant matches what the
         // runtime computes (RUE-59).
-        CfgInstData::BitNot(operand) => {
-            fold_unary_arith(cfg, *operand, ty, |v| Some(truncate_to_type(!v, ty)))
-        }
+        CfgInstData::BitNot(operand) => fold_unary_arith(cfg, *operand, ty, |v| {
+            Some(ty.integer_semantics()?.bitnot_u64(v))
+        }),
 
         // Everything else is not foldable
         _ => None,
@@ -216,30 +226,24 @@ where
     }
 }
 
-/// Try to fold a comparison that needs signed semantics for signed types.
-fn fold_comparison_signed<Fs, Fu>(
+/// Try to fold an ordered integer comparison through the shared semantics
+/// kernel.  `compare_u64` interprets the same canonical register image as the
+/// language does, including signed narrow values.
+fn fold_comparison_ordered<F>(
     cfg: &Cfg,
     lhs: CfgValue,
     rhs: CfgValue,
     ty: Type,
-    signed_op: Fs,
-    unsigned_op: Fu,
+    op: F,
 ) -> Option<CfgInstData>
 where
-    Fs: FnOnce(i64, i64) -> bool,
-    Fu: FnOnce(u64, u64) -> bool,
+    F: FnOnce(Ordering) -> bool,
 {
     let lhs_val = get_const_int(cfg, lhs)?;
     let rhs_val = get_const_int(cfg, rhs)?;
 
-    let result = if is_signed(ty) {
-        // Sign-extend the values to i64 based on the type
-        let lhs_signed = sign_extend(lhs_val, ty) as i64;
-        let rhs_signed = sign_extend(rhs_val, ty) as i64;
-        signed_op(lhs_signed, rhs_signed)
-    } else {
-        unsigned_op(lhs_val, rhs_val)
-    };
+    let integer = ty.integer_semantics()?;
+    let result = op(integer.compare_u64(lhs_val, rhs_val));
 
     Some(CfgInstData::BoolConst(result))
 }
@@ -255,31 +259,8 @@ fn fold_shift(
     let lhs_val = get_const_int(cfg, lhs)?;
     let rhs_val = get_const_int(cfg, rhs)?;
 
-    // Shift amount must be less than the bit width
-    let bits = type_bits(ty);
-    // A shift amount >= the bit width is masked modulo the width at runtime
-    // (spec 4.3a:10), consistent with dce.rs treating shifts as non-trapping —
-    // it is NOT UB. This fold path assumes rhs < bits (it does not re-narrow the
-    // result for the masked count), so defer the masked case to the backend,
-    // which masks the count correctly.
-    if rhs_val >= bits as u64 {
-        return None;
-    }
-
-    let result = if is_left {
-        lhs_val << rhs_val
-    } else if is_signed(ty) {
-        // Arithmetic right shift for signed types.
-        // Must sign-extend narrow types to i64 before shifting.
-        let signed_val = sign_extend(lhs_val, ty) as i64;
-        (signed_val >> rhs_val) as u64
-    } else {
-        // Logical right shift for unsigned types
-        lhs_val >> rhs_val
-    };
-
-    // Truncate to the type's bit width (canonical representation)
-    let result = truncate_to_type(result, ty);
+    let integer = ty.integer_semantics()?;
+    let result = integer.shift_u64(lhs_val, rhs_val, is_left);
     Some(CfgInstData::Const(result))
 }
 
@@ -336,206 +317,38 @@ fn get_enum_variant(cfg: &Cfg, value: CfgValue) -> Option<(EnumId, u32, u32)> {
     }
 }
 
-/// Check if a type is signed.
-fn is_signed(ty: Type) -> bool {
-    matches!(
-        ty.kind(),
-        TypeKind::I8 | TypeKind::I16 | TypeKind::I32 | TypeKind::I64
-    )
-}
-
-/// Get the bit width of a type.
-fn type_bits(ty: Type) -> u32 {
-    match ty.kind() {
-        TypeKind::I8 | TypeKind::U8 => 8,
-        TypeKind::I16 | TypeKind::U16 => 16,
-        TypeKind::I32 | TypeKind::U32 => 32,
-        TypeKind::I64 | TypeKind::U64 => 64,
-        TypeKind::Bool => 1,
-        _ => 64, // Default for other types
-    }
-}
-
-/// Truncate a value to a type's width, producing the canonical 64-bit
-/// representation: zero-extended for unsigned types, sign-extended for
-/// signed types.
-///
-/// All folds must produce canonical constants. The checked arithmetic
-/// helpers already do (signed results come out of an `i64 as u64` cast,
-/// i.e. sign-extended), and Eq/Ne folding compares raw u64 representations,
-/// so a non-canonical constant — an unmasked `!v`, or a masked-but-not-
-/// extended negative shift result — yields wrong folds and -O0 vs -O1+
-/// divergence (RUE-59).
-fn truncate_to_type(val: u64, ty: Type) -> u64 {
-    let masked = mask_to_type(val, ty);
-    if is_signed(ty) {
-        sign_extend(masked, ty)
-    } else {
-        masked
-    }
-}
-
-/// Mask a value to the bit width of a type.
-fn mask_to_type(val: u64, ty: Type) -> u64 {
-    match ty.kind() {
-        TypeKind::I8 | TypeKind::U8 => val & 0xFF,
-        TypeKind::I16 | TypeKind::U16 => val & 0xFFFF,
-        TypeKind::I32 | TypeKind::U32 => val & 0xFFFF_FFFF,
-        TypeKind::I64 | TypeKind::U64 => val,
-        _ => val,
-    }
-}
-
 // ============================================================================
 // Checked arithmetic (returns None if would overflow)
 // ============================================================================
 
 fn checked_add(a: u64, b: u64, ty: Type) -> Option<u64> {
-    if is_signed(ty) {
-        let (a, b) = sign_extend_operands(a, b, ty);
-        let result = (a as i64).checked_add(b as i64)?;
-        // Check for overflow in the target type
-        if !fits_in_signed_type(result, ty) {
-            return None;
-        }
-        Some(result as u64)
-    } else {
-        let result = a.checked_add(b)?;
-        if !fits_in_unsigned_type(result, ty) {
-            return None;
-        }
-        Some(result)
-    }
+    ty.integer_semantics()?.checked_add_u64(a, b)
 }
 
 fn checked_sub(a: u64, b: u64, ty: Type) -> Option<u64> {
-    if is_signed(ty) {
-        let (a, b) = sign_extend_operands(a, b, ty);
-        let result = (a as i64).checked_sub(b as i64)?;
-        if !fits_in_signed_type(result, ty) {
-            return None;
-        }
-        Some(result as u64)
-    } else {
-        a.checked_sub(b)
-    }
+    ty.integer_semantics()?.checked_sub_u64(a, b)
 }
 
 fn checked_mul(a: u64, b: u64, ty: Type) -> Option<u64> {
-    if is_signed(ty) {
-        let (a, b) = sign_extend_operands(a, b, ty);
-        let result = (a as i64).checked_mul(b as i64)?;
-        if !fits_in_signed_type(result, ty) {
-            return None;
-        }
-        Some(result as u64)
-    } else {
-        let result = a.checked_mul(b)?;
-        if !fits_in_unsigned_type(result, ty) {
-            return None;
-        }
-        Some(result)
-    }
+    ty.integer_semantics()?.checked_mul_u64(a, b)
 }
 
 fn checked_div(a: u64, b: u64, ty: Type) -> Option<u64> {
     if b == 0 {
         return None; // Division by zero - don't fold
     }
-    if is_signed(ty) {
-        let (a, b) = sign_extend_operands(a, b, ty);
-        // MIN / -1 overflows: the quotient -MIN is unrepresentable.
-        // checked_div only catches the i64 case; for narrower types the
-        // quotient (e.g. i32::MIN / -1 = 2^31) is a valid i64 that is merely
-        // out of range, so verify it fits like checked_mul does. Refusing to
-        // fold preserves the mandatory runtime overflow trap (RUE-147).
-        let result = (a as i64).checked_div(b as i64)?;
-        if !fits_in_signed_type(result, ty) {
-            return None;
-        }
-        Some(result as u64)
-    } else {
-        Some(a / b)
-    }
+    ty.integer_semantics()?.checked_div_u64(a, b)
 }
 
 fn checked_mod(a: u64, b: u64, ty: Type) -> Option<u64> {
     if b == 0 {
         return None; // Division by zero - don't fold
     }
-    if is_signed(ty) {
-        let (a, b) = sign_extend_operands(a, b, ty);
-        // MIN % -1 overflows just like MIN / -1 (the implied quotient -MIN is
-        // unrepresentable), even though the remainder itself would be 0.
-        // checked_rem only catches the i64 case, so verify the quotient fits
-        // the target type; refusing to fold preserves the runtime overflow
-        // trap (RUE-147).
-        let quotient = (a as i64).checked_div(b as i64)?;
-        if !fits_in_signed_type(quotient, ty) {
-            return None;
-        }
-        let result = (a as i64).checked_rem(b as i64)?;
-        Some(result as u64)
-    } else {
-        Some(a % b)
-    }
+    ty.integer_semantics()?.checked_rem_u64(a, b)
 }
 
 fn checked_neg(a: u64, ty: Type) -> Option<u64> {
-    if is_signed(ty) {
-        let a = sign_extend(a, ty);
-        let result = (a as i64).checked_neg()?;
-        if !fits_in_signed_type(result, ty) {
-            return None;
-        }
-        Some(result as u64)
-    } else {
-        // Unsigned negation: 0 - a, wrapping
-        // Only 0 doesn't overflow
-        if a == 0 {
-            Some(0)
-        } else {
-            None // Would underflow
-        }
-    }
-}
-
-/// Sign-extend a value based on its type.
-fn sign_extend(val: u64, ty: Type) -> u64 {
-    match ty.kind() {
-        TypeKind::I8 => (val as i8) as i64 as u64,
-        TypeKind::I16 => (val as i16) as i64 as u64,
-        TypeKind::I32 => (val as i32) as i64 as u64,
-        TypeKind::I64 => val,
-        _ => val,
-    }
-}
-
-/// Sign-extend both operands.
-fn sign_extend_operands(a: u64, b: u64, ty: Type) -> (u64, u64) {
-    (sign_extend(a, ty), sign_extend(b, ty))
-}
-
-/// Check if a signed result fits in the target type.
-fn fits_in_signed_type(val: i64, ty: Type) -> bool {
-    match ty.kind() {
-        TypeKind::I8 => val >= i8::MIN as i64 && val <= i8::MAX as i64,
-        TypeKind::I16 => val >= i16::MIN as i64 && val <= i16::MAX as i64,
-        TypeKind::I32 => val >= i32::MIN as i64 && val <= i32::MAX as i64,
-        TypeKind::I64 => true, // i64 can hold any i64
-        _ => true,
-    }
-}
-
-/// Check if an unsigned result fits in the target type.
-fn fits_in_unsigned_type(val: u64, ty: Type) -> bool {
-    match ty.kind() {
-        TypeKind::U8 => val <= u8::MAX as u64,
-        TypeKind::U16 => val <= u16::MAX as u64,
-        TypeKind::U32 => val <= u32::MAX as u64,
-        TypeKind::U64 => true,
-        _ => true,
-    }
+    ty.integer_semantics()?.checked_neg_u64(a)
 }
 
 #[cfg(test)]
@@ -936,6 +749,24 @@ mod tests {
         match &cfg.get_inst(shr).data {
             CfgInstData::Const(val) => {
                 assert_eq!(*val, 0x7F, "Expected 0x7F, got 0x{:X}", val);
+            }
+            other => panic!("Expected Const, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_fold_shift_count_is_masked_at_operand_width() {
+        let mut cfg = make_cfg();
+        let c1 = add_const(&mut cfg, 0x81, Type::U8);
+        let c2 = add_const(&mut cfg, 8, Type::U8);
+        let shr = add_shr(&mut cfg, c1, c2, Type::U8);
+        finalize_cfg(&mut cfg, shr);
+
+        crate::opt::constopt::run(&mut cfg);
+
+        match &cfg.get_inst(shr).data {
+            CfgInstData::Const(value) => {
+                assert_eq!(*value, 0x81, "8 is masked to shift count zero for u8");
             }
             other => panic!("Expected Const, got {:?}", other),
         }

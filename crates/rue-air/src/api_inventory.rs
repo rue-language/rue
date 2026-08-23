@@ -14,6 +14,25 @@ fn peer_one_body_authority_cannot_return() {
 }
 
 #[test]
+fn integer_consumers_use_one_representation_independent_kernel() {
+    let semantics = include_str!("integer_semantics.rs");
+    let types = include_str!("types.rs");
+    let comptime = include_str!("sema/comptime_eval.rs");
+
+    assert!(types.contains("pub fn integer_semantics(&self) -> Option<IntegerType>"));
+    assert!(comptime.contains("integer.shift_i128"));
+    assert!(comptime.contains("integer_semantics()"));
+    assert!(!comptime.contains("fn truncate_to_type("));
+    assert!(semantics.contains("pub struct IntegerType"));
+    assert!(semantics.contains("pub fn checked_div_i128"));
+    assert!(semantics.contains("pub fn checked_rem_i128"));
+    assert!(semantics.contains("pub struct CheckedIntegerResult"));
+    assert!(semantics.contains("pub fn checked_add_report_i128"));
+    assert!(semantics.contains("pub fn checked_neg_literal_i128"));
+    assert!(comptime.contains("checked_neg_literal_report_i128"));
+}
+
+#[test]
 fn type_syntax_dependency_admission_indexes_only_the_large_case() {
     let typeck = include_str!("sema/typeck.rs");
 
