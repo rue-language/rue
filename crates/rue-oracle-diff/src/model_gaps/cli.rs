@@ -474,6 +474,28 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
         &[],
     ),
+    // IntMap key extremes (RUE-1709). These cases assert on stdout rather than
+    // an exit code, because a hash that mishandles `i64::MIN` or that diverges
+    // between `_slot` and `_grow_to` produces a WRONG VALUE, not a trap — so
+    // `println` is the first thing the oracle model cannot follow in each.
+    Entry::new(
+        "cli.std_collections",
+        "intmap_extreme_keys_survive_growth",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_collections",
+        "intmap_key_i64_min_full_lifecycle",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_collections",
+        "intmap_negative_zero_positive_and_extreme_keys",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
+        &[],
+    ),
     Entry::new(
         "cli.std_core",
         "std_core_m1_smoke",
@@ -483,6 +505,47 @@ const ENTRIES: &[Entry] = &[
         // ADR-0059 Phase 4 (RUE-962) the per-byte step is `@ptr_read` over a
         // `ptr u8` rather than the removed `@byte_read`.
         intrinsic(UnsupportedIntrinsicKind::PointerRead),
+        &[],
+    ),
+    // std.math at the type extremes (RUE-1708). Each case reports per-width
+    // answers on stdout, since the bugs produced traps and wrong booleans
+    // rather than distinguishable exit codes. `math_is_prime_small_and_negative`
+    // registers ByteCopy instead of Println because it accumulates its answer
+    // into a `StrBuf` before printing, so the copy is reached first.
+    Entry::new(
+        "cli.std_core",
+        "math_gcd_at_type_min",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_core",
+        "math_gcd_signs_zero_and_unsigned",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_core",
+        "math_gcd_unrepresentable_result_panics",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_core",
+        "math_is_prime_at_type_maxima",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_core",
+        "math_is_prime_small_and_negative",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_core",
+        "math_lcm_zero_and_type_min",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
         &[],
     ),
     // std.env (RUE-935): argv/envp are captured process state, so the oracle
@@ -528,6 +591,37 @@ const ENTRIES: &[Entry] = &[
         "cli.std_exit",
         "std_exit_terminates_with_status",
         external(ExternalDependencyKind::SystemCall),
+        &[],
+    ),
+    // std.fmt.to_radix's base contract (RUE-1707). The three in-contract cases
+    // render digits to stdout, which the oracle model cannot follow past the
+    // `StrBuf` copy or the `println`. `to_radix_base_1000_panics` joins them
+    // because it deliberately prints a line BEFORE the guard fires; the other
+    // out-of-contract cases (base 0/1/17/u64::MAX) produce no stdout at all and
+    // assert only the `@panic` trap, which is a harness observation rather than
+    // oracle debt, so they are absent here by design.
+    Entry::new(
+        "cli.std_fmt_radix",
+        "to_radix_all_bases_2_through_16",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_fmt_radix",
+        "to_radix_base_1000_panics",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_fmt_radix",
+        "to_radix_u64_max_at_contract_edges",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_fmt_radix",
+        "to_radix_zero_at_every_legal_base",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
