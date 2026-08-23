@@ -656,6 +656,7 @@ fn run(options: &Options) -> Result<u8, String> {
             environment: environment::fingerprint(),
         },
         boundary: None,
+        full_evidence: None,
         workloads: observations,
         failures,
     };
@@ -663,26 +664,11 @@ fn run(options: &Options) -> Result<u8, String> {
     let outcome = validate_run(&manifest, &run);
     let regressions = process_elapsed_regressions(&manifest, &run, &outcome);
 
-    // The stored form replaces per-process evidence with one witness per
-    // workload plus per-process digests (ADR-0071 Amendment 1). Validation ran
-    // over the full form above; the encoded form is validated again so an
-    // encoding defect fails the collection rather than reaching the store.
-    let encoded = encode_v2(&run)
-        .map_err(|error| format!("could not encode the run object for storage: {error}"))?;
-    let encoded_outcome = validate_run(&manifest, &encoded);
-    if encoded_outcome.errors != outcome.errors {
-        return Err(format!(
-            "the encoded run object validates differently from the full one: {:?}",
-            encoded_outcome.errors
-        ));
-    }
-
-    // Both forms are written whatever the verdict. Evidence of a broken
-    // collection is worth more than a missing file. The full-evidence form is
-    // the collection workflow's retained artifact: complete per-process depth
-    // for the artifact retention window, at zero cost to the store.
-    let serialized = rue_perf_schema::canonical_json(&encoded)
-        .map_err(|error| format!("could not serialize the run object: {error}"))?;
+    // Evidence is written before anything can abort. A run that validation
+    // refuses is exactly the run whose bytes matter most (RUE-1258), so the
+    // full-evidence form — the collection workflow's retained artifact,
+    // complete per-process depth at zero cost to the store — reaches disk
+    // before the encoding step gets a chance to fail.
     let full_serialized = rue_perf_schema::canonical_json(&run)
         .map_err(|error| format!("could not serialize the full-evidence form: {error}"))?;
     if let Some(parent) = options
@@ -693,8 +679,6 @@ fn run(options: &Options) -> Result<u8, String> {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
     }
-    std::fs::write(&options.output, &serialized)
-        .map_err(|error| format!("could not write {}: {error}", options.output.display()))?;
     // Deliberately NOT a `.json` sibling: the publish job sweeps every
     // `*.json` artifact onto the data branch, and under the dual-version
     // reader the full-evidence form is itself appendable — the one file that
@@ -702,6 +686,31 @@ fn run(options: &Options) -> Result<u8, String> {
     let full_evidence_path = options.output.with_extension("full-evidence");
     std::fs::write(&full_evidence_path, &full_serialized)
         .map_err(|error| format!("could not write {}: {error}", full_evidence_path.display()))?;
+
+    // The stored form replaces per-process evidence with one witness per
+    // workload plus per-process digests (ADR-0071 Amendment 1).
+    let encoded = encode_v2(&run)
+        .map_err(|error| format!("could not encode the run object for storage: {error}"))?;
+    let serialized = rue_perf_schema::canonical_json(&encoded)
+        .map_err(|error| format!("could not serialize the run object: {error}"))?;
+    std::fs::write(&options.output, &serialized)
+        .map_err(|error| format!("could not write {}: {error}", options.output.display()))?;
+
+    // The encoded form is validated again so an encoding defect fails the
+    // collection loudly rather than reaching the store unnoticed. The gate is
+    // appendability agreement, not error-list equality: the two encodings
+    // word the same refusal differently (per-process details against
+    // witness-level ones), and a run that validation rejects under both is
+    // ordinary rejected evidence, published and exit-coded exactly as
+    // before. Both files are already on disk either way.
+    let encoded_outcome = validate_run(&manifest, &encoded);
+    if encoded_outcome.is_appendable() != outcome.is_appendable() {
+        return Err(format!(
+            "the encoded run object's appendability disagrees with the full form's: full \
+             {:?}, encoded {:?}",
+            outcome.errors, encoded_outcome.errors
+        ));
+    }
 
     report(&encoded, &outcome, &regressions, &options.output);
 
@@ -909,6 +918,9 @@ window = 10
                 },
             },
             boundary: None,
+            // A placeholder commitment: validation checks the shape, and only
+            // encode_v2 computes the real address.
+            full_evidence: Some("f".repeat(64)),
             workloads: vec![WorkloadObservation {
                 workload: "startup".to_string(),
                 boundary: None,

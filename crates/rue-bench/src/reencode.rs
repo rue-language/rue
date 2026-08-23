@@ -278,6 +278,7 @@ mod tests {
                 },
             },
             boundary: None,
+            full_evidence: None,
             workloads: vec![WorkloadObservation {
                 workload: "startup".to_string(),
                 boundary: None,
@@ -350,8 +351,13 @@ mod tests {
         let manifest_file = store.path().join("manifest.toml");
         std::fs::write(&manifest_file, manifest_pinned_to(&old_address)).unwrap();
 
-        let mut encoded = record.clone();
-        encoded.schema_version = RUN_SCHEMA_VERSION;
+        let encoded = encode_v2(&record).unwrap();
+        assert_eq!(encoded.schema_version, RUN_SCHEMA_VERSION);
+        assert_eq!(
+            encoded.full_evidence.as_deref(),
+            Some(old_address.as_str()),
+            "a re-encoded record names its pre-compaction original"
+        );
         let new_address = Stored::minted(encoded).unwrap().address().to_string();
         assert_ne!(old_address, new_address, "the version field is addressed");
 

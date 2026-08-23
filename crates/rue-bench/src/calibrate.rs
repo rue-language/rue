@@ -1624,6 +1624,7 @@ mod tests {
                 },
             },
             boundary: None,
+            full_evidence: None,
             workloads: vec![WorkloadObservation {
                 workload: "startup".to_string(),
                 boundary: None,

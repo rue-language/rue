@@ -485,6 +485,17 @@ pub struct RunObject {
     /// Run-invariant boundary evidence, schema v2 only ([`RunBoundary`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boundary: Option<RunBoundary>,
+    /// The content address of this record's full-evidence (schema v1) form,
+    /// schema v2 only.
+    ///
+    /// For a fresh collection this names the workflow's retained
+    /// full-evidence artifact; for a re-encoded record it names the
+    /// pre-compaction original, still reachable in the data branch's history
+    /// under the compaction tag. It is what makes a stored digest of dropped
+    /// evidence more than a producer assertion (ADR-0067 Amendment 1): the
+    /// bytes the encoding drops remain committed to by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_evidence: Option<String>,
     /// Per-workload raw samples, sorted by workload identifier.
     pub workloads: Vec<WorkloadObservation>,
     /// Structured evidence of everything that failed.

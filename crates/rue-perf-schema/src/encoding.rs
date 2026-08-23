@@ -334,6 +334,10 @@ pub fn encode_v2(full: &RunObject) -> Result<RunObject, EncodeError> {
 
     let mut encoded = full.clone();
     encoded.schema_version = crate::RUN_SCHEMA_VERSION;
+    // The commitment to what this encoding drops: the full form's own content
+    // address, which is both the retained artifact's name and — for a
+    // re-encoded record — the pre-compaction record's address in history.
+    encoded.full_evidence = Some(crate::canonical::content_address(full)?);
 
     // The run-invariant block comes from the first evidence-bearing process in
     // the record. A record with none stays evidence-free.
@@ -617,6 +621,7 @@ mod tests {
         }
         let mut expected = full.clone();
         expected.schema_version = crate::RUN_SCHEMA_VERSION;
+        expected.full_evidence = Some(crate::canonical::content_address(&full).unwrap());
         assert_eq!(encoded, expected);
     }
 
@@ -646,6 +651,121 @@ mod tests {
             Err(EncodeError::NotFullEvidence {
                 found: crate::RUN_SCHEMA_VERSION
             })
+        );
+    }
+
+    #[test]
+    fn a_named_evidence_type_with_a_missing_field_refuses_to_parse() {
+        // The other half of rule 3: no `serde(default)` may be added either.
+        // A field absent from stored bytes must fail the parse, not fill in.
+        for field in ["output_sha256", "successful_exit", "clock_boundary"] {
+            let mut value = serde_json::to_value(vector_runner()).unwrap();
+            value.as_object_mut().unwrap().remove(field);
+            let parsed: Result<RunnerBoundaryEvidence, _> = serde_json::from_value(value);
+            assert!(parsed.is_err(), "{field} parsed as a default");
+        }
+        for field in ["accepted_inputs", "emitted_output_sha256", "artifact_hits"] {
+            let mut value =
+                serde_json::to_value(crate::boundary::tests::evidence().compiler).unwrap();
+            value.as_object_mut().unwrap().remove(field);
+            let parsed: Result<CompilerBoundaryEvidence, _> = serde_json::from_value(value);
+            assert!(parsed.is_err(), "{field} parsed as a default");
+        }
+    }
+
+    #[test]
+    fn empty_collections_still_serialize_their_keys() {
+        // A `skip_serializing_if` on an empty collection would pass a
+        // non-empty fixture's field-presence test while changing the preimage
+        // of every record whose value is empty. Pin the empty case directly.
+        let mut compiler = crate::boundary::tests::evidence().compiler;
+        compiler.accepted_inputs = Vec::new();
+        compiler.embedded_assets = Vec::new();
+        compiler.configuration.preview_features = Vec::new();
+        let canonical = crate::canonical::canonical_json(&compiler).unwrap();
+        for field in ["accepted_inputs", "embedded_assets", "preview_features"] {
+            assert!(
+                canonical.contains(&format!("\"{field}\":[]")),
+                "{field} omitted when empty: {canonical}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_work_digest_preimage_serializes_every_group() {
+        // `CompilerWork` is the work-digest preimage; rule 3's by-name scope
+        // covers the evidence pair, so this test extends the same guarantee
+        // to the third preimage type. Its `serde(default)` fields are
+        // parse-side tolerance for old records and must still serialize.
+        let canonical = crate::canonical::canonical_json(&CompilerWork::default()).unwrap();
+        for field in [
+            "semantic_provider",
+            "semantic_reachability",
+            "semantic_body_structure",
+            "cfg_materialization",
+            "cfg_prerequisites",
+            "cfg_retained_charge",
+            "cfg_local_epoch",
+            "query_runtime",
+            "publication",
+        ] {
+            assert!(
+                canonical.contains(&format!("\"{field}\":")),
+                "{field} omitted"
+            );
+        }
+    }
+
+    #[test]
+    fn the_identity_preimage_is_the_two_key_object() {
+        let evidence = crate::boundary::tests::evidence();
+        let preimage = IdentityPreimage {
+            runner: &evidence.runner,
+            compiler: &evidence.compiler,
+        };
+        let canonical = crate::canonical::canonical_json(&preimage).unwrap();
+        let expected = format!(
+            "{{\"compiler\":{},\"runner\":{}}}",
+            crate::canonical::canonical_json(&evidence.compiler).unwrap(),
+            crate::canonical::canonical_json(&evidence.runner).unwrap()
+        );
+        assert_eq!(canonical, expected);
+    }
+
+    #[test]
+    fn an_encoded_record_round_trips_through_stored_bytes() {
+        let encoded = encode_v2(&full_run()).unwrap();
+        let serialized = crate::canonical::canonical_json(&encoded).unwrap();
+        let parsed: RunObject = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(parsed, encoded);
+        assert_eq!(
+            crate::canonical::canonical_json(&parsed).unwrap(),
+            serialized
+        );
+    }
+
+    #[test]
+    fn v1_bytes_without_the_new_fields_reserialize_byte_identically() {
+        // A stored v1 record never contained the v2 keys; parsing it must not
+        // materialize them, or every pre-change address would move.
+        let full = full_run();
+        let serialized = crate::canonical::canonical_json(&full).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        let top = value.as_object().unwrap();
+        assert!(!top.contains_key("boundary"));
+        assert!(!top.contains_key("full_evidence"));
+        let sample = &value["workloads"][0]["samples"][0];
+        let sample = sample.as_object().unwrap();
+        assert!(!sample.contains_key("boundary_processes"));
+        assert!(!sample.contains_key("boundary_work_processes"));
+        let parsed: RunObject = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(
+            crate::canonical::canonical_json(&parsed).unwrap(),
+            serialized
+        );
+        assert_eq!(
+            crate::content_address(&parsed).unwrap(),
+            crate::content_address(&full).unwrap()
         );
     }
 }
