@@ -520,7 +520,7 @@ Found by reading the source, not by reasoning about it.
 | `performance/manifest.toml:845` `reference_run` | Must equal its epoch's baseline. | `manifest.rs:695` rejects the manifest at parse — **loud** |
 | `derive.rs:1316` | Resolves the baseline by `stored.address() == baseline.run`. A miss yields `baseline_medians = None`. | **silent**: the epoch keeps plotting per-workload series and loses its headline index and every workload ratio |
 | `scripts/validate-performance-stall.py` `unindexed()` | Catches exactly that failure — but iterates `newest_epochs()` only, over data `staleness-inputs` restricted to the live epoch. | catches a live epoch, **misses a retired one**; not fixable in the rule, see below |
-| `rue-bench check-baselines` (added on this branch) | Every declared baseline must name a record of its own epoch and platform in `index.json`. | **loud**, exit 3, covers retired epochs |
+| `rue-bench check-baselines` (PR #2608, split from this proposal) | Every declared baseline must name a record of its own epoch and platform in `index.json`. | **loud**, exit 3, covers retired epochs |
 | `index.json` | Must be rewritten to the new addresses. | rewritten on every commit anyway |
 | `publish-performance-runs.py` | Refuses differing bytes under an existing name. | new addresses never collide; an *in-place* rewrite would trip it — **loud** |
 | `stored.rs` `Stored::read` | The naming property: a record is named by the bytes it was published as. Re-encoding creates a second published record, it does not rename the first. | n/a; the regression test `a_schema_change_does_not_rename_an_existing_record` still holds |
@@ -546,9 +546,9 @@ records. `rue-bench staleness-inputs` selects the live epoch alone before
 reading 1,437 of the store's 1,440 records instead of 321 — the cost RUE-1542
 removed. The resolution question needs no derived data: `index.json` carries
 every record's platform, epoch and address, and the gate has already checked it
-out to decide what to read. `rue-bench check-baselines` asks it there, for
-every epoch, and is the prerequisite this note means. Measured against the
-store on 2026-08-18: nine declared baselines, nine resolving.
+out to decide what to read. `rue-bench check-baselines` (PR #2608) asks it
+there, for every epoch, and is the prerequisite this note means. Measured
+against the store on 2026-08-18: nine declared baselines, nine resolving.
 
 ### What immutability and content addressing actually buy
 

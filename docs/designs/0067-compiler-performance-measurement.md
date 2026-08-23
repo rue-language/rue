@@ -713,10 +713,11 @@ Two failure modes are worth naming because they differ sharply:
   `index.json` already carries the platform, epoch and address of every record
   — and is already checked out, because the selection above reads it. So the
   condition of acceptance is **a manifest-against-index baseline resolution
-  check covering every epoch, live or retired**, which this branch implements
-  as `rue-bench check-baselines` and runs in the staleness job ahead of
-  `derive`. It reports all nine of today's baselines resolving, and exits 3
-  naming the epoch when one does not.
+  check covering every epoch, live or retired**, implemented separately as
+  `rue-bench check-baselines` (PR #2608), which runs in the staleness job
+  ahead of `derive`. Against the live store it reports all nine of today's
+  baselines resolving, and exits 3 naming the epoch when one does not. That
+  gate must be merged before any re-encode is executed.
 
 ### What immutability and content addressing are actually protecting
 
