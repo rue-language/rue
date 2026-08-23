@@ -1,0 +1,430 @@
+# Nested declared-`linear` destructure (RUE-1632, spec 3.8:33).
+#
+# Reading a field through a declared-`linear` value destructures THAT value
+# (spec 3.8:33): the consumption is scoped to the destructured value's PLACE
+# — `h.arr[0]`, `h.a`, or the binding itself when the declared-linear struct
+# is the root. It used to be recorded against the root binding, which
+# silently discharged every sibling place's must-consume obligation (a linear
+# value could be dropped with no diagnostic at all) and, in the other
+# direction, made every sibling element unreadable as a use-after-move of the
+# whole root.
+#
+# The obligation of the destructured value itself is the unresolved RUE-614
+# husk question and is deliberately not settled here; these cases pin the
+# SIBLINGS: sibling elements, sibling fields, sibling rows, and the rest of
+# the root keep their obligations and their drop glue.
+
+[section]
+id = "cli.nested_linear_destructure"
+name = "Nested declared-linear destructure"
+description = "Destructuring consumption is scoped to the destructured place, not the root binding (RUE-1632)."
+
+[[case]]
+name = "array_element_destructure_keeps_sibling_obligation"
+description = "Reading a Copy field of one declared-linear array element leaves the sibling element's must-consume obligation standing (RUE-1632)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct H { arr: [L; 2] }
+fn main() -> i32 {
+    let h = H { arr: [L { v: 1 }, L { v: 2 }] };
+    h.arr[0].v
+}
+""" }]
+compile_fail = true
+error_contains = [
+    "E0406",
+    "linear value 'h' must be consumed",
+    "'h.arr[1]' still holds a linear value",
+]
+
+[[case]]
+name = "array_all_elements_destructured_runs"
+description = "Destructuring EVERY element discharges the array field: the program compiles and runs (before RUE-1632 the second element was a use-after-move of the whole root)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct H { arr: [L; 2] }
+fn main() -> i32 {
+    let h = H { arr: [L { v: 1 }, L { v: 2 }] };
+    h.arr[0].v + h.arr[1].v
+}
+""" }]
+exit_code = 3
+
+[[case]]
+name = "root_array_element_destructure_keeps_sibling_obligation"
+description = "The same scoping at a ROOT array of declared-linear elements: destructuring element 0 leaves element 1 unconsumed, reported element-wise (RUE-1632, spec 3.8:71)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+fn main() -> i32 {
+    let a = [L { v: 1 }, L { v: 2 }];
+    a[0].v
+}
+""" }]
+compile_fail = true
+error_contains = [
+    "E0406",
+    "element(s) [1] of 'a' are not consumed on every path",
+]
+
+[[case]]
+name = "root_array_all_elements_destructured_runs"
+description = "Destructuring every element of a root array discharges it element-wise and runs."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+fn main() -> i32 {
+    let a = [L { v: 1 }, L { v: 2 }];
+    a[0].v + a[1].v
+}
+""" }]
+exit_code = 3
+
+[[case]]
+name = "by_value_array_param_element_destructure_keeps_sibling_obligation"
+description = "A by-value array parameter owns its elements: destructuring one element leaves the sibling unconsumed in the callee (RUE-1632)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+fn eat(a: [L; 2]) -> i32 { a[0].v }
+fn main() -> i32 {
+    eat([L { v: 1 }, L { v: 2 }])
+}
+""" }]
+compile_fail = true
+error_contains = [
+    "E0406",
+    "element(s) [1] of 'a' are not consumed on every path",
+]
+
+[[case]]
+name = "by_value_array_param_all_elements_destructured_runs"
+description = "Consuming every element of a by-value array parameter is legal and runs."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+fn eat(a: [L; 2]) -> i32 { a[0].v + a[1].v }
+fn main() -> i32 {
+    eat([L { v: 1 }, L { v: 2 }])
+}
+""" }]
+exit_code = 3
+
+[[case]]
+name = "plain_field_destructure_keeps_sibling_obligation"
+description = "A non-array nested declared-linear field: destructuring 'h.a' leaves 'h.b' unconsumed (RUE-1632)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct H { a: L, b: L }
+fn main() -> i32 {
+    let h = H { a: L { v: 1 }, b: L { v: 2 } };
+    h.a.v
+}
+""" }]
+compile_fail = true
+error_contains = [
+    "E0406",
+    "linear value 'h' must be consumed",
+    "'h.b' still holds a linear value",
+]
+
+[[case]]
+name = "plain_field_both_destructured_runs"
+description = "Destructuring both declared-linear fields discharges the carrier and runs."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct H { a: L, b: L }
+fn main() -> i32 {
+    let h = H { a: L { v: 1 }, b: L { v: 2 } };
+    h.a.v + h.b.v
+}
+""" }]
+exit_code = 3
+
+[[case]]
+name = "nested_array_destructure_keeps_sibling_leaf"
+description = "Depth 2 ([[L; 2]; 2]): destructuring one leaf element leaves the sibling leaf of the SAME row unconsumed (RUE-1632)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct H { grid: [[L; 2]; 2] }
+fn main() -> i32 {
+    let h = H { grid: [[L { v: 1 }, L { v: 2 }], [L { v: 4 }, L { v: 8 }]] };
+    h.grid[0][0].v
+}
+""" }]
+compile_fail = true
+error_contains = [
+    "E0406",
+    "linear value 'h' must be consumed",
+    "'h.grid[0][1]' still holds a linear value",
+]
+
+[[case]]
+name = "nested_array_destructure_keeps_sibling_row"
+description = "Depth 2: consuming a whole row leaves the sibling ROW unconsumed, reported at row granularity (RUE-1632)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct H { grid: [[L; 2]; 2] }
+fn main() -> i32 {
+    let h = H { grid: [[L { v: 1 }, L { v: 2 }], [L { v: 4 }, L { v: 8 }]] };
+    h.grid[0][0].v + h.grid[0][1].v
+}
+""" }]
+compile_fail = true
+error_contains = [
+    "E0406",
+    "linear value 'h' must be consumed",
+    "'h.grid[1]' still holds a linear value",
+]
+
+[[case]]
+name = "nested_array_all_leaves_destructured_runs"
+description = "Depth 2: destructuring every leaf discharges both rows and the field."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct H { grid: [[L; 2]; 2] }
+fn main() -> i32 {
+    let h = H { grid: [[L { v: 1 }, L { v: 2 }], [L { v: 4 }, L { v: 8 }]] };
+    h.grid[0][0].v + h.grid[0][1].v + h.grid[1][0].v + h.grid[1][1].v
+}
+""" }]
+exit_code = 15
+
+[[case]]
+name = "declared_linear_field_beside_non_linear_siblings_runs"
+description = "A declared-linear field beside non-linear siblings: the siblings stay readable and draw no spurious diagnostic (RUE-1632)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct N { v: i32 }
+struct H { a: L, n: N, k: i32 }
+fn main() -> i32 {
+    let h = H { a: L { v: 5 }, n: N { v: 2 }, k: 3 };
+    h.a.v + h.n.v + h.k
+}
+""" }]
+exit_code = 10
+
+[[case]]
+name = "destructured_element_is_moved_out"
+description = "The destructured element is consumed: reading through it again is a use-after-move naming the ELEMENT, not the root (RUE-1632)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct H { arr: [L; 2] }
+fn main() -> i32 {
+    let h = H { arr: [L { v: 1 }, L { v: 2 }] };
+    h.arr[0].v + h.arr[0].v + h.arr[1].v
+}
+""" }]
+compile_fail = true
+error_contains = [
+    "E0205",
+    "use of moved value 'h.arr[0]'",
+]
+
+[[case]]
+name = "element_destructured_on_one_path_only"
+description = "An element destructured on only one branch is not consumed on all paths, reported at element granularity (RUE-1632 + RUE-127 item 5)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct H { arr: [L; 2] }
+fn pick(n: i32) -> i32 {
+    let h = H { arr: [L { v: 1 }, L { v: 2 }] };
+    if n > 0 {
+        h.arr[0].v + h.arr[1].v
+    } else {
+        h.arr[0].v
+    }
+}
+fn main() -> i32 { pick(1) }
+""" }]
+compile_fail = true
+error_contains = [
+    "E0443",
+    "not consumed on all paths",
+    "'h.arr[1]' still holds a linear value",
+]
+
+[[case]]
+name = "carrier_param_element_destructure_runs"
+description = "The same scoping applies to a by-value parameter base: both elements are destructured inside the callee."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct H { arr: [L; 2] }
+fn take(h: H) -> i32 { h.arr[0].v + h.arr[1].v }
+fn main() -> i32 {
+    take(H { arr: [L { v: 3 }, L { v: 4 }] })
+}
+""" }]
+exit_code = 7
+
+[[case]]
+name = "sibling_field_destructor_runs_after_destructure"
+description = "Destructuring one field no longer suppresses the WHOLE root's drop: the non-linear sibling's destructor runs exactly once, at scope exit (RUE-1632). Before the fix only 99 was printed."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+struct H { a: L, d: D }
+fn main() -> i32 {
+    let h = H { a: L { v: 5 }, d: D { v: 41 } };
+    let r = h.a.v;
+    @dbg(99);
+    r
+}
+""" }]
+exit_code = 5
+stdout = """99
+41
+"""
+
+[[case]]
+name = "sibling_field_destructor_runs_after_element_destructure"
+description = "The array-element shape keeps the sibling field's drop glue too: the destructor runs once after every element is destructured (RUE-1632)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+struct H { arr: [L; 2], d: D }
+fn main() -> i32 {
+    let h = H { arr: [L { v: 1 }, L { v: 2 }], d: D { v: 41 } };
+    let r = h.arr[0].v + h.arr[1].v;
+    @dbg(99);
+    r
+}
+""" }]
+exit_code = 3
+stdout = """99
+41
+"""
+
+[[case]]
+name = "sibling_field_destructor_runs_after_destructure_aarch64"
+description = "The sibling's drop is scheduled by the shared drop elaboration, so aarch64 emits the same ordering; run natively on the aarch64 lane (RUE-1632)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+struct H { arr: [L; 2], d: D }
+fn main() -> i32 {
+    let h = H { arr: [L { v: 1 }, L { v: 2 }], d: D { v: 41 } };
+    let r = h.arr[0].v + h.arr[1].v;
+    @dbg(99);
+    r
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 3
+stdout = """99
+41
+"""
+
+[[case]]
+name = "sibling_field_destructor_runs_after_destructure_at_O2"
+description = "The sibling drop and its ordering survive inlining and folding: same digits at -O2 as at -O0 (RUE-1632)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+struct H { arr: [L; 2], d: D }
+fn main() -> i32 {
+    let h = H { arr: [L { v: 1 }, L { v: 2 }], d: D { v: 41 } };
+    let r = h.arr[0].v + h.arr[1].v;
+    @dbg(99);
+    r
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 3
+stdout = """99
+41
+"""
+
+# --- Boundaries the fix must NOT move -------------------------------------
+
+[[case]]
+name = "declared_linear_root_still_destructures_whole_value"
+description = "The declared-linear struct at the ROOT still destructures whole-value, array field and all: the husk stays droppable (RUE-614, unchanged by RUE-1632)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+linear struct H { arr: [L; 2] }
+fn main() -> i32 {
+    let h = H { arr: [L { v: 1 }, L { v: 2 }] };
+    h.arr[0].v
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "declared_linear_root_still_rejects_dropping_a_linear_sibling"
+description = "The E0474 destructure check is unchanged: accessing a Copy field of a declared-linear root would drop its linear array field."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+linear struct H { arr: [L; 2], n: i32 }
+fn main() -> i32 {
+    let h = H { arr: [L { v: 1 }, L { v: 2 }], n: 7 };
+    h.n
+}
+""" }]
+compile_fail = true
+error_contains = [
+    "E0474",
+    "would implicitly drop linear field 'arr'",
+]
+
+[[case]]
+name = "infectious_element_carrier_boundary_unchanged"
+description = "An INFECTIOUS carrier element is not destructured: its linear sub-place moves, the Copy sibling stays readable, and the other element's sub-place is still reported (RUE-1591 boundary, unchanged by RUE-1632)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct C { l: L, tag: i32 }
+struct H { arr: [C; 2] }
+fn sink(l: L) -> i32 { l.v }
+fn main() -> i32 {
+    let h = H { arr: [C { l: L { v: 1 }, tag: 7 }, C { l: L { v: 2 }, tag: 8 }] };
+    sink(h.arr[0].l) + h.arr[0].tag
+}
+""" }]
+compile_fail = true
+error_contains = [
+    "E0406",
+    "'h.arr[1].l' still holds a linear value",
+]
+
+[[case]]
+name = "infectious_element_carrier_all_subplaces_consumed_runs"
+description = "Consuming every element's linear sub-place discharges the infectious carrier (RUE-1606), unchanged by RUE-1632."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct C { l: L, tag: i32 }
+struct H { arr: [C; 2] }
+fn sink(l: L) -> i32 { l.v }
+fn main() -> i32 {
+    let h = H { arr: [C { l: L { v: 1 }, tag: 7 }, C { l: L { v: 2 }, tag: 8 }] };
+    sink(h.arr[0].l) + sink(h.arr[1].l) + h.arr[0].tag
+}
+""" }]
+exit_code = 10
+
+[[case]]
+name = "affine_array_element_field_read_control"
+description = "Control: an affine (non-linear) element is not destructured at all — reading a Copy field of each element is an ordinary read."
+files = [{ path = "main.rue", source = """
+struct A { v: i32 }
+struct H { arr: [A; 2] }
+fn main() -> i32 {
+    let h = H { arr: [A { v: 1 }, A { v: 2 }] };
+    h.arr[0].v + h.arr[1].v + h.arr[0].v
+}
+""" }]
+exit_code = 4
+
+[[case]]
+name = "affine_nested_field_read_control"
+description = "Control: an affine nested field in the plain-field and depth-2 shapes reads freely and drops normally."
+files = [{ path = "main.rue", source = """
+struct A { v: i32 }
+struct H { a: A, grid: [[A; 2]; 2] }
+fn main() -> i32 {
+    let h = H { a: A { v: 1 }, grid: [[A { v: 2 }, A { v: 4 }], [A { v: 8 }, A { v: 16 }]] };
+    h.a.v + h.grid[0][1].v + h.grid[1][1].v + h.a.v
+}
+""" }]
+exit_code = 22
