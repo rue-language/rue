@@ -1652,6 +1652,101 @@ compile_fail = true
 error_contains = "would implicitly drop linear field 'inner'"
 
 [[case]]
+name = "declared_linear_root_array_element_destructure_scoped_to_the_element"
+spec = ["3.8:33", "3.8:71"]
+description = "Destructuring one element of a ROOT array of declared-linear values leaves the sibling element unconsumed (RUE-1632)"
+source = """
+linear struct MustUse { value: i32 }
+
+fn main() -> i32 {
+    let a = [MustUse { value: 1 }, MustUse { value: 2 }];
+    a[0].value
+}
+"""
+compile_fail = true
+error_contains = "element(s) [1] of 'a' are not consumed"
+
+[[case]]
+name = "declared_linear_root_array_every_element_destructured"
+spec = ["3.8:33", "3.8:71"]
+description = "Destructuring every element of a root array discharges it element-wise (RUE-1632)"
+source = """
+linear struct MustUse { value: i32 }
+
+fn main() -> i32 {
+    let a = [MustUse { value: 1 }, MustUse { value: 2 }];
+    a[0].value + a[1].value
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "declared_linear_element_destructure_scoped_to_the_element"
+spec = ["3.8:32", "3.8:33"]
+description = "Destructuring one declared-linear array element consumes that element only; the sibling element's obligation stands (RUE-1632)"
+source = """
+linear struct MustUse { value: i32 }
+
+struct Holder { arr: [MustUse; 2] }
+
+fn main() -> i32 {
+    let h = Holder { arr: [MustUse { value: 1 }, MustUse { value: 2 }] };
+    h.arr[0].value
+}
+"""
+compile_fail = true
+error_contains = "'h.arr[1]' still holds a linear value"
+
+[[case]]
+name = "declared_linear_every_element_destructured"
+spec = ["3.8:32", "3.8:33"]
+description = "Destructuring every element of the array field discharges the carrier's obligation (RUE-1632)"
+source = """
+linear struct MustUse { value: i32 }
+
+struct Holder { arr: [MustUse; 2] }
+
+fn main() -> i32 {
+    let h = Holder { arr: [MustUse { value: 1 }, MustUse { value: 2 }] };
+    h.arr[0].value + h.arr[1].value
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "declared_linear_nested_field_destructure_scoped_to_the_field"
+spec = ["3.8:32", "3.8:33"]
+description = "Destructuring a nested declared-linear field consumes that field only; the sibling field's obligation stands (RUE-1632)"
+source = """
+linear struct MustUse { value: i32 }
+
+struct Holder { a: MustUse, b: MustUse }
+
+fn main() -> i32 {
+    let h = Holder { a: MustUse { value: 1 }, b: MustUse { value: 2 } };
+    h.a.value
+}
+"""
+compile_fail = true
+error_contains = "'h.b' still holds a linear value"
+
+[[case]]
+name = "declared_linear_root_destructure_consumes_the_binding"
+spec = ["3.8:33", "3.8:74"]
+description = "When the declared-linear struct IS the binding, the destructure consumes the whole binding, array field and all (RUE-1632 keeps this case unchanged)"
+source = """
+linear struct MustUse { value: i32 }
+
+linear struct Holder { arr: [MustUse; 2] }
+
+fn main() -> i32 {
+    let h = Holder { arr: [MustUse { value: 1 }, MustUse { value: 2 }] };
+    h.arr[0].value
+}
+"""
+exit_code = 1
+
+[[case]]
 name = "infectious_carrier_unconsumed_field_reported_at_scope_exit"
 spec = ["3.8:60"]
 description = "Reading a Copy sibling of an infectious carrier does not destructure it; the unconsumed linear sub-place is reported at scope exit (RUE-1591)"
@@ -1952,16 +2047,22 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "linear value 'a' must be consumed"
 
+# RUE-1632: this case's callee used to read ONE element's Copy field
+# (`a[0].value * 2`) and compile. That read destructures element 0 only, so
+# element 1 was dropped unconsumed — the whole-root recording of the
+# destructure discharged it silently, against 3.8:71. The callee now consumes
+# both elements; the case's subject (3.8:66's whole-array consumption at the
+# call site) is unchanged.
 [[case]]
 name = "linear_array_consumed_whole_ok"
-spec = ["3.8:66"]
-description = "An array of linear values consumed as a whole satisfies the requirement"
+spec = ["3.8:66", "3.8:71"]
+description = "An array of linear values consumed as a whole satisfies the requirement; the callee then owes each element's consumption (RUE-1632)"
 source = """
 linear struct MustUse { value: i32 }
 
 fn make_linear() -> MustUse { MustUse { value: 21 } }
 
-fn eat(a: [MustUse; 2]) -> i32 { a[0].value * 2 }
+fn eat(a: [MustUse; 2]) -> i32 { a[0].value + a[1].value }
 
 fn main() -> i32 {
     let a = [make_linear(), make_linear()];

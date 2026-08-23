@@ -208,6 +208,26 @@ impl PlaceTrace {
         path
     }
 
+    /// The move path of the sub-place reached after the first `depth`
+    /// projections — the prefix of [`Self::field_path`] that names the
+    /// container `projections[depth]` projects out of.
+    ///
+    /// Unlike `field_path`, an unnameable segment (a dynamic/negative index,
+    /// or a field projection with no recorded name) makes the whole prefix
+    /// unnameable (`None`) instead of restarting the path: callers use this
+    /// to name a place they are about to record a move for, and a restarted
+    /// path would name a DIFFERENT place (RUE-1632).
+    fn prefix_field_path(&self, depth: usize) -> Option<Vec<Spur>> {
+        let mut path = Vec::with_capacity(depth);
+        for p in &self.projections[..depth] {
+            match p.proj {
+                AirProjection::Index { .. } => path.push(p.index_segment?),
+                AirProjection::Field { .. } => path.push(p.field_name?),
+            }
+        }
+        Some(path)
+    }
+
     /// Whether this place contains an index projection whose element cannot be
     /// named statically in the move/drop path model.
     fn has_untrackable_index(&self) -> bool {
@@ -1519,13 +1539,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// must be statically decodable by drop elaboration. Re-emit constant index
     /// projections with dedicated `Const` instructions so CFG lowering can turn
     /// paths like `arr[0].field` into the moved path `[0, field]`.
+    ///
+    /// `projections` is the prefix of the trace's projections that names the
+    /// moved place. It is the whole chain for an ordinary field move, and a
+    /// strict prefix when the consumed place is an ancestor of the accessed
+    /// one — a nested declared-`linear` destructure consumes the struct it
+    /// destructures, not the leaf it extracts (RUE-1632).
     fn build_move_marker_place_ref(
         air: &mut Air,
         trace: &PlaceTrace,
+        projections: &[ProjectionInfo],
         span: Span,
     ) -> CompileResult<AirPlaceRef> {
-        let mut projs = Vec::with_capacity(trace.projections.len());
-        for p in &trace.projections {
+        let mut projs = Vec::with_capacity(projections.len());
+        for p in projections {
             match p.proj {
                 AirProjection::Field { .. } => projs.push(p.proj),
                 AirProjection::Index { array_type, .. } => {
@@ -2569,6 +2596,39 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         def.declared_linear
     }
 
+    /// The projection depth of the value a declared-`linear` field access
+    /// destructures: `trace.projections[..depth]` names the consumed place,
+    /// and `trace.projections[depth]` is the field access that destructures
+    /// it (RUE-1632).
+    ///
+    /// Destructuring consumption (3.8:33) consumes the destructured VALUE,
+    /// which is a place — `h.arr[0]`, `h.a`, or the root binding itself —
+    /// not the root binding in every case. Scoping it to the root discharged
+    /// every sibling place's linear obligation along with it (RUE-1632).
+    ///
+    /// The SHALLOWEST declared-`linear` container along the chain wins:
+    /// reaching a deeper one means projecting through the shallow one, which
+    /// destructures (and so consumes) that outer value wholly, residue
+    /// included. Levels above it are not declared linear, so they follow the
+    /// ordinary partial-move model (3.8:22, RUE-1591) and keep the
+    /// obligations of their other sub-places.
+    ///
+    /// Only called once the last container is known to be declared linear, so
+    /// a level always exists; depth 0 (consume the root) is the fallback.
+    fn declared_linear_destructure_depth(&self, trace: &PlaceTrace) -> usize {
+        let mut container = trace.base_type;
+        for (depth, proj) in trace.projections.iter().enumerate() {
+            if container
+                .as_struct()
+                .is_some_and(|id| self.struct_declared_linear(id))
+            {
+                return depth;
+            }
+            container = proj.result_type;
+        }
+        0
+    }
+
     /// Reject a field access that consumes (destructures) a **declared**
     /// `linear` struct when the destructure would implicitly drop a
     /// *different* field that itself carries a linear value (E0474, spec
@@ -2809,15 +2869,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // discharged by consuming it — see `residual_linear_place`.
             // Modelling the carrier as a whole-value consumption instead both
             // leaked the siblings' drop glue and over-rejected Copy sibling
-            // reads (RUE-1591).
+            // reads (RUE-1591). "Whole-value" is the destructured struct's
+            // PLACE, which is the root binding only when the declared-linear
+            // struct IS the root (RUE-1632) — see
+            // `declared_linear_destructure_depth`.
             let is_declared_linear = parent_type
                 .as_struct()
                 .is_some_and(|id| self.struct_declared_linear(id));
 
             // Move checking using the trace. `move_is_partial` selects the
-            // MarkMoved marker's place component: absent for a whole-struct
-            // (declared-linear) move, the accessed place for a field-path move
-            // (RUE-62, RUE-157).
+            // MarkMoved marker's place component: absent for a whole-slot
+            // move, the accessed place for a field-path move (RUE-62,
+            // RUE-157), and the destructured sub-place for a nested
+            // declared-linear access (RUE-1632).
             //
             // A use as a by-ref call argument (`f(borrow o.f)`, `f(inout
             // o.f)`) borrows the place rather than moving out of it
@@ -2845,6 +2909,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             let mut emit_move_marker = false;
             let mut move_is_partial = false;
+            // How many of the trace's projections the move marker's place
+            // keeps: the whole chain names the accessed field (an ordinary
+            // partial move), a strict prefix names the destructured value a
+            // nested declared-`linear` access consumes (RUE-1632).
+            let mut marker_depth = trace.projections.len();
             if is_byref_arg_use {
                 let field_path = trace.field_path();
                 if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
@@ -2860,15 +2929,43 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
             } else if is_declared_linear {
                 // For a declared-linear struct, field access destructures and
-                // so consumes the entire struct (3.8:33).
+                // so consumes that struct's whole value (3.8:33).
                 self.reject_accessor_place_move(&trace, field_type, span)?;
                 self.reject_linear_destructure_dropping_linear_field(&trace, span)?;
                 self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
                 self.reject_move_of_call_loaned_root(trace.root_var, span, ctx)?;
+
+                // The consumed value is the destructured struct's PLACE. When
+                // it is a sub-place of the root (`h.arr[0].v`, `h.a.v`), only
+                // that place is consumed: the root's other sub-places keep
+                // their own linear obligations and their drop glue (RUE-1632).
+                // An unnameable place (dynamic index in the prefix) cannot be
+                // recorded per-place, so it keeps the whole-root consumption.
+                marker_depth = self.declared_linear_destructure_depth(&trace);
+                let destructured_path = trace.prefix_field_path(marker_depth).unwrap_or_default();
+
+                // Destructuring a sub-place uses it as a whole value, so the
+                // place itself, an ancestor, or a descendant being moved makes
+                // this a use-after-move (RUE-279) — at the root the full-move
+                // check above already covers it.
+                if !destructured_path.is_empty()
+                    && let Some(state) = ctx.moved_vars.get(&trace.root_var)
+                    && let Some(moved_span) = state.is_path_or_descendant_moved(&destructured_path)
+                {
+                    return Err(super::use_after_move_path_error(
+                        self.body_interner(),
+                        trace.root_var,
+                        &destructured_path,
+                        span,
+                        moved_span,
+                    ));
+                }
+
+                move_is_partial = !destructured_path.is_empty();
                 ctx.moved_vars
                     .entry(trace.root_var)
                     .or_default()
-                    .mark_path_moved(&[], span);
+                    .mark_path_moved(&destructured_path, span);
                 if trace.continues {
                     self.record_completed_exclusive_use(trace.root_var, span, ctx);
                 }
@@ -2984,8 +3081,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             });
             if emit_move_marker {
-                // Export the move (whole struct for linear types, the
-                // accessed field path for partial moves) to drop elaboration.
+                // Export the move (the whole slot, the accessed field path, or
+                // the destructured sub-place of a nested declared-`linear`
+                // access — RUE-1632) to drop elaboration.
                 let (slot, is_param) = match trace.base {
                     AirPlaceBase::Local(slot) => (slot, false),
                     AirPlaceBase::Param(slot) => (slot, true),
@@ -2994,7 +3092,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     }
                 };
                 let marker_place = move_is_partial
-                    .then(|| Self::build_move_marker_place_ref(air, &trace, span))
+                    .then(|| {
+                        Self::build_move_marker_place_ref(
+                            air,
+                            &trace,
+                            &trace.projections[..marker_depth],
+                            span,
+                        )
+                    })
                     .transpose()?;
                 air_ref = air.add_inst(AirInst {
                     data: AirInstData::MarkMoved {
