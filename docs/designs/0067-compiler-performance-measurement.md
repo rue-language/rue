@@ -524,6 +524,11 @@ one, and what happens to the 1,481.2 MiB already published. All three need a
 maintainer ruling, and the second is a prerequisite for the other two rather
 than a preference among them.
 
+(Figures throughout are the 2026-08-16 corpus the analysis was performed on.
+Re-measured 2026-08-23 at rebase: 1,619 records, 3,470.7 MiB, growth
+unchanged at ~284 MiB/day — the supporting note carries the details. The
+trend the amendment addresses has continued exactly as projected.)
+
 ### Question 1: which axis owns a change to the record encoding?
 
 §3 assigns "runner protocol semantics (what a sample is, how batching is
