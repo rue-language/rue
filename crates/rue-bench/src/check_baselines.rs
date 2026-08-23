@@ -13,8 +13,8 @@
 //! epoch alone before `derive` runs (RUE-1542), so a retired epoch's records
 //! are never materialized into the gate's data root. Selecting every epoch that
 //! declares a baseline would restore the cost RUE-1542 removed: on
-//! 2026-08-18 that is 1,437 of 1,440 records, against the 321 the gate reads
-//! now.
+//! 2026-08-18 that was 1,437 of 1,440 records, against the 321 the gate read
+//! then.
 //!
 //! So the question is asked where it is cheap and total instead. Baseline
 //! resolution needs no derived data and no run object — only the manifest and
@@ -226,8 +226,9 @@ window = 3
 
     #[test]
     fn a_baseline_naming_no_record_is_reported() {
-        // The compaction's characteristic mistake: the manifest keeps a
-        // pre-compaction address that no longer names anything.
+        // A compaction or bulk re-pin's characteristic mistake (RUE-1543):
+        // the manifest keeps a pre-compaction address that no longer names
+        // anything.
         let manifest = manifest_with(Some(("c0", "gone")));
         let index = index_with(&[("x86_64-linux", 1, "abc")]);
         let missing = unresolved(&manifest, &index);
@@ -277,5 +278,67 @@ window = 3
         let manifest = Manifest::parse(&text).expect("manifest parses");
         let index = index_with(&[("x86_64-linux", 1, "abc")]);
         assert_eq!(unresolved(&manifest, &index).len(), 1);
+    }
+
+    #[test]
+    fn the_report_names_the_retired_epoch_and_exits_nonzero() {
+        // The compaction rehearsal, end to end through `report`: a live epoch
+        // whose pin resolves next to a retired epoch whose pin names a
+        // pre-compaction address. The run must exit `NOT_APPENDABLE` naming
+        // exactly the retired epoch — the one `unindexed()` cannot reach.
+        let mut text = format!("{BASE}\n[epoch.baseline]\ncommit = \"c0\"\nrun = \"live\"\n");
+        text.push_str(
+            r#"
+[[epoch]]
+id = 2
+collection = false
+platform = "x86_64-linux"
+suite_revision = 1
+target = "x86_64-unknown-linux-gnu"
+args = []
+toolchain_hash = "toolchain"
+
+[epoch.workload_source_hashes]
+startup = "startup-hash"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.startup]
+samples = 3
+batch_size = 1
+
+[epoch.flagging]
+k = 2.0
+window = 3
+
+[epoch.baseline]
+commit = "c1"
+run = "pre-compaction"
+"#,
+        );
+        let directory = tempfile::tempdir().expect("temp dir");
+        let manifest_path = directory.path().join("manifest.toml");
+        let index_path = directory.path().join("index.json");
+        std::fs::write(&manifest_path, &text).expect("write manifest");
+        std::fs::write(
+            &index_path,
+            r#"{"runs":[{"platform":"x86_64-linux","epoch":1,"finished_at":"2026-08-18T00:00:00Z","run":"live"}]}"#,
+        )
+        .expect("write index");
+
+        let mut output = Vec::new();
+        let code = report(&manifest_path, &index_path, &mut output).expect("report runs");
+        assert_eq!(code, crate::exit::NOT_APPENDABLE);
+        let output = String::from_utf8(output).expect("report is text");
+        assert!(
+            output.contains("x86_64-linux epoch 2: baseline pre-compaction does not resolve"),
+            "unexpected report: {output}"
+        );
+        assert!(
+            !output.contains("epoch 1:"),
+            "the resolving live pin must not be reported: {output}"
+        );
     }
 }
