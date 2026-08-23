@@ -4292,6 +4292,33 @@ fn durable_const_fits_type(
     }
 }
 
+/// Describe integer type `ty` for the canonical width-truncating semantics in
+/// [`rue_air::integer_semantics`], which the in-body comptime engine already
+/// uses — sharing it is what keeps the two evaluators from disagreeing about
+/// what `<<` and `~` mean at a given width (RUE-1698, RUE-1750).
+///
+/// Returns `None` for a non-integer type. The durable evaluator only reaches
+/// the truncating arms after [`SemanticConstEvaluator::require_integer_fits`]
+/// has admitted the operands at `ty`, which no non-integer type survives.
+fn durable_int_width(
+    ty: &crate::durable_semantics::DurableType,
+) -> Option<rue_air::integer_semantics::IntegerType> {
+    use crate::durable_semantics::DurableType as T;
+    use rue_air::integer_semantics::IntegerType;
+    let (bits, signed) = match ty {
+        T::I8 => (8, true),
+        T::I16 => (16, true),
+        T::I32 => (32, true),
+        T::I64 => (64, true),
+        T::U8 => (8, false),
+        T::U16 => (16, false),
+        T::U32 => (32, false),
+        T::U64 => (64, false),
+        _ => return None,
+    };
+    IntegerType::new(bits, signed)
+}
+
 fn semantic_nucleus_declaration_name(identity: &str) -> Option<Arc<str>> {
     let candidate = [
         "identity:",
@@ -7367,8 +7394,22 @@ impl SemanticConstEvaluator<'_, '_> {
             O::BitAnd => V::Integer(left & right),
             O::BitOr => V::Integer(left | right),
             O::BitXor => V::Integer(left ^ right),
-            O::Shl => V::Integer(left.wrapping_shl((right as u32) & 127)),
-            O::Shr => V::Integer(left.wrapping_shr((right as u32) & 127)),
+            // Shifts mask the amount modulo the *operand* width and truncate
+            // the result to it (4.3a:10); they never trap, so unlike the
+            // arithmetic arms above there is no overflow to reject. Masking by
+            // the i128 width instead made `n << 8` at u8 a spurious E1200 in
+            // const position while the same call folded to the truncated value
+            // in body position (RUE-1698); the width arithmetic now comes from
+            // the same helper the in-body engine uses.
+            O::Shl | O::Shr => {
+                // A non-integer operand type should be unreachable here, but a
+                // diagnosable failure beats an ICE if the type ever resolves to
+                // something unexpected.
+                let Some(width) = durable_int_width(&operand_ty) else {
+                    return Self::failure("comptime shift operand is not an integer");
+                };
+                V::Integer(width.shift_i128(left, right, op == O::Shl))
+            }
             O::And | O::Or => unreachable!(),
         };
         let ty = if matches!(value, V::Bool(_)) {
@@ -7377,6 +7418,8 @@ impl SemanticConstEvaluator<'_, '_> {
             let V::Integer(result) = value else {
                 unreachable!()
             };
+            // Only the trapping arms can land outside the operand type here:
+            // a truncated shift result fits its width by construction.
             Self::require_integer_fits(&operand_ty, result)?;
             return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
                 V::Integer(result),
@@ -8230,11 +8273,22 @@ impl SemanticConstEvaluator<'_, '_> {
                 let (operand_value, ty) = self.int_value(*operand)?;
                 let ty = self.integer_type(ty, None)?;
                 let result = if matches!(&instruction.data, E::Neg { .. }) {
+                    // Negation can overflow (`-@int_min(i8)`), and the runtime
+                    // panics there, so it stays range-checked below.
                     operand_value.checked_neg().ok_or_else(|| {
                         Self::comptime_failure_value("integer overflow evaluating negation")
                     })?
                 } else {
-                    !operand_value
+                    // `~` is closed over the operand width and cannot trap:
+                    // `~0u8` is 255, not the i128 -1 this used to compute and
+                    // then reject as out of range for u8 (RUE-1698).
+                    let Some(width) = durable_int_width(&ty) else {
+                        return Self::failure("comptime bitwise NOT operand is not an integer");
+                    };
+                    return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                        V::Integer(width.bitnot_i128(operand_value)),
+                        ty,
+                    )));
                 };
                 Self::require_integer_fits(&ty, result)?;
                 Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(

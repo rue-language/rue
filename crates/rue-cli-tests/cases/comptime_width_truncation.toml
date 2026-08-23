@@ -1,0 +1,571 @@
+# Width-truncating comptime operators across all three evaluation positions
+# (RUE-1698, closing out the RUE-163 epic).
+#
+# Rue evaluates the same expression with more than one engine. The in-body
+# engine (rue-air `sema::comptime_eval`) folds a `comptime { }` block inside a
+# function body; the durable evaluator in rue-compiler's query database
+# evaluates const initializers and reduces cross-callable comptime value calls;
+# codegen computes the runtime form. RUE-163 taught the in-body engine the
+# spec's truncating semantics for `<<` and `~` and the mod-width shift-amount
+# mask (4.3a:10) but left the durable evaluator masking by 127 (the i128 width)
+# and range-checking the result, so the two disagreed:
+#
+#   fn f(comptime n: u8) -> u8 { comptime { ~n } }
+#   const X: u8 = f(0);   // E1200 "value -1 is out of range for type u8"
+#   let x: u8 = f(0);     // 255, matching runtime `~0u8`
+#
+# `>>` diverged silently rather than loudly: `n >> 8` at u8 gave 0 in const
+# position and 200 (amount masked to 0) in body position, so a const and its
+# body-position twin held different values in the same program.
+#
+# The governing property is that const position, body position, and runtime
+# agree, so every case below prints all three for the same operation and pins
+# the exact stdout. `differential_opt` additionally runs each at -O0..-O3, which
+# puts the CFG constant folder's own truncation on the same triple.
+#
+# The controls at the bottom are the other half of the property: operations
+# that genuinely panic at runtime (add/sub/mul overflow, division and remainder
+# by zero, negating a type's minimum) must keep failing in const position. Only
+# the operations that cannot trap became total.
+
+[section]
+id = "cli.comptime_width_truncation"
+name = "Comptime width truncation agrees across evaluation positions"
+description = "`~`, `<<`, and `>>` yield the same value in const position, body position, and at runtime."
+
+[[case]]
+name = "bitnot_every_width_agrees"
+description = "`~` at every integer width: const initializer, body position, and runtime all agree (the RUE-1698 repro, which errored in const position)."
+files = [{ path = "main.rue", source = """
+fn id_u8(v: u8) -> u8 { v }
+fn id_u16(v: u16) -> u16 { v }
+fn id_u32(v: u32) -> u32 { v }
+fn id_u64(v: u64) -> u64 { v }
+fn id_i8(v: i8) -> i8 { v }
+fn id_i16(v: i16) -> i16 { v }
+fn id_i32(v: i32) -> i32 { v }
+fn id_i64(v: i64) -> i64 { v }
+
+fn not_u8(comptime n: u8) -> u8 { comptime { ~n } }
+fn not_u16(comptime n: u16) -> u16 { comptime { ~n } }
+fn not_u32(comptime n: u32) -> u32 { comptime { ~n } }
+fn not_u64(comptime n: u64) -> u64 { comptime { ~n } }
+fn not_i8(comptime n: i8) -> i8 { comptime { ~n } }
+fn not_i16(comptime n: i16) -> i16 { comptime { ~n } }
+fn not_i32(comptime n: i32) -> i32 { comptime { ~n } }
+fn not_i64(comptime n: i64) -> i64 { comptime { ~n } }
+
+const K_U8: u8 = not_u8(0);
+const K_U16: u16 = not_u16(0);
+const K_U32: u32 = not_u32(0);
+const K_U64: u64 = not_u64(0);
+const K_I8: i8 = not_i8(5);
+const K_I16: i16 = not_i16(5);
+const K_I32: i32 = not_i32(5);
+const K_I64: i64 = not_i64(5);
+
+fn main() -> i32 {
+    @dbg(K_U8); @dbg(not_u8(0)); @dbg(~id_u8(0));
+    @dbg(K_U16); @dbg(not_u16(0)); @dbg(~id_u16(0));
+    @dbg(K_U32); @dbg(not_u32(0)); @dbg(~id_u32(0));
+    @dbg(K_U64); @dbg(not_u64(0)); @dbg(~id_u64(0));
+    @dbg(K_I8); @dbg(not_i8(5)); @dbg(~id_i8(5));
+    @dbg(K_I16); @dbg(not_i16(5)); @dbg(~id_i16(5));
+    @dbg(K_I32); @dbg(not_i32(5)); @dbg(~id_i32(5));
+    @dbg(K_I64); @dbg(not_i64(5)); @dbg(~id_i64(5));
+    0
+}
+""" }]
+differential_opt = true
+exit_code = 0
+stdout = """255
+255
+255
+65535
+65535
+65535
+4294967295
+4294967295
+4294967295
+18446744073709551615
+18446744073709551615
+18446744073709551615
+-6
+-6
+-6
+-6
+-6
+-6
+-6
+-6
+-6
+-6
+-6
+-6
+"""
+
+[[case]]
+name = "shl_amount_below_at_and_above_width_agrees"
+description = "`<<` with amounts w-1, w, and w+1 at every width: the result truncates and the amount masks mod width (4.3a:10) identically in all three positions."
+files = [{ path = "main.rue", source = """
+fn id_u8(v: u8) -> u8 { v }
+fn id_i8(v: i8) -> i8 { v }
+fn id_u16(v: u16) -> u16 { v }
+fn id_i16(v: i16) -> i16 { v }
+fn id_u32(v: u32) -> u32 { v }
+fn id_i32(v: i32) -> i32 { v }
+fn id_u64(v: u64) -> u64 { v }
+fn id_i64(v: i64) -> i64 { v }
+
+fn shl_u8(comptime n: u8, comptime s: u8) -> u8 { comptime { n << s } }
+fn shl_i8(comptime n: i8, comptime s: i8) -> i8 { comptime { n << s } }
+fn shl_u16(comptime n: u16, comptime s: u16) -> u16 { comptime { n << s } }
+fn shl_i16(comptime n: i16, comptime s: i16) -> i16 { comptime { n << s } }
+fn shl_u32(comptime n: u32, comptime s: u32) -> u32 { comptime { n << s } }
+fn shl_i32(comptime n: i32, comptime s: i32) -> i32 { comptime { n << s } }
+fn shl_u64(comptime n: u64, comptime s: u64) -> u64 { comptime { n << s } }
+fn shl_i64(comptime n: i64, comptime s: i64) -> i64 { comptime { n << s } }
+
+const A1: u8 = shl_u8(3, 7);
+const A2: u8 = shl_u8(3, 8);
+const A3: u8 = shl_u8(3, 9);
+const B1: i8 = shl_i8(1, 7);
+const B2: i8 = shl_i8(1, 8);
+const B3: i8 = shl_i8(1, 9);
+const C1: u16 = shl_u16(3, 15);
+const C2: u16 = shl_u16(3, 16);
+const C3: u16 = shl_u16(3, 17);
+const D1: i16 = shl_i16(1, 15);
+const D2: i16 = shl_i16(1, 16);
+const D3: i16 = shl_i16(1, 17);
+const E1: u32 = shl_u32(3, 31);
+const E2: u32 = shl_u32(3, 32);
+const E3: u32 = shl_u32(3, 33);
+const F1: i32 = shl_i32(1, 31);
+const F2: i32 = shl_i32(1, 32);
+const F3: i32 = shl_i32(1, 33);
+const G1: u64 = shl_u64(3, 63);
+const G2: u64 = shl_u64(3, 64);
+const G3: u64 = shl_u64(3, 65);
+const H1: i64 = shl_i64(1, 63);
+const H2: i64 = shl_i64(1, 64);
+const H3: i64 = shl_i64(1, 65);
+
+fn main() -> i32 {
+    @dbg(A1); @dbg(shl_u8(3, 7)); @dbg(id_u8(3) << id_u8(7));
+    @dbg(A2); @dbg(shl_u8(3, 8)); @dbg(id_u8(3) << id_u8(8));
+    @dbg(A3); @dbg(shl_u8(3, 9)); @dbg(id_u8(3) << id_u8(9));
+    @dbg(B1); @dbg(shl_i8(1, 7)); @dbg(id_i8(1) << id_i8(7));
+    @dbg(B2); @dbg(shl_i8(1, 8)); @dbg(id_i8(1) << id_i8(8));
+    @dbg(B3); @dbg(shl_i8(1, 9)); @dbg(id_i8(1) << id_i8(9));
+    @dbg(C1); @dbg(shl_u16(3, 15)); @dbg(id_u16(3) << id_u16(15));
+    @dbg(C2); @dbg(shl_u16(3, 16)); @dbg(id_u16(3) << id_u16(16));
+    @dbg(C3); @dbg(shl_u16(3, 17)); @dbg(id_u16(3) << id_u16(17));
+    @dbg(D1); @dbg(shl_i16(1, 15)); @dbg(id_i16(1) << id_i16(15));
+    @dbg(D2); @dbg(shl_i16(1, 16)); @dbg(id_i16(1) << id_i16(16));
+    @dbg(D3); @dbg(shl_i16(1, 17)); @dbg(id_i16(1) << id_i16(17));
+    @dbg(E1); @dbg(shl_u32(3, 31)); @dbg(id_u32(3) << id_u32(31));
+    @dbg(E2); @dbg(shl_u32(3, 32)); @dbg(id_u32(3) << id_u32(32));
+    @dbg(E3); @dbg(shl_u32(3, 33)); @dbg(id_u32(3) << id_u32(33));
+    @dbg(F1); @dbg(shl_i32(1, 31)); @dbg(id_i32(1) << id_i32(31));
+    @dbg(F2); @dbg(shl_i32(1, 32)); @dbg(id_i32(1) << id_i32(32));
+    @dbg(F3); @dbg(shl_i32(1, 33)); @dbg(id_i32(1) << id_i32(33));
+    @dbg(G1); @dbg(shl_u64(3, 63)); @dbg(id_u64(3) << id_u64(63));
+    @dbg(G2); @dbg(shl_u64(3, 64)); @dbg(id_u64(3) << id_u64(64));
+    @dbg(G3); @dbg(shl_u64(3, 65)); @dbg(id_u64(3) << id_u64(65));
+    @dbg(H1); @dbg(shl_i64(1, 63)); @dbg(id_i64(1) << id_i64(63));
+    @dbg(H2); @dbg(shl_i64(1, 64)); @dbg(id_i64(1) << id_i64(64));
+    @dbg(H3); @dbg(shl_i64(1, 65)); @dbg(id_i64(1) << id_i64(65));
+    0
+}
+""" }]
+differential_opt = true
+exit_code = 0
+stdout = """128
+128
+128
+3
+3
+3
+6
+6
+6
+-128
+-128
+-128
+1
+1
+1
+2
+2
+2
+32768
+32768
+32768
+3
+3
+3
+6
+6
+6
+-32768
+-32768
+-32768
+1
+1
+1
+2
+2
+2
+2147483648
+2147483648
+2147483648
+3
+3
+3
+6
+6
+6
+-2147483648
+-2147483648
+-2147483648
+1
+1
+1
+2
+2
+2
+9223372036854775808
+9223372036854775808
+9223372036854775808
+3
+3
+3
+6
+6
+6
+-9223372036854775808
+-9223372036854775808
+-9223372036854775808
+1
+1
+1
+2
+2
+2
+"""
+
+[[case]]
+name = "shr_fill_and_mask_agree"
+description = "`>>` at every width: sign-replicating on signed operands, zero-filling on unsigned (4.3a:8), with the amount masked mod width. Shifting by the width is the identity in all three positions."
+files = [{ path = "main.rue", source = """
+fn id_u8(v: u8) -> u8 { v }
+fn id_i8(v: i8) -> i8 { v }
+fn id_u16(v: u16) -> u16 { v }
+fn id_i16(v: i16) -> i16 { v }
+fn id_u32(v: u32) -> u32 { v }
+fn id_i32(v: i32) -> i32 { v }
+fn id_u64(v: u64) -> u64 { v }
+fn id_i64(v: i64) -> i64 { v }
+
+fn shr_u8(comptime n: u8, comptime s: u8) -> u8 { comptime { n >> s } }
+fn shr_i8(comptime n: i8, comptime s: i8) -> i8 { comptime { n >> s } }
+fn shr_u16(comptime n: u16, comptime s: u16) -> u16 { comptime { n >> s } }
+fn shr_i16(comptime n: i16, comptime s: i16) -> i16 { comptime { n >> s } }
+fn shr_u32(comptime n: u32, comptime s: u32) -> u32 { comptime { n >> s } }
+fn shr_i32(comptime n: i32, comptime s: i32) -> i32 { comptime { n >> s } }
+fn shr_u64(comptime n: u64, comptime s: u64) -> u64 { comptime { n >> s } }
+fn shr_i64(comptime n: i64, comptime s: i64) -> i64 { comptime { n >> s } }
+
+const A1: u8 = shr_u8(200, 1);
+const A2: u8 = shr_u8(200, 7);
+const A3: u8 = shr_u8(200, 8);
+const B1: i8 = shr_i8(-100, 1);
+const B2: i8 = shr_i8(-100, 7);
+const B3: i8 = shr_i8(-100, 8);
+const C1: u16 = shr_u16(50000, 1);
+const C2: u16 = shr_u16(50000, 15);
+const C3: u16 = shr_u16(50000, 16);
+const D1: i16 = shr_i16(-20000, 1);
+const D2: i16 = shr_i16(-20000, 15);
+const D3: i16 = shr_i16(-20000, 16);
+const E1: u32 = shr_u32(4000000000, 1);
+const E2: u32 = shr_u32(4000000000, 31);
+const E3: u32 = shr_u32(4000000000, 32);
+const F1: i32 = shr_i32(-2000000000, 1);
+const F2: i32 = shr_i32(-2000000000, 31);
+const F3: i32 = shr_i32(-2000000000, 32);
+const G1: u64 = shr_u64(18446744073709551615, 1);
+const G2: u64 = shr_u64(18446744073709551615, 63);
+const G3: u64 = shr_u64(18446744073709551615, 64);
+const H1: i64 = shr_i64(-9223372036854775808, 1);
+const H2: i64 = shr_i64(-9223372036854775808, 63);
+const H3: i64 = shr_i64(-9223372036854775808, 64);
+
+fn main() -> i32 {
+    @dbg(A1); @dbg(shr_u8(200, 1)); @dbg(id_u8(200) >> id_u8(1));
+    @dbg(A2); @dbg(shr_u8(200, 7)); @dbg(id_u8(200) >> id_u8(7));
+    @dbg(A3); @dbg(shr_u8(200, 8)); @dbg(id_u8(200) >> id_u8(8));
+    @dbg(B1); @dbg(shr_i8(-100, 1)); @dbg(id_i8(-100) >> id_i8(1));
+    @dbg(B2); @dbg(shr_i8(-100, 7)); @dbg(id_i8(-100) >> id_i8(7));
+    @dbg(B3); @dbg(shr_i8(-100, 8)); @dbg(id_i8(-100) >> id_i8(8));
+    @dbg(C1); @dbg(shr_u16(50000, 1)); @dbg(id_u16(50000) >> id_u16(1));
+    @dbg(C2); @dbg(shr_u16(50000, 15)); @dbg(id_u16(50000) >> id_u16(15));
+    @dbg(C3); @dbg(shr_u16(50000, 16)); @dbg(id_u16(50000) >> id_u16(16));
+    @dbg(D1); @dbg(shr_i16(-20000, 1)); @dbg(id_i16(-20000) >> id_i16(1));
+    @dbg(D2); @dbg(shr_i16(-20000, 15)); @dbg(id_i16(-20000) >> id_i16(15));
+    @dbg(D3); @dbg(shr_i16(-20000, 16)); @dbg(id_i16(-20000) >> id_i16(16));
+    @dbg(E1); @dbg(shr_u32(4000000000, 1)); @dbg(id_u32(4000000000) >> id_u32(1));
+    @dbg(E2); @dbg(shr_u32(4000000000, 31)); @dbg(id_u32(4000000000) >> id_u32(31));
+    @dbg(E3); @dbg(shr_u32(4000000000, 32)); @dbg(id_u32(4000000000) >> id_u32(32));
+    @dbg(F1); @dbg(shr_i32(-2000000000, 1)); @dbg(id_i32(-2000000000) >> id_i32(1));
+    @dbg(F2); @dbg(shr_i32(-2000000000, 31)); @dbg(id_i32(-2000000000) >> id_i32(31));
+    @dbg(F3); @dbg(shr_i32(-2000000000, 32)); @dbg(id_i32(-2000000000) >> id_i32(32));
+    @dbg(G1); @dbg(shr_u64(18446744073709551615, 1)); @dbg(id_u64(18446744073709551615) >> id_u64(1));
+    @dbg(G2); @dbg(shr_u64(18446744073709551615, 63)); @dbg(id_u64(18446744073709551615) >> id_u64(63));
+    @dbg(G3); @dbg(shr_u64(18446744073709551615, 64)); @dbg(id_u64(18446744073709551615) >> id_u64(64));
+    @dbg(H1); @dbg(shr_i64(-9223372036854775808, 1)); @dbg(id_i64(-9223372036854775808) >> id_i64(1));
+    @dbg(H2); @dbg(shr_i64(-9223372036854775808, 63)); @dbg(id_i64(-9223372036854775808) >> id_i64(63));
+    @dbg(H3); @dbg(shr_i64(-9223372036854775808, 64)); @dbg(id_i64(-9223372036854775808) >> id_i64(64));
+    0
+}
+""" }]
+differential_opt = true
+exit_code = 0
+stdout = """100
+100
+100
+1
+1
+1
+200
+200
+200
+-50
+-50
+-50
+-1
+-1
+-1
+-100
+-100
+-100
+25000
+25000
+25000
+1
+1
+1
+50000
+50000
+50000
+-10000
+-10000
+-10000
+-1
+-1
+-1
+-20000
+-20000
+-20000
+2000000000
+2000000000
+2000000000
+1
+1
+1
+4000000000
+4000000000
+4000000000
+-1000000000
+-1000000000
+-1000000000
+-1
+-1
+-1
+-2000000000
+-2000000000
+-2000000000
+9223372036854775807
+9223372036854775807
+9223372036854775807
+1
+1
+1
+18446744073709551615
+18446744073709551615
+18446744073709551615
+-4611686018427387904
+-4611686018427387904
+-4611686018427387904
+-1
+-1
+-1
+-9223372036854775808
+-9223372036854775808
+-9223372036854775808
+"""
+
+[[case]]
+name = "negative_and_min_operands_agree"
+description = "Negative and type-minimum operands: `~-128i8` is 127, `~i64::MIN` is i64::MAX, and shifting the minimum stays width-closed in all three positions."
+files = [{ path = "main.rue", source = """
+fn id_i8(v: i8) -> i8 { v }
+fn id_i64(v: i64) -> i64 { v }
+fn id_u64(v: u64) -> u64 { v }
+
+fn not_i8(comptime n: i8) -> i8 { comptime { ~n } }
+fn not_i64(comptime n: i64) -> i64 { comptime { ~n } }
+fn not_u64(comptime n: u64) -> u64 { comptime { ~n } }
+fn shl_i8(comptime n: i8, comptime s: i8) -> i8 { comptime { n << s } }
+fn shr_i8(comptime n: i8, comptime s: i8) -> i8 { comptime { n >> s } }
+
+const N1: i8 = not_i8(-128);
+const N2: i8 = not_i8(-1);
+const N3: i64 = not_i64(-9223372036854775808);
+const N4: u64 = not_u64(18446744073709551615);
+const S1: i8 = shl_i8(-128, 1);
+const S2: i8 = shl_i8(-1, 7);
+const S3: i8 = shr_i8(-128, 7);
+
+fn main() -> i32 {
+    @dbg(N1); @dbg(not_i8(-128)); @dbg(~id_i8(-128));
+    @dbg(N2); @dbg(not_i8(-1)); @dbg(~id_i8(-1));
+    @dbg(N3); @dbg(not_i64(-9223372036854775808)); @dbg(~id_i64(-9223372036854775808));
+    @dbg(N4); @dbg(not_u64(18446744073709551615)); @dbg(~id_u64(18446744073709551615));
+    @dbg(S1); @dbg(shl_i8(-128, 1)); @dbg(id_i8(-128) << id_i8(1));
+    @dbg(S2); @dbg(shl_i8(-1, 7)); @dbg(id_i8(-1) << id_i8(7));
+    @dbg(S3); @dbg(shr_i8(-128, 7)); @dbg(id_i8(-128) >> id_i8(7));
+    0
+}
+""" }]
+differential_opt = true
+exit_code = 0
+stdout = """127
+127
+127
+0
+0
+0
+9223372036854775807
+9223372036854775807
+9223372036854775807
+0
+0
+0
+0
+0
+0
+-128
+-128
+-128
+-1
+-1
+-1
+"""
+
+[[case]]
+name = "direct_const_initializers_truncate"
+description = "The same truncation applies to a const initializer written inline, with no comptime call to reduce."
+files = [{ path = "main.rue", source = """
+const A: u8 = ~0;
+const B: u8 = 3 << 7;
+const C: i32 = 1 << 33;
+const D: u8 = 200 >> 8;
+fn main() -> i32 {
+    @dbg(A);
+    @dbg(B);
+    @dbg(C);
+    @dbg(D);
+    0
+}
+""" }]
+differential_opt = true
+exit_code = 0
+stdout = """255
+128
+2
+200
+"""
+
+# --- Controls: operations that really do panic at runtime must still be
+# rejected in const position. These all reduce through the same durable
+# evaluator arms the fix touched, so they are what proves the change did not
+# make const evaluation total.
+
+[[case]]
+name = "control_add_overflow_still_rejected"
+description = "`@int_max(u8) + 1` reduced through a comptime call is still E1200: addition traps at runtime."
+files = [{ path = "main.rue", source = """
+fn bump(comptime n: u8) -> u8 { comptime { n + 1 } }
+const X: u8 = bump(255);
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "integer overflow", "u8", "256"]
+
+[[case]]
+name = "control_int_max_plus_one_still_rejected"
+description = "The builtin form `@int_max(u8) + 1` in a const initializer is still E1200."
+files = [{ path = "main.rue", source = """
+const X: u8 = @int_max(u8) + 1;
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "integer overflow", "u8"]
+
+[[case]]
+name = "control_sub_underflow_still_rejected"
+description = "`@int_min(i8) - 1` is still E1200 in both the reduced-call and builtin forms."
+files = [{ path = "main.rue", source = """
+fn drop1(comptime n: i8) -> i8 { comptime { n - 1 } }
+const X: i8 = drop1(-128);
+const Y: i8 = @int_min(i8) - 1;
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "integer overflow", "i8"]
+
+[[case]]
+name = "control_mul_overflow_still_rejected"
+description = "A multiply that overflows the operand type is still E1200."
+files = [{ path = "main.rue", source = """
+fn sq(comptime n: u8) -> u8 { comptime { n * n } }
+const X: u8 = sq(200);
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "integer overflow", "u8", "40000"]
+
+[[case]]
+name = "control_division_by_zero_still_rejected"
+description = "`1 / 0` in const position is still E1200 and still says it would panic at runtime."
+files = [{ path = "main.rue", source = """
+fn div(comptime n: i32, comptime d: i32) -> i32 { comptime { n / d } }
+const X: i32 = div(1, 0);
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "division by zero", "would panic at runtime"]
+
+[[case]]
+name = "control_remainder_by_zero_still_rejected"
+description = "`1 % 0` in const position is still E1200."
+files = [{ path = "main.rue", source = """
+fn rem(comptime n: i32, comptime d: i32) -> i32 { comptime { n % d } }
+const X: i32 = rem(1, 0);
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "remainder by zero", "would panic at runtime"]
+
+[[case]]
+name = "control_negate_minimum_still_rejected"
+description = "Negation is not a truncating operation: negating a type's minimum still overflows and is still E1200."
+files = [{ path = "main.rue", source = """
+fn neg(comptime n: i8) -> i8 { comptime { -n } }
+const X: i8 = neg(-128);
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "integer overflow", "i8", "128"]
