@@ -16,8 +16,10 @@ that a maintainer should confirm; everything else is a proposed commitment.
 
 After elaboration (desugaring + comptime + monomorphization), a Rue program is a
 set of first-order, fully-monomorphic function definitions over a small set of
-types, with no `comptime`, no generics, and no method-call or `&&`/`||`/`while`
-sugar. The core makes precise what it means to *run* such a program and what it
+types, with no `comptime`, no generics, and no `&&`/`||`/`while` sugar and no
+method-call sugar — save for the one method form that is not sugar, the
+accessor call, which survives into the core for the reason §2 gives. The core
+makes precise what it means to *run* such a program and what it
 means for one to be *well-formed* — where "well-formed" includes the entire
 ownership discipline that is Rue's memory-safety guarantee.
 
@@ -57,6 +59,10 @@ Expressions
       | E :: K ( e1, ..., em )           -- enum value construction (variant K of E with payload e1..em; m = arity of K)
       | [ e1, ..., en ]        -- array value construction
       | g ( a1, ..., am )      -- call of function g with argument forms a_i (see below)
+      | p . f ( e1, ..., ek )  -- ACCESSOR call (ADR-0062): result is a PLACE, not a value — §5.8, (Accessor-Call)
+      | @drop ( p )            -- explicit drop of place p (§5.3 statics, §6.11 dynamics; 3.9:37-39)
+      | @panic ( s )           -- diverging trap; s a string-valued operand (§5.8 (Panic), §5.7; §6.12, (D-Panic))
+      | @dbg ( e )             -- append e's rendering to the observable output (§5.8 (Dbg); §6.9, §6.12)
       | if e0 { e1 } else { e2 }
       | match e0 { pat1 => e1, ..., patk => ek }
       | let μ x = e1 ; e2      -- binding; scope of x is e2; μ ∈ {∅, mut} is the binding's mutability mark (§5)
@@ -79,13 +85,47 @@ Function definitions
   F ::= fn g ( m1 x1: T1, ..., mk xk: Tk ) -> T { e }     -- m_i ∈ {∅, inout, borrow}; a by-value (m_i = ∅)
                                                           --   parameter may additionally carry the μ = mut mark,
                                                           --   binding exactly as a `let mut` local does
+      | fn A . f ( r self: A, x1: T1, ..., xk: Tk ) -> r T { b }
+                                -- ACCESSOR (ADR-0062): r ∈ {borrow, inout}, the SAME r on receiver and result;
+                                --   value parameters are by-value (6.6:4-6.6:7); body b below
+
+Accessor bodies (the only place `yield` appears)
+  b ::= yield p_y              -- the single non-diverging exit: a place rooted at the receiver `self`
+                               --   (a projection chain, possibly through a nested accessor call), with an
+                               --   empty continuation after it
+      | e_guard ; b            -- a guard that either falls through or diverges (a trap, @panic) — §5.8
 
 Programs
   P ::= D* F*                  -- with exactly one  fn main() -> (int(32,signed) | unit)
 ```
 
+Several forms above look like surface sugar and are not; each is a core form
+because no core form it could elaborate *into* exists (RUE-1600). **Accessor
+calls keep their method-call spelling**: an ordinary surface method call
+elaborates to `g(p, ē)` / `g(borrow p, ē)`, but an accessor *yields a place*,
+and §2 has neither a by-reference return nor a first-class reference for one to
+become — the deliberate absence RUE-1012 records as a forward-compatibility
+contract. So `p.f(ē)` is typed by (Accessor-Call) at the **place sort**
+`place(m, T)` (§5, §5.8) and reduced by inlining the accessor's body, not by
+`(D-Call)` (§5.8). The `yield` body form exists for the same reason: it is the
+only way to write "this function's result is that place", and it is confined to
+`b` — no `F` body and no expression position admits it. The three intrinsic
+forms are likewise not instances of the `g(a1..am)` call production: `@drop`
+takes a *place* operand and both consumes it and runs its drop glue (§5.3,
+§6.11); `@panic` is `never`-typed and hands no value to its context (§5.7,
+§6.12); `@dbg`'s effect is on the observable output, which no user function has
+(§6.9). Their operand sorts are not the argument forms `a` either: a place; a
+string-valued expression, whose type is one the core's `T` does not yet list —
+the string types arrive with the deferred slice statics (§5.7's `⊳` note,
+§6.13.4), and a literal one is an `H0` static allocation (§6.13.2), though the
+operand need not be a literal (verified: `@panic(m)` for a string binding `m`
+compiles); and a value expression of an integer or `bool` type (verified: the
+compiler's `@dbg` accepts exactly integer, `bool`, and `String`, rejecting an
+aggregate with E0702 — the `String` case again riding with the slice statics).
+
 Notes on what is **absent by design** (lives in elaboration, `02-elaboration.md`):
-`comptime`, comptime/`type` parameters, generics, method-call syntax, `Self`,
+`comptime`, comptime/`type` parameters, generics, method-call syntax **other
+than an accessor's** (the one surviving case, just above), `Self`,
 `&&`/`||` (→ `if`), `else if` (→ nested `if`), `while c { b }` (→
 `loop { if c { b } else { break } }`), block syntax (→ `let`/`;` sequences),
 `@import`/modules (→ a flat set of `F` after resolution), integer-literal *base*
@@ -123,7 +163,53 @@ Notes on what is **absent by design** (lives in elaboration, `02-elaboration.md`
   divergence remains in this area;
 - **no-argument `@panic()`** → the message form (§6.12, D-Panic) with the
   fixed message `panic` (verified: the compiler emits the bare word and exits
-  101).
+  101);
+- **`for` loops** (`4.8:23`–`4.8:29`) → **deferred, and deliberately given no
+  elaboration** (RUE-1600). `4.8:26` makes iteration a shared borrow of the
+  collection *for the loop's duration*: the collection stays usable afterward
+  and no element is moved out of it. §5.4's loans are strictly call-scoped, so
+  the core has no loan extent a loop-duration borrow could elaborate into, and
+  §5.8's accessor extent (the enclosing full expression) is not one either.
+  Inventing a loop-extent loan class is a change to the *framework*, not a
+  desugaring, and belongs with the first-class-reference question already open
+  at §5.4 and §9 (item 3) — so `for` has no core image, and this entry states
+  the gap rather than papering it. The compiler implements the surface form
+  (verified: `for x in a { … }` over an `[T; 2]` with `T` droppable compiles,
+  `a[1]` is readable after the loop, and both elements drop exactly once, at
+  `a`'s scope exit);
+- **`continue`** (`4.8:8/9/10/13`, `4.8:27`) → the enclosing loop's **back
+  edge**, never-typed exactly like `break` (`4.8:10`; §5.7). It is not a
+  distinct core form and needs no rule of its own, but the elaboration is only
+  half-stated: `break`'s unwind drops are pinned by §6.10's
+  `unwind-drops(H, φ', φ)`, and **`continue`'s are not specified here** —
+  which scopes the back edge discards, and in what order, is left open, so a
+  second implementation cannot derive the iteration-local drop trace from this
+  document. The compiler does run the iteration's scope drops at the
+  `continue` (verified: a `while` body binding a droppable local drops it once
+  per iteration, on the `continue` turn exactly as on the fall-through turn).
+  Writing that down is an `02-elaboration.md` obligation, recorded here rather
+  than left silent.
+
+**Elaboration prunes unreachable bodies** (RUE-1600). The surface→core mapping
+is applied to the bodies reachable from `main`, and only those: the semantic
+compilation unit is the root module and its transitive imports, but ordinary
+function and method bodies are analyzed *on demand* from `main`, and an error
+inside an unreferenced body is not reported at all (`10.5:4`; verified: a
+function whose body is `x + true` compiles with an unused-function warning and
+no error). Two things rest on this assumption, so it is stated here rather than
+assumed silently:
+
+- a function whose parameter type is **uninhabited** — a zero-variant enum,
+  which `6.3:12` admits and which can never be constructed — can never be
+  called, so it is never reached and never elaborated.
+  `enum Never {}  fn absurd(n: Never) -> i32 { match n {} }` is a well-formed
+  surface program (verified: it compiles with only an unused-function warning)
+  with **no core image**, which is exactly what licenses §5.5's "no `E` here is
+  uninhabited" and its exclusion of the zero-arm `match`;
+- consequently the §7 theorems quantify over **elaborated** — that is,
+  reachable — code. An unreachable surface body lies outside them, and outside
+  the compiler's analysis too (`10.5:4`), so the two artifacts are silent about
+  exactly the same programs.
 
 **[open]** Raw pointers and `unchecked` code (chapter 9) are
 initially *out* of the core and added as a distinguished, clearly-marked
@@ -331,6 +417,11 @@ Ownership is flow-sensitive, so the type judgment threads an **ownership state**
 
   Loan state (for exclusivity)
     Λ : set of currently-outstanding loans, each  ( root(p), {shared | exclusive} )
+
+  Result sorts (what the judgment's right-hand side may be)
+    R ::= T                      -- a VALUE of type T: every rule in §5 except (Accessor-Call)
+        | place(m, T)            -- a PLACE of type T held under a loan of mode m ∈ {shared, exclusive}
+                                 --   (§5.8, (Accessor-Call), ADR-0062); admissible in PLACE contexts only (§4.1)
 ```
 
 `Σ(p)` is the state recorded for the exact path `p`. A base path can be `Owned`
@@ -350,11 +441,15 @@ mutability premise undefined for every elaborated program.)
 The main judgment:
 
 ```
-    Γ ; Σ ; Λ  ⊢  e  ⇒  T  ⊣  Σ'
+    Γ ; Σ ; Λ  ⊢  e  ⇒  R  ⊣  Σ'
 ```
 
 read: "under bindings Γ, starting ownership Σ and loans Λ, expression `e` is
-well-formed, has type `T`, and leaves ownership Σ'." (Λ is scoped to a single call
+well-formed, has result sort `R`, and leaves ownership Σ'." Every rule below
+writes `T` for `R` — the value case, and the only one until §5.8. The single
+place-sorted result is (Accessor-Call)'s `place(m, T)` (RUE-1600: the sort was
+used there before it was introduced); §4.1's place contexts are exactly where
+such a result may appear, and §5.8 enumerates them. (Λ is scoped to a single call
 and does not change across `e`; it is threaded only so the use/assign rules can
 consult it — see 5.4. It is written on the turnstile, not on the output, for that
 reason.)
@@ -384,6 +479,9 @@ discipline determined by the signature:
   Γ0 = [x1↦T1, ..., xm↦Tm]
   Σ0 = [xi↦Owned for every parameter xi]
   Γ0;Σ0;∅ ⊢ e_body ⇒ Tr ⊣ Σf
+  for every by-value parameter xi (mi = ∅), the §5.6 scope-exit obligation at every exit of the body:
+    ¬ residual-linear(Σf, xi, Ti)              if Σf ≠ ⊥          -- the fall-through exit
+    ¬ residual-linear(Σ_r, xi, Ti)             at each `return` in e_body, in the state Σ_r in force there
   for every parameter xi:
     mi = borrow  ⇒ xi and every path under xi is read-only, never moved out, and may be re-lent only as borrow
     mi = inout   ⇒ xi may be read, written, and forwarded, but never moved out
@@ -391,6 +489,31 @@ discipline determined by the signature:
   ───────────────────────────────────────────────────────────────────────── (Fn)
   g is well-formed
 ```
+
+The `residual-linear` premise is §5.6's scope-exit obligation stated *in* the
+judgment rather than beside it (RUE-1600). The body's end is where the
+by-value parameters' scopes end, so a parameter still carrying linear content
+in `Σf` is a leak, exactly as a `let` binding would be; body-local bindings
+discharge the same obligation at their own scope exits inside `e_body` (§5.6),
+and `borrow`/`inout` parameters are exempt because the caller owns them
+(`3.8:62`). Without this, `Σf` was derived by (Fn) and then never used, and the
+must-consume check — the entire point of the `Linear` class — lived only in
+§5.6's prose. Verified against the compiler: a by-value `linear` parameter the
+body never consumes is E0406 ("parameter 't' is passed by value, so this
+function owns it and must consume it"), as is a body-local `let` binding of
+one.
+
+Its second clause covers the paths that never reach `Σf`. A body ending in
+`return` has `Σf = ⊥` (§5.7), which discharges nothing: the function's scopes
+end at the `return` instead, so the obligation must hold in the state in force
+*there* — the same "consumed on only some paths" discipline §5.5's join applies
+to branches (`3.8:50`). **Compiler divergence** (observed 2026-08-23 while
+verifying this premise; not yet filed): the compiler checks the obligation
+path-insensitively, so a linear binding consumed on the fall-through path but
+still live across an early `return` is accepted, and its destructor runs on the
+return path — an implicit drop of a value the program never consumed, which is
+what `3.8:32/62/66` forbid. The core states the prose rule; the compiler is the
+artifact in the wrong (RUE-305).
 
 The `borrow` and `inout` restrictions are **callee-polarity** rules: the caller
 may not touch a lent place while the loan is live, while the callee may touch the
@@ -543,9 +666,35 @@ glue and no ownership effect.
   Γ;Σ;Λ ⊢ @drop(p) ⇒ unit ⊣ Σ
 
   Γ ⊢ p : T        class(T)∈{Affine,Linear}        Σ(p)=Owned        p not loaned in Λ
+  no proper prefix of p has a type that declares a destructor       -- 3.9:34 (E0456); @drop of the WHOLE value is fine
+  any index step in p is a constant [c] applied directly to the root binding    -- 3.8:68 (E0904)
   ─────────────────────────────────────────────────────── (@Drop)
   Γ;Σ;Λ ⊢ @drop(p) ⇒ unit ⊣ Σ[ p ↦ MovedOut, and every path strictly under p removed ]
 ```
+
+The last two premises are (Use-Move)'s, for the same reason (RUE-1600):
+`@drop(p)` leaves `p` `MovedOut`, so when `p` is a projection it *is* a partial
+move, and §4.2's two restrictions on which projections may be partially moved
+apply unchanged. Without them the core accepted `@drop(o.f)` on an `Outer` that
+declares a destructor — leaving a hole the destructor would observe, and a
+field the automatic cleanup after it would drop a second time. Verified against
+the compiler: `@drop(o.a)` where `Outer` has a `drop fn` is E0456;
+`@drop(w.arr[0])` (an index step reached through a field) and `@drop(a[i])`
+with a non-constant `i` are both E0904; `@drop(a[0])` at the root is accepted
+and drops exactly that element. (@Drop-Copy) needs neither premise: a `Copy`
+place is moved by nothing, and the compiler agrees — `@drop(o.a)` on a `Copy`
+field of a destructor-bearing `Outer` compiles, as does `@drop(a[i])` on a
+`Copy`-element array at a *dynamic* index, both with no drop glue and no
+ownership effect.
+
+`Σ(p) = Owned`, not `fully-owned(Σ, p)`, is the right strength here: `@drop`
+hands the value to no new owner, and §6.11's `⊘`-skip drops a partially moved
+value correctly — the very walk §5.6 schedules when that value merely leaves
+scope. **Compiler divergence** (observed 2026-08-23 while verifying the
+premises above; not yet filed): the compiler demands the stronger predicate —
+after `eat(o.a)`, `@drop(o)` is E0205 "use of moved value", although letting
+that same `o` leave scope is accepted and drops the residue. The core states
+the weaker premise, which is the one its own drop relation supports.
 
 ### 5.4 Borrows and the law of exclusivity
 
@@ -684,7 +833,12 @@ nested `if` chains on `≟` (bool and integer matches are exhaustiveness-checked
 at the surface, and an integer match's residual arm is the `_` the surface
 requires); and a zero-arm `match` on an uninhabited scrutinee is `never`-typed
 at the surface and does not reach the core (no `E` here is uninhabited — every
-core enum has at least one variant). The (Match) rule below therefore never
+core enum has at least one variant). That last clause is not a claim about the
+*surface*, which does admit a zero-variant enum (`6.3:12`): it holds because a
+function taking an uninhabited parameter can never be called, and elaboration
+therefore never reaches its body — §2's reachability-pruning assumption
+(`10.5:4`), which is where that gap is stated and where `fn absurd(n: Never)
+-> i32 { match n {} }` is accounted for. The (Match) rule below therefore never
 needs an ordering or overlap side condition.
 
 Enum construction is the dual introduction form, evaluated like a struct literal:
@@ -776,7 +930,9 @@ and an infinite `loop { e }` — one whose body **syntactically contains no
 `break` targeting it**, the same purely syntactic classification the prose
 (`4.8:21`) and the compiler use; reachability of a `break` that is present is
 not consulted. (Surface `continue` elaborates to the loop's back-edge and is
-likewise never-typed; it is not a distinct core form. `@panic(...)` **is** a
+likewise never-typed; it is not a distinct core form — see §2's inventory entry
+for what that elaboration still owes, namely `continue`'s unwind drops, which
+are unspecified here where `break`'s are pinned by §6.10. `@panic(...)` **is** a
 never form — it elaborates to a diverging call of type `!`, matching `3.4:2`
 (which lists it among the control-transfer forms) and the compiler's HM, AIR,
 and CFG contracts, which all type a `@panic` expression at `!`; its *dynamics*
@@ -841,13 +997,29 @@ which exit it.
   on exactly the exits that did not move it. Loop-local bindings live at a
   break are not part of any `Σ_bi`; their §5.6 obligations are discharged at
   the break itself, where their scopes end (dynamically, §6.10's unwind).
-- **Compiler divergence (RUE-1293).** The compiler enforces the back-edge
-  premise but currently computes the loop-exit state from the entry state
-  instead of joining the break-edge states, so it accepts a post-loop use of
-  a value moved on a break path — an accepted use-after-move, and an
-  observable double-drop when the type has drop glue. The core states the
-  rule the prose join discipline (`3.8:50/51`) requires; the compiler is the
-  artifact in the wrong (RUE-305).
+- **Compiler agreement (RUE-1293, resolved).** The divergence recorded here —
+  a loop-exit state computed from the entry state rather than from the
+  break-edge join, hence an accepted post-loop use of a value moved on a break
+  path — **no longer reproduces** (re-verified 2026-08-23, RUE-1600). The
+  compiler now implements this join: a value moved in a breaking arm is
+  `MovedOut` after the loop, and a post-loop use of it is rejected with E0205
+  citing the move at the break arm; the state really is per-break rather than
+  "moved anywhere in the body", since moving the value in the breaking arm and
+  *reassigning* it before the `break` leaves it usable after the loop (§5.2's
+  reinitialization), with the old value dropped once at the move and the new
+  one once at scope exit. The conservative `MovedOut` join plus the per-path
+  drop flag of `3.8:73` are likewise observable: a break arm that moves and a
+  break arm that does not produce exactly one drop on each path. So the core
+  and the compiler agree on (Loop-Break), and no RUE-1293 divergence remains.
+  What *does* remain, in the opposite direction (observed 2026-08-23; not yet
+  filed): when **every** path through the body breaks, the compiler rejects the
+  move itself with E0205 and the note "value was moved in a previous iteration
+  of the loop", although no back edge exists to carry it there —
+  `loop { eat(t); break; }` is the minimal case. Under (Loop-Break) the
+  back-edge premise constrains only the body's *fall-through* state `Σ_back`,
+  which is `⊥` when every path diverges, so the premise is vacuous and the
+  program is well-formed; this is an over-rejection, not the accepted
+  use-after-move RUE-1293 described.
 
 A `never`-typed expression is accepted wherever a value of any type is expected —
 this is the coercion, stated as **subsumption on the bottom type** (`3.4:3/4`):
@@ -892,15 +1064,20 @@ converting any stored value.
 §5.5 gave the rules for the branching and enum forms (`if`/`match`, enum
 intro/elim) and §5.7 the diverging forms (`return`/`break`, (Loop-Div)) together
 with the break-exited loop ((Loop-Break), RUE-1278). This subsection completes
-the statics with the remaining **non-diverging** expression forms of §2 —
-literals, primitive arithmetic/bitwise, equality compare, struct and array
-construction, and calls — closing the "thin statics" gap (RUE-308).
+the statics with the remaining expression forms of §2 — literals, primitive
+arithmetic/bitwise, equality compare, struct and array construction, calls,
+accessor calls, and the `@panic`/`@dbg` intrinsics — closing the "thin
+statics" gap (RUE-308).
 None of these adds ownership machinery beyond the *use* discipline of §4.2 and
 the loan discipline of §5.4; they are collected here so §5 covers every §2
 expression form, not because they introduce anything new. Each threads the
 ownership state Σ left-to-right through its subexpressions (evaluation order
-`4.0`). The diverging forms are **not** restated here (they live in §5.7), and
-`match`/enum construction are **not** restated here (they live in §5.5).
+`4.0`). The `return`/`break`/`loop` diverging forms are **not** restated here
+(they live in §5.7), and neither are `match`/enum construction (§5.5). Of the
+intrinsic forms, `@drop(p)` is typed in §5.3; `@panic` and `@dbg` get one rule
+each below — `@panic` among them despite diverging, because §5.7 states its
+`!`-typing in prose only — so that the "every §2 expression form" claim above
+stays true now that all three are §2 productions (RUE-1600).
 
 **Literals.** A literal denotes a fresh `Copy` value of its own type and reads no
 place, so Σ is unchanged.
@@ -1058,7 +1235,35 @@ carries only the moves performed by the by-value arguments. Because the core is
 fully monomorphic (§1), `g` names a single concrete signature: there is no
 overload or generic instantiation to resolve at the call.
 
-**Accessor calls (ADR-0062).** An accessor is a method of the form
+**Intrinsic forms `@panic` / `@dbg`.** `@panic` transfers control away instead
+of yielding a value, so it is typed exactly like the §5.7 diverging forms —
+`never`, with outgoing state `⊥` — and (Sub-Never) then admits it wherever a
+value of any type is expected. `@dbg` is an ordinary `unit`-typed expression
+whose operand is a value-context use.
+
+```
+  Γ;Σ;Λ ⊢ s ⇒ (a string type) ⊣ _        -- the string types are deferred (§5.7's ⊳ note, §6.13.4)
+  ─────────────────────────────────────── (Panic)        -- dynamics: §6.12, (D-Panic)
+  Γ;Σ;Λ ⊢ @panic(s) ⇒ never ⊣ ⊥
+
+  Γ;Σ;Λ ⊢ e ⇒ T ⊣ Σ'        T ∈ { int(w,s), bool }      -- plus the surface's String, with the slice statics
+  ─────────────────────────────────────── (Dbg)          -- dynamics: §6.9's intrinsic note
+  Γ;Σ;Λ ⊢ @dbg(e) ⇒ unit ⊣ Σ'
+```
+
+`(Panic)`'s `⊥` is what makes a panicking branch contribute nothing to §5.5's
+join, exactly as `return`/`break` do — verified against the compiler: an `if`
+arm that moves a value and then panics leaves that value usable after the `if`,
+and it drops exactly once. `(Dbg)`'s operand restriction is the compiler's
+(E0702); its dynamics append the operand's rendering to the observable output,
+which is why `@dbg` is part of the `Outcome` the differential harness compares
+(§6.12).
+
+**Accessor calls (ADR-0062).** The accessor definition form `fn A.f(…) -> r T
+{ b }`, its `yield` body form `b`, and the call expression `p.f(e1..ek)` are §2
+productions (RUE-1600 added them; the note there says why an accessor call
+cannot be desugared to an ordinary call). Spelled out, an accessor is a method
+of the form
 
 ```
   A.f : fn ( self_mode self : A, x1:T1, ..., xk:Tk ) -> result_mode T { e_guard ; yield p_y }
@@ -1717,16 +1922,30 @@ definition connecting the two):
 ```
   S declares  drop fn S(self) { e_dtor }        ℓ fresh
   ⟨ H[ℓ ↦ {v1,…,vk}_S] ; ⟨ [self↦(ℓ,ε)] ; [[]] ⟩ ; halt ; e_dtor ⟩  →*  ⟨ H1 ; _ ; halt ; ⟨⟩ ⟩
-  H1(ℓ) = { c1, …, ck }_S               -- the RESIDUAL fields: ⊘ wherever the destructor moved one out
+  H1(ℓ) = { c1, …, ck }_S               -- the residual fields; no ci can be ⊘ (see the vacuity note below)
 ```
 
 The destructor body runs in its own frame whose single scope record is
 **empty**: `self` is exempt from the drop obligation (§5.6 — otherwise
 dropping `self` would re-run the destructor, an infinite regress), so the
 nested run's frame pop drops only the destructor's own locals. Afterward the
-*residual* cell contents `c1,…,ck` — not the original `v1,…,vk` — drop in
-declaration order, so a field the destructor consumed is `⊘` and skipped,
-never dropped twice; the scratch cell `ℓ` is then retired. `drop` and `→` are
+cell contents `c1,…,ck` as the nested run left them — not the original
+`v1,…,vk` — drop in declaration order; the scratch cell `ℓ` is then retired.
+
+**The `⊘` case here is vacuous for well-formed programs** (RUE-1600), and the
+rule is written this way only so it stays honest if that ever changes. No `ci`
+can be `⊘`: reaching this rule means `S` declares a destructor, and `3.9:34`
+forbids moving a field out of *any* value whose type declares one, `self`
+inside that type's own destructor included, while `3.9:33` forbids moving
+`self` as a whole — so a destructor body has no way to consume a sub-place of
+the value being dropped. Both halves are verified against the compiler:
+`eat(self.a)` inside `drop fn Outer` is E0456 ("cannot move field `a` out of a
+value of type 'Outer', which has a destructor"), and `eat(self)` is E0442
+("cannot move `self` out of the destructor for 'Outer'"); `@drop(self.a)`
+takes the same E0456 path (§5.3). The residual-vs-original distinction
+therefore has no observable consequence today — it is the general shape, kept
+because the `⊘`-skip that makes it safe is §7's double-free argument and
+should not have to be re-derived if `3.9:34` is ever relaxed. `drop` and `→` are
 thus defined by **mutual recursion**, as the least pair of relations closed
 under all the rules of §6; a `drop` whose nested run diverges makes the
 enclosing configuration diverge, and one whose nested run traps `↯κ` makes the
@@ -2189,6 +2408,14 @@ it is not mistaken for coverage.
 With §5 (statics) and §6 (dynamics) precise, Rue's guarantees become *theorems*
 rather than hopes. Stated now; proved in `03-metatheory.md`.
 
+They quantify over **elaborated** core programs — which, by §2's
+reachability-pruning assumption (`10.5:4`), are the bodies reachable from
+`main`. A surface body no call reaches has no core image and so lies outside
+every theorem below; it lies outside the compiler's analysis for the same
+reason, so the two artifacts are silent about exactly the same programs, and
+neither claims anything about an uninhabited-parameter function such as
+`fn absurd(n: Never) -> i32 { match n {} }` (RUE-1600).
+
 - **Type safety (progress + preservation).** A well-typed core program does not
   get stuck: it either reduces, halts with a value, or halts with one of the
   defined panics. Types are preserved under reduction. For `match`, progress rests
@@ -2317,6 +2544,9 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 
 | Formal notion | Prose paragraphs it formalizes / replaces |
 |---|---|
+| §2 elaboration inventory — *recorded as deferred, not subsumed* | 4.8:23–29 (`for`), 4.8:8/9/10/13, 4.8:27 (`continue`) |
+| §2 reachability-pruning assumption (+ §7's quantification) | 10.5:4, 6.3:12 |
+| §5.8 (Panic)/(Dbg) intrinsic statics | 3.4:2, 8.1–8.3 (`@panic`); `@dbg` has no prose paragraph of its own |
 | §3 multiplicity lattice | 3.8:1–3, 3.8:14/16/18/20, 3.8:30/32/37, 3.8:57/58, 3.8:74, 3.9:31, 6.3:19 |
 | §4.2 definition of *use* (+ §5.1 premises) | 3.8:5, 3.8:7, 3.8:9, 3.8:11, 3.8:22, 3.8:26, 3.8:33, 3.8:53, 3.8:68, 3.9:34 |
 | §4.1/§5.4 equality borrows its operands | 4.3:3f |

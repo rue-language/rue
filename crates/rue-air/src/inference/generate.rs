@@ -532,6 +532,20 @@ impl<'a> ConstraintGenerator<'a> {
         false
     }
 
+    /// Is this method call the slice `len` of 7.2:17 — `s.len()` on a receiver
+    /// whose type is the synthetic slice struct `[T]`?
+    ///
+    /// Only the slice view qualifies. `str`, `Str(N)`, and StrBuf carry
+    /// source-defined `len` signatures that ordinary method lookup already
+    /// resolves; the slice view has no declared method at all, so its result
+    /// type has to be published here for the call to take part in ordinary
+    /// unification (RUE-1611).
+    fn is_slice_len_call(&self, receiver: StructId, method: Spur, arg_count: usize) -> bool {
+        arg_count == 0
+            && self.interner.resolve(&method) == "len"
+            && crate::types::is_slice_struct_name(&self.type_pool.struct_def(receiver).name)
+    }
+
     /// Whether an already-known operand is one of Rue's packed string types.
     /// String indexing is lowered by semantic analysis to a byte read, so its
     /// result is always `u8`, unlike an array index whose element type comes
@@ -3116,7 +3130,18 @@ impl<'a> ConstraintGenerator<'a> {
                             // back to late-registered anonymous-struct
                             // signatures, RUE-164)
                             let method_key = (struct_id, *method);
-                            if let Some(method_sig) = self.method_sig(&method_key) {
+                            if self.is_slice_len_call(struct_id, *method, call_args.len()) {
+                                // `len` is the one method a slice `[T]` has
+                                // (7.2:17-18) and sema synthesizes it from the
+                                // view's `len` word, so no signature is
+                                // registered for the synthetic struct. Publish
+                                // its `u64` result here anyway: without it the
+                                // call typed as `ERROR`, which unifies with any
+                                // annotation, so `let n: i32 = s.len();` passed
+                                // inference and reached CFG verification as a
+                                // `u64` value in an `i32` binding (RUE-1611).
+                                InferType::Concrete(Type::U64)
+                            } else if let Some(method_sig) = self.method_sig(&method_key) {
                                 // Generate constraints for arguments
                                 for (arg, param_type) in
                                     call_args.iter().zip(method_sig.param_types.iter())

@@ -72,6 +72,26 @@ fn main() -> i32 {
 """
 exit_code = 44
 
+# The element type `T` is any type whose layout admits the coercion (7.2:14),
+# not just a scalar: a struct built from slot-width fields is a valid element,
+# and a body that only measures the view never names the element type itself.
+# That shape used to fail to compile — the element's nominal was not carried
+# into the callee's analysis (RUE-1610).
+[[case]]
+name = "slice_element_may_be_a_struct"
+spec = ["7.2:2", "7.2:17"]
+source = """
+struct S { v: i64 }
+fn ln(borrow s: [S]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [S; 2] = [S { v: 1 }, S { v: 2 }];
+    ln(borrow a)
+}
+"""
+exit_code = 2
+
 # =============================================================================
 # Second-class status: the escaping positions (7.2:3 – 7.2:6)
 # =============================================================================
@@ -413,6 +433,43 @@ fn main() -> i32 {
 }
 """
 
+# The restriction is about layout, not about being a scalar: a struct holding a
+# narrow field is not slot-identical either, and the diagnostic names the struct
+# as the element type.
+[[case]]
+name = "slice_coercion_struct_element_with_narrow_field_rejected"
+spec = ["7.2:14"]
+compile_fail = true
+error_contains = ["E0908", "non-slot-width", "N"]
+source = """
+struct N { v: i32 }
+fn ln(borrow s: [N]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [N; 2] = [N { v: 1 }, N { v: 2 }];
+    ln(borrow a)
+}
+"""
+
+# A struct of slot-width fields is slot-identical however many fields it has,
+# so a multi-slot element coerces and the view strides by the whole element.
+[[case]]
+name = "slice_coercion_multi_slot_struct_element_strides_by_the_element"
+spec = ["7.2:14", "7.2:20"]
+source = """
+struct P { a: i64, b: i64 }
+fn last(borrow s: [P]) -> i32 {
+    let e = s[2];
+    @intCast(e.a * 10 + e.b)
+}
+fn main() -> i32 {
+    let a: [P; 3] = [P { a: 1, b: 1 }, P { a: 2, b: 2 }, P { a: 4, b: 2 }];
+    last(borrow a)
+}
+"""
+exit_code = 42
+
 # An EMPTY array is exempt from the narrow-element restriction: its pointer
 # word is never dereferenced, because every read is guarded by `i < len` and
 # `len` is 0.
@@ -486,6 +543,42 @@ fn main() -> i32 {
 """
 exit_code = 0
 
+# The result type is `u64`, and it takes part in ordinary type checking: an
+# annotation of another integer type is a plain type mismatch at the binding,
+# not a value that flows on unchecked (RUE-1611).
+[[case]]
+name = "slice_len_result_is_u64_and_is_type_checked"
+spec = ["7.2:17"]
+compile_fail = true
+error_contains = ["E0206", "expected i32, found u64"]
+source = """
+fn ln(borrow s: [i64]) -> i32 {
+    let n: i32 = s.len();
+    n
+}
+fn main() -> i32 {
+    let a: [i64; 2] = [1, 2];
+    ln(borrow a)
+}
+"""
+
+# The control: a `u64` binding of the same call is exact, and converting the
+# length explicitly is how it reaches a narrower type.
+[[case]]
+name = "slice_len_binds_to_u64_and_converts_explicitly"
+spec = ["7.2:17"]
+source = """
+fn ln(borrow s: [i64]) -> i32 {
+    let n: u64 = s.len();
+    @intCast(n) + @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [i64; 3] = [1, 2, 3];
+    ln(borrow a)
+}
+"""
+exit_code = 6
+
 # `len` is the only method on a slice.
 [[case]]
 name = "slice_has_no_method_other_than_len"
@@ -533,6 +626,24 @@ fn twice(borrow s: [i64]) -> i32 {
 fn main() -> i32 {
     let a: [i64; 1] = [21];
     twice(borrow a)
+}
+"""
+exit_code = 42
+
+# A struct element is read out of the view whole: the copy is the element at
+# that position, and the backing array keeps its own copy.
+[[case]]
+name = "slice_index_reads_a_struct_element_out"
+spec = ["7.2:20"]
+source = """
+struct S { v: i64 }
+fn pick(borrow s: [S], i: u64) -> i32 {
+    let e = s[i];
+    @intCast(e.v)
+}
+fn main() -> i32 {
+    let a: [S; 3] = [S { v: 10 }, S { v: 42 }, S { v: 30 }];
+    pick(borrow a, 1)
 }
 """
 exit_code = 42
@@ -611,6 +722,24 @@ fn pick(borrow s: [i64], i: i32) -> i32 {
 fn main() -> i32 {
     let a: [i64; 3] = [10, 20, 30];
     pick(borrow a, -1)
+}
+"""
+exit_code = 101
+
+# The bounds check does not depend on the element type: a struct-element view
+# traps on an out-of-range index exactly as a scalar-element one does.
+[[case]]
+name = "slice_index_past_length_traps_for_a_struct_element"
+spec = ["7.2:22"]
+source = """
+struct S { v: i64 }
+fn pick(borrow s: [S], i: u64) -> i32 {
+    let e = s[i];
+    @intCast(e.v)
+}
+fn main() -> i32 {
+    let a: [S; 2] = [S { v: 7 }, S { v: 8 }];
+    pick(borrow a, 5)
 }
 """
 exit_code = 101

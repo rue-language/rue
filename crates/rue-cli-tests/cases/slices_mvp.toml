@@ -22,6 +22,12 @@
 # is refused loudly (RUE-987 / RUE-1035 M2); `slice_param_narrow_frame_refused`
 # pins that. The slice runtime itself (len, bounds-checked indexing, forwarding,
 # methods) is element-width-independent and is exercised here on i64.
+#
+# The element type does not have to be a scalar. A struct built from slot-width
+# fields is slot-identical too, so `[S]` and `[P]` views coerce and stride by
+# the element's whole size; the `struct_element_*` cases below cover that
+# family, including the multi-slot stride and the aggregate form of the same
+# narrow-element refusal (RUE-1610).
 
 [section]
 id = "cli.slices"
@@ -288,6 +294,299 @@ fn main() -> i32 {
 args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["type mismatch"]
+
+# --- Struct element types (RUE-1610) -----------------------------------------
+#
+# A slice element may be any type the coercion admits (7.2:2, 7.2:14), and a
+# struct built from slot-width fields qualifies. The failing shape was a callee
+# that measures the view without ever naming the element type: the element's
+# nominal reached the callee's CFG epoch only through the view's `ptr` field, a
+# route that carried no nominal at all, so the body failed to materialize with
+# an internal error. These cases exercise both routes — a body that only calls
+# `len` (no mention of `S` anywhere) and a body that reads elements out.
+
+[[case]]
+name = "struct_element_slice_len"
+description = "RUE-1610 repro: a `[S]` view whose callee never names `S` compiles and measures the view."
+files = [{ path = "main.rue", source = """
+struct S { v: i64 }
+fn ln(borrow s: [S]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [S; 2] = [S { v: 1 }, S { v: 2 }];
+    ln(borrow a)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 2
+compile_stderr_not_contains = ["E9000", "internal compiler error", "MissingNominal"]
+
+[[case]]
+name = "struct_element_slice_index_and_len"
+description = "Reading struct elements out of a view: positions match the backing array and the length word is the array length."
+files = [{ path = "main.rue", source = """
+struct S { v: i64 }
+fn total(borrow s: [S]) -> i32 {
+    let mut acc: i64 = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        let e = s[i];
+        acc = acc + e.v;
+        i = i + 1;
+    }
+    @intCast(acc) + @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [S; 3] = [S { v: 10 }, S { v: 20 }, S { v: 9 }];
+    total(borrow a)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+
+[[case]]
+name = "struct_element_slice_index_out_of_bounds_traps"
+description = "The bounds check is element-type-independent: a struct-element view traps (exit 101) on an out-of-range index."
+files = [{ path = "main.rue", source = """
+struct S { v: i64 }
+fn pick(borrow s: [S], i: u64) -> i32 {
+    let e = s[i];
+    @intCast(e.v)
+}
+fn main() -> i32 {
+    let a: [S; 2] = [S { v: 7 }, S { v: 8 }];
+    pick(borrow a, 5)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+
+# A multi-slot element is the stride case: an element of two i64 fields is
+# slot-identical but sixteen bytes wide, so a view that strided by one slot
+# would read the wrong halves of the wrong elements. The discriminating value
+# depends on every element being read whole and in order.
+[[case]]
+name = "struct_element_slice_multi_slot_stride"
+description = "A two-slot struct element (`{i64, i64}`) is viewed with the element's own stride, not the slot stride."
+files = [{ path = "main.rue", source = """
+struct P { a: i64, b: i64 }
+fn fold(borrow s: [P]) -> i32 {
+    let mut acc: i64 = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        let e = s[i];
+        acc = acc * 10 + e.a * 2 + e.b;
+        i = i + 1;
+    }
+    @intCast(acc)
+}
+fn main() -> i32 {
+    let a: [P; 3] = [P { a: 0, b: 1 }, P { a: 1, b: 0 }, P { a: 1, b: 3 }];
+    fold(borrow a)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 125
+
+# A nested aggregate element keeps its inner layout through the view.
+[[case]]
+name = "struct_element_slice_nested_aggregate"
+description = "An element whose own field is a struct is read out whole: the inner field is reachable through the copy."
+files = [{ path = "main.rue", source = """
+struct Inner { a: i64 }
+struct Outer { i: Inner, b: i64 }
+fn pick(borrow s: [Outer]) -> i32 {
+    let e = s[1];
+    @intCast(e.i.a * 10 + e.b + @intCast(s.len()))
+}
+fn main() -> i32 {
+    let a: [Outer; 2] = [
+        Outer { i: Inner { a: 1 }, b: 2 },
+        Outer { i: Inner { a: 4 }, b: 0 },
+    ];
+    pick(borrow a)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+
+# A view does not own what it views (7.2:2), so a droppable element type is
+# dropped exactly once each, by the frame that owns the backing array, after
+# the viewing call has returned. Exact stdout pins the drop ORDER.
+[[case]]
+name = "struct_element_slice_does_not_drop_the_viewed_elements"
+description = "Viewing an array of a droppable struct runs each element's destructor once, in the backing array's own drop order, after the call."
+files = [{ path = "main.rue", source = """
+struct D { v: i64 }
+
+drop fn D(self) {
+    @dbg(self.v);
+}
+
+fn ln(borrow s: [D]) -> i32 {
+    @intCast(s.len())
+}
+
+fn main() -> i32 {
+    let a: [D; 3] = [D { v: 1 }, D { v: 2 }, D { v: 3 }];
+    let n = ln(borrow a);
+    @dbg(99);
+    n
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 3
+stdout = "99\n1\n2\n3\n"
+
+[[case]]
+name = "struct_element_slice_empty_view"
+description = "An empty array of a struct element still coerces: the pointer word is never dereferenced."
+files = [{ path = "main.rue", source = """
+struct S { v: i64 }
+fn ln(borrow s: [S]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [S; 0] = [];
+    ln(borrow a)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+
+# The layout restriction of `slice_param_narrow_frame_refused` applies to an
+# aggregate element too: a struct holding an i32 field is not slot-identical,
+# and the diagnostic names the struct.
+[[case]]
+name = "struct_element_with_narrow_field_refused"
+description = "A struct element holding a narrow field is refused at the coercion boundary with E0908 naming the struct."
+files = [{ path = "main.rue", source = """
+struct N { v: i32 }
+fn ln(borrow s: [N]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [N; 2] = [N { v: 1 }, N { v: 2 }];
+    ln(borrow a)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0908", "non-slot-width", "coerce or borrow", "N"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "MissingNominal"]
+
+# The element's nominal has to travel across a module boundary too: the callee
+# lives in the imported module and the backing array in the root module.
+[[case]]
+name = "struct_element_slice_across_modules"
+description = "A struct element declared in an imported module is carried into both the measuring and the reading callee (RUE-1610)."
+files = [
+    { path = "main.rue", source = """
+const h = @import("helper.rue");
+
+fn main() -> i32 {
+    let a: [h.S; 3] = [h.S { v: 10 }, h.S { v: 20 }, h.S { v: 9 }];
+    @intCast(h.total(borrow a) + h.count(borrow a))
+}
+""" },
+    { path = "helper.rue", source = """
+pub struct S { v: i64 }
+
+pub fn total(borrow s: [S]) -> i64 {
+    let mut acc: i64 = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        let e = s[i];
+        acc = acc + e.v;
+        i = i + 1;
+    }
+    acc
+}
+
+pub fn count(borrow s: [S]) -> i64 {
+    @intCast(s.len())
+}
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+
+# --- `len` result typing (RUE-1611) ------------------------------------------
+#
+# `s.len()` is `u64` (7.2:17). It used to take no part in inference — the view
+# has no declared method, so the call typed as the error type, which unified
+# with any annotation — and a mismatched binding reached CFG verification as a
+# u64 value in an i32 slot, reported as an internal error. It is an ordinary
+# type mismatch at the binding now.
+[[case]]
+name = "slice_len_mismatched_annotation_is_e0206"
+description = "RUE-1611 repro: `let n: i32 = s.len();` is E0206 at the binding, not a CFG verification ICE."
+files = [{ path = "main.rue", source = """
+fn ln(borrow s: [i64]) -> i32 {
+    let n: i32 = s.len();
+    n
+}
+fn main() -> i32 {
+    let a: [i64; 2] = [1, 2];
+    ln(borrow a)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected i32, found u64"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification"]
+
+[[case]]
+name = "slice_len_u64_annotation_stays_legal"
+description = "Control: the exact `u64` annotation of the same call is accepted."
+files = [{ path = "main.rue", source = """
+fn ln(borrow s: [i64]) -> i32 {
+    let n: u64 = s.len();
+    @intCast(n)
+}
+fn main() -> i32 {
+    let a: [i64; 5] = [1, 2, 3, 4, 5];
+    ln(borrow a)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 5
+
+[[case]]
+name = "slice_len_intcast_to_i32_stays_legal"
+description = "Control: an explicit conversion of the length reaches a narrower type, in a binding and in an expression."
+files = [{ path = "main.rue", source = """
+fn ln(borrow s: [i64]) -> i32 {
+    let n: i32 = @intCast(s.len());
+    n + @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [i64; 3] = [1, 2, 3];
+    ln(borrow a)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 6
+
+# The unannotated binding keeps the call's own type: `n` is the u64 length, so
+# it still needs a conversion to reach the i32 return.
+[[case]]
+name = "slice_len_unannotated_binding_is_u64"
+description = "Control: `let n = s.len();` binds a u64, and a comparison against another u64 length is exact."
+files = [{ path = "main.rue", source = """
+fn same(borrow s: [i64], borrow t: [i64]) -> i32 {
+    let n = s.len();
+    if n == t.len() { 7 } else { 3 }
+}
+fn main() -> i32 {
+    let a: [i64; 2] = [1, 2];
+    let b: [i64; 2] = [3, 4];
+    same(borrow a, borrow b)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 7
 
 # Passing the removed feature name uses the ordinary unknown-preview error.
 [[case]]
