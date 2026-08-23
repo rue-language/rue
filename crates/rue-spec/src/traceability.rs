@@ -1099,6 +1099,441 @@ fn grammar_declaration_contains_symbol(declaration: &str, symbol: &str) -> bool 
         .is_some_and(|(_, rhs)| rhs.split_whitespace().any(|token| token == symbol))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AppendixGrammarProduction {
+    name: String,
+    line: usize,
+    rhs: String,
+}
+
+/// Remove EBNF comments while retaining line breaks for diagnostics.
+fn strip_ebnf_comments(input: &str, first_line: usize, path: &Path) -> Result<String, String> {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    let mut quote = None;
+    let mut special = false;
+    let mut escaped = false;
+    let mut line_number = first_line;
+    while let Some(character) = chars.next() {
+        if character == '\n' {
+            line_number += 1;
+        }
+        if let Some(quote_character) = quote {
+            output.push(character);
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == quote_character {
+                quote = None;
+            }
+        } else if special {
+            output.push(character);
+            if character == '?' {
+                special = false;
+            }
+        } else if matches!(character, '"' | '\'') {
+            output.push(character);
+            quote = Some(character);
+        } else if character == '?' {
+            output.push(character);
+            special = true;
+        } else if character == '(' && chars.peek() == Some(&'*') {
+            let comment_line = line_number;
+            output.push(' ');
+            chars.next();
+            let mut closed = false;
+            while let Some(comment_character) = chars.next() {
+                if comment_character == '*' && chars.peek() == Some(&')') {
+                    chars.next();
+                    closed = true;
+                    break;
+                }
+                if comment_character == '\n' {
+                    output.push('\n');
+                    line_number += 1;
+                }
+            }
+            if !closed {
+                return Err(format!(
+                    "{}:{}: unterminated EBNF comment in Appendix A",
+                    path.display(),
+                    comment_line,
+                ));
+            }
+        } else {
+            output.push(character);
+        }
+    }
+    Ok(output)
+}
+
+/// Split one Appendix EBNF fence into declarations.
+///
+/// This is deliberately a small, fail-closed reader rather than a claim to
+/// implement all of EBNF. It understands the syntax used by Appendix A:
+/// quoted terminals, `? special sequences ?`, comments, and semicolon-ended
+/// productions. Anything else that is not a production is rejected so a
+/// malformed appendix cannot silently pass the gate.
+fn parse_appendix_grammar_fence(
+    content: &str,
+    first_line: usize,
+    path: &Path,
+) -> Result<Vec<AppendixGrammarProduction>, String> {
+    let content = strip_ebnf_comments(content, first_line, path)?;
+    let mut productions = Vec::new();
+    let mut declaration_start = 0;
+    let mut quote = None;
+    let mut quote_start = 0;
+    let mut special = false;
+    let mut special_start = 0;
+    let mut escaped = false;
+    let mut delimiters = Vec::<(char, usize)>::new();
+
+    for (index, character) in content.char_indices() {
+        if let Some(quote_character) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == quote_character {
+                quote = None;
+            }
+            continue;
+        }
+        if special {
+            if character == '?' {
+                special = false;
+            }
+            continue;
+        }
+        match character {
+            '"' | '\'' => {
+                quote = Some(character);
+                quote_start = ebnf_line_for_offset(&content, index, first_line);
+            }
+            '?' => {
+                special = true;
+                special_start = ebnf_line_for_offset(&content, index, first_line);
+            }
+            '(' | '[' | '{' => {
+                delimiters.push((character, ebnf_line_for_offset(&content, index, first_line)))
+            }
+            ')' | ']' | '}' => {
+                let expected = match character {
+                    ')' => '(',
+                    ']' => '[',
+                    '}' => '{',
+                    _ => unreachable!(),
+                };
+                let Some((opening, opening_line)) = delimiters.pop() else {
+                    return Err(format!(
+                        "{}:{}: unexpected EBNF delimiter `{character}` in Appendix A",
+                        path.display(),
+                        ebnf_line_for_offset(&content, index, first_line),
+                    ));
+                };
+                if opening != expected {
+                    return Err(format!(
+                        "{}:{}: mismatched EBNF delimiter `{character}` for `{opening}` opened at line {opening_line}",
+                        path.display(),
+                        ebnf_line_for_offset(&content, index, first_line),
+                    ));
+                }
+            }
+            ';' => {
+                if let Some((opening, opening_line)) = delimiters.last() {
+                    return Err(format!(
+                        "{}:{}: production ends before EBNF delimiter `{opening}` opened at line {opening_line} is closed",
+                        path.display(),
+                        ebnf_line_for_offset(&content, index, first_line),
+                    ));
+                }
+                let declaration = content[declaration_start..index].trim();
+                if declaration.is_empty() {
+                    declaration_start = index + character.len_utf8();
+                    continue;
+                }
+                let Some(equal_index) = find_ebnf_equal(declaration) else {
+                    return Err(format!(
+                        "{}:{}: Appendix A contains a non-production EBNF declaration `{}`",
+                        path.display(),
+                        ebnf_line_for_offset(&content, declaration_start, first_line),
+                        declaration
+                    ));
+                };
+                let name = declaration[..equal_index].trim();
+                if !is_ebnf_identifier(name) {
+                    return Err(format!(
+                        "{}:{}: Appendix A has invalid production name `{name}`",
+                        path.display(),
+                        ebnf_line_for_offset(&content, declaration_start, first_line),
+                    ));
+                }
+                productions.push(AppendixGrammarProduction {
+                    name: name.to_string(),
+                    line: ebnf_line_for_offset(&content, declaration_start, first_line),
+                    rhs: declaration[equal_index + 1..].trim().to_string(),
+                });
+                declaration_start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if quote.is_some() {
+        return Err(format!(
+            "{}:{}: unterminated quoted terminal in Appendix A",
+            path.display(),
+            quote_start,
+        ));
+    }
+    if special {
+        return Err(format!(
+            "{}:{}: unterminated EBNF special sequence in Appendix A",
+            path.display(),
+            special_start,
+        ));
+    }
+    if let Some((opening, opening_line)) = delimiters.last() {
+        return Err(format!(
+            "{}:{}: unterminated EBNF delimiter `{opening}` in Appendix A",
+            path.display(),
+            opening_line,
+        ));
+    }
+    if !content[declaration_start..].trim().is_empty() {
+        return Err(format!(
+            "{}:{}: Appendix A has an unterminated EBNF production",
+            path.display(),
+            ebnf_line_for_offset(&content, declaration_start, first_line),
+        ));
+    }
+    Ok(productions)
+}
+
+fn ebnf_line_for_offset(content: &str, offset: usize, first_line: usize) -> usize {
+    let declaration = &content[offset..];
+    let first_non_whitespace = declaration
+        .find(|character: char| !character.is_whitespace())
+        .unwrap_or(0);
+    first_line
+        + content[..offset + first_non_whitespace]
+            .matches('\n')
+            .count()
+}
+
+fn is_ebnf_identifier(value: &str) -> bool {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+fn find_ebnf_equal(value: &str) -> Option<usize> {
+    let mut quote = None;
+    let mut special = false;
+    let mut escaped = false;
+    for (index, character) in value.char_indices() {
+        if let Some(quote_character) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == quote_character {
+                quote = None;
+            }
+        } else if special {
+            if character == '?' {
+                special = false;
+            }
+        } else {
+            match character {
+                '"' | '\'' => quote = Some(character),
+                '?' => special = true,
+                '=' => return Some(index),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+fn ebnf_references(rhs: &str) -> Result<Vec<String>, String> {
+    let mut references = Vec::new();
+    let mut chars = rhs.char_indices().peekable();
+    let mut quote = None;
+    let mut special = false;
+    let mut escaped = false;
+    while let Some((index, character)) = chars.next() {
+        if let Some(quote_character) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == quote_character {
+                quote = None;
+            }
+            continue;
+        }
+        if special {
+            if character == '?' {
+                special = false;
+            }
+            continue;
+        }
+        match character {
+            '"' | '\'' => quote = Some(character),
+            '?' => special = true,
+            character if character.is_ascii_alphabetic() || character == '_' => {
+                let start = index;
+                let mut end = index + character.len_utf8();
+                while let Some((next_index, next_character)) = chars.peek().copied() {
+                    if next_character.is_ascii_alphanumeric() || next_character == '_' {
+                        end = next_index + next_character.len_utf8();
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                references.push(rhs[start..end].to_string());
+            }
+            _ => {}
+        }
+    }
+    if quote.is_some() {
+        return Err("unterminated quoted terminal in EBNF production".to_string());
+    }
+    if special {
+        return Err("unterminated EBNF special sequence in production".to_string());
+    }
+    Ok(references)
+}
+
+/// Check that every unquoted Appendix A RHS identifier names a production.
+fn validate_appendix_grammar(spec_dir: &Path) -> Result<(), String> {
+    let appendix_path = spec_dir.join("appendices/A-grammar.md");
+    let content = fs::read_to_string(&appendix_path).map_err(|error| {
+        format!(
+            "failed to read Appendix A grammar {}: {error}",
+            appendix_path.display()
+        )
+    })?;
+    let lines: Vec<&str> = content.lines().collect();
+    let mut productions = Vec::new();
+    let mut fence_count = 0;
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].trim() != "```ebnf" {
+            index += 1;
+            continue;
+        }
+        fence_count += 1;
+        let first_line = index + 2;
+        let end = lines[index + 1..]
+            .iter()
+            .position(|line| line.trim() == "```")
+            .map(|offset| index + 1 + offset)
+            .ok_or_else(|| {
+                format!(
+                    "{}:{}: unterminated EBNF fence in Appendix A",
+                    appendix_path.display(),
+                    index + 1
+                )
+            })?;
+        let fence = lines[index + 1..end].join("\n");
+        productions.extend(parse_appendix_grammar_fence(
+            &fence,
+            first_line,
+            &appendix_path,
+        )?);
+        index = end + 1;
+    }
+    if fence_count == 0 {
+        return Err(format!(
+            "{}: Appendix A contains no EBNF fence",
+            appendix_path.display()
+        ));
+    }
+    if productions.is_empty() {
+        return Err(format!(
+            "{}: Appendix A contains no EBNF productions",
+            appendix_path.display()
+        ));
+    }
+
+    let mut definition_locations = BTreeMap::<String, Vec<usize>>::new();
+    for production in &productions {
+        definition_locations
+            .entry(production.name.clone())
+            .or_default()
+            .push(production.line);
+    }
+    let duplicates = definition_locations
+        .iter()
+        .filter(|(_, locations)| locations.len() > 1)
+        .map(|(name, locations)| {
+            format!(
+                "`{name}` at lines {}",
+                locations
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+        .collect::<Vec<_>>();
+    if !duplicates.is_empty() {
+        return Err(format!(
+            "{}: Appendix A defines duplicate grammar productions: {}",
+            appendix_path.display(),
+            duplicates.join("; ")
+        ));
+    }
+
+    let definitions: std::collections::BTreeSet<_> = productions
+        .iter()
+        .map(|production| production.name.as_str())
+        .collect();
+    let mut undefined = BTreeMap::<String, Vec<(String, usize)>>::new();
+    for production in &productions {
+        for reference in ebnf_references(&production.rhs).map_err(|error| {
+            format!(
+                "{}:{}: cannot parse Appendix A production `{}`: {error}",
+                appendix_path.display(),
+                production.line,
+                production.name
+            )
+        })? {
+            if !definitions.contains(reference.as_str()) {
+                undefined
+                    .entry(reference)
+                    .or_default()
+                    .push((production.name.clone(), production.line));
+            }
+        }
+    }
+    if undefined.is_empty() {
+        return Ok(());
+    }
+    let details = undefined
+        .into_iter()
+        .map(|(symbol, origins)| {
+            let origins = origins
+                .into_iter()
+                .map(|(production, line)| format!("{production} at line {line}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("`{symbol}` referenced by {origins}")
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(format!(
+        "{}: Appendix A references undefined grammar symbols: {details}",
+        appendix_path.display()
+    ))
+}
+
 /// Verify every marked normative production has an exact Appendix A mirror.
 ///
 /// This is intentionally part of the existing traceability gate. A marker in
@@ -1223,6 +1658,7 @@ fn validate_grammar_consistency(spec_dir: &Path) -> Result<(), String> {
             ));
         }
     }
+    validate_appendix_grammar(spec_dir)?;
     Ok(())
 }
 
@@ -1415,6 +1851,220 @@ pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> Result<Traceability
 mod tests {
     use super::*;
 
+    fn write_test_appendix(spec_dir: &Path) {
+        fs::create_dir(spec_dir.join("appendices")).unwrap();
+        fs::write(
+            spec_dir.join("appendices/A-grammar.md"),
+            "```ebnf\nstart = token ;\ntoken = \"token\" ;\n```",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn appendix_grammar_accepts_the_checked_in_grammar() {
+        validate_appendix_grammar(Path::new("docs/spec/src")).unwrap();
+    }
+
+    #[test]
+    fn appendix_grammar_reports_all_undefined_symbols_in_order() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(spec_dir.path().join("appendices")).unwrap();
+        fs::write(
+            spec_dir.path().join("appendices/A-grammar.md"),
+            r#"```ebnf
+start = missing_b | "missing_in_a_string" | missing_a ;
+other = missing_b | missing_c ;
+```"#,
+        )
+        .unwrap();
+
+        let error = validate_appendix_grammar(spec_dir.path()).unwrap_err();
+        assert!(
+            error.contains("`missing_a` referenced by start at line 2"),
+            "{error}"
+        );
+        assert!(
+            error.contains("`missing_b` referenced by start at line 2, other at line 3"),
+            "{error}"
+        );
+        assert!(
+            error.contains("`missing_c` referenced by other at line 3"),
+            "{error}"
+        );
+        assert!(error.find("missing_a").unwrap() < error.find("missing_b").unwrap());
+        assert!(error.find("missing_b").unwrap() < error.find("missing_c").unwrap());
+    }
+
+    #[test]
+    fn appendix_grammar_ignores_terminals_special_sequences_and_comments() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(spec_dir.path().join("appendices")).unwrap();
+        fs::write(
+            spec_dir.path().join("appendices/A-grammar.md"),
+            r#"```ebnf
+(* prose_reference and missing_in_comment are not symbols *)
+start = "missing_in_a_string (* not a comment *)" | ? prose_reference and missing_in_special ? | helper ;
+helper = "keyword" ;
+```"#,
+        )
+        .unwrap();
+
+        assert!(validate_appendix_grammar(spec_dir.path()).is_ok());
+    }
+
+    #[test]
+    fn appendix_grammar_fails_closed_for_missing_fences_and_productions() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(spec_dir.path().join("appendices")).unwrap();
+        let appendix = spec_dir.path().join("appendices/A-grammar.md");
+        fs::write(&appendix, "No grammar here").unwrap();
+        let error = validate_appendix_grammar(spec_dir.path()).unwrap_err();
+        assert!(error.contains("no EBNF fence"), "{error}");
+
+        fs::write(&appendix, "```ebnf\n(* only a comment *)\n```").unwrap();
+        let error = validate_appendix_grammar(spec_dir.path()).unwrap_err();
+        assert!(error.contains("no EBNF productions"), "{error}");
+    }
+
+    #[test]
+    fn appendix_grammar_accepts_a_line_comment_at_physical_eof() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(spec_dir.path().join("appendices")).unwrap();
+        // Deliberately omit the final newline. The lexer accepts a comment at
+        // physical EOF, so the grammar models the line terminator as optional.
+        fs::write(
+            spec_dir.path().join("appendices/A-grammar.md"),
+            "```ebnf\nany_char_except_newline = ? any character except '\\n' or '\\r' ? ;\nnewline = \"\\r\\n\" | \"\\n\" | \"\\r\" ;\nline_comment = \"//\" { any_char_except_newline } [ newline ] ;\n```",
+        )
+        .unwrap();
+
+        assert!(validate_appendix_grammar(spec_dir.path()).is_ok());
+    }
+
+    #[test]
+    fn appendix_grammar_rejects_duplicate_and_mismatched_definitions() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(spec_dir.path().join("appendices")).unwrap();
+        let appendix = spec_dir.path().join("appendices/A-grammar.md");
+        fs::write(
+            &appendix,
+            "```ebnf\nstart = token ;\n```\n\n```ebnf\nstart = ( token ] ;\n```",
+        )
+        .unwrap();
+        let error = validate_appendix_grammar(spec_dir.path()).unwrap_err();
+        assert!(error.contains("mismatched EBNF delimiter"), "{error}");
+
+        fs::write(&appendix, "```ebnf\nstart = ( token ;\n```").unwrap();
+        let error = validate_appendix_grammar(spec_dir.path()).unwrap_err();
+        assert!(
+            error.contains("production ends before EBNF delimiter `(` opened at line 2"),
+            "{error}"
+        );
+
+        fs::write(
+            &appendix,
+            "```ebnf\nstart = token ;\n```\n\n```ebnf\nstart = \"other\" ;\n```",
+        )
+        .unwrap();
+        let error = validate_appendix_grammar(spec_dir.path()).unwrap_err();
+        assert!(error.contains("duplicate grammar productions"), "{error}");
+        assert!(error.contains("lines 2, 6"), "{error}");
+    }
+
+    #[test]
+    fn appendix_grammar_does_not_balance_delimiters_across_productions() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(spec_dir.path().join("appendices")).unwrap();
+        let appendix = spec_dir.path().join("appendices/A-grammar.md");
+        fs::write(
+            &appendix,
+            "```ebnf\nxbroken = ( ybroken ;\nybroken = ) xbroken ;\n```",
+        )
+        .unwrap();
+        let error = validate_appendix_grammar(spec_dir.path()).unwrap_err();
+        assert!(
+            error.contains("production ends before EBNF delimiter `(` opened at line 2"),
+            "{error}"
+        );
+
+        fs::write(
+            &appendix,
+            "```ebnf\nmultiline = (\n    token\n) ;\ntoken = \"token\" ;\n```",
+        )
+        .unwrap();
+        assert!(validate_appendix_grammar(spec_dir.path()).is_ok());
+    }
+
+    #[test]
+    fn appendix_grammar_reports_unterminated_construct_start_lines() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(spec_dir.path().join("appendices")).unwrap();
+        fs::write(
+            spec_dir.path().join("appendices/A-grammar.md"),
+            "```ebnf\n\nstart = \"unterminated ;\n```",
+        )
+        .unwrap();
+        let error = validate_appendix_grammar(spec_dir.path()).unwrap_err();
+        assert!(
+            error.contains(":3: unterminated quoted terminal"),
+            "{error}"
+        );
+
+        fs::write(
+            spec_dir.path().join("appendices/A-grammar.md"),
+            "```ebnf\n\nstart = ? prose without a closing marker\n```",
+        )
+        .unwrap();
+        let error = validate_appendix_grammar(spec_dir.path()).unwrap_err();
+        assert!(
+            error.contains(":3: unterminated EBNF special sequence"),
+            "{error}"
+        );
+
+        fs::write(
+            spec_dir.path().join("appendices/A-grammar.md"),
+            "```ebnf\n\n(* comment without a closing marker\n```",
+        )
+        .unwrap();
+        let error = validate_appendix_grammar(spec_dir.path()).unwrap_err();
+        assert!(error.contains(":3: unterminated EBNF comment"), "{error}");
+    }
+
+    #[test]
+    fn lexical_grammar_sync_pairs_reject_a_source_appendix_drift() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(spec_dir.path().join("appendices")).unwrap();
+        let markers = r#"
+<!-- grammar-sync(id="2.1:6", production="STRING", role="source", relation="contains", symbol="string_char") -->
+<!-- grammar-sync(id="2.1:6", production="string_char", role="source") -->
+<!-- grammar-sync(id="2.2:1", production="any_char_except_newline", role="source") -->
+<!-- grammar-sync(id="2.2:1", production="newline", role="source") -->
+<!-- grammar-sync(id="2.2:1", production="line_comment", role="source") -->
+```ebnf
+STRING = '"' { string_char } '"' ;
+string_char = "x" ;
+any_char_except_newline = "x" ;
+newline = "n" ;
+line_comment = "//" { any_char_except_newline } [ newline ] ;
+```
+"#;
+        let appendix = markers.replace("role=\"source\"", "role=\"appendix\"");
+        fs::write(spec_dir.path().join("source.md"), markers).unwrap();
+        fs::write(spec_dir.path().join("appendices/A-grammar.md"), &appendix).unwrap();
+        assert!(validate_grammar_consistency(spec_dir.path()).is_ok());
+
+        fs::write(
+            spec_dir.path().join("appendices/A-grammar.md"),
+            appendix.replace("string_char = \"x\"", "string_char = \"drift\""),
+        )
+        .unwrap();
+        let error = validate_grammar_consistency(spec_dir.path()).unwrap_err();
+        assert!(
+            error.contains("grammar-sync 2.1:6:string_char differs"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn grammar_sync_markers_parse_and_reject_unknown_roles() {
         let marker = parse_grammar_sync_marker(
@@ -1450,12 +2100,14 @@ mod tests {
 <!-- grammar-sync(id="2.1:26", production="byte_literal", role="source") -->
 ```ebnf
 byte_literal = "b'" byte_char "'" ;
+byte_char = "x" ;
 ```
 "#;
         let appendix = r#"
 <!-- grammar-sync(id="2.1:26", production="byte_literal", role="appendix") -->
 ```ebnf
 byte_literal = "b'" byte_char "'" ;
+byte_char = "x" ;
 ```
 "#;
         fs::write(spec_dir.path().join("source.md"), source).unwrap();
@@ -1507,6 +2159,8 @@ byte_literal = "b'" byte_char "'" ;
 <!-- grammar-sync(id="2.1:26", production="INTEGER", role="appendix", relation="contains", symbol="byte_literal") -->
 ```ebnf
 INTEGER = byte_literal | dec_literal ;
+byte_literal = "b" ;
+dec_literal = "d" ;
 ```
 "#,
         )
@@ -1519,6 +2173,8 @@ INTEGER = byte_literal | dec_literal ;
 <!-- grammar-sync(id="2.1:26", production="INTEGER", role="appendix", relation="contains", symbol="byte_literal") -->
 ```ebnf
 INTEGER = dec_literal ;
+byte_literal = "b" ;
+dec_literal = "d" ;
 ```
 "#,
         )
@@ -1577,6 +2233,7 @@ INTEGER = dec_literal ;
     #[test]
     fn malformed_test_file_fails_report_even_with_valid_sibling() {
         let spec_dir = tempfile::tempdir().unwrap();
+        write_test_appendix(spec_dir.path());
         fs::write(
             spec_dir.path().join("spec.md"),
             "{{ rule(id=\"1.1:1\", cat=\"normative\") }}\nRule.",
@@ -1606,6 +2263,7 @@ exit_code = 0
     #[test]
     fn traceability_uses_runner_parameter_expansion() {
         let spec_dir = tempfile::tempdir().unwrap();
+        write_test_appendix(spec_dir.path());
         fs::write(
             spec_dir.path().join("spec.md"),
             concat!(
@@ -1828,6 +2486,7 @@ source = "fn main() -> i32 { 0 }"
 exit_code = 0
 "#;
         let spec_dir = tempfile::tempdir().unwrap();
+        write_test_appendix(spec_dir.path());
         fs::write(spec_dir.path().join("s.md"), spec).unwrap();
         let cases_dir = tempfile::tempdir().unwrap();
         fs::write(cases_dir.path().join("c.toml"), cases).unwrap();
@@ -1886,6 +2545,7 @@ source = "fn main() -> i32 { 0 }"
 exit_code = 0
 "#;
         let spec_dir = tempfile::tempdir().unwrap();
+        write_test_appendix(spec_dir.path());
         fs::write(spec_dir.path().join("s.md"), spec).unwrap();
         let cases_dir = tempfile::tempdir().unwrap();
         fs::write(cases_dir.path().join("c.toml"), cases).unwrap();
@@ -1942,6 +2602,7 @@ exit_code = 0
 "#
         );
         let spec_dir = tempfile::tempdir().unwrap();
+        write_test_appendix(spec_dir.path());
         fs::write(spec_dir.path().join("s.md"), spec).unwrap();
         let cases_dir = tempfile::tempdir().unwrap();
         fs::write(cases_dir.path().join("c.toml"), cases).unwrap();

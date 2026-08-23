@@ -120,11 +120,14 @@ fn main() -> i32 {
 
 A string literal is a sequence of characters enclosed in double quotes (`"`).
 
+<!-- grammar-sync(id="2.1:6", production="string_char", role="source") -->
+<!-- grammar-sync(id="2.1:6", production="STRING", role="source", relation="contains", symbol="string_char") -->
 <!-- grammar-sync(id="2.1:6", production="escape_sequence", role="source") -->
 
 ```ebnf
 string_literal = '"' { string_char } '"' ;
-string_char = any_char_except_quote_or_backslash | escape_sequence ;
+string_char = ? any character except '"', '\\', '\n', or '\r' ?
+            | escape_sequence ;
 escape_sequence = "\\" | "\"" | "\n" | "\t" | "\r" | "\0" ;
 ```
 
