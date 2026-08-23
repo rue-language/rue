@@ -2395,7 +2395,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // a linear value would drop the caller's live value implicitly.
                 // An `inout` binding can never be proven moved-out, so this is
                 // always ill-formed (E0494).
-                let discharged = self.place_linear_discharged(param_ty, name, &[], span, ctx);
+                let discharged = self.place_linear_discharged(param_ty, name, &[], ctx);
                 self.check_linear_overwrite(param_ty, discharged, true, span)?;
 
                 // Assignment to a parameter resets its move state
@@ -2462,7 +2462,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // would drop it implicitly. Legal only when the whole variable was
         // proven moved-out on every path (reinit-after-move idiom) — evaluated
         // on the post-RHS move state so `x = f(x)` counts as a discharge.
-        let discharged = self.place_linear_discharged(local_ty, name, &[], span, ctx);
+        let discharged = self.place_linear_discharged(local_ty, name, &[], ctx);
         self.check_linear_overwrite(local_ty, discharged, false, span)?;
         // Two-types model (ADR-0043, RUE-386): reassigning a first-class `str`
         // local must store a first-class `str`, not a buffer or a borrowed view;
@@ -4131,7 +4131,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     field_type,
                     trace.root_var,
                     &trace.field_path(),
-                    span,
                     ctx,
                 );
             self.check_linear_overwrite(field_type, discharged, false, span)?;
@@ -4336,7 +4335,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     elem_type,
                     trace.root_var,
                     &trace.field_path(),
-                    span,
                     ctx,
                 );
             self.check_linear_overwrite(elem_type, discharged, false, span)?;
@@ -4497,8 +4495,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// branch of an if/match still leaks on the other paths. Only types that
     /// require consumption are checked: linear structs themselves, and
     /// non-empty arrays whose elements carry one (an array of linear values
-    /// must be consumed — as a whole, or element-wise via constant-index
-    /// moves (RUE-186); dropping it would silently drop every element).
+    /// must be consumed — as a whole, element-wise via constant-index moves
+    /// (RUE-186), or per element through its linear sub-places (RUE-1606);
+    /// dropping it would silently drop every element).
     fn check_linear_binding_consumed(
         &self,
         symbol: Spur,
@@ -4512,22 +4511,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok(());
         }
 
-        // Element-wise consumption of a linear array (RUE-186, spec
-        // 3.8:71): moving every element out (constant indices) on every
-        // path satisfies the array's must-consume obligation. Partial
-        // element consumption is an error naming the missing elements.
+        // Per-place residue (core §5.6, spec 3.8:60, RUE-1591): consuming
+        // exactly the linear sub-places of an infectious carrier
+        // discharges its obligation, and the non-linear residue is left
+        // for the ordinary scope-exit drop walk. The walk recurses into
+        // array elements (RUE-1606), so it also accepts complete
+        // element-wise consumption of a root linear array (RUE-186, spec
+        // 3.8:71) and of an array field consumed through per-element field
+        // moves.
+        let Some(residue) = self.residual_linear_place(local.ty, state, &mut Vec::new()) else {
+            return Ok(());
+        };
+
+        // A root array PARTIALLY consumed element-wise gets the more
+        // precise diagnostic naming the missing elements (RUE-186).
         match self.check_array_elementwise_consumption(local.ty, state, symbol, local.span)? {
             ElementwiseConsumption::Complete => return Ok(()),
             ElementwiseConsumption::NotElementwise => {}
         }
-
-        // Per-place residue (core §5.6, spec 3.8:60, RUE-1591): consuming
-        // exactly the linear sub-places of an infectious carrier
-        // discharges its obligation, and the non-linear residue is left
-        // for the ordinary scope-exit drop walk.
-        let Some(residue) = self.residual_linear_place(local.ty, state, &mut Vec::new()) else {
-            return Ok(());
-        };
 
         let name = self.body_interner().resolve(&symbol);
         let err = linear_not_consumed_error(
@@ -4567,19 +4568,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if state.is_some_and(|s| s.full_move_on_all_paths) {
             return Ok(());
         }
-        // Element-wise consumption of a linear array parameter (RUE-186)
-        // satisfies the obligation like a whole move.
+        // Per-place residue (core §5.6, RUE-1591): a by-value parameter of an
+        // infectious carrier is consumed by consuming its linear sub-places;
+        // the rest is dropped by the ordinary exit walk, exactly as for a
+        // local. The walk recurses into array elements (RUE-1606), so
+        // element-wise consumption of a linear array parameter (RUE-186) —
+        // and per-element field consumption of an array anywhere in the
+        // parameter's place tree — satisfies the obligation like a whole
+        // move.
+        let Some(residue) = self.residual_linear_place(param.ty, state, &mut Vec::new()) else {
+            return Ok(());
+        };
+        // A root array PARTIALLY consumed element-wise gets the more precise
+        // diagnostic naming the missing elements (RUE-186).
         match self.check_array_elementwise_consumption(param.ty, state, param.name, span)? {
             ElementwiseConsumption::Complete => return Ok(()),
             ElementwiseConsumption::NotElementwise => {}
         }
-        // Per-place residue (core §5.6, RUE-1591): a by-value parameter of an
-        // infectious carrier is consumed by consuming its linear sub-places;
-        // the rest is dropped by the ordinary exit walk, exactly as for a
-        // local.
-        let Some(residue) = self.residual_linear_place(param.ty, state, &mut Vec::new()) else {
-            return Ok(());
-        };
         let name = self.body_interner().resolve(&param.name);
         let err = linear_not_consumed_error(
             name,
@@ -4706,10 +4711,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ///   (RUE-614, an open maintainer decision) unchanged;
     /// - a struct otherwise recurses into the fields that carry a linear
     ///   value;
-    /// - everything else (arrays, enums, scalars) falls back to the type's own
+    /// - an array recurses into its elements once any move was recorded
+    ///   under this place (see [`Self::residual_linear_array_place`]), so
+    ///   consuming the linear content of every element — element-wise for a
+    ///   root array (3.8:71), or through per-element field moves for an
+    ///   array anywhere in the place tree (RUE-1606) — discharges it;
+    /// - everything else (enums, scalars) falls back to the type's own
     ///   obligation, because their sub-places are not tracked per place here.
-    ///   Whole-array element-wise consumption is checked separately by
-    ///   [`Self::check_array_elementwise_consumption`] before this runs.
     ///
     /// `path` is scratch space threaded through the recursion; it is restored
     /// to its entry value before returning.
@@ -4721,6 +4729,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> Option<Vec<Spur>> {
         if state.is_some_and(|s| Self::place_moved_on_all_paths(s, path)) {
             return None;
+        }
+        if let TypeKind::Array(array_id) = ty.kind() {
+            return self.residual_linear_array_place(array_id, state, path);
         }
         let Some(struct_id) = ty.as_struct() else {
             return self.type_requires_consumption(ty).then(|| path.clone());
@@ -4735,6 +4746,54 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
             path.push(self.body_interner().get_or_intern(&field.name));
             let found = self.residual_linear_place(field.ty, state, path);
+            path.pop();
+            if found.is_some() {
+                return found;
+            }
+        }
+        None
+    }
+
+    /// The array clause of [`Self::residual_linear_place`] (RUE-1606): the
+    /// residual obligation of an array-typed place, per element.
+    ///
+    /// An array's linear content can be consumed below the whole-array
+    /// granularity: element-wise constant-index moves for a root array
+    /// (3.8:68/3.8:71), and — for an array ANYWHERE in the place tree whose
+    /// elements are infectious carriers — per-element field moves
+    /// (`h.arr[0].p`; the field-move path model names constant-index
+    /// elements, RUE-279). Recursing into each element at its own path lets
+    /// both discharge the array exactly like a struct field's consumption
+    /// discharges the struct (core §5.6).
+    ///
+    /// When NO move was recorded strictly under this place, no element
+    /// content was ever consumed, so the whole array is the residue — this
+    /// keeps the untouched-array diagnostic (and the walk's cost) independent
+    /// of the array length. Declared-`linear` elements are never dischargeable
+    /// below whole-element granularity (their obligation is the value itself,
+    /// 3.8:74, and an element of a non-root array cannot be moved out at all,
+    /// 3.8:68), so for them the recursion reports the first live element.
+    fn residual_linear_array_place(
+        &self,
+        array_id: crate::types::ArrayTypeId,
+        state: Option<&VariableMoveState>,
+        path: &mut Vec<Spur>,
+    ) -> Option<Vec<Spur>> {
+        let (elem_ty, len) = self.body_type_pool().array_def(array_id);
+        if len == 0 || !self.type_requires_consumption(elem_ty) {
+            return None;
+        }
+        let touched_below = state.is_some_and(|s| {
+            s.partial_moves
+                .iter()
+                .any(|(p, _)| p.len() > path.len() && p[..path.len()] == path[..])
+        });
+        if !touched_below {
+            return Some(path.clone());
+        }
+        for k in 0..len {
+            path.push(index_path_segment(self.body_interner(), k));
+            let found = self.residual_linear_place(elem_ty, state, path);
             path.pop();
             if found.is_some() {
                 return found;
@@ -4822,12 +4881,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// Shared element-wise consumption check for linear arrays (RUE-186):
-    /// returns `Complete` when every element of the array was moved out on
-    /// every path (the must-consume obligation is satisfied), an `Err`
-    /// naming the missing elements when the array was only PARTIALLY
-    /// consumed element-wise, and `NotElementwise` when no element was ever
-    /// consumed (or the type is not an array) — the caller then reports its
-    /// usual whole-value diagnostic.
+    /// returns `Complete` when every element's linear content was consumed
+    /// on every path — a whole-element move (constant index, 3.8:68), or
+    /// consumption of all of the element's linear sub-places (RUE-1606, the
+    /// per-place residual model of core §5.6) — an `Err` naming the missing
+    /// elements when the array was only PARTIALLY consumed element-wise, and
+    /// `NotElementwise` when no element was ever touched (or the type is not
+    /// an array) — the caller then reports its usual whole-value diagnostic.
+    ///
+    /// The reinit-after-overwrite proof is deliberately NOT this check: see
+    /// [`Self::array_fully_moved_elementwise`].
     pub(crate) fn check_array_elementwise_consumption(
         &self,
         ty: Type,
@@ -4841,10 +4904,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let Some(s) = state else {
             return Ok(ElementwiseConsumption::NotElementwise);
         };
-        let (_elem, len) = self.body_type_pool().array_def(array_id);
+        let (elem_ty, len) = self.body_type_pool().array_def(array_id);
         let elem_path = |k: u64| vec![index_path_segment(self.body_interner(), k)];
         let unconsumed: Vec<u64> = (0..len)
-            .filter(|k| !s.partial_moves_on_all_paths.contains(&elem_path(*k)))
+            .filter(|k| {
+                self.residual_linear_place(elem_ty, Some(s), &mut elem_path(*k))
+                    .is_some()
+            })
             .collect();
         if unconsumed.is_empty() {
             return Ok(ElementwiseConsumption::Complete);
@@ -4857,14 +4923,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok(ElementwiseConsumption::NotElementwise);
         }
         let name = self.body_interner().resolve(&symbol);
-        // An unconsumed element that WAS moved on some path selects the
-        // more precise "not consumed on all paths" diagnostic (E0443 over
-        // E0406).
+        // An unconsumed element that WAS moved (whole, or below the element)
+        // on some path selects the more precise "not consumed on all paths"
+        // diagnostic (E0443 over E0406).
         let some_path_span = unconsumed.iter().find_map(|k| {
             let target = elem_path(*k);
             s.partial_moves
                 .iter()
-                .find(|(p, _)| *p == target)
+                .find(|(p, _)| p.first() == Some(&target[0]))
                 .map(|(_, span)| *span)
         });
         let list = unconsumed
@@ -4942,7 +5008,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         dest_ty: Type,
         root_var: Spur,
         assigned_path: &[Spur],
-        span: Span,
         ctx: &AnalysisContext,
     ) -> bool {
         let Some(state) = ctx.moved_vars.get(&root_var) else {
@@ -4957,13 +5022,30 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return true;
         }
         // A whole linear array consumed element-wise on every path holds no
-        // live element to drop. Reuse the must-consume element check; `Err`
-        // (partial consumption) and `NotElementwise` are both "not discharged".
-        assigned_path.is_empty()
-            && matches!(
-                self.check_array_elementwise_consumption(dest_ty, Some(state), root_var, span),
-                Ok(ElementwiseConsumption::Complete)
-            )
+        // live element to drop.
+        assigned_path.is_empty() && self.array_fully_moved_elementwise(dest_ty, state)
+    }
+
+    /// Whether every element of an array was WHOLLY moved out on every path
+    /// (constant-index element moves, 3.8:68) — the reinit-after-move proof
+    /// for a whole-array overwrite (3.8:77).
+    ///
+    /// This is deliberately stricter than the must-consume discharge
+    /// ([`Self::check_array_elementwise_consumption`], which since RUE-1606
+    /// also accepts consumption of an element's linear SUB-places): after
+    /// `sink(a[0].p)` element 0 is a live husk that the assignment would
+    /// still overwrite, so it does not license reassignment — exactly as a
+    /// struct husk does not (`c = ...` stays rejected after `sink(c.l)`).
+    fn array_fully_moved_elementwise(&self, ty: Type, state: &VariableMoveState) -> bool {
+        let TypeKind::Array(array_id) = ty.kind() else {
+            return false;
+        };
+        let (_elem, len) = self.body_type_pool().array_def(array_id);
+        (0..len).all(|k| {
+            state
+                .partial_moves_on_all_paths
+                .contains(&vec![index_path_segment(self.body_interner(), k)])
+        })
     }
 
     /// Reject a discarded expression value that carries a linear value
