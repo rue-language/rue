@@ -62,8 +62,11 @@ no_warnings = true
 ./buck2 run //crates/rue-ui-tests:rue-ui-tests -- "unused"
 ```
 
+The shared libtest layer rejects an explicit name filter that selects no cases.
+An unfiltered UI run keeps its existing platform-ignore behavior; this shared
+layer only adds the explicit-filter check.
+
 #### When to Add UI Tests vs Spec Tests
 
 - **Spec tests** (`crates/rue-spec/cases/`): Language semantics defined in the specification. These tests have `spec = [...]` references linking to spec paragraphs.
 - **UI tests** (`crates/rue-ui-tests/cases/`): Compiler quality-of-life features not in the spec (warnings, diagnostics, CLI behavior).
-

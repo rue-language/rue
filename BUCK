@@ -1643,6 +1643,26 @@ rue_sh_test(
     },
 )
 
+# Every corpus harness must reject an explicit name filter that selects no
+# cases. Keep this as a real subprocess test for all three binaries so a
+# wrapper or harness can’t hide a zero-test pass behind a helper-level check.
+rue_sh_test(
+    name = "zero-filter-harness-tests",
+    test = "scripts/test-zero-filter-harness.sh",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_SPEC_HARNESS": "$(exe_target //crates/rue-spec:rue-spec)",
+        "RUE_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
+        "RUE_UI_HARNESS": "$(exe_target //crates/rue-ui-tests:rue-ui-tests)",
+        "RUE_UI_CASES": "$(location //crates/rue-ui-tests:cases)/cases",
+        "RUE_CLI_HARNESS": "$(exe_target //crates/rue-cli-tests:rue-cli-tests)",
+        "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
+        "RUE_EXAMPLES_DIR": "$(location root//:examples)/examples",
+        "RUE_REPO_DIR": "$(location root//:cli-test-fixtures)",
+        "RUE_STD_DIR": "$(location :std)/std",
+    },
+)
+
 # RUE-1118: corpus-action decides whether a corpus suite's result is written to
 # the action cache, so its stamp-only-on-success and absolutization contracts
 # are pinned independently of any corpus actually running.

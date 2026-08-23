@@ -123,6 +123,23 @@ impl Harness<StateParsed> {
             (priority, name)
         });
 
+        // A positive name filter is an assertion about the inventory, not
+        // merely an optimization.  Treat an empty selection as a harness
+        // error so a typo cannot report a passing (zero-test) run.  Leave
+        // unfiltered discovery alone: platform selection, sharding, and
+        // orchestration may intentionally produce an empty inventory.  The
+        // check is after `--skip` filtering, so a filter whose only matches
+        // are skipped is still an empty selection.
+        if !self.state.opts.filters.is_empty() && selected_cases.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "no tests matched the given filter(s): {}",
+                    self.state.opts.filters.join(", ")
+                ),
+            ));
+        }
+
         self.state.notifier.notify(
             notify::event::DiscoverComplete {
                 elapsed_s: Some(notify::Elapsed(self.state.start.elapsed())),
@@ -759,5 +776,108 @@ mod tests {
         ));
         assert!(remaining_ran.load(Ordering::SeqCst));
         assert!(exclusive_ran.load(Ordering::SeqCst));
+    }
+
+    fn discover_with_args(
+        args: impl IntoIterator<Item = impl Into<std::ffi::OsString>>,
+        cases: Vec<SchedulerCase>,
+    ) -> std::io::Result<Harness<StateDiscovered>> {
+        Harness::new()
+            .with_args(args)?
+            .parse()
+            .expect("test arguments should parse")
+            .discover(cases)
+    }
+
+    fn passing_case(name: &'static str) -> SchedulerCase {
+        SchedulerCase::concurrent(name, |_| Ok(()))
+    }
+
+    #[test]
+    fn empty_unfiltered_discovery_is_still_allowed() {
+        let discovered = discover_with_args(["empty"], vec![]).unwrap();
+        assert!(discovered.run().unwrap());
+    }
+
+    #[test]
+    fn skip_only_empty_selection_is_still_allowed() {
+        let discovered = discover_with_args(
+            ["skip-only", "--skip", "selected"],
+            vec![passing_case("selected")],
+        )
+        .unwrap();
+        assert!(discovered.run().unwrap());
+    }
+
+    #[test]
+    fn a_positive_filter_eliminated_by_skip_is_an_error() {
+        let error = discover_with_args(
+            ["positive-and-skip", "--skip", "selected", "selected"],
+            vec![passing_case("selected")],
+        )
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("no tests matched"));
+        assert!(error.to_string().contains("selected"));
+    }
+
+    #[test]
+    fn exact_filters_require_the_complete_case_name() {
+        assert!(discover_with_args(
+            ["exact", "--exact", "exact::child"],
+            vec![passing_case("exact::child")],
+        )
+        .unwrap()
+        .run()
+        .unwrap());
+
+        let error = discover_with_args(
+            ["exact-partial", "--exact", "child"],
+            vec![passing_case("exact::child")],
+        )
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("no tests matched"));
+    }
+
+    #[test]
+    fn multiple_positive_filters_are_or_combined() {
+        assert!(discover_with_args(
+            ["multiple", "missing", "selected"],
+            vec![passing_case("selected")],
+        )
+        .unwrap()
+        .run()
+        .unwrap());
+    }
+
+    #[test]
+    fn list_does_not_turn_an_unmatched_filter_into_a_pass() {
+        let error = discover_with_args(
+            ["list", "--list", "missing"],
+            vec![passing_case("selected")],
+        )
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("no tests matched"));
+    }
+
+    #[test]
+    fn argfile_filters_are_checked_after_argument_expansion() {
+        let path = std::env::temp_dir().join(format!(
+            "libtest2-harness-filter-{}.args",
+            std::process::id()
+        ));
+        std::fs::write(&path, "missing\n").unwrap();
+        let argfile = format!("@{}", path.display());
+        let error = discover_with_args(
+            ["argfile", argfile.as_str()],
+            vec![passing_case("selected")],
+        )
+        .err()
+        .unwrap();
+        let _ = std::fs::remove_file(path);
+        assert!(error.to_string().contains("no tests matched"));
+        assert!(error.to_string().contains("missing"));
     }
 }
