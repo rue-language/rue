@@ -33,6 +33,7 @@ rue_rust_library(
     features = [
         "default",
         "getrandom",
+        "no-rng",
         "runtime-rng",
         "std",
     ],
@@ -70,6 +71,7 @@ cargo.rust_binary(
     features = [
         "default",
         "getrandom",
+        "no-rng",
         "runtime-rng",
         "std",
     ],
@@ -84,6 +86,7 @@ buildscript_run(
     features = [
         "default",
         "getrandom",
+        "no-rng",
         "runtime-rng",
         "std",
     ],
