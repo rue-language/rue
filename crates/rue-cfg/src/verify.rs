@@ -309,6 +309,15 @@ struct Verifier<'a> {
     /// may only be built once targets are known to be in bounds and payload
     /// slices are known to be valid.
     dominators: Option<DominatorTree>,
+    /// Memo for [`Verifier::abi_slot_count`], which is a pure function of the
+    /// type against this verifier's fixed pool: `block`, `value`, and `role`
+    /// only name the site in an error message.
+    ///
+    /// The count recurses through struct fields, array elements, and enum
+    /// payloads, and the same types recur constantly across a function's
+    /// slots. Uncached, a fresh Lattice build called it about two million
+    /// times for 406M instructions, 4.8% of the whole compile.
+    abi_slot_cache: std::cell::RefCell<ahash::AHashMap<Type, u32>>,
 }
 
 impl<'a> Verifier<'a> {
@@ -324,6 +333,7 @@ impl<'a> Verifier<'a> {
             skip_unreachable_blocks: false,
             attachments: vec![None; cfg.value_count()],
             dominators: None,
+            abi_slot_cache: std::cell::RefCell::new(ahash::AHashMap::new()),
         }
     }
 
@@ -766,6 +776,10 @@ impl<'a> Verifier<'a> {
         value: CfgValue,
         role: &str,
     ) -> Result<u32, CfgVerificationError> {
+        let cached = self.abi_slot_cache.borrow().get(&ty).copied();
+        if let Some(width) = cached {
+            return Ok(width);
+        }
         let width = match ty.kind() {
             TypeKind::I8
             | TypeKind::I16
@@ -832,6 +846,7 @@ impl<'a> Verifier<'a> {
                 1u32.saturating_add(payload_width)
             }
         };
+        self.abi_slot_cache.borrow_mut().insert(ty, width);
         Ok(width)
     }
 
