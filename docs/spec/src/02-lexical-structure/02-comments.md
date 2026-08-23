@@ -10,8 +10,14 @@ template = "spec/page.html"
 
 Line comments begin with `//` and extend to the end of the line.
 
+<!-- grammar-sync(id="2.2:1", production="any_char_except_newline", role="source") -->
+<!-- grammar-sync(id="2.2:1", production="newline", role="source") -->
+<!-- grammar-sync(id="2.2:1", production="line_comment", role="source") -->
+
 ```ebnf
-line_comment = "//" { any_char_except_newline } newline ;
+any_char_except_newline = ? any character except '\n' or '\r' ? ;
+newline = "\r\n" | "\n" | "\r" ;
+line_comment = "//" { any_char_except_newline } [ newline ] ;
 ```
 
 {{ rule(id="2.2:2", cat="normative") }}

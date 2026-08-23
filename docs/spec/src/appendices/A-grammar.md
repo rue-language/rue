@@ -19,7 +19,12 @@ this appendix governs.
 <!-- grammar-sync(id="2.1:26", production="INTEGER", role="appendix", relation="contains", symbol="byte_literal") -->
 <!-- grammar-sync(id="2.1:26", production="byte_literal", role="appendix") -->
 <!-- grammar-sync(id="2.1:26", production="byte_char", role="appendix") -->
+<!-- grammar-sync(id="2.1:6", production="STRING", role="appendix", relation="contains", symbol="string_char") -->
+<!-- grammar-sync(id="2.1:6", production="string_char", role="appendix") -->
 <!-- grammar-sync(id="2.1:6", production="escape_sequence", role="appendix") -->
+<!-- grammar-sync(id="2.2:1", production="any_char_except_newline", role="appendix") -->
+<!-- grammar-sync(id="2.2:1", production="newline", role="appendix") -->
+<!-- grammar-sync(id="2.2:1", production="line_comment", role="appendix") -->
 
 ```ebnf
 (* Program structure *)
@@ -225,7 +230,9 @@ oct_digit      = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" ;
 bin_digit      = "0" | "1" ;
 byte_literal   = "b'" ( byte_char | escape_sequence | "\'" ) "'" ;
 byte_char      = ? any ASCII character except "'" or "\" ? ; (* one ASCII byte; value 0–255 *)
-STRING         = '"' { string_char | escape_sequence } '"' ;
+STRING         = '"' { string_char } '"' ;
+string_char    = ? any character except '"', '\\', '\n', or '\r' ?
+               | escape_sequence ;
 escape_sequence = "\\" | "\"" | "\n" | "\t" | "\r" | "\0" ;
 BOOL           = "true" | "false" ;
 letter         = "a" | ... | "z" | "A" | ... | "Z" ;
@@ -233,7 +240,9 @@ digit          = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
 
 (* Whitespace and comments are ignored between tokens *)
 whitespace     = " " | "\t" | "\n" | "\r" ;
-line_comment   = "//" { any_char_except_newline } newline ;
+any_char_except_newline = ? any character except '\n' or '\r' ? ;
+newline        = "\r\n" | "\n" | "\r" ;
+line_comment   = "//" { any_char_except_newline } [ newline ] ;
 ```
 
 Notes:

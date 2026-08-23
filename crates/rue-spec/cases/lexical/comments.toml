@@ -57,6 +57,12 @@ fn main() -> i32 { 42 }
 exit_code = 42
 
 [[case]]
+name = "line_comment_at_physical_eof"
+spec = ["2.2:1"]
+source = "fn main() -> i32 { 42 } // no final newline"
+exit_code = 42
+
+[[case]]
 name = "comment_with_slashes"
 spec = ["2.2:1"]
 source = """
