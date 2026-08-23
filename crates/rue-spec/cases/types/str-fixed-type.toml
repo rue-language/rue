@@ -109,6 +109,37 @@ fn main() -> i32 {
 """
 exit_code = 5
 
+# 3.7:52 — the result type is `u64` and is ordinarily type-checked: annotating
+# the call with another integer type is a type mismatch at the binding. Like
+# `str`, a `Str(N)` has no declared `len`, so until inference published the
+# `u64` result the call typed as the error type, unified with the annotation,
+# and reached CFG verification as a u64 value in an i32 slot (RUE-1679).
+[[case]]
+name = "str_fixed_len_result_is_u64_and_is_type_checked"
+spec = ["3.7:52"]
+compile_fail = true
+error_contains = "expected i32, found u64"
+source = """
+fn main() -> i32 {
+    let s: Str(16) = "hello";
+    let n: i32 = s.len();
+    n
+}
+"""
+
+# 3.7:52 — the control: the exact `u64` annotation of the same call is accepted.
+[[case]]
+name = "str_fixed_len_binds_to_u64"
+spec = ["3.7:52"]
+source = """
+fn main() -> i32 {
+    let s: Str(16) = "hello";
+    let n: u64 = s.len();
+    @intCast(n)
+}
+"""
+exit_code = 5
+
 # 3.7:53 — `s[i]` is the i-th byte as `u8`; packed bytes, not char boundaries.
 [[case]]
 name = "str_fixed_byte_index"

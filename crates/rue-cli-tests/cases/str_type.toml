@@ -453,3 +453,141 @@ fn main() -> i32 {
 args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 exit_code = 4
+
+# --- `len` result typing on the string rungs (RUE-1679) ----------------------
+#
+# `s.len()` is `u64` (spec 3.7:45 for `str`, 3.7:52 for `Str(N)`). Neither type
+# has a DECLARED `len` — sema answers the call by reading the view's `len` word,
+# the same route a slice `[T]` takes — so until inference published the `u64`
+# result the call typed as the error type, which unifies with any annotation. A
+# mismatched binding then sailed through inference and reached CFG verification
+# as a u64 value in an i32 slot, surfacing as E9000. This is the RUE-1611 class
+# on the string rungs; RUE-1611 fixed `[T]` and deliberately excluded these two
+# on the assumption their `len` signatures resolve, which they do not.
+#
+# Each mismatch case asserts the ABSENCE of the ICE as well as the presence of
+# the ordinary diagnostic: a fix that only changed the wording would still pass
+# a bare `error_contains`.
+
+[[case]]
+name = "str_len_mismatched_annotation_is_e0206"
+description = "RUE-1679 repro: `let n: i32 = s.len();` on a `str` local is E0206 at the binding, not a CFG verification ICE."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: str = "hello";
+    let n: i32 = s.len();
+    n
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected i32, found u64"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification"]
+
+[[case]]
+name = "str_literal_len_mismatched_annotation_is_e0206"
+description = "The same call on a bare literal receiver, whose text type is still contextual when the method is looked up."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let n: i32 = "hello".len();
+    n
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected i32, found u64"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification"]
+
+[[case]]
+name = "str_fixed_len_mismatched_annotation_is_e0206"
+description = "A `Str(N)` receiver takes the same route as `str` and is type-checked the same way."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: Str(16) = "hello";
+    let n: i32 = s.len();
+    n
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected i32, found u64"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification"]
+
+[[case]]
+name = "str_field_len_mismatched_annotation_is_e0206"
+description = "A struct-FIELD receiver reaches the call with a concrete `str` type rather than a literal's contextual variable — the other half of the mechanism."
+files = [{ path = "main.rue", source = """
+struct Holder { s: str }
+fn main() -> i32 {
+    let h = Holder { s: "hello" };
+    let n: i32 = h.s.len();
+    n
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected i32, found u64"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification"]
+
+[[case]]
+name = "str_param_len_mismatched_annotation_is_e0206"
+description = "A `str` parameter receiver, the third way the receiver's type reaches the call."
+files = [{ path = "main.rue", source = """
+fn take(s: str) -> i32 {
+    let n: i32 = s.len();
+    n
+}
+fn main() -> i32 {
+    take("hello")
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected i32, found u64"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification"]
+
+[[case]]
+name = "str_len_u64_annotation_and_intcast_stay_legal"
+description = "Control: the exact `u64` annotation is accepted for `str`, `Str(N)` and a literal, and `@intCast` is how the length reaches a narrower type. Exit code is the summed length, so a wrong published result type would show up as a wrong value, not just a compile failure."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: str = "hello";
+    let f: Str(16) = "hi";
+    let a: u64 = s.len();
+    let b: u64 = f.len();
+    let c: i32 = @intCast("xyz".len());
+    @intCast(a) + @intCast(b) + c
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 10
+
+[[case]]
+name = "str_unknown_method_is_undefined_method_not_ice"
+description = "Control: `len` is the only method these rungs answer, and every other name is still an ordinary undefined-method diagnostic — publishing `len`'s result did not turn a typo into an ICE."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: str = "hello";
+    let n = s.bogus();
+    n
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0411", "no method named 'bogus' found for type 'str'"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification"]
+
+[[case]]
+name = "str_len_with_argument_is_undefined_method_not_ice"
+description = "Control: `len` with an argument is not the zero-arg view `len`; it stays an ordinary undefined-method diagnostic."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: str = "hello";
+    let n: u64 = s.len(1);
+    @intCast(n)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0411", "no method named 'len' found for type 'str'"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification"]

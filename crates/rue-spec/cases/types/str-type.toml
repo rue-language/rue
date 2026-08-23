@@ -96,6 +96,55 @@ fn main() -> i32 {
 """
 exit_code = 5
 
+# 3.7:45 — the result type is `u64`, and it takes part in ordinary type
+# checking: an annotation of another integer type is a plain type mismatch at
+# the binding, not a value that flows on unchecked. `str` has no *declared*
+# `len` (the call reads the view's `len` word), so until inference published
+# the `u64` result the call typed as the error type, unified with any
+# annotation, and reached CFG verification as a u64 value in an i32 slot —
+# reported as an internal error (RUE-1679, the RUE-1611 class on `str`).
+[[case]]
+name = "str_len_result_is_u64_and_is_type_checked"
+spec = ["3.7:45"]
+compile_fail = true
+error_contains = "expected i32, found u64"
+source = """
+fn main() -> i32 {
+    let s: str = "hello";
+    let n: i32 = s.len();
+    n
+}
+"""
+
+# 3.7:45 — the same rule holds for a literal receiver, whose text type is still
+# contextual when the method is looked up: `.len()` is `u64` on every text type
+# the literal could settle on.
+[[case]]
+name = "str_literal_len_result_is_u64_and_is_type_checked"
+spec = ["3.7:45"]
+compile_fail = true
+error_contains = "expected i32, found u64"
+source = """
+fn main() -> i32 {
+    let n: i32 = "hello".len();
+    n
+}
+"""
+
+# 3.7:45 — the control: a `u64` binding of the same call is exact, and an
+# explicit conversion is how the length reaches a narrower type.
+[[case]]
+name = "str_len_binds_to_u64_and_converts_explicitly"
+spec = ["3.7:45"]
+source = """
+fn main() -> i32 {
+    let s: str = "hello";
+    let n: u64 = s.len();
+    @intCast(n)
+}
+"""
+exit_code = 5
+
 # 3.7:46 — `s[i]` is the i-th byte as `u8`.
 [[case]]
 name = "str_byte_index"

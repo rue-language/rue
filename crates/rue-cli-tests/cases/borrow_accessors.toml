@@ -504,3 +504,259 @@ fn main() -> i32 {
 args = ["main.rue", "-O0", "-o", "prog"]
 stdout = "8\n8\n9\n"
 exit_code = 0
+
+# ---------------------------------------------------------------------------
+# Joined accessor results (RUE-1678). Wrapping an accessor call in an `if` or
+# `match` arm, or in a multi-statement block tail, does not turn its borrowed
+# place into a first-class value: the join's value IS the arm's value, so the
+# 6.6:9 escape checks and the 6.6:10 loan extent both see through the join.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "accessor_result_cannot_be_let_bound_through_if_arm"
+description = "An accessor result reached through an if arm is still an accessor result at a `let` (E0252)."
+files = [{ path = "main.rue", source = """
+struct P {
+    x: i64,
+    fn xr(borrow self) -> borrow i64 { yield self.x; }
+}
+fn main() -> i32 {
+    let p = P { x: 7 };
+    let b = if true { p.xr() } else { 0 };
+    if b == 7 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0252", "cannot bind an accessor result with `let`", "`xr`"]
+
+[[case]]
+name = "accessor_result_cannot_be_stored_through_if_arm"
+description = "An accessor result reached through an if arm is still an accessor result at an assignment (E0251)."
+files = [{ path = "main.rue", source = """
+struct P {
+    x: i64,
+    fn xr(borrow self) -> borrow i64 { yield self.x; }
+}
+fn main() -> i32 {
+    let p = P { x: 7 };
+    let mut slot = 0;
+    slot = if true { p.xr() } else { 0 };
+    if slot == 7 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0251", "cannot store an accessor result", "`xr`"]
+
+[[case]]
+name = "accessor_result_cannot_be_returned_through_if_arm"
+description = "An accessor result reached through an if arm is still an accessor result at a `return` (E0250)."
+files = [{ path = "main.rue", source = """
+struct P {
+    x: i64,
+    fn xr(borrow self) -> borrow i64 { yield self.x; }
+}
+fn read(borrow p: P, c: bool) -> i64 {
+    return if c { p.xr() } else { 0 };
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    if read(borrow p, true) == 1 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0250", "cannot return an accessor result", "`xr`"]
+
+[[case]]
+name = "accessor_result_cannot_be_captured_through_if_arm"
+description = "An accessor result reached through an if arm is still an accessor result in a struct literal (E0253)."
+files = [{ path = "main.rue", source = """
+struct P {
+    x: i64,
+    fn xr(borrow self) -> borrow i64 { yield self.x; }
+}
+struct Box { v: i64 }
+fn main() -> i32 {
+    let p = P { x: 1 };
+    let q = Box { v: if true { p.xr() } else { 0 } };
+    if q.v == 1 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0253", "cannot capture an accessor result in an aggregate", "`xr`"]
+
+[[case]]
+name = "accessor_result_cannot_escape_through_match_arm"
+description = "A match arm joins an accessor result exactly as an if arm does (E0252)."
+files = [{ path = "main.rue", source = """
+struct P {
+    x: i64,
+    fn xr(borrow self) -> borrow i64 { yield self.x; }
+}
+fn main() -> i32 {
+    let p = P { x: 7 };
+    let n = 1;
+    let b = match n {
+        1 => p.xr(),
+        _ => 0,
+    };
+    if b == 7 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0252", "cannot bind an accessor result with `let`", "`xr`"]
+
+[[case]]
+name = "accessor_result_cannot_escape_through_nested_join"
+description = "An if nested inside a match arm still carries the accessor result out to the binding (E0252)."
+files = [{ path = "main.rue", source = """
+struct P {
+    x: i64,
+    fn xr(borrow self) -> borrow i64 { yield self.x; }
+}
+fn main() -> i32 {
+    let p = P { x: 7 };
+    let n = 1;
+    let b = match n {
+        1 => if true { p.xr() } else { 0 },
+        _ => 0,
+    };
+    if b == 7 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0252", "cannot bind an accessor result with `let`", "`xr`"]
+
+[[case]]
+name = "accessor_results_in_both_arms_cannot_escape"
+description = "A join whose arms both yield accessor results escapes on either path; the diagnostic names the leftmost."
+files = [{ path = "main.rue", source = """
+struct P {
+    x: i64,
+    y: i64,
+    fn xr(borrow self) -> borrow i64 { yield self.x; }
+    fn yr(borrow self) -> borrow i64 { yield self.y; }
+}
+fn main() -> i32 {
+    let p = P { x: 7, y: 3 };
+    let b = if true { p.xr() } else { p.yr() };
+    if b == 7 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0252", "cannot bind an accessor result with `let`", "`xr`"]
+
+[[case]]
+name = "accessor_result_cannot_escape_through_block_tail"
+description = "A multi-statement block's tail carries the accessor result out to the binding (E0252)."
+files = [{ path = "main.rue", source = """
+struct P {
+    x: i64,
+    fn xr(borrow self) -> borrow i64 { yield self.x; }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    let b = {
+        let z = 1;
+        @dbg(z);
+        p.xr()
+    };
+    if b == 1 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0252", "cannot bind an accessor result with `let`", "`xr`"]
+
+[[case]]
+name = "accessor_result_through_diverging_arm_reports_once"
+description = "A never-typed sibling arm does not turn the join's single escape into a second return diagnostic."
+files = [{ path = "main.rue", source = """
+struct P {
+    x: i64,
+    fn xr(borrow self) -> borrow i64 { yield self.x; }
+}
+fn read(borrow p: P, c: bool) -> i64 {
+    let b = if c { p.xr() } else { return 0 };
+    b
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    if read(borrow p, true) == 1 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0252", "cannot bind an accessor result with `let`", "`xr`"]
+compile_stderr_not_contains = ["E0250"]
+
+[[case]]
+name = "joined_accessor_result_conflicts_with_sibling_inout"
+description = "A joined accessor result keeps its loan's full-expression extent, so a sibling `inout` of the same root is E0259."
+files = [{ path = "main.rue", source = """
+struct Grid {
+    cells: [i64; 4],
+    fn at(borrow self, i: u64) -> borrow i64 { yield self.cells[i]; }
+}
+fn using(a: i64, inout g: Grid) -> i64 {
+    g.cells[0] = 9;
+    a
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3, 4] };
+    using(if true { g.at(0) } else { 0 }, inout g);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0259", "as `inout` while an accessor result borrows it"]
+
+[[case]]
+name = "joined_accessor_result_consumed_in_place_is_legal"
+description = "Consuming a joined accessor result by copy-read inside the same full expression stays legal and runs."
+files = [{ path = "main.rue", source = """
+struct P {
+    x: i64,
+    y: i64,
+    fn xr(borrow self) -> borrow i64 { yield self.x; }
+    fn yr(borrow self) -> borrow i64 { yield self.y; }
+}
+fn use1(v: i64) -> i64 { v + 1 }
+fn main() -> i32 {
+    let p = P { x: 7, y: 3 };
+    @dbg(use1(if true { p.xr() } else { 0 }));
+    @dbg(use1(if false { p.xr() } else { p.yr() }));
+    if (if true { p.xr() } else { 0 }) == 7 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "8\n4\n"
+exit_code = 0
+
+[[case]]
+name = "joined_accessor_result_lowers_on_aarch64"
+description = "A joined accessor result's spliced place lowers on AArch64 without publishing an accessor symbol."
+files = [{ path = "main.rue", source = """
+struct P {
+    x: i64,
+    y: i64,
+    fn xr(borrow self) -> borrow i64 { yield self.x; }
+    fn yr(borrow self) -> borrow i64 { yield self.y; }
+}
+fn use1(v: i64) -> i64 { v + 1 }
+fn main() -> i32 {
+    let p = P { x: 7, y: 3 };
+    if use1(if true { p.xr() } else { p.yr() }) == 8 { 0 } else { 1 }
+}
+""" }]
+args = ["--emit", "asm", "--target", "aarch64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (aarch64-linux) ===", "main:"]
+compile_stdout_not_contains = ["xr:", "yr:"]

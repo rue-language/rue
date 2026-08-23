@@ -1138,6 +1138,72 @@ fn main() -> i32 {
 """
 exit_code = 20
 
+# 7.1:37 names an in-scope `comptime` value parameter alongside a file-level
+# `const` as a legal repeat count. Constraint generation resolved only the
+# `const` half, so the repeat's type stayed unconstrained and decayed to the
+# error type — reported as the un-annotatable empty-array diagnostic E0903
+# (RUE-1681).
+[[case]]
+name = "array_repeat_comptime_value_param_count"
+spec = ["7.1:37"]
+source = """
+fn make(comptime n: u64) -> i32 {
+    [7; n][0] + [7; n][2]
+}
+fn main() -> i32 {
+    make(3)
+}
+"""
+exit_code = 14
+
+[[case]]
+name = "array_repeat_comptime_value_param_count_matches_annotation"
+spec = ["7.1:37"]
+description = "The repeat's inferred length agrees with an array-TYPE length named by the same comptime value parameter"
+source = """
+fn make(comptime n: u64) -> i32 {
+    let arr: [i32; n] = [0; n];
+    arr[0] + arr[2] + 42
+}
+fn main() -> i32 {
+    make(3)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "array_repeat_comptime_value_param_count_nested"
+spec = ["7.1:37"]
+description = "Both counts of a nested repeat `[[v; n]; m]` resolve against the enclosing comptime value parameters"
+source = """
+fn make(comptime n: u64, comptime m: u64) -> i32 {
+    let grid: [[i32; n]; m] = [[3; n]; m];
+    grid[1][2] + grid[0][0]
+}
+fn main() -> i32 {
+    make(3, 2)
+}
+"""
+exit_code = 6
+
+[[case]]
+name = "array_repeat_comptime_value_param_zero_count_evaluates_value_once"
+spec = ["7.1:37", "7.1:39"]
+description = "A zero comptime value-parameter count still evaluates the repeat value exactly once (the RUE-531 anchoring, now reachable through a comptime count)"
+source = """
+fn produce() -> i32 { @dbg(42); 7 }
+fn make(comptime n: u64) -> i32 {
+    let a: [i32; n] = [produce(); n];
+    @intCast(n)
+}
+fn main() -> i32 {
+    make(0)
+}
+"""
+expected_stdout = """42
+"""
+exit_code = 0
+
 [[case]]
 name = "array_repeat_evaluates_value_once"
 spec = ["7.1:39"]

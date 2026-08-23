@@ -206,9 +206,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         ctx.push_scope();
                         let boundary = ctx.enter_full_expression();
                         let result = self.analyze_inst(air, block, ctx);
+                        let loans = ctx.nested_expression_loans(&boundary);
                         ctx.exit_full_expression(boundary);
                         let result = result?;
                         ctx.pop_scope();
+                        // The selected branch IS this `if`'s value, so an
+                        // accessor result it yields keeps its loan for the
+                        // enclosing full expression (RUE-1678), exactly as on
+                        // the ordinary two-armed path below.
+                        self.readmit_arm_accessor_loans(ctx, block, loans);
                         // An `if` without `else` is unit-typed, so its (taken)
                         // then-branch must still be unit (spec 4.6:5).
                         if else_block.is_none()
@@ -257,10 +263,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Save move state before entering branches.
             let saved_moves = ctx.moved_vars.clone();
 
-            // Analyze then branch with its own scope
+            // Analyze then branch with its own scope. An arm's accessor loan
+            // is harvested before the arm's boundary closes: if the arm's
+            // value is the `if`'s value, that loan belongs to the enclosing
+            // full expression and is readmitted once both arms are analyzed
+            // (ADR-0062 6.6:10, RUE-1678).
             ctx.push_scope();
             let boundary = ctx.enter_full_expression();
             let then_result = self.analyze_inst(air, then_block, ctx);
+            let then_loans = ctx.nested_expression_loans(&boundary);
             ctx.exit_full_expression(boundary);
             let then_result = then_result?;
             let then_type = then_result.ty;
@@ -278,12 +289,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx.push_scope();
             let boundary = ctx.enter_full_expression();
             let else_result = self.analyze_inst(air, else_b, ctx);
+            let else_loans = ctx.nested_expression_loans(&boundary);
             ctx.exit_full_expression(boundary);
             let else_result = else_result?;
             let else_type = else_result.ty;
             let else_continues = else_result.continues;
             let else_span = self.body_rir_ref().get(else_b).span;
             ctx.pop_scope();
+
+            // Both arms are analyzed, so an arm's accessor loan can no longer
+            // be mistaken for a conflicting sibling of the other arm's
+            // accessor call. Readmit the loans of whichever arms yield the
+            // `if`'s value as an accessor result (RUE-1678).
+            self.readmit_arm_accessor_loans(ctx, then_block, then_loans);
+            self.readmit_arm_accessor_loans(ctx, else_b, else_loans);
 
             // Capture else-branch's move state
             let else_moves = ctx.moved_vars.clone();
@@ -1008,9 +1027,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         ctx.push_scope();
                         let boundary = ctx.enter_full_expression();
                         let result = self.analyze_inst(air, body, ctx);
+                        let loans = ctx.nested_expression_loans(&boundary);
                         ctx.exit_full_expression(boundary);
                         let result = result?;
                         ctx.pop_scope();
+                        // The selected arm IS this `match`'s value, so an
+                        // accessor result it yields keeps its loan for the
+                        // enclosing full expression (RUE-1678).
+                        self.readmit_arm_accessor_loans(ctx, body, loans);
                         return Ok(result);
                     }
                 }
@@ -1105,6 +1129,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // merged after the loop (see merge_arm_moves).
         let moves_before_arms = ctx.moved_vars.clone();
         let mut arm_move_states = Vec::with_capacity(arms.len());
+        // Accessor loans harvested from each arm before its nested
+        // full-expression boundary closed. Arms are alternatives, so these are
+        // readmitted only once every arm has been analyzed (RUE-1678).
+        let mut arm_accessor_loans = Vec::with_capacity(arms.len());
 
         for (pattern, body) in arms.iter() {
             let pattern_span = pattern.span();
@@ -1380,6 +1408,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Analyze arm body
             let boundary = ctx.enter_full_expression();
             let body_result = self.analyze_inst(air, *body, ctx);
+            arm_accessor_loans.push((*body, ctx.nested_expression_loans(&boundary)));
             ctx.exit_full_expression(boundary);
             let body_result = body_result?;
             let body_type = body_result.ty;
@@ -1492,6 +1521,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             };
 
             air_arms.push((air_pattern, arm_body_ref));
+        }
+
+        // Every arm is analyzed, so an arm's accessor loan can no longer be
+        // mistaken for a conflicting sibling of a later arm's accessor call.
+        // Readmit the loans of whichever arms yield the `match`'s value as an
+        // accessor result (ADR-0062 6.6:10, RUE-1678).
+        for (body, loans) in arm_accessor_loans {
+            self.readmit_arm_accessor_loans(ctx, body, loans);
         }
 
         // Join the arms' move states (union of non-diverging arms;

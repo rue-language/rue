@@ -392,6 +392,41 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "generic_function_type_arg_is_user_struct_name"
+spec = ["4.14:5"]
+description = "A user-declared struct name is a comptime type argument in its own right (`identity(Foo, ..)`), resolving T:=Foo exactly as the primitive and alias spellings do (RUE-1680)"
+source = """
+struct Foo { x: i32 }
+fn identity(comptime T: type, v: T) -> T {
+    v
+}
+fn main() -> i32 {
+    let f: Foo = identity(Foo, Foo { x: 42 });
+    f.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "generic_function_type_arg_is_user_enum_name"
+spec = ["4.14:5"]
+description = "A user-declared enum name resolves as a comptime type argument on the same route as a struct name (RUE-1680)"
+source = """
+enum Color { Red, Green }
+fn identity(comptime T: type, v: T) -> T {
+    v
+}
+fn main() -> i32 {
+    let c: Color = identity(Color, Color.Green);
+    match c {
+        Color.Red => 1,
+        Color.Green => 42,
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
 name = "generic_function_with_bool"
 spec = ["4.14:5"]
 description = "Generic identity function specialized for bool"
@@ -1701,6 +1736,37 @@ fn pair(comptime T: type, x: T) -> [T; 2] {
 fn main() -> i32 {
     let p = pair(i32, 21);
     p[0] + p[1]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "type_param_in_array_return_with_user_struct_arg"
+spec = ["4.14:16"]
+description = "The composite `-> [T; 2]` return substitutes a user-declared struct passed by name, not only a primitive (RUE-1680)"
+source = """
+struct Foo { x: i32 }
+fn pair(comptime T: type, a: T, b: T) -> [T; 2] {
+    [a, b]
+}
+fn main() -> i32 {
+    let p: [Foo; 2] = pair(Foo, Foo { x: 40 }, Foo { x: 2 });
+    p[0].x + p[1].x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "type_param_forwarded_through_nested_generic_call"
+spec = ["4.14:16"]
+description = "A user-struct type argument forwards through a nested generic call, the shape a forwarded type PARAMETER already had (RUE-102): the inner call's `T` comes from the outer specialization"
+source = """
+struct Foo { x: i32 }
+fn inner(comptime T: type, v: T) -> T { v }
+fn outer(comptime T: type, v: T) -> T { inner(T, v) }
+fn main() -> i32 {
+    let f: Foo = outer(Foo, Foo { x: 42 });
+    f.x
 }
 """
 exit_code = 42

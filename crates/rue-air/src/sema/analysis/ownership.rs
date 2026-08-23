@@ -5607,10 +5607,110 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
-    /// Reject the direct escape of an accessor result (ADR-0062): `operand`
-    /// is the RIR expression consumed at an escape-shaped site, and if it was
-    /// expanded as an accessor call, the borrowed place would outlive its
-    /// enclosing full expression there.
+    /// Every accessor result the value of `operand` can be: the accessor call
+    /// itself, or — when `operand` is a *join* — the results its arms
+    /// contribute, in leftmost-first order (ADR-0062, RUE-1678).
+    ///
+    /// A block tail, an `if`/`else` arm, and a `match` arm each materialize
+    /// their value AS the value of the enclosing expression, so an accessor
+    /// result reached through one is still the borrowed place that expression
+    /// consumes: `let b = if c { p.at(i) } else { 0 };` binds exactly the
+    /// second-class place `let b = p.at(i);` binds. Only the accessor CALL is
+    /// registered in `ctx.accessor_call_insts` (a join has no AIR shape of its
+    /// own to peel), so the join relation is decided structurally here, from
+    /// the RIR, and composes through nesting — an `if` inside a `match` arm
+    /// inside a block reports the accessor at the bottom.
+    ///
+    /// Arms contribute independently: a join whose arms call two different
+    /// accessors yields both, and a join with one accessor arm and one
+    /// ordinary arm still yields that one, because the accessor path escapes.
+    fn accessor_results_of(&self, operand: InstRef, ctx: &AnalysisContext) -> Vec<(Spur, Spur)> {
+        // Overwhelmingly common case: the body expanded no accessor at all,
+        // so no join can carry one and nothing needs walking or allocating.
+        if ctx.accessor_call_insts.is_empty() {
+            return Vec::new();
+        }
+        let rir = self.body_rir_ref();
+        let mut found = Vec::new();
+        // Depth-first over a RIR expression tree (acyclic by construction),
+        // children pushed in reverse so arms are visited left to right.
+        let mut pending = vec![operand];
+        while let Some(current) = pending.pop() {
+            if let Some(direct) = ctx.accessor_call_insts.get(&current) {
+                found.push(*direct);
+                continue;
+            }
+            match &rir.get(current).data {
+                InstData::Block { instructions } => {
+                    if let Some(tail) = rir.block_insts(instructions).values().last() {
+                        pending.push(tail);
+                    }
+                }
+                InstData::Branch {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    // An `if` without `else` is unit-typed and carries no
+                    // value, so only the two-armed form can join a result.
+                    if let Some(else_block) = else_block {
+                        pending.push(*else_block);
+                        pending.push(*then_block);
+                    }
+                }
+                InstData::Match { arms, .. } => {
+                    // The arm iterator is not double-ended, so collect the
+                    // bodies before reversing them onto the stack.
+                    let bodies: Vec<InstRef> =
+                        rir.match_arms(arms).iter().map(|(_, body)| body).collect();
+                    pending.extend(bodies.into_iter().rev());
+                }
+                _ => {}
+            }
+        }
+        found
+    }
+
+    /// Does the value of `operand` carry an accessor result out of a join
+    /// (ADR-0062, RUE-1678)? Used by the `if`/`match` arm analyses to decide
+    /// whether an arm's accessor loan outlives the arm's nested-full-expression
+    /// boundary; see [`Self::accessor_results_of`].
+    fn yields_accessor_result(&self, operand: InstRef, ctx: &AnalysisContext) -> bool {
+        !self.accessor_results_of(operand, ctx).is_empty()
+    }
+
+    /// Carry an `if`/`match` arm's accessor loans into the join's enclosing
+    /// full expression, when the arm's value is what the join yields
+    /// (ADR-0062 6.6:10, RUE-1678).
+    ///
+    /// Each arm is analyzed as a nested full expression, so `loans` — taken
+    /// with `nested_expression_loans` just before that boundary closed — has
+    /// already been discarded by the time this runs. For an arm whose value
+    /// is an accessor result the discard is wrong: the loan's extent is the
+    /// full expression the JOIN belongs to, so an exclusive use of the same
+    /// root anywhere in it is still E0259 (`using(if c { g.at(0) } else { 0 },
+    /// inout g)`). Arms are alternatives rather than siblings, so every arm's
+    /// loans are readmitted only after the last arm has been analyzed —
+    /// readmitting earlier would make one arm's loan conflict with the next
+    /// arm's accessor call on the same root.
+    pub(crate) fn readmit_arm_accessor_loans(
+        &self,
+        ctx: &mut AnalysisContext,
+        arm: InstRef,
+        loans: Vec<(Spur, Span, CallLoanKind)>,
+    ) {
+        if loans.is_empty() || !self.yields_accessor_result(arm, ctx) {
+            return;
+        }
+        ctx.readmit_expression_loans(loans);
+    }
+
+    /// Reject the escape of an accessor result (ADR-0062): `operand` is the
+    /// RIR expression consumed at an escape-shaped site, and if its value is
+    /// an accessor result — the call itself, or one carried out of an
+    /// `if`/`match`/block join — the borrowed place would outlive its
+    /// enclosing full expression there. A join over two accessors escapes
+    /// either way, so the diagnostic names the leftmost contributing arm.
     pub(crate) fn reject_accessor_result_escape(
         &self,
         operand: InstRef,
@@ -5618,7 +5718,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
-        let Some((method, root)) = ctx.accessor_call_insts.get(&operand) else {
+        let results = self.accessor_results_of(operand, ctx);
+        let Some((method, root)) = results.first() else {
             return Ok(());
         };
         let method = self.body_interner().resolve(method).to_string();

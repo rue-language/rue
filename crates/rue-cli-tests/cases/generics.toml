@@ -224,3 +224,122 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 42
+
+# =============================================================================
+# A user-declared struct/enum NAME as the comptime type argument (RUE-1680)
+# =============================================================================
+#
+# `identity(Foo, Foo { x: 42 })` was rejected with a bogus
+# "type mismatch: expected Foo, found type". A struct/enum name in argument
+# position parses as a variable reference, and inference resolved such a
+# reference only against the enclosing type substitution and the BUILTIN
+# struct/enum tables — never against the user-declared ones. `T` therefore
+# stayed out of the call's substitution map, a `-> T` return type could not be
+# substituted, and the call's type remained the literal `type` placeholder,
+# which mismatched the binding's annotation.
+#
+# The bug is invisible whenever the return type does not mention `T` — the
+# struct cases above (`one(A, a) -> i32`) passed throughout — so these cases
+# all bind the result to the nominal type.
+
+[[case]]
+name = "generic_struct_name_type_argument"
+description = "RUE-1680 repro: a user struct passed by name as `comptime T: type` with a `-> T` return."
+files = [{ path = "main.rue", source = """
+struct Foo { x: i32 }
+fn identity(comptime T: type, v: T) -> T { v }
+fn main() -> i32 {
+    let f: Foo = identity(Foo, Foo { x: 42 });
+    f.x
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "generic_enum_name_type_argument"
+description = "A user enum name resolves on the same route as a struct name; the payload survives the round trip."
+files = [{ path = "main.rue", source = """
+enum Slot { Empty, Full(i32) }
+fn identity(comptime T: type, v: T) -> T { v }
+fn main() -> i32 {
+    let s: Slot = identity(Slot, Slot.Full(42));
+    match s {
+        Slot.Empty => 0,
+        Slot.Full(v) => v,
+    }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "generic_struct_name_type_argument_composite_return"
+description = "The composite `-> [T; 2]` return substitutes a user struct passed by name (the RUE-172 shape, which also only worked for primitives)."
+files = [{ path = "main.rue", source = """
+struct Foo { x: i32 }
+fn pair(comptime T: type, a: T, b: T) -> [T; 2] { [a, b] }
+fn main() -> i32 {
+    let p: [Foo; 2] = pair(Foo, Foo { x: 40 }, Foo { x: 2 });
+    p[0].x + p[1].x
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "generic_struct_name_type_argument_forwarded"
+description = "A user-struct type argument forwards through a nested generic call — the RUE-102 relay shape, now reachable with a nominal argument."
+files = [{ path = "main.rue", source = """
+struct Foo { x: i32 }
+fn inner(comptime T: type, v: T) -> T { v }
+fn outer(comptime T: type, v: T) -> T { inner(T, v) }
+fn main() -> i32 {
+    let f: Foo = outer(Foo, Foo { x: 42 });
+    f.x
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "generic_struct_name_type_argument_two_instantiations"
+description = "Two nominal instantiations of one `-> T` generic keep their own layouts; a shared or mis-resolved substitution would read the wrong field."
+files = [{ path = "main.rue", source = """
+struct Pair { x: i32, y: i32 }
+struct Triple { x: i32, y: i32, z: i32 }
+fn echo(comptime T: type, v: T) -> T { v }
+fn main() -> i32 {
+    let p: Pair = echo(Pair, Pair { x: 2, y: 4 });
+    let t: Triple = echo(Triple, Triple { x: 10, y: 30, z: 6 });
+    p.y + t.z + t.x * 3
+}
+""" }]
+exit_code = 40
+
+[[case]]
+name = "generic_type_argument_alias_and_primitive_controls"
+description = "Controls, unchanged by the fix: a let-bound alias (RUE-281) and a primitive literal type name resolve as before, and a local shadowing the type name is still not a type value."
+files = [{ path = "main.rue", source = """
+struct Foo { x: i32 }
+fn identity(comptime T: type, v: T) -> T { v }
+fn main() -> i32 {
+    let P = Foo;
+    let a: Foo = identity(P, Foo { x: 20 });
+    let b: i32 = identity(i32, 22);
+    a.x + b
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "generic_type_argument_runtime_local_shadowing_type_name_rejected"
+description = "Control: a runtime local that shadows a struct name is a value, not a type — the nominal lookup must not fire through a shadowing binding, so the call is still rejected. (The wording is the unsubstituted-`T` mismatch rather than the comptime-argument diagnostic; that is pre-existing and unchanged here.)"
+files = [{ path = "main.rue", source = """
+struct Foo { x: i32 }
+fn identity(comptime T: type, v: T) -> T { v }
+fn main() -> i32 {
+    let Foo = 7;
+    let a: i32 = identity(Foo, 3);
+    a
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
+compile_stderr_not_contains = ["E9000", "internal compiler error"]
