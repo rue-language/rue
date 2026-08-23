@@ -1013,3 +1013,131 @@ fn main() -> i32 {
 """ }]
 stdout = "1\n2\n"
 exit_code = 0
+
+# INTERIOR NUL (RUE-1711). Paths are byte-string `StrBuf`s, and the kernel reads
+# the marshalled buffer as a C string — so a path holding byte 0 anywhere would
+# name only the bytes before it. This case is the behavioral one: `remove` on
+# "victim.dat" + 0 + "totally_different_file" must NOT unlink `victim.dat`. It is
+# a real regression test, not a shape assertion — before the check it exited 1,
+# having removed a file the caller never named.
+[[case]]
+name = "fs_nul_path_does_not_remove_the_truncated_prefix"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+
+    let mut victim = std.strbuf.StrBuf.new();
+    victim.push_str("victim.dat");
+
+    let created = match F.create(borrow victim) { R.Ok(x) => x, R.Err(_e) => { return 71; } };
+    let mut c = created;
+    match c.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 72; } };
+
+    // "victim.dat" then byte 0 then more bytes. Marshalled without a check, the
+    // kernel reads the C string as "victim.dat" and this unlinks the victim.
+    let mut sneaky = std.strbuf.StrBuf.new();
+    sneaky.push_str("victim.dat");
+    sneaky.push(0);
+    sneaky.push_str("totally_different_file");
+
+    match std.fs.remove(borrow sneaky) {
+        CR.Ok(_u) => { return 1; },
+        CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 2; } },
+    };
+
+    // the file the truncated path named is still there
+    let opened = match F.open(borrow victim) { R.Ok(x) => x, R.Err(_e) => { return 3; } };
+    let mut h = opened;
+    match h.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 4; } };
+    0
+}
+""" }]
+exit_code = 0
+
+# The same rejection across EVERY path-taking entry point, plus the three things
+# a "reject it" fix can still get wrong: a rejected call must leave the truncated
+# prefix untouched, `create_dir_all` must not create the parents that precede the
+# offending component, and a TRAILING NUL — whose C-string form is a perfectly
+# valid path — must be rejected rather than quietly accepted. NUL-free paths are
+# re-checked at the end so the guard cannot pass by rejecting everything.
+[[case]]
+name = "fs_nul_path_rejected_by_every_entry_point"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+// "<prefix>" then byte 0 then "shadow": a path whose C-string form is just
+// "<prefix>", so an unchecked marshal silently operates on the prefix.
+fn nul_path(borrow prefix: str) -> std.strbuf.StrBuf {
+    let mut out = std.strbuf.StrBuf.new();
+    out.append_str(borrow prefix);
+    out.push(0);
+    out.append_str(borrow "shadow");
+    out
+}
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    let MR = std.result.Result(std.fs.Metadata, FE);
+
+    let p = nul_path(borrow "victim.dat");
+
+    // every path-taking entry point reports InvalidInput
+    match F.open(borrow p) { R.Ok(_x) => { return 10; }, R.Err(e) => match e { FE.InvalidInput => {}, _ => { return 11; } } };
+    match F.create(borrow p) { R.Ok(_x) => { return 12; }, R.Err(e) => match e { FE.InvalidInput => {}, _ => { return 13; } } };
+    match F.append(borrow p) { R.Ok(_x) => { return 14; }, R.Err(e) => match e { FE.InvalidInput => {}, _ => { return 15; } } };
+    match std.fs.metadata(borrow p) { MR.Ok(_x) => { return 16; }, MR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 17; } } };
+    match std.fs.remove(borrow p) { CR.Ok(_u) => { return 18; }, CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 19; } } };
+    match std.fs.create_dir(borrow p) { CR.Ok(_u) => { return 20; }, CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 21; } } };
+    match std.fs.create_dir_all(borrow p) { CR.Ok(_u) => { return 22; }, CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 23; } } };
+    match std.fs.remove_dir(borrow p) { CR.Ok(_u) => { return 24; }, CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 25; } } };
+
+    // rename rejects a NUL in EITHER operand
+    let mut clean = std.strbuf.StrBuf.new();
+    clean.push_str("clean.dat");
+    match std.fs.rename(borrow p, borrow clean) { CR.Ok(_u) => { return 26; }, CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 27; } } };
+    match std.fs.rename(borrow clean, borrow p) { CR.Ok(_u) => { return 28; }, CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 29; } } };
+
+    // a rejected call creates nothing under the truncated prefix
+    let mut prefix = std.strbuf.StrBuf.new();
+    prefix.push_str("victim.dat");
+    match std.fs.metadata(borrow prefix) { MR.Ok(_x) => { return 30; }, MR.Err(e) => match e { FE.NotFound => {}, _ => { return 31; } } };
+
+    // create_dir_all creates no parent when a LATER component holds the NUL
+    let mut nested = std.strbuf.StrBuf.new();
+    nested.push_str("parent/child");
+    nested.push(0);
+    nested.push_str("shadow");
+    match std.fs.create_dir_all(borrow nested) { CR.Ok(_u) => { return 32; }, CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 33; } } };
+    let mut parent = std.strbuf.StrBuf.new();
+    parent.push_str("parent");
+    match std.fs.metadata(borrow parent) { MR.Ok(_x) => { return 34; }, MR.Err(e) => match e { FE.NotFound => {}, _ => { return 35; } } };
+
+    // a TRAILING NUL is rejected too, though its C-string form is a valid path
+    let mut trailing = std.strbuf.StrBuf.new();
+    trailing.push_str("trailing.dat");
+    trailing.push(0);
+    match F.create(borrow trailing) { R.Ok(_x) => { return 36; }, R.Err(e) => match e { FE.InvalidInput => {}, _ => { return 37; } } };
+    let mut bare = std.strbuf.StrBuf.new();
+    bare.push_str("trailing.dat");
+    match std.fs.metadata(borrow bare) { MR.Ok(_x) => { return 38; }, MR.Err(e) => match e { FE.NotFound => {}, _ => { return 39; } } };
+
+    // NUL-free paths are unaffected
+    let made = match F.create(borrow clean) { R.Ok(x) => x, R.Err(_e) => { return 40; } };
+    let mut h = made;
+    match h.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 41; } };
+    match std.fs.metadata(borrow clean) { MR.Ok(_x) => {}, MR.Err(_e) => { return 42; } };
+    match std.fs.remove(borrow clean) { CR.Ok(_u) => {}, CR.Err(_e) => { return 43; } };
+    0
+}
+""" }]
+exit_code = 0

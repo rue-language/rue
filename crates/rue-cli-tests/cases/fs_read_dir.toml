@@ -727,3 +727,54 @@ tree/up_link symlink
 6
 """
 exit_code = 0
+
+# INTERIOR NUL (RUE-1711). Enumeration marshals its path the same way the file
+# entry points do, so it inherits the same truncation: "tree" + 0 + "shadow"
+# would have listed the real `tree` directory under a path naming something else.
+# Both `read_dir` and `walk` report `InvalidInput`, and the directory still lists
+# normally through a clean path.
+[[case]]
+name = "read_dir_and_walk_reject_nul_path"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+
+fn mk(borrow s: str) -> std.strbuf.StrBuf {
+    let mut out = std.strbuf.StrBuf.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn main() -> i32 {
+    let FE = std.fs.FileError;
+    let DR = std.result.Result(std.fs.DirEntries, FE);
+
+    // "tree" then byte 0 then "shadow": the C-string form is the real directory
+    // "tree", so an unchecked marshal would list it under a path that names
+    // something else.
+    let mut sneaky = std.strbuf.StrBuf.new();
+    sneaky.push_str("tree");
+    sneaky.push(0);
+    sneaky.push_str("shadow");
+
+    match std.fs.read_dir(borrow sneaky) {
+        DR.Ok(_d) => { return 1; },
+        DR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 2; } },
+    };
+    match std.fs.walk(borrow sneaky) {
+        DR.Ok(_d) => { return 3; },
+        DR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 4; } },
+    };
+
+    // the directory itself still lists normally
+    let listing = match std.fs.read_dir(borrow mk(borrow "tree")) { DR.Ok(d) => d, DR.Err(_e) => { return 5; } };
+    if listing.len() != 1 { return 6; }
+    let tree = match std.fs.walk(borrow mk(borrow "tree")) { DR.Ok(d) => d, DR.Err(_e) => { return 7; } };
+    if tree.len() != 1 { return 8; }
+    0
+}
+""" },
+    { path = "tree/a.md", source = "" },
+]
+exit_code = 0

@@ -70,7 +70,7 @@ pub enum FileError {
     AlreadyExists,      // EEXIST
     Interrupted,        // EINTR
     WouldBlock,         // EAGAIN / EWOULDBLOCK
-    InvalidInput,       // EINVAL, EBADF
+    InvalidInput,       // EINVAL, EBADF; also a path holding byte 0 (RUE-1711)
     Other(i64),         // any other raw errno
 }
 
@@ -646,7 +646,36 @@ fn _normalize_macos(e: i64) -> FileError {
 // Reads bytes through the public `StrBuf.byte_at` accessor (RUE-712 uses the
 // PR #1714 `byte_at`), so `fs` never touches `StrBuf`'s private buffer.
 // The caller frees the returned buffer with `len + 1`.
+//
+// A path holding byte 0 anywhere is REJECTED before it is marshalled (RUE-1711).
+// The kernel stops at the first NUL, so `"victim\0ignored"` would name `victim`:
+// the operation would silently land on a DIFFERENT path than the one passed, and
+// paths here are byte strings a program may well assemble from input it does not
+// control. Every marshalling site checks `_path_has_nul` first and reports
+// `FileError.InvalidInput`, the same answer a `CString`-based fs gives. The check
+// is at the marshalling sites rather than inside `_path_to_cbuf` because that
+// function returns a bare pointer with no way to spell the failure.
 // ---------------------------------------------------------------------------
+
+// True when `path` holds byte 0 at any index — the bytes past it would be
+// dropped by the kernel's C-string read.
+fn _path_has_nul(borrow path: strbuf.StrBuf) -> bool {
+    let n = path.len();
+    let O = option.Option(u8);
+    let mut i: u64 = 0;
+    while i < n {
+        match path.byte_at(i) {
+            O.Some(b) => {
+                if b == 0 {
+                    return true;
+                }
+            },
+            O.None => {},
+        }
+        i += 1;
+    }
+    false
+}
 
 fn _path_to_cbuf(borrow path: strbuf.StrBuf) -> ptr mut u8 {
     let n = path.len();
@@ -681,6 +710,9 @@ pub struct File {
     // Shared openat path used by the three constructors.
     fn _open_with(borrow path: strbuf.StrBuf, flags: u64, mode: u64) -> result.Result(File, FileError) {
         let R = result.Result(File, FileError);
+        if _path_has_nul(borrow path) {
+            return R.Err(FileError.InvalidInput);
+        }
         let cbuf = _path_to_cbuf(borrow path);
         let addr: u64 = checked { @ptr_to_int(cbuf) };
         let free_len = path.len() + 1;
@@ -929,6 +961,9 @@ drop fn File(self) {
 // `d_type` would have reported.
 fn _metadata_at(borrow path: strbuf.StrBuf, flags: u64) -> result.Result(Metadata, FileError) {
     let R = result.Result(Metadata, FileError);
+    if _path_has_nul(borrow path) {
+        return R.Err(FileError.InvalidInput);
+    }
     let cbuf = _path_to_cbuf(borrow path);
     let paddr: u64 = checked { @ptr_to_int(cbuf) };
     let free_len = path.len() + 1;
@@ -961,6 +996,9 @@ pub fn metadata(borrow path: strbuf.StrBuf) -> result.Result(Metadata, FileError
 // existing `to` is atomically replaced (POSIX rename semantics).
 pub fn rename(borrow from: strbuf.StrBuf, borrow to: strbuf.StrBuf) -> result.Result((), FileError) {
     let R = result.Result((), FileError);
+    if _path_has_nul(borrow from) || _path_has_nul(borrow to) {
+        return R.Err(FileError.InvalidInput);
+    }
     let fbuf = _path_to_cbuf(borrow from);
     let faddr: u64 = checked { @ptr_to_int(fbuf) };
     let flen = from.len() + 1;
@@ -981,6 +1019,9 @@ pub fn rename(borrow from: strbuf.StrBuf, borrow to: strbuf.StrBuf) -> result.Re
 // directory path fails (EISDIR/EPERM -> the normalized error); use `remove_dir`.
 pub fn remove(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
     let R = result.Result((), FileError);
+    if _path_has_nul(borrow path) {
+        return R.Err(FileError.InvalidInput);
+    }
     let cbuf = _path_to_cbuf(borrow path);
     let addr: u64 = checked { @ptr_to_int(cbuf) };
     let free_len = path.len() + 1;
@@ -999,6 +1040,9 @@ pub fn remove(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
 // there is one marshalling path; only their errno HANDLING differs (the
 // recursive form has to inspect EEXIST before deciding it is an error).
 fn _mkdirat_raw(borrow path: strbuf.StrBuf) -> i64 {
+    if _path_has_nul(borrow path) {
+        return 0 - _errno_einval();
+    }
     let cbuf = _path_to_cbuf(borrow path);
     let addr: u64 = checked { @ptr_to_int(cbuf) };
     let free_len = path.len() + 1;
@@ -1012,6 +1056,15 @@ fn _mkdirat_raw(borrow path: strbuf.StrBuf) -> i64 {
 // which both map 17 to `FileError.AlreadyExists`.
 fn _errno_eexist() -> i64 {
     17
+}
+
+// EINVAL as a raw errno, for the raw-result `_mkdirat_raw` to report a path
+// rejected before the syscall. Like EEXIST it agrees across Linux and macOS
+// (both 22), and both tables map 22 to `FileError.InvalidInput` — so the caller
+// that normalizes this gets the same error the `Result`-returning entry points
+// return directly.
+fn _errno_einval() -> i64 {
+    22
 }
 
 // The path separator byte, `/` (ASCII 47). POSIX on every supported target.
@@ -1086,6 +1139,12 @@ pub fn create_dir_all(borrow path: strbuf.StrBuf) -> result.Result((), FileError
     if n == 0 {
         return R.Err(FileError.NotFound);
     }
+    // Whole-path check up front: `_mkdirat_raw` would reject the offending
+    // component anyway, but only after the prefixes before it were created, and
+    // this call creates nothing for a path it cannot use.
+    if _path_has_nul(borrow path) {
+        return R.Err(FileError.InvalidInput);
+    }
     let O = option.Option(u8);
     let sep = _path_separator();
 
@@ -1133,6 +1192,9 @@ pub fn create_dir_all(borrow path: strbuf.StrBuf) -> result.Result((), FileError
 // non-empty directory is `Err` (ENOTEMPTY -> `Other`, or the normalized case).
 pub fn remove_dir(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
     let R = result.Result((), FileError);
+    if _path_has_nul(borrow path) {
+        return R.Err(FileError.InvalidInput);
+    }
     let cbuf = _path_to_cbuf(borrow path);
     let addr: u64 = checked { @ptr_to_int(cbuf) };
     let free_len = path.len() + 1;

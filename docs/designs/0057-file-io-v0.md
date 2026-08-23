@@ -9,7 +9,7 @@ accepted: 2026-07-16
 implemented: 2026-07-16
 spec-sections: []
 superseded-by:
-relates: ["RUE-712", "RUE-713", "RUE-935", "RUE-940", "ADR-0034", "ADR-0038"]
+relates: ["RUE-712", "RUE-713", "RUE-935", "RUE-940", "RUE-1711", "ADR-0034", "ADR-0038"]
 ---
 
 # ADR-0057: File IO v0 — pure-Rue fs over `@syscall`, normalized `FileError`
@@ -109,6 +109,25 @@ touches `StrBuf`'s private buffer. There is **no `Path`/`PathBuf` abstraction in
 v0** — a byte string is the path. A typed path layer can arrive later without
 changing the syscall boundary.
 
+#### 2a. Interior NUL bytes are rejected, not truncated (RUE-1711)
+
+"Arbitrary bytes" has one exception, and appending the terminator is what forces
+it: the kernel reads the marshalled buffer as a **C string**, so it stops at the
+first byte 0 and everything after it is dropped. Left unchecked, `"victim\0x"`
+is an operation on `victim` — the call succeeds, reports nothing unusual, and
+lands on a path the caller never wrote. Byte-string paths invite exactly the
+program that hits this: one assembling a path from bytes it does not control.
+
+So a path holding byte 0 **anywhere** is rejected with
+`FileError.InvalidInput` before it is marshalled, which is what a `CString`-based
+fs reports for the same input. A trailing NUL is rejected on the same rule even
+though its C-string form is a valid path: the buffer the kernel would read is not
+the byte string the caller passed, and the caller has an unambiguous way to spell
+that path already. The check sits at the marshalling **call sites** rather than
+inside the copy itself, because the copy returns a bare pointer with no way to
+spell a failure. `create_dir_all` checks the whole path once up front, so a
+rejected path creates none of the parents that precede the offending component.
+
 ### 3. Error model: a normalized `FileError`, never a raw errno
 
 Every fallible operation returns `Result(T, FileError)` (the ADR-0038 library
@@ -121,7 +140,7 @@ enum FileError {
     AlreadyExists,      // EEXIST
     Interrupted,        // EINTR — retryable; surfaced, not hidden
     WouldBlock,         // EAGAIN / EWOULDBLOCK
-    InvalidInput,       // EINVAL, EBADF
+    InvalidInput,       // EINVAL, EBADF; also a path holding byte 0 (see 2a)
     Other(i64),         // the raw errno, for everything not yet named
 }
 ```
