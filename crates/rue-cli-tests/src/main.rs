@@ -54,6 +54,9 @@
 //!   says nothing about the compile, the case RUNS THAT EXECUTABLE instead of
 //!   compiling — see "Execution modes" below
 //! - `output`: name of produced executable (default `"prog"`)
+//! - `watch`: synchronized imperative scenario for real `--watch` orchestration;
+//!   it names a `kind` (`edit`, `cancel`, or `delete`), fixture edits, and the
+//!   expected executable exit codes after the initial and final publication
 //! - `symlinks`: symbolic links created in the temp directory before the
 //!   compile, as `[{ link = "name", target = "..." }]`. The target is written
 //!   verbatim and is NOT required to exist: a dangling link is a legitimate
@@ -166,9 +169,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -176,8 +179,9 @@ use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_target::{Arch, Target};
 use rue_test_runner::{
     ExpectedFailureOutcome, KNOWN_TARGETS, PlatformCaseSelection, ShardSelector, TestFailure,
-    TestResult, classify_expected_failure, compiler_command, find_dir, find_rue_binary,
-    ice_message, run_with_timeout, validate_nonempty_case_corpus,
+    TestResult, classify_expected_failure, compiler_command, configure_process_group, find_dir,
+    find_rue_binary, ice_message, kill_process_group, run_with_timeout,
+    validate_nonempty_case_corpus,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1045,6 +1049,39 @@ struct SymlinkFixture {
     target: String,
 }
 
+/// Imperative end-to-end watch scenario. These cases use the watch protocol
+/// seam in `rue` to synchronize edits and then terminate the watch process;
+/// ordinary CLI cases remain declarative and use the normal compile/run path.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WatchScenario {
+    kind: WatchScenarioKind,
+    #[serde(default)]
+    source_path: Option<String>,
+    #[serde(default)]
+    compile_delay_ms: Option<u64>,
+    edits: Vec<WatchEdit>,
+    expected_exit_codes: Vec<i32>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum WatchScenarioKind {
+    Edit,
+    Cancel,
+    Delete,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WatchEdit {
+    path: String,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    delete: bool,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Case {
@@ -1084,6 +1121,9 @@ struct Case {
     /// Name of the executable the compiler is expected to produce.
     #[serde(default)]
     output: Option<String>,
+    /// A synchronized, imperative `--watch` integration scenario.
+    #[serde(default)]
+    watch: Option<WatchScenario>,
     /// Extra environment variables for the compiler invocation.
     #[serde(default)]
     env: HashMap<String, String>,
@@ -1983,6 +2023,7 @@ fn case_runs_prebuilt_program(case: &Case) -> bool {
         // ...and must leave the compile exactly as `rue <root> -o prog`.
         args: None,
         output: None,
+        watch: None,
         env,
         executable_target: None,
         compile_fail: false,
@@ -2331,6 +2372,301 @@ fn run_case(
     run_case_program(case, contract, dir, &program)
 }
 
+fn watch_events(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn watch_event_count(path: &Path, event: &str) -> usize {
+    watch_events(path)
+        .iter()
+        .filter(|line| line.as_str() == event)
+        .count()
+}
+
+fn finish_watch_child(
+    mut child: std::process::Child,
+    stdout: std::thread::JoinHandle<Vec<u8>>,
+    stderr: std::thread::JoinHandle<Vec<u8>>,
+    terminate: bool,
+) -> (Option<std::process::ExitStatus>, Vec<u8>, Vec<u8>) {
+    let running = matches!(child.try_wait(), Ok(None));
+    if terminate && running {
+        kill_process_group(&mut child);
+    } else if running {
+        let _ = child.wait();
+    }
+    let status = child.try_wait().ok().flatten();
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    (status, stdout, stderr)
+}
+
+fn wait_for_watch_event(
+    child: &mut std::process::Child,
+    protocol: &Path,
+    event: &str,
+    count: usize,
+    deadline: Instant,
+) -> Result<(), String> {
+    while Instant::now() < deadline {
+        if watch_event_count(protocol, event) >= count {
+            return Ok(());
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("failed waiting for watch process: {error}"))?
+        {
+            return Err(format!(
+                "watch process exited before event {event:?} (status {status})"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Err(format!(
+        "timed out waiting for watch event {event:?} (count {count})"
+    ))
+}
+
+fn write_watch_edit(dir: &Path, edit: &WatchEdit) -> Result<(), String> {
+    let path = dir.join(&edit.path);
+    match (edit.delete, &edit.source) {
+        (true, None) => std::fs::remove_file(&path)
+            .map_err(|error| format!("failed to delete watch fixture {}: {error}", edit.path)),
+        (false, Some(source)) => std::fs::write(&path, source)
+            .map_err(|error| format!("failed to update watch fixture {}: {error}", edit.path)),
+        _ => Err(format!(
+            "watch edit {} must specify exactly one of delete or source",
+            edit.path
+        )),
+    }
+}
+
+fn assert_watch_program(
+    contract: &ExecutionContract,
+    program: &Path,
+    expected_exit: i32,
+) -> TestResult {
+    let output = run_with_timeout(
+        {
+            let mut command = Command::new(program);
+            command.current_dir(program.parent().unwrap_or_else(|| Path::new(".")));
+            command
+        },
+        contract.runtime_timeout(),
+        None,
+    )?;
+    if output.status.code() != Some(expected_exit) {
+        return Err(TestFailure::assertion(format!(
+            "watch executable exit mismatch: expected {expected_exit}, actual {:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        )));
+    }
+    Ok(())
+}
+
+/// Run a real driver `--watch` process while editing its source files through
+/// a file-backed protocol. The process is always placed in its own group and
+/// killed/reaped after the final publication, including assertion failures.
+fn run_watch_case(
+    case: &Case,
+    scenario: &WatchScenario,
+    contract: &ExecutionContract,
+    rue_binary: &Path,
+    real_std: &Path,
+) -> TestResult {
+    if scenario.expected_exit_codes.len() != 2 || scenario.edits.len() < 1 {
+        return Err(TestFailure::assertion(
+            "watch scenario requires two expected exits and at least one edit",
+        ));
+    }
+    if scenario.kind == WatchScenarioKind::Cancel && scenario.edits.len() != 2 {
+        return Err(TestFailure::assertion(
+            "cancel watch scenario requires exactly two edits",
+        ));
+    }
+    if scenario.kind == WatchScenarioKind::Edit && scenario.edits.len() != 1 {
+        return Err(TestFailure::assertion(
+            "edit watch scenario requires exactly one edit",
+        ));
+    }
+    if scenario.kind == WatchScenarioKind::Delete && scenario.edits.len() != 2 {
+        return Err(TestFailure::assertion(
+            "delete watch scenario requires delete and restore edits",
+        ));
+    }
+
+    let temp_dir = tempfile::tempdir()
+        .map_err(|error| TestFailure::fatal(format!("failed to create watch temp dir: {error}")))?;
+    let dir = temp_dir.path();
+    for file in &case.files {
+        let path = dir.join(&file.path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                TestFailure::fatal(format!("failed to create watch fixture directory: {error}"))
+            })?;
+        }
+        std::fs::write(&path, &file.source).map_err(|error| {
+            TestFailure::fatal(format!(
+                "failed to write watch fixture {}: {error}",
+                file.path
+            ))
+        })?;
+    }
+    for symlink in &case.symlinks {
+        let path = dir.join(&symlink.link);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                TestFailure::fatal(format!("failed to create watch symlink directory: {error}"))
+            })?;
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&symlink.target, &path).map_err(|error| {
+            TestFailure::fatal(format!("failed to create watch symlink: {error}"))
+        })?;
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&symlink.target, &path).map_err(|error| {
+            TestFailure::fatal(format!("failed to create watch symlink: {error}"))
+        })?;
+    }
+
+    let source = scenario
+        .source_path
+        .as_deref()
+        .or_else(|| case.files.first().map(|file| file.path.as_str()))
+        .ok_or_else(|| TestFailure::assertion("watch scenario has no root source"))?;
+    let output_name = case.output.as_deref().unwrap_or("prog");
+    let protocol = dir.join("watch.protocol");
+    let mut command = case_compiler_command(
+        rue_binary,
+        &[
+            source.to_string(),
+            "-o".to_string(),
+            output_name.to_string(),
+            "--watch".to_string(),
+        ],
+        dir,
+        &case.env,
+        real_std,
+    );
+    command
+        .env("RUE_WATCH_TEST_PROTOCOL", &protocol)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(delay) = scenario.compile_delay_ms {
+        command.env("RUE_WATCH_TEST_COMPILE_DELAY_MS", delay.to_string());
+    }
+    configure_process_group(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| TestFailure::fatal(format!("failed to spawn watch process: {error}")))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| TestFailure::fatal("watch process stdout pipe was unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| TestFailure::fatal("watch process stderr pipe was unavailable"))?;
+    let stdout = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = std::io::BufReader::new(stdout).read_to_end(&mut bytes);
+        bytes
+    });
+    let stderr = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = std::io::BufReader::new(stderr).read_to_end(&mut bytes);
+        bytes
+    });
+
+    // A watch case is interactive by design; a short dedicated deadline keeps
+    // a broken protocol from consuming the ordinary suite hang guard.
+    let deadline = Instant::now() + contract.runtime_timeout().min(Duration::from_secs(30));
+    let result = (|| -> Result<(), String> {
+        wait_for_watch_event(&mut child, &protocol, "ready", 1, deadline)?;
+        wait_for_watch_event(&mut child, &protocol, "published", 1, deadline)?;
+        let program = dir.join(output_name);
+        assert_watch_program(contract, &program, scenario.expected_exit_codes[0])
+            .map_err(|error| error.to_string())?;
+
+        write_watch_edit(dir, &scenario.edits[0])?;
+        match scenario.kind {
+            WatchScenarioKind::Edit => {
+                wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
+            }
+            WatchScenarioKind::Cancel => {
+                wait_for_watch_event(&mut child, &protocol, "change-detected", 1, deadline)?;
+                wait_for_watch_event(&mut child, &protocol, "compile-started", 2, deadline)?;
+                write_watch_edit(dir, &scenario.edits[1])?;
+                wait_for_watch_event(
+                    &mut child,
+                    &protocol,
+                    "canceled-before-publication",
+                    1,
+                    deadline,
+                )?;
+                wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
+            }
+            WatchScenarioKind::Delete => {
+                // A deleted transitive input can first be observed as a
+                // closed-invalid revision by the current host snapshot; the
+                // next cycle then reobserves the restored closure.
+                wait_for_watch_event(&mut child, &protocol, "compile-error", 1, deadline)?;
+                write_watch_edit(dir, &scenario.edits[1])?;
+                wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
+                let events = watch_events(&protocol);
+                let failure = events
+                    .iter()
+                    .position(|event| event == "compile-error")
+                    .ok_or_else(|| "watch failure anchor disappeared".to_string())?;
+                let reobserve = events
+                    .iter()
+                    .enumerate()
+                    .skip(failure + 1)
+                    .find_map(|(index, event)| (event == "reobserve-ok").then_some(index))
+                    .ok_or_else(|| "watch never reobserved after restoring import".to_string())?;
+                let acquire = events
+                    .iter()
+                    .enumerate()
+                    .skip(failure + 1)
+                    .find_map(|(index, event)| (event == "acquire-ok").then_some(index))
+                    .ok_or_else(|| "watch never reacquired toolchain modules".to_string())?;
+                if reobserve > acquire {
+                    return Err(
+                        "watch acquired toolchain modules before reobserve completed".into(),
+                    );
+                }
+            }
+        }
+        assert_watch_program(contract, &program, scenario.expected_exit_codes[1])
+            .map_err(|error| error.to_string())?;
+        if scenario.kind == WatchScenarioKind::Cancel
+            && watch_event_count(&protocol, "published") != 2
+        {
+            return Err(format!(
+                "watch published a stale intermediate revision: expected exactly 2 publications, events were {:?}",
+                watch_events(&protocol)
+            ));
+        }
+        Ok(())
+    })();
+
+    let (status, stdout_bytes, stderr_bytes) = finish_watch_child(child, stdout, stderr, true);
+    result.map_err(|error| {
+        TestFailure::assertion(format!(
+            "{error}\nwatch process status: {status:?}\n--- watch stdout ---\n{}\n--- watch stderr ---\n{}",
+            String::from_utf8_lossy(&stdout_bytes),
+            String::from_utf8_lossy(&stderr_bytes),
+        ))
+    })
+}
+
 /// Run the case's program from its temp directory and check every runtime
 /// expectation.
 ///
@@ -2535,7 +2871,9 @@ fn run_case_wrapper(
         ));
     }
 
-    let result = if case.differential_opt {
+    let result = if let Some(scenario) = &case.watch {
+        run_watch_case(case, scenario, contract, rue_binary, real_std)
+    } else if case.differential_opt {
         run_case_differential(case, contract, rue_binary, real_std, repo_root)
     } else {
         run_case(case, contract, rue_binary, real_std, repo_root, None).map(|_| ())

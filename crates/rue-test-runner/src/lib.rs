@@ -2283,18 +2283,18 @@ pub fn compiler_command(binary: &Path) -> Command {
 /// grandchildren it forked are torn down too, so nothing survives to keep a
 /// pipe open and wedge the harness.
 #[cfg(unix)]
-fn configure_process_group(cmd: &mut Command) {
+pub fn configure_process_group(cmd: &mut Command) {
     use std::os::unix::process::CommandExt;
     // process_group(0) makes the child a new group leader whose pgid == its pid.
     cmd.process_group(0);
 }
 
 #[cfg(not(unix))]
-fn configure_process_group(_cmd: &mut Command) {}
+pub fn configure_process_group(_cmd: &mut Command) {}
 
 /// Kill the timed-out child and everything in its process group, then reap it.
 #[cfg(unix)]
-fn kill_process_group(child: &mut std::process::Child) {
+pub fn kill_process_group(child: &mut std::process::Child) {
     // The child leads its own group (see `configure_process_group`), so a
     // negative pid targets every process in that group with SIGKILL.
     let pid = child.id() as i32;
@@ -2306,7 +2306,7 @@ fn kill_process_group(child: &mut std::process::Child) {
 }
 
 #[cfg(not(unix))]
-fn kill_process_group(child: &mut std::process::Child) {
+pub fn kill_process_group(child: &mut std::process::Child) {
     let _ = child.kill();
     let _ = child.wait();
 }
