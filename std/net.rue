@@ -152,7 +152,7 @@ pub enum NetworkError {
     AddressInUse,         // EADDRINUSE
     AddressNotAvailable,  // EADDRNOTAVAIL
     ConnectionRefused,    // ECONNREFUSED
-    ConnectionReset,      // ECONNRESET
+    ConnectionReset,      // ECONNRESET, EPIPE (peer closed its receive side)
     ConnectionAborted,    // ECONNABORTED
     NotConnected,         // ENOTCONN
     TimedOut,             // ETIMEDOUT
@@ -240,12 +240,17 @@ fn _sys_net_read() -> u64 {
     }
 }
 
-fn _sys_net_write() -> u64 {
+// Linux `sendto(2)` with MSG_NOSIGNAL is the socket-specific write path. The
+// null destination and zero address length use the already-connected peer;
+// unlike `write(2)`, MSG_NOSIGNAL suppresses SIGPIPE for these sends only.
+fn _sys_net_sendto() -> u64 {
     match @target_arch() {
-        Arch.X86_64 => 1,
-        Arch.Aarch64 => 64,
+        Arch.X86_64 => 44,
+        Arch.Aarch64 => 206,
     }
 }
+
+fn _msg_nosignal() -> u64 { 0x4000 }
 
 fn _sys_net_close() -> u64 {
     match @target_arch() {
@@ -262,7 +267,7 @@ fn _default_backlog() -> u64 { 128 }
 // same on x86-64 and aarch64).
 fn _normalize_net_errno(e: i64) -> NetworkError {
     // EPERM=1 EINTR=4 EBADF=9 EAGAIN=11 EACCES=13 EINVAL=22 EADDRINUSE=98
-    // EADDRNOTAVAIL=99 ECONNABORTED=103 ECONNRESET=104 ENOTCONN=107
+    // EADDRNOTAVAIL=99 ECONNABORTED=103 ECONNRESET=104 EPIPE=32 ENOTCONN=107
     // ETIMEDOUT=110 ECONNREFUSED=111
     if e == 1 {
         NetworkError.PermissionDenied
@@ -275,6 +280,8 @@ fn _normalize_net_errno(e: i64) -> NetworkError {
     } else if e == 111 {
         NetworkError.ConnectionRefused
     } else if e == 104 {
+        NetworkError.ConnectionReset
+    } else if e == 32 {
         NetworkError.ConnectionReset
     } else if e == 103 {
         NetworkError.ConnectionAborted
@@ -400,9 +407,11 @@ pub struct TcpStream {
         R.Ok(n)
     }
 
-    // Send the bytes of `buf` in a single write(2); may send fewer than
-    // `buf.len()` (the count is returned). Use `write_all` for the
-    // whole-buffer guarantee.
+    // Send the bytes of `buf` in a single `sendto(2)` with MSG_NOSIGNAL;
+    // the null destination uses the connected peer and suppresses SIGPIPE
+    // for this socket send. It may send fewer than `buf.len()` (the count is
+    // returned). Use `write_all` for the whole-buffer guarantee. Linux EPIPE
+    // is normalized to ConnectionReset, like ECONNRESET.
     fn write(inout self, borrow buf: arraybuf.ArrayBuf(u8)) -> result.Result(u64, NetworkError) {
         let R = result.Result(u64, NetworkError);
         let n = buf.len();
@@ -420,7 +429,9 @@ pub struct TcpStream {
         }
         let addr: u64 = checked { @ptr_to_int(tmp) };
         let fd_u: u64 = @intCast(self.fd);
-        let ret: i64 = checked { @syscall(_sys_net_write(), fd_u, addr, n) };
+        let ret: i64 = checked {
+            @syscall(_sys_net_sendto(), fd_u, addr, n, _msg_nosignal(), 0, 0)
+        };
         checked { @free(tmp, n, 1); };
         if ret < 0 {
             R.Err(_normalize_net_errno(0 - ret))
@@ -449,7 +460,9 @@ pub struct TcpStream {
         let fd_u: u64 = @intCast(self.fd);
         let mut off: u64 = 0;
         while off < n {
-            let ret: i64 = checked { @syscall(_sys_net_write(), fd_u, base + off, n - off) };
+            let ret: i64 = checked {
+                @syscall(_sys_net_sendto(), fd_u, base + off, n - off, _msg_nosignal(), 0, 0)
+            };
             if ret < 0 {
                 let e = _normalize_net_errno(0 - ret);
                 let retry = match e {
