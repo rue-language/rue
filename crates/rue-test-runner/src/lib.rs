@@ -15,7 +15,7 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 /// This matches the convention used by Rust's test harness and the Rue runtime.
 /// When a Rue program encounters a runtime error, it exits with this code.
 pub const RUNTIME_ERROR_EXIT_CODE: i32 = 101;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{Read as IoRead, Write};
 use std::path::{Path, PathBuf};
@@ -1484,6 +1484,69 @@ pub fn expand_test_file(mut test_file: TestFile) -> TestFile {
     test_file
 }
 
+/// The source location of one expanded test identity.
+///
+/// Test harnesses use the identity as the key for libtest2's scheduler. Keep
+/// the source and case name alongside it so duplicate identities can be
+/// reported before any trials are constructed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestNameOrigin {
+    /// The name passed to libtest2 (for example, `section::case`).
+    pub name: String,
+    /// The test file that declared the case.
+    pub source: String,
+    /// The expanded case name within the source file.
+    pub case: String,
+}
+
+/// Reject duplicate names in a complete, already-expanded test corpus.
+///
+/// This is intentionally shared by all harnesses. Filtering by tier, platform,
+/// selector, or shard must happen only after this check: otherwise a duplicate
+/// can hide in an unselected slice and still corrupt concurrent scheduling when
+/// a later invocation selects it.
+pub fn validate_unique_test_names<I>(origins: I) -> Result<(), String>
+where
+    I: IntoIterator<Item = TestNameOrigin>,
+{
+    let mut by_name: BTreeMap<String, Vec<TestNameOrigin>> = BTreeMap::new();
+    for origin in origins {
+        by_name.entry(origin.name.clone()).or_default().push(origin);
+    }
+
+    let duplicates = by_name
+        .into_iter()
+        .filter(|(_, origins)| origins.len() > 1)
+        .collect::<Vec<_>>();
+    if duplicates.is_empty() {
+        return Ok(());
+    }
+
+    let mut details = Vec::new();
+    for (name, mut origins) in duplicates {
+        origins.sort_by(|left, right| {
+            left.source
+                .cmp(&right.source)
+                .then_with(|| left.case.cmp(&right.case))
+        });
+        let locations = origins
+            .into_iter()
+            .map(|origin| format!("{} (case '{}')", origin.source, origin.case))
+            .collect::<Vec<_>>();
+        details.push(format!(
+            "duplicate test name '{}': {}",
+            name,
+            locations.join("; ")
+        ));
+    }
+
+    Err(format!(
+        "{} duplicate test name(s) found:\n  - {}",
+        details.len(),
+        details.join("\n  - ")
+    ))
+}
+
 /// An error indicating an unknown preview feature name was used in a test.
 #[derive(Debug, Clone)]
 pub struct UnknownPreviewFeatureError {
@@ -1848,6 +1911,7 @@ pub fn discover_files(dir: &Path, ext: &str) -> std::io::Result<Vec<PathBuf>> {
 /// parse, or validation failure instead of silently running a partial corpus.
 pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, String> {
     let mut specs = Vec::new();
+    let mut test_name_origins = Vec::new();
     let mut preview_errors: Vec<UnknownPreviewFeatureError> = Vec::new();
     let mut platform_errors: Vec<UnknownPlatformError> = Vec::new();
     let mut stray_error_assertions: Vec<StrayErrorAssertionError> = Vec::new();
@@ -1899,6 +1963,12 @@ pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, Stri
                 // a declared target a scoped host cannot execute (RUE-1161).
                 platform_responsibility.extend(validate_platform_responsibility(&spec));
 
+                test_name_origins.extend(spec.case.iter().map(|case| TestNameOrigin {
+                    name: format!("{}::{}", spec.section.id, case.name),
+                    source: path.display().to_string(),
+                    case: case.name.clone(),
+                }));
+
                 // Build a relative path from cases_dir to create the identifier
                 // e.g., "expressions/match" for "cases/expressions/match.toml"
                 let relative = path
@@ -1925,6 +1995,8 @@ pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, Stri
             load_errors.join("\n  - ")
         ));
     }
+
+    validate_unique_test_names(test_name_origins)?;
 
     // Report all preview feature errors and fail if any were found
     if !preview_errors.is_empty() {
@@ -3014,6 +3086,92 @@ exit_code = 0
         let error = load_test_files(directory.path()).unwrap_err();
         assert!(error.contains("b-malformed.toml"), "{error}");
         assert!(error.contains("failed to load"), "{error}");
+    }
+
+    #[test]
+    fn duplicate_test_names_are_rejected_with_both_same_file_cases() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("duplicates.toml"),
+            r#"
+[section]
+id = "test.section"
+name = "Test"
+
+[[case]]
+name = "same"
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "same"
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+"#,
+        )
+        .unwrap();
+
+        let error = load_test_files(directory.path()).expect_err("duplicate must not load");
+        assert!(
+            error.contains("duplicate test name 'test.section::same'"),
+            "{error}"
+        );
+        assert!(error.contains("duplicates.toml"), "{error}");
+        assert!(error.matches("case 'same'").count() >= 2, "{error}");
+    }
+
+    #[test]
+    fn duplicate_test_names_are_rejected_across_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = || {
+            format!(
+                r#"
+[section]
+id = "test.section"
+name = "Test"
+
+[[case]]
+name = "same"
+source = "fn main() -> i32 {{ 0 }}"
+exit_code = 0
+"#
+            )
+        };
+        fs::write(directory.path().join("a.toml"), file()).unwrap();
+        fs::write(directory.path().join("b.toml"), file()).unwrap();
+
+        let error = load_test_files(directory.path()).expect_err("duplicate must not load");
+        assert!(error.contains("a.toml"), "{error}");
+        assert!(error.contains("b.toml"), "{error}");
+        assert!(error.contains("case 'same'"), "{error}");
+    }
+
+    #[test]
+    fn duplicate_test_names_are_rejected_after_parameter_expansion() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("parameterized.toml"),
+            r#"
+[section]
+id = "test.section"
+name = "Test"
+
+[[case]]
+name = "case_{variant}"
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+params = [
+  { variant = "same" },
+  { variant = "same" },
+]
+"#,
+        )
+        .unwrap();
+
+        let error = load_test_files(directory.path()).expect_err("duplicate must not load");
+        assert!(error.contains("test.section::case_same"), "{error}");
+        assert!(error.contains("parameterized.toml"), "{error}");
+        assert!(error.matches("case 'case_same'").count() >= 2, "{error}");
     }
 
     #[cfg(unix)]
