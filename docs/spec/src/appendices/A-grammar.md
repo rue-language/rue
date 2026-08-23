@@ -22,6 +22,8 @@ this appendix governs.
 <!-- grammar-sync(id="9.3:1a", production="extern_fn", role="appendix") -->
 <!-- grammar-sync(id="9.3:1a", production="extern_result", role="appendix") -->
 <!-- grammar-sync(id="9.3:1a", production="extern_export", role="appendix") -->
+<!-- grammar-sync(id="6.6:2", production="primary", role="appendix", relation="contains", symbol="yield_expr") -->
+<!-- grammar-sync(id="6.6:2", production="yield_expr", role="appendix") -->
 
 <!-- grammar-sync(id="2.1:26", production="INTEGER", role="appendix", relation="contains", symbol="byte_literal") -->
 <!-- grammar-sync(id="2.1:26", production="byte_literal", role="appendix") -->
@@ -97,12 +99,10 @@ compound_op    = "+=" | "-=" | "*=" | "/=" | "%="
 expr_stmt      = expression ";"
                | control_flow_expr
                | block_expr ;          (* block-like expressions need no semicolon *)
-yield_expr     = "yield" expression ;  (* the trailing exit of an accessor body
-                                          (ADR-0062); parsed as an
-                                          expression form, valid only as the
-                                          single trailing statement of a
-                                          `-> borrow` or `-> inout` accessor
-                                          body — a legality rule *)
+(* The trailing exit of an accessor body (ADR-0062); parsed as an expression
+   form, valid only as the single trailing statement of a `-> borrow` or
+   `-> inout` accessor body — a legality rule. *)
+yield_expr     = "yield" expression ;
 
 (* Place expressions: a variable — or `self`, inside a method — followed by
    zero or more field/index projections, or an accessor call followed by those
@@ -188,7 +188,8 @@ primary        = INTEGER | STRING | BOOL | "()"
                | comptime_expr
                | checked_expr
                | block_expr
-               | control_flow_expr ;
+               | control_flow_expr
+               | yield_expr ;
 
 (* An identifier optionally followed by call arguments, a struct literal
    body, or a path. *)
