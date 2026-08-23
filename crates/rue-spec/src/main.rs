@@ -159,8 +159,11 @@ fn is_spec_selector(argument: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
         && subsection.starts_with(|c: char| c.is_ascii_digit());
-    let paragraph_ok =
-        paragraph.is_none_or(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    let paragraph_ok = paragraph.is_none_or(|p| {
+        !p.is_empty()
+            && p.bytes().all(|b| b.is_ascii_alphanumeric())
+            && p.starts_with(|c: char| c.is_ascii_digit())
+    });
     chapter_ok && subsection_ok && paragraph_ok
 }
 
@@ -406,6 +409,7 @@ mod runner_tests {
         assert!(is_spec_selector("4.2"));
         assert!(is_spec_selector("4.3a"));
         assert!(is_spec_selector("4.2:5"));
+        assert!(is_spec_selector("4.3:3a"));
         assert!(is_spec_selector("11.10:123"));
 
         assert!(!is_spec_selector("arithmetic"));
@@ -413,6 +417,8 @@ mod runner_tests {
         assert!(!is_spec_selector("--quiet"));
         assert!(!is_spec_selector("4."));
         assert!(!is_spec_selector("4.2:"));
+        assert!(!is_spec_selector("4.2:a"));
+        assert!(!is_spec_selector("4.2:3-4"));
         assert!(!is_spec_selector("4.2:x"));
     }
 
@@ -426,6 +432,16 @@ mod runner_tests {
 
         assert_eq!(selectors(&["--spec", "4.2:5"]), vec!["4.2:5".to_string()]);
         assert_eq!(selectors(&["--spec=4.2:5"]), vec!["4.2:5".to_string()]);
+        assert_eq!(selectors(&["4.3:3a"]), vec!["4.3:3a".to_string()]);
+        assert_eq!(
+            harness_args(&["4.3:3a", "arithmetic", "--skip", "4.2"]),
+            vec![
+                "rue-spec".to_string(),
+                "arithmetic".to_string(),
+                "--skip".to_string(),
+                "4.2".to_string()
+            ]
+        );
 
         // A name filter still reaches libtest untouched.
         assert!(selectors(&["arithmetic"]).is_empty());
