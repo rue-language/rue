@@ -45,7 +45,8 @@ That is +1,989.5 MiB across +431 records in seven days — **284 MiB/day**,
 matching the measured 288.6 MiB/day within 2%. Nothing on trunk changed what
 is collected (RUE-1590 made the stall gate ignore *empty* records; it does
 not alter evidence retention), and all nine declared baselines still resolve
-(`rue-bench check-baselines`: 9/9, exit 0, against the live `index.json`).
+(PR #2608's `rue-bench check-baselines`: 9/9, exit 0, against the live
+`index.json`).
 The compacted-size projections below scale roughly linearly with record
 count; the *shares* (evidence at 98.6–99.3% of a record, the per-entry
 breakdown, the cross-process identity finding) are properties of the
@@ -530,7 +531,8 @@ Found by reading the source, not by reasoning about it.
 
 The dangerous one is the combination of rows 1, 3 and 4: re-pinning a *retired*
 epoch's baseline incorrectly loses that epoch's headline index from the
-dashboard with **no gate firing**, and the remediation text in the gate that
+dashboard with **no gate firing** (the gap PR #2608 closes), and the
+remediation text in the gate that
 would have caught it says "A record is named by the bytes it was published as;
 nothing may rename it afterwards."
 
@@ -543,8 +545,9 @@ would report the mistake.
 Extending `unindexed()` does not fix it, because the gate never holds the
 records. `rue-bench staleness-inputs` selects the live epoch alone before
 `derive` (RUE-1542), and selecting every epoch with a baseline would mean
-reading 1,437 of the store's 1,440 records instead of 321 — the cost RUE-1542
-removed. The resolution question needs no derived data: `index.json` carries
+reading nearly the whole store — on 2026-08-18, 1,437 of 1,440 records
+instead of the 321 the gate then read; at the 2026-08-23 re-measurement,
+1,616 of 1,619 against 500 — the cost RUE-1542 removed. The resolution question needs no derived data: `index.json` carries
 every record's platform, epoch and address, and the gate has already checked it
 out to decide what to read. `rue-bench check-baselines` (PR #2608) asks it
 there, for every epoch, and is the prerequisite this note means. Measured
