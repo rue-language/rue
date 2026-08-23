@@ -421,6 +421,11 @@ impl ErrorCode {
     /// source file's directory), so it can receive no project-relative module
     /// identity (ADR-0078).
     pub const IMPORT_ESCAPES_ROOT: Self = Self(713);
+    /// An `@import` specifier is not a relative path: it is empty, or it is
+    /// absolute. Resolution is defined for relative paths only (spec 10.2:1-2),
+    /// and an absolute specifier would additionally bind the program to one
+    /// machine's layout, which project-root-relative identity exists to avoid.
+    pub const IMPORT_SPECIFIER_NOT_RELATIVE: Self = Self(714);
 
     // ========================================================================
     // Literal/operator errors (E0800-E0899)
@@ -1766,6 +1771,13 @@ pub enum ErrorKind {
         "import '{path}' escapes the project root: '{candidate}' is outside the root source file's directory"
     )]
     ImportEscapesRoot { path: String, candidate: String },
+    #[error("@import requires a relative path, but the specifier is empty")]
+    ImportSpecifierEmpty,
+    #[error(
+        "@import requires a relative path, but '{path}' is absolute; paths resolve \
+         relative to the importing file"
+    )]
+    ImportSpecifierAbsolute { path: String },
     #[error("standard library not found")]
     StdLibNotFound,
     #[error("{item_kind} `{name}` is private")]
@@ -2231,6 +2243,9 @@ impl ErrorKind {
             ErrorKind::ImportRequiresStringLiteral => ErrorCode::IMPORT_REQUIRES_STRING_LITERAL,
             ErrorKind::ModuleNotFound { .. } => ErrorCode::MODULE_NOT_FOUND,
             ErrorKind::ImportEscapesRoot { .. } => ErrorCode::IMPORT_ESCAPES_ROOT,
+            ErrorKind::ImportSpecifierEmpty | ErrorKind::ImportSpecifierAbsolute { .. } => {
+                ErrorCode::IMPORT_SPECIFIER_NOT_RELATIVE
+            }
             ErrorKind::StdLibNotFound => ErrorCode::STD_LIB_NOT_FOUND,
             ErrorKind::PrivateMemberAccess { .. } => ErrorCode::PRIVATE_MEMBER_ACCESS,
             ErrorKind::PrivateUnqualifiedAccess(_) => ErrorCode::PRIVATE_UNQUALIFIED_ACCESS,

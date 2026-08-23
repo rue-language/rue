@@ -340,6 +340,40 @@ fn main() -> i32 { 0 }
 compile_fail = true
 error_contains = ["E0713", "escapes the project root", "../outside.rue"]
 
+# RUE-1706: `Path::join` DISCARDS its base when the right-hand side is absolute,
+# so an absolute specifier used to become its own candidate — checked only
+# against the project boundary, and accepted whenever it happened to land inside
+# it. These two cases pin the shape rule that now precedes that check. The
+# absolute path here is outside the root, because a CLI case cannot spell its own
+# temp directory; the inside-the-root variant, which is the one that used to
+# COMPILE, is pinned by `non_relative_specifiers_derive_no_discovery_requests` in
+# import_discovery.rs, where a test can choose the paths.
+[[case]]
+name = "absolute_import_specifier_is_e0714"
+description = "RUE-1706: an absolute @import specifier is rejected on its shape, not routed through the project-boundary check."
+files = [
+    { path = "main.rue", source = """
+const h = @import("/etc/hostname.rue");
+fn main() -> i32 { 0 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0714", "relative path", "/etc/hostname.rue"]
+compile_stderr_not_contains = ["E0713", "escapes the project root"]
+
+[[case]]
+name = "empty_import_specifier_is_e0714"
+description = "RUE-1706: an empty @import specifier names nothing; it no longer reports E0713 against a derived '/_.rue' candidate."
+files = [
+    { path = "main.rue", source = """
+const nothing = @import("");
+fn main() -> i32 { 0 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0714", "the specifier is empty"]
+compile_stderr_not_contains = ["E0713", "/_.rue"]
+
 [[case]]
 name = "emit_deps_malformed_import_has_no_envelope"
 description = "RUE-810: malformed import shape has no canonical unresolved topology and emits diagnostics without JSON."

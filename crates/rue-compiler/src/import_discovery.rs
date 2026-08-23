@@ -1401,6 +1401,12 @@ pub(crate) fn escaping_import_candidate(
     if specifier == "std" {
         return Ok(None);
     }
+    // A specifier that is not a relative path derives no candidate at all, so
+    // there is nothing to place inside or outside the boundary. Reporting it
+    // here as well would give one site two diagnostics for one mistake.
+    if non_relative_specifier(specifier).is_some() {
+        return Ok(None);
+    }
     let importer_path = normalize_absolute(importer_requested_path)?;
     let boundary_root = context
         .std_root()
@@ -1421,11 +1427,78 @@ pub(crate) fn escaping_import_candidate(
     }
 }
 
+/// Why a specifier is not a relative path, and so names no module. Both shapes
+/// are decided from the specifier text alone, before any candidate is derived
+/// (RUE-1706).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NonRelativeSpecifier {
+    /// `@import("")`. It names nothing; `discovery_candidate_groups` would
+    /// spell it as the root-anchored `/_.rue`, an artifact of joining an empty
+    /// basename onto an empty specifier rather than a path any project holds.
+    Empty,
+    /// `@import("/etc/hostname.rue")`, or any other rooted path. `Path::join`
+    /// REPLACES its base when the right-hand side is absolute, so such a
+    /// specifier would become its own candidate, unanchored from the importing
+    /// file — and one that happened to land inside the project root resolved,
+    /// making the program depend on where the tree sits on this machine.
+    Absolute,
+}
+
+/// Classify a specifier that resolution cannot accept. `std` is a reserved
+/// program-anchored specifier (spec 10.2:6), not a path, and is exempt.
+pub(crate) fn non_relative_specifier(specifier: &str) -> Option<NonRelativeSpecifier> {
+    if specifier == "std" {
+        return None;
+    }
+    if specifier.is_empty() {
+        return Some(NonRelativeSpecifier::Empty);
+    }
+    // Deliberately `Path::is_absolute`, the same predicate `Path::join` uses to
+    // decide whether to discard its base: this rejects exactly the specifiers
+    // that would otherwise escape the importer anchor.
+    if Path::new(specifier).is_absolute() {
+        return Some(NonRelativeSpecifier::Absolute);
+    }
+    None
+}
+
+/// E0714 diagnostics for occurrences whose specifier is not a relative path.
+/// Recomputed from the parsed program like `escape_diagnostics`, and for the
+/// same reason: such an occurrence owns no discovery requests, so it appears in
+/// neither the request groups nor the observation ledger.
+pub(crate) fn specifier_diagnostics(program: &ParsedProgram) -> CompileErrors {
+    let mut errors = CompileErrors::new();
+    for site in program.import_directives().iter() {
+        let Some(shape) = non_relative_specifier(site.specifier()) else {
+            continue;
+        };
+        let kind = match shape {
+            NonRelativeSpecifier::Empty => ErrorKind::ImportSpecifierEmpty,
+            NonRelativeSpecifier::Absolute => ErrorKind::ImportSpecifierAbsolute {
+                path: site.specifier().to_owned(),
+            },
+        };
+        let file_id = program
+            .module(site.importer())
+            .expect("import directive belongs to parsed program")
+            .file_id();
+        let span = rue_span::Span::with_file(file_id, site.source_offset(), site.source_end());
+        errors.push(CompileError::new(kind, span));
+    }
+    errors
+}
+
 pub(crate) fn discovery_groups_for_occurrence(
     context: &ImportDiscoveryContext,
     occurrence: &ImportOccurrenceKey,
     importer_requested_path: &str,
 ) -> CompileResult<Vec<Arc<[ImportDiscoveryRequest]>>> {
+    // A specifier that is not a relative path derives no filesystem requests:
+    // like an escaping one, its rejection is decided lexically, and the
+    // diagnostic projection recomputes the same check (`specifier_diagnostics`).
+    if non_relative_specifier(occurrence.specifier()).is_some() {
+        return Ok(Vec::new());
+    }
     // An escaping occurrence derives no filesystem requests: its rejection is
     // decided lexically from the importer anchor and its project or captured
     // standard-library root, and the diagnostic projection recomputes the same
@@ -1619,6 +1692,7 @@ pub(crate) fn exact_import_diagnostics(
     ledger: &ImportObservationLedger,
 ) -> CompileErrors {
     let mut errors = ImportDiscoveryPlan::shape_diagnostics(program);
+    errors.extend(specifier_diagnostics(program));
     errors.extend(escape_diagnostics(program, context));
     let mut groups_by_site: BTreeMap<&ImportOccurrenceKey, Vec<&Arc<[ImportDiscoveryRequest]>>> =
         BTreeMap::new();
@@ -2836,6 +2910,78 @@ mod tests {
                 discovery_groups_for_occurrence(&context, occurrence, importer)
                     .unwrap()
                     .is_empty()
+            );
+        }
+    }
+
+    fn project_occurrence(importer: &str, specifier: &str) -> ImportOccurrenceKey {
+        ImportOccurrenceKey {
+            importer: ModuleId::from_logical_path(importer).unwrap(),
+            source_offset: 0,
+            source_end: specifier.len() as u32,
+            specifier: Arc::from(specifier),
+        }
+    }
+
+    #[test]
+    fn non_relative_specifiers_are_classified_from_their_text() {
+        assert_eq!(
+            non_relative_specifier(""),
+            Some(NonRelativeSpecifier::Empty)
+        );
+        assert_eq!(
+            non_relative_specifier("/etc/hostname.rue"),
+            Some(NonRelativeSpecifier::Absolute)
+        );
+        assert_eq!(
+            non_relative_specifier("/project/helper.rue"),
+            Some(NonRelativeSpecifier::Absolute)
+        );
+        // Relative spellings, including the ones that look unusual, are not
+        // this rule's business: an escaping `..` chain is E0713's.
+        for relative in ["helper.rue", "./helper.rue", "../outside.rue", "nested/mod"] {
+            assert_eq!(non_relative_specifier(relative), None, "{relative}");
+        }
+        // `std` is a reserved program-anchored specifier, not a path.
+        assert_eq!(non_relative_specifier("std"), None);
+    }
+
+    #[test]
+    fn non_relative_specifiers_derive_no_discovery_requests() {
+        let context = context(1);
+        // The absolute specifier here names a file that really is inside the
+        // project root. Before RUE-1706 `Path::join` discarded the importer
+        // anchor, this candidate stayed within the boundary, and the import
+        // RESOLVED — a program that compiled only while its tree sat at this
+        // path on this machine.
+        for specifier in ["", "/project/helper.rue", "/etc/hostname.rue"] {
+            let occurrence = project_occurrence("main.rue", specifier);
+            assert!(
+                discovery_groups_for_occurrence(&context, &occurrence, "/project/main.rue")
+                    .unwrap()
+                    .is_empty(),
+                "{specifier} derived requests"
+            );
+            // One mistake, one diagnostic: the escape check declines these so
+            // they are not also reported as leaving the project root.
+            assert_eq!(
+                escaping_import_candidate(&context, specifier, "/project/main.rue").unwrap(),
+                None,
+                "{specifier} also reported as escaping"
+            );
+        }
+    }
+
+    #[test]
+    fn relative_specifiers_still_derive_discovery_requests() {
+        let context = context(1);
+        for specifier in ["helper.rue", "./helper.rue", "nested/mod"] {
+            let occurrence = project_occurrence("main.rue", specifier);
+            assert!(
+                !discovery_groups_for_occurrence(&context, &occurrence, "/project/main.rue")
+                    .unwrap()
+                    .is_empty(),
+                "{specifier} derived no requests"
             );
         }
     }

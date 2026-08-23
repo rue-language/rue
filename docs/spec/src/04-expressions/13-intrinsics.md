@@ -1126,6 +1126,14 @@ candidate falls outside the project root (the root file's directory); see
 rule [10.2:7](@/10-modules/02-import-resolution.md). Module identity is
 project-root-relative, so a file outside the root can receive no identity.
 
+{{ rule(id="4.13:133", cat="legality-rule") }}
+
+It is a compile-time error (E0714) if an import path is empty or absolute;
+see rule [10.2:8](@/10-modules/02-import-resolution.md). `@import` resolves a
+relative path against the importing file's directory, so neither shape names
+a module: the empty path names nothing, and an absolute path is anchored to a
+machine rather than to the importing file.
+
 {{ rule(id="4.13:90", cat="legality-rule") }}
 
 It is a compile-time error to access a member of a module that is not

@@ -37,6 +37,19 @@ file therefore either satisfies a previously failing import at its one
 candidate path or is irrelevant to it — it can never retarget an import
 that already resolves.
 
+{{ rule(id="10.2:8", cat="normative") }}
+
+An import path is a *relative* path. An empty path names no candidate, and
+an absolute path — one beginning with the root separator `/` — is not
+resolved against the importing file's directory at all, so 10.2:1 and 10.2:2
+give it no meaning. An absolute path would also bind the program to one
+machine's directory layout, which the project-root-relative identity of
+10.2:4 exists to prevent: the same source tree, checked out elsewhere, would
+stop compiling. Either shape is a compile-time error (rule
+[4.13:133](@/04-expressions/13-intrinsics.md), error E0714), decided from the
+path text alone, and no filesystem probe is attempted for it. The reserved
+specifier `"std"` is not a path and is not subject to this rule (10.2:6).
+
 ## Transitive Loading
 
 {{ rule(id="10.2:3", cat="normative") }}
