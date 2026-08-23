@@ -1,0 +1,52 @@
+[section]
+id = "cli.watch"
+name = "Watch loop integration"
+description = "Exercise real driver watch orchestration through the test protocol seam."
+
+[[case]]
+name = "edit_rebuilds_and_publishes_new_output"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 1 }\n" }]
+
+[case.watch]
+kind = "edit"
+expected_exit_codes = [1, 2]
+
+[[case.watch.edits]]
+path = "main.rue"
+source = "fn main() -> i32 { 2 }\n"
+
+[[case]]
+name = "change_during_compile_publishes_only_newest_revision"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 1 }\n" }]
+
+[case.watch]
+kind = "cancel"
+compile_delay_ms = 250
+expected_exit_codes = [1, 3]
+
+[[case.watch.edits]]
+path = "main.rue"
+source = "fn main() -> i32 { 2 }\n"
+
+[[case.watch.edits]]
+path = "main.rue"
+source = "fn main() -> i32 { 3 }\n"
+
+[[case]]
+name = "deleted_import_retries_reobserve_before_rebuilding"
+files = [
+    { path = "main.rue", source = "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n" },
+    { path = "helper.rue", source = "pub fn answer() -> i32 { 1 }\n" },
+]
+
+[case.watch]
+kind = "delete"
+expected_exit_codes = [1, 2]
+
+[[case.watch.edits]]
+path = "helper.rue"
+delete = true
+
+[[case.watch.edits]]
+path = "helper.rue"
+source = "pub fn answer() -> i32 { 2 }\n"

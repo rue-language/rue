@@ -104,6 +104,8 @@ struct Case {
     #[serde(default)]
     compile_only: bool,
     #[serde(default)]
+    watch: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
     stdout: Option<String>,
     #[serde(default)]
     stdout_contains: Vec<String>,
@@ -162,6 +164,7 @@ enum IneligibleReason {
     ExpectedCompileFailure,
     CompileOnly,
     ApplicableKnownBug,
+    WatchOrchestration,
     StandardInput,
     CompilerEnvironment,
     ExternalSourcePath,
@@ -184,6 +187,7 @@ impl fmt::Display for IneligibleReason {
             Self::ExpectedCompileFailure => f.write_str("expected compile failure"),
             Self::CompileOnly => f.write_str("compile-only case"),
             Self::ApplicableKnownBug => f.write_str("applicable known bug"),
+            Self::WatchOrchestration => f.write_str("watch orchestration"),
             Self::StandardInput => f.write_str("standard input required"),
             Self::CompilerEnvironment => f.write_str("compiler environment"),
             Self::ExternalSourcePath => f.write_str("external source path"),
@@ -1029,6 +1033,12 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
     if known_bug_applies {
         return CaseOutcome::Ineligible(IneligibleReason::ApplicableKnownBug);
     }
+    // A watch case is an imperative sequence of filesystem edits and driver
+    // publications, not one concrete source execution the in-process oracle
+    // can compare. The CLI harness owns this orchestration contract.
+    if case.watch.is_some() {
+        return CaseOutcome::Ineligible(IneligibleReason::WatchOrchestration);
+    }
     if case.stdin.is_some() {
         return CaseOutcome::Ineligible(IneligibleReason::StandardInput);
     }
@@ -1371,6 +1381,7 @@ mod tests {
             env: HashMap::new(),
             compile_fail,
             compile_only: false,
+            watch: None,
             stdout: None,
             stdout_contains: Vec::new(),
             runtime_error_contains: Vec::new(),
@@ -1742,6 +1753,9 @@ files = [{ path = "probe.rue", source = "not Rue" }]
         case.compile_only = false;
         assert_cli_ineligible(&case, IneligibleReason::ApplicableKnownBug);
         case.known_bug = None;
+        case.watch = Some(serde::de::IgnoredAny);
+        assert_cli_ineligible(&case, IneligibleReason::WatchOrchestration);
+        case.watch = None;
         assert_cli_ineligible(&case, IneligibleReason::StandardInput);
         case.stdin = None;
         assert_cli_ineligible(&case, IneligibleReason::CompilerEnvironment);

@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,6 +20,35 @@ const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const MAX_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const QUIET_PERIOD: Duration = Duration::from_millis(75);
 const FAILED_REOBSERVE_RETRY: Duration = Duration::from_millis(250);
+
+// Test-only watch protocol. When RUE_WATCH_TEST_PROTOCOL names a file, the
+// loop appends one milestone per line. It is intentionally dormant unless the
+// CLI integration harness opts in; production users never pay for the file
+// opens or the optional delay. The protocol gives end-to-end tests stable
+// synchronization without wall-clock sleeps.
+const TEST_PROTOCOL_ENV: &str = "RUE_WATCH_TEST_PROTOCOL";
+const TEST_COMPILE_DELAY_ENV: &str = "RUE_WATCH_TEST_COMPILE_DELAY_MS";
+
+fn test_event(event: &str) {
+    let Some(path) = std::env::var_os(TEST_PROTOCOL_ENV) else {
+        return;
+    };
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(file, "{event}");
+    let _ = file.flush();
+}
+
+fn test_compile_delay() {
+    let Ok(delay) = std::env::var(TEST_COMPILE_DELAY_ENV) else {
+        return;
+    };
+    let Ok(milliseconds) = delay.parse::<u64>() else {
+        return;
+    };
+    thread::sleep(Duration::from_millis(milliseconds.min(5_000)));
+}
 
 pub(crate) struct WatchRequest {
     pub(crate) host: FilesystemCompilerHost,
@@ -44,6 +75,7 @@ impl ChangeMonitor {
             while !thread_stop.load(Ordering::Acquire) {
                 if inputs_changed(&inputs) {
                     thread_changed.store(true, Ordering::Release);
+                    test_event("change-detected");
                     cancellation.cancel();
                     return;
                 }
@@ -76,13 +108,15 @@ impl ChangeMonitor {
 pub(crate) fn run(mut request: WatchRequest) -> ! {
     let mut needs_reobserve = false;
     println!("Watching {} for changes", request.source_path);
+    test_event("ready");
 
     loop {
         let cycle_started = Instant::now();
         if needs_reobserve {
             match request.host.reobserve() {
-                Ok(()) => {}
+                Ok(()) => test_event("reobserve-ok"),
                 Err(error) => {
+                    test_event("reobserve-error");
                     print_source_load_error(error, request.error_format);
                     eprintln!(
                         "Watch cycle failed after {} ms; keeping the last successful executable",
@@ -96,6 +130,7 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
                 .host
                 .acquire_reached_toolchain_modules(&request.compile_options)
             {
+                test_event("acquire-error");
                 print_source_load_error(error, request.error_format);
                 eprintln!(
                     "Watch cycle failed after {} ms; keeping the last successful executable",
@@ -104,6 +139,7 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
                 thread::sleep(FAILED_REOBSERVE_RETRY);
                 continue;
             }
+            test_event("acquire-ok");
         }
 
         let inputs = request.host.watch_inputs();
@@ -140,6 +176,8 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
 
         let cancellation = CompilationCancellation::new();
         let monitor = ChangeMonitor::start(inputs.clone(), cancellation.clone());
+        test_event("compile-started");
+        test_compile_delay();
         let outcome = execute_cancellable(CancellableCompileRequest {
             host: &mut request.host,
             options: request.compile_options.clone(),
@@ -149,6 +187,7 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
 
         let changed_before_publication = monitor.changed() || inputs_changed(&inputs);
         if changed_before_publication {
+            test_event("canceled-before-publication");
             eprintln!(
                 "Watch cycle canceled after {} ms; a newer source revision is available",
                 cycle_started.elapsed().as_millis()
@@ -160,6 +199,7 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
                     diagnostics.print_warnings(&publication.warnings);
                     match publication.result {
                         Ok(_) => {
+                            test_event("published");
                             println!(
                                 "Compiled {} -> {} in {} ms (target: {}, linker: {})",
                                 request.source_path,
@@ -177,12 +217,14 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
                     }
                 }
                 CompileCycleOutcome::Canceled => {
+                    test_event("canceled");
                     eprintln!(
                         "Watch cycle canceled after {} ms",
                         cycle_started.elapsed().as_millis()
                     );
                 }
                 CompileCycleOutcome::Errors(errors) => {
+                    test_event("compile-error");
                     diagnostics.print_errors(&errors);
                     eprintln!(
                         "Watch cycle failed after {} ms; keeping the last successful executable",
@@ -230,7 +272,11 @@ fn print_source_load_error(error: SourceLoadError, error_format: ErrorFormat) {
 
 fn wait_for_change(inputs: &[WatchInput]) {
     let mut poll = PollBackoff::new();
-    while !inputs_changed(inputs) {
+    loop {
+        if inputs_changed(inputs) {
+            test_event("change-detected");
+            break;
+        }
         thread::sleep(poll.next_delay());
     }
 }
