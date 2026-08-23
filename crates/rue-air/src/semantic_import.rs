@@ -468,13 +468,13 @@ fn import_type_identity<K: Clone, M: Clone>(
             TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(key.clone()))
         }
         S::Array { element, len } => TypeInstanceKey::Array {
-            element: Box::new(import_type_identity(element)),
+            element: Arc::new(import_type_identity(element)),
             len: *len,
         },
-        S::PtrConst(inner) => TypeInstanceKey::PtrConst(Box::new(import_type_identity(inner))),
-        S::PtrMut(inner) => TypeInstanceKey::PtrMut(Box::new(import_type_identity(inner))),
+        S::PtrConst(inner) => TypeInstanceKey::PtrConst(Arc::new(import_type_identity(inner))),
+        S::PtrMut(inner) => TypeInstanceKey::PtrMut(Arc::new(import_type_identity(inner))),
         S::Slice { element, name } => TypeInstanceKey::Slice {
-            element: Box::new(import_type_identity(element)),
+            element: Arc::new(import_type_identity(element)),
             name: name.clone(),
         },
         S::Module(module) => TypeInstanceKey::Module(module.clone()),
@@ -494,10 +494,10 @@ fn specialization_key<K: Clone, M: Clone>(
             }
             SemanticImportConstValue::Bool(value) => crate::CanonicalArgumentValue::Bool(*value),
             SemanticImportConstValue::Type(value) => {
-                crate::CanonicalArgumentValue::Type(Box::new(import_type_identity(value)))
+                crate::CanonicalArgumentValue::Type(Arc::new(import_type_identity(value)))
             }
             SemanticImportConstValue::Function(value) => crate::CanonicalArgumentValue::Function(
-                Box::new(FunctionInstanceKey::Definition(value.clone())),
+                Arc::new(FunctionInstanceKey::Definition(value.clone())),
             ),
             SemanticImportConstValue::Unit => crate::CanonicalArgumentValue::Unit,
             SemanticImportConstValue::String(value) => {
@@ -506,7 +506,7 @@ fn specialization_key<K: Clone, M: Clone>(
         })
         .collect::<Vec<_>>();
     FunctionInstanceKey::Specialization {
-        base: Box::new(FunctionInstanceKey::Definition(identity.base.clone())),
+        base: Arc::new(FunctionInstanceKey::Definition(identity.base.clone())),
         arguments: crate::CanonicalArguments {
             types: identity
                 .type_arguments
@@ -3244,11 +3244,11 @@ mod tests {
             values: vec![crate::CanonicalArgumentValue::Integer(7)].into(),
         };
         let owner = FunctionInstanceKey::Specialization {
-            base: Box::new(FunctionInstanceKey::Definition("generic")),
+            base: Arc::new(FunctionInstanceKey::Definition("generic")),
             arguments: arguments.clone(),
         };
         let callee = FunctionInstanceKey::Specialization {
-            base: Box::new(FunctionInstanceKey::Definition("callee")),
+            base: Arc::new(FunctionInstanceKey::Definition("callee")),
             arguments,
         };
         let input = body(vec![
@@ -3438,7 +3438,7 @@ mod tests {
         let anonymous = anonymous_key();
         let owner_type = TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(anonymous.clone()));
         let identity = FunctionInstanceKey::AnonymousMember {
-            owner: Box::new(owner_type.clone()),
+            owner: Arc::new(owner_type.clone()),
             member: crate::AnonymousMemberKey {
                 kind: crate::AnonymousMemberKind::Method,
                 name: Arc::from("value"),

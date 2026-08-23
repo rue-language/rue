@@ -737,7 +737,7 @@ mod tests {
 
     fn unit(identity: &str, digest_byte: u8) -> ProgramImageUnit {
         ProgramImageUnit {
-            function: crate::FunctionInstanceKey::DropGlue(Box::new(crate::TypeInstanceKey::I64)),
+            function: crate::FunctionInstanceKey::DropGlue(Arc::new(crate::TypeInstanceKey::I64)),
             identity: identity.to_owned(),
             defined_symbol: Arc::from(identity),
             object: Arc::new(crate::object_query::ObjectProjection::from_bytes(vec![
@@ -914,7 +914,7 @@ mod tests {
         let mut duplicate_symbol = units;
         let mut second = duplicate_symbol[0].clone();
         second.function =
-            crate::FunctionInstanceKey::DropGlue(Box::new(crate::TypeInstanceKey::I64));
+            crate::FunctionInstanceKey::DropGlue(Arc::new(crate::TypeInstanceKey::I64));
         duplicate_symbol.push(second);
         let error = ProgramImage::new(duplicate_symbol, &functions, &options, &[])
             .err()

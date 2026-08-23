@@ -30,6 +30,7 @@
 
 use ahash::{AHashMap, AHashSet};
 use std::collections::hash_map::Entry;
+use std::sync::Arc;
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind};
@@ -301,7 +302,7 @@ where
                     .into(),
             };
             let instance = crate::FunctionInstanceKey::Specialization {
-                base: Box::new(base),
+                base: Arc::new(base),
                 arguments,
             };
             Ok((info.mangled_name, identity, instance))
@@ -457,7 +458,7 @@ where
     // Normalize at the producer boundary so the body, its produced facts, and
     // final composition all name the same anonymous nominal.
     let producer = (
-        crate::StableProducerId::Function(Box::new(
+        crate::StableProducerId::Function(Arc::new(
             identity.with_collapsed_empty_specializations().into_owned(),
         )),
         canonical_arguments,

@@ -557,15 +557,15 @@ pub(crate) fn type_instance(ty: &crate::durable_semantics::DurableType) -> crate
             crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity.clone()))
         }
         T::Array { element, len } => crate::TypeInstanceKey::Array {
-            element: Box::new(type_instance(element)),
+            element: Arc::new(type_instance(element)),
             len: *len,
         },
         T::Slice { element, name } => crate::TypeInstanceKey::Slice {
-            element: Box::new(type_instance(element)),
+            element: Arc::new(type_instance(element)),
             name: name.clone(),
         },
-        T::PtrConst(element) => crate::TypeInstanceKey::PtrConst(Box::new(type_instance(element))),
-        T::PtrMut(element) => crate::TypeInstanceKey::PtrMut(Box::new(type_instance(element))),
+        T::PtrConst(element) => crate::TypeInstanceKey::PtrConst(Arc::new(type_instance(element))),
+        T::PtrMut(element) => crate::TypeInstanceKey::PtrMut(Arc::new(type_instance(element))),
         T::Module(module) => crate::TypeInstanceKey::Module(module.clone()),
         T::GenericParameter(index) => crate::TypeInstanceKey::GenericParameter(*index),
     }
