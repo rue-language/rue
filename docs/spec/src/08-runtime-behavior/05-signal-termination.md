@@ -49,16 +49,24 @@ system and its shell.
 
 {{ rule(id="8.5:3", cat="informative") }}
 
-A Rue program whose standard output (or any output stream it writes to) is a
-pipe or socket **whose reading end has been closed** is terminated by `SIGPIPE`
-on its next write to that stream, exiting with status `141` (that is,
-`128 + SIGPIPE`, where `SIGPIPE` is `13` on Linux and macOS). This is Rue's
-defined default: it matches the standard Unix behavior for programs in a
-pipeline (such as `rue_program | head`), so a downstream reader that stops
-consuming input promptly and cleanly ends the producer. The runtime's write path
-does **not** intercept this case — the signal is delivered before the failing
+A Rue program whose standard output (or another stream written without
+per-operation signal suppression) is a pipe or socket **whose reading end has
+been closed** is terminated by `SIGPIPE` on its next failing write to that
+stream, exiting with status `141` (that is, `128 + SIGPIPE`, where `SIGPIPE` is
+`13` on Linux and macOS). This is Rue's defined default: it matches the standard
+Unix behavior for programs in a pipeline (such as `rue_program | head`), so a
+downstream reader that stops consuming input promptly and cleanly ends the
+producer. The runtime's standard-output and standard-error write paths do
+**not** intercept this case — the signal is delivered before the failing
 `write` syscall returns, so the write's error result is never observed (see the
 `write_stderr`/`write_stdout` documentation in `rue-runtime`).
+
+Linux `std.net.TcpStream.write` and `write_all` are a socket-scoped exception:
+each send uses `MSG_NOSIGNAL`, so a closed peer returns
+`NetworkError.ConnectionReset` (from `EPIPE` or `ECONNRESET`) instead of
+terminating the process. This per-send flag does not change the process signal
+disposition and therefore does not affect standard output, standard error, or
+raw `@syscall` writes.
 
 {{ rule(id="8.5:4", cat="informative") }}
 
@@ -70,8 +78,9 @@ about to exit regardless.
 
 {{ rule(id="8.5:5") }}
 
-Making the `SIGPIPE` response configurable (an analogue of Rust's
-`-Zon-broken-pipe`, e.g. resetting the disposition so writes observe `EPIPE`
-instead of dying) is a separate, future feature and is intentionally out of
-scope here; the default described above is the only behavior Rue currently
-provides.
+Making the process-wide `SIGPIPE` response configurable (an analogue of Rust's
+`-Zon-broken-pipe`, e.g. resetting the disposition so ordinary writes observe
+`EPIPE` instead of dying) is a separate, future feature and is intentionally out
+of scope here. The default disposition described above remains the only
+process-wide behavior Rue provides; `std.net`'s per-send socket flag does not
+configure or alter it.

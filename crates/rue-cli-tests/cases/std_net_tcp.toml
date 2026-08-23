@@ -110,6 +110,167 @@ fn main() -> i32 {
 """ }]
 stdout = "1\n2\n104\n105\n33\n3\n111\n4\n"
 
+# Socket sends use sendto(MSG_NOSIGNAL), so a closed peer reports EPIPE as
+# NetworkError.ConnectionReset instead of terminating the process with SIGPIPE.
+# Each method gets an independent connection and must return the error twice:
+# a raw write can first observe ECONNRESET without a signal, but its next call
+# reaches EPIPE and would kill the process if that method lacked MSG_NOSIGNAL.
+[[case]]
+name = "tcp_write_after_peer_close_is_connection_reset"
+description = "independent bounded write/write_all retries after peer EOF return ConnectionReset rather than SIGPIPE."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+only_on = ["x86-64-linux", "aarch64-linux"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn fail(code: i32) -> i32 {
+    @dbg(code);
+    1
+}
+
+fn main() -> i32 {
+    let RL = std.result.Result(std.net.TcpListener, std.net.NetworkError);
+    let RS = std.result.Result(std.net.TcpStream, std.net.NetworkError);
+    let RA = std.result.Result(std.net.SockAddr, std.net.NetworkError);
+    let RU = std.result.Result(u64, std.net.NetworkError);
+    let RUnit = std.result.Result((), std.net.NetworkError);
+
+    // Keep one live listener and learn its kernel-selected port before connect.
+    let mut listener = match std.net.TcpListener.bind(
+        std.net.SockAddr.v4(std.net.Ipv4Addr.localhost(), 0)
+    ) {
+        RL.Ok(l) => l,
+        RL.Err(e) => { return fail(101); },
+    };
+    let port: u16 = match listener.local_addr() {
+        RA.Ok(a) => a.port,
+        RA.Err(e) => { return fail(102); },
+    };
+    let mut payload = std.arraybuf.ArrayBuf(u8).new();
+    payload.push(170);
+
+    // First connection: successful one-byte write is the positive control for
+    // `write` itself, then two post-close errors prove its EPIPE call is safe.
+    let mut client1 = match std.net.TcpStream.connect(
+        std.net.SockAddr.v4(std.net.Ipv4Addr.localhost(), port)
+    ) {
+        RS.Ok(s) => s,
+        RS.Err(e) => { return fail(103); },
+    };
+    let mut server1 = match listener.accept() {
+        RS.Ok(s) => s,
+        RS.Err(e) => { return fail(104); },
+    };
+    match client1.write(borrow payload) {
+        RU.Ok(n) => { if n == 1 { @dbg(1); } else { return fail(105); } },
+        RU.Err(e) => { return fail(106); },
+    }
+    let mut received = std.arraybuf.ArrayBuf(u8).with_capacity(1);
+    match server1.read(inout received) {
+        RU.Ok(n) => {
+            if n == 1 && received.get_or(0, 0) == 170 {
+                @dbg(2);
+            } else {
+                return fail(107);
+            }
+        },
+        RU.Err(e) => { return fail(108); },
+    }
+
+    // Close the accepted peer cleanly, then require the client to observe EOF
+    // before attempting sends. This removes the FIN/RST timing race from the
+    // write assertions while retaining the connected client descriptor.
+    match server1.shutdown(std.net.Shutdown.Both) {
+        RUnit.Ok(u) => {},
+        RUnit.Err(e) => { return fail(109); },
+    }
+    match server1.close() {
+        RUnit.Ok(u) => {},
+        RUnit.Err(e) => { return fail(110); },
+    }
+    let mut eof1 = std.arraybuf.ArrayBuf(u8).with_capacity(1);
+    match client1.read(inout eof1) {
+        RU.Ok(n) => { if n == 0 { @dbg(3); } else { return fail(111); } },
+        RU.Err(e) => { return fail(112); },
+    }
+
+    // Linux may accept an initial post-FIN send or report ECONNRESET before
+    // EPIPE. Requiring two error returns ensures this method reaches a send
+    // that would raise SIGPIPE without MSG_NOSIGNAL, while remaining bounded.
+    let mut write_resets: u64 = 0;
+    let mut write_attempts: u64 = 0;
+    while write_attempts < 8 {
+        if write_resets == 2 { break; }
+        match client1.write(borrow payload) {
+            RU.Ok(n) => {},
+            RU.Err(e) => {
+                match e {
+                    std.net.NetworkError.ConnectionReset => {
+                        write_resets += 1;
+                    },
+                    _ => { return fail(113); },
+                }
+            },
+        }
+        write_attempts = write_attempts + 1;
+    }
+    if write_resets != 2 { return fail(114); }
+    @dbg(4);
+    match client1.close() { RUnit.Ok(u) => {}, RUnit.Err(e) => { return fail(115); } }
+
+    // Second independent connection gives `write_all` the same proof instead
+    // of relying on `write` to advance the first connection to EPIPE.
+    let mut client2 = match std.net.TcpStream.connect(
+        std.net.SockAddr.v4(std.net.Ipv4Addr.localhost(), port)
+    ) {
+        RS.Ok(s) => s,
+        RS.Err(e) => { return fail(116); },
+    };
+    let mut server2 = match listener.accept() {
+        RS.Ok(s) => s,
+        RS.Err(e) => { return fail(117); },
+    };
+    match server2.shutdown(std.net.Shutdown.Both) {
+        RUnit.Ok(u) => {},
+        RUnit.Err(e) => { return fail(118); },
+    }
+    match server2.close() {
+        RUnit.Ok(u) => {},
+        RUnit.Err(e) => { return fail(119); },
+    }
+    let mut eof2 = std.arraybuf.ArrayBuf(u8).with_capacity(1);
+    match client2.read(inout eof2) {
+        RU.Ok(n) => { if n == 0 { @dbg(5); } else { return fail(120); } },
+        RU.Err(e) => { return fail(121); },
+    }
+
+    let mut write_all_resets: u64 = 0;
+    let mut all_attempts: u64 = 0;
+    while all_attempts < 8 {
+        if write_all_resets == 2 { break; }
+        match client2.write_all(borrow payload) {
+            RUnit.Ok(u) => {},
+            RUnit.Err(e) => {
+                match e {
+                    std.net.NetworkError.ConnectionReset => {
+                        write_all_resets += 1;
+                    },
+                    _ => { return fail(122); },
+                }
+            },
+        }
+        all_attempts = all_attempts + 1;
+    }
+    if write_all_resets != 2 { return fail(123); }
+    @dbg(6);
+    match client2.close() { RUnit.Ok(u) => {}, RUnit.Err(e) => { return fail(124); } }
+    match listener.close() { RUnit.Ok(u) => {}, RUnit.Err(e) => { return fail(125); } }
+    0
+}
+""" }]
+stdout = "1\n2\n3\n4\n5\n6\n"
+
 # Connecting to a just-released ephemeral port is refused, exercising errno
 # normalization (ECONNREFUSED -> ConnectionRefused) through a real syscall.
 [[case]]

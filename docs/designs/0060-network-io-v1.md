@@ -9,7 +9,7 @@ accepted: 2026-07-17
 implemented:
 spec-sections: []
 superseded-by:
-relates: ["RUE-713", "RUE-970", "RUE-982", "RUE-983", "RUE-984", "RUE-985", "RUE-986", "ADR-0034", "ADR-0057", "ADR-0059"]
+relates: ["RUE-713", "RUE-970", "RUE-982", "RUE-983", "RUE-984", "RUE-985", "RUE-986", "RUE-1701", "ADR-0034", "ADR-0057", "ADR-0059"]
 ---
 
 # ADR-0060: Network IO v1 — blocking IPv4 TCP in pure Rue
@@ -193,6 +193,9 @@ enum NetworkError {
 This list is an ADR-level contract, not a demand for speculative errno coverage:
 implementation should map useful, stable logical cases and route all remaining
 errors to `Other(i64)`. Raw errno values do not become the public matching API.
+For Linux socket sends, `sendto(2)` uses `MSG_NOSIGNAL` so a broken peer is
+reported to Rue instead of terminating the process with `SIGPIPE`; both
+`ECONNRESET` and `EPIPE` map to `ConnectionReset`.
 `WouldBlock` remains available for unusual kernel/configuration behavior and
 future evolution even though v1 itself creates blocking sockets.
 
