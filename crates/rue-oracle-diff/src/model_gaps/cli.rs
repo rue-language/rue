@@ -250,6 +250,22 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
+    // RUE-1711: NUL-bearing paths are rejected rather than truncated. Same
+    // substrate and same gap as the rest of the std.fs group — these cases
+    // build their paths through StrBuf, whose bulk byte copy the oracle does
+    // not model. Ungated in the case file, so unscoped here to match.
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_path_with_nul_does_not_hit_the_truncated_path",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_path_with_nul_rejected_at_every_entry_point",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
     // RUE-1481: directory enumeration (`read_dir`/`walk`) reaches the same
     // `@byte_copy` gap as the rest of the std.fs group — every entry's path is
     // pooled through StrBuf, which copies bytes in bulk. Ungated in the case
