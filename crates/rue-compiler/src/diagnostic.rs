@@ -986,6 +986,57 @@ pub struct JsonSuggestion {
     pub applicability: String,
 }
 
+/// Clamp a diagnostic span to the source it will be published against.
+///
+/// Compiler spans normally already satisfy these bounds, but diagnostics can
+/// also be produced while recovering from invalid input or from a stale
+/// source projection. JSON is a versioned consumer-facing surface, so never
+/// publish a range that a consumer cannot safely slice or whose end precedes
+/// its start.
+fn normalize_json_range(span: Span, source: &str) -> (u32, u32) {
+    let source_len = source.len().min(u32::MAX as usize) as u32;
+    let start = span.start.min(source_len);
+    let end = span.end.min(source_len).max(start);
+    (start, end)
+}
+
+/// Build one JSON span using normalized source coordinates.
+fn make_json_span(
+    path: &str,
+    source: &str,
+    span: Span,
+    label: Option<String>,
+    primary: bool,
+) -> JsonSpan {
+    let (start, end) = normalize_json_range(span, source);
+    let (line, column) = offset_to_line_col(source, start);
+    JsonSpan {
+        file: path.to_string(),
+        start,
+        end,
+        line,
+        column,
+        label,
+        primary,
+    }
+}
+
+/// Assemble the published span list, promoting the first emitted label when
+/// the declared primary is absent or cannot be resolved to a source.
+fn finalize_json_spans(primary: Option<JsonSpan>, mut labels: Vec<JsonSpan>) -> Vec<JsonSpan> {
+    let mut spans = Vec::with_capacity(primary.is_some() as usize + labels.len());
+    if let Some(mut primary) = primary {
+        primary.primary = true;
+        primary.label = None;
+        spans.push(primary);
+    } else if let Some(first) = labels.first_mut() {
+        first.primary = true;
+        first.label = None;
+    }
+    spans.extend(labels);
+    spans
+}
+
 impl JsonDiagnostic {
     /// Serialize this diagnostic to a JSON string.
     pub fn to_json(&self) -> String {
@@ -1108,40 +1159,30 @@ impl<'a> JsonDiagnosticFormatter<'a> {
     /// Format a compile error as JSON.
     pub fn format_error(&self, error: &CompileError) -> JsonDiagnostic {
         let diag = error.diagnostic();
-        let (line, col) = error
-            .span()
-            .map(|s| offset_to_line_col(self.source_info.source, s.start))
-            .unwrap_or((1, 1));
-
-        let primary_span = error.span().map(|span| JsonSpan {
-            file: self.source_info.path.to_string(),
-            start: span.start,
-            end: span.end,
-            line,
-            column: col,
-            label: None,
-            primary: true,
+        let primary_span = error.span().map(|span| {
+            make_json_span(
+                self.source_info.path,
+                self.source_info.source,
+                span,
+                None,
+                true,
+            )
         });
 
         let secondary_spans: Vec<JsonSpan> = diag
             .labels
             .iter()
             .map(|label| {
-                let (line, col) = offset_to_line_col(self.source_info.source, label.span.start);
-                JsonSpan {
-                    file: self.source_info.path.to_string(),
-                    start: label.span.start,
-                    end: label.span.end,
-                    line,
-                    column: col,
-                    label: Some(label.message.clone()),
-                    primary: false,
-                }
+                make_json_span(
+                    self.source_info.path,
+                    self.source_info.source,
+                    label.span,
+                    Some(label.message.clone()),
+                    false,
+                )
             })
             .collect();
-
-        let mut spans: Vec<JsonSpan> = primary_span.into_iter().collect();
-        spans.extend(secondary_spans);
+        let spans = finalize_json_spans(primary_span, secondary_spans);
 
         let suggestions: Vec<JsonSuggestion> = diag
             .suggestions
@@ -1170,40 +1211,30 @@ impl<'a> JsonDiagnosticFormatter<'a> {
     /// Format a compile warning as JSON.
     pub fn format_warning(&self, warning: &CompileWarning) -> JsonDiagnostic {
         let diag = warning.diagnostic();
-        let (line, col) = warning
-            .span()
-            .map(|s| offset_to_line_col(self.source_info.source, s.start))
-            .unwrap_or((1, 1));
-
-        let primary_span = warning.span().map(|span| JsonSpan {
-            file: self.source_info.path.to_string(),
-            start: span.start,
-            end: span.end,
-            line,
-            column: col,
-            label: None,
-            primary: true,
+        let primary_span = warning.span().map(|span| {
+            make_json_span(
+                self.source_info.path,
+                self.source_info.source,
+                span,
+                None,
+                true,
+            )
         });
 
         let secondary_spans: Vec<JsonSpan> = diag
             .labels
             .iter()
             .map(|label| {
-                let (line, col) = offset_to_line_col(self.source_info.source, label.span.start);
-                JsonSpan {
-                    file: self.source_info.path.to_string(),
-                    start: label.span.start,
-                    end: label.span.end,
-                    line,
-                    column: col,
-                    label: Some(label.message.clone()),
-                    primary: false,
-                }
+                make_json_span(
+                    self.source_info.path,
+                    self.source_info.source,
+                    label.span,
+                    Some(label.message.clone()),
+                    false,
+                )
             })
             .collect();
-
-        let mut spans: Vec<JsonSpan> = primary_span.into_iter().collect();
-        spans.extend(secondary_spans);
+        let spans = finalize_json_spans(primary_span, secondary_spans);
 
         let suggestions: Vec<JsonSuggestion> = diag
             .suggestions
@@ -1317,18 +1348,8 @@ impl<'a> MultiFileJsonFormatter<'a> {
         let diag = error.diagnostic();
 
         let primary_span = error.span().and_then(|span| {
-            self.source_for_span(span).map(|(path, source)| {
-                let (line, col) = offset_to_line_col(source, span.start);
-                JsonSpan {
-                    file: path.to_string(),
-                    start: span.start,
-                    end: span.end,
-                    line,
-                    column: col,
-                    label: None,
-                    primary: true,
-                }
-            })
+            self.source_for_span(span)
+                .map(|(path, source)| make_json_span(path, source, span, None, true))
         });
 
         let secondary_spans: Vec<JsonSpan> = diag
@@ -1336,22 +1357,11 @@ impl<'a> MultiFileJsonFormatter<'a> {
             .iter()
             .filter_map(|label| {
                 self.source_for_span(label.span).map(|(path, source)| {
-                    let (line, col) = offset_to_line_col(source, label.span.start);
-                    JsonSpan {
-                        file: path.to_string(),
-                        start: label.span.start,
-                        end: label.span.end,
-                        line,
-                        column: col,
-                        label: Some(label.message.clone()),
-                        primary: false,
-                    }
+                    make_json_span(path, source, label.span, Some(label.message.clone()), false)
                 })
             })
             .collect();
-
-        let mut spans: Vec<JsonSpan> = primary_span.into_iter().collect();
-        spans.extend(secondary_spans);
+        let spans = finalize_json_spans(primary_span, secondary_spans);
 
         let suggestions: Vec<JsonSuggestion> = diag
             .suggestions
@@ -1385,18 +1395,8 @@ impl<'a> MultiFileJsonFormatter<'a> {
         let diag = warning.diagnostic();
 
         let primary_span = warning.span().and_then(|span| {
-            self.source_for_span(span).map(|(path, source)| {
-                let (line, col) = offset_to_line_col(source, span.start);
-                JsonSpan {
-                    file: path.to_string(),
-                    start: span.start,
-                    end: span.end,
-                    line,
-                    column: col,
-                    label: None,
-                    primary: true,
-                }
-            })
+            self.source_for_span(span)
+                .map(|(path, source)| make_json_span(path, source, span, None, true))
         });
 
         let secondary_spans: Vec<JsonSpan> = diag
@@ -1404,22 +1404,11 @@ impl<'a> MultiFileJsonFormatter<'a> {
             .iter()
             .filter_map(|label| {
                 self.source_for_span(label.span).map(|(path, source)| {
-                    let (line, col) = offset_to_line_col(source, label.span.start);
-                    JsonSpan {
-                        file: path.to_string(),
-                        start: label.span.start,
-                        end: label.span.end,
-                        line,
-                        column: col,
-                        label: Some(label.message.clone()),
-                        primary: false,
-                    }
+                    make_json_span(path, source, label.span, Some(label.message.clone()), false)
                 })
             })
             .collect();
-
-        let mut spans: Vec<JsonSpan> = primary_span.into_iter().collect();
-        spans.extend(secondary_spans);
+        let spans = finalize_json_spans(primary_span, secondary_spans);
 
         let suggestions: Vec<JsonSuggestion> = diag
             .suggestions
@@ -2023,6 +2012,57 @@ mod tests {
     }
 
     #[test]
+    fn test_json_spanless_diagnostics_promote_labels() {
+        let source_info = SourceInfo::new("fn main() -> i32 { 0 }", "test.rue");
+        let formatter = JsonDiagnosticFormatter::new(&source_info);
+
+        let error = CompileError::without_span(ErrorKind::NoMainFunction)
+            .with_label("candidate", Span::new(3, 7))
+            .with_label("related", Span::new(8, 12));
+        let json_error = formatter.format_error(&error);
+        assert_eq!(json_error.spans.len(), 2);
+        assert!(json_error.spans[0].primary);
+        assert_eq!(json_error.spans[0].label, None);
+        assert!(!json_error.spans[1].primary);
+        assert_eq!(json_error.spans[1].label.as_deref(), Some("related"));
+
+        let warning = CompileWarning::without_span(WarningKind::UnusedVariable("x".into()))
+            .with_label("candidate", Span::new(3, 7));
+        let json_warning = formatter.format_warning(&warning);
+        assert_eq!(json_warning.spans.len(), 1);
+        assert!(json_warning.spans[0].primary);
+        assert_eq!(json_warning.spans[0].label, None);
+    }
+
+    #[test]
+    fn test_json_spans_clamp_reversed_and_out_of_range_ranges() {
+        let source = "fn main() -> i32 { 0 }";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let formatter = JsonDiagnosticFormatter::new(&source_info);
+
+        let error = CompileError::new(
+            ErrorKind::NoMainFunction,
+            Span::new(source.len() as u32 + 10, 1),
+        );
+        let json_error = formatter.format_error(&error);
+        assert_eq!(json_error.spans[0].start as usize, source.len());
+        assert_eq!(json_error.spans[0].end as usize, source.len());
+        assert_eq!(json_error.spans[0].line, 1);
+
+        let warning = CompileWarning::new(
+            WarningKind::UnusedVariable("x".into()),
+            Span::new(10, 1_000),
+        );
+        let json_warning = formatter.format_warning(&warning);
+        assert_eq!(json_warning.spans[0].start, 10);
+        assert_eq!(json_warning.spans[0].end as usize, source.len());
+        assert_eq!(
+            (json_warning.spans[0].line, json_warning.spans[0].column),
+            offset_to_line_col(source, 10)
+        );
+    }
+
+    #[test]
     fn test_json_to_string() {
         let source = "fn main() -> i32 { 1 + true }";
         let source_info = SourceInfo::new(source, "test.rue");
@@ -2426,6 +2466,69 @@ mod tests {
             secondary.label,
             Some("function returns bool here".to_string())
         );
+    }
+
+    #[test]
+    fn test_multi_file_json_unresolved_primary_promotes_resolvable_labels() {
+        let sources = vec![
+            (FileId::new(1), SourceInfo::new("fn main() {}", "main.rue")),
+            (
+                FileId::new(2),
+                SourceInfo::new("fn helper() {}", "helper.rue"),
+            ),
+        ];
+        let formatter = MultiFileJsonFormatter::new(sources);
+        let unknown = FileId::new(99);
+
+        let error = CompileError::new(ErrorKind::NoMainFunction, Span::with_file(unknown, 0, 5))
+            .with_label("first", Span::with_file(FileId::new(2), 3, 9))
+            .with_label("second", Span::with_file(FileId::new(1), 3, 7));
+        let json_error = formatter.format_error(&error);
+        assert_eq!(json_error.spans.len(), 2);
+        assert_eq!(json_error.spans[0].file, "helper.rue");
+        assert!(json_error.spans[0].primary);
+        assert_eq!(json_error.spans[0].label, None);
+        assert_eq!(json_error.spans[1].file, "main.rue");
+        assert!(!json_error.spans[1].primary);
+        assert_eq!(json_error.spans[1].label.as_deref(), Some("second"));
+
+        let warning = CompileWarning::new(
+            WarningKind::UnusedVariable("x".into()),
+            Span::with_file(unknown, 0, 5),
+        )
+        .with_label("first warning", Span::with_file(FileId::new(2), 3, 9));
+        let json_warning = formatter.format_warning(&warning);
+        assert_eq!(json_warning.spans.len(), 1);
+        assert_eq!(json_warning.spans[0].file, "helper.rue");
+        assert!(json_warning.spans[0].primary);
+        assert_eq!(json_warning.spans[0].label, None);
+
+        let unresolved =
+            CompileError::new(ErrorKind::NoMainFunction, Span::with_file(unknown, 0, 5));
+        assert!(formatter.format_error(&unresolved).spans.is_empty());
+    }
+
+    #[test]
+    fn test_multi_file_json_spans_clamp_ranges_for_errors_and_warnings() {
+        let source = "fn main() {}";
+        let sources = vec![(FileId::new(1), SourceInfo::new(source, "main.rue"))];
+        let formatter = MultiFileJsonFormatter::new(sources);
+
+        let error = CompileError::new(
+            ErrorKind::NoMainFunction,
+            Span::with_file(FileId::new(1), 50, 1),
+        );
+        let json_error = formatter.format_error(&error);
+        assert_eq!(json_error.spans[0].start as usize, source.len());
+        assert_eq!(json_error.spans[0].end as usize, source.len());
+
+        let warning = CompileWarning::new(
+            WarningKind::UnusedVariable("x".into()),
+            Span::with_file(FileId::new(1), 2, 50),
+        );
+        let json_warning = formatter.format_warning(&warning);
+        assert_eq!(json_warning.spans[0].start, 2);
+        assert_eq!(json_warning.spans[0].end as usize, source.len());
     }
 
     #[test]
