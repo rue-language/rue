@@ -12102,11 +12102,12 @@ impl RevisionedQueryDatabase {
                     )
                     .expect("accepted import provenance and captured context are canonical");
                     if groups.is_empty() {
-                        // The occurrence's candidate escapes the project root
-                        // (ADR-0078): no filesystem request exists and the
-                        // rejection is deterministic, so the binding is a
-                        // first-class Missing terminal. The E0713 diagnostic
-                        // is owned by the diagnostic projection.
+                        // The occurrence's candidate escapes its project or
+                        // captured standard-library root (ADR-0078): no
+                        // filesystem request exists and the rejection is
+                        // deterministic, so the binding is a first-class
+                        // Missing terminal. The E0713 diagnostic is owned by
+                        // the diagnostic projection.
                         return Ok(QueryOutput::success(ResolveImportValue {
                             site_found: true,
                             groups: Arc::from([]),

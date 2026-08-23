@@ -538,6 +538,100 @@ env = { RUE_STD_PATH = "${REAL_STD}" }
 compile_stderr_not_contains = ["unused function", "exit_syscall_number"]
 stdout = "5\n"
 
+# A trusted standard-library module may not use a relative import to leave the
+# captured SDK root. The rejected target exists so this exercises the lexical
+# escape decision rather than an absent-file diagnostic (RUE-1738).
+[[case]]
+name = "trusted_std_direct_relative_escape_rejected"
+env = { RUE_STD_PATH = "sdk" }
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    std.outside.answer
+}
+""" },
+    { path = "sdk/_std.rue", source = """
+pub const outside = @import("../outside.rue");
+""" },
+    { path = "outside.rue", source = """
+pub const answer: i32 = 42;
+""" },
+]
+compile_fail = true
+error_contains = ["E0713", "escapes the project root"]
+
+[[case]]
+name = "trusted_std_nested_relative_escape_rejected"
+env = { RUE_STD_PATH = "sdk" }
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    std.nested.outside.answer
+}
+""" },
+    { path = "sdk/_std.rue", source = """
+pub const nested = @import("nested/mod.rue");
+""" },
+    { path = "sdk/nested/mod.rue", source = """
+pub const outside = @import("../../outside.rue");
+""" },
+    { path = "outside.rue", source = """
+pub const answer: i32 = 42;
+""" },
+]
+compile_fail = true
+error_contains = ["E0713", "escapes the project root"]
+
+[[case]]
+name = "trusted_std_in_root_relative_import_works"
+env = { RUE_STD_PATH = "sdk" }
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    std.nested.answer()
+}
+""" },
+    { path = "sdk/_std.rue", source = """
+pub const nested = @import("nested/helper.rue");
+""" },
+    { path = "sdk/nested/helper.rue", source = """
+pub fn answer() -> i32 {
+    42
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "program_anchored_std_import_precedes_sdk"
+env = { RUE_STD_PATH = "sdk" }
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    std.answer()
+}
+""" },
+    { path = "std/_std.rue", source = """
+pub fn answer() -> i32 {
+    42
+}
+""" },
+    { path = "sdk/_std.rue", source = """
+pub fn answer() -> i32 {
+    7
+}
+""" },
+]
+exit_code = 42
+
 [[case]]
 name = "import_std_ignores_unrelated_loaded_std_facade_name"
 description = "@import(\"std\") must not bind to an unrelated loaded helper/_std.rue just because its filename is _std.rue (RUE-493)."

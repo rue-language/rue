@@ -1389,11 +1389,10 @@ fn canonicalize_accepted(mut accepted: Vec<&AcceptedImportSource>) -> Vec<&Accep
 /// Compute candidate precedence for one exact indexed occurrence from captured
 /// invocation context and the importer's accepted-read provenance.
 /// The normalized candidate a relative occurrence would probe, when that
-/// candidate lies outside the project root (ADR-0078: project-root-relative
-/// identity is total, so an escaping import is rejected before any filesystem
-/// request is derived). `std` is a reserved program-anchored specifier and a
-/// trusted standard-library importer resolves within its own root; neither is
-/// subject to the check.
+/// candidate lies outside its lexical boundary (ADR-0078: project-relative or
+/// trusted-standard-library identity is total, so an escaping import is
+/// rejected before any filesystem request is derived). `std` is a reserved
+/// program-anchored specifier and is not subject to the check.
 pub(crate) fn escaping_import_candidate(
     context: &ImportDiscoveryContext,
     specifier: &str,
@@ -1403,11 +1402,10 @@ pub(crate) fn escaping_import_candidate(
         return Ok(None);
     }
     let importer_path = normalize_absolute(importer_requested_path)?;
-    if let Some(std_root) = context.std_root() {
-        if Path::new(&importer_path).starts_with(std_root) {
-            return Ok(None);
-        }
-    }
+    let boundary_root = context
+        .std_root()
+        .filter(|std_root| Path::new(&importer_path).starts_with(std_root))
+        .unwrap_or(context.project_root());
     let importer_dir = parent_dir(&importer_path);
     let groups = discovery_candidate_groups(
         specifier,
@@ -1416,7 +1414,7 @@ pub(crate) fn escaping_import_candidate(
         context.std_root(),
     );
     let candidate = normalize_path(&groups[0][0]);
-    if Path::new(&candidate).starts_with(context.project_root()) {
+    if Path::new(&candidate).starts_with(boundary_root) {
         Ok(None)
     } else {
         Ok(Some(candidate))
@@ -1429,8 +1427,9 @@ pub(crate) fn discovery_groups_for_occurrence(
     importer_requested_path: &str,
 ) -> CompileResult<Vec<Arc<[ImportDiscoveryRequest]>>> {
     // An escaping occurrence derives no filesystem requests: its rejection is
-    // decided lexically from the importer anchor and project root alone, and
-    // the diagnostic projection recomputes the same check (`escape_diagnostics`).
+    // decided lexically from the importer anchor and its project or captured
+    // standard-library root, and the diagnostic projection recomputes the same
+    // check (`escape_diagnostics`).
     if escaping_import_candidate(context, occurrence.specifier(), importer_requested_path)?
         .is_some()
     {
@@ -1573,10 +1572,10 @@ pub(crate) fn exact_import_has_failures(
         .any(|(failed, resolved)| *failed && !*resolved)
 }
 
-/// E0713 diagnostics for occurrences whose single candidate escapes the
-/// project root. Recomputed from the parsed program and captured context —
-/// escaping occurrences own no discovery requests, so they never appear in
-/// request groups or the observation ledger.
+/// E0713 diagnostics for occurrences whose single candidate escapes its
+/// project or captured standard-library root. Recomputed from the parsed
+/// program and captured context — escaping occurrences own no discovery
+/// requests, so they never appear in request groups or the observation ledger.
 pub(crate) fn escape_diagnostics(
     program: &ParsedProgram,
     context: &ImportDiscoveryContext,
@@ -2800,6 +2799,111 @@ mod tests {
 
     fn context(epoch: u64) -> ImportDiscoveryContext {
         ImportDiscoveryContext::new(epoch, "/project", Some("/sdk"), "all").unwrap()
+    }
+
+    fn occurrence(importer: &str, specifier: &str) -> ImportOccurrenceKey {
+        let relative = importer
+            .strip_prefix("/sdk/")
+            .expect("test trusted std importer is under the SDK root");
+        ImportOccurrenceKey {
+            importer: ModuleId::from_trusted_standard_library_path(format!("\0rue-std/{relative}"))
+                .unwrap(),
+            source_offset: 0,
+            source_end: specifier.len() as u32,
+            specifier: Arc::from(specifier),
+        }
+    }
+
+    #[test]
+    fn trusted_std_escapes_are_rejected_before_filesystem_discovery() {
+        let context = context(1);
+        let direct = occurrence("/sdk/_std.rue", "../outside.rue");
+        let nested = occurrence("/sdk/nested/mod.rue", "../../outside.rue");
+        let facade = occurrence("/sdk/nested/mod.rue", "../../outside");
+
+        for (occurrence, importer, expected) in [
+            (&direct, "/sdk/_std.rue", "/outside.rue"),
+            (&nested, "/sdk/nested/mod.rue", "/outside.rue"),
+            (&facade, "/sdk/nested/mod.rue", "/outside/_outside.rue"),
+        ] {
+            assert_eq!(
+                escaping_import_candidate(&context, occurrence.specifier(), importer)
+                    .unwrap()
+                    .as_deref(),
+                Some(expected)
+            );
+            assert!(
+                discovery_groups_for_occurrence(&context, occurrence, importer)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn trusted_std_in_root_and_program_anchored_imports_remain_discoverable() {
+        let context = context(1);
+        let in_root = occurrence("/sdk/nested/mod.rue", "../nested/helper.rue");
+        assert_eq!(
+            escaping_import_candidate(&context, in_root.specifier(), "/sdk/nested/mod.rue")
+                .unwrap(),
+            None
+        );
+        assert!(
+            !discovery_groups_for_occurrence(&context, &in_root, "/sdk/nested/mod.rue")
+                .unwrap()
+                .is_empty()
+        );
+
+        let std = occurrence("/sdk/nested/mod.rue", "std");
+        assert_eq!(
+            escaping_import_candidate(&context, std.specifier(), "/sdk/nested/mod.rue").unwrap(),
+            None
+        );
+        assert!(
+            !discovery_groups_for_occurrence(&context, &std, "/sdk/nested/mod.rue")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn trusted_std_escape_projects_e0713_from_the_same_candidate_helper() {
+        let root = FileId::new(1);
+        let trusted = FileId::new(2);
+        let metadata = SourceMetadata::new_with_trusted_standard_library(
+            root,
+            AHashMap::from([
+                (root, "/project/main.rue".to_owned()),
+                (trusted, "/sdk/nested/mod.rue".to_owned()),
+            ]),
+            AHashMap::from([
+                (root, "main.rue".to_owned()),
+                (trusted, "\0rue-std/nested/mod.rue".to_owned()),
+            ]),
+            ahash::AHashSet::from([trusted]),
+        )
+        .unwrap();
+        let source = SourceSnapshot::new(
+            metadata,
+            vec![
+                (root, Arc::new("fn main() {}".to_owned())),
+                (
+                    trusted,
+                    Arc::new("const outside = @import(\"../../outside.rue\");".to_owned()),
+                ),
+            ],
+        )
+        .unwrap();
+        let mut session = crate::CompilerSession::new();
+        let program = session.update(&source).into_owner_result().unwrap();
+        let errors = escape_diagnostics(&program, &context(1));
+
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            &errors.first().expect("trusted std escape has a diagnostic").kind,
+            ErrorKind::ImportEscapesRoot { candidate, .. } if candidate == "/outside.rue"
+        ));
     }
 
     #[test]
