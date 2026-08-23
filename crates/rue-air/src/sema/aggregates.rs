@@ -509,6 +509,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Check if this is an integer literal that needs type coercion
             // This handles the case where HM inference couldn't resolve the type
             // (e.g., when the struct comes from a comptime type variable)
+            let field_span = self.body_rir_ref().get(field_value).span;
             let field_inst = self.body_rir_ref().get(field_value);
             let field_result = if let InstData::IntConst(value) = &field_inst.data {
                 // Integer literal - use the expected field type directly, but
@@ -584,7 +585,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             .ty
                             .safe_name_with_pool(Some(self.body_type_pool())),
                     },
-                    span,
+                    field_span,
                 )
                 .with_label(
                     format!(
@@ -592,7 +593,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         init_name,
                         expected_field_type.safe_name_with_pool(Some(self.body_type_pool()))
                     ),
-                    span,
+                    field_span,
                 ));
             }
 
