@@ -3155,6 +3155,7 @@ impl BodyRirIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Node;
     use crate::semantic_identity::{AnonymousNominalKind, CanonicalArguments, StableProducerId};
 
     type Key = u32;
@@ -4873,15 +4874,15 @@ mod tests {
         use crate::semantic_identity::FunctionInstanceKey;
         let collapsed = AnonymousNominalKey {
             kind: AnonymousNominalKind::Struct,
-            producer: StableProducerId::Function(Arc::new(FunctionInstanceKey::Definition(7u32))),
+            producer: StableProducerId::Function(Node::new(FunctionInstanceKey::Definition(7u32))),
             anchor: rue_rir::RirStructuralAnchor::new(vec![
                 rue_rir::RirStructuralPathSegment::AnonymousType(0),
             ]),
             arguments: CanonicalArguments::default(),
         };
         let wrapped = AnonymousNominalKey {
-            producer: StableProducerId::Function(Arc::new(FunctionInstanceKey::Specialization {
-                base: Arc::new(FunctionInstanceKey::Definition(7u32)),
+            producer: StableProducerId::Function(Node::new(FunctionInstanceKey::Specialization {
+                base: Node::new(FunctionInstanceKey::Definition(7u32)),
                 arguments: CanonicalArguments::default(),
             })),
             ..collapsed.clone()
@@ -4967,9 +4968,9 @@ mod tests {
         // producer answers the same ruling (entry canonicalization).
         if let StableProducerId::Definition(producer) = &key.producer {
             let wrapped = AnonymousNominalKey {
-                producer: StableProducerId::Function(Arc::new(
+                producer: StableProducerId::Function(Node::new(
                     FunctionInstanceKey::Specialization {
-                        base: Arc::new(FunctionInstanceKey::Definition(*producer)),
+                        base: Node::new(FunctionInstanceKey::Definition(*producer)),
                         arguments: CanonicalArguments::default(),
                     },
                 )),
@@ -5006,15 +5007,15 @@ mod tests {
         use crate::semantic_identity::FunctionInstanceKey;
         let collapsed = AnonymousNominalKey {
             kind: AnonymousNominalKind::Enum,
-            producer: StableProducerId::Function(Arc::new(FunctionInstanceKey::Definition(40u32))),
+            producer: StableProducerId::Function(Node::new(FunctionInstanceKey::Definition(40u32))),
             anchor: rue_rir::RirStructuralAnchor::new(vec![
                 rue_rir::RirStructuralPathSegment::AnonymousType(0),
             ]),
             arguments: CanonicalArguments::default(),
         };
         let wrapped = AnonymousNominalKey {
-            producer: StableProducerId::Function(Arc::new(FunctionInstanceKey::Specialization {
-                base: Arc::new(FunctionInstanceKey::Definition(40u32)),
+            producer: StableProducerId::Function(Node::new(FunctionInstanceKey::Specialization {
+                base: Node::new(FunctionInstanceKey::Definition(40u32)),
                 arguments: CanonicalArguments::default(),
             })),
             ..collapsed.clone()

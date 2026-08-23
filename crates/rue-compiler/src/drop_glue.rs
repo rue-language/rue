@@ -23,6 +23,8 @@
 #[cfg(test)]
 use ahash::AHashMap;
 #[cfg(test)]
+use rue_air::Node;
+#[cfg(test)]
 use rue_air::{
     AirEditor, AirPattern, AirRef, AirValidationContext, AnalyzedFunction, EnumId,
     FrozenTypeInternPool, ParamSlotModes, StructDef, Type, TypeKind,
@@ -63,7 +65,9 @@ pub(crate) fn semantic_type_from_instance(
             name: name.clone(),
         },
         T::Nominal(crate::NominalInstanceKey::Named(key)) => S::Nominal(key.clone()),
-        T::Nominal(crate::NominalInstanceKey::Anonymous(key)) => S::AnonymousNominal(key.clone()),
+        T::Nominal(crate::NominalInstanceKey::Anonymous(key)) => {
+            S::AnonymousNominal((**key).clone())
+        }
         T::Nominal(crate::NominalInstanceKey::Builtin { kind, name }) => S::BuiltinNominal {
             kind: match kind {
                 crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
@@ -407,7 +411,7 @@ fn create_struct_drop_glue_function(
     let param_modes = vec![false; num_param_slots as usize];
 
     Ok(AnalyzedFunction {
-        identity: rue_air::FunctionInstanceKey::DropGlue(Arc::new(identity)),
+        identity: rue_air::FunctionInstanceKey::DropGlue(Node::new(identity)),
         callable_kind: rue_air::AnalyzedCallableKind::DropGlue,
         ordinary_owner: None,
         name: fn_name,
@@ -538,7 +542,7 @@ fn create_array_drop_glue_function(
     let param_modes = vec![false; num_param_slots as usize];
 
     Ok(AnalyzedFunction {
-        identity: rue_air::FunctionInstanceKey::DropGlue(Arc::new(identity)),
+        identity: rue_air::FunctionInstanceKey::DropGlue(Node::new(identity)),
         callable_kind: rue_air::AnalyzedCallableKind::DropGlue,
         ordinary_owner: None,
         name: fn_name,
@@ -678,7 +682,7 @@ fn create_enum_drop_glue_function(
     let param_modes = vec![false; num_param_slots as usize];
 
     Ok(AnalyzedFunction {
-        identity: rue_air::FunctionInstanceKey::DropGlue(Arc::new(identity)),
+        identity: rue_air::FunctionInstanceKey::DropGlue(Node::new(identity)),
         callable_kind: rue_air::AnalyzedCallableKind::DropGlue,
         ordinary_owner: None,
         name: fn_name,
@@ -717,6 +721,7 @@ pub use rue_air::drop_glue_names::{array_drop_glue_name, enum_drop_glue_name};
 #[cfg(test)]
 mod tests {
     use lasso::ThreadedRodeo;
+    use rue_air::Node;
     use rue_air::{AirInstData, EnumDef, StructField, TypeInternPool};
     use std::sync::Arc;
 
@@ -729,7 +734,7 @@ mod tests {
             name: Arc::from("Owned"),
         };
         let owner = crate::TypeInstanceKey::Array {
-            element: Arc::new(element.clone()),
+            element: Node::new(element.clone()),
             len: 3,
         };
         let facts = crate::type_queries::DropGlueFacts {
@@ -796,15 +801,15 @@ mod tests {
             TypeKind::Array(id) => {
                 let (element, len) = type_pool.array_def(id);
                 T::Array {
-                    element: Arc::new(test_type_identity(element, type_pool)),
+                    element: Node::new(test_type_identity(element, type_pool)),
                     len,
                 }
             }
-            TypeKind::PtrConst(id) => T::PtrConst(Arc::new(test_type_identity(
+            TypeKind::PtrConst(id) => T::PtrConst(Node::new(test_type_identity(
                 type_pool.ptr_const_def(id),
                 type_pool,
             ))),
-            TypeKind::PtrMut(id) => T::PtrMut(Arc::new(test_type_identity(
+            TypeKind::PtrMut(id) => T::PtrMut(Node::new(test_type_identity(
                 type_pool.ptr_mut_def(id),
                 type_pool,
             ))),

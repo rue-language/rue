@@ -371,10 +371,10 @@ mod tests {
 
     use rue_rir::{RirStructuralAnchor, RirStructuralPathSegment};
 
-    use std::hash::Hash as _;
+    use crate::Node;
 
     use super::{
-        StableFnv1a128, anonymous_symbol_ordinals, stable_anonymous_identity_digest,
+        anonymous_symbol_ordinals, stable_anonymous_identity_digest,
         stable_anonymous_symbol_component, stable_definition_component, stable_module_component,
     };
     use crate::{
@@ -645,99 +645,250 @@ mod tests {
     /// The derive is the oracle only while it still agrees; once it stops being
     /// consulted for naming, this test is what pins the encoding, and its
     /// corpus is what makes that pin worth having.
-    #[test]
-    fn durable_encode_agrees_with_the_derived_hash() {
-        fn derived(identity: &AnonymousNominalKey<String, String>) -> u128 {
-            let mut hasher = StableFnv1a128::new();
-            identity.hash(&mut hasher);
-            hasher.digest()
-        }
+    /// The durable stream is a name, so every byte of it is pinned.
+    ///
+    /// These digests were taken while `#[derive(Hash)]` still produced them, by
+    /// running both over this corpus and asserting they agreed; they are the
+    /// values the compiler has always spelled. The corpus reaches every variant
+    /// of every type on the identity graph, so a wrong discriminant or a dropped
+    /// field fails here rather than in somebody's object file.
+    ///
+    /// A change here is a rename of every anonymous nominal in every program
+    /// carrying the affected shape. If one of these moves, that is the question
+    /// to answer -- not a number to update.
+    const DURABLE_DIGESTS: &[(&str, &str)] = &[
+        (
+            "producer function definition (struct)",
+            "ec4e05a47384afca3cbc60877deb11a1",
+        ),
+        (
+            "producer function specialization (struct)",
+            "878a69cf8779bc9a48e2bd0544895579",
+        ),
+        (
+            "producer function anonymous member (struct)",
+            "1260949fa05dc692262ee74e0f057549",
+        ),
+        (
+            "producer function drop glue (struct)",
+            "feb0b5ff79bf7b5f6daffe2bf6fb4add",
+        ),
+        (
+            "producer definition (struct)",
+            "102ac552074f2e057dbff637257de7ad",
+        ),
+        (
+            "producer function definition (enum)",
+            "aa02e4b0ac3b48d540c230ba46e34a8a",
+        ),
+        (
+            "producer function specialization (enum)",
+            "41eb8a04200f269d447f161118dcf0c8",
+        ),
+        (
+            "producer function anonymous member (enum)",
+            "eef3756d48c04504ec585b0c9fdbe48e",
+        ),
+        (
+            "producer function drop glue (enum)",
+            "e7ac96de412bb160557f77281d9eb5ac",
+        ),
+        (
+            "producer definition (enum)",
+            "d5bdc23d3b48f603dbcef3a152e9904e",
+        ),
+        ("type argument i8", "e0c66905387d6c46fdbaa414c52799cb"),
+        ("type argument i16", "a7bd95777f6cdb173a0e93887e8cae0a"),
+        ("type argument i32", "6eb4c1e9c65c49e7766282fc37f1c249"),
+        ("type argument i64", "35abee5c0d4bb8b7b2b6726ff156d688"),
+        ("type argument u8", "c4e9b73c1cbfb1060c6ae645df9348cf"),
+        ("type argument u16", "8be0e3ae63af1fd648bed5b998f85d0e"),
+        ("type argument u32", "52d81020aa9e8ea68512c52d525d714d"),
+        ("type argument u64", "19cf3c92f18dfd76c166b4a10bc2858c"),
+        ("type argument bool", "187fcc976ff8e2c8e05a1fb290503bc3"),
+        ("type argument unit", "df76f909b6e851991cae0f2649b55002"),
+        ("type argument never", "a66e257bfdd7c0695901fe9a031a6441"),
+        (
+            "type argument comptime type",
+            "6d6551ee44c72f399555ee0dbc7f7880",
+        ),
+        (
+            "type argument builtin nominal",
+            "dae8f74ff631dfbb5643285ee2ffde5a",
+        ),
+        (
+            "type argument nominal builtin",
+            "5128dfe22a2aa39c948d84498d582bd2",
+        ),
+        (
+            "type argument nominal named",
+            "7144ea40e647c7cde9c7b11e0ab16de3",
+        ),
+        (
+            "type argument nominal anonymous",
+            "6fa6b24ea532fde7e7546e7476ab40e0",
+        ),
+        ("type argument array", "99fb17ebe88d5c5f0a1ab06162733b00"),
+        ("type argument slice", "5072f209978bb5e8d566967123cff101"),
+        (
+            "type argument ptr const",
+            "9421f255fc67768bb4d91ad2d0bb7ef9",
+        ),
+        ("type argument ptr mut", "4aaf44af8392b42eb072d2290e071758"),
+        ("type argument module", "d3cc1e52047ff5ace920ebe291a95930"),
+        (
+            "type argument generic parameter",
+            "d0012436d84d1f9e2873daf39f84330b",
+        ),
+        ("value argument integer", "0469a1c56713c80c74604122db9e55a7"),
+        ("value argument bool", "fe732a2a655b565c0fcce5096ab1169d"),
+        ("value argument type", "cee5a98f51731f766e3032758eca1220"),
+        (
+            "value argument function",
+            "e7aa6ef862691885f26f904f8a7266ba",
+        ),
+        ("value argument unit", "23984bb60e0a0ac714765f9d6f166e63"),
+        ("value argument string", "25a900804c416e384a4a53053854435a"),
+        (
+            "multiple arguments of both streams",
+            "beab0bd64921e55eaa3feea66bb5b4e4",
+        ),
+    ];
 
-        for (label, identity) in identity_corpus() {
+    #[test]
+    fn the_durable_encoding_is_pinned() {
+        let corpus = identity_corpus();
+        assert_eq!(
+            corpus.len(),
+            DURABLE_DIGESTS.len(),
+            "the corpus and its pinned digests disagree on how many shapes there are"
+        );
+        for ((label, identity), (pinned_label, pinned)) in corpus.iter().zip(DURABLE_DIGESTS) {
+            assert_eq!(label, pinned_label, "the corpus reordered under its pins");
             assert_eq!(
-                stable_anonymous_identity_digest(&identity),
-                derived(&identity),
-                "durable encoding diverged from the derived hash for {label}"
+                format!("{:032x}", stable_anonymous_identity_digest(identity)),
+                *pinned,
+                "the durable encoding of {label} changed, which renames every \
+                 anonymous nominal of that shape in every program"
             );
         }
     }
 
     /// Every `TypeInstanceKey` variant, reached through a nominal's arguments.
-    fn every_type_variant() -> Vec<crate::TypeInstanceKey<String, String>> {
+    fn every_type_variant() -> Vec<(&'static str, crate::TypeInstanceKey<String, String>)> {
         use crate::TypeInstanceKey as T;
-        let leaf = || Arc::new(T::I32);
+        let leaf = || Node::new(T::I32);
         vec![
-            T::I8,
-            T::I16,
-            T::I32,
-            T::I64,
-            T::U8,
-            T::U16,
-            T::U32,
-            T::U64,
-            T::Bool,
-            T::Unit,
-            T::Never,
-            T::ComptimeType,
-            T::BuiltinNominal {
-                kind: AnonymousNominalKind::Enum,
-                name: "str".into(),
-            },
-            T::Nominal(crate::NominalInstanceKey::Builtin {
-                kind: AnonymousNominalKind::Struct,
-                name: "builtin".into(),
-            }),
-            T::Nominal(crate::NominalInstanceKey::Named(
-                "pkg/m.rue::Named".to_owned(),
-            )),
-            T::Nominal(crate::NominalInstanceKey::Anonymous(inner_nominal())),
-            T::Array {
-                element: leaf(),
-                len: 7,
-            },
-            T::Slice {
-                element: leaf(),
-                name: "slice".into(),
-            },
-            T::PtrConst(leaf()),
-            T::PtrMut(leaf()),
-            T::Module("pkg/m.rue".to_owned()),
-            T::GenericParameter(3),
+            ("i8", T::I8),
+            ("i16", T::I16),
+            ("i32", T::I32),
+            ("i64", T::I64),
+            ("u8", T::U8),
+            ("u16", T::U16),
+            ("u32", T::U32),
+            ("u64", T::U64),
+            ("bool", T::Bool),
+            ("unit", T::Unit),
+            ("never", T::Never),
+            ("comptime type", T::ComptimeType),
+            (
+                "builtin nominal",
+                T::BuiltinNominal {
+                    kind: AnonymousNominalKind::Enum,
+                    name: "str".into(),
+                },
+            ),
+            (
+                "nominal builtin",
+                T::Nominal(crate::NominalInstanceKey::Builtin {
+                    kind: AnonymousNominalKind::Struct,
+                    name: "builtin".into(),
+                }),
+            ),
+            (
+                "nominal named",
+                T::Nominal(crate::NominalInstanceKey::Named(
+                    "pkg/m.rue::Named".to_owned(),
+                )),
+            ),
+            (
+                "nominal anonymous",
+                T::Nominal(crate::NominalInstanceKey::Anonymous(Node::new(
+                    inner_nominal(),
+                ))),
+            ),
+            (
+                "array",
+                T::Array {
+                    element: leaf(),
+                    len: 7,
+                },
+            ),
+            (
+                "slice",
+                T::Slice {
+                    element: leaf(),
+                    name: "slice".into(),
+                },
+            ),
+            ("ptr const", T::PtrConst(leaf())),
+            ("ptr mut", T::PtrMut(leaf())),
+            ("module", T::Module("pkg/m.rue".to_owned())),
+            ("generic parameter", T::GenericParameter(3)),
         ]
     }
 
     /// Every `FunctionInstanceKey` variant, including both producer spellings.
-    fn every_function_variant() -> Vec<crate::FunctionInstanceKey<String, String>> {
+    fn every_function_variant() -> Vec<(&'static str, crate::FunctionInstanceKey<String, String>)> {
         use crate::FunctionInstanceKey as F;
         vec![
-            F::Definition("pkg/m.rue::f".to_owned()),
-            F::Specialization {
-                base: Arc::new(F::Definition("pkg/m.rue::base".to_owned())),
-                arguments: crate::CanonicalArguments::default(),
-            },
-            F::AnonymousMember {
-                owner: Arc::new(crate::TypeInstanceKey::I64),
-                member: crate::AnonymousMemberKey {
-                    kind: crate::AnonymousMemberKind::Destructor,
-                    name: "drop".into(),
+            (
+                "function definition",
+                F::Definition("pkg/m.rue::f".to_owned()),
+            ),
+            (
+                "function specialization",
+                F::Specialization {
+                    base: Node::new(F::Definition("pkg/m.rue::base".to_owned())),
+                    arguments: crate::CanonicalArguments::default(),
                 },
-            },
-            F::DropGlue(Arc::new(crate::TypeInstanceKey::Bool)),
+            ),
+            (
+                "function anonymous member",
+                F::AnonymousMember {
+                    owner: Node::new(crate::TypeInstanceKey::I64),
+                    member: crate::AnonymousMemberKey {
+                        kind: crate::AnonymousMemberKind::Destructor,
+                        name: "drop".into(),
+                    },
+                },
+            ),
+            (
+                "function drop glue",
+                F::DropGlue(Node::new(crate::TypeInstanceKey::Bool)),
+            ),
         ]
     }
 
     /// Every `CanonicalArgumentValue` variant.
-    fn every_argument_value() -> Vec<crate::CanonicalArgumentValue<String, String>> {
+    fn every_argument_value() -> Vec<(&'static str, crate::CanonicalArgumentValue<String, String>)>
+    {
         use crate::CanonicalArgumentValue as V;
         vec![
-            V::Integer(-170_141_183_460_469_231_731_687_303_715_884_105_728),
-            V::Bool(true),
-            V::Type(Arc::new(crate::TypeInstanceKey::U16)),
-            V::Function(Arc::new(crate::FunctionInstanceKey::Definition(
-                "pkg/m.rue::g".to_owned(),
-            ))),
-            V::Unit,
-            V::String("literal".into()),
+            (
+                "integer",
+                V::Integer(-170_141_183_460_469_231_731_687_303_715_884_105_728),
+            ),
+            ("bool", V::Bool(true)),
+            ("type", V::Type(Node::new(crate::TypeInstanceKey::U16))),
+            (
+                "function",
+                V::Function(Node::new(crate::FunctionInstanceKey::Definition(
+                    "pkg/m.rue::g".to_owned(),
+                ))),
+            ),
+            ("unit", V::Unit),
+            ("string", V::String("literal".into())),
         ]
     }
 
@@ -766,12 +917,12 @@ mod tests {
             ("struct", AnonymousNominalKind::Struct),
             ("enum", AnonymousNominalKind::Enum),
         ] {
-            for function in every_function_variant() {
+            for (function_label, function) in every_function_variant() {
                 corpus.push((
-                    format!("producer function {function:?} ({kind_label})"),
+                    format!("producer {function_label} ({kind_label})"),
                     AnonymousNominalKey {
                         kind,
-                        producer: crate::StableProducerId::Function(Arc::new(function)),
+                        producer: crate::StableProducerId::Function(Node::new(function)),
                         anchor: anchor(&[RirStructuralPathSegment::AnonymousType(1)]),
                         arguments: crate::CanonicalArguments::default(),
                     },
@@ -789,9 +940,9 @@ mod tests {
         }
 
         // Every type variant, as the sole type argument.
-        for ty in every_type_variant() {
+        for (type_label, ty) in every_type_variant() {
             corpus.push((
-                format!("type argument {ty:?}"),
+                format!("type argument {type_label}"),
                 AnonymousNominalKey {
                     kind: AnonymousNominalKind::Struct,
                     producer: crate::StableProducerId::Definition("pkg/m.rue::d".to_owned()),
@@ -805,9 +956,9 @@ mod tests {
         }
 
         // Every value variant, as the sole value argument.
-        for value in every_argument_value() {
+        for (value_label, value) in every_argument_value() {
             corpus.push((
-                format!("value argument {value:?}"),
+                format!("value argument {value_label}"),
                 AnonymousNominalKey {
                     kind: AnonymousNominalKind::Struct,
                     producer: crate::StableProducerId::Definition("pkg/m.rue::d".to_owned()),
@@ -836,8 +987,16 @@ mod tests {
                     RirStructuralPathSegment::Operand(9),
                 ]),
                 arguments: crate::CanonicalArguments {
-                    types: every_type_variant().into(),
-                    values: every_argument_value().into(),
+                    types: every_type_variant()
+                        .into_iter()
+                        .map(|(_, ty)| ty)
+                        .collect::<Vec<_>>()
+                        .into(),
+                    values: every_argument_value()
+                        .into_iter()
+                        .map(|(_, value)| value)
+                        .collect::<Vec<_>>()
+                        .into(),
                 },
             },
         ));

@@ -4,6 +4,7 @@
 //! handles and pool indexes are materialization details and never cross this
 //! boundary.
 
+use rue_air::Node;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -286,7 +287,7 @@ pub(crate) struct DropGlueVariantField<D = crate::StableDefinitionKey, M = crate
 impl<D, M> DropGlueFacts<D, M> {
     #[cfg(test)]
     #[allow(dead_code)]
-    pub(crate) fn try_map_identities<D2, M2, E>(
+    pub(crate) fn try_map_identities<D2: std::hash::Hash, M2: std::hash::Hash, E>(
         &self,
         definition: &impl Fn(&D) -> Result<D2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
@@ -553,19 +554,19 @@ pub(crate) fn type_instance(ty: &crate::durable_semantics::DurableType) -> crate
         T::Nominal(definition) => {
             crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(definition.clone()))
         }
-        T::AnonymousNominal(identity) => {
-            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity.clone()))
-        }
+        T::AnonymousNominal(identity) => crate::TypeInstanceKey::Nominal(
+            crate::NominalInstanceKey::Anonymous(Node::new(identity.clone())),
+        ),
         T::Array { element, len } => crate::TypeInstanceKey::Array {
-            element: Arc::new(type_instance(element)),
+            element: Node::new(type_instance(element)),
             len: *len,
         },
         T::Slice { element, name } => crate::TypeInstanceKey::Slice {
-            element: Arc::new(type_instance(element)),
+            element: Node::new(type_instance(element)),
             name: name.clone(),
         },
-        T::PtrConst(element) => crate::TypeInstanceKey::PtrConst(Arc::new(type_instance(element))),
-        T::PtrMut(element) => crate::TypeInstanceKey::PtrMut(Arc::new(type_instance(element))),
+        T::PtrConst(element) => crate::TypeInstanceKey::PtrConst(Node::new(type_instance(element))),
+        T::PtrMut(element) => crate::TypeInstanceKey::PtrMut(Node::new(type_instance(element))),
         T::Module(module) => crate::TypeInstanceKey::Module(module.clone()),
         T::GenericParameter(index) => crate::TypeInstanceKey::GenericParameter(*index),
     }

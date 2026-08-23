@@ -28,9 +28,9 @@
 //! specialized body. The compiler's query graph owns the cross-body fixed
 //! point and its expansion budget ([`MAX_SPECIALIZATION_ROUNDS`]).
 
+use crate::Node;
 use ahash::{AHashMap, AHashSet};
 use std::collections::hash_map::Entry;
-use std::sync::Arc;
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind};
@@ -302,7 +302,7 @@ where
                     .into(),
             };
             let instance = crate::FunctionInstanceKey::Specialization {
-                base: Arc::new(base),
+                base: Node::new(base),
                 arguments,
             };
             Ok((info.mangled_name, identity, instance))
@@ -458,7 +458,7 @@ where
     // Normalize at the producer boundary so the body, its produced facts, and
     // final composition all name the same anonymous nominal.
     let producer = (
-        crate::StableProducerId::Function(Arc::new(
+        crate::StableProducerId::Function(Node::new(
             identity.with_collapsed_empty_specializations().into_owned(),
         )),
         canonical_arguments,

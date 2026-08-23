@@ -3,6 +3,7 @@
 //! The representation intentionally mirrors AIR operations, but never its packed
 //! `extra` array or epoch-local type, symbol, nominal, place, or instruction IDs.
 
+use crate::Node;
 use std::sync::Arc;
 
 use crate::ParamSlotModes;
@@ -138,7 +139,7 @@ pub struct SemanticSpecializedCandidateInstallWork {
 }
 
 impl<K, M> SemanticSpecializationIdentity<K, M> {
-    pub fn try_map_keys<K2, M2, E>(
+    pub fn try_map_keys<K2: std::hash::Hash, M2: std::hash::Hash, E>(
         &self,
         key: &impl Fn(&K) -> Result<K2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
@@ -547,12 +548,12 @@ impl<K, M> SemanticBodyInstData<K, M> {
     /// Project definition and module identities without cloning unchanged
     /// dependency arrays. The exhaustive match is intentionally local to the
     /// canonical schema so new variants produce a focused compiler error.
-    pub fn try_map_keys<K2, M2, E>(
+    pub fn try_map_keys<K2: std::hash::Hash, M2: std::hash::Hash, E>(
         &self,
         key: &impl Fn(&K) -> Result<K2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
     ) -> Result<SemanticBodyInstData<K2, M2>, E> {
-        fn pattern<K, M, K2, M2, E>(
+        fn pattern<K, M, K2: std::hash::Hash, M2: std::hash::Hash, E>(
             value: &SemanticBodyPattern<K, M>,
             key: &impl Fn(&K) -> Result<K2, E>,
             module: &impl Fn(&M) -> Result<M2, E>,
@@ -571,9 +572,9 @@ impl<K, M> SemanticBodyInstData<K, M> {
                             name: name.clone(),
                         },
                         NominalInstanceKey::Named(value) => NominalInstanceKey::Named(key(value)?),
-                        NominalInstanceKey::Anonymous(value) => {
-                            NominalInstanceKey::Anonymous(value.try_map_identities(key, module)?)
-                        }
+                        NominalInstanceKey::Anonymous(value) => NominalInstanceKey::Anonymous(
+                            Node::new(value.try_map_identities(key, module)?),
+                        ),
                     },
                     variant_index: *variant_index,
                 },
@@ -696,9 +697,9 @@ impl<K, M> SemanticBodyInstData<K, M> {
                         name: name.clone(),
                     },
                     NominalInstanceKey::Named(value) => NominalInstanceKey::Named(key(value)?),
-                    NominalInstanceKey::Anonymous(value) => {
-                        NominalInstanceKey::Anonymous(value.try_map_identities(key, module)?)
-                    }
+                    NominalInstanceKey::Anonymous(value) => NominalInstanceKey::Anonymous(
+                        Node::new(value.try_map_identities(key, module)?),
+                    ),
                 },
                 fields: fields.clone(),
                 source_order: source_order.clone(),
@@ -722,9 +723,9 @@ impl<K, M> SemanticBodyInstData<K, M> {
                         name: name.clone(),
                     },
                     NominalInstanceKey::Named(value) => NominalInstanceKey::Named(key(value)?),
-                    NominalInstanceKey::Anonymous(value) => {
-                        NominalInstanceKey::Anonymous(value.try_map_identities(key, module)?)
-                    }
+                    NominalInstanceKey::Anonymous(value) => NominalInstanceKey::Anonymous(
+                        Node::new(value.try_map_identities(key, module)?),
+                    ),
                 },
                 variant_index: *variant_index,
                 payload: payload.clone(),
@@ -742,9 +743,9 @@ impl<K, M> SemanticBodyInstData<K, M> {
                         name: name.clone(),
                     },
                     NominalInstanceKey::Named(value) => NominalInstanceKey::Named(key(value)?),
-                    NominalInstanceKey::Anonymous(value) => {
-                        NominalInstanceKey::Anonymous(value.try_map_identities(key, module)?)
-                    }
+                    NominalInstanceKey::Anonymous(value) => NominalInstanceKey::Anonymous(
+                        Node::new(value.try_map_identities(key, module)?),
+                    ),
                 },
                 variant_index: *variant_index,
                 field_index: *field_index,
@@ -1009,7 +1010,7 @@ pub struct SemanticBody<K, M> {
 impl<K, M> SemanticBody<K, M> {
     /// Replace request-independent definition and module keys without creating
     /// any epoch-local AIR values.
-    pub fn try_map_keys<K2, M2, E>(
+    pub fn try_map_keys<K2: std::hash::Hash, M2: std::hash::Hash, E>(
         &self,
         key: &impl Fn(&K) -> Result<K2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
@@ -1041,9 +1042,9 @@ impl<K, M> SemanticBody<K, M> {
                                             NominalInstanceKey::Named(key(value)?)
                                         }
                                         NominalInstanceKey::Anonymous(value) => {
-                                            NominalInstanceKey::Anonymous(
+                                            NominalInstanceKey::Anonymous(Node::new(
                                                 value.try_map_identities(key, module)?,
-                                            )
+                                            ))
                                         }
                                     },
                                     field_index: *field_index,
@@ -1120,7 +1121,7 @@ impl<K, M> SemanticBody<K, M> {
                                 NominalInstanceKey::Named(key(value)?)
                             }
                             NominalInstanceKey::Anonymous(value) => NominalInstanceKey::Anonymous(
-                                value.try_map_identities(key, module)?,
+                                Node::new(value.try_map_identities(key, module)?),
                             ),
                         },
                         method: reference.method.clone(),

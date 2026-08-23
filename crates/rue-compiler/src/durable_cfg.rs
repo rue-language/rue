@@ -1,4 +1,5 @@
 use ahash::{AHashMap, AHashSet};
+use rue_air::Node;
 use std::sync::Arc;
 
 use lasso::{Key, Spur};
@@ -214,7 +215,7 @@ fn canonical_type_from_instance(
             CanonicalType::Nominal(definition.clone())
         }
         T::Nominal(crate::NominalInstanceKey::Anonymous(identity)) => {
-            CanonicalType::AnonymousNominal(identity.clone())
+            CanonicalType::AnonymousNominal((**identity).clone())
         }
         T::Array { element, len } => CanonicalType::Array {
             element: Arc::new(canonical_type_from_instance(element)?),
@@ -323,21 +324,21 @@ fn canonical_type_instance(ty: &CanonicalType) -> Option<crate::TypeInstanceKey>
         CanonicalType::Nominal(definition) => {
             crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(definition.clone()))
         }
-        CanonicalType::AnonymousNominal(identity) => {
-            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity.clone()))
-        }
+        CanonicalType::AnonymousNominal(identity) => crate::TypeInstanceKey::Nominal(
+            crate::NominalInstanceKey::Anonymous(Node::new(identity.clone())),
+        ),
         CanonicalType::Array { element, len } => crate::TypeInstanceKey::Array {
-            element: Arc::new(canonical_type_instance(element)?),
+            element: Node::new(canonical_type_instance(element)?),
             len: *len,
         },
         CanonicalType::PtrConst(element) => {
-            crate::TypeInstanceKey::PtrConst(Arc::new(canonical_type_instance(element)?))
+            crate::TypeInstanceKey::PtrConst(Node::new(canonical_type_instance(element)?))
         }
         CanonicalType::PtrMut(element) => {
-            crate::TypeInstanceKey::PtrMut(Arc::new(canonical_type_instance(element)?))
+            crate::TypeInstanceKey::PtrMut(Node::new(canonical_type_instance(element)?))
         }
         CanonicalType::Slice { element, name } => crate::TypeInstanceKey::Slice {
-            element: Arc::new(canonical_type_instance(element)?),
+            element: Node::new(canonical_type_instance(element)?),
             name: name.clone(),
         },
         CanonicalType::Module(module) => crate::TypeInstanceKey::Module(module.clone()),
@@ -885,8 +886,8 @@ impl CfgDomainProjection {
                         (&type_pool.struct_def(id).destructor, stable)
                     {
                         let callable = crate::FunctionInstanceKey::AnonymousMember {
-                            owner: Arc::new(crate::TypeInstanceKey::Nominal(
-                                crate::NominalInstanceKey::Anonymous(identity.clone()),
+                            owner: Node::new(crate::TypeInstanceKey::Nominal(
+                                crate::NominalInstanceKey::Anonymous(Node::new(identity.clone())),
                             )),
                             member: crate::AnonymousMemberKey {
                                 kind: crate::AnonymousMemberKind::Destructor,
@@ -931,7 +932,7 @@ impl CfgDomainProjection {
                 .unwrap_or_else(|| {
                     crate::StableSymbolEncoder::encode(&crate::StableSymbolId::Callable(
                         crate::StableCallableId::Function(crate::FunctionInstanceKey::DropGlue(
-                            Arc::new(owner.clone()),
+                            Node::new(owner.clone()),
                         )),
                     ))
                 });
@@ -1158,8 +1159,10 @@ impl CfgDomainProjection {
                                 symbol,
                                 StableCfgSymbol::Callable(
                                     crate::FunctionInstanceKey::AnonymousMember {
-                                        owner: Arc::new(crate::TypeInstanceKey::Nominal(
-                                            crate::NominalInstanceKey::Anonymous(owner.clone()),
+                                        owner: Node::new(crate::TypeInstanceKey::Nominal(
+                                            crate::NominalInstanceKey::Anonymous(Node::new(
+                                                owner.clone(),
+                                            )),
                                         )),
                                         member: crate::AnonymousMemberKey {
                                             kind: crate::AnonymousMemberKind::Destructor,

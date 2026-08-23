@@ -118,7 +118,7 @@ pub use semantic_body::{
 pub use semantic_identity::{
     AnonymousMemberKey, AnonymousMemberKind, AnonymousNominalKey, AnonymousNominalKind,
     CanonicalArgumentValue, CanonicalArguments, CompilerCallableId, FunctionInstanceKey,
-    LocalAtomId, LocalAtomKind, LocalAtomRecord, NominalInstanceKey, STABLE_DEFINITION_KINDS,
+    LocalAtomId, LocalAtomKind, LocalAtomRecord, Node, NominalInstanceKey, STABLE_DEFINITION_KINDS,
     STABLE_DEFINITION_NAMESPACES, SemanticBodyLocalAtom, StableCallableId, StableDefinitionKind,
     StableDefinitionNamespace, StableProducerId, StableSymbolId, TypeInstanceKey,
 };
