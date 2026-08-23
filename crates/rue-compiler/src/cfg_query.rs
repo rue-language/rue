@@ -1177,9 +1177,9 @@ fn materialize_and_build_cfg(
     context.record_work(rue_query::WorkItem::new("cfg.materialize.attempts", 1));
     let input_preparation_ns = elapsed_ns(input_preparation_started);
     let materialization_started = std::time::Instant::now();
-    // The indexed variants preserve the materialize_canonical_body(...) and
-    // materialize_semantic_body(...) adapters for direct providers while this
-    // hot path reuses the exact fact-side indexes prepared during selection.
+    // Both CFG inputs use the exact fact-side indexes prepared during
+    // selection, keeping canonical-body and drop-glue materialization on one
+    // indexed path.
     let materialized = match &key.semantic_input {
         CfgSemanticInput::Body { input, .. } => {
             crate::local_semantic_materialization::materialize_canonical_body_with_indexes(
