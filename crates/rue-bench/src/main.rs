@@ -695,7 +695,11 @@ fn run(options: &Options) -> Result<u8, String> {
     }
     std::fs::write(&options.output, &serialized)
         .map_err(|error| format!("could not write {}: {error}", options.output.display()))?;
-    let full_evidence_path = options.output.with_extension("full-evidence.json");
+    // Deliberately NOT a `.json` sibling: the publish job sweeps every
+    // `*.json` artifact onto the data branch, and under the dual-version
+    // reader the full-evidence form is itself appendable — the one file that
+    // must never reach the store is the one a `.json` spelling would publish.
+    let full_evidence_path = options.output.with_extension("full-evidence");
     std::fs::write(&full_evidence_path, &full_serialized)
         .map_err(|error| format!("could not write {}: {error}", full_evidence_path.display()))?;
 
