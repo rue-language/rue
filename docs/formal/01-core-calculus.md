@@ -1018,15 +1018,13 @@ which exit it.
   drop flag of `3.8:73` are likewise observable: a break arm that moves and a
   break arm that does not produce exactly one drop on each path. So the core
   and the compiler agree on (Loop-Break), and no RUE-1293 divergence remains.
-  What *does* remain, in the opposite direction (observed 2026-08-23; not yet
-  filed): when **every** path through the body breaks, the compiler rejects the
-  move itself with E0205 and the note "value was moved in a previous iteration
-  of the loop", although no back edge exists to carry it there —
-  `loop { eat(t); break; }` is the minimal case. Under (Loop-Break) the
-  back-edge premise constrains only the body's *fall-through* state `Σ_back`,
-  which is `⊥` when every path diverges, so the premise is vacuous and the
-  program is well-formed; this is an over-rejection, not the accepted
-  use-after-move RUE-1293 described.
+  **Compiler agreement (RUE-1615, resolved).** The back-edge check is gated on
+  an actually reachable return to the loop head. When every path through the
+  body breaks, the fall-through state `Σ_back` is `⊥`, so a move in
+  `loop { eat(t); break; }` is checked only against the at-break exit state and
+  is not incorrectly rejected as a move in a previous iteration. Explicit
+  `continue` edges and ordinary fall-through paths remain back edges and retain
+  the recheck required by this rule.
 
 A `never`-typed expression is accepted wherever a value of any type is expected —
 this is the coercion, stated as **subsumption on the bottom type** (`3.4:3/4`):

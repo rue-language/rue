@@ -842,6 +842,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
     // Helper methods for intrinsic analysis (delegated from analyze_intrinsic_impl)
 
+    fn analyze_sequenced_intrinsic_operand(
+        &mut self,
+        air: &mut Air,
+        operand: InstRef,
+        reachable: bool,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let reachable_edges = ctx.loop_break_stack.clone();
+        let result = self.analyze_inst(air, operand, ctx)?;
+        if !reachable {
+            Self::restore_reachable_loop_edges(ctx, &reachable_edges);
+        }
+        Ok(result)
+    }
+
     pub(super) fn analyze_dbg_intrinsic(
         &mut self,
         air: &mut Air,
@@ -1140,7 +1155,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut extra_data = vec![cond_result.air_ref];
         let mut temp_scope = Vec::new();
         if args.len() > 1 {
+            let reachable_edges_before_message = ctx.loop_break_stack.clone();
             let msg_result = self.analyze_inst_for_projection(air, args[1].value, ctx)?;
+            if !cond_result.continues {
+                Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_message);
+            }
             self.validate_abort_message_type(
                 "assert",
                 msg_result.ty,
@@ -1962,8 +1981,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
-        let lhs = self.analyze_inst(air, args[0].value, ctx)?;
-        let rhs = self.analyze_inst(air, args[1].value, ctx)?;
+        let lhs = self.analyze_sequenced_intrinsic_operand(air, args[0].value, true, ctx)?;
+        let rhs =
+            self.analyze_sequenced_intrinsic_operand(air, args[1].value, lhs.continues, ctx)?;
         let lty = lhs.ty;
         let rty = rhs.ty;
 

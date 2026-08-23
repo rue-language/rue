@@ -5,7 +5,7 @@
 //! them. It extends the canonical body-analysis engine rather than
 //! introducing peer analysis state.
 
-use super::super::context::{LocalVar, ParamInfo, VariableMoveState};
+use super::super::context::{FieldPath, LocalVar, ParamInfo, VariableMoveState};
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 use crate::inst::AirPlaceRef;
@@ -3942,6 +3942,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx.expected_type = previous_expected;
         let value_result = value_result?;
         self.reject_accessor_result_escape(value, AccessorEscapeSite::Store, span, ctx)?;
+        let reachable_edges_after_rhs = ctx.loop_break_stack.clone();
         // A plain assignment's RHS is complete before the LHS place is
         // evaluated. Ordinary shared-read markers are expression-order
         // bookkeeping and can be truncated before the target is traced;
@@ -3967,6 +3968,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let trace = self
                     .try_trace_place(place, air, ctx)?
                     .ok_or_else(|| CompileError::new(ErrorKind::InvalidAssignmentTarget, span))?;
+                if !value_result.continues {
+                    Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_rhs);
+                }
                 if !trace.via_accessor || !trace.is_root_mutable {
                     return Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span));
                 }
@@ -4015,8 +4019,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Try to trace the base to a place
-        if let Some(mut trace) = self.try_trace_place(base, air, ctx)? {
+        // Assignment evaluates the RHS before the target (spec 5.2:17-18).
+        // Analyze the value first, then keep any target edges from a dead RHS
+        // out of the enclosing loop's reachable control-flow facts.
+        let value_result = self.analyze_inst(air, value, ctx)?;
+        self.reject_accessor_result_escape(value, AccessorEscapeSite::Store, span, ctx)?;
+        let reachable_edges_after_value = ctx.loop_break_stack.clone();
+        let traced = self.try_trace_place(base, air, ctx)?;
+        if !value_result.continues {
+            Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_value);
+        }
+
+        if let Some(mut trace) = traced {
             // Check if the root variable was fully moved
             if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
                 if let Some(moved_span) = state.full_move {
@@ -4116,11 +4130,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // A write through an element of a partially moved array
             // (`xs[0].f = ...` after an element of `xs` moved out) is
             // rejected (RUE-186, E0480), like a direct element write.
-            self.reject_write_into_partially_moved_array(&trace, ctx, span)?;
-
-            // Analyze the value
-            let value_result = self.analyze_inst(air, value, ctx)?;
-            self.reject_accessor_result_escape(value, AccessorEscapeSite::Store, span, ctx)?;
+            self.reject_write_into_partially_moved_array(&trace, ctx, span, None)?;
 
             // RUE-387: writing a live linear value's field would silently drop
             // the old field value. Legal only when that exact field path was
@@ -4194,8 +4204,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Try to trace the base to a place
-        if let Some(mut trace) = self.try_trace_place(base, air, ctx)? {
+        // Keep the one shape that can reinitialize itself: a direct constant
+        // element read from the same root array.  The RHS is analyzed first,
+        // so its element move is present when the target-side partial-array
+        // guard runs; remember that this exact path was new before the RHS.
+        let rhs_element = self.direct_constant_array_element_path(value);
+        let rhs_element_was_unmoved = rhs_element.as_ref().is_some_and(|(root, path)| {
+            ctx.moved_vars
+                .get(root)
+                .is_none_or(|state| state.is_path_or_descendant_moved(path).is_none())
+        });
+        // Assignment evaluates the RHS before the target and index
+        // (spec 5.2:17-18). Analyze the value first so dead target edges do
+        // not become reachable loop back edges.
+        let value_result = self.analyze_inst(air, value, ctx)?;
+        self.reject_accessor_result_escape(value, AccessorEscapeSite::Store, span, ctx)?;
+        let reachable_edges_after_rhs = ctx.loop_break_stack.clone();
+        let traced = self.try_trace_place(base, air, ctx)?;
+        if !value_result.continues {
+            Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_rhs);
+        }
+
+        if let Some(mut trace) = traced {
             // Check if the root variable was fully moved
             if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
                 if let Some(moved_span) = state.full_move {
@@ -4271,7 +4301,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Analyze index. Index must be an integer type (signed or
             // unsigned) per spec 7.1:7; negative/out-of-range runtime indices
             // trap at runtime via the bounds check (RUE-81).
+            let reachable_edges_before_index = ctx.loop_break_stack.clone();
             let index_result = self.analyze_inst(air, index, ctx)?;
+            if !(value_result.continues && trace.continues) {
+                Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_index);
+            }
             if !index_result.ty.is_integer() && !index_result.ty.is_error() {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
@@ -4319,11 +4353,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             // Writing into an array with moved-out elements is rejected
             // (RUE-186, E0480): the write can't re-arm per-element ownership.
-            self.reject_write_into_partially_moved_array(&trace, ctx, span)?;
-
-            // Analyze the value
-            let value_result = self.analyze_inst(air, value, ctx)?;
-            self.reject_accessor_result_escape(value, AccessorEscapeSite::Store, span, ctx)?;
+            let reinitialized_path = rhs_element
+                .filter(|(root, path)| {
+                    rhs_element_was_unmoved
+                        && *root == trace.root_var
+                        && path == &trace.field_path()
+                        && ctx.moved_vars.get(root).is_some_and(|state| {
+                            state.partial_moves.iter().any(|(moved, _)| moved == path)
+                        })
+                })
+                .map(|(_, path)| path);
+            self.reject_write_into_partially_moved_array(
+                &trace,
+                ctx,
+                span,
+                reinitialized_path.as_deref(),
+            )?;
 
             // RUE-387: writing a live linear value into an array element would
             // silently drop the old element. Legal only when that exact
@@ -5280,15 +5325,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Reject a write into an array place while one or more of the root
     /// array's elements are moved out (RUE-186, E0480). Re-arming
     /// per-element ownership through an element (or through-element) write
-    /// is not supported — sema-side reinitialization and the runtime drop
-    /// flags would disagree — so the whole array must be reinitialized
-    /// instead. Writes into arrays with no outstanding element moves are
-    /// unaffected.
+    /// is not supported in general — sema-side reinitialization and the
+    /// runtime drop flags would disagree — so the whole array must be
+    /// reinitialized instead. The sole exception is an immediate direct
+    /// same-element self-move, whose exact path is passed as `except_path` and
+    /// re-armed by the caller. Writes into arrays with no outstanding element
+    /// moves are unaffected.
     fn reject_write_into_partially_moved_array(
         &self,
         trace: &PlaceTrace,
         ctx: &AnalysisContext,
         span: Span,
+        except_path: Option<&[Spur]>,
     ) -> CompileResult<()> {
         // The write must go through the root array (position-0 Index
         // projection); element moves only exist for array roots.
@@ -5302,6 +5350,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok(());
         };
         let element_move_span = state.partial_moves.iter().find_map(|(p, s)| {
+            if except_path.is_some_and(|except| p.as_slice() == except) {
+                return None;
+            }
             p.first()
                 .filter(|seg| is_index_segment(self.body_interner(), **seg))
                 .map(|_| *s)
@@ -5315,6 +5366,32 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .with_label("element moved out here", moved_span)
                 .with_help("reinitialize the whole array instead (`xs = [...]`)"),
         )
+    }
+
+    /// Return the path tracked by a direct constant-index array read, if any.
+    ///
+    /// This intentionally accepts only `array[K]` rooted directly at a
+    /// variable. Nested projections and dynamic indices must remain subject to
+    /// the conservative partial-array write rejection.
+    fn direct_constant_array_element_path(
+        &mut self,
+        inst_ref: InstRef,
+    ) -> Option<(Spur, FieldPath)> {
+        let (base, index) = match &self.body_rir_ref().get(inst_ref).data {
+            InstData::IndexGet { base, index } => (*base, *index),
+            _ => return None,
+        };
+        let root = match &self.body_rir_ref().get(base).data {
+            InstData::VarRef { name, .. } => *name,
+            _ => return None,
+        };
+        let index = self.try_get_const_index(index)?;
+        (index >= 0).then(|| {
+            (
+                root,
+                vec![index_path_segment(self.body_interner(), index as u64)],
+            )
+        })
     }
 
     /// Extract the root variable symbol from an expression, if it refers to a variable.
@@ -5865,6 +5942,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut temp_scope: Vec<AirRef> = Vec::new();
         let mut continues = true;
         for (i, arg) in args.enumerate() {
+            let reachable_edges_before_arg = ctx.loop_break_stack.clone();
             // A `str` parameter (ADR-0043 Phase 3, RUE-324) is a first-class
             // 2-word value, not a `borrow`-materialized fat pointer. A string
             // literal argument materializes as a `str` under the expected type;
@@ -5911,6 +5989,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let arg_result = self.analyze_inst(air, arg.value, ctx);
                 ctx.expected_type = prev_expected;
                 let arg_result = arg_result?;
+                if !continues {
+                    Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_arg);
+                }
                 continues &= arg_result.continues;
                 // `Str(N)` is a nominal fixed-capacity value, not a bare
                 // string view. Contextual literals materialize directly as
@@ -6032,6 +6113,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
             ctx.byref_arg_root = prev_byref_root;
             let mut arg_result = arg_result?;
+            if !continues {
+                Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_arg);
+            }
             continues &= arg_result.continues;
             if elaborates_borrow {
                 let span = self.body_rir_ref().get(arg.value).span;

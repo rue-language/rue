@@ -300,7 +300,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         F: FnOnce(AirRef, AirRef) -> AirInstData,
     {
         let lhs_result = self.analyze_inst(air, lhs, ctx)?;
+        let reachable_edges_after_lhs = ctx.loop_break_stack.clone();
         let rhs_result = self.analyze_inst(air, rhs, ctx)?;
+        if !lhs_result.continues {
+            Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_lhs);
+        }
 
         if !lhs_result.continues || !rhs_result.continues {
             let air_ref = air.add_inst(AirInst {
@@ -368,19 +372,27 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         );
         let (lhs_result, rhs_result) = if lhs_is_literal {
             let rhs_result = self.analyze_inst_for_projection(air, rhs, ctx)?;
+            let reachable_edges_after_rhs = ctx.loop_break_stack.clone();
             let expected = (self.is_strbuf(rhs_result.ty) || self.is_str_like(rhs_result.ty))
                 .then_some(rhs_result.ty);
             let lhs_result = ctx.with_expected_type(expected, |ctx| {
                 self.analyze_inst_for_projection(air, lhs, ctx)
             })?;
+            if !rhs_result.continues {
+                Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_rhs);
+            }
             (lhs_result, rhs_result)
         } else {
             let lhs_result = self.analyze_inst_for_projection(air, lhs, ctx)?;
+            let reachable_edges_after_lhs = ctx.loop_break_stack.clone();
             let expected = (self.is_strbuf(lhs_result.ty) || self.is_str_like(lhs_result.ty))
                 .then_some(lhs_result.ty);
             let rhs_result = ctx.with_expected_type(expected, |ctx| {
                 self.analyze_inst_for_projection(air, rhs, ctx)
             })?;
+            if !lhs_result.continues {
+                Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_lhs);
+            }
             (lhs_result, rhs_result)
         };
         let lhs_type = lhs_result.ty;
