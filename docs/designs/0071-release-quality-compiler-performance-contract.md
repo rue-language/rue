@@ -564,8 +564,8 @@ round-trip — reassemble, compare against the original evidence, require
 equality — because a field landing in neither block, or in both, is otherwise
 invisible.
 
-One ambiguity in the supporting note's sketch is resolved here explicitly.
-"Output identity" is four fields, not two: `runner.output_sha256`,
+One boundary of the partition is pinned explicitly: "output identity" is four
+fields, not two — `runner.output_sha256`,
 `runner.output_size_bytes`, `compiler.emitted_output_sha256` and
 `compiler.emitted_output_size_bytes`. All four are workload-level, and
 `accepted_inputs` joins them there.

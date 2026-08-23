@@ -393,11 +393,9 @@ binary rather than the schedule. Under the split, only
 
 #### The parallel case carries no work digest
 
-The paragraph above originally said a parallel boundary epoch keeps the
-per-process work digests without a workload-level `compiler_work` witness.
-That is not a guarantee, and the correction is Steve's on the pull request: with
+A parallel boundary epoch stores no per-process work digests at all: with
 no stored preimage and no requirement that the values agree, a reader holding
-those digests can observe only that they differ, which is what
+those digests could observe only that they differ, which is what
 `check_boundary_evidence` already expects there. A digest of discarded bytes
 that is *supposed* to differ certifies nothing — the same objection this note
 makes against encoding A, reached from the other side.
@@ -506,10 +504,6 @@ records with no evidence in any sample, so 877 records change in that one field
 and nothing else. That distinction is why the equivalence result above holds,
 but it does not reduce the breakage inventory, which turns only on whether an
 address moved.
-
-An earlier revision of this note reported 311 moved addresses and 242 under
-retired-only. Those came from a prototype that left `schema_version` at 1,
-which Question 1a does not permit; they are superseded.
 
 ### Exhaustive breakage inventory
 
@@ -671,10 +665,8 @@ does not change. Under that reading the encoding is a `schema_version` 1 → 2
 change, needs no epoch turn and no headline gap, and legacy records can be
 re-encoded under their existing epochs.
 
-**An earlier version of this section concluded that the two decisions were
-therefore independent, and either could be taken first or alone. That was
-wrong**, and the correction came from review (Steve, on PR #2444).
-`RUN_SCHEMA_VERSION` is not a decoding axis today. `validate_run`
+**The two decisions are nonetheless not independent, and neither can be taken
+alone.** `RUN_SCHEMA_VERSION` is not a decoding axis today. `validate_run`
 (`validate.rs:401`) compares the record's version against the single current
 constant and returns `UnsupportedSchemaVersion` without evaluating anything
 else, and `lib.rs:139` states the intent: "there is no compatibility path, by

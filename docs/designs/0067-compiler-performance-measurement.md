@@ -525,9 +525,8 @@ maintainer ruling, and the second is a prerequisite for the other two rather
 than a preference among them.
 
 (Figures throughout are the 2026-08-16 corpus the analysis was performed on.
-Re-measured 2026-08-23 at rebase: 1,619 records, 3,470.7 MiB, growth
-unchanged at ~284 MiB/day — the supporting note carries the details. The
-trend the amendment addresses has continued exactly as projected.)
+Re-measured 2026-08-23: 1,619 records, 3,470.7 MiB, growth unchanged at
+~284 MiB/day — the supporting note carries the details.)
 
 ### Question 1: which axis owns a change to the record encoding?
 
@@ -572,10 +571,8 @@ to become.
 
 ### Question 1a: what must the reader contract become?
 
-This amendment originally claimed the encoding could be adopted for new records
-without compacting anything. **That claim was wrong**, and the correction is
-Steve's on the pull request: `schema_version` today is a refusal marker, not a
-compatibility axis.
+`schema_version` today is a refusal marker, not a compatibility axis — which
+is what makes this question load-bearing rather than housekeeping.
 
 `validate_run` (`crates/rue-perf-schema/src/validate.rs:401`) compares
 `run.schema_version` against the single constant `RUN_SCHEMA_VERSION` and, on
@@ -623,9 +620,8 @@ The dual-reader is what makes the two decisions separable at all. Without it the
 only alternative is an atomic cutover — the reader flip and the corpus
 conversion landing at the same instant — which is not achievable across a
 repository merge and a data-branch push, and whose failure window is the silent
-one described above. Steve's review named both routes; this amendment takes the
-first, and says plainly that the second is not implementable rather than merely
-less attractive.
+one described above: the atomic cutover is not implementable, not merely less
+attractive.
 
 ### Question 2: may published records be re-encoded?
 
@@ -658,9 +654,9 @@ result: the tip falls from 1,482.9 MiB to 54.3 MiB and parses in 0.34s instead
 of 18.48s.
 
 Every re-encoded-tip figure in this amendment was serialized with **one digest
-per process**. ADR-0071 Amendment 1 now splits that digest in two so the
-encoding survives a parallel boundary epoch, which adds a measured 6.7 MiB of
-digests across the branch: the tip becomes **61.0 MiB** rather than 54.3, a 24×
+per process**. ADR-0071 Amendment 1 splits that digest in two so the encoding
+survives a parallel boundary epoch, which adds a measured 6.7 MiB of digests
+across the branch: the tip becomes **61.0 MiB** rather than 54.3, a 24×
 checkout reduction rather than 27×. Parse time is unaffected at this scale. The
 pack and fetch consequences are bounded by that same 6.7 MiB before compression
 and were not separately measured; the implementing change owes both
@@ -694,10 +690,9 @@ Two failure modes are worth naming because they differ sharply:
   are unguarded, and six of the nine pins that must move belong to those two
   retired epochs.
 
-  An earlier draft of this amendment made "extend `unindexed()` to every epoch
-  declaring a baseline" the condition of acceptance. **That is not
-  implementable as stated**, and the correction is Steve's on the pull request:
-  the gate never sees a retired epoch's records. `rue-bench staleness-inputs`
+  Extending `unindexed()` to cover every epoch declaring a baseline is **not
+  implementable**: the gate never sees a retired epoch's records.
+  `rue-bench staleness-inputs`
   selects the epoch holding each platform's newest point and nothing else
   (RUE-1542), so those records are never materialized into the data root
   `derive` reads. Editing the rule cannot make it inspect data that was not
@@ -792,9 +787,6 @@ archived tag. Under either force-push variant, that recovery is impossible once
 GitHub's maintenance runs.
 
 ### Relationship to the other amendment
-
-An earlier draft of this section claimed the two amendments were independent and
-could land "in either order". They are not, and cannot. Corrected:
 
 **The dual-version reader of Question 1a is a prerequisite for both, and must
 land first.** Until readers implement v1 and v2 together, a v2 record and a v1
