@@ -464,6 +464,16 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
         &[],
     ),
+    // Same empty-view debt as the spec-corpus entries (model_gaps/spec.rs):
+    // an empty `[T; 0]` source materializes its pointer word as
+    // `@int_to_ptr(0)`, which the oracle does not model and never needs to —
+    // every read is guarded by `i < len` with len 0 (RUE-1610 coverage).
+    Entry::new(
+        "cli.slices",
+        "struct_element_slice_empty_view",
+        intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
+        &[],
+    ),
     Entry::new(
         "cli.std_core",
         "std_core_m1_smoke",
