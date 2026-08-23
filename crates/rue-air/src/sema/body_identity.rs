@@ -275,6 +275,27 @@ pub trait DurableAnonymousSource<K, M> {
         Vec::new()
     }
 
+    /// Whether one named method of an anonymous struct returns a borrow and
+    /// whether it returns an inout, or `None` when the nominal declares no such
+    /// method.
+    ///
+    /// The default answers from [`Self::anonymous_methods`], which is correct
+    /// but projects every parameter and result type of every method to read two
+    /// flags that the durable signature already carries. A compiler-owned
+    /// source should override it to read those flags directly: this is asked
+    /// once per method call on a trusted anonymous accessor, and the projection
+    /// it avoids substitutes the producer's generic environment into each type.
+    fn anonymous_method_return_modes(
+        &self,
+        key: &AnonymousNominalKey<K, M>,
+        name: &str,
+    ) -> Option<(bool, bool)> {
+        self.anonymous_methods(key)
+            .into_iter()
+            .find(|method| method.name.as_ref() == name)
+            .map(|method| (method.returns_borrow, method.returns_inout))
+    }
+
     /// Type-valued lexical captures carried by an anonymous producer. Member
     /// bodies use these exact facts to restore the producer's generic
     /// environment without consulting an analyzer-owned epoch.

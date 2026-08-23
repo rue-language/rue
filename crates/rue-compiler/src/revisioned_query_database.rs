@@ -22919,6 +22919,28 @@ impl rue_air::DurableAnonymousSource<crate::StableDefinitionKey, ModuleId>
             .unwrap_or_default()
     }
 
+    fn anonymous_method_return_modes(
+        &self,
+        key: &crate::AnonymousNominalKey,
+        name: &str,
+    ) -> Option<(bool, bool)> {
+        // The two flags are carried verbatim by the durable signature, so this
+        // reads them where they are written instead of projecting every
+        // parameter and result type of every method to find them again.
+        // Method order is the declaration order the projection preserves, so
+        // the first match here is the first match there.
+        let nominal = self.anonymous_nominal(key)?;
+        let crate::durable_semantics::DurableAnonymousNominalShape::Struct { methods, .. } =
+            &nominal.shape
+        else {
+            return None;
+        };
+        methods
+            .iter()
+            .find(|method| method.name.as_ref() == name)
+            .map(|method| (method.returns_borrow, method.returns_inout))
+    }
+
     fn anonymous_type_captures(
         &self,
         key: &crate::AnonymousNominalKey,

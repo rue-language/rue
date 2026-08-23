@@ -1875,14 +1875,12 @@ where
                 .anonymous_definition_module(&durable)
                 .is_some_and(|module| self.source.module_is_trusted_standard_library(&module));
             if trusted
-                && let Some(method) = self
+                && let Some((returns_borrow, returns_inout)) = self
                     .source
-                    .anonymous_methods(&durable)
-                    .into_iter()
-                    .find(|method| method.name.as_ref() == self.interner.resolve(&name))
+                    .anonymous_method_return_modes(&durable, self.interner.resolve(&name))
             {
-                info.returns_borrow = method.returns_borrow;
-                info.returns_inout = method.returns_inout;
+                info.returns_borrow = returns_borrow;
+                info.returns_inout = returns_inout;
                 return info;
             }
         }
