@@ -2184,6 +2184,122 @@ dec_literal = "d" ;
     }
 
     #[test]
+    fn grammar_sync_keeps_c_ffi_items_and_productions_reachable() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        let appendix_dir = spec_dir.path().join("appendices");
+        fs::create_dir(&appendix_dir).unwrap();
+        let source = r#"
+<!-- grammar-sync(id="9.3:1a", production="item", role="source", relation="contains", symbol="extern_block") -->
+<!-- grammar-sync(id="9.3:1a", production="item", role="source", relation="contains", symbol="extern_export") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_block", role="source") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_fn", role="source") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_result", role="source") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_export", role="source") -->
+```ebnf
+item          = function | extern_block | extern_export | struct_def ;
+extern_block  = "extern" STRING "{" { extern_fn } "}" ;
+extern_fn     = "fn" IDENT "(" [ params ] ")" [ extern_result ] ";" ;
+extern_result = "->" type ;
+extern_export = "pub" "extern" STRING [ "unchecked" ] "fn" IDENT "(" [ params ] ")" [ result ] "{" block "}" ;
+```
+"#;
+        let appendix = r#"
+<!-- grammar-sync(id="9.3:1a", production="item", role="appendix", relation="contains", symbol="extern_block") -->
+<!-- grammar-sync(id="9.3:1a", production="item", role="appendix", relation="contains", symbol="extern_export") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_block", role="appendix") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_fn", role="appendix") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_result", role="appendix") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_export", role="appendix") -->
+```ebnf
+item          = function | extern_block | extern_export | struct_def ;
+extern_block  = "extern" STRING "{" { extern_fn } "}" ;
+extern_fn     = "fn" IDENT "(" [ params ] ")" [ extern_result ] ";" ;
+extern_result = "->" type ;
+extern_export = "pub" "extern" STRING [ "unchecked" ] "fn" IDENT "(" [ params ] ")" [ result ] "{" block "}" ;
+function      = "function" ;
+struct_def    = "struct" ;
+STRING        = "string" ;
+IDENT         = "identifier" ;
+params        = "params" ;
+type          = "type" ;
+result        = "result" ;
+block         = "block" ;
+```
+"#;
+        fs::write(spec_dir.path().join("foreign-boundary.md"), source).unwrap();
+        let appendix_path = appendix_dir.join("A-grammar.md");
+        fs::write(&appendix_path, appendix).unwrap();
+        assert!(validate_grammar_consistency(spec_dir.path()).is_ok());
+
+        fs::write(
+            &appendix_path,
+            appendix.replace(
+                "item          = function | extern_block | extern_export | struct_def ;",
+                "item          = function | extern_block | struct_def ;",
+            ),
+        )
+        .unwrap();
+        let error = validate_grammar_consistency(spec_dir.path()).unwrap_err();
+        assert!(error.contains("contain `extern_export`"), "{error}");
+
+        fs::write(
+            &appendix_path,
+            appendix.replace(
+                "extern_block  = \"extern\" STRING \"{\" { extern_fn } \"}\" ;",
+                "extern_block  = \"extern\" STRING \"{\" { extern_fn } \"}\" \"broken\" ;",
+            ),
+        )
+        .unwrap();
+        let error = validate_grammar_consistency(spec_dir.path()).unwrap_err();
+        assert!(
+            error.contains("extern_block") && error.contains("differs"),
+            "{error}"
+        );
+
+        fs::write(
+            &appendix_path,
+            appendix.replace(
+                "extern_fn     = \"fn\" IDENT \"(\" [ params ] \")\" [ extern_result ] \";\" ;",
+                "extern_fn     = \"fn\" IDENT \"(\" [ params ] \")\" [ extern_result ] \"broken\" ;",
+            ),
+        )
+        .unwrap();
+        let error = validate_grammar_consistency(spec_dir.path()).unwrap_err();
+        assert!(
+            error.contains("extern_fn") && error.contains("differs"),
+            "{error}"
+        );
+
+        fs::write(
+            &appendix_path,
+            appendix.replace(
+                "extern_result = \"->\" type ;",
+                "extern_result = \"=>\" type ;",
+            ),
+        )
+        .unwrap();
+        let error = validate_grammar_consistency(spec_dir.path()).unwrap_err();
+        assert!(
+            error.contains("extern_result") && error.contains("differs"),
+            "{error}"
+        );
+
+        fs::write(
+            &appendix_path,
+            appendix.replace(
+                "extern_export = \"pub\" \"extern\" STRING [ \"unchecked\" ] \"fn\" IDENT \"(\" [ params ] \")\" [ result ] \"{\" block \"}\" ;",
+                "extern_export = \"pub\" \"extern\" STRING [ \"unchecked\" ] \"fn\" IDENT \"(\" [ params ] \")\" [ result ] \"{\" block \"}\" \"broken\" ;",
+            ),
+        )
+        .unwrap();
+        let error = validate_grammar_consistency(spec_dir.path()).unwrap_err();
+        assert!(
+            error.contains("extern_export") && error.contains("differs"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn test_parse_spec_comment() {
         // Simple shortcode without category defaults to informative
         let (id, cat) = parse_spec_comment("{{ rule(id=\"3.1:1\") }}")

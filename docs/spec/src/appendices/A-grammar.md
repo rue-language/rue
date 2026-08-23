@@ -16,6 +16,13 @@ Rue. The EBNF fragments that appear inline in Chapters 5 and 6 are
 the construct under discussion; where any of them differs from this appendix,
 this appendix governs.
 
+<!-- grammar-sync(id="9.3:1a", production="item", role="appendix", relation="contains", symbol="extern_block") -->
+<!-- grammar-sync(id="9.3:1a", production="item", role="appendix", relation="contains", symbol="extern_export") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_block", role="appendix") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_fn", role="appendix") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_result", role="appendix") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_export", role="appendix") -->
+
 <!-- grammar-sync(id="2.1:26", production="INTEGER", role="appendix", relation="contains", symbol="byte_literal") -->
 <!-- grammar-sync(id="2.1:26", production="byte_literal", role="appendix") -->
 <!-- grammar-sync(id="2.1:26", production="byte_char", role="appendix") -->
@@ -29,7 +36,7 @@ this appendix governs.
 ```ebnf
 (* Program structure *)
 program        = { item } ;
-item           = function | struct_def | enum_def | drop_fn | const_decl ;
+item           = function | extern_block | extern_export | struct_def | enum_def | drop_fn | const_decl ;
 
 (* Directives and intrinsics *)
 directives     = { directive } ;
@@ -51,6 +58,14 @@ params         = param { "," param } [ "," ] ;
 param          = [ param_mode ] IDENT ":" type ;
 param_mode     = "comptime" | "inout" | "borrow" ;
 block          = { statement } [ expression ] ;
+
+(* C foreign boundary declarations. Preview, ABI, and FFI-safety requirements
+   are legality rules rather than grammar. *)
+extern_block   = "extern" STRING "{" { extern_fn } "}" ;
+extern_fn      = "fn" IDENT "(" [ params ] ")" [ extern_result ] ";" ;
+extern_result  = "->" type ;
+extern_export  = "pub" "extern" STRING [ "unchecked" ] "fn" IDENT
+                 "(" [ params ] ")" [ result ] "{" block "}" ;
 
 (* Structs: fields first (comma-separated), then inline methods *)
 struct_def     = directives [ "pub" ] [ "linear" ]

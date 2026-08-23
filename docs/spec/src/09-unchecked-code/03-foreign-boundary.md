@@ -21,6 +21,35 @@ foreign *call* requires a `checked` block, § 9.1); an *export* body is ordinary
 Rue code. The rules below govern what happens when control, a trap, or ownership
 crosses this boundary.
 
+{{ rule(id="9.3:1a", cat="syntax") }}
+
+The C foreign-boundary declarations have the following syntax. This is a
+syntactic description only: the `c_ffi` preview gate, ABI and FFI-safety
+requirements, checked-call rule, and other legality constraints are specified
+below and are not encoded by this grammar. The ABI position is a `STRING`
+lexical token.
+
+<!-- grammar-sync(id="9.3:1a", production="item", role="source", relation="contains", symbol="extern_block") -->
+<!-- grammar-sync(id="9.3:1a", production="item", role="source", relation="contains", symbol="extern_export") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_block", role="source") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_fn", role="source") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_result", role="source") -->
+<!-- grammar-sync(id="9.3:1a", production="extern_export", role="source") -->
+
+```ebnf
+extern_block  = "extern" STRING "{" { extern_fn } "}" ;
+extern_fn     = "fn" IDENT "(" [ params ] ")" [ extern_result ] ";" ;
+extern_result = "->" type ;
+extern_export = "pub" "extern" STRING [ "unchecked" ] "fn" IDENT
+                "(" [ params ] ")" [ result ] "{" block "}" ;
+```
+
+{{ rule(id="9.3:1b", cat="legality-rule") }}
+
+The ABI `STRING` in a foreign declaration or export **MUST** have the value
+`"C"`. Any other ABI string is unsupported in this version and is rejected at
+compile time.
+
 ## Abort at the boundary
 
 {{ rule(id="9.3:2", cat="dynamic-semantics") }}
