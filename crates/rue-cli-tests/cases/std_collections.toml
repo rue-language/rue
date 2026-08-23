@@ -175,27 +175,10 @@ fn main() -> i32 {
 
 # Insert / lookup / overwrite / remove / re-insert, all at i64::MIN, which
 # previously trapped with "integer overflow" on the very first insert.
-#
-# NOT `differential_opt`, and deliberately so: this case's own shape trips a
-# SEPARATE, PRE-EXISTING optimizer bug that has nothing to do with the key. On
-# trunk's unmodified `std/intmap.rue`, at -O2 and -O3 only,
-#
-#     let mut m = M.new(0);
-#     m.insert(42, 7);
-#     println("contains=" + std.fmt.bool_to_string(m.contains(42)));
-#     match m.get(99) { O.Some(v) => ..., O.None => ... }   // takes Some(0)!
-#
-# reads a `None` returned by `IntMap.get` as `Some(filler)`. It needs no
-# negative key, no i64::MIN and no growth — an ordinary key 42 reproduces it —
-# and it disappears if the `bool_to_string(<call>)` concatenation before the
-# lookup is removed. Marking this case `differential_opt` would report that
-# optimizer bug as a std-library regression at the wrong address, so the
-# opt-level sweep is left off HERE and carried by the two cases below, whose
-# assertions do not sit downstream of that shape. See the meta note filed with
-# RUE-1709 for the standalone repro.
 [[case]]
 name = "intmap_key_i64_min_full_lifecycle"
 description = "i64::MIN works as an ordinary key through insert, get, contains, overwrite, remove and re-insert (RUE-1709)."
+differential_opt = true
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
 exit_code = 0

@@ -248,17 +248,47 @@ pub trait CfgLowerAdapter: TerminatorAdapter + ValueLowerAdapter {
     fn terminator_rationale(&self, plan: &TerminatorPlan) -> Option<String>;
 }
 
-fn next_ordered_block(ctx: &CfgLowerContext<'_>, block: BlockId) -> Option<BlockId> {
-    let index = ctx
-        .cfg
-        .blocks()
-        .iter()
-        .position(|candidate| candidate.id == block)?;
-    ctx.cfg.blocks().get(index + 1).map(|block| block.id)
+/// The block visiting order lowering uses, plus the inverse lookup the
+/// fallthrough policy needs.
+///
+/// Lowering materializes a CFG value into whichever block is being lowered when
+/// the value is first demanded, so the visiting order has to place every
+/// definition's block before every block that uses it (RUE-1758). The order
+/// comes from [`rue_cfg::Cfg::block_lowering_order`], which derives it from the
+/// dominator tree the verifier already holds every operand to; it equals arena
+/// order whenever arena order is itself such an order.
+pub(crate) struct BlockOrder {
+    blocks: Vec<BlockId>,
+    /// Position in `blocks` by raw block id, which is also the block's arena
+    /// index.
+    position: Vec<u32>,
+}
+
+impl BlockOrder {
+    fn of(ctx: &CfgLowerContext<'_>) -> Self {
+        let blocks = ctx.cfg.block_lowering_order();
+        let mut position = vec![0; ctx.cfg.block_count()];
+        for (index, block) in blocks.iter().enumerate() {
+            position[block.as_u32() as usize] = index as u32;
+        }
+        Self { blocks, position }
+    }
+
+    fn blocks(&self) -> &[BlockId] {
+        &self.blocks
+    }
+
+    /// The block emitted immediately after `block`, or `None` at the end of the
+    /// function.
+    fn next(&self, block: BlockId) -> Option<BlockId> {
+        let index = *self.position.get(block.as_u32() as usize)? as usize;
+        self.blocks.get(index + 1).copied()
+    }
 }
 
 fn moves_for_edge<A: TerminatorAdapter>(
     ctx: &CfgLowerContext<'_>,
+    order: &BlockOrder,
     adapter: &mut A,
     source_values: &[CfgValue],
     target: BlockId,
@@ -323,7 +353,7 @@ fn moves_for_edge<A: TerminatorAdapter>(
     EdgePlan {
         target,
         moves,
-        fallthrough: next_ordered_block(ctx, source_block) == Some(target),
+        fallthrough: order.next(source_block) == Some(target),
     }
 }
 
@@ -356,6 +386,7 @@ fn return_value<A: TerminatorAdapter>(
 /// Build the one canonical plan for a CFG terminator.
 pub(crate) fn plan_terminator<A: TerminatorAdapter>(
     ctx: &CfgLowerContext<'_>,
+    order: &BlockOrder,
     adapter: &mut A,
     block: &BasicBlock,
     fn_name: &str,
@@ -365,6 +396,7 @@ pub(crate) fn plan_terminator<A: TerminatorAdapter>(
         Terminator::Goto { target, .. } => TerminatorPlan::Goto {
             edge: moves_for_edge(
                 ctx,
+                order,
                 adapter,
                 ctx.cfg.get_goto_args(&block.terminator),
                 *target,
@@ -381,6 +413,7 @@ pub(crate) fn plan_terminator<A: TerminatorAdapter>(
             let condition = adapter.materialize_value(*cond, condition_plan).primary;
             let then_edge = moves_for_edge(
                 ctx,
+                order,
                 adapter,
                 ctx.cfg.get_branch_then_args(&block.terminator),
                 *then_block,
@@ -388,6 +421,7 @@ pub(crate) fn plan_terminator<A: TerminatorAdapter>(
             );
             let mut else_edge = moves_for_edge(
                 ctx,
+                order,
                 adapter,
                 ctx.cfg.get_branch_else_args(&block.terminator),
                 *else_block,
@@ -469,6 +503,10 @@ pub(crate) fn plan_terminator<A: TerminatorAdapter>(
 /// Lower every CFG block through the same block order, label policy, and
 /// terminator planner.  The optional debug sink observes these exact plans;
 /// it does not invoke a presentation-specific lowerer.
+///
+/// Blocks are visited in [`BlockOrder`], not arena order: a value is emitted
+/// into whichever block first demands it, so a use must never be lowered
+/// before its definition's block (RUE-1758).
 pub(crate) fn lower_cfg<A: CfgLowerAdapter>(
     ctx: &CfgLowerContext<'_>,
     adapter: &mut A,
@@ -476,6 +514,7 @@ pub(crate) fn lower_cfg<A: CfgLowerAdapter>(
     ret_reg_budget: u32,
 ) {
     adapter.preload_by_ref_params();
+    let order = BlockOrder::of(ctx);
 
     for block in ctx.cfg.blocks() {
         for (index, &(value, ty)) in block.params.iter().enumerate() {
@@ -483,7 +522,8 @@ pub(crate) fn lower_cfg<A: CfgLowerAdapter>(
         }
     }
 
-    for block in ctx.cfg.blocks() {
+    for &block_id in order.blocks() {
+        let block = ctx.cfg.get_block(block_id);
         let mut block_info = debug_info.as_deref_mut().map(|_| crate::BlockLoweringInfo {
             block_id: block.id,
             instructions: Vec::new(),
@@ -529,7 +569,14 @@ pub(crate) fn lower_cfg<A: CfgLowerAdapter>(
             }
         }
 
-        let plan = plan_terminator(ctx, adapter, block, ctx.cfg.fn_name(), ret_reg_budget);
+        let plan = plan_terminator(
+            ctx,
+            &order,
+            adapter,
+            block,
+            ctx.cfg.fn_name(),
+            ret_reg_budget,
+        );
         let term_start = adapter.instruction_count();
         adapter.emit_terminator(plan.clone());
         let term_end = adapter.instruction_count();
@@ -1176,9 +1223,53 @@ mod tests {
         let second = cfg.new_block();
         let third = cfg.new_block();
         let ctx = crate::cfg_lower::CfgLowerContext::new(&cfg, &pool);
-        assert_eq!(next_ordered_block(&ctx, first), Some(second));
-        assert_eq!(next_ordered_block(&ctx, second), Some(third));
-        assert_eq!(next_ordered_block(&ctx, third), None);
+        let order = BlockOrder::of(&ctx);
+        assert_eq!(order.next(first), Some(second));
+        assert_eq!(order.next(second), Some(third));
+        assert_eq!(order.next(third), None);
+    }
+
+    /// A continuation block that an inline splice appends after the successors
+    /// it dominates must still be lowered before them, or their on-demand
+    /// materialization emits the continuation's definitions into themselves
+    /// (RUE-1758).
+    #[test]
+    fn lowering_order_puts_a_dominating_continuation_before_its_successors() {
+        let pool = FrozenTypeInternPool::new();
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "spliced_continuation".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let some_arm = cfg.new_block();
+        let none_arm = cfg.new_block();
+        let join = cfg.new_block();
+        // The splice appends its continuation last even though it dominates the
+        // arms the original call block already branched to.
+        let continuation = cfg.new_block();
+        cfg.entry = entry;
+        let condition = cfg.append_inst(entry, inst(CfgInstData::BoolConst(true), Type::BOOL));
+        let scrutinee = cfg.append_inst(continuation, inst(CfgInstData::Const(0), Type::I64));
+        cfg.set_branch(entry, condition, continuation, [], continuation, []);
+        cfg.set_switch(continuation, scrutinee, [(0, some_arm)], none_arm);
+        cfg.set_goto(some_arm, join, []);
+        cfg.set_goto(none_arm, join, []);
+        cfg.set_return(join, None);
+
+        let ctx = crate::cfg_lower::CfgLowerContext::new(&cfg, &pool);
+        let order = BlockOrder::of(&ctx);
+        assert_eq!(
+            order.blocks(),
+            [entry, continuation, some_arm, none_arm, join]
+        );
+    }
+
+    /// Arena order is already a valid lowering order for an ordinary diamond,
+    /// so the emitted layout must be left exactly as it was.
+    #[test]
+    fn lowering_order_keeps_a_valid_arena_order_unchanged() {
+        let (cfg, pool, _interner) = diamond_fixture();
+        let ctx = crate::cfg_lower::CfgLowerContext::new(&cfg, &pool);
+        let order = BlockOrder::of(&ctx);
+        let arena: Vec<BlockId> = cfg.blocks().iter().map(|block| block.id).collect();
+        assert_eq!(order.blocks(), arena.as_slice());
     }
 
     #[test]

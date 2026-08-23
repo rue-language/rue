@@ -1,0 +1,348 @@
+# Lowering blocks in an order where definitions precede their uses (RUE-1758).
+#
+# CFG->MIR lowering materializes a value the first time some block asks for it,
+# into whichever block is being lowered at that moment. That is correct only
+# while blocks are visited in an order that places a definition's block before
+# every block that uses it — and lowering used the CFG's arena order, which is
+# not guaranteed to be one.
+#
+# The inline splice is what breaks it. Splicing a callee into a call site moves
+# everything after the call into a fresh continuation block, and the
+# continuation gets the highest block id while the call block's original
+# successors keep their low ones. Arena order then visits a use before its
+# definition: the successor block lowers the continuation's `call` into itself,
+# and the continuation's own terminator is left switching on a vreg nothing has
+# defined yet.
+#
+# What that looked like from Rue: at -O2/-O3 only, a `None` returned by a struct
+# method was read as `Some(<uninitialized payload>)`, because the `switch` on the
+# Option's discriminant compared garbage. It needed a call small enough to inline
+# between the method call and the match — nothing about `Option`, `std`, or the
+# payload type.
+#
+# Every case below is `differential_opt`: the whole class is invisible unless the
+# same program is run at all four levels and its stdout compared.
+
+[section]
+id = "cli.inlined_continuation_lowering_order"
+name = "Inlined-continuation lowering order"
+description = "Values defined after an inlined call are lowered before the blocks that consume them, at every optimization level (RUE-1758)."
+
+# --- The reported shape, through the real std ------------------------------
+[[case]]
+name = "std_intmap_missing_key_stays_none_after_an_inlined_call"
+description = "`IntMap.get` on an absent key answers `None` even when an inlinable call sits between the lookup and the match (RUE-1758)."
+differential_opt = true
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """contains=true
+get=none
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let M = std.intmap.IntMap(i64);
+    let O = std.option.Option(i64);
+    let mut m = M.new(0);
+    m.insert(42, 7);
+    // `bool_to_string` is small enough for the -O2 inliner, so the lookup and
+    // the match below end up in the splice's continuation block.
+    println("contains=" + std.fmt.bool_to_string(m.contains(42)));
+    match m.get(99) {
+        O.Some(v) => { println("get=" + @to_string(v)); },
+        O.None => { println("get=none"); },
+    }
+    0
+}
+""" }]
+
+# --- The same shape with no std collection involved -------------------------
+# The minimal reduction: a hand-written `Option` enum, a hand-written struct
+# method returning it, and one inlinable free function taking that method's
+# result. `std` appears only because `@to_string`/`println` need `StrBuf`.
+[[case]]
+name = "hand_written_option_none_survives_an_inlined_call"
+description = "A hand-written Option returned by a struct method keeps its None discriminant across an inlined call (RUE-1758)."
+differential_opt = true
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """tag=1
+get=none
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn Opt(comptime T: type) -> type {
+    enum {
+        Some(T),
+        None,
+    }
+}
+
+fn tag(b: bool) -> i64 {
+    if b { 1 } else { 0 }
+}
+
+fn Map(comptime V: type) -> type {
+    struct {
+        a: V,
+
+        fn get(borrow self, k: i64) -> Opt(V) {
+            let O = Opt(V);
+            if k == 42 {
+                return O.Some(self.a);
+            }
+            O.None
+        }
+
+        fn contains(borrow self, k: i64) -> bool {
+            let O = Opt(V);
+            match self.get(k) {
+                O.Some(v) => true,
+                O.None => false,
+            }
+        }
+    }
+}
+
+fn main() -> i32 {
+    let M = Map(i64);
+    let O = Opt(i64);
+    let m = M { a: 7 };
+    println("tag=" + @to_string(tag(m.contains(42))));
+    match m.get(99) {
+        O.Some(v) => { println("get=" + @to_string(v)); },
+        O.None => { println("get=none"); },
+    }
+    0
+}
+""" }]
+
+# --- Both arms, so a fix cannot pass by answering `None` everywhere ----------
+[[case]]
+name = "present_and_absent_keys_both_answer_correctly"
+description = "Present keys still return their value and absent keys still return None, with an inlinable call before each match (RUE-1758)."
+differential_opt = true
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """hit_tag=1
+hit=7
+miss_tag=0
+miss=none
+second_tag=1
+second=3
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn tag(b: bool) -> i64 {
+    if b { 1 } else { 0 }
+}
+
+fn main() -> i32 {
+    let M = std.intmap.IntMap(i64);
+    let O = std.option.Option(i64);
+    let mut m = M.new(0);
+    m.insert(42, 7);
+    m.insert(11, 3);
+
+    println("hit_tag=" + @to_string(tag(m.contains(42))));
+    match m.get(42) {
+        O.Some(v) => { println("hit=" + @to_string(v)); },
+        O.None => { println("hit=none"); },
+    }
+
+    println("miss_tag=" + @to_string(tag(m.contains(99))));
+    match m.get(99) {
+        O.Some(v) => { println("miss=" + @to_string(v)); },
+        O.None => { println("miss=none"); },
+    }
+
+    println("second_tag=" + @to_string(tag(m.contains(11))));
+    match m.get(11) {
+        O.Some(v) => { println("second=" + @to_string(v)); },
+        O.None => { println("second=none"); },
+    }
+    0
+}
+""" }]
+
+# --- Payload width is not what decides it -----------------------------------
+# A one-byte `bool` payload and a three-slot struct payload both took the wrong
+# arm before the fix, so neither the enum's slot count nor the payload's width
+# is part of the mechanism: the discriminant read itself was the garbage.
+[[case]]
+name = "one_byte_payload_option_keeps_its_none"
+description = "An Option(bool) returned by a struct method keeps its None across an inlined call (RUE-1758)."
+differential_opt = true
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """bool_tag=1
+bool=none
+bool_hit=true
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn Opt(comptime T: type) -> type {
+    enum {
+        Some(T),
+        None,
+    }
+}
+
+fn tag(b: bool) -> i64 {
+    if b { 1 } else { 0 }
+}
+
+fn Box(comptime V: type) -> type {
+    struct {
+        held: V,
+
+        fn get(borrow self, k: i64) -> Opt(V) {
+            let O = Opt(V);
+            if k == 1 {
+                return O.Some(self.held);
+            }
+            O.None
+        }
+
+        fn has(borrow self, k: i64) -> bool {
+            let O = Opt(V);
+            match self.get(k) {
+                O.Some(v) => true,
+                O.None => false,
+            }
+        }
+    }
+}
+
+fn main() -> i32 {
+    let BB = Box(bool);
+    let OB = Opt(bool);
+    let bb = BB { held: true };
+    println("bool_tag=" + @to_string(tag(bb.has(1))));
+    match bb.get(2) {
+        OB.Some(v) => { println("bool=" + std.fmt.bool_to_string(v)); },
+        OB.None => { println("bool=none"); },
+    }
+    match bb.get(1) {
+        OB.Some(v) => { println("bool_hit=" + std.fmt.bool_to_string(v)); },
+        OB.None => { println("bool_hit=none"); },
+    }
+    0
+}
+""" }]
+
+[[case]]
+name = "multi_slot_payload_option_keeps_its_none"
+description = "An Option of a three-field struct keeps its None across an inlined call, and its Some still carries every field (RUE-1758)."
+differential_opt = true
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """point_tag=1
+point=none
+point_hit=15
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn Opt(comptime T: type) -> type {
+    enum {
+        Some(T),
+        None,
+    }
+}
+
+struct Point {
+    x: i64,
+    y: i64,
+    z: i64,
+}
+
+fn tag(b: bool) -> i64 {
+    if b { 1 } else { 0 }
+}
+
+struct PointBox {
+    a: i64,
+    b: i64,
+    c: i64,
+
+    fn get(borrow self, k: i64) -> Opt(Point) {
+        let O = Opt(Point);
+        if k == 1 {
+            return O.Some(Point { x: self.a, y: self.b, z: self.c });
+        }
+        O.None
+    }
+
+    fn has(borrow self, k: i64) -> bool {
+        let O = Opt(Point);
+        match self.get(k) {
+            O.Some(p) => true,
+            O.None => false,
+        }
+    }
+}
+
+fn main() -> i32 {
+    let OP = Opt(Point);
+    let pb = PointBox { a: 4, b: 5, c: 6 };
+    println("point_tag=" + @to_string(tag(pb.has(1))));
+    match pb.get(2) {
+        OP.Some(p) => { println("point=" + @to_string(p.x + p.y + p.z)); },
+        OP.None => { println("point=none"); },
+    }
+    match pb.get(1) {
+        OP.Some(p) => { println("point_hit=" + @to_string(p.x + p.y + p.z)); },
+        OP.None => { println("point_hit=none"); },
+    }
+    0
+}
+""" }]
+
+# --- AArch64 -----------------------------------------------------------------
+# The block visiting order lives in shared `terminator_plan::lower_cfg`, so both
+# backends emitted the same wrong MIR and both are fixed by the same change.
+# This runs the reported shape natively on an ARM64 host and still compiles and
+# links it everywhere else.
+[[case]]
+name = "aarch64_missing_key_stays_none_after_an_inlined_call"
+description = "The AArch64 backend answers None for an absent key at -O2, since the lowering order is shared policy (RUE-1758)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "--target", "aarch64-linux", "-O2", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 0
+stdout = """contains=true
+get=none
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let M = std.intmap.IntMap(i64);
+    let O = std.option.Option(i64);
+    let mut m = M.new(0);
+    m.insert(42, 7);
+    println("contains=" + std.fmt.bool_to_string(m.contains(42)));
+    match m.get(99) {
+        O.Some(v) => { println("get=" + @to_string(v)); },
+        O.None => { println("get=none"); },
+    }
+    0
+}
+""" }]
