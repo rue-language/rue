@@ -20,6 +20,9 @@ exclusive place, and uses `inout self` with an `-> inout T` result.
 
 {{ rule(id="6.6:2", cat="syntax") }}
 
+<!-- grammar-sync(id="6.6:2", production="primary", role="source", relation="contains", symbol="yield_expr") -->
+<!-- grammar-sync(id="6.6:2", production="yield_expr", role="source") -->
+
 ```ebnf
 accessor    = "fn" IDENT "(" accessor_self [ "," params ] ")"
               "->" accessor_result type "{" { statement } yield_expr [ ";" ] "}" ;

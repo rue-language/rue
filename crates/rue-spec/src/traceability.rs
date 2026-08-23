@@ -2300,6 +2300,59 @@ block         = "block" ;
     }
 
     #[test]
+    fn grammar_sync_keeps_yield_expr_reachable_and_exact() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        let appendix_dir = spec_dir.path().join("appendices");
+        fs::create_dir(&appendix_dir).unwrap();
+        let source = r#"
+<!-- grammar-sync(id="6.6:2", production="primary", role="source", relation="contains", symbol="yield_expr") -->
+<!-- grammar-sync(id="6.6:2", production="yield_expr", role="source") -->
+```ebnf
+primary    = expression | yield_expr ;
+yield_expr = "yield" expression ;
+```
+"#;
+        let appendix = r#"
+<!-- grammar-sync(id="6.6:2", production="primary", role="appendix", relation="contains", symbol="yield_expr") -->
+<!-- grammar-sync(id="6.6:2", production="yield_expr", role="appendix") -->
+```ebnf
+primary    = expression | yield_expr ;
+yield_expr = "yield" expression ;
+expression = "value" ;
+```
+"#;
+        fs::write(spec_dir.path().join("borrow-accessors.md"), source).unwrap();
+        let appendix_path = appendix_dir.join("A-grammar.md");
+        fs::write(&appendix_path, appendix).unwrap();
+        assert!(validate_grammar_consistency(spec_dir.path()).is_ok());
+
+        fs::write(
+            &appendix_path,
+            appendix.replace(
+                "primary    = expression | yield_expr ;",
+                "primary    = expression ;",
+            ),
+        )
+        .unwrap();
+        let error = validate_grammar_consistency(spec_dir.path()).unwrap_err();
+        assert!(error.contains("contain `yield_expr`"), "{error}");
+
+        fs::write(
+            &appendix_path,
+            appendix.replace(
+                "yield_expr = \"yield\" expression ;",
+                "yield_expr = \"yield\" expression \"drift\" ;",
+            ),
+        )
+        .unwrap();
+        let error = validate_grammar_consistency(spec_dir.path()).unwrap_err();
+        assert!(
+            error.contains("yield_expr") && error.contains("differs"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn test_parse_spec_comment() {
         // Simple shortcode without category defaults to informative
         let (id, cat) = parse_spec_comment("{{ rule(id=\"3.1:1\") }}")
