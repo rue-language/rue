@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::{fs, sync::Arc};
 
+use ahash::AHashMap;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{EnvFilter, Layer as _, fmt};
@@ -23,11 +24,11 @@ mod watch;
 use emit::EmitStage;
 #[cfg(test)]
 use emit::{EmitFrontendRoute, build_emit_frontend, emit_frontend_route, emit_requires_semantic};
-#[cfg(test)]
-use rue_compiler::unstable::update_for_presentation;
 use rue_compiler::unstable::{
     JsonDiagnostic, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,
 };
+#[cfg(test)]
+use rue_compiler::unstable::{Span, update_for_presentation};
 use rue_driver::{FilesystemCompilerHost, HostOpenRequest, SourceLoadError};
 
 use rue_compiler::{
@@ -36,7 +37,7 @@ use rue_compiler::{
 };
 #[cfg(test)]
 use rue_compiler::{CompilerSession, SourceMetadata, SourceSnapshot};
-use rue_error::{CompileError, ErrorCode};
+use rue_error::{CompileError, DiagnosticWrapper, ErrorCode};
 use rue_perf_schema::{
     ArtifactHitEvidence, BuildBoundary, CompilerBoundaryEvidence, CompilerBuildProfile,
     CompilerConfigurationEvidence, CompilerCriticalPathEvidence, CompilerInputClass,
@@ -746,6 +747,9 @@ fn with_import_migration_helps(errors: &CompileErrors) -> CompileErrors {
 
 struct DiagnosticOutput<'a> {
     format: ErrorFormat,
+    /// The path each file is known by, used to put a batch of diagnostics into
+    /// source order before it reaches a formatter.
+    paths: AHashMap<FileId, &'a str>,
     text: MultiFileFormatter<'a>,
     json: MultiFileJsonFormatter<'a>,
 }
@@ -754,9 +758,63 @@ impl<'a> DiagnosticOutput<'a> {
     fn new(format: ErrorFormat, sources: Vec<(FileId, SourceInfo<'a>)>) -> Self {
         Self {
             format,
+            paths: sources
+                .iter()
+                .map(|(file_id, info)| (*file_id, info.path))
+                .collect(),
             text: MultiFileFormatter::new(sources.clone()),
             json: MultiFileJsonFormatter::new(sources),
         }
+    }
+
+    /// Order a batch of diagnostics the way a reader walks the program: by the
+    /// path of the file each one lands in, then by byte offset within it.
+    ///
+    /// Two pressures decide diagnostic order, and only one of them is served by
+    /// the order the pipeline happens to publish in. Reproducibility is why an
+    /// order is defined at all -- two runs over the same inputs owe a consumer
+    /// byte-identical output, whatever `-j` was -- but reproducibility is
+    /// satisfied by *any* fixed order and so cannot pick one. Usefulness picks
+    /// it: a person reads a program top to bottom, and wants the first
+    /// complaint about it first.
+    ///
+    /// ADR-0063 already asks for exactly this -- "execution order never
+    /// determines presentation order", with batches sorted by stable source
+    /// identity, current source position, and producer order -- and this is
+    /// where that becomes true rather than incidental.
+    ///
+    /// It sorts at the render boundary rather than upstream on purpose. The
+    /// query engine's canonical ordering answers a different question -- which
+    /// diagnostics are the same diagnostic, for red/green identity -- and the
+    /// same ADR keeps current locations out of that comparison, as "a
+    /// separately stamped presentation projection". Sorting by position there
+    /// would couple a cursor's position back into the equality that decides
+    /// stamp reuse, invalidating the world every time a line moved. Here,
+    /// downstream of every stamp, position is free.
+    ///
+    /// The sort is stable, so diagnostics sharing a location keep the
+    /// publication order upstream has already fixed, and the result stays as
+    /// reproducible as its input. Spanless diagnostics belong to the
+    /// compilation rather than to any one line, so they precede it
+    /// (`None` sorts before `Some`).
+    fn in_source_order<'d, K>(
+        &self,
+        diagnostics: &'d [DiagnosticWrapper<K>],
+    ) -> Vec<&'d DiagnosticWrapper<K>> {
+        let mut ordered: Vec<&'d DiagnosticWrapper<K>> = diagnostics.iter().collect();
+        ordered.sort_by_key(|diagnostic| {
+            let span = diagnostic.span()?;
+            // The file id trails the path so that a file the caller never
+            // described still lands in one fixed place instead of tying with
+            // every other undescribed file.
+            Some((
+                self.paths.get(&span.file_id).copied().unwrap_or(""),
+                span.file_id.index(),
+                span.start,
+                span.end,
+            ))
+        });
+        ordered
     }
 
     /// Render one error. Under `--error-format json` a lone error is still
@@ -773,16 +831,27 @@ impl<'a> DiagnosticOutput<'a> {
     }
 
     fn render_errors(&self, errors: &CompileErrors) -> String {
+        let errors = CompileErrors::from(
+            self.in_source_order(errors.as_slice())
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
         match self.format {
-            ErrorFormat::Text => self.text.format_errors(errors),
-            ErrorFormat::Json => self.json.format_errors(errors),
+            ErrorFormat::Text => self.text.format_errors(&errors),
+            ErrorFormat::Json => self.json.format_errors(&errors),
         }
     }
 
     fn render_warnings(&self, warnings: &[CompileWarning]) -> String {
+        let warnings: Vec<CompileWarning> = self
+            .in_source_order(warnings)
+            .into_iter()
+            .cloned()
+            .collect();
         match self.format {
-            ErrorFormat::Text => self.text.format_warnings(warnings),
-            ErrorFormat::Json => self.json.format_warnings(warnings),
+            ErrorFormat::Text => self.text.format_warnings(&warnings),
+            ErrorFormat::Json => self.json.format_warnings(&warnings),
         }
     }
 
@@ -3064,6 +3133,72 @@ mod tests {
         let batch = batch.as_array().expect("a JSON array, not a bare object");
         assert_eq!(batch.len(), 1);
         assert_eq!(batch[0]["severity"], "error");
+    }
+
+    /// Two pressures decide diagnostic order, and only one of them picks a
+    /// specific order. Reproducibility is why one is fixed at all -- two runs
+    /// over the same inputs owe a consumer byte-identical output -- but *any*
+    /// fixed order satisfies that. Usefulness picks which: a reader walks a
+    /// program top to bottom and wants its first complaint first. So a batch
+    /// published in some other order comes out sorted by path and then by
+    /// offset, with the spanless diagnostics -- which belong to the compilation
+    /// rather than to a line -- ahead of it.
+    #[test]
+    fn json_batch_is_rendered_in_source_order() {
+        let main_source = "fn main() -> i32 { true }\n";
+        let helper_source = "pub fn helper() -> i32 { false }\n";
+        let helper = FileId::new(1);
+        let output = DiagnosticOutput::new(
+            ErrorFormat::Json,
+            vec![
+                (FileId::DEFAULT, SourceInfo::new(main_source, "main.rue")),
+                (helper, SourceInfo::new(helper_source, "helper.rue")),
+            ],
+        );
+
+        let at = |span| {
+            CompileError::new(
+                rue_error::ErrorKind::InternalError("located".to_string()),
+                span,
+            )
+        };
+        // Back to front and file-interleaved: no prefix of this input is
+        // already in the order a reader wants.
+        let errors = CompileErrors::from(vec![
+            at(Span::with_file(helper, 25, 30)),
+            at(Span::with_file(FileId::DEFAULT, 19, 23)),
+            at(Span::with_file(FileId::DEFAULT, 3, 7)),
+            CompileError::without_span(rue_error::ErrorKind::InternalError(
+                "no line to blame".to_string(),
+            )),
+        ]);
+
+        let rendered = output.render_errors(&errors);
+        let batch: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        let locations: Vec<String> = batch
+            .as_array()
+            .expect("a JSON array")
+            .iter()
+            .map(|diagnostic| {
+                match diagnostic["spans"]
+                    .as_array()
+                    .and_then(|spans| spans.first())
+                {
+                    Some(primary) => format!(
+                        "{}:{}:{}",
+                        primary["file"].as_str().expect("a span file"),
+                        primary["line"],
+                        primary["column"]
+                    ),
+                    None => "-".to_string(),
+                }
+            })
+            .collect();
+
+        assert_eq!(
+            locations,
+            ["-", "helper.rue:1:26", "main.rue:1:4", "main.rue:1:20"]
+        );
     }
 
     /// A graceful ICE (`ice_error!` -> `ErrorKind::InternalError`) is an
