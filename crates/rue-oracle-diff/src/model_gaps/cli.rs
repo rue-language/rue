@@ -324,6 +324,41 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
+    // RUE-1758: the inlined-continuation lowering-order cases assert on stdout
+    // rather than an exit code, because lowering a use before its definition
+    // produced a WRONG VALUE — a `None` read as `Some(<uninitialized>)` — not a
+    // trap. `println` is therefore the first thing the oracle model cannot
+    // follow in each, exactly as for the IntMap key-extreme cases below.
+    Entry::new(
+        "cli.inlined_continuation_lowering_order",
+        "hand_written_option_none_survives_an_inlined_call",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
+        &[],
+    ),
+    Entry::new(
+        "cli.inlined_continuation_lowering_order",
+        "multi_slot_payload_option_keeps_its_none",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
+        &[],
+    ),
+    Entry::new(
+        "cli.inlined_continuation_lowering_order",
+        "one_byte_payload_option_keeps_its_none",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
+        &[],
+    ),
+    Entry::new(
+        "cli.inlined_continuation_lowering_order",
+        "present_and_absent_keys_both_answer_correctly",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
+        &[],
+    ),
+    Entry::new(
+        "cli.inlined_continuation_lowering_order",
+        "std_intmap_missing_key_stays_none_after_an_inlined_call",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
+        &[],
+    ),
     // RUE-954: the literal-threading regression cases invoke a real dup(2)
     // syscall, which the oracle does not model.
     Entry::new(

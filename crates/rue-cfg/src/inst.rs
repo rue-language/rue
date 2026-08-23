@@ -2563,6 +2563,20 @@ impl Cfg {
         (0..self.blocks.len() as u32).map(BlockId)
     }
 
+    /// The order a backend must visit blocks in so that every value is emitted
+    /// before the code that consumes it (RUE-1758).
+    ///
+    /// Backends materialize a value into whichever block first demands it, so
+    /// the visiting order decides where a definition lands. `blocks()` order is
+    /// *usually* fine and is not guaranteed to be — an inline splice appends its
+    /// continuation after the successors it dominates. This is the dominator-tree
+    /// topological order that always takes the lowest available block id, so it
+    /// equals `blocks()` order whenever that order is already valid. See
+    /// `dominators::block_lowering_order` for the full argument.
+    pub fn block_lowering_order(&self) -> Vec<BlockId> {
+        crate::dominators::block_lowering_order(self)
+    }
+
     /// Drop every block `keep` rejects and renumber the survivors densely,
     /// rewriting every block reference in the graph (RUE-769).
     ///

@@ -54,9 +54,10 @@
 //!
 //! The pipeline consumers are value forwarding's Rule 1 dominance check
 //! (`opt/forward.rs`), natural-loop detection (`opt/loops.rs`), LICM
-//! (`opt/licm.rs`), and the structural verifier (`verify.rs`); the `idom` query
-//! itself is exercised only by this module's tests and carries a targeted allow
-//! below.
+//! (`opt/licm.rs`), the structural verifier (`verify.rs`), and
+//! [`block_lowering_order`] (published as [`Cfg::block_lowering_order`]), which
+//! turns the tree into the block order codegen must lower in (RUE-1758) and is
+//! this module's one consumer of `idom`.
 
 use crate::{BlockId, Cfg, Terminator};
 
@@ -201,9 +202,6 @@ impl DominatorTree {
 
     /// The immediate dominator of `block`, or `None` when `block` is the entry
     /// or is unreachable.
-    // Every call site is this module's own tests; the query is kept as the
-    // tree's basic inspection API alongside `dominates`.
-    #[allow(dead_code)]
     pub(crate) fn idom(&self, block: BlockId) -> Option<BlockId> {
         let i = block.as_u32() as usize;
         match self.idom.get(i).copied().flatten() {
@@ -232,6 +230,69 @@ impl DominatorTree {
             _ => a == b,
         }
     }
+}
+
+/// The order a backend must visit blocks in so that every value is emitted
+/// before the code that consumes it (RUE-1758).
+///
+/// CFG→MIR lowering materializes a value the first time it is asked for, into
+/// whichever block is being lowered at that moment. That is only correct when
+/// blocks are visited in an order where a definition's block always precedes
+/// every block that uses it. The verifier already establishes the premise that
+/// makes such an order exist: every operand's definition *dominates* its use
+/// (`verify.rs`), so any topological order of the dominator tree is a valid
+/// lowering order.
+///
+/// Arena order is *usually* such an order, which is why lowering used it — but
+/// it is not guaranteed to be one. An inline splice moves everything after the
+/// call site into a fresh continuation block, which gets the highest id while
+/// its consumers (the call block's original successors) keep their low ones;
+/// arena order then places a use before its definition and lowering emits the
+/// definition into the using block, leaving the real definition site reading an
+/// undefined vreg. RUE-1758 was exactly that: an `Option` returned by a struct
+/// method was switched on with garbage, so a `None` took the `Some` arm.
+///
+/// The order returned here is the dominator-tree topological order that always
+/// takes the lowest available block id, so it *equals* arena order whenever
+/// arena order is already valid, and only reorders the blocks that need it.
+/// Unreachable blocks are not in the dominator tree and cannot constrain
+/// anything; they follow every reachable block, so a value they mention is
+/// already materialized at its real definition site rather than inside dead
+/// code.
+///
+/// Published to consumers as [`Cfg::block_lowering_order`].
+pub(crate) fn block_lowering_order(cfg: &Cfg) -> Vec<BlockId> {
+    let n = cfg.block_count();
+    let dominators = DominatorTree::compute(cfg);
+
+    // Dominator-tree children, keyed by raw block index (== arena position).
+    let mut children: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for index in 0..n {
+        let block = BlockId::from_raw(index as u32);
+        if let Some(parent) = dominators.idom(block) {
+            children[parent.as_u32() as usize].push(index as u32);
+        }
+    }
+
+    let mut order = Vec::with_capacity(n);
+    let mut ready = std::collections::BinaryHeap::new();
+    if dominators.is_reachable(cfg.entry) {
+        ready.push(std::cmp::Reverse(cfg.entry.as_u32()));
+    }
+    while let Some(std::cmp::Reverse(index)) = ready.pop() {
+        order.push(BlockId::from_raw(index));
+        for &child in &children[index as usize] {
+            ready.push(std::cmp::Reverse(child));
+        }
+    }
+
+    for index in 0..n {
+        let block = BlockId::from_raw(index as u32);
+        if !dominators.is_reachable(block) {
+            order.push(block);
+        }
+    }
+    order
 }
 
 /// Number the dominator tree in preorder and record where each subtree ends.
@@ -476,6 +537,69 @@ mod tests {
         }
         assert!(dom.dominates(a, b));
         assert!(!dom.dominates(b, a));
+    }
+
+    #[test]
+    fn lowering_order_is_arena_order_when_arena_order_is_already_valid() {
+        // entry -> {then, else} -> join: every block already follows its idom.
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let then_block = cfg.new_block();
+        let else_block = cfg.new_block();
+        let join = cfg.new_block();
+        let cond = bool_const(&mut cfg, entry);
+        cfg.set_terminator(entry, branch(cond, then_block, else_block));
+        cfg.set_terminator(then_block, goto(join));
+        cfg.set_terminator(else_block, goto(join));
+        cfg.set_terminator(join, Terminator::Return { value: None });
+
+        assert_eq!(
+            block_lowering_order(&cfg),
+            vec![entry, then_block, else_block, join]
+        );
+    }
+
+    #[test]
+    fn lowering_order_hoists_a_spliced_continuation_above_its_successors() {
+        // The shape an inline splice leaves behind: the continuation dominates
+        // the arms the original call block branched to, but was appended after
+        // them, so arena order would visit a use before its definition.
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let some_arm = cfg.new_block();
+        let none_arm = cfg.new_block();
+        let join = cfg.new_block();
+        let continuation = cfg.new_block();
+        let cond = bool_const(&mut cfg, entry);
+        cfg.set_terminator(entry, branch(cond, continuation, continuation));
+        let taken = bool_const(&mut cfg, continuation);
+        cfg.set_terminator(continuation, branch(taken, some_arm, none_arm));
+        cfg.set_terminator(some_arm, goto(join));
+        cfg.set_terminator(none_arm, goto(join));
+        cfg.set_terminator(join, Terminator::Return { value: None });
+
+        assert_eq!(
+            block_lowering_order(&cfg),
+            vec![entry, continuation, some_arm, none_arm, join]
+        );
+    }
+
+    #[test]
+    fn lowering_order_puts_unreachable_blocks_after_every_reachable_one() {
+        // An unreachable block constrains nothing, so it must not be able to
+        // pull a reachable block's definition into dead code.
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let orphan = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.set_terminator(entry, goto(exit));
+        cfg.set_terminator(orphan, goto(exit));
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+
+        assert_eq!(block_lowering_order(&cfg), vec![entry, exit, orphan]);
     }
 
     #[test]
