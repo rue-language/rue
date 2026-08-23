@@ -1154,11 +1154,34 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = ["E0406", "'c.l' still holds a linear value"]
 
-# A diverging arm body is exempt only on paths that actually consume or
-# diverge before scope exit (3.8:51): consuming on the surviving branch and
-# returning on the other is legal from an arm exactly as from a block.
+# A linear payload binding must be consumed on the early-return path too: the
+# return unwinds the arm scope and drops its live bindings there (3.8:51,
+# RUE-1614 — this case previously returned bare `0` and leaked `x` on that
+# path). Consuming before the return discharges the obligation on both
+# branches, from an arm exactly as from a block.
 [[case]]
-name = "match_linear_payload_binding_diverging_branch_is_exempt"
+name = "match_linear_payload_binding_early_return_consumes"
+spec = ["4.7:31", "3.8:51"]
+source = """
+linear struct L { v: i32 }
+enum E { A(L), B }
+fn sink(x: L) -> i32 { x.v }
+fn main() -> i32 {
+    let c = true;
+    let e = E.A(L { v: 37 });
+    match e {
+        E.A(x) => if c { sink(x) + 5 } else { @drop(x); return 0 },
+        E.B => 2,
+    }
+}
+"""
+exit_code = 42
+
+# The RUE-1614 hole in arm position: a conditional return inside an arm with
+# the payload binding still live escaped the arm-scope check (RUE-1603), which
+# only sees the fall-through join.
+[[case]]
+name = "match_linear_payload_binding_conditional_return_leak_rejected"
 spec = ["4.7:31", "3.8:51"]
 source = """
 linear struct L { v: i32 }
@@ -1173,7 +1196,8 @@ fn main() -> i32 {
     }
 }
 """
-exit_code = 42
+compile_fail = true
+error_contains = ["E0406", "'x' must be consumed"]
 
 # `@drop` is the explicit-discard escape hatch for a named linear payload
 # binding, exactly as for any linear local (3.9:37).

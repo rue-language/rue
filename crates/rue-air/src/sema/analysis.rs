@@ -244,9 +244,9 @@ pub(crate) fn linear_not_consumed_error(
         )
         .with_label("consumed here, but not on every path", consumed_span)
         .with_help(
-            "a linear value must be consumed on every path; \
-             consume it in the other branches too (paths that diverge, \
-             e.g. by returning, are exempt)",
+            "a linear value must be consumed on every path; consume it in \
+             the other branches too (a branch that exits early — `return`, \
+             `?`, `break`, `continue` — must consume it before the exit)",
         ),
         None => CompileError::new(
             ErrorKind::LinearValueNotConsumed(name.to_string()),

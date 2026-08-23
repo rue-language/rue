@@ -307,6 +307,14 @@ pub(crate) struct LoopEdgeStates {
     pub break_snaps: Vec<(AHashMap<Spur, VariableMoveState>, usize)>,
     /// One `moved_vars` snapshot per `continue` targeting this loop.
     pub continue_snaps: Vec<(AHashMap<Spur, VariableMoveState>, usize)>,
+    /// Index of the first scope frame a `break`/`continue` targeting this
+    /// loop unwinds — the loop's own scope frame, recorded when the loop
+    /// pushes it. The early-exit edge walk (RUE-1614) enforces the linear
+    /// must-consume obligation over exactly the frames `first_unwound_frame..`
+    /// at each such edge: those scopes end at the edge and their live
+    /// bindings are dropped there, while bindings outside the loop stay live
+    /// and may still be consumed after it.
+    pub first_unwound_frame: usize,
 }
 
 /// Record one snapshot in a per-loop edge list, merging with an existing
@@ -347,6 +355,15 @@ fn merged_edge_moves(
 }
 
 impl LoopEdgeStates {
+    /// A fresh record for a loop whose own (just-pushed) scope frame is
+    /// `first_unwound_frame` (RUE-1614).
+    pub fn entered_at(first_unwound_frame: usize) -> Self {
+        LoopEdgeStates {
+            first_unwound_frame,
+            ..LoopEdgeStates::default()
+        }
+    }
+
     /// Record one break's snapshot.
     pub fn record_break(&mut self, moves: &AHashMap<Spur, VariableMoveState>, depth: usize) {
         self.broke = true;
@@ -716,6 +733,11 @@ pub(crate) struct AnalysisContext<'a> {
     /// registry-installed `Option(payload)`. Left `false` everywhere else, where
     /// a contextual enum may validate — but never select — the result identity.
     pub try_operand: bool,
+    /// True while analyzing a destructor body. A destructor's `self` is
+    /// disposed of by the drop glue after the body runs (spec 3.8:62), so the
+    /// early-exit edge walk (RUE-1614) must skip the by-value parameter
+    /// obligation exactly as the end-of-body parameter check does.
+    pub is_destructor: bool,
 }
 
 pub(crate) struct FullExpressionBoundary {
@@ -1002,6 +1024,7 @@ impl<'a> AnalysisContext<'a> {
             inline_resolved_types: self.inline_resolved_types.clone(),
             place_aliases: self.place_aliases.clone(),
             try_operand: false,
+            is_destructor: self.is_destructor,
         }
     }
 

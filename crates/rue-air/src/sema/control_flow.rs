@@ -76,6 +76,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(ErrorKind::BreakWithValue, inst.span));
                 }
 
+                // The break unwinds the scopes between here and the loop:
+                // those scopes end AT this edge and their live bindings are
+                // dropped here (spec 4.8:21), so a linear value they hold
+                // must already be consumed in the state in force at the edge
+                // (RUE-1614). The enclosing joins exclude this diverging arm,
+                // so no scope-exit check ever observes this state.
+                if let Some(record) = ctx.loop_break_stack.last() {
+                    self.check_linear_values_at_exit_edge(ctx, record.first_unwound_frame, false)?;
+                }
+
                 // Record the break against the innermost enclosing loop: it
                 // is now `()`-typed instead of `!` (spec 4.8:17), and the
                 // move state in force HERE is one of the loop's exit states —
@@ -101,6 +111,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // Validate that we're inside a loop
                 if ctx.loop_depth == 0 {
                     return Err(CompileError::new(ErrorKind::ContinueOutsideLoop, inst.span));
+                }
+
+                // The continue unwinds the scopes between here and the loop
+                // head: this iteration's bindings in those scopes end AT this
+                // edge and are dropped here, so a linear value they hold must
+                // already be consumed in the state in force at the edge
+                // (RUE-1614), exactly as at a break.
+                if let Some(record) = ctx.loop_break_stack.last() {
+                    self.check_linear_values_at_exit_edge(ctx, record.first_unwound_frame, false)?;
                 }
 
                 // The move state in force HERE rides the back edge into the
@@ -390,7 +409,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // the flag itself is unused because a while loop is always `()`.
         ctx.push_scope();
         ctx.loop_depth += 1;
-        ctx.loop_break_stack.push(LoopEdgeStates::default());
+        ctx.loop_break_stack
+            .push(LoopEdgeStates::entered_at(ctx.scope_stack.len() - 1));
         let boundary = ctx.enter_full_expression();
         let body_result = self.analyze_inst(air, body, ctx);
         ctx.exit_full_expression(boundary);
@@ -449,7 +469,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 result?;
                 scratch_ctx.push_scope();
                 scratch_ctx.loop_depth += 1;
-                scratch_ctx.loop_break_stack.push(LoopEdgeStates::default());
+                scratch_ctx
+                    .loop_break_stack
+                    .push(LoopEdgeStates::entered_at(
+                        scratch_ctx.scope_stack.len() - 1,
+                    ));
                 let boundary = scratch_ctx.enter_full_expression();
                 let result = self.analyze_inst(air, body, &mut scratch_ctx);
                 scratch_ctx.exit_full_expression(boundary);
@@ -502,7 +526,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         ctx.push_scope();
         ctx.loop_depth += 1;
-        ctx.loop_break_stack.push(LoopEdgeStates::default());
+        ctx.loop_break_stack
+            .push(LoopEdgeStates::entered_at(ctx.scope_stack.len() - 1));
         // A `for` over a named variable borrows it (shared) for the body's
         // duration (spec 4.8:26, RUE-233): record the borrow so a mutation of
         // the iterated collection inside the body is rejected (E0428).
@@ -560,7 +585,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let recovered_before = self.body_analysis_recovered_errors_mut().len();
             scratch_ctx.push_scope();
             scratch_ctx.loop_depth += 1;
-            scratch_ctx.loop_break_stack.push(LoopEdgeStates::default());
+            scratch_ctx
+                .loop_break_stack
+                .push(LoopEdgeStates::entered_at(
+                    scratch_ctx.scope_stack.len() - 1,
+                ));
             if let Some(var) = iter_borrow {
                 scratch_ctx.iter_borrows.push(var);
             }
@@ -1551,7 +1580,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             )
         };
-        match self.trusted_try_producer(operand_ty) {
+        let trusted_producer = self.trusted_try_producer(operand_ty);
+
+        // The `?` failure arm is an early `return` (4.15): it ends every open
+        // scope, dropping their live bindings and the by-value parameters at
+        // this edge, so a linear value any of them holds must already be
+        // consumed in the state in force HERE, after the operand's own
+        // consumptions (RUE-1614) — exactly as at an explicit `return`. The
+        // check runs only for a genuine try (a trusted Option/Result operand;
+        // a lookalike reports E0504 instead) whose operand actually reaches
+        // this edge.
+        if trusted_producer.is_some() && operand_result.continues {
+            self.check_linear_values_at_exit_edge(ctx, 0, true)?;
+        }
+
+        match trusted_producer {
             Some(TrustedTryProducer::Option) => {
                 let operand_enum_id = operand_ty
                     .as_enum()
@@ -2188,7 +2231,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         }
-        let inner_air_ref = if let Some(inner) = inner {
+        let (inner_air_ref, edge_reachable) = if let Some(inner) = inner {
             // Explicit return with value. A `str`-returning function
             // (ADR-0043 Phase 3, RUE-324) supplies `str` as the expected type so
             // a string-literal `return "..."` materializes as a static-backed,
@@ -2244,7 +2287,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     span,
                 ));
             }
-            Some(inner_result.air_ref)
+            (Some(inner_result.air_ref), inner_result.continues)
         } else {
             // `return;` without expression - only valid for unit-returning functions
             if ctx.return_type != Type::UNIT && !ctx.return_type.is_error() {
@@ -2258,8 +2301,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     span,
                 ));
             }
-            None
+            (None, true)
         };
+
+        // The return ends every open scope: their live bindings — and the
+        // by-value parameters — are dropped at this edge (spec 4.9:7), so a
+        // linear value any of them holds must already be consumed in the
+        // state in force HERE, after the operand's own consumptions
+        // (RUE-1614). The enclosing joins exclude this diverging arm, so no
+        // scope-exit check ever observes this state; without the edge check a
+        // conditional return leaked the value into the return path's unwind
+        // drops. An operand that itself diverges never reaches this edge, so
+        // its obligation sites report instead (no double-report).
+        if edge_reachable {
+            self.check_linear_values_at_exit_edge(ctx, 0, true)?;
+        }
 
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Ret(inner_air_ref),
