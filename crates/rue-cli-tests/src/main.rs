@@ -179,9 +179,9 @@ use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_target::{Arch, Target};
 use rue_test_runner::{
     ExpectedFailureOutcome, KNOWN_TARGETS, PlatformCaseSelection, ShardSelector, TestFailure,
-    TestResult, classify_expected_failure, compiler_command, configure_process_group, find_dir,
-    find_rue_binary, ice_message, kill_process_group, run_with_timeout,
-    validate_nonempty_case_corpus,
+    TestNameOrigin, TestResult, classify_expected_failure, compiler_command,
+    configure_process_group, find_dir, find_rue_binary, ice_message, kill_process_group,
+    run_with_timeout, validate_nonempty_case_corpus, validate_unique_test_names,
 };
 use serde::{Deserialize, Serialize};
 
@@ -3815,6 +3815,27 @@ fn discover_examples() -> Result<Vec<DiscoveredExample>, String> {
         .collect())
 }
 
+/// Validate every declarative and automatic CLI identity before any tier,
+/// platform, or shard filtering can construct a trial.
+fn validate_cli_test_names(
+    corpus: &LoadedCorpus,
+    examples: &[DiscoveredExample],
+) -> Result<(), String> {
+    let explicit = corpus.files.iter().flat_map(|(source, file)| {
+        file.cases.iter().map(move |case| TestNameOrigin {
+            name: format!("{}::{}", file.section.id, case.name),
+            source: source.clone(),
+            case: case.name.clone(),
+        })
+    });
+    let automatic = examples.iter().map(|example| TestNameOrigin {
+        name: example_test_name(&example.relative_path),
+        source: example.path.display().to_string(),
+        case: example.relative_path.clone(),
+    });
+    validate_unique_test_names(explicit.chain(automatic))
+}
+
 /// Build one automatic smoke-test trial per discovered example (RUE-48).
 fn example_trials(
     examples: Vec<DiscoveredExample>,
@@ -3929,6 +3950,9 @@ fn emit_shard_loads(
     let cases_dir = find_dir("RUE_CLI_CASES", CASES_DIR_PATHS, "cases");
     let corpus = load_cases(&cases_dir);
     let examples = discover_examples()?;
+    if let Err(error) = validate_cli_test_names(&corpus, &examples) {
+        return Err(format!("invalid CLI test names: {error}"));
+    }
     let discovered_example_paths = examples
         .iter()
         .map(|example| example.relative_path.clone())
@@ -4011,6 +4035,10 @@ fn main() {
         eprintln!("error: {error}");
         std::process::exit(1);
     });
+    if let Err(error) = validate_cli_test_names(&corpus, &examples) {
+        eprintln!("error: invalid CLI test names: {error}");
+        std::process::exit(1);
+    }
     let discovered_example_paths = examples
         .iter()
         .map(|example| example.relative_path.clone())
@@ -4203,6 +4231,31 @@ mod tests {
             automatic_examples: file.automatic_example.clone(),
             files: vec![("inline.toml".to_string(), file)],
         }
+    }
+
+    #[test]
+    fn duplicate_cli_names_are_rejected_before_example_trials_are_built() {
+        let corpus = corpus_from_toml(
+            r#"
+                [section]
+                id = "cli.examples"
+                name = "examples"
+
+                [[case]]
+                name = "demo"
+            "#,
+        );
+        let examples = vec![DiscoveredExample {
+            path: PathBuf::from("examples/demo.rue"),
+            relative_path: "demo.rue".to_string(),
+        }];
+
+        let error = validate_cli_test_names(&corpus, &examples)
+            .expect_err("explicit and automatic duplicate must be rejected");
+        assert!(error.contains("cli.examples::demo"), "{error}");
+        assert!(error.contains("inline.toml"), "{error}");
+        assert!(error.contains("examples/demo.rue"), "{error}");
+        assert!(error.contains("case 'demo'"), "{error}");
     }
 
     #[test]

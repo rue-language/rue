@@ -307,6 +307,23 @@ cached_corpus_suite(
     ],
 )
 
+# RUE-1741: invoke every real test-harness entry point with a filtered,
+# duplicate corpus. The duplicate validator must reject the complete corpus
+# before platform filtering and before libtest2's concurrent scheduler sees a
+# passing case. The CLI fixture also collides with an automatically discovered
+# example, covering both Trial-producing populations.
+rue_sh_test(
+    name = "test-harness-duplicate-names",
+    test = "scripts/test-harness-duplicate-names.sh",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_CLI_HARNESS": "$(exe_target //crates/rue-cli-tests:rue-cli-tests)",
+        "RUE_SPEC_HARNESS": "$(exe_target //crates/rue-spec:rue-spec)",
+        "RUE_UI_HARNESS": "$(exe_target //crates/rue-ui-tests:rue-ui-tests)",
+    },
+    resources = ["scripts/test-harness-duplicate-names.sh"],
+)
+
 rue_sh_test(
     name = "spec-traceability",
     test = "//crates/rue-spec:rue-spec",
