@@ -11,7 +11,7 @@
 //! architecture cannot quietly invent a different scalar/aggregate policy.
 
 use lasso::Spur;
-use rue_air::{EnumId, RuntimeCallKind, StructId, TypeKind};
+use rue_air::{EnumId, IntegerType, RuntimeCallKind, StructId, TypeKind};
 use rue_cfg::{CfgInstData, CfgValue, Place, PlaceBase, Projection, Type};
 use rue_runtime_abi::RuntimeHelperId;
 
@@ -526,6 +526,15 @@ impl ValueShape {
 pub struct IntegerWidth {
     pub bits: u32,
     pub signed: bool,
+}
+
+impl From<IntegerType> for IntegerWidth {
+    fn from(integer: IntegerType) -> Self {
+        Self {
+            bits: integer.bits(),
+            signed: integer.is_signed(),
+        }
+    }
 }
 
 /// Normalized extension required when an integer value feeds a 64-bit pointer
@@ -2174,17 +2183,7 @@ fn shape(ctx: &CfgLowerContext<'_>, ty: Type) -> ValueShape {
 
 /// Select the language integer width and signedness used by all adapters.
 pub fn integer_width(ty: Type) -> Option<IntegerWidth> {
-    let bits = match ty.kind() {
-        TypeKind::I8 | TypeKind::U8 => 8,
-        TypeKind::I16 | TypeKind::U16 => 16,
-        TypeKind::I32 | TypeKind::U32 => 32,
-        TypeKind::I64 | TypeKind::U64 => 64,
-        _ => return None,
-    };
-    Some(IntegerWidth {
-        bits,
-        signed: ty.is_signed(),
-    })
+    ty.integer_semantics().map(Into::into)
 }
 
 /// Select the width used by a scalar comparison. Booleans and discriminant-only
@@ -2263,13 +2262,9 @@ pub fn type_bits(ty: Type) -> u32 {
 /// The language-level shift-count mask. Hardware details differ by target,
 /// but the language operation has one width-derived count domain.
 pub fn shift_count_mask(ty: Type) -> u64 {
-    match type_bits(ty) {
-        8 => 7,
-        16 => 15,
-        32 => 31,
-        64 => 63,
-        bits => panic!("invalid shift operand width: {bits}"),
-    }
+    ty.integer_semantics()
+        .expect("shift_count_mask called on non-integer type")
+        .shift_count_mask()
 }
 
 /// Return whether an integer type uses the machine's 64-bit value width.
@@ -2291,17 +2286,14 @@ pub fn type_range(ty: Type) -> (i64, i64) {
 
 /// Return the representable range selected by a shared integer-width plan.
 pub fn integer_range(width: IntegerWidth) -> (i64, i64) {
-    match (width.bits, width.signed) {
-        (8, true) => (i8::MIN as i64, i8::MAX as i64),
-        (16, true) => (i16::MIN as i64, i16::MAX as i64),
-        (32, true) => (i32::MIN as i64, i32::MAX as i64),
-        (64, true) => (i64::MIN, i64::MAX),
-        (8, false) => (0, u8::MAX as i64),
-        (16, false) => (0, u16::MAX as i64),
-        (32, false) => (0, u32::MAX as i64),
-        (64, false) => (0, i64::MAX),
-        _ => panic!("invalid integer width: {width:?}"),
-    }
+    let integer = u8::try_from(width.bits)
+        .ok()
+        .and_then(|bits| IntegerType::new(bits, width.signed))
+        .expect("invalid integer width");
+    (
+        integer.min_i128() as i64,
+        integer.max_i128().min(i128::from(i64::MAX)) as i64,
+    )
 }
 
 /// Return the by-reference parameter slots that must be preloaded before the
@@ -2704,6 +2696,15 @@ mod tests {
                 signed: false
             }
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid integer width")]
+    fn integer_range_rejects_widths_that_do_not_fit_the_kernel_descriptor() {
+        integer_range(IntegerWidth {
+            bits: 264,
+            signed: false,
+        });
     }
 
     #[test]

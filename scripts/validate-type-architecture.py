@@ -86,6 +86,7 @@ PUBLIC_TYPE_DECLARATION_ALLOWLIST = {
     ("rue-air", "inference/types.rs", "TypeVarAllocator"): "inference-local allocator",
     ("rue-air", "call_abi.rs", "NativeAbiTypeFacts"): "per-type call-ABI kernel facts, not a type identity",
     ("rue-air", "runtime_call.rs", "RuntimeAirType"): "typed runtime ABI shape classification",
+    ("rue-air", "integer_semantics.rs", "IntegerType"): "fixed-width integer semantics descriptor, not a live type identity",
     ("rue-air", "semantic_import.rs", "SemanticImportType"): "stable semantic import schema",
     ("rue-air", "semantic_import.rs", "SemanticImportTypeFold"): "exhaustive stable schema fold view",
     ("rue-air", "semantic_import.rs", "SemanticImportedType"): "validated imported-type result",

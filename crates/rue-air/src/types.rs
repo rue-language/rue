@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use crate::integer_semantics::IntegerType;
 use crate::type_encoding::{self, Composite, Decoded, Primitive};
 
 /// Return the capacity encoded by the canonical synthetic `Str(N)` name.
@@ -968,17 +969,7 @@ impl Type {
     /// For non-integer types, returns `false`.
     #[must_use]
     pub fn literal_fits(&self, value: u64) -> bool {
-        match self.try_kind() {
-            Some(TypeKind::I8) => value <= i8::MAX as u64,
-            Some(TypeKind::I16) => value <= i16::MAX as u64,
-            Some(TypeKind::I32) => value <= i32::MAX as u64,
-            Some(TypeKind::I64) => value <= i64::MAX as u64,
-            Some(TypeKind::U8) => value <= u8::MAX as u64,
-            Some(TypeKind::U16) => value <= u16::MAX as u64,
-            Some(TypeKind::U32) => value <= u32::MAX as u64,
-            Some(TypeKind::U64) => true,
-            _ => false,
-        }
+        self.int_max().is_some_and(|max| i128::from(value) <= max)
     }
 
     /// Get the bit width of this integer type (8, 16, 32, or 64).
@@ -986,13 +977,21 @@ impl Type {
     /// Returns `None` for non-integer types.
     #[must_use]
     pub fn int_bit_width(&self) -> Option<u32> {
-        match self.try_kind()? {
-            TypeKind::I8 | TypeKind::U8 => Some(8),
-            TypeKind::I16 | TypeKind::U16 => Some(16),
-            TypeKind::I32 | TypeKind::U32 => Some(32),
-            TypeKind::I64 | TypeKind::U64 => Some(64),
-            _ => None,
-        }
+        self.integer_semantics().map(IntegerType::bits)
+    }
+
+    /// Return the width and signedness descriptor used by all integer
+    /// semantics consumers.
+    #[must_use]
+    pub fn integer_semantics(&self) -> Option<IntegerType> {
+        let bits = match self.try_kind()? {
+            TypeKind::I8 | TypeKind::U8 => 8,
+            TypeKind::I16 | TypeKind::U16 => 16,
+            TypeKind::I32 | TypeKind::U32 => 32,
+            TypeKind::I64 | TypeKind::U64 => 64,
+            _ => return None,
+        };
+        IntegerType::new(bits, self.is_signed())
     }
 
     /// Get the minimum representable value of this integer type.
@@ -1000,12 +999,7 @@ impl Type {
     /// Returns `None` for non-integer types.
     #[must_use]
     pub fn int_min(&self) -> Option<i128> {
-        let width = self.int_bit_width()?;
-        if self.is_signed() {
-            Some(-(1i128 << (width - 1)))
-        } else {
-            Some(0)
-        }
+        self.integer_semantics().map(IntegerType::min_i128)
     }
 
     /// Get the maximum representable value of this integer type.
@@ -1013,12 +1007,7 @@ impl Type {
     /// Returns `None` for non-integer types.
     #[must_use]
     pub fn int_max(&self) -> Option<i128> {
-        let width = self.int_bit_width()?;
-        if self.is_signed() {
-            Some((1i128 << (width - 1)) - 1)
-        } else {
-            Some((1i128 << width) - 1)
-        }
+        self.integer_semantics().map(IntegerType::max_i128)
     }
 
     /// Check if a u64 value can be negated to fit within the range of this signed integer type.
@@ -1027,13 +1016,11 @@ impl Type {
     /// Returns `true` if the negated value fits, `false` otherwise.
     #[must_use]
     pub fn negated_literal_fits(&self, value: u64) -> bool {
-        match self.try_kind() {
-            Some(TypeKind::I8) => value <= (i8::MIN as i64).unsigned_abs(),
-            Some(TypeKind::I16) => value <= (i16::MIN as i64).unsigned_abs(),
-            Some(TypeKind::I32) => value <= (i32::MIN as i64).unsigned_abs(),
-            Some(TypeKind::I64) => value <= (i64::MIN).unsigned_abs(),
-            _ => false,
-        }
+        self.integer_semantics().is_some_and(|integer| {
+            integer
+                .checked_neg_literal_i128(i128::from(value))
+                .is_some()
+        })
     }
 
     /// Encode this type as a u32 for storage in extra arrays.
