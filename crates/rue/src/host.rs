@@ -11,8 +11,8 @@ use rue_compiler::{
 };
 
 use crate::source_loader::{
-    ImportDiscoveryResult, SourceLoadError, SourceLoadRequest, acquire_reached_toolchain_modules,
-    load, reload_from_filesystem,
+    ImportDiscoveryResult, SourceLoadError, SourceLoadRequest, WatchInput,
+    acquire_reached_toolchain_modules, load, reload_from_filesystem,
 };
 
 /// Immutable filesystem configuration captured when a retained host opens.
@@ -69,7 +69,7 @@ impl FilesystemCompilerHost {
 
     /// Exact accepted filesystem closure, plus the policy manifest that can
     /// change which reads are allowed on the next observation.
-    pub fn watch_inputs(&self) -> Vec<(std::path::PathBuf, u64)> {
+    pub fn watch_inputs(&self) -> Vec<WatchInput> {
         self.state.watch_inputs()
     }
 

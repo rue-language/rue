@@ -9,4 +9,6 @@ mod host;
 mod source_loader;
 
 pub use host::{FilesystemCompilerHost, HostOpenRequest};
-pub use source_loader::{HermeticDenialError, SourceLoadError, ToolchainIntegrityError};
+pub use source_loader::{
+    HermeticDenialError, SourceLoadError, ToolchainIntegrityError, WatchFingerprint, WatchInput,
+};

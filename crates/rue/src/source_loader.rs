@@ -37,10 +37,70 @@ use rue_compiler::{
     TrustedToolchainModuleDemand,
 };
 
+/// The content fingerprint used by the long-lived filesystem observer.
+///
+/// Keeping the hash policy with the filesystem host means the producer's
+/// accepted-read snapshot and the CLI watcher cannot silently diverge.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct WatchFingerprint(u64);
+
+impl WatchFingerprint {
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let mut hash = 0xcbf29ce484222325_u64;
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        Self(hash)
+    }
+
+    pub fn read(path: &Path) -> Option<Self> {
+        fs::read(path).ok().map(|bytes| Self::from_bytes(&bytes))
+    }
+}
+
+/// One accepted filesystem path and its content fingerprint.
+///
+/// `requested_path` is retained separately from `canonical_path`: the watcher
+/// must notice an import alias being deleted or retargeted even though the
+/// canonical file may still exist.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WatchInput {
+    requested_path: PathBuf,
+    canonical_path: PathBuf,
+    fingerprint: WatchFingerprint,
+}
+
+impl WatchInput {
+    pub fn new(
+        requested_path: PathBuf,
+        canonical_path: PathBuf,
+        fingerprint: WatchFingerprint,
+    ) -> Self {
+        Self {
+            requested_path,
+            canonical_path,
+            fingerprint,
+        }
+    }
+
+    pub fn requested_path(&self) -> &Path {
+        &self.requested_path
+    }
+
+    pub fn canonical_path(&self) -> &Path {
+        &self.canonical_path
+    }
+
+    pub fn fingerprint(&self) -> WatchFingerprint {
+        self.fingerprint
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct SourceManifest {
     path: PathBuf,
-    content_hash: u64,
+    content_hash: WatchFingerprint,
     allowed: AHashSet<PathBuf>,
     declared_paths: AHashSet<PathBuf>,
 }
@@ -110,7 +170,7 @@ impl SourceManifest {
 
         Ok(Self {
             path: manifest_path.to_path_buf(),
-            content_hash: watch_content_hash(content.as_bytes()),
+            content_hash: WatchFingerprint::from_bytes(content.as_bytes()),
             allowed,
             declared_paths,
         })
@@ -706,8 +766,8 @@ pub(crate) struct SourceResolutionInputs {
 }
 
 impl ImportDiscoveryResult {
-    pub(crate) fn watch_inputs(&self) -> Vec<(PathBuf, u64)> {
-        let mut paths = Vec::with_capacity(self.read_manifest.len() * 2 + 1);
+    pub(crate) fn watch_inputs(&self) -> Vec<WatchInput> {
+        let mut paths = Vec::with_capacity(self.read_manifest.len() + 1);
         for entry in self.read_manifest.iter() {
             let source = self
                 .source_snapshot
@@ -716,28 +776,28 @@ impl ImportDiscoveryResult {
                     self.source_snapshot.module_id(source.file_id) == Some(entry.module())
                 })
                 .expect("an accepted read has source bytes in the committed snapshot");
-            let hash = watch_content_hash(source.source.as_bytes());
-            paths.push((PathBuf::from(entry.requested_path()), hash));
-            paths.push((PathBuf::from(entry.canonical_path()), hash));
+            let fingerprint = WatchFingerprint::from_bytes(source.source.as_bytes());
+            paths.push(WatchInput::new(
+                PathBuf::from(entry.requested_path()),
+                PathBuf::from(entry.canonical_path()),
+                fingerprint,
+            ));
         }
         if let Some(manifest) = &self.source_manifest {
-            paths.push((manifest.path.clone(), manifest.content_hash));
+            paths.push(WatchInput::new(
+                manifest.path.clone(),
+                manifest.path.clone(),
+                manifest.content_hash,
+            ));
         }
-        paths.sort_by(|left, right| left.0.cmp(&right.0));
-        paths.dedup_by(|left, right| left.0 == right.0);
+        paths.sort_by(|left, right| {
+            left.requested_path()
+                .cmp(right.requested_path())
+                .then_with(|| left.canonical_path().cmp(right.canonical_path()))
+        });
+        paths.dedup();
         paths
     }
-}
-
-pub(crate) fn watch_content_hash(bytes: &[u8]) -> u64 {
-    // A fixed FNV-1a hash keeps the polling watcher deterministic and avoids
-    // retaining another copy of every source buffer in its monitor thread.
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
 }
 
 /// The closed import-discovery revision produced by
