@@ -1255,6 +1255,17 @@ pub(crate) fn select_materialization_facts(
                     kind,
                     name: name.clone(),
                 });
+            // A slice view is materialized from its source type, and its `ptr`
+            // field names the element type. The element's nominal therefore has
+            // to exist in this body's epoch even when the body reaches the view
+            // only by its builtin name and never mentions the element type on
+            // its own (RUE-1610). The view's own layout is two words whatever
+            // the element is, so the element enters opaquely — the same shapeless
+            // registration a pointee gets.
+            if let crate::TypeInstanceKey::Slice { element, .. } = &query_ty {
+                let element = element.as_ref().clone();
+                self.opaque_instance_type(&element);
+            }
             self.builtins.insert(LocalBuiltinNominalRequest {
                 kind,
                 name: name.clone(),

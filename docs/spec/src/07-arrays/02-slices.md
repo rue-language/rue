@@ -150,13 +150,17 @@ element type is a compile-time type mismatch, not a coercion.
 {{ rule(id="7.2:14", cat="legality-rule") }}
 
 A non-empty fixed array whose element type is not slot-identical in layout —
-an element narrower than a stack slot, such as `i32` or `u8` — **MUST NOT**
-coerce to a slice. A view strides by the element's own size, which for such an
-element differs from the stride of the frame array it would view, so the
-coercion is refused at the argument with a diagnostic naming the element type.
-This is a restriction of the current implementation, not a property of the
-slice type. An **empty** array is exempt: `[T; 0]` coerces for every element
-type, because a zero-length view's pointer word is never dereferenced (7.2:22).
+an element narrower than a stack slot, such as `i32` or `u8`, or an aggregate
+holding such a field, such as `struct N { v: i32 }` — **MUST NOT** coerce to a
+slice. A view strides by the element's own size, which for such an element
+differs from the stride of the frame array it would view, so the coercion is
+refused at the argument with a diagnostic naming the element type. An element
+built only from slot-width fields is slot-identical and does coerce, however
+many fields it has: `struct S { v: i64 }` and `struct P { a: i64, b: i64 }` are
+both admitted, and the view strides by the element's whole size. This is a
+restriction of the current implementation, not a property of the slice type. An
+**empty** array is exempt: `[T; 0]` coerces for every element type, because a
+zero-length view's pointer word is never dereferenced (7.2:22).
 
 {{ rule(id="7.2:15", cat="normative") }}
 
