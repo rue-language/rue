@@ -1673,3 +1673,226 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0259", "accessor"]
+
+# ---------------------------------------------------------------------------
+# A join carries an accessor result (RUE-1678). An `if`/`match` arm and a block
+# tail each yield their value AS the enclosing expression's value, so the
+# escape rule of 6.6:9 and the loan extent of 6.6:10 both apply through them.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "accessor_result_cannot_be_let_bound_through_if_arm"
+spec = ["6.6:9"]
+description = "Binding an accessor result reached through an if arm still escapes its full expression (E0252)."
+source = """
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    let b = if true { p.xr() } else { 0 };
+    if b == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0252", "cannot bind an accessor result with `let`"]
+
+[[case]]
+name = "accessor_result_cannot_be_returned_through_if_arm"
+spec = ["6.6:9"]
+description = "Returning an accessor result reached through an if arm still escapes its full expression (E0250)."
+source = """
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn read(borrow p: P, c: bool) -> i64 {
+    return if c { p.xr() } else { 0 };
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    if read(borrow p, true) == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0250", "cannot return an accessor result"]
+
+[[case]]
+name = "accessor_result_cannot_be_stored_through_if_arm"
+spec = ["6.6:9"]
+description = "Assigning an accessor result reached through an if arm still escapes its full expression (E0251)."
+source = """
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    let mut slot = 0;
+    slot = if true { p.xr() } else { 0 };
+    if slot == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0251", "cannot store an accessor result"]
+
+[[case]]
+name = "accessor_result_cannot_be_captured_through_if_arm"
+spec = ["6.6:9"]
+description = "Capturing an accessor result reached through an if arm in an array literal still escapes (E0253)."
+source = """
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    let a = [if true { p.xr() } else { 0 }];
+    if a[0] == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0253", "cannot capture an accessor result"]
+
+[[case]]
+name = "accessor_result_cannot_escape_through_match_arm"
+spec = ["6.6:9"]
+description = "A match arm joins an accessor result exactly as an if arm does (E0252)."
+source = """
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    let n = 1;
+    let b = match n {
+        1 => p.xr(),
+        _ => 0,
+    };
+    if b == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0252", "cannot bind an accessor result with `let`"]
+
+[[case]]
+name = "accessor_results_in_both_arms_cannot_escape"
+spec = ["6.6:9"]
+description = "A join over two accessor results escapes on either path and names the leftmost arm's accessor (E0252)."
+source = """
+struct P {
+    x: i64,
+    y: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+
+    fn yr(borrow self) -> borrow i64 {
+        yield self.y;
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1, y: 2 };
+    let b = if true { p.xr() } else { p.yr() };
+    if b == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0252", "cannot bind an accessor result with `let`", "`xr`"]
+
+[[case]]
+name = "accessor_result_cannot_escape_through_block_tail"
+spec = ["6.6:9"]
+description = "A multi-statement block's tail carries the accessor result out to the binding (E0252)."
+source = """
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    let b = {
+        let z = 1;
+        @dbg(z);
+        p.xr()
+    };
+    if b == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0252", "cannot bind an accessor result with `let`"]
+
+[[case]]
+name = "joined_accessor_result_conflicts_with_inout"
+spec = ["6.6:10"]
+description = "A joined accessor result keeps its loan's full-expression extent, so a sibling exclusive use is E0259."
+source = """
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 {
+        yield self.cells[i];
+    }
+}
+fn using(a: i64, b: i64) -> i64 { a + b }
+fn bump(inout g: Grid) -> i64 {
+    g.cells[0] = 9;
+    0
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3, 4] };
+    using(if true { g.at(0) } else { 0 }, bump(inout g));
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "while an accessor result borrows it"]
+
+[[case]]
+name = "joined_accessor_result_consumed_in_place_is_legal"
+spec = ["6.6:8", "6.6:9"]
+description = "An accessor result consumed by copy-read within its own full expression is legal through an arm too."
+source = """
+struct P {
+    x: i64,
+    y: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+
+    fn yr(borrow self) -> borrow i64 {
+        yield self.y;
+    }
+}
+fn use1(v: i64) -> i64 { v + 1 }
+fn main() -> i32 {
+    let p = P { x: 7, y: 3 };
+    let sum = use1(if true { p.xr() } else { 0 }) + use1(if false { p.xr() } else { p.yr() });
+    @dbg(sum);
+    if sum == 12 { 0 } else { 1 }
+}
+"""
+expected_stdout = "12\n"
+exit_code = 0

@@ -78,3 +78,142 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["E0905", "not Copy"]
+
+# --- comptime value-parameter counts (RUE-1681) ------------------------------
+#
+# 7.1:37 admits an in-scope `comptime` value parameter as a repeat count, by
+# the same rules an array-TYPE length uses. Constraint generation resolved only
+# the file-level `const` half, so the repeat's type stayed an unconstrained
+# variable, decayed to the error type, and sema reported the literal as an
+# un-annotatable empty array (E0903) — a legal program rejected. Every case
+# below pins the filled contents on stdout, not just the exit code: an
+# unresolved count used to be a compile failure, but a MIS-resolved one is a
+# silent wrong-length fill.
+
+[[case]]
+name = "repeat_comptime_value_param_count"
+description = "RUE-1681 repro: `[v; n]` with a comptime value-parameter count compiles and fills n slots."
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn make(comptime n: u64) -> i32 {
+    let a = [7; n];
+    @dbg(a[0] + a[1] + a[2]);
+    0
+}
+fn main() -> i32 {
+    make(3)
+}
+""" }]
+stdout = "21\n"
+
+[[case]]
+name = "repeat_comptime_value_param_count_with_annotation"
+description = "The repeat's inferred length agrees with an array-type length named by the same comptime value parameter."
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn make(comptime n: u64) -> i32 {
+    let a: [i32; n] = [0; n];
+    @dbg(a[0] + a[1] + a[2] + 5);
+    0
+}
+fn main() -> i32 {
+    make(3)
+}
+""" }]
+stdout = "5\n"
+
+[[case]]
+name = "repeat_comptime_value_param_count_two_specializations"
+description = "Two specializations of one body get their own counts; each fill has the length of its own instance."
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn total(comptime n: u64, v: i32) -> i32 {
+    let a: [i32; n] = [v; n];
+    let mut acc: i32 = 0;
+    let mut i: u64 = 0;
+    while i < n {
+        acc = acc + a[i];
+        i = i + 1;
+    }
+    acc
+}
+fn main() -> i32 {
+    @dbg(total(2, 10));
+    @dbg(total(5, 3));
+    0
+}
+""" }]
+stdout = "20\n15\n"
+
+[[case]]
+name = "repeat_comptime_value_param_count_nested"
+description = "Both counts of a nested repeat `[[v; n]; m]` resolve against the enclosing comptime value parameters."
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn make(comptime n: u64, comptime m: u64) -> i32 {
+    let grid: [[i32; n]; m] = [[3; n]; m];
+    @dbg(grid[0][0] + grid[1][2]);
+    0
+}
+fn main() -> i32 {
+    make(3, 2)
+}
+""" }]
+stdout = "6\n"
+
+[[case]]
+name = "repeat_comptime_value_param_zero_count_evaluates_value_once"
+description = "A zero comptime value-parameter count still evaluates the repeat value exactly once (spec 7.1:39; the RUE-531 anchoring, reached through a comptime count)."
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn produce() -> i32 {
+    @dbg(42);
+    7
+}
+fn make(comptime n: u64) -> i32 {
+    let a: [i32; n] = [produce(); n];
+    let len: i32 = @intCast(n);
+    @dbg(len);
+    0
+}
+fn main() -> i32 {
+    make(0)
+}
+""" }]
+stdout = "42\n0\n"
+
+[[case]]
+name = "repeat_comptime_value_param_count_shadows_same_named_const"
+description = "A comptime value parameter takes precedence over a file-level const of the same name — the precedence array-type lengths already use (RUE-252). A wrong precedence here fills 9 slots, not 2."
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+const n: usize = 9;
+fn make(comptime n: u64) -> i32 {
+    let a = [1; n];
+    let mut acc: i32 = 0;
+    let mut i: u64 = 0;
+    while i < n {
+        acc = acc + a[i];
+        i = i + 1;
+    }
+    acc
+}
+fn main() -> i32 {
+    @dbg(make(2));
+    0
+}
+""" }]
+stdout = "2\n"
+
+[[case]]
+name = "genuine_empty_array_still_needs_annotation"
+description = "Control: an actually empty, unannotated array literal still gets the E0903 annotation diagnostic — the repeat fix did not weaken it."
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a = [];
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0903", "type annotation required for empty array"]

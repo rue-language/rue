@@ -784,6 +784,29 @@ impl AnalysisContext<'_> {
         }
     }
 
+    /// The accessor loans a nested full expression established and still
+    /// holds — the loans of its own tail expression, since every nested
+    /// statement inside it already discarded its own at its boundary.
+    ///
+    /// Read just before [`Self::exit_full_expression`] by an `if`/`match` arm
+    /// whose value flows on as the join's value: that value is an accessor
+    /// result of the ENCLOSING full expression, so its loan keeps the 6.6:10
+    /// extent the arm boundary would otherwise cut short (RUE-1678). The
+    /// caller re-registers the returned loans with
+    /// [`Self::readmit_expression_loans`] after the boundary closes.
+    pub(crate) fn nested_expression_loans(
+        &self,
+        boundary: &FullExpressionBoundary,
+    ) -> Vec<(Spur, Span, CallLoanKind)> {
+        self.expression_loans[boundary.loans..].to_vec()
+    }
+
+    /// Re-register loans harvested by [`Self::nested_expression_loans`] into
+    /// the enclosing full expression (RUE-1678).
+    pub(crate) fn readmit_expression_loans(&mut self, loans: Vec<(Spur, Span, CallLoanKind)>) {
+        self.expression_loans.extend(loans);
+    }
+
     /// Finish a nested full expression, discarding child loans and restoring
     /// the enclosing expression's completed read/use records.
     pub(crate) fn exit_full_expression(&mut self, boundary: FullExpressionBoundary) {

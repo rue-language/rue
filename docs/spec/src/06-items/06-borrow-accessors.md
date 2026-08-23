@@ -96,6 +96,13 @@ loans extend through the enclosing full expression (core calculus
 An accessor result **MUST NOT** escape its full expression: returning it
 (E0250), storing it by assignment (E0251), binding it with a plain `let`
 (E0252), or capturing it in a struct or array literal (E0253) is rejected.
+A join yields whatever its arms yield, so an `if`/`else` arm, a `match` arm,
+and a block's tail expression each pass the property along: when any arm can
+yield an accessor result, the join *is* an accessor result of that arm's root,
+and every rule above applies to it unchanged —
+`let b = if c { v.get_ref(i) } else { 0 };` is the same E0252 as
+`let b = v.get_ref(i);`. Consuming the join within its own full expression
+stays legal, exactly as consuming the call directly does.
 
 {{ rule(id="6.6:10", cat="legality-rule") }}
 
@@ -110,7 +117,9 @@ even though the read syntactically precedes the exclusive access. When the
 accessor result is itself re-borrowed as a `borrow` argument of the same call
 (`use(borrow v.get_ref(i), inout v)`), the conflict is caught by the general
 argument-exclusivity rule and surfaces as its diagnostic (E0430) rather than
-E0259; the program is rejected either way.
+E0259; the program is rejected either way. A loan carried out of a join
+(6.6:9) keeps this extent, so `use(if c { v.get_ref(i) } else { 0 },
+g(inout v))` is rejected on the same footing as the unwrapped call.
 
 {{ rule(id="6.6:11", cat="legality-rule") }}
 

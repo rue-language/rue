@@ -569,18 +569,37 @@ impl<'a> ConstraintGenerator<'a> {
         false
     }
 
-    /// Is this method call the slice `len` of 7.2:17 — `s.len()` on a receiver
-    /// whose type is the synthetic slice struct `[T]`?
+    /// Is this method call a view `len` — `s.len()` on a receiver whose type is
+    /// the synthetic slice struct `[T]` (7.2:17), the `str` string type
+    /// (3.7:45), or a fixed-capacity `Str(N)` (3.7:52)? All three rules give the
+    /// result type as `u64`.
     ///
-    /// Only the slice view qualifies. `str`, `Str(N)`, and StrBuf carry
-    /// source-defined `len` signatures that ordinary method lookup already
-    /// resolves; the slice view has no declared method at all, so its result
-    /// type has to be published here for the call to take part in ordinary
-    /// unification (RUE-1611).
-    fn is_slice_len_call(&self, receiver: StructId, method: Spur, arg_count: usize) -> bool {
+    /// These three share one representation (a `{ptr, len}` view) and one
+    /// method route: sema dispatches every method call on them through
+    /// `analyze_slice_method`, which answers `len()` by reading the `len` word
+    /// as `u64` and rejects everything else as an undefined method. None of
+    /// them has a *declared* `len`, so unless its result type is published
+    /// here the call types as `ERROR`, which unifies with any annotation —
+    /// `let n: i32 = s.len();` then passed inference and reached CFG
+    /// verification as a `u64` value in an `i32` slot (RUE-1611 for `[T]`,
+    /// RUE-1679 for `str`/`Str(N)`).
+    ///
+    /// StrBuf is not in this family: it is a source-defined struct whose
+    /// declared `len` ordinary method lookup already resolves.
+    fn is_view_len_call(&self, receiver: StructId, method: Spur, arg_count: usize) -> bool {
+        let name: &str = &self.type_pool.struct_def(receiver).name;
         arg_count == 0
             && self.interner.resolve(&method) == "len"
-            && crate::types::is_slice_struct_name(&self.type_pool.struct_def(receiver).name)
+            && (crate::types::is_slice_struct_name(name)
+                || crate::types::is_string_view_struct_name(name))
+    }
+
+    /// The string-literal analogue of [`Self::is_view_len_call`]: a zero-arg
+    /// `len` on a receiver whose text type has not been fixed yet. Every text
+    /// type the literal can settle on reports a `u64` byte length, so the
+    /// result is known even though the receiver is not (RUE-1679).
+    fn is_string_literal_len_call(&self, method: Spur, arg_count: usize) -> bool {
+        arg_count == 0 && self.interner.resolve(&method) == "len"
     }
 
     /// Whether an already-known operand is one of Rue's packed string types.
@@ -777,6 +796,18 @@ impl<'a> ConstraintGenerator<'a> {
         }
         self.const_values
             .and_then(|values| values.get(&(file_id, sym)).copied())
+    }
+
+    /// The integer bound to a comptime *value* parameter of the specialization
+    /// currently being analyzed (`comptime n: u64` → `n = 3` for `make(3)`).
+    /// `None` outside a specialization, for a name that is not a comptime value
+    /// parameter, and for a non-integer binding. See the `comptime_values`
+    /// field (RUE-268).
+    fn comptime_value_int(&self, sym: Spur) -> Option<i128> {
+        match self.comptime_values?.get(&sym)? {
+            ConstValue::Integer(n) => Some(*n),
+            _ => None,
+        }
     }
 
     /// Resolve a bare type-alias name in alias-head position against the
@@ -2850,17 +2881,26 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Array-repeat literal `[value; count]` (RUE-235). The array type
             // is `[typeof value; count]`; every slot has the value's type. The
-            // count is a compile-time constant resolved here (literal or a
-            // file-level `const`); an unresolved count (e.g. a `comptime` value
-            // parameter, only known at specialization) yields a fresh variable
-            // and is resolved/diagnosed by sema.
+            // count is a compile-time constant resolved here: a literal, a
+            // comptime value parameter of the specialization being analyzed
+            // (`fn make(comptime n: u64) -> i32 { [0; n][0] }`, spec 7.1:37),
+            // or a file-level `const`. A count that still doesn't resolve
+            // yields a fresh variable and is resolved/diagnosed by sema.
             InstData::ArrayRepeat { value, count } => {
                 let value_info = self.generate(*value, ctx);
                 continues &= value_info.continues;
                 let resolved = match count {
                     RepeatCount::Literal(n) => Some(*n),
+                    // A comptime value parameter captured at the call site
+                    // takes precedence over a file-level `const` of the same
+                    // name, the same precedence array-TYPE lengths use
+                    // (RUE-252). Without the value-parameter half the repeat's
+                    // type stayed an unconstrained variable that decayed to
+                    // `<error>`, and sema reported the array-repeat literal as
+                    // an un-annotatable empty array (E0903, RUE-1681).
                     RepeatCount::Named(sym) => self
-                        .const_value((span.file_id, *sym))
+                        .comptime_value_int(*sym)
+                        .or_else(|| self.const_value((span.file_id, *sym)))
                         .and_then(|v| u64::try_from(v).ok()),
                 };
                 match resolved {
@@ -3054,6 +3094,26 @@ impl<'a> ConstraintGenerator<'a> {
                         span,
                         !arg_diverged && !Self::is_never_concrete(&return_type),
                     );
+                }
+
+                // `len()` on a string literal whose text type is still
+                // contextual. Its result is `u64` whichever type the literal
+                // settles on — `str` (3.7:45) and `Str(N)` (3.7:52) by rule,
+                // StrBuf by its source-defined signature — so publish that
+                // result without pinning the receiver, which keeps its stable
+                // `str` default. The StrBuf-signature
+                // block above answers the same call only when the program
+                // imports StrBuf; without that import the receiver stayed a
+                // bare type variable, the call fell through to a fresh variable
+                // that unified with any annotation, and `let n: i32 =
+                // "hi".len();` reached CFG verification as a `u64` value in an
+                // `i32` slot (RUE-1679, the RUE-1611 class on the string rungs).
+                if self.is_string_literal_candidate(&receiver_info.ty)
+                    && self.is_string_literal_len_call(*method, call_args.len())
+                {
+                    let return_type = InferType::Concrete(Type::U64);
+                    self.record_type(inst_ref, return_type.clone());
+                    return ExprInfo::with_continues(return_type, span, receiver_info.continues);
                 }
 
                 // Resolve the call's result type from the receiver's type.
@@ -3266,8 +3326,9 @@ impl<'a> ConstraintGenerator<'a> {
                             // back to late-registered anonymous-struct
                             // signatures, RUE-164)
                             let method_key = (struct_id, *method);
-                            if self.is_slice_len_call(struct_id, *method, call_args.len()) {
-                                // `len` is the one method a slice `[T]` has
+                            if self.is_view_len_call(struct_id, *method, call_args.len()) {
+                                // `len` is the one method a `{ptr, len}` view —
+                                // a slice `[T]`, a `str`, a `Str(N)` — has
                                 // (7.2:17-18) and sema synthesizes it from the
                                 // view's `len` word, so no signature is
                                 // registered for the synthetic struct. Publish
@@ -3275,7 +3336,8 @@ impl<'a> ConstraintGenerator<'a> {
                                 // call typed as `ERROR`, which unifies with any
                                 // annotation, so `let n: i32 = s.len();` passed
                                 // inference and reached CFG verification as a
-                                // `u64` value in an `i32` binding (RUE-1611).
+                                // `u64` value in an `i32` binding (RUE-1611,
+                                // RUE-1679).
                                 InferType::Concrete(Type::U64)
                             } else if let Some(method_sig) = self.method_sig(&method_key) {
                                 // Generate constraints for arguments
@@ -3855,25 +3917,35 @@ impl<'a> ConstraintGenerator<'a> {
     /// `identity(i32, 42)`) to a concrete type, if it can be determined during
     /// constraint generation.
     ///
-    /// Handles type literals (`i32`, `bool`, ...), named struct/enum types, and
-    /// forwarded type parameters (a reference to `T` inside a specialized generic
-    /// body, resolved via `self.type_subst`). Returns `None` for type values that
-    /// are only known to semantic analysis (e.g. a local variable bound to an
-    /// anonymous struct type) - those are type-checked in sema instead.
+    /// Handles type literals (`i32`, `bool`, ...), named struct/enum types
+    /// (user-declared as well as built-in), and forwarded type parameters (a
+    /// reference to `T` inside a specialized generic body, resolved via
+    /// `self.type_subst`). Returns `None` for type values that are only known
+    /// to semantic analysis (e.g. a local variable bound to an anonymous struct
+    /// type) - those are type-checked in sema instead.
     fn extract_type_argument(&self, arg: InstRef, ctx: &ConstraintContext) -> Option<Type> {
+        let file_id = self.rir.get(arg).span.file_id;
         let resolve_sym = |sym: &Spur| -> Option<Type> {
+            // A forwarded type parameter substitutes to whatever the enclosing
+            // specialization bound it to, of any kind (a primitive, an array,
+            // a nominal type), so this lookup is unfiltered and comes first.
             if let Some(subst) = self.type_subst {
                 if let Some(&ty) = subst.get(sym) {
                     return Some(ty);
                 }
             }
-            if let Some(ty) = self.builtin_struct_type(*sym) {
-                return Some(ty);
-            }
-            if let Some(ty) = self.builtin_enum_type(*sym) {
-                return Some(ty);
-            }
-            None
+            // A directly named struct/enum — `identity(Foo, ..)` — is a type
+            // value exactly like `identity(i32, ..)`. `struct_type_for` /
+            // `enum_type_for` are the same by-file lookups the type-qualified
+            // call path uses (lexical aliases, file-level aliases, the
+            // referencing file's declarations, then builtins), so a nominal
+            // spelling resolves wherever its alias spelling already did.
+            // Consulting only the builtin tables left the argument out of
+            // `type_subst`, so a `-> T` return type could not be substituted
+            // and stayed the literal `type` placeholder — reported as a bogus
+            // "expected Foo, found type" mismatch at the binding (RUE-1680).
+            self.struct_type_for(sym, file_id)
+                .or_else(|| self.enum_type_for(sym, file_id))
         };
 
         match &self.rir.get(arg).data {
