@@ -5,6 +5,7 @@
 //! inherent-method receiver, which stable Rust cannot define on a trait. It
 //! owns no state, representation conversion, cache, or alternative policy.
 
+use crate::Node;
 use ahash::{AHashMap, AHashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -857,7 +858,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 .into(),
         };
         Ok(IssuedFunctionInstanceKey::Specialization {
-            base: Arc::new(IssuedFunctionInstanceKey::Definition(
+            base: Node::new(IssuedFunctionInstanceKey::Definition(
                 self.storage.function_identity(function_name)?,
             )),
             arguments,
@@ -1093,12 +1094,12 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             base
         } else {
             IssuedFunctionInstanceKey::Specialization {
-                base: Arc::new(base),
+                base: Node::new(base),
                 arguments: arguments.clone(),
             }
         };
         Ok((
-            IssuedStableProducerId::Function(Arc::new(function)),
+            IssuedStableProducerId::Function(Node::new(function)),
             arguments,
         ))
     }
@@ -1699,7 +1700,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             reject_runtime_type_value(*ty, *is_comptime, span)?;
         }
         let producer = (
-            crate::StableProducerId::Function(Arc::new(identity.clone())),
+            crate::StableProducerId::Function(Node::new(identity.clone())),
             crate::CanonicalArguments::default(),
         );
         let previous = self
@@ -1800,7 +1801,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         })?;
         let identity = crate::FunctionInstanceKey::Definition(identity_token);
         let producer = (
-            crate::StableProducerId::Function(Arc::new(identity.clone())),
+            crate::StableProducerId::Function(Node::new(identity.clone())),
             crate::CanonicalArguments::default(),
         );
         let previous = self

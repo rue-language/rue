@@ -7,8 +7,8 @@
 
 #![allow(dead_code)] // Phase-4 seams consumed incrementally by later query families.
 
+use rue_air::Node;
 use std::fmt::Write as _;
-use std::sync::Arc;
 
 use crate::{ModuleId, StableDefinitionKey, bound_definitions::StableNamedTypeKey};
 
@@ -331,21 +331,21 @@ pub(crate) fn type_instance_from_semantic(
         },
         T::Nominal(key) => TypeInstanceKey::Nominal(NominalInstanceKey::Named(key.clone())),
         T::AnonymousNominal(key) => {
-            TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(key.clone()))
+            TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(Node::new(key.clone())))
         }
         T::Array { element, len } => TypeInstanceKey::Array {
-            element: Arc::new(type_instance_from_semantic(element)?),
+            element: Node::new(type_instance_from_semantic(element)?),
             len: *len,
         },
         T::Slice { element, name } => TypeInstanceKey::Slice {
-            element: Arc::new(type_instance_from_semantic(element)?),
+            element: Node::new(type_instance_from_semantic(element)?),
             name: name.clone(),
         },
         T::PtrConst(pointee) => {
-            TypeInstanceKey::PtrConst(Arc::new(type_instance_from_semantic(pointee)?))
+            TypeInstanceKey::PtrConst(Node::new(type_instance_from_semantic(pointee)?))
         }
         T::PtrMut(pointee) => {
-            TypeInstanceKey::PtrMut(Arc::new(type_instance_from_semantic(pointee)?))
+            TypeInstanceKey::PtrMut(Node::new(type_instance_from_semantic(pointee)?))
         }
         T::Module(module) => TypeInstanceKey::Module(module.clone()),
         T::GenericParameter(index) => TypeInstanceKey::GenericParameter(*index),
@@ -360,9 +360,9 @@ pub(crate) fn argument_value_from_semantic(
         V::Integer(value) => CanonicalArgumentValue::Integer(*value),
         V::Bool(value) => CanonicalArgumentValue::Bool(*value),
         V::Type(value) => {
-            CanonicalArgumentValue::Type(Arc::new(type_instance_from_semantic(value)?))
+            CanonicalArgumentValue::Type(Node::new(type_instance_from_semantic(value)?))
         }
-        V::Function(value) => CanonicalArgumentValue::Function(Arc::new(
+        V::Function(value) => CanonicalArgumentValue::Function(Node::new(
             FunctionInstanceKey::Definition(value.clone()),
         )),
         V::Unit => CanonicalArgumentValue::Unit,
@@ -384,7 +384,7 @@ pub(crate) fn function_instance_from_specialization(
         .map(argument_value_from_semantic)
         .collect::<Option<Vec<_>>>()?;
     Some(FunctionInstanceKey::Specialization {
-        base: Arc::new(FunctionInstanceKey::Definition(value.base.clone())),
+        base: Node::new(FunctionInstanceKey::Definition(value.base.clone())),
         arguments: CanonicalArguments {
             types: types.into(),
             values: values.into(),
@@ -810,15 +810,19 @@ mod tests {
     fn anonymous_identity_includes_producer_anchor_arguments_and_kind() {
         let producer = definition("m", "make");
         let make = |kind, ordinal, argument| {
-            TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(AnonymousNominalKey {
-                kind,
-                producer: StableProducerId::Definition(producer.clone()),
-                anchor: StructuralAnchor::new(vec![StructuralPathSegment::AnonymousType(ordinal)]),
-                arguments: CanonicalArguments {
-                    types: vec![argument].into(),
-                    values: Arc::new([]),
+            TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(Node::new(
+                AnonymousNominalKey {
+                    kind,
+                    producer: StableProducerId::Definition(producer.clone()),
+                    anchor: StructuralAnchor::new(vec![StructuralPathSegment::AnonymousType(
+                        ordinal,
+                    )]),
+                    arguments: CanonicalArguments {
+                        types: vec![argument].into(),
+                        values: Arc::new([]),
+                    },
                 },
-            }))
+            )))
         };
         let baseline = make(AnonymousNominalKind::Struct, 0, TypeInstanceKey::I32);
         assert_eq!(
@@ -917,8 +921,8 @@ mod tests {
 
         let owner = &sites[0];
         let member = FunctionInstanceKey::AnonymousMember {
-            owner: Arc::new(TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(
-                owner.clone(),
+            owner: Node::new(TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(
+                Node::new(owner.clone()),
             ))),
             member: AnonymousMemberKey {
                 kind: AnonymousMemberKind::Destructor,

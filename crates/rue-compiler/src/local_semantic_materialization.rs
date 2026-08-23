@@ -8,6 +8,7 @@
 //! configuration are absent because relocation of already-analyzed AIR is
 //! configuration-neutral; they remain part of the downstream CFG query key.
 
+use rue_air::Node;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -287,7 +288,7 @@ fn collect_slice_sources(
                 output.insert(
                     name.clone(),
                     crate::TypeInstanceKey::Slice {
-                        element: Arc::new(element),
+                        element: Node::new(element),
                         name: name.clone(),
                     },
                 );
@@ -1002,8 +1003,10 @@ pub(crate) fn materialize_semantic_body_with_indexes(
                     .iter()
                     .find(|method| method.has_self && method.name.as_ref() == "__drop")
                     .map(|_| FunctionInstanceKey::AnonymousMember {
-                        owner: Arc::new(crate::TypeInstanceKey::Nominal(
-                            crate::NominalInstanceKey::Anonymous(nominal.identity.clone()),
+                        owner: Node::new(crate::TypeInstanceKey::Nominal(
+                            crate::NominalInstanceKey::Anonymous(Node::new(
+                                nominal.identity.clone(),
+                            )),
                         )),
                         member: crate::AnonymousMemberKey {
                             kind: crate::AnonymousMemberKind::Destructor,
@@ -1032,7 +1035,7 @@ pub(crate) fn materialize_semantic_body_with_indexes(
             ),
         };
         rue_air::SemanticLocalNominal {
-            key: rue_air::NominalInstanceKey::Anonymous(nominal.identity.clone()),
+            key: rue_air::NominalInstanceKey::Anonymous(Node::new(nominal.identity.clone())),
             module_path: Arc::from("<anonymous>"),
             name: nominal.source_symbol().clone(),
             kind,
@@ -1264,9 +1267,9 @@ pub(crate) fn select_materialization_facts(
             use rue_air::SemanticImportType as T;
             match ty {
                 T::Nominal(key) => self.nominal(&crate::NominalInstanceKey::Named(key.clone())),
-                T::AnonymousNominal(key) => {
-                    self.nominal(&crate::NominalInstanceKey::Anonymous(key.clone()))
-                }
+                T::AnonymousNominal(key) => self.nominal(&crate::NominalInstanceKey::Anonymous(
+                    Node::new(key.clone()),
+                )),
                 T::BuiltinNominal { kind, name } => {
                     self.builtin(
                         match kind {
@@ -1304,7 +1307,7 @@ pub(crate) fn select_materialization_facts(
                 }
                 T::AnonymousNominal(key) => {
                     self.opaque_nominals
-                        .insert(crate::NominalInstanceKey::Anonymous(key.clone()));
+                        .insert(crate::NominalInstanceKey::Anonymous(Node::new(key.clone())));
                 }
                 T::BuiltinNominal { kind, name } => {
                     self.builtin(
@@ -1464,13 +1467,14 @@ pub(crate) fn select_materialization_facts(
                         let nominal = self
                             .index
                             .anonymous
-                            .get(&key)
+                            .get(&*key)
                             .copied()
                             .cloned()
                             .ok_or_else(|| {
-                                LocalFactSelectionFailure::MissingAnonymousNominal(key.clone())
+                                LocalFactSelectionFailure::MissingAnonymousNominal((*key).clone())
                             })?;
-                        self.selected_anonymous.insert(key.clone(), nominal.clone());
+                        self.selected_anonymous
+                            .insert((*key).clone(), nominal.clone());
                         for (_, ty) in nominal.type_captures.iter() {
                             self.semantic_type(ty);
                         }
@@ -1490,7 +1494,7 @@ pub(crate) fn select_materialization_facts(
                                     }
                                     if method.has_self && method.name.as_ref() == "__drop" {
                                         self.callable(&FunctionInstanceKey::AnonymousMember {
-                                            owner: Arc::new(crate::TypeInstanceKey::Nominal(
+                                            owner: Node::new(crate::TypeInstanceKey::Nominal(
                                                 crate::NominalInstanceKey::Anonymous(key.clone()),
                                             )),
                                             member: crate::AnonymousMemberKey {
@@ -1548,9 +1552,10 @@ pub(crate) fn select_materialization_facts(
                         );
                     }
                     crate::NominalInstanceKey::Anonymous(key) => {
-                        let nominal = self.index.anonymous.get(&key).copied().ok_or_else(|| {
-                            LocalFactSelectionFailure::MissingAnonymousNominal(key.clone())
-                        })?;
+                        let nominal =
+                            self.index.anonymous.get(&*key).copied().ok_or_else(|| {
+                                LocalFactSelectionFailure::MissingAnonymousNominal((*key).clone())
+                            })?;
                         let shape = match nominal.shape {
                             DurableAnonymousNominalShape::Struct { .. } => {
                                 DurableAnonymousNominalShape::Struct {
@@ -1565,7 +1570,7 @@ pub(crate) fn select_materialization_facts(
                             }
                         };
                         self.selected_anonymous
-                            .insert(key, nominal.with_shape(shape));
+                            .insert((*key).clone(), nominal.with_shape(shape));
                     }
                 }
             }
@@ -1711,7 +1716,7 @@ pub(crate) fn select_drop_glue_materialization_facts(
     callable_symbols: &ahash::AHashMap<FunctionInstanceKey, Arc<str>>,
     interner: &mut LocalMaterializationFactInterner,
 ) -> Result<LocalMaterializationFacts, LocalFactSelectionFailure> {
-    let identity = FunctionInstanceKey::DropGlue(Arc::new(owner.clone()));
+    let identity = FunctionInstanceKey::DropGlue(Node::new(owner.clone()));
     let mut roots = vec![(0, crate::drop_glue::semantic_type_from_instance(owner))];
     roots.extend(facts.nested.iter().enumerate().map(|(index, ty)| {
         (
@@ -1796,7 +1801,7 @@ mod tests {
         let module = ModuleId::from_validated_canonical("a.rue");
         let mut interner = LocalMaterializationFactInterner::default();
         let callable = |name: &str| LocalCallableFact {
-            identity: FunctionInstanceKey::DropGlue(Arc::new(crate::TypeInstanceKey::I32)),
+            identity: FunctionInstanceKey::DropGlue(Node::new(crate::TypeInstanceKey::I32)),
             symbol: Arc::from(name),
         };
 
@@ -2189,7 +2194,7 @@ mod tests {
     #[test]
     fn anonymous_destructor_instances_keep_the_cleanup_callable_kind() {
         let destructor = FunctionInstanceKey::AnonymousMember {
-            owner: Arc::new(crate::TypeInstanceKey::I32),
+            owner: Node::new(crate::TypeInstanceKey::I32),
             member: crate::AnonymousMemberKey {
                 kind: crate::AnonymousMemberKind::Destructor,
                 name: Arc::from("__drop"),
@@ -2201,7 +2206,7 @@ mod tests {
         );
         assert_eq!(
             callable_kind_for_identity(&FunctionInstanceKey::Specialization {
-                base: Arc::new(destructor),
+                base: Node::new(destructor),
                 arguments: crate::CanonicalArguments::default(),
             }),
             rue_air::AnalyzedCallableKind::Destructor

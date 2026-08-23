@@ -4,6 +4,254 @@ use std::sync::Arc;
 
 use rue_runtime_abi::{ReservedExportId, RuntimeHelperId};
 
+/// Fixed-key mixer for identity digests.
+///
+/// The SplitMix64 finalizer `rue_query::StableHasher` uses, kept here so a
+/// digest can be taken without the semantic IR depending on the query engine.
+/// Fixed-key is the whole point: these digests select the order of maps whose
+/// iteration the compiler observes, so a per-process seed would make the
+/// compiler non-deterministic rather than subtly wrong.
+///
+/// One 64-bit lane rather than `StableHasher`'s two. The digest here is only
+/// ever an accelerator: [`Node`] verifies equality structurally and breaks an
+/// ordering tie structurally, so a collision costs one slow comparison and can
+/// never produce a wrong answer. Over the ~274k nodes a fresh Lattice compile
+/// builds, a 64-bit space makes that slow path astronomically rare, and the
+/// second lane would double the cost of the one operation this whole change
+/// exists to make cheap.
+#[derive(Debug, Clone)]
+struct IdentityHasher {
+    state: u64,
+}
+
+impl IdentityHasher {
+    const KEY: u64 = 0x2545_F491_4F6C_DD1D;
+
+    const fn new() -> Self {
+        Self { state: Self::KEY }
+    }
+
+    /// Bijective 64-bit finalizer (the SplitMix64 mixer).
+    #[inline]
+    const fn mix(mut word: u64) -> u64 {
+        word ^= word >> 30;
+        word = word.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        word ^= word >> 27;
+        word = word.wrapping_mul(0x94D0_49BB_1331_11EB);
+        word ^ (word >> 31)
+    }
+
+    #[inline]
+    fn absorb(&mut self, word: u64) {
+        self.state = Self::mix(self.state ^ word);
+    }
+
+    fn digest(&self) -> u64 {
+        self.state
+    }
+}
+
+impl std::hash::Hasher for IdentityHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        // Whole words first, then one tail word carrying the remainder's
+        // length in its top byte so a short tail cannot alias a longer one.
+        // An exact multiple of eight still absorbs that word, which is what
+        // separates `b"abcdefgh"` from `b"abcdefgh\0"`.
+        let mut chunks = bytes.chunks_exact(8);
+        for chunk in &mut chunks {
+            self.absorb(u64::from_le_bytes(chunk.try_into().expect("eight bytes")));
+        }
+        let remainder = chunks.remainder();
+        let mut tail = [0u8; 8];
+        tail[..remainder.len()].copy_from_slice(remainder);
+        self.absorb(u64::from_le_bytes(tail) ^ ((remainder.len() as u64) << 56));
+    }
+
+    // Integers are absorbed little-endian rather than through `to_ne_bytes`,
+    // so a digest does not depend on the host's byte order.
+    fn write_u8(&mut self, value: u8) {
+        self.absorb(u64::from(value));
+    }
+
+    fn write_u16(&mut self, value: u16) {
+        self.absorb(u64::from(value));
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.absorb(u64::from(value));
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.absorb(value);
+    }
+
+    fn write_u128(&mut self, value: u128) {
+        self.absorb(value as u64);
+        self.absorb((value >> 64) as u64);
+    }
+
+    fn write_i128(&mut self, value: i128) {
+        self.write_u128(value as u128);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.absorb(value as u64);
+    }
+
+    fn finish(&self) -> u64 {
+        self.state
+    }
+}
+
+/// One recursive edge of a canonical identity, carrying the digest of the
+/// subtree behind it.
+///
+/// These keys are compared and hashed far more often than they are built --
+/// on a fresh Lattice compile, roughly ten times more often -- and both
+/// operations used to walk the whole tree: `Hash` always, `Ord` until two keys
+/// diverged. Digesting each node once at construction turns both into integer
+/// work. Construction stays proportional to the node rather than the subtree,
+/// because a parent absorbs its children's digests rather than their contents.
+///
+/// `Ord` compares digests and falls back to the structural comparison only on
+/// a tie -- the ADR-0074 shape, a stable digest with a cold structural
+/// tiebreak. It is a total order and consistent with `Eq`: equal values imply
+/// an equal digest, so a digest difference always implies a value difference,
+/// and a digest tie is decided structurally exactly as before. `Hash` writes
+/// the digest, which is consistent with that `Eq` for the same reason.
+#[derive(Debug)]
+pub struct Node<T> {
+    digest: u64,
+    value: Arc<T>,
+}
+
+impl<T: std::hash::Hash> Node<T> {
+    /// Digests `value` once and shares it behind an `Arc`.
+    pub fn new(value: T) -> Self {
+        Self {
+            digest: Self::digest_of(&value),
+            value: Arc::new(value),
+        }
+    }
+
+    /// Adopts an already-shared value, digesting it once.
+    pub fn from_arc(value: Arc<T>) -> Self {
+        Self {
+            digest: Self::digest_of(&value),
+            value,
+        }
+    }
+
+    fn digest_of(value: &T) -> u64 {
+        let mut hasher = IdentityHasher::new();
+        value.hash(&mut hasher);
+        hasher.digest()
+    }
+}
+
+impl<T> Node<T> {
+    /// The shared value, for a caller that needs to keep the sharing.
+    pub fn as_arc(&self) -> &Arc<T> {
+        &self.value
+    }
+}
+
+impl<T: Clone> Node<T> {
+    /// Takes the value out, reclaiming it without a copy when this edge is its
+    /// last holder. A consumer converting an identity into another
+    /// representation used to move the value; keep that move where the sharing
+    /// allows it rather than paying a deep clone for the wrapper.
+    pub fn into_inner(self) -> T {
+        Arc::try_unwrap(self.value).unwrap_or_else(|shared| (*shared).clone())
+    }
+}
+
+impl<T> Clone for Node<T> {
+    fn clone(&self) -> Self {
+        Self {
+            digest: self.digest,
+            value: Arc::clone(&self.value),
+        }
+    }
+}
+
+impl<T> std::ops::Deref for Node<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
+impl<T> AsRef<T> for Node<T> {
+    fn as_ref(&self) -> &T {
+        &self.value
+    }
+}
+
+impl<T: std::hash::Hash> From<T> for Node<T> {
+    fn from(value: T) -> Self {
+        Self::new(value)
+    }
+}
+
+impl<T: PartialEq> PartialEq for Node<T> {
+    fn eq(&self, other: &Self) -> bool {
+        // Cloning an edge shares it, so the identical-pointer case is common
+        // enough to answer before touching the digest.
+        Arc::ptr_eq(&self.value, &other.value)
+            || (self.digest == other.digest && self.value == other.value)
+    }
+}
+
+impl<T: Eq> Eq for Node<T> {}
+
+/// Bounded on `PartialOrd` rather than `Ord` so a `#[derive(PartialOrd)]` on a
+/// payload that holds `Node` edges can prove it: the derive supplies only
+/// `PartialOrd` for the type parameters. Digest-first ordering extends `T`'s
+/// order faithfully exactly when that order is total, which every canonical
+/// identity's is -- they all derive `Ord` alongside it. `Node` is a building
+/// block for those identities, not a general-purpose smart pointer, so that is
+/// the contract rather than a gap.
+impl<T: PartialOrd> PartialOrd for Node<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        if Arc::ptr_eq(&self.value, &other.value) {
+            return Some(std::cmp::Ordering::Equal);
+        }
+        match self.digest.cmp(&other.digest) {
+            std::cmp::Ordering::Equal => self.value.partial_cmp(&other.value),
+            ordering => Some(ordering),
+        }
+    }
+}
+
+impl<T: Ord> Ord for Node<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if Arc::ptr_eq(&self.value, &other.value) {
+            return std::cmp::Ordering::Equal;
+        }
+        match self.digest.cmp(&other.digest) {
+            std::cmp::Ordering::Equal => self.value.cmp(&other.value),
+            ordering => ordering,
+        }
+    }
+}
+
+/// Writes the digest, which is the point: a probe that used to walk the whole
+/// subtree writes eight bytes instead.
+///
+/// This is only sound because no durable name reads `Hash` any more.
+/// `stable_anonymous_identity_digest` used to mint `__anon_struct_{digest}`
+/// through it, so writing the digest here would have renamed every anonymous
+/// nominal in every program; that path walks the explicit encoding in
+/// `stable_digest::DurableEncode` instead. Anything else that needs the
+/// structure rather than an accelerator belongs there too, not here.
+impl<T> std::hash::Hash for Node<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.digest);
+    }
+}
+
 /// The kind of an anonymous nominal is part of its identity even when its
 /// producer, structural site, and arguments happen to match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -31,8 +279,8 @@ pub struct AnonymousMemberKey {
 pub enum CanonicalArgumentValue<D, M> {
     Integer(i128),
     Bool(bool),
-    Type(Arc<TypeInstanceKey<D, M>>),
-    Function(Arc<FunctionInstanceKey<D, M>>),
+    Type(Node<TypeInstanceKey<D, M>>),
+    Function(Node<FunctionInstanceKey<D, M>>),
     Unit,
     String(Arc<str>),
 }
@@ -67,7 +315,7 @@ impl<D, M> Default for CanonicalArguments<D, M> {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StableProducerId<D, M> {
     Definition(D),
-    Function(Arc<FunctionInstanceKey<D, M>>),
+    Function(Node<FunctionInstanceKey<D, M>>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -85,7 +333,7 @@ pub enum NominalInstanceKey<D, M> {
         name: Arc<str>,
     },
     Named(D),
-    Anonymous(AnonymousNominalKey<D, M>),
+    Anonymous(Node<AnonymousNominalKey<D, M>>),
 }
 
 /// Canonical identity of a concrete type instance. `D` and `M` are the
@@ -111,15 +359,15 @@ pub enum TypeInstanceKey<D, M> {
     },
     Nominal(NominalInstanceKey<D, M>),
     Array {
-        element: Arc<Self>,
+        element: Node<Self>,
         len: u64,
     },
     Slice {
-        element: Arc<Self>,
+        element: Node<Self>,
         name: Arc<str>,
     },
-    PtrConst(Arc<Self>),
-    PtrMut(Arc<Self>),
+    PtrConst(Node<Self>),
+    PtrMut(Node<Self>),
     Module(M),
     GenericParameter(u32),
 }
@@ -129,20 +377,20 @@ pub enum TypeInstanceKey<D, M> {
 pub enum FunctionInstanceKey<D, M> {
     Definition(D),
     Specialization {
-        base: Arc<FunctionInstanceKey<D, M>>,
+        base: Node<FunctionInstanceKey<D, M>>,
         arguments: CanonicalArguments<D, M>,
     },
     AnonymousMember {
-        owner: Arc<TypeInstanceKey<D, M>>,
+        owner: Node<TypeInstanceKey<D, M>>,
         member: AnonymousMemberKey,
     },
-    DropGlue(Arc<TypeInstanceKey<D, M>>),
+    DropGlue(Node<TypeInstanceKey<D, M>>),
 }
 
 impl<D, M> CanonicalArgumentValue<D, M> {
     /// Relocate every definition and module identity carried by this stable
     /// argument value without changing its language-level value.
-    pub fn try_map_identities<D2, M2, E>(
+    pub fn try_map_identities<D2: std::hash::Hash, M2: std::hash::Hash, E>(
         &self,
         definition: &impl Fn(&D) -> Result<D2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
@@ -150,10 +398,10 @@ impl<D, M> CanonicalArgumentValue<D, M> {
         Ok(match self {
             Self::Integer(value) => CanonicalArgumentValue::Integer(*value),
             Self::Bool(value) => CanonicalArgumentValue::Bool(*value),
-            Self::Type(value) => CanonicalArgumentValue::Type(Arc::new(
+            Self::Type(value) => CanonicalArgumentValue::Type(Node::new(
                 value.try_map_identities(definition, module)?,
             )),
-            Self::Function(value) => CanonicalArgumentValue::Function(Arc::new(
+            Self::Function(value) => CanonicalArgumentValue::Function(Node::new(
                 value.try_map_identities(definition, module)?,
             )),
             Self::Unit => CanonicalArgumentValue::Unit,
@@ -163,7 +411,7 @@ impl<D, M> CanonicalArgumentValue<D, M> {
 }
 
 impl<D, M> CanonicalArguments<D, M> {
-    pub fn try_map_identities<D2, M2, E>(
+    pub fn try_map_identities<D2: std::hash::Hash, M2: std::hash::Hash, E>(
         &self,
         definition: &impl Fn(&D) -> Result<D2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
@@ -189,7 +437,7 @@ impl<D, M> AnonymousNominalKey<D, M> {
     /// Relocate the complete recursive identity graph without changing its
     /// language-level identity. Durable body projection and current-request
     /// validation deliberately share this traversal.
-    pub fn try_map_identities<D2, M2, E>(
+    pub fn try_map_identities<D2: std::hash::Hash, M2: std::hash::Hash, E>(
         &self,
         definition: &impl Fn(&D) -> Result<D2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
@@ -200,7 +448,7 @@ impl<D, M> AnonymousNominalKey<D, M> {
                 StableProducerId::Definition(value) => {
                     StableProducerId::Definition(definition(value)?)
                 }
-                StableProducerId::Function(value) => StableProducerId::Function(Arc::new(
+                StableProducerId::Function(value) => StableProducerId::Function(Node::new(
                     value.try_map_identities(definition, module)?,
                 )),
             },
@@ -210,7 +458,7 @@ impl<D, M> AnonymousNominalKey<D, M> {
     }
 }
 
-impl<D: Clone, M: Clone> AnonymousNominalKey<D, M> {
+impl<D: Clone + std::hash::Hash, M: Clone + std::hash::Hash> AnonymousNominalKey<D, M> {
     /// The canonical producer form of this key: every empty-argument function
     /// `Specialization` wrapper on the producer's base spine collapsed to its
     /// base (see [`FunctionInstanceKey::with_collapsed_empty_specializations`]).
@@ -229,7 +477,7 @@ impl<D: Clone, M: Clone> AnonymousNominalKey<D, M> {
                     std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(self),
                     std::borrow::Cow::Owned(collapsed) => std::borrow::Cow::Owned(Self {
                         kind: self.kind,
-                        producer: StableProducerId::Function(Arc::new(collapsed)),
+                        producer: StableProducerId::Function(Node::new(collapsed)),
                         anchor: self.anchor.clone(),
                         arguments: self.arguments.clone(),
                     }),
@@ -239,7 +487,7 @@ impl<D: Clone, M: Clone> AnonymousNominalKey<D, M> {
     }
 }
 
-impl<D: Clone, M: Clone> FunctionInstanceKey<D, M> {
+impl<D: Clone + std::hash::Hash, M: Clone + std::hash::Hash> FunctionInstanceKey<D, M> {
     /// Collapse every `Specialization` wrapper carrying no arguments to its
     /// base, recursively along the base spine — the canonical producer form
     /// the epoch's `canonical_function_producer` emits
@@ -262,7 +510,7 @@ impl<D: Clone, M: Clone> FunctionInstanceKey<D, M> {
                     std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(self),
                     std::borrow::Cow::Owned(base) => {
                         std::borrow::Cow::Owned(Self::Specialization {
-                            base: Arc::new(base),
+                            base: Node::new(base),
                             arguments: arguments.clone(),
                         })
                     }
@@ -274,7 +522,7 @@ impl<D: Clone, M: Clone> FunctionInstanceKey<D, M> {
 }
 
 impl<D, M> TypeInstanceKey<D, M> {
-    pub fn try_map_identities<D2, M2, E>(
+    pub fn try_map_identities<D2: std::hash::Hash, M2: std::hash::Hash, E>(
         &self,
         definition: &impl Fn(&D) -> Result<D2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
@@ -302,23 +550,23 @@ impl<D, M> TypeInstanceKey<D, M> {
                     name: name.clone(),
                 },
                 NominalInstanceKey::Named(value) => NominalInstanceKey::Named(definition(value)?),
-                NominalInstanceKey::Anonymous(value) => {
-                    NominalInstanceKey::Anonymous(value.try_map_identities(definition, module)?)
-                }
+                NominalInstanceKey::Anonymous(value) => NominalInstanceKey::Anonymous(Node::new(
+                    value.try_map_identities(definition, module)?,
+                )),
             }),
             Self::Array { element, len } => TypeInstanceKey::Array {
-                element: Arc::new(element.try_map_identities(definition, module)?),
+                element: Node::new(element.try_map_identities(definition, module)?),
                 len: *len,
             },
             Self::Slice { element, name } => TypeInstanceKey::Slice {
-                element: Arc::new(element.try_map_identities(definition, module)?),
+                element: Node::new(element.try_map_identities(definition, module)?),
                 name: name.clone(),
             },
             Self::PtrConst(value) => {
-                TypeInstanceKey::PtrConst(Arc::new(value.try_map_identities(definition, module)?))
+                TypeInstanceKey::PtrConst(Node::new(value.try_map_identities(definition, module)?))
             }
             Self::PtrMut(value) => {
-                TypeInstanceKey::PtrMut(Arc::new(value.try_map_identities(definition, module)?))
+                TypeInstanceKey::PtrMut(Node::new(value.try_map_identities(definition, module)?))
             }
             Self::Module(value) => TypeInstanceKey::Module(module(value)?),
             Self::GenericParameter(index) => TypeInstanceKey::GenericParameter(*index),
@@ -327,7 +575,7 @@ impl<D, M> TypeInstanceKey<D, M> {
 }
 
 impl<D, M> FunctionInstanceKey<D, M> {
-    pub fn try_map_identities<D2, M2, E>(
+    pub fn try_map_identities<D2: std::hash::Hash, M2: std::hash::Hash, E>(
         &self,
         definition: &impl Fn(&D) -> Result<D2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
@@ -335,14 +583,14 @@ impl<D, M> FunctionInstanceKey<D, M> {
         Ok(match self {
             Self::Definition(value) => FunctionInstanceKey::Definition(definition(value)?),
             Self::Specialization { base, arguments } => FunctionInstanceKey::Specialization {
-                base: Arc::new(base.try_map_identities(definition, module)?),
+                base: Node::new(base.try_map_identities(definition, module)?),
                 arguments: arguments.try_map_identities(definition, module)?,
             },
             Self::AnonymousMember { owner, member } => FunctionInstanceKey::AnonymousMember {
-                owner: Arc::new(owner.try_map_identities(definition, module)?),
+                owner: Node::new(owner.try_map_identities(definition, module)?),
                 member: member.clone(),
             },
-            Self::DropGlue(value) => FunctionInstanceKey::DropGlue(Arc::new(
+            Self::DropGlue(value) => FunctionInstanceKey::DropGlue(Node::new(
                 value.try_map_identities(definition, module)?,
             )),
         })
@@ -379,7 +627,7 @@ pub struct LocalAtomId<D, M> {
 }
 
 impl<D, M> LocalAtomId<D, M> {
-    pub fn try_map_identities<D2, M2, E>(
+    pub fn try_map_identities<D2: std::hash::Hash, M2: std::hash::Hash, E>(
         &self,
         definition: &impl Fn(&D) -> Result<D2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
@@ -527,15 +775,17 @@ mod tests {
 
         type T = TypeInstanceKey<&'static str, &'static str>;
         let make = |definition, module, path| {
-            T::Nominal(NominalInstanceKey::Anonymous(AnonymousNominalKey {
-                kind: AnonymousNominalKind::Struct,
-                producer: StableProducerId::Definition(definition),
-                anchor: rue_rir::RirStructuralAnchor::new(path),
-                arguments: CanonicalArguments {
-                    types: Arc::from([T::Module(module)]),
-                    values: Arc::new([]),
+            T::Nominal(NominalInstanceKey::Anonymous(Node::new(
+                AnonymousNominalKey {
+                    kind: AnonymousNominalKind::Struct,
+                    producer: StableProducerId::Definition(definition),
+                    anchor: rue_rir::RirStructuralAnchor::new(path),
+                    arguments: CanonicalArguments {
+                        types: Arc::from([T::Module(module)]),
+                        values: Arc::new([]),
+                    },
                 },
-            }))
+            )))
         };
         let baseline = make("make", "pkg", vec![S::Body, S::AnonymousType(0)]);
         let same = make("make", "pkg", vec![S::Body, S::AnonymousType(0)]);

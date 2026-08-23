@@ -1,6 +1,7 @@
 //! In-process canonical parse, merge, and RIR query orchestration.
 
 use ahash::{AHashMap, AHashSet};
+use rue_air::Node;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
@@ -5052,7 +5053,7 @@ impl CompilerSession {
                 .demanded_drop_glue
                 .iter()
                 .cloned()
-                .map(|owner| crate::FunctionInstanceKey::DropGlue(Arc::new(owner))),
+                .map(|owner| crate::FunctionInstanceKey::DropGlue(Node::new(owner))),
         );
         let main_identity = crate::FunctionInstanceKey::Definition(graph.main.clone());
         let callable_symbols = identities
@@ -5200,7 +5201,7 @@ impl CompilerSession {
         for (owner, facts) in graph.closure.demanded_drop_glue_plans.iter() {
             work.cfg.drop_glue_functions_synthesized += 1;
             work.cfg.materialization_fact_selections += 1;
-            let identity = crate::FunctionInstanceKey::DropGlue(Arc::new(owner.clone()));
+            let identity = crate::FunctionInstanceKey::DropGlue(Node::new(owner.clone()));
             let materialization =
                 crate::local_semantic_materialization::select_drop_glue_materialization_facts(
                     owner,
@@ -11774,7 +11775,7 @@ fn main() -> i32 {
         let make_definition = body_query_key(&mut session, &options, "Make");
         let make = crate::body_query::BodyQueryKey::new(
             crate::FunctionInstanceKey::Specialization {
-                base: Arc::new(make_definition.instance.clone()),
+                base: Node::new(make_definition.instance.clone()),
                 arguments: crate::CanonicalArguments::default(),
             },
             main.configuration.clone(),
@@ -11878,7 +11879,7 @@ fn main() -> i32 {
                 }
                 crate::body_query::BodyReference::Type(ty)
                 | crate::body_query::BodyReference::DropGlue(ty) => {
-                    let owner = crate::FunctionInstanceKey::DropGlue(Arc::new(ty.clone()));
+                    let owner = crate::FunctionInstanceKey::DropGlue(Node::new(ty.clone()));
                     producers.extend(
                         crate::revisioned_query_database::collect_instance_anonymous_nominals(
                             &owner,

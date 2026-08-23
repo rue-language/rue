@@ -5,6 +5,7 @@
 //! terminal. Both publish stable relocation domains and own the body-local AIR,
 //! type pool, symbols, strings, and local atoms required by their CFG.
 
+use rue_air::Node;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, OnceLock};
@@ -960,22 +961,22 @@ fn type_instance_from_semantic(
         T::Nominal(definition) => {
             crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(definition.clone()))
         }
-        T::AnonymousNominal(identity) => {
-            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity.clone()))
-        }
+        T::AnonymousNominal(identity) => crate::TypeInstanceKey::Nominal(
+            crate::NominalInstanceKey::Anonymous(Node::new(identity.clone())),
+        ),
         T::Array { element, len } => crate::TypeInstanceKey::Array {
-            element: Arc::new(type_instance_from_semantic(element)),
+            element: Node::new(type_instance_from_semantic(element)),
             len: *len,
         },
         T::Slice { element, name } => crate::TypeInstanceKey::Slice {
-            element: Arc::new(type_instance_from_semantic(element)),
+            element: Node::new(type_instance_from_semantic(element)),
             name: name.clone(),
         },
         T::PtrConst(element) => {
-            crate::TypeInstanceKey::PtrConst(Arc::new(type_instance_from_semantic(element)))
+            crate::TypeInstanceKey::PtrConst(Node::new(type_instance_from_semantic(element)))
         }
         T::PtrMut(element) => {
-            crate::TypeInstanceKey::PtrMut(Arc::new(type_instance_from_semantic(element)))
+            crate::TypeInstanceKey::PtrMut(Node::new(type_instance_from_semantic(element)))
         }
         T::Module(module) => crate::TypeInstanceKey::Module(module.clone()),
         T::GenericParameter(index) => crate::TypeInstanceKey::GenericParameter(*index),
@@ -1199,7 +1200,7 @@ fn materialize_and_build_cfg(
         }
         CfgSemanticInput::DropGlue { owner, .. } => {
             crate::local_semantic_materialization::materialize_semantic_body_with_indexes(
-                crate::FunctionInstanceKey::DropGlue(Arc::new(owner.clone())),
+                crate::FunctionInstanceKey::DropGlue(Node::new(owner.clone())),
                 body,
                 body_span,
                 &facts.declarations,

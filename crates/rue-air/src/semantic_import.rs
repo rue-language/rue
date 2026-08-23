@@ -13,6 +13,7 @@ use ahash::AHashMap;
 use lasso::{Spur, ThreadedRodeo};
 use rue_span::FileId;
 
+use crate::Node;
 use crate::{
     Air, AirCallArg, AirInst, AirInstData, AirPattern, AirProjection, AirRef, AnonymousNominalKey,
     ConstValue, EnumDef, EnumId, FunctionInstanceKey, ModuleId, ModuleRegistry, NominalInstanceKey,
@@ -289,7 +290,7 @@ impl<K, M> SemanticImportType<K, M> {
     /// Relocate every identity in this canonical type without changing its
     /// structural shape. This is the single traversal used by body,
     /// specialization, and durable declaration adapters.
-    pub fn try_map_identities<K2, M2, E>(
+    pub fn try_map_identities<K2: std::hash::Hash, M2: std::hash::Hash, E>(
         &self,
         key: &impl Fn(&K) -> Result<K2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
@@ -337,7 +338,7 @@ impl<K, M> SemanticImportType<K, M> {
 
 impl<K, M> SemanticImportConstValue<K, M> {
     /// Relocate identities using the canonical type traversal.
-    pub fn try_map_identities<K2, M2, E>(
+    pub fn try_map_identities<K2: std::hash::Hash, M2: std::hash::Hash, E>(
         &self,
         key: &impl Fn(&K) -> Result<K2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
@@ -425,7 +426,9 @@ pub struct SemanticLocalCallable<K, M> {
     pub symbol: Arc<str>,
 }
 
-fn nominal_import_type<K, M>(key: NominalInstanceKey<K, M>) -> SemanticImportType<K, M> {
+fn nominal_import_type<K: Clone, M: Clone>(
+    key: NominalInstanceKey<K, M>,
+) -> SemanticImportType<K, M> {
     match key {
         NominalInstanceKey::Builtin { kind, name } => SemanticImportType::BuiltinNominal {
             name,
@@ -435,11 +438,13 @@ fn nominal_import_type<K, M>(key: NominalInstanceKey<K, M>) -> SemanticImportTyp
             },
         },
         NominalInstanceKey::Named(key) => SemanticImportType::Nominal(key),
-        NominalInstanceKey::Anonymous(key) => SemanticImportType::AnonymousNominal(key),
+        NominalInstanceKey::Anonymous(key) => {
+            SemanticImportType::AnonymousNominal(key.into_inner())
+        }
     }
 }
 
-fn import_type_identity<K: Clone, M: Clone>(
+fn import_type_identity<K: Clone + std::hash::Hash, M: Clone + std::hash::Hash>(
     ty: &SemanticImportType<K, M>,
 ) -> TypeInstanceKey<K, M> {
     use SemanticImportType as S;
@@ -465,16 +470,16 @@ fn import_type_identity<K: Clone, M: Clone>(
         },
         S::Nominal(key) => TypeInstanceKey::Nominal(NominalInstanceKey::Named(key.clone())),
         S::AnonymousNominal(key) => {
-            TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(key.clone()))
+            TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(Node::new(key.clone())))
         }
         S::Array { element, len } => TypeInstanceKey::Array {
-            element: Arc::new(import_type_identity(element)),
+            element: Node::new(import_type_identity(element)),
             len: *len,
         },
-        S::PtrConst(inner) => TypeInstanceKey::PtrConst(Arc::new(import_type_identity(inner))),
-        S::PtrMut(inner) => TypeInstanceKey::PtrMut(Arc::new(import_type_identity(inner))),
+        S::PtrConst(inner) => TypeInstanceKey::PtrConst(Node::new(import_type_identity(inner))),
+        S::PtrMut(inner) => TypeInstanceKey::PtrMut(Node::new(import_type_identity(inner))),
         S::Slice { element, name } => TypeInstanceKey::Slice {
-            element: Arc::new(import_type_identity(element)),
+            element: Node::new(import_type_identity(element)),
             name: name.clone(),
         },
         S::Module(module) => TypeInstanceKey::Module(module.clone()),
@@ -482,7 +487,7 @@ fn import_type_identity<K: Clone, M: Clone>(
     }
 }
 
-fn specialization_key<K: Clone, M: Clone>(
+fn specialization_key<K: Clone + std::hash::Hash, M: Clone + std::hash::Hash>(
     identity: &crate::SemanticSpecializationIdentity<K, M>,
 ) -> FunctionInstanceKey<K, M> {
     let values = identity
@@ -494,10 +499,10 @@ fn specialization_key<K: Clone, M: Clone>(
             }
             SemanticImportConstValue::Bool(value) => crate::CanonicalArgumentValue::Bool(*value),
             SemanticImportConstValue::Type(value) => {
-                crate::CanonicalArgumentValue::Type(Arc::new(import_type_identity(value)))
+                crate::CanonicalArgumentValue::Type(Node::new(import_type_identity(value)))
             }
             SemanticImportConstValue::Function(value) => crate::CanonicalArgumentValue::Function(
-                Arc::new(FunctionInstanceKey::Definition(value.clone())),
+                Node::new(FunctionInstanceKey::Definition(value.clone())),
             ),
             SemanticImportConstValue::Unit => crate::CanonicalArgumentValue::Unit,
             SemanticImportConstValue::String(value) => {
@@ -506,7 +511,7 @@ fn specialization_key<K: Clone, M: Clone>(
         })
         .collect::<Vec<_>>();
     FunctionInstanceKey::Specialization {
-        base: Arc::new(FunctionInstanceKey::Definition(identity.base.clone())),
+        base: Node::new(FunctionInstanceKey::Definition(identity.base.clone())),
         arguments: crate::CanonicalArguments {
             types: identity
                 .type_arguments
@@ -1764,7 +1769,7 @@ where
                 },
                 F::AnonymousNominal(key) => match self
                     .nominals
-                    .get(&NominalInstanceKey::Anonymous(key.clone()))
+                    .get(&NominalInstanceKey::Anonymous(Node::new(key.clone())))
                 {
                     Some(LocalNominal::Struct(id)) => Type::new_struct(*id),
                     Some(LocalNominal::Enum(id)) => Type::new_enum(*id),
@@ -2893,7 +2898,7 @@ mod tests {
             arguments: crate::CanonicalArguments::default(),
         };
         nominals.push(SemanticLocalNominal {
-            key: NominalInstanceKey::Anonymous(anonymous.clone()),
+            key: NominalInstanceKey::Anonymous(Node::new(anonymous.clone())),
             module_path: Arc::from("module-anonymous"),
             name: Arc::from("Anonymous"),
             kind: SemanticImportNominalKind::Struct,
@@ -3244,11 +3249,11 @@ mod tests {
             values: vec![crate::CanonicalArgumentValue::Integer(7)].into(),
         };
         let owner = FunctionInstanceKey::Specialization {
-            base: Arc::new(FunctionInstanceKey::Definition("generic")),
+            base: Node::new(FunctionInstanceKey::Definition("generic")),
             arguments: arguments.clone(),
         };
         let callee = FunctionInstanceKey::Specialization {
-            base: Arc::new(FunctionInstanceKey::Definition("callee")),
+            base: Node::new(FunctionInstanceKey::Definition("callee")),
             arguments,
         };
         let input = body(vec![
@@ -3436,16 +3441,17 @@ mod tests {
     fn local_materialization_joins_anonymous_nominal_and_member_identity() {
         use crate::SemanticBodyInstData as D;
         let anonymous = anonymous_key();
-        let owner_type = TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(anonymous.clone()));
+        let owner_type =
+            TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(Node::new(anonymous.clone())));
         let identity = FunctionInstanceKey::AnonymousMember {
-            owner: Arc::new(owner_type.clone()),
+            owner: Node::new(owner_type.clone()),
             member: crate::AnonymousMemberKey {
                 kind: crate::AnonymousMemberKind::Method,
                 name: Arc::from("value"),
             },
         };
         let nominal = SemanticLocalNominal {
-            key: NominalInstanceKey::Anonymous(anonymous.clone()),
+            key: NominalInstanceKey::Anonymous(Node::new(anonymous.clone())),
             module_path: Arc::from("main"),
             name: Arc::from("anonymous-record"),
             kind: SemanticImportNominalKind::Struct,

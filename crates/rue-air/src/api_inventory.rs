@@ -273,7 +273,10 @@ fn semantic_schema_scaffolding_stays_exhaustive_and_reviewable() {
 
     assert!(body.contains("macro_rules! semantic_body_inst_schema"));
     assert!(body.contains("pub enum SemanticBodyInstKind"));
-    assert!(body.contains("pub fn try_map_keys<K2, M2, E>("));
+    // The traversal is the contract; its exact type-parameter list is not. The
+    // sibling checks in this test pin `pub fn name(` for the same reason --
+    // adding a bound to `K2`/`M2` changes nothing this guard exists to protect.
+    assert!(body.contains("pub fn try_map_keys<"));
     assert!(body.contains("pub fn visit_dependencies("));
     assert!(body.contains("pub struct SemanticBodyInstFailureContext<E>"));
     assert!(body.contains("let data = inst.data.try_map_keys(key, module)?;"));
