@@ -597,6 +597,12 @@ const ENTRIES: &[Entry] = &[
         &["aarch64-linux", "x86-64-linux"],
     ),
     Entry::new(
+        "cli.std_net_tcp",
+        "tcp_write_after_peer_close_is_connection_reset",
+        external(ExternalDependencyKind::SystemCall),
+        &["aarch64-linux", "x86-64-linux"],
+    ),
+    Entry::new(
         "cli.std_strbuf",
         "mem_swap_exchanges_move_only_strbufs",
         intrinsic(UnsupportedIntrinsicKind::ByteCopy),
