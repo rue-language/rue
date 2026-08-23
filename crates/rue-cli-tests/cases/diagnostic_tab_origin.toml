@@ -50,3 +50,58 @@ error_contains = [
 compile_stderr_not_contains = [
   '"column":12',
 ]
+
+[[case]]
+name = "multi_file_suffix_collision_root_registered_first"
+description = """
+RUE-1652: the root main.rue path is a suffix of the imported lib/main.rue path.
+The origin correction must identify the rendered path segment structurally, so
+the root's tab-free source cannot suppress correction for the imported file.
+"""
+files = [
+  { path = "main.rue", source = """
+const lib = @import("lib/main.rue");
+
+fn main() -> i32 {
+    return lib.bad();
+}
+""" },
+  { path = "lib/main.rue", source = """
+pub fn bad() -> i32 {
+	return nope;
+}
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+  "lib/main.rue:2:9",
+  "2 |     return nope;",
+  "|            ^^^^",
+]
+compile_stderr_not_contains = ["--> lib/main.rue:2:12"]
+
+[[case]]
+name = "multi_file_suffix_collision_imported_file_registered_first"
+description = """
+RUE-1652 order control: registration order must not change the imported file's
+corrected original-source column when the paths suffix-collide.
+"""
+files = [
+  { path = "lib/main.rue", source = """
+pub fn bad() -> i32 {
+	return nope;
+}
+""" },
+  { path = "main.rue", source = """
+const lib = @import("lib/main.rue");
+
+fn main() -> i32 {
+    return lib.bad();
+}
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["lib/main.rue:2:9"]
+compile_stderr_not_contains = ["--> lib/main.rue:2:12"]
