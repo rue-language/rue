@@ -6,8 +6,7 @@
 //! of the checkout location. Keeping both maps together with an explicit root
 //! makes it impossible for those coupled inputs to drift after construction.
 
-use std::collections::{HashMap, HashSet};
-
+use ahash::{AHashMap, AHashSet};
 use rue_air::normalize_module_path;
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::FileId;
@@ -37,13 +36,13 @@ pub struct SourceMetadata {
 #[derive(Debug)]
 struct MetadataSegment {
     sorted_ids: Vec<FileId>,
-    physical_paths: HashMap<FileId, String>,
-    logical_paths: HashMap<FileId, String>,
-    trusted_standard_library_files: HashSet<FileId>,
+    physical_paths: AHashMap<FileId, String>,
+    logical_paths: AHashMap<FileId, String>,
+    trusted_standard_library_files: AHashSet<FileId>,
     /// Normalized path identities, retained so an appended segment can check
     /// cross-segment collisions without re-normalizing predecessor entries.
-    normalized_physical: HashSet<String>,
-    normalized_logical: HashSet<String>,
+    normalized_physical: AHashSet<String>,
+    normalized_logical: AHashSet<String>,
 }
 
 impl Clone for SourceMetadata {
@@ -88,7 +87,7 @@ impl Eq for SourceMetadata {}
 
 impl std::hash::Hash for SourceMetadata {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // This type owns unordered `HashMap`/`HashSet` fields, so `Hash` cannot
+        // This type owns unordered `AHashMap`/`AHashSet` fields, so `Hash` cannot
         // be derived. Hashing the root plus the deterministic ascending id
         // sequence is consistent with the logical `Eq`: equal metadata
         // necessarily agree on both, and any collision between distinct
@@ -110,8 +109,8 @@ impl SourceMetadata {
     /// materialize both maps so relocation-sensitive defaults remain explicit.
     pub fn new(
         root_file_id: FileId,
-        physical_paths: HashMap<FileId, String>,
-        logical_paths: HashMap<FileId, String>,
+        physical_paths: AHashMap<FileId, String>,
+        logical_paths: AHashMap<FileId, String>,
     ) -> CompileResult<Self> {
         if physical_paths.is_empty() {
             return Err(invalid_input("source metadata contains no files"));
@@ -123,7 +122,7 @@ impl SourceMetadata {
             )));
         }
         let segment =
-            MetadataSegment::validated(physical_paths, logical_paths, HashSet::new(), None)?;
+            MetadataSegment::validated(physical_paths, logical_paths, AHashSet::new(), None)?;
         let len = segment.sorted_ids.len();
         Ok(Self {
             root_file_id,
@@ -135,9 +134,9 @@ impl SourceMetadata {
 
     pub(crate) fn new_with_trusted_standard_library(
         root_file_id: FileId,
-        physical_paths: HashMap<FileId, String>,
-        logical_paths: HashMap<FileId, String>,
-        trusted_standard_library_files: HashSet<FileId>,
+        physical_paths: AHashMap<FileId, String>,
+        logical_paths: AHashMap<FileId, String>,
+        trusted_standard_library_files: AHashSet<FileId>,
     ) -> CompileResult<Self> {
         if physical_paths.is_empty() {
             return Err(invalid_input("source metadata contains no files"));
@@ -175,9 +174,9 @@ impl SourceMetadata {
     /// stay ascending.
     pub(crate) fn extend_with_appended(
         &self,
-        physical_paths: HashMap<FileId, String>,
-        logical_paths: HashMap<FileId, String>,
-        trusted_standard_library_files: HashSet<FileId>,
+        physical_paths: AHashMap<FileId, String>,
+        logical_paths: AHashMap<FileId, String>,
+        trusted_standard_library_files: AHashSet<FileId>,
     ) -> CompileResult<Self> {
         if physical_paths.is_empty() {
             return Err(invalid_input("source metadata extension appends no files"));
@@ -264,13 +263,13 @@ impl SourceMetadata {
     pub(crate) fn from_sources(
         sources: &[SourceView<'_>],
         root_file_id: FileId,
-        logical_path_overrides: HashMap<FileId, String>,
+        logical_path_overrides: AHashMap<FileId, String>,
     ) -> CompileResult<Self> {
         if sources.is_empty() {
             return Err(invalid_input("source metadata contains no files"));
         }
 
-        let mut counts = HashMap::<FileId, usize>::new();
+        let mut counts = AHashMap::<FileId, usize>::new();
         for source in sources {
             *counts.entry(source.file_id).or_default() += 1;
         }
@@ -286,7 +285,7 @@ impl SourceMetadata {
             )));
         }
 
-        let physical_paths: HashMap<_, _> = sources
+        let physical_paths: AHashMap<_, _> = sources
             .iter()
             .map(|source| (source.file_id, source.path.to_owned()))
             .collect();
@@ -413,7 +412,7 @@ impl SourceMetadata {
 
     #[cfg(test)]
     pub(crate) fn validate_sources(&self, sources: &[SourceView<'_>]) -> CompileResult<()> {
-        let mut counts = HashMap::<FileId, usize>::new();
+        let mut counts = AHashMap::<FileId, usize>::new();
         for source in sources {
             *counts.entry(source.file_id).or_default() += 1;
         }
@@ -430,7 +429,7 @@ impl SourceMetadata {
             )));
         }
 
-        let seen: HashSet<_> = counts.keys().copied().collect();
+        let seen: AHashSet<_> = counts.keys().copied().collect();
         let mut unknown_ids: Vec<_> = seen
             .iter()
             .copied()
@@ -523,9 +522,9 @@ impl MetadataSegment {
     /// collision freedom against the shared base's RETAINED normalized
     /// identities (no base entry is re-normalized or re-walked).
     fn validated(
-        physical_paths: HashMap<FileId, String>,
-        logical_paths: HashMap<FileId, String>,
-        trusted_standard_library_files: HashSet<FileId>,
+        physical_paths: AHashMap<FileId, String>,
+        logical_paths: AHashMap<FileId, String>,
+        trusted_standard_library_files: AHashSet<FileId>,
         base: Option<&[std::sync::Arc<MetadataSegment>]>,
     ) -> CompileResult<Self> {
         let mut file_ids: Vec<_> = physical_paths.keys().copied().collect();
@@ -556,7 +555,7 @@ impl MetadataSegment {
             )));
         }
 
-        let logical_paths: HashMap<_, _> = logical_paths
+        let logical_paths: AHashMap<_, _> = logical_paths
             .into_iter()
             .map(|(file_id, path)| (file_id, normalize_module_path(&path)))
             .collect();
@@ -579,11 +578,11 @@ impl MetadataSegment {
             }
         }
 
-        let normalized_physical: HashSet<String> = file_ids
+        let normalized_physical: AHashSet<String> = file_ids
             .iter()
             .map(|file_id| normalize_module_path(&physical_paths[file_id]))
             .collect();
-        let normalized_logical: HashSet<String> = logical_paths.values().cloned().collect();
+        let normalized_logical: AHashSet<String> = logical_paths.values().cloned().collect();
         if let Some(base) = base {
             for segment in base {
                 for path in &normalized_physical {
@@ -617,7 +616,7 @@ impl MetadataSegment {
 fn validate_nonempty_paths(
     kind: &str,
     file_ids: &[FileId],
-    paths: &HashMap<FileId, String>,
+    paths: &AHashMap<FileId, String>,
 ) -> CompileResult<()> {
     for &file_id in file_ids {
         let path = paths.get(&file_id).expect("validated path key");
@@ -634,9 +633,9 @@ fn validate_nonempty_paths(
 fn validate_normalized_collisions(
     kind: &str,
     file_ids: &[FileId],
-    paths: &HashMap<FileId, String>,
+    paths: &AHashMap<FileId, String>,
 ) -> CompileResult<()> {
-    let mut seen = HashMap::<String, FileId>::new();
+    let mut seen = AHashMap::<String, FileId>::new();
     let mut collisions = Vec::new();
     for &file_id in file_ids {
         let normalized = normalize_module_path(paths.get(&file_id).expect("validated path key"));
@@ -684,7 +683,7 @@ mod tests {
         SourceView::new(path, "", FileId::new(file_id))
     }
 
-    fn physical(entries: &[(u32, &str)]) -> HashMap<FileId, String> {
+    fn physical(entries: &[(u32, &str)]) -> AHashMap<FileId, String> {
         entries
             .iter()
             .map(|&(file_id, path)| (FileId::new(file_id), path.to_owned()))
@@ -782,8 +781,8 @@ mod tests {
         assert_eq!(
             error_message(SourceMetadata::new(
                 FileId::new(1),
-                HashMap::new(),
-                HashMap::new()
+                AHashMap::new(),
+                AHashMap::new()
             )),
             "invalid compiler input: source metadata contains no files"
         );
@@ -801,7 +800,7 @@ mod tests {
             error_message(SourceMetadata::from_sources(
                 &sources,
                 FileId::new(2),
-                HashMap::new()
+                AHashMap::new()
             )),
             "invalid compiler input: source files contain duplicate file IDs: 2, 9"
         );

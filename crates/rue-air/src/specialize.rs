@@ -325,7 +325,7 @@ pub(crate) struct OneSpecializedBody {
     pub(crate) warnings: Vec<CompileWarning>,
     pub(crate) local_strings: Vec<String>,
     pub(crate) referenced_functions: AHashSet<Spur>,
-    pub(crate) referenced_methods: AHashSet<(StructId, Spur)>,
+    pub(crate) referenced_methods: std::collections::HashSet<(StructId, Spur)>,
     pub(crate) dependencies: Vec<crate::SemanticDefinitionToken>,
     pub(crate) dependency_boundary_complete: bool,
     pub(crate) identity: crate::SemanticSpecializationIdentity<

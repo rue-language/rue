@@ -8,13 +8,14 @@
 //! immutable and may be retained across later session updates.
 //!
 //! ```
-//! use std::{collections::HashMap, sync::Arc};
+//! use ahash::AHashMap;
+//! use std::sync::Arc;
 //! use rue_compiler::{
 //!     CompileOptions, CompilerSession, FileId, SourceMetadata, SourceSnapshot, compile_snapshot,
 //! };
 //!
 //! let root = FileId::new(7);
-//! let paths = HashMap::from([(root, "src/main.rue".to_owned())]);
+//! let paths = AHashMap::from([(root, "src/main.rue".to_owned())]);
 //! let metadata = SourceMetadata::new(root, paths.clone(), paths)?;
 //! let snapshot = SourceSnapshot::new(
 //!     metadata,

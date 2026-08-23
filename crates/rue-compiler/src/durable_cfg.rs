@@ -1,8 +1,4 @@
-// Local, request-scoped maps keyed by dense type/symbol identities. Equality
-// stays authoritative, so the hasher is a bucket selector: `ahash` replaces
-// SipHash here because CFG domain projection rebuilds these maps for every
-// body on the fresh-compile path.
-use ahash::AHashMap as HashMap;
+use ahash::{AHashMap, AHashSet};
 use std::sync::Arc;
 
 use lasso::{Key, Spur};
@@ -17,7 +13,7 @@ type CanonicalType = SemanticImportType<crate::StableDefinitionKey, crate::Modul
 pub(crate) struct CfgTypeAdmissionIndex<'a> {
     pool: &'a rue_air::FrozenTypeInternPool,
     aggregates: &'a std::collections::HashMap<Type, crate::TypeInstanceKey>,
-    live_by_stable: Option<HashMap<CanonicalType, Type>>,
+    live_by_stable: Option<AHashMap<CanonicalType, Type>>,
 }
 
 #[cfg(test)]
@@ -38,8 +34,8 @@ impl<'a> CfgTypeAdmissionIndex<'a> {
         let aggregates = self.aggregates;
         self.live_by_stable
             .get_or_insert_with(|| {
-                let mut live_by_stable = HashMap::with_capacity(pool.len());
-                let mut stable_by_live = HashMap::with_capacity(pool.len());
+                let mut live_by_stable = AHashMap::with_capacity(pool.len());
+                let mut stable_by_live = AHashMap::with_capacity(pool.len());
                 for live in pool.all_types() {
                     if let Ok(stable) =
                         canonical_type_from_live_cached(live, pool, aggregates, &mut stable_by_live)
@@ -54,8 +50,8 @@ impl<'a> CfgTypeAdmissionIndex<'a> {
     }
 }
 
-fn first_string_indices(strings: &[String]) -> Result<HashMap<&str, u32>, CfgDomainFailure> {
-    let mut indices = HashMap::with_capacity(strings.len());
+fn first_string_indices(strings: &[String]) -> Result<AHashMap<&str, u32>, CfgDomainFailure> {
+    let mut indices = AHashMap::with_capacity(strings.len());
     for (index, value) in strings.iter().enumerate() {
         let index = u32::try_from(index).map_err(|_| CfgDomainFailure::Shape)?;
         indices.entry(value.as_str()).or_insert(index);
@@ -133,7 +129,7 @@ fn canonical_type_from_live_cached(
     ty: Type,
     pool: &rue_air::FrozenTypeInternPool,
     aggregates: &std::collections::HashMap<Type, crate::TypeInstanceKey>,
-    stable_by_live: &mut HashMap<Type, CanonicalType>,
+    stable_by_live: &mut AHashMap<Type, CanonicalType>,
 ) -> Result<CanonicalType, CfgDomainFailure> {
     if let Some(stable) = stable_by_live.get(&ty) {
         return Ok(stable.clone());
@@ -244,7 +240,7 @@ fn record_cfg_type(
     ty: Type,
     pool: &rue_air::FrozenTypeInternPool,
     aggregates: &std::collections::HashMap<Type, crate::TypeInstanceKey>,
-    stable_by_live: &mut HashMap<Type, CanonicalType>,
+    stable_by_live: &mut AHashMap<Type, CanonicalType>,
 ) -> Result<(), CfgDomainFailure> {
     match canonical_type_from_live_cached(ty, pool, aggregates, stable_by_live) {
         Ok(stable) => types.push((ty, stable)),
@@ -352,7 +348,7 @@ fn canonical_type_instance(ty: &CanonicalType) -> Option<crate::TypeInstanceKey>
 fn deduplicate_type_mappings(
     mappings: Vec<(Type, CanonicalType)>,
 ) -> Result<Vec<(Type, CanonicalType)>, CfgDomainFailure> {
-    let mut positions: HashMap<Type, usize> = HashMap::with_capacity(mappings.len());
+    let mut positions: AHashMap<Type, usize> = AHashMap::with_capacity(mappings.len());
     let mut unique: Vec<(Type, CanonicalType)> = Vec::with_capacity(mappings.len());
     for (current, stable) in mappings {
         if let Some(&position) = positions.get(&current) {
@@ -444,14 +440,14 @@ pub(crate) struct CfgDomainProjection {
 }
 
 struct CfgTypeDomainIndex<'a> {
-    stable_by_live: HashMap<Type, &'a CanonicalType>,
-    live_by_stable: HashMap<&'a CanonicalType, Type>,
+    stable_by_live: AHashMap<Type, &'a CanonicalType>,
+    live_by_stable: AHashMap<&'a CanonicalType, Type>,
 }
 
 impl<'a> CfgTypeDomainIndex<'a> {
     fn new(old: &'a [(Type, CanonicalType)], current: &'a [(Type, CanonicalType)]) -> Self {
-        let mut stable_by_live = HashMap::with_capacity(old.len());
-        let mut live_by_stable = HashMap::with_capacity(current.len());
+        let mut stable_by_live = AHashMap::with_capacity(old.len());
+        let mut live_by_stable = AHashMap::with_capacity(current.len());
         for (live, stable) in old {
             stable_by_live.entry(*live).or_insert(stable);
         }
@@ -601,7 +597,7 @@ impl CfgDomainProjection {
         for (_, stable) in &old.types {
             type_index.current(stable)?;
         }
-        let mut current_symbols = HashMap::with_capacity(self.symbols.len() + old.symbols.len());
+        let mut current_symbols = AHashMap::with_capacity(self.symbols.len() + old.symbols.len());
         for (live, stable) in &self.symbols {
             current_symbols.entry(stable.clone()).or_insert(*live);
         }
@@ -613,7 +609,7 @@ impl CfgDomainProjection {
             current_symbols.insert(stable.clone(), symbol);
             self.symbols.push((symbol, stable.clone()));
         }
-        let mut old_symbols = HashMap::with_capacity(old.symbols.len());
+        let mut old_symbols = AHashMap::with_capacity(old.symbols.len());
         for (live, stable) in &old.symbols {
             old_symbols.entry(*live).or_insert(stable);
         }
@@ -751,7 +747,7 @@ impl CfgDomainProjection {
                     continue;
                 };
                 let symbols_by_live = symbols_by_live.get_or_insert_with(|| {
-                    let mut index = HashMap::with_capacity(self.symbols.len());
+                    let mut index = AHashMap::with_capacity(self.symbols.len());
                     for (live, stable) in &self.symbols {
                         index.entry(*live).or_insert(stable);
                     }
@@ -964,7 +960,7 @@ impl CfgDomainProjection {
         let type_pool = &materialization.type_pool;
         let interner = &materialization.interner;
         let air = &materialization.air;
-        let mut stable_by_live = HashMap::with_capacity(materialization.materialized_types.len());
+        let mut stable_by_live = AHashMap::with_capacity(materialization.materialized_types.len());
         let mut types = Vec::with_capacity(materialization.materialized_types.len() + 2);
         types.push((Type::I32, CanonicalType::I32));
         types.push((Type::UNIT, CanonicalType::Unit));
@@ -1137,13 +1133,13 @@ impl CfgDomainProjection {
             .iter()
             .enumerate()
             .map(|(position, (current, _))| (*current, position))
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let mut pending = types
             .iter()
             .map(|(current, _)| *current)
             .collect::<Vec<_>>();
         let mut enqueued = pending.iter().copied().collect::<ahash::AHashSet<_>>();
-        let mut visited = std::collections::HashSet::new();
+        let mut visited = AHashSet::new();
         let mut incomplete = false;
         while let Some(current) = pending.pop() {
             if !visited.insert(current) {
@@ -1261,23 +1257,23 @@ impl CfgDomainProjection {
             return Err(CfgDomainFailure::Shape);
         }
         let type_index = CfgTypeDomainIndex::new(&old.types, &new.types);
-        let mut old_symbols = HashMap::with_capacity(old.symbols.len());
-        let mut new_symbols = HashMap::with_capacity(new.symbols.len());
+        let mut old_symbols = AHashMap::with_capacity(old.symbols.len());
+        let mut new_symbols = AHashMap::with_capacity(new.symbols.len());
         for (live, stable) in &old.symbols {
             old_symbols.entry(*live).or_insert(stable);
         }
         for (live, stable) in &new.symbols {
             new_symbols.entry(stable).or_insert(*live);
         }
-        let mut old_strings = HashMap::with_capacity(old.strings.len());
-        let mut new_strings = HashMap::with_capacity(new.strings.len());
+        let mut old_strings = AHashMap::with_capacity(old.strings.len());
+        let mut new_strings = AHashMap::with_capacity(new.strings.len());
         for (index, stable) in &old.strings {
             old_strings.entry(*index).or_insert(stable.as_ref());
         }
         for (index, stable) in &new.strings {
             new_strings.entry(stable.as_ref()).or_insert(*index);
         }
-        let mut old_spans = HashMap::with_capacity(old.spans.len());
+        let mut old_spans = AHashMap::with_capacity(old.spans.len());
         for (span, stable) in &old.spans {
             old_spans.entry(*span).or_insert(*stable);
         }

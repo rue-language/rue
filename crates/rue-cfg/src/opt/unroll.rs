@@ -8,8 +8,6 @@
 //! audit for trap, drop, and block-argument ordering. Everything else is
 //! refused without changing the graph.
 
-use std::collections::HashMap;
-
 use super::CfgOptimizationError;
 use super::loops::{NaturalLoop, loops};
 use crate::dominators::DominatorTree;
@@ -17,6 +15,7 @@ use crate::{
     BlockId, Cfg, CfgCallArg, CfgEditError, CfgInst, CfgInstData, CfgValue, PlaceBase, Projection,
     Terminator, Type,
 };
+use ahash::{AHashMap, AHashSet};
 
 /// Shared future code-growth policy (ADR-0049). Inlining can consume this same
 /// representation when its growth budget lands; this pass is the first user.
@@ -308,7 +307,7 @@ fn recognize(cfg: &Cfg, lp: &NaturalLoop) -> Option<Trip> {
                 .map(|(value, _)| *value)
                 .chain(cfg.get_block(*block).insts.iter().copied())
         })
-        .collect::<std::collections::HashSet<_>>();
+        .collect::<AHashSet<_>>();
     let mut external_use = false;
     for block in cfg.block_ids().filter(|block| !lp.contains(*block)) {
         for &value in &cfg.get_block(block).insts {
@@ -335,7 +334,7 @@ fn recognize(cfg: &Cfg, lp: &NaturalLoop) -> Option<Trip> {
     let mut latch_load = None;
     let mut update = None;
     let mut store_count = 0;
-    let mut load_values = std::collections::HashSet::new();
+    let mut load_values = AHashSet::new();
     for &block in &lp.body {
         for &v in &cfg.get_block(block).insts {
             if matches!(cfg.get_inst(v).data, CfgInstData::Load { slot: s } if s == slot) {
@@ -460,7 +459,7 @@ fn checked_trip_count(initial: i128, bound: i128, step: i128, cmp: u8, ty: Type)
     Some(count)
 }
 
-fn map_value(map: &HashMap<CfgValue, CfgValue>, value: CfgValue) -> CfgValue {
+fn map_value(map: &AHashMap<CfgValue, CfgValue>, value: CfgValue) -> CfgValue {
     map.get(&value).copied().unwrap_or(value)
 }
 
@@ -468,7 +467,7 @@ fn remap_data(
     source: &Cfg,
     cfg: &mut Cfg,
     data: &CfgInstData,
-    map: &HashMap<CfgValue, CfgValue>,
+    map: &AHashMap<CfgValue, CfgValue>,
     specialize_slot: Option<(u32, u64)>,
 ) -> Result<CfgInstData, CfgEditError> {
     let m = |v| map_value(map, v);
@@ -684,14 +683,14 @@ fn unroll_one(
         .map(|b| u64::try_from(cfg.get_block(*b).insts.len()).unwrap_or(u64::MAX))
         .try_fold(0u64, |a, b| a.checked_add(b))
         .unwrap_or(u64::MAX);
-    let mut iterations: Vec<HashMap<BlockId, BlockId>> = Vec::new();
+    let mut iterations: Vec<AHashMap<BlockId, BlockId>> = Vec::new();
     let mut all_maps = Vec::new();
     for iteration in 0..trip.count {
-        let block_map: HashMap<_, _> = original_blocks
+        let block_map: AHashMap<_, _> = original_blocks
             .iter()
             .map(|&b| (b, cfg.new_block()))
             .collect();
-        let mut map = HashMap::new();
+        let mut map = AHashMap::new();
         for &b in &original_blocks {
             let params = cfg.get_block(b).params.clone();
             for &(v, ty) in &params {
@@ -736,7 +735,7 @@ fn unroll_one(
                     .map(|(value, _)| *value)
                     .chain(source.get_block(*block).insts.iter().copied())
             })
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<AHashSet<_>>();
         let mut missing_mapping = false;
         for &(v, _) in &insts {
             super::dce::visit_instruction_uses(&source, v, |used| {
@@ -888,8 +887,8 @@ fn remap_term(
     source: &Cfg,
     cfg: &mut Cfg,
     t: &Terminator,
-    map: &HashMap<CfgValue, CfgValue>,
-    blocks: &HashMap<BlockId, BlockId>,
+    map: &AHashMap<CfgValue, CfgValue>,
+    blocks: &AHashMap<BlockId, BlockId>,
 ) -> Result<Terminator, CfgOptimizationError> {
     Ok(match t {
         Terminator::Goto { target, .. } => Terminator::Goto {

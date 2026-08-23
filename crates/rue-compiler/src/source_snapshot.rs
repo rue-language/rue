@@ -5,9 +5,9 @@
 //! snapshot cheaply share source buffers without duplicating or allowing path
 //! information to drift.
 
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use ahash::{AHashMap, AHashSet};
 use rue_error::{CompileError, CompileResult, ErrorKind};
 pub use rue_lexer::MAX_SOURCE_BYTES;
 use rue_span::FileId;
@@ -55,13 +55,13 @@ struct SourceSnapshotData {
 struct SnapshotSegment {
     contents: Vec<SourceRecord>,
     /// Position within THIS segment for each of its file ids.
-    index: HashMap<FileId, usize>,
+    index: AHashMap<FileId, usize>,
     /// Position within THIS segment for each of its module identities. A
     /// snapshot binds each module to exactly one file, so resolving a module to
     /// its file is a per-segment hash lookup instead of a scan of every file.
     /// Where a segment somehow held one module twice, the lowest file id wins,
     /// matching what an ascending scan of the metadata's file ids would find.
-    module_index: HashMap<ModuleId, usize>,
+    module_index: AHashMap<ModuleId, usize>,
     min_file_index: u32,
     max_file_index: u32,
 }
@@ -83,7 +83,7 @@ impl SnapshotSegment {
             .enumerate()
             .map(|(index, record)| (record.file_id, index))
             .collect();
-        let mut module_index = HashMap::with_capacity(contents.len());
+        let mut module_index = AHashMap::with_capacity(contents.len());
         for (position, record) in contents.iter().enumerate() {
             match module_index.entry(record.module_id.clone()) {
                 std::collections::hash_map::Entry::Vacant(slot) => {
@@ -308,7 +308,7 @@ impl SourceSnapshot {
         contents: Vec<(FileId, Arc<String>)>,
     ) -> CompileResult<Self> {
         validate_source_file_count(contents.len())?;
-        let mut counts = HashMap::<FileId, usize>::new();
+        let mut counts = AHashMap::<FileId, usize>::new();
         for (file_id, _) in &contents {
             *counts.entry(*file_id).or_default() += 1;
         }
@@ -325,7 +325,7 @@ impl SourceSnapshot {
             )));
         }
 
-        let seen: HashSet<_> = counts.keys().copied().collect();
+        let seen: AHashSet<_> = counts.keys().copied().collect();
         let mut unknown_ids: Vec<_> = seen
             .iter()
             .copied()
@@ -628,9 +628,9 @@ impl SourceSnapshot {
             return Ok(base.clone());
         }
         validate_source_file_count(base.len().saturating_add(appended.len()))?;
-        let mut physical_paths = HashMap::new();
-        let mut logical_paths = HashMap::new();
-        let mut trusted = HashSet::new();
+        let mut physical_paths = AHashMap::new();
+        let mut logical_paths = AHashMap::new();
+        let mut trusted = AHashSet::new();
         for entry in &appended {
             physical_paths.insert(entry.file_id, entry.physical_path.clone());
             logical_paths.insert(entry.file_id, entry.logical_path.clone());
@@ -806,7 +806,7 @@ mod tests {
     use super::*;
 
     fn metadata(entries: &[(u32, &str)]) -> SourceMetadata {
-        let paths: HashMap<_, _> = entries
+        let paths: AHashMap<_, _> = entries
             .iter()
             .map(|&(file_id, path)| (FileId::new(file_id), path.to_owned()))
             .collect();
@@ -1099,14 +1099,14 @@ mod tests {
     #[test]
     fn revisions_ignore_file_ids_physical_roots_and_input_order() {
         let make = |root_id, helper_id, physical_root: &str, reversed: bool| {
-            let physical = HashMap::from([
+            let physical = AHashMap::from([
                 (FileId::new(root_id), physical_root.to_owned()),
                 (
                     FileId::new(helper_id),
                     format!("{physical_root}/../helper.rue"),
                 ),
             ]);
-            let logical = HashMap::from([
+            let logical = AHashMap::from([
                 (FileId::new(root_id), "app/main.rue".to_owned()),
                 (FileId::new(helper_id), "app/helper.rue".to_owned()),
             ]);
@@ -1141,11 +1141,11 @@ mod tests {
     fn parsed_module_reassembly_preserves_typed_module_origin() {
         let root = FileId::new(7);
         let standard_library = FileId::new(11);
-        let physical = HashMap::from([
+        let physical = AHashMap::from([
             (root, "/project/main.rue".to_owned()),
             (standard_library, "/sdk/strbuf.rue".to_owned()),
         ]);
-        let logical = HashMap::from([
+        let logical = AHashMap::from([
             (root, "app/main.rue".to_owned()),
             (standard_library, "\0rue-std/strbuf.rue".to_owned()),
         ]);
@@ -1153,7 +1153,7 @@ mod tests {
             root,
             physical,
             logical,
-            HashSet::from([standard_library]),
+            AHashSet::from([standard_library]),
         )
         .unwrap();
         let original = SourceSnapshot::new(

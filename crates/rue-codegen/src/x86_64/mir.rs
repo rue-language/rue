@@ -5,7 +5,7 @@
 //! - Uses virtual registers (unlimited) that are later allocated to physical registers
 //! - Can be emitted to machine code or assembly text
 
-use std::collections::HashMap;
+use ahash::AHashMap;
 use std::fmt;
 
 pub use rue_runtime_abi::ReturnBehavior;
@@ -1028,7 +1028,7 @@ pub struct X86Mir {
     /// Index for O(1) symbol lookup during interning.
     ///
     /// Maps symbol names to their indices in the `symbols` vector.
-    symbol_index: HashMap<String, u32>,
+    symbol_index: AHashMap<String, u32>,
 }
 
 impl X86Mir {
@@ -1040,7 +1040,7 @@ impl X86Mir {
             vreg_classes: VRegClasses::new(),
             next_label: 0,
             symbols: Vec::new(),
-            symbol_index: HashMap::new(),
+            symbol_index: AHashMap::new(),
         }
     }
 
@@ -1049,7 +1049,7 @@ impl X86Mir {
     /// If the symbol already exists, returns its existing ID.
     /// Otherwise, adds it to the table and returns the new ID.
     pub fn intern_symbol(&mut self, symbol: &str) -> u32 {
-        // O(1) lookup via HashMap
+        // O(1) lookup via AHashMap
         if let Some(&idx) = self.symbol_index.get(symbol) {
             return idx;
         }

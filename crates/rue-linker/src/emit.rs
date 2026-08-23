@@ -2,8 +2,7 @@
 //!
 //! Creates ELF64 relocatable object files from machine code and relocation info.
 
-use std::collections::HashMap;
-
+use ahash::AHashMap;
 use rue_target::Target;
 
 use crate::constants::{
@@ -227,10 +226,10 @@ impl ObjectBuilder {
         }
 
         // Collect external symbols for relocations (excluding string constants)
-        // Use HashMap for O(1) lookup during relocation processing
+        // Use AHashMap for O(1) lookup during relocation processing
         let mut extern_symbols: Vec<String> = Vec::new();
         let mut extern_symbol_offsets: Vec<usize> = Vec::new();
-        let mut extern_symbol_indices: HashMap<String, usize> = HashMap::new();
+        let mut extern_symbol_indices: AHashMap<String, usize> = AHashMap::new();
         for reloc in &self.relocations {
             // Skip string constant symbols - they're local, not external
             if reloc.symbol.starts_with(".rodata.str") {
@@ -333,7 +332,7 @@ impl ObjectBuilder {
                     .unwrap();
                 first_string_sym + string_id
             } else {
-                // External symbol - O(1) lookup via HashMap
+                // External symbol - O(1) lookup via AHashMap
                 extern_symbol_indices[&reloc.symbol] + first_extern_sym
             };
 
@@ -685,7 +684,7 @@ impl ObjectBuilder {
         // relocation while emitting them, both quadratic in an object's symbol
         // count.
         let mut extern_name_offsets: Vec<usize> = Vec::new();
-        let mut extern_symbol_indices: HashMap<&str, usize> = HashMap::new();
+        let mut extern_symbol_indices: AHashMap<&str, usize> = AHashMap::new();
         for reloc in &self.relocations {
             // Skip string symbols - they're handled via local symbols
             // String symbols use .rodata.strN format (possibly with @PAGE/@PAGEOFF suffix)

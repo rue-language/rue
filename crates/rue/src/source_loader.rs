@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::Read;
@@ -6,6 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use ahash::{AHashMap, AHashSet};
 use rue_compiler::unstable::{
     AcceptedImportSource, DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode,
     ImportDiscoveryPlan, ImportDiscoveryRequest, ImportDiscoveryWave, ImportInputRevision,
@@ -41,8 +41,8 @@ use rue_compiler::{
 pub(crate) struct SourceManifest {
     path: PathBuf,
     content_hash: u64,
-    allowed: std::collections::HashSet<PathBuf>,
-    declared_paths: std::collections::HashSet<PathBuf>,
+    allowed: AHashSet<PathBuf>,
+    declared_paths: AHashSet<PathBuf>,
 }
 
 impl SourceManifest {
@@ -68,8 +68,8 @@ impl SourceManifest {
             )
         };
 
-        let mut allowed = std::collections::HashSet::new();
-        let mut declared_paths = std::collections::HashSet::new();
+        let mut allowed = AHashSet::new();
+        let mut declared_paths = AHashSet::new();
         for (line_index, raw_line) in content.lines().enumerate() {
             let line_number = line_index + 1;
             let entry = parse_source_manifest_entry(raw_line);
@@ -345,9 +345,9 @@ fn reobserve_accepted_reads(
     snapshot: &SourceSnapshot,
     manifest: &AcceptedReadManifest,
     source_manifest: Option<&SourceManifest>,
-) -> Result<HashMap<String, AcceptedImportSource>, SourceLoadError> {
+) -> Result<AHashMap<String, AcceptedImportSource>, SourceLoadError> {
     let now = SystemTime::now();
-    let mut observed = HashMap::with_capacity(manifest.len());
+    let mut observed = AHashMap::with_capacity(manifest.len());
     for entry in manifest.iter() {
         let cached_source =
             cached_source_for_module(snapshot, entry.module()).ok_or_else(|| {
@@ -396,7 +396,7 @@ fn reobserve_accepted_reads(
 fn execute_import_request(
     request: ImportDiscoveryRequest,
     source_manifest: Option<&SourceManifest>,
-    reobserved_reads: Option<&HashMap<String, AcceptedImportSource>>,
+    reobserved_reads: Option<&AHashMap<String, AcceptedImportSource>>,
 ) -> ImportObservation {
     if let Some(source) = reobserved_reads
         .and_then(|reads| reads.get(request.requested_path()))
@@ -928,7 +928,7 @@ fn run_import_wave(
     plan: &ImportDiscoveryPlan,
     frontier: &ImportDemandFrontier,
     source_manifest: Option<&SourceManifest>,
-    reobserved_reads: Option<&HashMap<String, AcceptedImportSource>>,
+    reobserved_reads: Option<&AHashMap<String, AcceptedImportSource>>,
 ) -> Result<(ImportInputRevision, ImportDemandFrontier), SourceLoadError> {
     for attempt in 0..=WAVE_STAMP_RETRIES {
         let mut wave = begin_import_wave(staging, input_revision, plan, frontier)
@@ -980,7 +980,7 @@ fn drive_import_discovery_to_close(
     staging: &mut CompilerSession,
     context: &ImportDiscoveryContext,
     source_manifest: Option<&SourceManifest>,
-    reobserved_reads: Option<&HashMap<String, AcceptedImportSource>>,
+    reobserved_reads: Option<&AHashMap<String, AcceptedImportSource>>,
     continuation: Option<ImportInputRevision>,
     reclose: Option<ReClose<'_>>,
 ) -> Result<ClosedDiscovery, SourceLoadError> {
@@ -1267,8 +1267,9 @@ pub(crate) fn discover_and_load_imports(
     // duplicate CLI inputs left to detect here; discovery still recognizes
     // `main.rue` and `./main.rue` as the same physical source when one is
     // reached through the other's import graph.
-    let physical_paths: HashMap<_, _> = HashMap::from([(FileId::new(1), root_source.to_string())]);
-    let logical_paths: HashMap<_, _> = HashMap::from([(FileId::new(1), "root".to_string())]);
+    let physical_paths: AHashMap<_, _> =
+        AHashMap::from([(FileId::new(1), root_source.to_string())]);
+    let logical_paths: AHashMap<_, _> = AHashMap::from([(FileId::new(1), "root".to_string())]);
     if let Err(error) = SourceMetadata::new(FileId::new(1), physical_paths, logical_paths) {
         return Err(SourceLoadError::Compiler {
             snapshot: None,

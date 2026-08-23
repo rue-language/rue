@@ -21,9 +21,9 @@
 //! ```
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::io::IsTerminal;
 
+use ahash::AHashMap;
 use annotate_snippets::{Level, Renderer, Snippet};
 use rue_span::offset_to_line_col;
 
@@ -423,7 +423,7 @@ impl<'a> DiagnosticFormatter<'a> {
         }
 
         // Count occurrences of each unused variable name
-        let mut var_name_counts: HashMap<&str, usize> = HashMap::new();
+        let mut var_name_counts: AHashMap<&str, usize> = AHashMap::new();
         for warning in warnings {
             if let Some(name) = warning.kind.unused_variable_name() {
                 *var_name_counts.entry(name).or_insert(0) += 1;
@@ -601,7 +601,7 @@ impl<'a> DiagnosticFormatter<'a> {
 /// ```
 pub struct MultiFileFormatter<'a> {
     /// Mapping from FileId to source information.
-    sources: HashMap<FileId, SourceInfo<'a>>,
+    sources: AHashMap<FileId, SourceInfo<'a>>,
     /// The renderer for formatting diagnostics.
     renderer: Renderer,
 }
@@ -729,7 +729,7 @@ impl<'a> MultiFileFormatter<'a> {
         }
 
         // Count occurrences of each unused variable name
-        let mut var_name_counts: HashMap<&str, usize> = HashMap::new();
+        let mut var_name_counts: AHashMap<&str, usize> = AHashMap::new();
         for warning in warnings {
             if let Some(name) = warning.kind.unused_variable_name() {
                 *var_name_counts.entry(name).or_insert(0) += 1;
@@ -834,7 +834,7 @@ impl<'a> MultiFileFormatter<'a> {
         };
 
         // Collect all file IDs we need to show
-        let mut file_spans: HashMap<FileId, Vec<(Span, Option<&str>, Level)>> = HashMap::new();
+        let mut file_spans: AHashMap<FileId, Vec<(Span, Option<&str>, Level)>> = AHashMap::new();
 
         // Add primary span (promoted label is index 0 when present).
         file_spans.entry(primary_span.file_id).or_default().push((
@@ -1273,7 +1273,7 @@ impl<'a> JsonDiagnosticFormatter<'a> {
 /// ```
 pub struct MultiFileJsonFormatter<'a> {
     /// Mapping from FileId to source information.
-    sources: HashMap<FileId, SourceInfo<'a>>,
+    sources: AHashMap<FileId, SourceInfo<'a>>,
 }
 
 impl<'a> MultiFileJsonFormatter<'a> {

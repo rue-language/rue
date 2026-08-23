@@ -17,9 +17,10 @@
 
 use crate::*;
 use std::collections::BTreeSet;
-use std::collections::{HashMap, HashSet};
+
 use std::sync::Arc;
 
+use ahash::{AHashMap, AHashSet};
 use rue_target::Target;
 
 // ===========================================================================
@@ -66,15 +67,15 @@ fn trusted_option_snapshot(root_source: &str) -> SourceSnapshot {
 fn trusted_option_snapshot_with_source(root_source: &str, option_source: &str) -> SourceSnapshot {
     let metadata = SourceMetadata::new_with_trusted_standard_library(
         ROOT_FILE,
-        HashMap::from([
+        AHashMap::from([
             (ROOT_FILE, "/project/main.rue".to_owned()),
             (TRUSTED_OPTION_FILE, "/project/std/option.rue".to_owned()),
         ]),
-        HashMap::from([
+        AHashMap::from([
             (ROOT_FILE, "main.rue".to_owned()),
             (TRUSTED_OPTION_FILE, "\0rue-std/option.rue".to_owned()),
         ]),
-        HashSet::from([TRUSTED_OPTION_FILE]),
+        AHashSet::from([TRUSTED_OPTION_FILE]),
     )
     .expect("trusted-std metadata is valid");
     SourceSnapshot::new(
@@ -1061,8 +1062,7 @@ fn rooted_cfg_at_root_file_id(
     logical_path: &str,
     options: &CompileOptions,
 ) -> RootedCfgOutput {
-    let physical: std::collections::HashMap<FileId, String> =
-        [(file_id, logical_path.to_owned())].into();
+    let physical: AHashMap<FileId, String> = [(file_id, logical_path.to_owned())].into();
     let logical = physical.clone();
     let metadata =
         SourceMetadata::new(file_id, physical, logical).expect("single-file metadata is valid");

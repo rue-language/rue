@@ -305,7 +305,8 @@ use crate::*;
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use ahash::{AHashMap, AHashSet};
+
     use std::sync::Arc;
 
     use rue_linker::{CodeRelocation, ObjectBuilder, ObjectFile, RelocationType};
@@ -619,15 +620,15 @@ fn main() -> i32 {
         let strbuf = FileId::new(2);
         let metadata = SourceMetadata::new_with_trusted_standard_library(
             root,
-            HashMap::from([
+            AHashMap::from([
                 (root, "/project/main.rue".to_owned()),
                 (strbuf, "/project/std/strbuf.rue".to_owned()),
             ]),
-            HashMap::from([
+            AHashMap::from([
                 (root, "main.rue".to_owned()),
                 (strbuf, "\0rue-std/strbuf.rue".to_owned()),
             ]),
-            HashSet::from([strbuf]),
+            AHashSet::from([strbuf]),
         )
         .unwrap();
         let source = r#"
@@ -751,7 +752,7 @@ drop fn StrBuf(self) { }
             .iter()
             .filter(|function| function.record.source_name.contains("concat_borrowed"))
             .map(|function| function.record.codegen.defined_symbol.as_ref())
-            .collect::<HashSet<_>>();
+            .collect::<AHashSet<_>>();
         let cleanup_symbols = semantic
             .functions()
             .iter()
@@ -760,7 +761,7 @@ drop fn StrBuf(self) { }
                     || function.record.source_name.starts_with("__rue_drop_")
             })
             .map(|function| function.record.codegen.defined_symbol.as_ref())
-            .collect::<HashSet<_>>();
+            .collect::<AHashSet<_>>();
         let concats: Vec<_> = calls
             .iter()
             .filter(|(_, symbol)| concat_symbols.contains(symbol.as_str()))
@@ -786,17 +787,17 @@ drop fn StrBuf(self) { }
                 .collect();
             let first_cleanup = *cleanups.first().expect("temporary cleanup before println");
             let last_cleanup = *cleanups.last().unwrap();
-            let saved: HashSet<_> = stores
+            let saved: AHashSet<_> = stores
                 .iter()
                 .filter(|(index, _)| *index > *concat_index && *index < first_cleanup)
                 .map(|(_, offset)| *offset)
                 .collect();
-            let restored: HashSet<_> = loads
+            let restored: AHashSet<_> = loads
                 .iter()
                 .filter(|(index, _)| *index > last_cleanup && *index < println_index)
                 .map(|(_, offset)| *offset)
                 .collect();
-            let preserved: HashSet<_> = saved.intersection(&restored).copied().collect();
+            let preserved: AHashSet<_> = saved.intersection(&restored).copied().collect();
             assert_eq!(
                 preserved.len(),
                 3,
@@ -859,7 +860,7 @@ drop fn StrBuf(self) { }
                 .map(|object| object.object.bytes.as_ref())
                 .collect::<Vec<_>>();
 
-            let mut undefined = HashSet::new();
+            let mut undefined = AHashSet::new();
             for bytes in objects {
                 let object = ObjectFile::parse(bytes).unwrap();
                 undefined.extend(

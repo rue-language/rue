@@ -3,8 +3,6 @@
 //! This module provides x86-64 specific instruction information for liveness analysis.
 //! The actual dataflow algorithm is shared via [`crate::liveness`].
 
-use std::collections::HashMap;
-
 use super::mir::{Operand, Reg, ReturnBehavior, X86Inst, X86Mir};
 use crate::liveness::{
     LivenessAdapter, SuccessorList, VRegList, branch_successor, conditional_successors,
@@ -12,6 +10,7 @@ use crate::liveness::{
 };
 use crate::reg_class::VRegClasses;
 use crate::vreg::LabelId;
+use ahash::AHashMap;
 
 // Re-export shared types from the regalloc module
 pub use crate::regalloc::{InstructionLiveness, LiveRange, LivenessDebugInfo, LoopInfo};
@@ -47,7 +46,7 @@ impl LivenessAdapter for X86LivenessAdapter<'_> {
         &self,
         idx: usize,
         inst: &Self::Inst,
-        label_to_idx: &HashMap<LabelId, usize>,
+        label_to_idx: &AHashMap<LabelId, usize>,
     ) -> SuccessorList {
         get_successors(idx, inst, label_to_idx, self.instructions().len())
     }
@@ -105,7 +104,7 @@ fn get_label(inst: &X86Inst) -> Option<LabelId> {
 fn get_successors(
     idx: usize,
     inst: &X86Inst,
-    label_to_idx: &HashMap<LabelId, usize>,
+    label_to_idx: &AHashMap<LabelId, usize>,
     num_insts: usize,
 ) -> SuccessorList {
     match inst {

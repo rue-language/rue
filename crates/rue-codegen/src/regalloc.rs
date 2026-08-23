@@ -42,9 +42,9 @@
 //!
 //! The [`CostModel`] struct allows these parameters to be configured.
 
-use std::collections::HashSet;
 use std::fmt;
 
+use ahash::AHashSet;
 use rue_error::CompileResult;
 
 use crate::index_map::IndexMap;
@@ -244,9 +244,9 @@ pub struct InstructionLiveness {
     /// Instruction index.
     pub index: usize,
     /// Virtual registers live before this instruction executes.
-    pub live_in: HashSet<VReg>,
+    pub live_in: AHashSet<VReg>,
     /// Virtual registers live after this instruction executes.
-    pub live_out: HashSet<VReg>,
+    pub live_out: AHashSet<VReg>,
     /// Virtual registers defined (written) by this instruction.
     pub defs: Vec<VReg>,
     /// Virtual registers used (read) by this instruction.
@@ -3321,7 +3321,7 @@ mod tests {
         }
 
         // All spill offsets should be unique
-        let unique_offsets: std::collections::HashSet<_> = offsets.iter().copied().collect();
+        let unique_offsets: AHashSet<_> = offsets.iter().copied().collect();
         assert_eq!(
             offsets.len(),
             unique_offsets.len(),
@@ -3373,7 +3373,7 @@ mod tests {
             })
             .collect();
 
-        let unique: std::collections::HashSet<_> = spill_offsets.iter().copied().collect();
+        let unique: AHashSet<_> = spill_offsets.iter().copied().collect();
         assert_eq!(
             spill_offsets.len(),
             unique.len(),

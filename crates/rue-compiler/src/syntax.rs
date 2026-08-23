@@ -91,7 +91,8 @@ pub(crate) fn parse_file(source: SourceView<'_>, interner: ThreadedRodeo) -> Fil
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc};
+    use ahash::AHashMap;
+    use std::sync::Arc;
 
     use rue_error::ErrorKind;
     use rue_span::FileId;
@@ -101,7 +102,7 @@ mod tests {
     use crate::{CompilerSession, Item, SourceMetadata, SourceSnapshot};
 
     fn snapshot(entries: &[(u32, &str, &str)]) -> SourceSnapshot {
-        let physical_paths: HashMap<_, _> = entries
+        let physical_paths: AHashMap<_, _> = entries
             .iter()
             .map(|&(id, path, _)| (FileId::new(id), path.to_owned()))
             .collect();

@@ -1,7 +1,8 @@
 //! The linker - combines object files and produces an executable.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 
+use ahash::{AHashMap, AHashSet};
 use rue_target::Target;
 use tracing::info_span;
 
@@ -257,7 +258,7 @@ fn references_undefined(sym: &Symbol) -> bool {
 fn enqueue_undefined<'a>(
     name: &'a str,
     pending: &mut VecDeque<&'a str>,
-    queued: &mut HashSet<&'a str>,
+    queued: &mut AHashSet<&'a str>,
 ) {
     if queued.insert(name) {
         pending.push_back(name);
@@ -743,8 +744,8 @@ fn collect_section_relocations(
 /// (RUE-131 item 2)
 #[derive(Default)]
 struct SymbolAddresses {
-    globals: HashMap<String, u64>,
-    locals: HashMap<(usize, String), u64>,
+    globals: AHashMap<String, u64>,
+    locals: AHashMap<(usize, String), u64>,
 }
 
 impl SymbolAddresses {
@@ -922,7 +923,7 @@ pub struct Linker {
     /// Page size for alignment.
     page_size: u64,
     /// Symbol table: name -> (object_index, symbol).
-    global_symbols: HashMap<String, (usize, Symbol)>,
+    global_symbols: AHashMap<String, (usize, Symbol)>,
     /// All object files we're linking.
     objects: Vec<ObjectFile>,
     /// Symbols that must be resolved (e.g., entry point).
@@ -938,7 +939,7 @@ impl Linker {
             target,
             base_addr: target.default_base_addr(),
             page_size: target.page_size(),
-            global_symbols: HashMap::new(),
+            global_symbols: AHashMap::new(),
             objects: Vec::new(),
             required_symbols: Vec::new(),
         }
@@ -1044,13 +1045,13 @@ impl Linker {
         // selected members move into `self` afterwards.
         let selected: Vec<bool> = {
             // Map each symbol to every member that defines it, in archive member
-            // order. A last-writer-wins `HashMap::insert` index would instead bind
+            // order. A last-writer-wins `AHashMap::insert` index would instead bind
             // each symbol to its *last* provider, so selection could extract a later
             // member over an earlier one and silently change weak/strong resolution
             // when a user or foreign archive ships multiple providers (RUE-848).
             // Retaining the ordered provider list keeps selection first-eligible and
             // independent of hash iteration order.
-            let mut symbol_providers: HashMap<&str, Vec<usize>> = HashMap::new();
+            let mut symbol_providers: AHashMap<&str, Vec<usize>> = AHashMap::new();
             for (obj_idx, obj) in archive_objects.iter().enumerate() {
                 for sym in &obj.symbols {
                     if provides_definition(sym) {
@@ -1061,7 +1062,7 @@ impl Linker {
 
             // Track which archive objects we've selected and which symbols are defined
             let mut selected: Vec<bool> = vec![false; archive_objects.len()];
-            let mut defined: HashSet<&str> =
+            let mut defined: AHashSet<&str> =
                 self.global_symbols.keys().map(String::as_str).collect();
 
             // The undefined symbols still to resolve, in the order they were
@@ -1075,7 +1076,7 @@ impl Linker {
             // extraction remains first-eligible in archive order and independent
             // of hash iteration order.
             let mut pending: VecDeque<&str> = VecDeque::new();
-            let mut queued: HashSet<&str> = HashSet::new();
+            let mut queued: AHashSet<&str> = AHashSet::new();
 
             // Required symbols (e.g. the entry point) are undefined by
             // definition, followed by every reference the linked objects make.
@@ -1165,7 +1166,7 @@ impl Linker {
         let mut merged_text = Vec::new(); // Code + rodata (goes in __TEXT)
         let mut merged_data = Vec::new(); // Writable data (goes in __DATA)
         let mut bss_size: u64 = 0;
-        let mut section_offsets: HashMap<(usize, usize), u64> = HashMap::new();
+        let mut section_offsets: AHashMap<(usize, usize), u64> = AHashMap::new();
         let mut pending_relocations: Vec<PendingRelocation> = Vec::new();
 
         // Merge code sections (.text* / __text)
@@ -1576,7 +1577,7 @@ impl Linker {
 
         // Track where each section ends up in the merged output
         // Key: (object_index, section_index) -> offset in merged section
-        let mut section_offsets: HashMap<(usize, usize), u64> = HashMap::new();
+        let mut section_offsets: AHashMap<(usize, usize), u64> = AHashMap::new();
 
         // Merge code sections (.text*)
         for (obj_idx, obj) in self.objects.iter().enumerate() {
@@ -2101,7 +2102,7 @@ mod tests {
                 align: 1,
             }],
             symbols,
-            section_map: HashMap::from([(".text".into(), 0)]),
+            section_map: AHashMap::from([(".text".into(), 0)]),
             machine: crate::elf::ElfMachine::X86_64,
             format: ObjectFormat::Elf,
         }
@@ -2546,7 +2547,7 @@ mod tests {
             binding: SymbolBinding::Global,
             sym_type: SymbolType::Func,
         }];
-        let mut section_map = HashMap::new();
+        let mut section_map = AHashMap::new();
         section_map.insert(".text".into(), 0);
         section_map.insert(name.to_string(), 1);
         ObjectFile {
@@ -2796,7 +2797,7 @@ mod tests {
                 binding,
                 sym_type: SymbolType::Func,
             }],
-            section_map: HashMap::from([(".text".into(), 0)]),
+            section_map: AHashMap::from([(".text".into(), 0)]),
             machine: crate::elf::ElfMachine::X86_64,
             format: crate::elf::ObjectFormat::Elf,
         };
@@ -2880,7 +2881,7 @@ mod tests {
                 align: 16,
             }],
             symbols,
-            section_map: HashMap::from([(".text".into(), 0)]),
+            section_map: AHashMap::from([(".text".into(), 0)]),
             machine: crate::elf::ElfMachine::X86_64,
             format: crate::elf::ObjectFormat::Elf,
         }
@@ -3241,7 +3242,7 @@ mod tests {
                     sym_type: SymbolType::None,
                 },
             ],
-            section_map: HashMap::from([(".text".into(), 0)]),
+            section_map: AHashMap::from([(".text".into(), 0)]),
             machine: crate::elf::ElfMachine::X86_64,
             format: crate::elf::ObjectFormat::Elf,
         };
@@ -3606,7 +3607,7 @@ mod tests {
         let obj = ObjectFile {
             sections: vec![text_section],
             symbols: vec![null_symbol, bad_symbol, main_symbol],
-            section_map: HashMap::from([(".text".into(), 0)]),
+            section_map: AHashMap::from([(".text".into(), 0)]),
             machine: crate::elf::ElfMachine::X86_64,
             format: crate::elf::ObjectFormat::Elf,
         };
@@ -3680,7 +3681,7 @@ mod tests {
         let obj = ObjectFile {
             sections: vec![text_section],
             symbols: vec![null_symbol, main_symbol], // Only 2 symbols, but relocation references index 999
-            section_map: HashMap::from([(".text".into(), 0)]),
+            section_map: AHashMap::from([(".text".into(), 0)]),
             machine: crate::elf::ElfMachine::X86_64,
             format: crate::elf::ObjectFormat::Elf,
         };

@@ -8,6 +8,7 @@ _DEPS = [
     "//crates/rue-perf-schema:rue-perf-schema",
     "//crates/rue-rir:rue-rir",
     "//crates/rue-target:rue-target",
+    "//third-party:ahash",
     "//third-party:libc",
     "//third-party:serde",
     "//third-party:serde_json",

@@ -623,7 +623,7 @@ pub(crate) struct AnalysisContext<'a> {
     pub referenced_functions: AHashSet<Spur>,
     /// Methods referenced during analysis of this function.
     /// Each entry is (struct_id, method_name) matching the key format in methods map.
-    pub referenced_methods: AHashSet<(StructId, Spur)>,
+    pub referenced_methods: std::collections::HashSet<(StructId, Spur)>,
     /// While analyzing the value of an `inout`/`borrow` call argument, the ROOT
     /// variable of the place being passed by reference (set by
     /// `analyze_call_args_coerced`; for `f(borrow o.f)` this is `o`). A by-ref argument
@@ -977,7 +977,7 @@ impl<'a> AnalysisContext<'a> {
             comptime_type_vars: self.comptime_type_vars.clone(),
             comptime_value_vars: self.comptime_value_vars.clone(),
             referenced_functions: AHashSet::new(),
-            referenced_methods: AHashSet::new(),
+            referenced_methods: std::collections::HashSet::new(),
             // A by-ref argument's value is a place — a variable or a
             // field/index projection chain (enforced in the call-argument analyzer) —
             // and index subexpressions are analyzed with the root cleared

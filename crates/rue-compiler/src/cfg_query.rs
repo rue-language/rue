@@ -9,6 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, OnceLock};
 
+use ahash::{AHashMap, AHashSet};
 use lasso::Key as _;
 use rue_query::{QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutcome, QueryOutput};
 use rue_span::Span;
@@ -1236,7 +1237,7 @@ fn materialize_and_build_cfg(
     }
 
     let domain_projection_started = std::time::Instant::now();
-    let mut callable_by_symbol = std::collections::HashMap::with_capacity(facts.callables.len());
+    let mut callable_by_symbol = AHashMap::with_capacity(facts.callables.len());
     for fact in facts.callables.iter() {
         match callable_by_symbol.entry(fact.symbol.as_ref()) {
             std::collections::hash_map::Entry::Vacant(entry) => {
@@ -1628,7 +1629,7 @@ pub(crate) fn evaluate_optimized_cfg(
     ));
     let mut accessor_calls: std::collections::VecDeque<_> =
         attached_accessor_calls(&current, 0, 0).into();
-    let mut splice_block_redirects = std::collections::HashMap::new();
+    let mut splice_block_redirects = AHashMap::new();
     while let Some((call, call_block)) = accessor_calls.pop_front() {
         let call_block = resolve_splice_block(call_block, &mut splice_block_redirects);
         let rue_cfg::CfgInstData::AccessorCall { name, .. } = current.get_inst(call).data else {
@@ -1690,7 +1691,7 @@ pub(crate) fn evaluate_optimized_cfg(
                 local_atoms
                     .iter()
                     .map(|atom| atom.identity.clone())
-                    .collect::<std::collections::HashSet<_>>()
+                    .collect::<AHashSet<_>>()
             });
             if local_atom_identities.insert(atom.identity.clone()) {
                 local_atoms.push(atom);
@@ -1995,7 +1996,7 @@ pub(crate) fn apply_general_inlining(
         let mut local_atom_identities = local_atoms
             .iter()
             .map(|atom| atom.identity.clone())
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<AHashSet<_>>();
         let mut symbol_mappings = record.codegen.symbol_mappings.as_ref().clone();
         let mut foreign_symbols = record.codegen.foreign_symbols.as_ref().clone();
         let materialization_warnings = record.materialization_warnings.to_vec();
@@ -2313,7 +2314,7 @@ fn attached_accessor_calls(
 
 fn resolve_splice_block(
     original: rue_cfg::BlockId,
-    redirects: &mut std::collections::HashMap<rue_cfg::BlockId, rue_cfg::BlockId>,
+    redirects: &mut AHashMap<rue_cfg::BlockId, rue_cfg::BlockId>,
 ) -> rue_cfg::BlockId {
     let mut current = original;
     while let Some(next) = redirects.get(&current).copied() {

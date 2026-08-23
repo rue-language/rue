@@ -11,6 +11,7 @@ rue_crate(
         "//crates/rue-runtime-abi:rue-runtime-abi",
         "//crates/rue-span:rue-span",
         "//crates/rue-target:rue-target",
+        "//third-party:ahash",
         "//third-party:fixedbitset",
         "//third-party:lasso",
         "//third-party:smallvec",

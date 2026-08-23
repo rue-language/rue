@@ -75,9 +75,8 @@
 //! sweeps the orphaned loads on its own. They are left as plain `Load`
 //! instructions, not dummied out.
 
-use std::collections::HashSet;
-
 use crate::{BlockId, Cfg, CfgInstData, CfgValue, PlaceBase};
+use ahash::AHashSet;
 
 use super::dce;
 
@@ -124,7 +123,7 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     // value must stay a place (its address is taken by the callee), so it is
     // never forwarded regardless of rule.
     // ------------------------------------------------------------------
-    let mut byref_arg_values: HashSet<CfgValue> = HashSet::new();
+    let mut byref_arg_values: AHashSet<CfgValue> = AHashSet::new();
     for block in cfg.blocks() {
         for &value in &block.insts {
             if let CfgInstData::Call { args, .. } = &cfg.get_inst(value).data {

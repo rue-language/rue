@@ -7,10 +7,11 @@
 //! enters the policy.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use ahash::{AHashMap, AHashSet};
 use rue_parser::ast;
 
 pub(crate) trait RetainedCharge {
@@ -387,7 +388,10 @@ impl<T: RetainedCharge> RetainedCharge for BTreeSet<T> {
     }
 }
 
-impl<K: RetainedCharge, V: RetainedCharge> RetainedCharge for HashMap<K, V> {
+// Generic over the hasher so that a map which swaps `RandomState` for a
+// faster bucket selector still reports its charge. The hasher is not part of
+// what a map retains.
+impl<K: RetainedCharge, V: RetainedCharge, S> RetainedCharge for AHashMap<K, V, S> {
     fn retained_charge(&self) -> u64 {
         let entries = self.len().saturating_mul(std::mem::size_of::<(K, V)>()) as u64;
         self.iter().fold(entries, |charge, (key, value)| {
@@ -398,7 +402,7 @@ impl<K: RetainedCharge, V: RetainedCharge> RetainedCharge for HashMap<K, V> {
     }
 }
 
-impl<T: RetainedCharge> RetainedCharge for HashSet<T> {
+impl<T: RetainedCharge, S> RetainedCharge for AHashSet<T, S> {
     fn retained_charge(&self) -> u64 {
         let entries = self.len().saturating_mul(std::mem::size_of::<T>()) as u64;
         self.iter().fold(entries, |charge, value| {

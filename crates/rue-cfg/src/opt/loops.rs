@@ -40,8 +40,8 @@
 
 use crate::dominators::DominatorTree;
 use crate::{BlockId, Cfg, CfgEditError, Terminator};
+use ahash::AHashSet;
 use rue_air::FrozenTypeInternPool;
-use std::collections::HashSet;
 
 use super::CfgOptimizationError;
 
@@ -273,7 +273,7 @@ pub(crate) fn loops_with_stats(cfg: &Cfg, dom: &DominatorTree) -> (LoopForest, S
         let mut latches = latch_sets[hi].clone();
         latches.sort_by_key(|b: &BlockId| b.as_u32());
 
-        let mut body: HashSet<BlockId> = HashSet::new();
+        let mut body: AHashSet<BlockId> = AHashSet::new();
         body.insert(header);
         let mut work: Vec<BlockId> = Vec::new();
         for &latch in &latches {

@@ -21,6 +21,8 @@
 //! 2. Drops each element in index order (element 0 first, then 1, etc.)
 
 #[cfg(test)]
+use ahash::AHashMap;
+#[cfg(test)]
 use rue_air::{
     AirEditor, AirPattern, AirRef, AirValidationContext, AnalyzedFunction, EnumId,
     FrozenTypeInternPool, ParamSlotModes, StructDef, Type, TypeKind,
@@ -250,7 +252,7 @@ fn plan_type_matches_live(
     planned: &IssuedTypeInstanceKey,
     live: Type,
     type_pool: &FrozenTypeInternPool,
-    types_by_identity: &std::collections::HashMap<IssuedTypeInstanceKey, Type>,
+    types_by_identity: &AHashMap<IssuedTypeInstanceKey, Type>,
 ) -> bool {
     use rue_air::TypeInstanceKey as P;
     match planned {
@@ -295,7 +297,7 @@ fn create_struct_drop_glue_function(
     struct_def: &StructDef,
     struct_id: rue_air::StructId,
     type_pool: &FrozenTypeInternPool,
-    types_by_identity: &std::collections::HashMap<IssuedTypeInstanceKey, Type>,
+    types_by_identity: &AHashMap<IssuedTypeInstanceKey, Type>,
     identity: IssuedTypeInstanceKey,
     facts: &crate::type_queries::DropGlueFacts<
         rue_air::SemanticDefinitionToken,
@@ -439,7 +441,7 @@ fn create_struct_drop_glue_function(
 fn create_array_drop_glue_function(
     array_id: rue_air::ArrayTypeId,
     type_pool: &FrozenTypeInternPool,
-    types_by_identity: &std::collections::HashMap<IssuedTypeInstanceKey, Type>,
+    types_by_identity: &AHashMap<IssuedTypeInstanceKey, Type>,
     identity: IssuedTypeInstanceKey,
     facts: &crate::type_queries::DropGlueFacts<
         rue_air::SemanticDefinitionToken,
@@ -568,7 +570,7 @@ fn create_array_drop_glue_function(
 fn create_enum_drop_glue_function(
     enum_id: EnumId,
     type_pool: &FrozenTypeInternPool,
-    types_by_identity: &std::collections::HashMap<IssuedTypeInstanceKey, Type>,
+    types_by_identity: &AHashMap<IssuedTypeInstanceKey, Type>,
     identity: IssuedTypeInstanceKey,
     facts: &crate::type_queries::DropGlueFacts<
         rue_air::SemanticDefinitionToken,
@@ -815,7 +817,7 @@ mod tests {
     fn insert_test_type(
         ty: Type,
         type_pool: &FrozenTypeInternPool,
-        output: &mut std::collections::HashMap<IssuedTypeInstanceKey, Type>,
+        output: &mut AHashMap<IssuedTypeInstanceKey, Type>,
     ) {
         match ty.kind() {
             TypeKind::Struct(id) => {
@@ -1061,7 +1063,7 @@ mod tests {
         );
         let outer_ty = Type::new_struct(outer_id);
         let type_pool = type_pool.freeze();
-        let mut types_by_identity = std::collections::HashMap::new();
+        let mut types_by_identity = AHashMap::new();
         insert_test_type(outer_ty, &type_pool, &mut types_by_identity);
         let outer_facts = test_facts(crate::type_queries::DropGluePlan::Struct {
             fields: type_pool

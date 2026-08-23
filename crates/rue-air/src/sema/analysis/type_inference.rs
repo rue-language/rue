@@ -6,6 +6,7 @@
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 use crate::inference::LazyInferenceFacts;
+use ahash::AHashMap;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy)]

@@ -205,7 +205,7 @@ impl Hash for StableDefinitionKey {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use ahash::AHashMap;
     use std::hash::Hasher;
     use std::sync::Arc;
 
@@ -274,7 +274,7 @@ mod tests {
         assert_ne!(first.cmp(&second), std::cmp::Ordering::Equal);
         assert_eq!(first.cmp(&second), second.cmp(&first).reverse());
 
-        let mut colliding = HashMap::new();
+        let mut colliding = AHashMap::new();
         colliding.insert(first, 1);
         colliding.insert(second, 2);
         assert_eq!(colliding.len(), 2);
@@ -284,11 +284,11 @@ mod tests {
         let physical = entries
             .iter()
             .map(|(id, path, _, _)| (FileId::new(*id), (*path).to_owned()))
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let logical = entries
             .iter()
             .map(|(id, _, logical, _)| (FileId::new(*id), (*logical).to_owned()))
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let metadata = SourceMetadata::new(FileId::new(root), physical, logical).unwrap();
         SourceSnapshot::new(
             metadata,

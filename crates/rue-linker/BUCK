@@ -5,6 +5,7 @@ rue_crate(
     test_platform = "native",
     deps = [
         "//crates/rue-target:rue-target",
+        "//third-party:ahash",
         "//third-party:tracing",
     ],
 )

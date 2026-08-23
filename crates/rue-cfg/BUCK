@@ -6,6 +6,7 @@ rue_crate(
         "//crates/rue-air:rue-air",
         "//crates/rue-error:rue-error",
         "//crates/rue-span:rue-span",
+        "//third-party:ahash",
         "//third-party:lasso",
     ],
 )
@@ -18,6 +19,7 @@ native.rust_library(
         "//crates/rue-air:rue-air",
         "//crates/rue-error:rue-error",
         "//crates/rue-span:rue-span",
+        "//third-party:ahash",
         "//third-party:lasso",
     ],
     rustc_flags = ["--cfg", "feature=\"fuzz-support\""],

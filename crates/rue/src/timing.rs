@@ -92,7 +92,6 @@
 //! ```
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 #[cfg(test)]
@@ -104,6 +103,7 @@ const COMPILER_BUILD_PROFILE: &str = "release_thin_lto";
 #[cfg(not(rue_release_build))]
 const COMPILER_BUILD_PROFILE: &str = "debug";
 
+use ahash::AHashMap;
 use rue_perf_schema::{CompilerWork, DurationDistribution, Phase, PhaseAccounting};
 use serde::Serialize;
 
@@ -128,16 +128,16 @@ pub struct TimingData {
 static NEXT_TIMING_DATA_ID: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
-    static LOCAL_TIMING: RefCell<HashMap<u64, LocalTiming>> = RefCell::new(HashMap::new());
+    static LOCAL_TIMING: RefCell<AHashMap<u64, LocalTiming>> = RefCell::new(AHashMap::new());
 }
 
 /// The actual timing data storage.
 struct TimingDataInner {
     /// Accumulated measurements per pass name.
     /// Key is the span name (e.g., "lexer", "parser").
-    passes: HashMap<String, PassAggregate>,
+    passes: AHashMap<String, PassAggregate>,
     /// Exact structural counters published by wide timing events.
-    counters: HashMap<String, u64>,
+    counters: AHashMap<String, u64>,
 
     /// Accumulated measurements per driver-phase name.
     ///
@@ -146,7 +146,7 @@ struct TimingDataInner {
     /// machinery but kept out of `passes` and out of `root_duration`, so
     /// `total_ms` keeps meaning "compiler work" and `compile` stays the sole
     /// timing root (RUE-786).
-    driver_phases: HashMap<String, DriverPhaseAggregate>,
+    driver_phases: AHashMap<String, DriverPhaseAggregate>,
 
     /// Timestamped root and phase transitions, merged once per worker. Sorting
     /// this bounded event stream at finalization reconstructs the one global
@@ -222,9 +222,9 @@ enum AccountingTransition {
 /// requested.
 struct LocalTiming {
     target: Weak<Mutex<TimingDataInner>>,
-    passes: HashMap<String, PassAggregate>,
-    counters: HashMap<String, u64>,
-    driver_phases: HashMap<String, DriverPhaseAggregate>,
+    passes: AHashMap<String, PassAggregate>,
+    counters: AHashMap<String, u64>,
+    driver_phases: AHashMap<String, DriverPhaseAggregate>,
     accounting_events: Vec<AccountingEvent>,
     #[cfg(test)]
     synthetic_unattributed: Duration,
@@ -236,9 +236,9 @@ impl LocalTiming {
     fn new(target: Weak<Mutex<TimingDataInner>>) -> Self {
         Self {
             target,
-            passes: HashMap::new(),
-            counters: HashMap::new(),
-            driver_phases: HashMap::new(),
+            passes: AHashMap::new(),
+            counters: AHashMap::new(),
+            driver_phases: AHashMap::new(),
             accounting_events: Vec::new(),
             #[cfg(test)]
             synthetic_unattributed: Duration::ZERO,
@@ -273,7 +273,7 @@ impl Drop for LocalTiming {
     }
 }
 
-fn merge_pass(target: &mut HashMap<String, PassAggregate>, name: String, local: PassAggregate) {
+fn merge_pass(target: &mut AHashMap<String, PassAggregate>, name: String, local: PassAggregate) {
     let aggregate = target.entry(name).or_default();
     aggregate.duration += local.duration;
     aggregate.max_duration = aggregate.max_duration.max(local.max_duration);
@@ -290,7 +290,7 @@ fn merge_pass(target: &mut HashMap<String, PassAggregate>, name: String, local: 
 }
 
 fn merge_driver_phase(
-    target: &mut HashMap<String, DriverPhaseAggregate>,
+    target: &mut AHashMap<String, DriverPhaseAggregate>,
     name: String,
     local: DriverPhaseAggregate,
 ) {
@@ -406,9 +406,9 @@ impl TimingData {
         Self {
             id: NEXT_TIMING_DATA_ID.fetch_add(1, Ordering::Relaxed),
             inner: Arc::new(Mutex::new(TimingDataInner {
-                passes: HashMap::new(),
-                counters: HashMap::new(),
-                driver_phases: HashMap::new(),
+                passes: AHashMap::new(),
+                counters: AHashMap::new(),
+                driver_phases: AHashMap::new(),
                 accounting_events: Vec::new(),
                 #[cfg(test)]
                 synthetic_unattributed: Duration::ZERO,
@@ -1010,13 +1010,13 @@ fn duration_bucket(duration: Duration) -> usize {
     }
 }
 
-fn ordered_aggregates(aggregates: &HashMap<String, PassAggregate>) -> Vec<String> {
+fn ordered_aggregates(aggregates: &AHashMap<String, PassAggregate>) -> Vec<String> {
     let mut names = aggregates.keys().cloned().collect::<Vec<_>>();
     names.sort();
     names
 }
 
-fn ordered_driver_aggregates(aggregates: &HashMap<String, DriverPhaseAggregate>) -> Vec<String> {
+fn ordered_driver_aggregates(aggregates: &AHashMap<String, DriverPhaseAggregate>) -> Vec<String> {
     let mut names = aggregates.keys().cloned().collect::<Vec<_>>();
     names.sort();
     names
@@ -1200,7 +1200,7 @@ struct SemanticProviderBreakdownVisitor {
     constraint_generation_ns: Option<u64>,
     unification_resolution_ns: Option<u64>,
     air_emission_validation_ns: Option<u64>,
-    counters: HashMap<&'static str, u64>,
+    counters: AHashMap<&'static str, u64>,
 }
 
 #[derive(Default)]
@@ -1211,7 +1211,7 @@ struct SemanticBodyLoweringBreakdownVisitor {
     rir_lower_ns: Option<u64>,
     span_remap_validation_ns: Option<u64>,
     body_rir_index_ns: Option<u64>,
-    counters: HashMap<&'static str, u64>,
+    counters: AHashMap<&'static str, u64>,
 }
 
 impl tracing::field::Visit for TimingFlushVisitor {

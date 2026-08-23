@@ -27,7 +27,7 @@
 //! any realistic function. The separation is handled automatically by the
 //! respective methods.
 
-use std::collections::HashMap;
+use ahash::AHashMap;
 use std::fmt;
 
 pub use rue_runtime_abi::ReturnBehavior;
@@ -1346,7 +1346,7 @@ pub struct Aarch64Mir {
     /// Index for O(1) symbol lookup during interning.
     ///
     /// Maps symbol names to their indices in the `symbols` vector.
-    symbol_index: HashMap<String, u32>,
+    symbol_index: AHashMap<String, u32>,
 }
 
 impl Aarch64Mir {
@@ -1358,7 +1358,7 @@ impl Aarch64Mir {
             vreg_classes: VRegClasses::new(),
             next_label: 0,
             symbols: Vec::new(),
-            symbol_index: HashMap::new(),
+            symbol_index: AHashMap::new(),
         }
     }
 
@@ -1367,7 +1367,7 @@ impl Aarch64Mir {
     /// If the symbol already exists, returns its existing ID.
     /// Otherwise, adds it to the table and returns the new ID.
     pub fn intern_symbol(&mut self, symbol: &str) -> u32 {
-        // O(1) lookup via HashMap
+        // O(1) lookup via AHashMap
         if let Some(&idx) = self.symbol_index.get(symbol) {
             return idx;
         }

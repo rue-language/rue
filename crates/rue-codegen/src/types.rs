@@ -6,10 +6,10 @@
 //! Struct, enum, array, and pointer definitions are resolved through the
 //! canonical `FrozenTypeInternPool` (ADR-0024).
 
+use ahash::AHashMap;
 use lasso::ThreadedRodeo;
 use rue_air::{ArrayTypeId, EnumId, FrozenTypeInternPool, StructId, TypeKind};
 use rue_cfg::{Cfg, CfgInstData, CfgValue, Type, ValidatedCfg};
-use std::collections::HashMap;
 
 use crate::vreg::VReg;
 
@@ -1203,7 +1203,7 @@ pub(crate) fn ensure_compact_layout_codegen_supported(
 /// * `get_vreg` - Closure to get/allocate a vreg for a given CFG value
 pub fn collect_array_scalar_vregs(
     cfg: &ValidatedCfg,
-    struct_slot_vregs: &HashMap<CfgValue, Vec<VReg>>,
+    struct_slot_vregs: &AHashMap<CfgValue, Vec<VReg>>,
     value: CfgValue,
     get_vreg: &mut impl FnMut(CfgValue) -> VReg,
 ) -> Vec<VReg> {
@@ -1271,7 +1271,7 @@ pub use rue_air::drop_glue_names::array_drop_glue_name;
 /// * `get_vreg` - Closure to get/allocate a vreg for a given CFG value
 pub fn collect_struct_scalar_vregs(
     cfg: &ValidatedCfg,
-    struct_slot_vregs: &HashMap<CfgValue, Vec<VReg>>,
+    struct_slot_vregs: &AHashMap<CfgValue, Vec<VReg>>,
     value: CfgValue,
     get_vreg: &mut impl FnMut(CfgValue) -> VReg,
 ) -> Vec<VReg> {

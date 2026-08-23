@@ -86,9 +86,8 @@
 //! batched work discipline as [`super::peephole`] and [`super::simplify`],
 //! RUE-794). DCE then removes the now-unused `Const(0)` placeholders.
 
-use std::collections::HashMap;
-
 use crate::{BlockId, Cfg, CfgInstData, CfgValue, Type};
+use ahash::AHashMap;
 
 /// Work counters for one run (RUE-794 convention): a single forward scan of
 /// every block, then one batched use-rewrite. There is no fixpoint loop.
@@ -253,7 +252,7 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
 
     for block_idx in 0..cfg.block_count() {
         let block_id = BlockId::from_raw(block_idx as u32);
-        let mut table: HashMap<VnKey, CfgValue> = HashMap::new();
+        let mut table: AHashMap<VnKey, CfgValue> = AHashMap::new();
 
         for i in 0..cfg.get_block(block_id).insts.len() {
             let value = cfg.get_block(block_id).insts[i];

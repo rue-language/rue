@@ -4,11 +4,12 @@
 //! universe, while [`ParsedProgram`] provides the sole parsed-program
 //! representation used by semantic compilation.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use ahash::AHashMap;
 use lasso::Key;
 use lasso::{RodeoResolver, Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind};
@@ -144,7 +145,7 @@ impl ParsedDefinitionCandidate {
 pub struct ParsedDefinitionIndex {
     candidates: Arc<[ParsedDefinitionCandidate]>,
     declarations: Arc<[ParsedDeclarationCandidate]>,
-    declaration_by_key: HashMap<DeclarationCandidateKey, usize>,
+    declaration_by_key: AHashMap<DeclarationCandidateKey, usize>,
     rir_recipes: Arc<[ParsedRirRecipe]>,
     declaration_capabilities: Arc<[DeclarationOccurrenceCapability]>,
     #[cfg(test)]
@@ -580,7 +581,7 @@ struct ImportSiteCollector {
 #[derive(Default)]
 struct ParsedModuleProjectionCollector {
     imports: ImportSiteCollector,
-    warning_call_heads: HashMap<ParsedDeclarationAstLocator, Vec<RawWarningCallHead>>,
+    warning_call_heads: AHashMap<ParsedDeclarationAstLocator, Vec<RawWarningCallHead>>,
 }
 
 /// Immutable parsed syntax whose spans and symbols belong to one FileId epoch.
@@ -1855,7 +1856,7 @@ struct ParsedBodyProjectionCollector<'a> {
     module: &'a ModuleId,
     resolver: &'a ThreadedRodeo,
     imports: &'a mut ImportSiteCollector,
-    scopes: Vec<HashMap<Spur, ParsedWarningLexicalBinding>>,
+    scopes: Vec<AHashMap<Spur, ParsedWarningLexicalBinding>>,
     heads: Vec<RawWarningCallHead>,
 }
 
@@ -1968,7 +1969,7 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
         body: &Expr,
         _has_self: bool,
     ) -> CompileResult<()> {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(AHashMap::new());
         let outcome = (|| {
             for parameter in parameters {
                 self.visit_type(&parameter.ty)?;
@@ -2154,7 +2155,7 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
 
     fn visit_block(&mut self, block: &rue_parser::ast::BlockExpr) -> CompileResult<()> {
         use rue_parser::ast::{LetPattern, Statement};
-        self.scopes.push(HashMap::new());
+        self.scopes.push(AHashMap::new());
         let outcome = (|| {
             for statement in &block.statements {
                 match statement {
@@ -2235,7 +2236,7 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
             Expr::Match(value) => {
                 self.visit_expr(&value.scrutinee)?;
                 for arm in &value.arms {
-                    self.scopes.push(HashMap::new());
+                    self.scopes.push(AHashMap::new());
                     let outcome = (|| {
                         if let Pattern::Path(path) = &arm.pattern {
                             if let Some(base) = &path.base {
@@ -2269,7 +2270,7 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
             Expr::Loop(value) => self.visit_block(&value.body)?,
             Expr::For(value) => {
                 self.visit_expr(&value.iterable)?;
-                self.scopes.push(HashMap::new());
+                self.scopes.push(AHashMap::new());
                 let outcome = (|| {
                     if let LetPattern::Ident(ident) = value.binder {
                         self.bind_local(ident)?;
@@ -2508,7 +2509,7 @@ fn project_warning_call_heads(
     import_range: Option<RawDeclarationImportRange>,
     import_sites: &[ImportDirective],
     resolver: &FrozenSymbolResolver,
-    raw_heads: &HashMap<ParsedDeclarationAstLocator, Vec<RawWarningCallHead>>,
+    raw_heads: &AHashMap<ParsedDeclarationAstLocator, Vec<RawWarningCallHead>>,
 ) -> CompileResult<Arc<[ParsedWarningCallHead]>> {
     let owns_warning_body = matches!(
         category,
@@ -2599,7 +2600,7 @@ fn build_definition_index(
     ast: &Ast,
     resolver: &FrozenSymbolResolver,
     import_sites: &[ImportDirective],
-    raw_warning_call_heads: &HashMap<ParsedDeclarationAstLocator, Vec<RawWarningCallHead>>,
+    raw_warning_call_heads: &AHashMap<ParsedDeclarationAstLocator, Vec<RawWarningCallHead>>,
 ) -> CompileResult<ParsedDefinitionIndex> {
     if import_sites.windows(2).any(|sites| {
         (sites[0].source_offset(), sites[0].source_end())
@@ -3090,7 +3091,7 @@ fn build_definition_index(
             },
         )
         .collect::<CompileResult<Vec<_>>>()?;
-    let mut declaration_by_key = HashMap::with_capacity(declarations.len());
+    let mut declaration_by_key = AHashMap::with_capacity(declarations.len());
     let mut declaration_capabilities = Vec::with_capacity(declarations.len());
     for (index, candidate) in declarations.iter().enumerate() {
         let key = candidate.fact.key.clone();
@@ -3109,7 +3110,7 @@ fn build_definition_index(
             });
         }
     }
-    let mut key_by_locator = HashMap::with_capacity(declarations.len());
+    let mut key_by_locator = AHashMap::with_capacity(declarations.len());
     for candidate in &declarations {
         if key_by_locator
             .insert(candidate.ast_locator, candidate.fact.key.clone())
@@ -3287,7 +3288,6 @@ fn invalid_input(message: impl Into<String>) -> CompileError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
 
     use lasso::Key;
     use rue_error::{PreviewFeature, PreviewFeatures};
@@ -3468,11 +3468,11 @@ extern "C" { fn getpid() -> i32; }
         let physical = entries
             .iter()
             .map(|(id, path, _, _)| (FileId::new(*id), (*path).to_owned()))
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let logical = entries
             .iter()
             .map(|(id, _, logical, _)| (FileId::new(*id), (*logical).to_owned()))
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let metadata = SourceMetadata::new(FileId::new(root), physical, logical).unwrap();
         SourceSnapshot::new(
             metadata,
@@ -3752,8 +3752,8 @@ extern "C" { fn getpid() -> i32; }
     #[test]
     fn one_edit_among_128_modules_parses_exactly_once() {
         fn large(edited: bool) -> SourceSnapshot {
-            let mut physical = HashMap::new();
-            let mut logical = HashMap::new();
+            let mut physical = AHashMap::new();
+            let mut logical = AHashMap::new();
             let mut contents = Vec::new();
             for index in 0..129_u32 {
                 let file_id = FileId::new(index + 1);
