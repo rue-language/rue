@@ -104,12 +104,18 @@ struct RenderSource<'a> {
 
 impl<'a> RenderSource<'a> {
     fn new(source: &'a str) -> Self {
+        // annotate-snippets does not materialize the empty line after a final
+        // newline. Keep a zero-width marker there so a point span at EOF still
+        // has a concrete line on which to draw its caret.
+        let needs_eof_marker = source.ends_with(['\n', '\r']);
+
         // Fast path: no tab (caret geometry) or control char — carriage return
         // and every other terminal-injection hazard (RUE-548) are covered by
         // `is_unsafe_control_char`.
         if !source
             .chars()
             .any(|c| c == '\t' || is_unsafe_control_char(c))
+            && !needs_eof_marker
         {
             return Self {
                 source: Cow::Borrowed(source),
@@ -148,6 +154,11 @@ impl<'a> RenderSource<'a> {
                 _ => rendered.push(ch),
             }
             byte_map[next_idx] = rendered.len();
+        }
+
+        if needs_eof_marker {
+            rendered.push('\u{200b}');
+            byte_map[source.len()] = rendered.len() - '\u{200b}'.len_utf8();
         }
 
         Self {
@@ -1482,6 +1493,85 @@ mod tests {
         assert!(output.contains("expected i32"));
         assert!(output.contains("found bool"));
         assert!(output.contains("test.rue"));
+    }
+
+    #[test]
+    fn test_format_zero_width_eof_span_with_and_without_trailing_newline() {
+        for (source, origin, excerpt, caret, expected_line_col) in [
+            (
+                "fn main() -> i32 { 0 }",
+                "--> test.rue:1:23",
+                "1 | fn main() -> i32 { 0 }",
+                "  |                       ^",
+                (1, 23),
+            ),
+            (
+                "fn main() -> i32 { 0 }\n",
+                "--> test.rue:2:1",
+                "2 | \u{200b}",
+                "  | ^",
+                (2, 1),
+            ),
+        ] {
+            let source_info = SourceInfo::new(source, "test.rue");
+            let text = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+            let at_eof = source.len() as u32;
+            let error = CompileError::new(ErrorKind::NoMainFunction, Span::new(at_eof, at_eof));
+
+            let output = text.format_error(&error);
+            assert!(output.contains(origin), "missing origin in:\n{output}");
+            assert!(output.contains(excerpt), "missing excerpt in:\n{output}");
+            assert!(output.contains(caret), "missing EOF caret in:\n{output}");
+
+            let json = JsonDiagnosticFormatter::new(&source_info).format_error(&error);
+            let span = &json.spans[0];
+            assert_eq!((span.start, span.end), (at_eof, at_eof));
+            assert_eq!((span.line, span.column), expected_line_col);
+            assert!(span.primary);
+        }
+    }
+
+    #[test]
+    fn test_format_multibyte_utf8_span_pins_text_caret_and_json_coordinates() {
+        let source = "fn main() -> i32 {\n    let π = true;\n}";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let text = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+        let start = source.find("true").unwrap() as u32;
+        let error = CompileError::new(ErrorKind::NoMainFunction, Span::new(start, start + 4));
+
+        let output = text.format_error(&error);
+        assert!(output.contains("2 |     let π = true;"));
+        assert!(
+            output.contains("  |             ^^^^"),
+            "caret drifted after UTF-8 text:\n{output}"
+        );
+
+        let json = JsonDiagnosticFormatter::new(&source_info).format_error(&error);
+        let span = &json.spans[0];
+        assert_eq!((span.start, span.end), (32, 36));
+        assert_eq!((span.line, span.column), (2, 13));
+    }
+
+    #[test]
+    fn test_format_multiline_span_pins_text_excerpt_and_json_range() {
+        let source = "fn main() -> i32 {\n    first\n    second\n}";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let text = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+        let start = source.find("first").unwrap() as u32;
+        let end = source.find("second").unwrap() as u32 + 3;
+        let error = CompileError::new(ErrorKind::NoMainFunction, Span::new(start, end));
+
+        let output = text.format_error(&error);
+        assert!(output.contains("2 | /     first\n3 | |     second"));
+        assert!(
+            output.contains("  | |_______^"),
+            "multiline underline changed:\n{output}"
+        );
+
+        let json = JsonDiagnosticFormatter::new(&source_info).format_error(&error);
+        let span = &json.spans[0];
+        assert_eq!((span.start, span.end), (23, 36));
+        assert_eq!((span.line, span.column), (2, 5));
     }
 
     #[test]
