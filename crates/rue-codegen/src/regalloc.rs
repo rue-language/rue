@@ -1413,13 +1413,21 @@ impl<I> RewriteBuffer<I> {
         self.after.push(inst);
     }
 
-    fn into_ordered(mut self) -> Vec<I> {
-        let mut ordered =
-            Vec::with_capacity(self.before.len() + self.main.len() + self.after.len());
-        ordered.append(&mut self.before);
-        ordered.append(&mut self.main);
-        ordered.append(&mut self.after);
-        ordered
+    /// Empty the buffer, keeping its three allocations for the next
+    /// instruction.
+    fn clear(&mut self) {
+        self.before.clear();
+        self.main.clear();
+        self.after.clear();
+    }
+
+    /// Take the rewritten instructions in emission order without allocating a
+    /// fourth vector to hold them.
+    fn drain_ordered(&mut self) -> impl Iterator<Item = I> + '_ {
+        self.before
+            .drain(..)
+            .chain(self.main.drain(..))
+            .chain(self.after.drain(..))
     }
 }
 
@@ -1634,6 +1642,10 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
             coalesce_result: &self.coalesce_result,
         };
 
+        // One buffer for the whole function. A fresh one per instruction
+        // allocated its three vectors again for every rewrite, grew them from
+        // empty, and `into_ordered` allocated a fourth to concatenate them.
+        let mut buffer = RewriteBuffer::new();
         for (idx, inst) in old_instructions.into_iter().enumerate() {
             if self.coalesce_result.is_eliminated(idx) {
                 continue;
@@ -1646,9 +1658,9 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
             {
                 continue;
             }
-            let mut buffer = RewriteBuffer::new();
+            buffer.clear();
             B::rewrite_inst(&context, &mut buffer, inst)?;
-            for rewritten in buffer.into_ordered() {
+            for rewritten in buffer.drain_ordered() {
                 B::push(&mut new_mir, rewritten);
             }
         }
@@ -2634,7 +2646,10 @@ mod tests {
         buffer.push_main("main");
         buffer.push_before("before");
 
-        assert_eq!(buffer.into_ordered(), ["before", "main", "after"]);
+        assert_eq!(
+            buffer.drain_ordered().collect::<Vec<_>>(),
+            ["before", "main", "after"]
+        );
     }
 
     // ========================================

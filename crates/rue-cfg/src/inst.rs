@@ -2896,7 +2896,47 @@ impl Cfg {
     /// Reach for [`Self::predecessors_of`] when only one block's row is
     /// wanted.
     pub fn compute_predecessors(&self) -> Vec<Vec<BlockId>> {
-        let mut preds: Vec<Vec<BlockId>> = vec![Vec::new(); self.blocks.len()];
+        // Count the in-edges before filling. Most blocks have one or two
+        // predecessors, so growing from empty allocated a four-slot buffer on
+        // the first push and reallocated on the fifth; the exact counts let
+        // every list be allocated once, and unreachable blocks not at all.
+        // The count pass decodes nothing a terminator does not already carry:
+        // switch cases are a slice, so its length is read, not walked.
+        let mut counts = vec![0usize; self.blocks.len()];
+        let count_edge = |target: &BlockId, counts: &mut Vec<usize>| {
+            counts[target.0 as usize] += 1;
+        };
+        for block in &self.blocks {
+            match &block.terminator {
+                Terminator::Goto { target, .. } => count_edge(target, &mut counts),
+                Terminator::Branch {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    count_edge(then_block, &mut counts);
+                    count_edge(else_block, &mut counts);
+                }
+                Terminator::Switch { cases, default, .. } => {
+                    for (_, target) in self.switch_cases(cases) {
+                        counts[target.0 as usize] += 1;
+                    }
+                    count_edge(default, &mut counts);
+                }
+                Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => {}
+            }
+        }
+
+        let mut preds: Vec<Vec<BlockId>> = counts
+            .into_iter()
+            .map(|count| {
+                if count == 0 {
+                    Vec::new()
+                } else {
+                    Vec::with_capacity(count)
+                }
+            })
+            .collect();
 
         for block in &self.blocks {
             match &block.terminator {
