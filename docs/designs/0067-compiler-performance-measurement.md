@@ -516,7 +516,10 @@ splicing via shared workloads.
 
 ## Amendment 1 (2026-08-16): versioning the record encoding, and compacting the store (RUE-1543)
 
-**Status: proposal. Not accepted, not implemented.** ADR-0071 Amendment 1
+**Status: accepted 2026-08-23 by Steve Klabnik and Dorian Scheidt, as
+recommended on all three questions**, with the stated condition — now
+satisfied — that the baseline-resolution gate (PR #2608, merged) precede
+any re-encode. ADR-0071 Amendment 1
 proposes a run-object encoding that is 4.0% of today's size. This amendment
 rules on the three questions that proposal raises about *this* ADR: which
 versioning axis owns the change, what that axis must become before it can carry

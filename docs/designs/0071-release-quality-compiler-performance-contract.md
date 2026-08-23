@@ -489,7 +489,8 @@ does not pre-authorize a large refactor merely because a later milestone exists.
 
 ## Amendment 1 (2026-08-16): boundary evidence costs more than it proves (RUE-1543)
 
-**Status: proposal. Not accepted, not implemented.** This amendment answers the
+**Status: accepted 2026-08-23 by Steve Klabnik and Dorian Scheidt, as
+recommended.** This amendment answers the
 question RUE-1543 asks — does a run object need to carry the complete
 build-boundary evidence of every measured process — and recommends *no*. It
 needs a maintainer ruling before it means anything. ADR-0067 Amendment 1 is its
