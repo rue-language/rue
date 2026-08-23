@@ -251,17 +251,20 @@ impl Parser {
                     TokenKind::Pub => Some("'unchecked' or 'fn' or 'linear' or 'struct' or …"),
                     _ => None,
                 };
-                if let Some(expected) = expected {
+                // The grammar diagnostic that triggered recovery already
+                // points at the first offending reserved keyword. Do not
+                // retain a second, narrower diagnostic for that same token;
+                // recovery diagnostics are for later malformed item prefixes
+                // encountered while scanning the failed body.
+                if let Some(expected) = expected
+                    && token.span != initial_span
+                {
                     self.record_error(CompileError::new(
                         ErrorKind::UnexpectedToken {
                             expected: expected.into(),
                             found: token.kind.name().to_owned().into(),
                         },
-                        Span::with_file(
-                            self.file_id,
-                            token.span.start,
-                            token.span.start.saturating_sub(1),
-                        ),
+                        token.span,
                     ));
                 }
             }
@@ -299,18 +302,12 @@ impl Parser {
                     break;
                 }
                 let token = self.bump();
-                let previous_end = self
-                    .cursor
-                    .checked_sub(2)
-                    .and_then(|index| self.tokens.get(index))
-                    .map(|token| token.span.end)
-                    .unwrap_or(token.span.start);
                 self.record_error(CompileError::new(
                     ErrorKind::UnexpectedToken {
                         expected: "identifier".into(),
                         found: "'fn'".into(),
                     },
-                    Span::with_file(self.file_id, token.span.start, previous_end),
+                    token.span,
                 ));
                 saw_malformed_function = true;
                 continue;

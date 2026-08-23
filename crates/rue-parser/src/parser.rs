@@ -310,6 +310,61 @@ mod tests {
     }
 
     #[test]
+    fn recovery_diagnostics_use_offending_spans_and_continue_without_cascades() {
+        let cases = [
+            // The initial let-pattern error already identifies the reserved
+            // keyword. Item recovery must not add a second error for it.
+            ("fn main() -> i32 { let fn = 2; 0 }", 1, vec![23..25]),
+            ("fn main() -> i32 { let struct = 2; 0 }", 1, vec![23..29]),
+            // The missing struct name is followed by a malformed method; the
+            // later top-level function remains a recovery synchronization
+            // point.
+            (
+                "struct { fn () {} }\nfn main() -> i32 { 0 }",
+                2,
+                vec![7..8, 9..11],
+            ),
+            // `ident_expected` owns the one diagnostic for an intrinsic whose
+            // name is followed by a non-identifier.
+            ("fn main() -> i32 { @1(2); 0 }", 1, vec![20..21]),
+        ];
+
+        for (source, expected_count, expected_ranges) in cases {
+            let errors = parse_source(source).unwrap_err();
+            assert_eq!(errors.len(), expected_count, "{source}: {errors:?}");
+            let ranges = errors
+                .iter()
+                .map(|error| {
+                    let span = error.span().expect("parser diagnostics have spans");
+                    assert!(span.start <= span.end, "{source}: {span:?}");
+                    span.start..span.end
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(ranges, expected_ranges, "{source}: {errors:?}");
+        }
+    }
+
+    #[test]
+    fn all_recovery_diagnostic_spans_are_non_reversed() {
+        for source in [
+            "fn main() -> i32 { let fn = 2; 0 }",
+            "fn main() -> i32 { let struct = 2; 0 }",
+            "struct { fn () {} } fn main() -> i32 { 0 }",
+            "fn main() -> i32 { @1(2); 0 }",
+            "struct S { fn broken( -> i32 { 0 } fn ok() -> i32 { 0 } }",
+        ] {
+            let errors = parse_source(source).unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .filter_map(CompileError::span)
+                    .all(|span| span.start <= span.end),
+                "{source}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
     fn thousands_of_recovery_points_have_a_bounded_diagnostic_result() {
         let mut source = String::new();
         for index in 0..2_000 {

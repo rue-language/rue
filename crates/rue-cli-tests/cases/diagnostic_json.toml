@@ -81,24 +81,45 @@ compile_stderr_not_contains = [
 ]
 
 [[case]]
-name = "parser_recovery_reversed_json_span_is_normalized"
-description = """
-Parser recovery can temporarily produce a reversed primary span. The JSON
-formatter clamps that range while preserving the reachable parser diagnostics;
-this is an end-to-end regression for the published span invariant.
-"""
+name = "parser_recovery_source_span_is_non_reversed"
+description = "Parser recovery emits the offending reserved keyword's source span directly; JSON preserves the source invariant without normalization."
 files = [{ path = "main.rue", source = "fn main() -> i32 { let fn = 2; 0 }" }]
 args = ["--error-format", "json", "main.rue", "-o", "prog"]
 compile_fail = true
 json_diagnostics = true
-json_diagnostic_order = [
-  "error E0100 main.rue:1:24",
-  "error E0100 main.rue:1:24",
-]
+json_diagnostic_order = ["error E0100 main.rue:1:24"]
 error_contains = [
   '"code":"E0100"',
   '"start":23',
-  '"end":23',
+  '"end":25',
+]
+
+[[case]]
+name = "parser_recovery_missing_name_spans_are_exact"
+description = "Malformed item-name recovery reports the missing name and malformed method at their offending tokens, then keeps the JSON order."
+files = [{ path = "main.rue", source = "struct { fn () {} }\nfn main() -> i32 { 0 }" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = [
+  "error E0100 main.rue:1:8",
+  "error E0100 main.rue:1:10",
+]
+error_contains = ['"code":"E0100"', '"start":7', '"end":8', '"start":9', '"end":11']
+
+[[case]]
+name = "parser_recovery_intrinsic_name_span_is_exact"
+description = "An intrinsic followed by a non-identifier keeps one diagnostic on the offending token with a non-reversed source span."
+files = [{ path = "main.rue", source = "fn main() -> i32 { @1(2); 0 }" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0100 main.rue:1:21"]
+error_contains = [
+  '"code":"E0100"',
+  "\"message\":\"expected identifier or 'drop', found integer\"",
+  '"start":20',
+  '"end":21',
 ]
 
 [[case]]

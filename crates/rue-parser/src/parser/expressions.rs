@@ -511,7 +511,7 @@ impl Parser {
         let start = self.start();
         let name = match self.kind() {
             TokenKind::At => {
-                let at = self.bump();
+                self.bump();
                 if self.at(TokenKind::Drop) {
                     let span = self.bump().span;
                     Ident {
@@ -522,14 +522,10 @@ impl Parser {
                     match self.ident_expected("identifier or 'drop'") {
                         Ok(name) => name,
                         Err(()) => {
-                            let previous_end = at.span.start.saturating_sub(5);
-                            self.record_error(CompileError::new(
-                                ErrorKind::UnexpectedToken {
-                                    expected: "identifier".into(),
-                                    found: "'@'".into(),
-                                },
-                                Span::with_file(self.file_id, at.span.start, previous_end),
-                            ));
+                            // `ident_expected` already reports the actual
+                            // offending token. Repeating the failure at `@`
+                            // obscures that location and would violate the
+                            // parser's source-span invariant.
                             return Err(());
                         }
                     }
