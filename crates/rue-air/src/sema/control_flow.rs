@@ -169,7 +169,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return match taken_block {
                     Some(block) => {
                         ctx.push_scope();
-                        let result = self.analyze_inst(air, block, ctx)?;
+                        let boundary = ctx.enter_full_expression();
+                        let result = self.analyze_inst(air, block, ctx);
+                        ctx.exit_full_expression(boundary);
+                        let result = result?;
                         ctx.pop_scope();
                         // An `if` without `else` is unit-typed, so its (taken)
                         // then-branch must still be unit (spec 4.6:5).
@@ -209,7 +212,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // Condition must be bool
-        let cond_result = ctx.with_expected_type(None, |ctx| self.analyze_inst(air, cond, ctx))?;
+        let boundary = ctx.enter_full_expression();
+        let cond_result = ctx.with_expected_type(None, |ctx| self.analyze_inst(air, cond, ctx));
+        ctx.exit_full_expression(boundary);
+        let cond_result = cond_result?;
 
         if let Some(else_b) = else_block {
             // Save move state before entering branches.
@@ -217,7 +223,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             // Analyze then branch with its own scope
             ctx.push_scope();
-            let then_result = self.analyze_inst(air, then_block, ctx)?;
+            let boundary = ctx.enter_full_expression();
+            let then_result = self.analyze_inst(air, then_block, ctx);
+            ctx.exit_full_expression(boundary);
+            let then_result = then_result?;
             let then_type = then_result.ty;
             let then_continues = then_result.continues;
             let then_span = self.body_rir_ref().get(then_block).span;
@@ -231,7 +240,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             // Analyze else branch with its own scope
             ctx.push_scope();
-            let else_result = self.analyze_inst(air, else_b, ctx)?;
+            let boundary = ctx.enter_full_expression();
+            let else_result = self.analyze_inst(air, else_b, ctx);
+            ctx.exit_full_expression(boundary);
+            let else_result = else_result?;
             let else_type = else_result.ty;
             let else_continues = else_result.continues;
             let else_span = self.body_rir_ref().get(else_b).span;
@@ -297,7 +309,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let saved_moves = ctx.moved_vars.clone();
 
             ctx.push_scope();
-            let then_result = self.analyze_inst(air, then_block, ctx)?;
+            let boundary = ctx.enter_full_expression();
+            let then_result = self.analyze_inst(air, then_block, ctx);
+            ctx.exit_full_expression(boundary);
+            let then_result = then_result?;
             ctx.pop_scope();
 
             // Check that the then branch has unit type (or Never/Error)
@@ -365,7 +380,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let moves_before_loop = ctx.moved_vars.clone();
 
         // While loop: condition must be bool, result is Unit
-        let cond_result = self.analyze_inst(air, cond, ctx)?;
+        let boundary = ctx.enter_full_expression();
+        let cond_result = self.analyze_inst(air, cond, ctx);
+        ctx.exit_full_expression(boundary);
+        let cond_result = cond_result?;
 
         // Analyze body with its own scope. The loop_break_stack entry makes
         // breaks inside the body target this while loop, not an outer loop;
@@ -373,7 +391,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx.push_scope();
         ctx.loop_depth += 1;
         ctx.loop_break_stack.push(LoopEdgeStates::default());
-        let body_result = self.analyze_inst(air, body, ctx)?;
+        let boundary = ctx.enter_full_expression();
+        let body_result = self.analyze_inst(air, body, ctx);
+        ctx.exit_full_expression(boundary);
+        let body_result = body_result?;
         ctx.loop_depth -= 1;
         // pop_scope replays this scope's RUE-522 restoration onto the
         // break-site snapshots still on the stack, so the record popped
@@ -422,11 +443,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             scratch_ctx.moved_vars = backedge_moves;
             let recovered_before = self.body_analysis_recovered_errors_mut().len();
             let result = (|| -> CompileResult<()> {
-                self.analyze_inst(air, cond, &mut scratch_ctx)?;
+                let boundary = scratch_ctx.enter_full_expression();
+                let result = self.analyze_inst(air, cond, &mut scratch_ctx);
+                scratch_ctx.exit_full_expression(boundary);
+                result?;
                 scratch_ctx.push_scope();
                 scratch_ctx.loop_depth += 1;
                 scratch_ctx.loop_break_stack.push(LoopEdgeStates::default());
-                self.analyze_inst(air, body, &mut scratch_ctx)?;
+                let boundary = scratch_ctx.enter_full_expression();
+                let result = self.analyze_inst(air, body, &mut scratch_ctx);
+                scratch_ctx.exit_full_expression(boundary);
+                result?;
                 scratch_ctx.loop_break_stack.pop();
                 scratch_ctx.loop_depth -= 1;
                 scratch_ctx.pop_scope();
@@ -482,7 +509,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if let Some(var) = iter_borrow {
             ctx.iter_borrows.push(var);
         }
-        let body_result = self.analyze_inst(air, body, ctx)?;
+        let boundary = ctx.enter_full_expression();
+        let body_result = self.analyze_inst(air, body, ctx);
+        ctx.exit_full_expression(boundary);
+        let body_result = body_result?;
         if iter_borrow.is_some() {
             ctx.iter_borrows.pop();
         }
@@ -534,7 +564,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if let Some(var) = iter_borrow {
                 scratch_ctx.iter_borrows.push(var);
             }
+            let boundary = scratch_ctx.enter_full_expression();
             let result = self.analyze_inst(air, body, &mut scratch_ctx);
+            scratch_ctx.exit_full_expression(boundary);
             air.rollback(checkpoint);
             for error in &mut self.body_analysis_recovered_errors_mut()[recovered_before..] {
                 *error = error
@@ -874,7 +906,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     self.warn_unreachable_pruned_arms(arms.iter().cloned(), scrutinee_type, ctx);
                     if let Some(body) = selected {
                         ctx.push_scope();
-                        let result = self.analyze_inst(air, body, ctx)?;
+                        let boundary = ctx.enter_full_expression();
+                        let result = self.analyze_inst(air, body, ctx);
+                        ctx.exit_full_expression(boundary);
+                        let result = result?;
                         ctx.pop_scope();
                         return Ok(result);
                     }
@@ -905,9 +940,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         });
         // Analyze the scrutinee under only the pattern-derived contract. The
         // match expression's own result expectation belongs to its arms.
+        let boundary = ctx.enter_full_expression();
         let scrutinee_result = ctx.with_expected_type(expected_scrutinee, |ctx| {
             self.analyze_inst(air, scrutinee, ctx)
-        })?;
+        });
+        ctx.exit_full_expression(boundary);
+        let scrutinee_result = scrutinee_result?;
         let scrutinee_type = scrutinee_result.ty;
 
         // Validate that we can match on this type (integers, booleans, and enums)
@@ -1239,7 +1277,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
 
             // Analyze arm body
-            let body_result = self.analyze_inst(air, *body, ctx)?;
+            let boundary = ctx.enter_full_expression();
+            let body_result = self.analyze_inst(air, *body, ctx);
+            ctx.exit_full_expression(boundary);
+            let body_result = body_result?;
             let body_type = body_result.ty;
 
             // Payload bindings are ordinary locals living in the ARM scope,
@@ -2238,7 +2279,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> CompileResult<AnalysisResult> {
         // Get the instruction refs from extra data
         let inst_refs = self.body_rir_ref().block_insts(instructions).to_vec();
-
         // Push a new scope for this block.
         ctx.push_scope();
 
@@ -2257,23 +2297,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let recovery_checkpoint = self
                 .body_analysis_error_recovery()
                 .then(|| (air.checkpoint(), ctx.clone()));
-            // Each non-tail statement is a full expression: accessor-result
-            // loans taken inside it (ADR-0062) end when it does. Loans taken
-            // by an *enclosing* statement (this block nested inside an
-            // expression) stay live across it, so this truncates rather than
-            // clears. The tail expression's loans are part of the enclosing
-            // full expression and survive the block.
-            let expression_loans_before = ctx.expression_loans.len();
-            let expression_shared_reads_before = ctx.expression_shared_reads.len();
+            // Each non-tail statement is a nested full expression. Enclosing
+            // accessor loans remain active through it, but completed reads and
+            // exclusive uses belong to the enclosing expression and must not
+            // enter the child. The tail expression remains part of the
+            // enclosing full expression and therefore needs no boundary.
+            let boundary = (!is_last).then(|| ctx.enter_full_expression());
             let outcome = if is_last {
                 self.analyze_inst(air, inst_ref, ctx)
             } else {
                 ctx.with_expected_type(None, |ctx| self.analyze_inst(air, inst_ref, ctx))
             };
-            if !is_last {
-                ctx.expression_loans.truncate(expression_loans_before);
-                ctx.expression_shared_reads
-                    .truncate(expression_shared_reads_before);
+            if let Some(boundary) = boundary {
+                ctx.exit_full_expression(boundary);
             }
             let result = match outcome {
                 Ok(result) => result,
@@ -2348,7 +2384,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // state is restored first so this frame removes dead locals and
         // restores any shadowed outer bindings normally.
         ctx.pop_scope();
-
         // Handle empty blocks - they evaluate to Unit
         let last = match last_result {
             Some(result) => result,
