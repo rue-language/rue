@@ -24,7 +24,20 @@ pub fn bool_to_string(b: bool) -> StrBuf {
 }
 
 // Unsigned value in an arbitrary base 2..=16, lowercase, no prefix.
+//
+// The base is CHECKED (RUE-1707): it is a contract, not a hint, and an
+// out-of-range base @panics instead of misbehaving. Unguarded, every kind of
+// misuse failed differently and none of them named the real mistake:
+//   * `base == 1` never decreased `m` (`m /= 1`) — an INFINITE LOOP;
+//   * `base == 0` trapped on `m % 0` with "division by zero";
+//   * `base >= 17` indexed past the 16-entry `digits` table, but only once a
+//     digit above 15 actually came up, so `to_radix(16, 17)` trapped with
+//     "index out of bounds" while `to_radix(255, 17)` silently returned a
+//     WRONG "f0" — a data-dependent partial success, the worst of the three.
 pub fn to_radix(n: u64, base: u64) -> StrBuf {
+    if base < 2 || base > 16 {
+        @panic("to_radix: base must be 2..=16");
+    }
     if n == 0 {
         return "0";
     }

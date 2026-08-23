@@ -1,0 +1,266 @@
+# std.fmt.to_radix — the base contract, exercised DIRECTLY (RUE-1707).
+#
+# Until now `to_radix` was only reached through `to_hex` smoke checks
+# (std_core.toml, std_m3.toml), which pin base 16 and nothing else: the
+# documented "base 2..=16" contract had no coverage at either edge and none at
+# all outside it. That gap let three different misuses ship, each failing in its
+# own unhelpful way and none of them naming the base as the problem:
+#
+#   base 1   `m /= 1` never decreased `m`      -> INFINITE LOOP (no output ever)
+#   base 0   `m % 0`                           -> "division by zero" trap
+#   base 17+ digit 16 indexed a 16-byte table  -> "index out of bounds" trap,
+#                                                 but ONLY for values that
+#                                                 actually produce a digit > 15
+#
+# That last one is the dangerous one: `to_radix(255, 17)` produced no digit
+# above 15 and so returned a plausible, WRONG `"f0"` with exit 0. A partial
+# success that depends on the data is worse than any trap, so the out-of-range
+# bases below cover both a trapping value and a silently-succeeding one.
+#
+# `to_radix` now @panics on an out-of-contract base. These are runtime-visible
+# (stdout, exit code, stderr), so they are pinned exactly here rather than being
+# folded into a scoring case.
+
+[section]
+id = "cli.std_fmt_radix"
+name = "std.fmt.to_radix base contract"
+description = "Every in-contract base 2..=16 renders known output; every out-of-contract base panics."
+
+# ── in contract: 2..=16 ──────────────────────────────────────────────────────
+
+# One program, all fifteen legal bases, against a value whose digits exercise
+# the full 0-15 digit table (255 is `ff` in hex, `11111111` in binary).
+[[case]]
+name = "to_radix_all_bases_2_through_16"
+description = "255 rendered in every base 2..=16; exact digits pinned for all fifteen."
+differential_opt = true
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """2 11111111
+3 100110
+4 3333
+5 2010
+6 1103
+7 513
+8 377
+9 313
+10 255
+11 212
+12 193
+13 168
+14 143
+15 120
+16 ff
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let n: u64 = 255;
+    let mut base: u64 = 2;
+    while base <= 16 {
+        println(@to_string(base) + " " + std.fmt.to_radix(n, base));
+        base += 1;
+    }
+    0
+}
+""" }]
+
+# The `n == 0` early return predates the guard and must still short-circuit at
+# every legal base — and it must NOT short-circuit past the base check.
+[[case]]
+name = "to_radix_zero_at_every_legal_base"
+description = "to_radix(0, base) is \"0\" for every base 2..=16."
+differential_opt = true
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = "000000000000000\n"
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let z: u64 = 0;
+    let mut out = StrBuf.new();
+    let mut base: u64 = 2;
+    while base <= 16 {
+        out = out + std.fmt.to_radix(z, base);
+        base += 1;
+    }
+    println(out);
+    0
+}
+""" }]
+
+# u64::MAX at both edges of the contract: the longest string base 2 can make
+# (64 digits) and the shortest base 16 can, with no digit lost or duplicated.
+[[case]]
+name = "to_radix_u64_max_at_contract_edges"
+description = "u64::MAX in base 2 (64 ones) and base 16 (16 f's); to_hex/to_binary agree."
+differential_opt = true
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """1111111111111111111111111111111111111111111111111111111111111111
+ffffffffffffffff
+1111111111111111111111111111111111111111111111111111111111111111
+ffffffffffffffff
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let n: u64 = @int_max(u64);
+    let b2: u64 = 2;
+    let b16: u64 = 16;
+    println(std.fmt.to_radix(n, b2));
+    println(std.fmt.to_radix(n, b16));
+    // The wrappers must route to exactly the same digits.
+    println(std.fmt.to_binary(n));
+    println(std.fmt.to_hex(n));
+    0
+}
+""" }]
+
+# ── out of contract: 0, 1, 17, and far above ─────────────────────────────────
+
+# base 1: the INFINITE LOOP. A hung test is invisible in a suite (it looks like
+# a slow machine, not a failure), so the value of this case is that it now
+# terminates at all — with a diagnosable message instead of never.
+[[case]]
+name = "to_radix_base_1_panics_instead_of_hanging"
+description = "to_radix(5, 1) panics; before the guard `m /= 1` looped forever."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["panic: to_radix: base must be 2..=16"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let n: u64 = 5;
+    let base: u64 = 1;
+    println(std.fmt.to_radix(n, base));
+    0
+}
+""" }]
+
+# base 0: previously "division by zero" from `m % 0` — a true statement about
+# the arithmetic that says nothing about the caller's actual mistake.
+[[case]]
+name = "to_radix_base_0_panics_not_divide_by_zero"
+description = "to_radix(5, 0) names the base contract, not the `m % 0` it used to trap on."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["panic: to_radix: base must be 2..=16"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let n: u64 = 5;
+    let base: u64 = 0;
+    println(std.fmt.to_radix(n, base));
+    0
+}
+""" }]
+
+# base 17 with a value that DOES overflow the digit table (16 in base 17 is the
+# single digit 16): previously "index out of bounds".
+[[case]]
+name = "to_radix_base_17_trapping_value_panics"
+description = "to_radix(16, 17) panics on the base rather than indexing past the digit table."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["panic: to_radix: base must be 2..=16"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let n: u64 = 16;
+    let base: u64 = 17;
+    println(std.fmt.to_radix(n, base));
+    0
+}
+""" }]
+
+# base 17 with a value that does NOT overflow the digit table: 255 = 15*17 + 0,
+# so every digit stayed under 16 and the old code returned a confident "f0" and
+# exited 0. This is the case that makes the guard worth having — a wrong answer
+# nobody would think to check.
+[[case]]
+name = "to_radix_base_17_silently_wrong_value_now_panics"
+description = "to_radix(255, 17) used to print \"f0\" and exit 0; the data-dependent partial success is now rejected."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["panic: to_radix: base must be 2..=16"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let n: u64 = 255;
+    let base: u64 = 17;
+    println(std.fmt.to_radix(n, base));
+    0
+}
+""" }]
+
+# A base well outside the contract but still a plausible typo.
+[[case]]
+name = "to_radix_base_1000_panics"
+description = "A base of 1000 panics on the contract before any digit is indexed."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+stdout = "before\n"
+runtime_error_contains = ["panic: to_radix: base must be 2..=16"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let n: u64 = 255;
+    let base: u64 = 1000;
+    // Pinning this line proves the panic comes from the call and not from
+    // something earlier in start-up.
+    println("before");
+    println(std.fmt.to_radix(n, base));
+    0
+}
+""" }]
+
+# u64::MAX as the base: `m % base == m`, so the very first digit would have
+# indexed the 16-byte table at 255.
+[[case]]
+name = "to_radix_base_u64_max_panics"
+description = "A base of u64::MAX panics on the contract rather than indexing the digit table at 255."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["panic: to_radix: base must be 2..=16"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let n: u64 = 255;
+    let base: u64 = @int_max(u64);
+    println(std.fmt.to_radix(n, base));
+    0
+}
+""" }]

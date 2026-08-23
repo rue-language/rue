@@ -155,3 +155,226 @@ fn main() -> i32 {
     42
 }
 """ }]
+
+# ── IntMap key extremes (RUE-1709) ──────────────────────────────────────────
+#
+# IntMap is documented to take any `i64` key, but until now every case above
+# used small NON-NEGATIVE keys — the suite had no negative-key coverage at all.
+# That left two things unpinned:
+#
+#   1. `_slot` hashed a negative key by its MAGNITUDE, `@intCast(0 - k)`, and
+#      `0 - i64::MIN` overflows. `@int_min(i64)` was a single-value landmine:
+#      an ordinary -5 key worked, so nothing looked wrong until exactly that
+#      key showed up. The hash now reinterprets the key's two's-complement bit
+#      pattern, which has no such hole.
+#   2. `_grow_to` carried a SECOND, inline copy of that same hash. A fix
+#      applied to `_slot` alone would place keys by the new hash and re-place
+#      them by the old one on the next growth — every lookup after a growth
+#      silently wrong. The hash now lives in one module-level `_hash`, and the
+#      growth case below is what would catch it diverging again.
+
+# Insert / lookup / overwrite / remove / re-insert, all at i64::MIN, which
+# previously trapped with "integer overflow" on the very first insert.
+#
+# NOT `differential_opt`, and deliberately so: this case's own shape trips a
+# SEPARATE, PRE-EXISTING optimizer bug that has nothing to do with the key. On
+# trunk's unmodified `std/intmap.rue`, at -O2 and -O3 only,
+#
+#     let mut m = M.new(0);
+#     m.insert(42, 7);
+#     println("contains=" + std.fmt.bool_to_string(m.contains(42)));
+#     match m.get(99) { O.Some(v) => ..., O.None => ... }   // takes Some(0)!
+#
+# reads a `None` returned by `IntMap.get` as `Some(filler)`. It needs no
+# negative key, no i64::MIN and no growth — an ordinary key 42 reproduces it —
+# and it disappears if the `bool_to_string(<call>)` concatenation before the
+# lookup is removed. Marking this case `differential_opt` would report that
+# optimizer bug as a std-library regression at the wrong address, so the
+# opt-level sweep is left off HERE and carried by the two cases below, whose
+# assertions do not sit downstream of that shape. See the meta note filed with
+# RUE-1709 for the standalone repro.
+[[case]]
+name = "intmap_key_i64_min_full_lifecycle"
+description = "i64::MIN works as an ordinary key through insert, get, contains, overwrite, remove and re-insert (RUE-1709)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """len=1
+get=7
+contains=true
+len_after_overwrite=1
+get2=99
+remove=true
+len_after_remove=0
+contains_after=false
+remove_again=false
+get3=none
+reinsert=5
+is_empty=false
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let M = std.intmap.IntMap(i64);
+    let O = std.option.Option(i64);
+    let mut m = M.new(0);
+    let mn: i64 = @int_min(i64);
+
+    m.insert(mn, 7);
+    println("len=" + @to_string(m.len()));
+    match m.get(mn) { O.Some(v) => { println("get=" + @to_string(v)); }, O.None => { println("get=none"); } }
+    println("contains=" + std.fmt.bool_to_string(m.contains(mn)));
+
+    m.insert(mn, 99);
+    println("len_after_overwrite=" + @to_string(m.len()));
+    match m.get(mn) { O.Some(v) => { println("get2=" + @to_string(v)); }, O.None => { println("get2=none"); } }
+
+    println("remove=" + std.fmt.bool_to_string(m.remove(mn)));
+    println("len_after_remove=" + @to_string(m.len()));
+    println("contains_after=" + std.fmt.bool_to_string(m.contains(mn)));
+    println("remove_again=" + std.fmt.bool_to_string(m.remove(mn)));
+    match m.get(mn) { O.Some(v) => { println("get3=" + @to_string(v)); }, O.None => { println("get3=none"); } }
+
+    // Re-inserting over the tombstone the removal left behind.
+    m.insert(mn, 5);
+    match m.get(mn) { O.Some(v) => { println("reinsert=" + @to_string(v)); }, O.None => { println("reinsert=none"); } }
+    println("is_empty=" + std.fmt.bool_to_string(m.is_empty()));
+    0
+}
+""" }]
+
+# Negative, zero, positive, MIN and MAX in one table, each mapped to a distinct
+# value so an aliasing hash shows up as a wrong value rather than a miss. The
+# three misses at the end matter too: a magnitude hash folds `k` and `-k` onto
+# the same slot, so near-neighbours of the extremes are exactly where a bad
+# fold would produce a false hit.
+[[case]]
+name = "intmap_negative_zero_positive_and_extreme_keys"
+description = "A mixed table of negative, zero, positive, i64::MIN and i64::MAX keys resolves each to its own value."
+differential_opt = true
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """len=7
+values=1234567
+miss_mx-1=false
+miss_neg2=false
+miss_1=false
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let M = std.intmap.IntMap(i64);
+    let O = std.option.Option(i64);
+    let mut m = M.new(0);
+
+    let mn: i64 = @int_min(i64);
+    let mx: i64 = @int_max(i64);
+    let mnp1: i64 = mn + 1;
+    let neg5: i64 = 0 - 5;
+    let neg1: i64 = 0 - 1;
+
+    m.insert(mn, 1);
+    m.insert(mnp1, 2);
+    m.insert(neg5, 3);
+    m.insert(neg1, 4);
+    m.insert(0, 5);
+    m.insert(5, 6);
+    m.insert(mx, 7);
+
+    println("len=" + @to_string(m.len()));
+    let mut out = StrBuf.new();
+    match m.get(mn) { O.Some(v) => { out = out + @to_string(v); }, O.None => { out = out + "?"; } }
+    match m.get(mnp1) { O.Some(v) => { out = out + @to_string(v); }, O.None => { out = out + "?"; } }
+    match m.get(neg5) { O.Some(v) => { out = out + @to_string(v); }, O.None => { out = out + "?"; } }
+    match m.get(neg1) { O.Some(v) => { out = out + @to_string(v); }, O.None => { out = out + "?"; } }
+    match m.get(0) { O.Some(v) => { out = out + @to_string(v); }, O.None => { out = out + "?"; } }
+    match m.get(5) { O.Some(v) => { out = out + @to_string(v); }, O.None => { out = out + "?"; } }
+    match m.get(mx) { O.Some(v) => { out = out + @to_string(v); }, O.None => { out = out + "?"; } }
+    println("values=" + out);
+
+    let mxm1: i64 = mx - 1;
+    println("miss_mx-1=" + std.fmt.bool_to_string(m.contains(mxm1)));
+    println("miss_neg2=" + std.fmt.bool_to_string(m.contains(0 - 2)));
+    println("miss_1=" + std.fmt.bool_to_string(m.contains(1)));
+    0
+}
+""" }]
+
+# THE one-copy detector. 403 entries against a starting capacity of 8 force
+# repeated `_grow_to` calls, and half the keys are negative, so a `_grow_to`
+# whose hash disagrees with `_slot` re-places them into slots `get` will never
+# probe. Verified by hand: reverting `_grow_to` alone to the old magnitude hash
+# drops `roundtrip` from 400 to 225, so this case fails loudly on divergence
+# rather than merely on the MIN key.
+[[case]]
+name = "intmap_extreme_keys_survive_growth"
+description = "i64::MIN/MIN+1/MAX and 400 mixed-sign keys all still resolve after repeated rehashing (RUE-1709)."
+differential_opt = true
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """len=403
+extremes=111 222 333
+roundtrip=400
+remove_min=true
+contains_min=false
+min+1_still=222
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let M = std.intmap.IntMap(i64);
+    let O = std.option.Option(i64);
+    let mut m = M.new(0);
+
+    let mn: i64 = @int_min(i64);
+    let mx: i64 = @int_max(i64);
+    let mnp1: i64 = mn + 1;
+
+    // Seeded BEFORE the bulk load so they are carried through every growth.
+    m.insert(mn, 111);
+    m.insert(mnp1, 222);
+    m.insert(mx, 333);
+
+    // Cap starts at 8; 400 more keys, half of them negative, force repeated
+    // _grow_to calls, each re-placing every live entry.
+    let mut i: i64 = 1;
+    while i <= 200 {
+        m.insert(0 - i * 1000, i);
+        m.insert(i * 1000, 0 - i);
+        i += 1;
+    }
+    println("len=" + @to_string(m.len()));
+
+    let mut out = StrBuf.new();
+    match m.get(mn) { O.Some(v) => { out = out + @to_string(v); }, O.None => { out = out + "?"; } }
+    out = out + " ";
+    match m.get(mnp1) { O.Some(v) => { out = out + @to_string(v); }, O.None => { out = out + "?"; } }
+    out = out + " ";
+    match m.get(mx) { O.Some(v) => { out = out + @to_string(v); }, O.None => { out = out + "?"; } }
+    println("extremes=" + out);
+
+    let mut ok: i64 = 0;
+    let mut j: i64 = 1;
+    while j <= 200 {
+        match m.get(0 - j * 1000) { O.Some(v) => { if v == j { ok += 1; } }, O.None => {} }
+        match m.get(j * 1000) { O.Some(v) => { if v == 0 - j { ok += 1; } }, O.None => {} }
+        j += 1;
+    }
+    println("roundtrip=" + @to_string(ok));
+
+    // Removal probes with the same hash, so it must find MIN in the grown
+    // table too — and must not disturb its neighbour.
+    println("remove_min=" + std.fmt.bool_to_string(m.remove(mn)));
+    println("contains_min=" + std.fmt.bool_to_string(m.contains(mn)));
+    match m.get(mnp1) { O.Some(v) => { println("min+1_still=" + @to_string(v)); }, O.None => { println("min+1_still=none"); } }
+    0
+}
+""" }]

@@ -34,6 +34,44 @@ fn _TOMBSTONE() -> u8 {
     2
 }
 
+// Raw two's-complement bit pattern of an `i64` key, as a `u64`.
+//
+// `@intCast` PANICS on a negative source (the value is not representable in
+// u64), so a negative key has to be rebuilt with non-trapping arithmetic. The
+// old code used the magnitude, `@intCast(0 - k)` — which OVERFLOWS at
+// `i64::MIN`, whose negation does not fit in i64, making the single value
+// `@int_min(i64)` an unusable key on a map documented to take any `i64`
+// (RUE-1709). Reinterpreting the bits instead has no such hole.
+//
+// For k < 0: 2^64 - |k| == ~(|k| - 1), and |k| - 1 is spelled `0 - (k + 1)`
+// rather than `(0 - k) - 1` — `k + 1` is in range even at `i64::MIN`, so the
+// subtraction never overflows and the result @intCasts cleanly. `~` is a
+// bitwise op and never traps. (Same shape as `fs._i64_bits`, which rebuilds a
+// seek offset; that one still negates first and so keeps the MIN hole.)
+fn _key_bits(k: i64) -> u64 {
+    if k >= 0 {
+        @intCast(k)
+    } else {
+        let mag_minus_1: u64 = @intCast(0 - (k + 1));
+        ~mag_minus_1
+    }
+}
+
+// Non-negative hash of a key, BEFORE folding into a table. Uses only xorshifts
+// (a multiply would overflow-trap without wrapping arithmetic, RUE-647).
+//
+// This lives in ONE place on purpose. `_slot` and `_grow_to` both need it, and
+// while `_grow_to` carried its own inline copy the two could silently diverge —
+// a hash fix applied to `_slot` alone would place keys by the new hash and then
+// re-place them by the old one on growth, corrupting every lookup afterwards.
+fn _hash(k: i64) -> u64 {
+    let mut h: u64 = _key_bits(k);
+    h ^= (h >> 33);
+    h ^= (h >> 17);
+    h ^= (h >> 29);
+    h
+}
+
 pub fn IntMap(comptime V: type) -> type {
     let Keys = arraybuf.ArrayBuf(i64);
     let Vals = arraybuf.ArrayBuf(V);
@@ -69,18 +107,9 @@ pub fn IntMap(comptime V: type) -> type {
             self.count == 0
         }
 
-        // Non-negative hash of `k` folded into `[0, cap)`. Uses only xorshifts
-        // (a multiply would overflow-trap without wrapping arithmetic, RUE-647).
+        // The module-level `_hash` folded into `[0, cap)`.
         fn _slot(borrow self, k: i64) -> u64 {
-            let mut h: u64 = if k < 0 {
-                @intCast(0 - k)
-            } else {
-                @intCast(k)
-            };
-            h ^= (h >> 33);
-            h ^= (h >> 17);
-            h ^= (h >> 29);
-            h % self.cap
+            _hash(k) % self.cap
         }
 
         // Re-hash into a table of `new_cap` slots.
@@ -105,16 +134,11 @@ pub fn IntMap(comptime V: type) -> type {
                 if self.states.get_or(j, _EMPTY()) == _OCCUPIED() {
                     let k = self.keys.get_or(j, 0);
                     let v = self.vals.get_or(j, self.filler);
-                    // insert into the new arrays by linear probing
-                    let mut h: u64 = if k < 0 {
-                        @intCast(0 - k)
-                    } else {
-                        @intCast(k)
-                    };
-                    h ^= (h >> 33);
-                    h ^= (h >> 17);
-                    h ^= (h >> 29);
-                    let mut idx = h % new_cap;
+                    // Insert into the new arrays by linear probing. `_slot`
+                    // cannot serve here — it folds by `self.cap`, which is
+                    // still the OLD capacity — so fold the shared `_hash` by
+                    // `new_cap` directly rather than re-deriving the hash.
+                    let mut idx = _hash(k) % new_cap;
                     while ns.get_or(idx, _EMPTY()) == _OCCUPIED() {
                         idx = (idx + 1) % new_cap;
                     }

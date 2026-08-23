@@ -55,28 +55,75 @@ pub fn sign(comptime T: type, x: T) -> T {
 }
 
 // Greatest common divisor (Euclid). The result is non-negative for signed `T`;
-// `gcd(0, 0) == 0`. Absolute value is inlined so the helper works for any `T`.
+// `gcd(0, 0) == 0`.
+//
+// Euclid runs on the SIGNED values and the sign is normalised only at the end
+// (RUE-1708). Taking `|a|`/`|b|` up front — the old shape — trapped for a
+// `T::MIN` operand, whose negation is not representable, even when the answer
+// plainly was: `gcd(i64::MIN, 2) == 2`. Rue's `%` truncates toward zero, so
+// the remainder's magnitude still strictly decreases whatever the signs are
+// and the loop terminates exactly as before.
+//
+// PANICS only when the true gcd is `|T::MIN| == 2^(bits-1)`, which no signed
+// `T` can hold: that is `gcd(MIN, 0)`, `gcd(0, MIN)` and `gcd(MIN, MIN)`.
 pub fn gcd(comptime T: type, a: T, b: T) -> T {
-    let mut x = if a < 0 { -a } else { a };
-    let mut y = if b < 0 { -b } else { b };
+    if @int_min(T) != 0 {
+        // Signed `T`. The remainder `T::MIN % -1` traps (its quotient
+        // overflows), so answer the magnitude-1 operands up front; their gcd
+        // with anything is 1. That is the only pairing the loop below could
+        // hit with `T::MIN` as the dividend. `minus_one` is computed rather
+        // than written as a literal so this whole (unsigned-unreachable) block
+        // still type-checks at unsigned `T`, exactly as in `checked_mul`.
+        let zero: T = 0;
+        let minus_one: T = zero - 1;
+        if a == 1 || b == 1 || a == minus_one || b == minus_one {
+            return 1;
+        }
+    }
+    let mut x = a;
+    let mut y = b;
     while y != 0 {
         let t = y;
         y = x % y;
         x = t;
     }
+    if x < 0 {
+        if x == @int_min(T) {
+            @panic("gcd: |T::MIN| is not representable in T");
+        }
+        // `0 - x`, not `-x`: unary `-` is rejected outright on an unsigned
+        // type (E0801) even in a branch that unsigned `T` can never reach, so
+        // writing it that way would break every unsigned instantiation at
+        // COMPILE time — as the pre-RUE-1708 body silently did, despite the
+        // doc's claim to work for any `T`.
+        let zero: T = 0;
+        return zero - x;
+    }
     x
 }
 
-// Least common multiple. `lcm(0, _) == 0`. SIGNED `T`.
+// Least common multiple. `lcm(0, _) == 0`. SIGNED `T`. Traps on overflow.
+//
+// PANICS for a non-zero `T::MIN` operand (RUE-1708): `|lcm(T::MIN, x)|` is
+// `2^(bits-1)` times an odd factor for every non-zero `x`, so it is never
+// representable — unlike `gcd`, there is nothing to rescue here. Rejecting
+// `T::MIN` up front is also what makes the closing negation safe: for the
+// product to land exactly on `T::MIN`, one operand's magnitude would have to
+// be `2^(bits-1)` itself.
 pub fn lcm(comptime T: type, a: T, b: T) -> T {
     if a == 0 {
-        0
-    } else if b == 0 {
-        0
-    } else {
-        let m = a / gcd(T, a, b) * b;
-        if m < 0 { -m } else { m }
+        return 0;
     }
+    if b == 0 {
+        return 0;
+    }
+    if a == @int_min(T) || b == @int_min(T) {
+        // Unreachable for unsigned `T`: there `@int_min(T)` is 0, already
+        // handled above.
+        @panic("lcm: a T::MIN operand has no representable lcm");
+    }
+    let m = a / gcd(T, a, b) * b;
+    if m < 0 { -m } else { m }
 }
 
 // Integer exponentiation by squaring: `base ** exp`. Traps on overflow.
@@ -123,12 +170,19 @@ pub fn is_pow_of_two(comptime T: type, n: T) -> bool {
 }
 
 // Trial-division primality test.
+//
+// The loop bound is `i <= n / i`, NOT `i * i <= n`: for a prime near
+// `@int_max(T)` the loop only exits once `i` passes `isqrt(n)`, and there the
+// square overflows and traps before the comparison can end it — `is_prime(i32,
+// 2147483647)` trapped instead of returning `true` (RUE-1708). Dividing is the
+// same overflow-free trick `isqrt` above uses, and it fixes every `T` at once.
+// `i >= 2` throughout, so the division never divides by zero.
 pub fn is_prime(comptime T: type, n: T) -> bool {
     if n < 2 {
         return false;
     }
     let mut i: T = 2;
-    while i * i <= n {
+    while i <= n / i {
         if n % i == 0 {
             return false;
         }

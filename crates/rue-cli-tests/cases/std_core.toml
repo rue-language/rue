@@ -105,3 +105,319 @@ fn main() -> i32 {
     @intCast(std.cmp.min(i64, 3, 7))
 }
 """ }]
+
+# ── std.math at the type extremes (RUE-1708) ────────────────────────────────
+#
+# The M1 smoke case above exercises gcd/isqrt/is_prime on comfortable mid-range
+# values, which is exactly where these helpers were already correct. All three
+# bugs lived at the ends of the type, where a mid-range sweep structurally
+# cannot reach — hence this separate block:
+#
+#   is_prime  `i * i <= n` overflowed before the loop could exit for a prime
+#             near `@int_max(T)`: `is_prime(i32, 2147483647)` — a Mersenne
+#             prime — TRAPPED instead of answering `true`. The bound is now
+#             `i <= n / i`, the same overflow-free comparison `isqrt` uses,
+#             which fixes every width at once, so widths are checked here.
+#   gcd       `if a < 0 { -a }` trapped for a `T::MIN` operand even when the
+#             answer fit perfectly well: `gcd(i64::MIN, 2)` is 2. Euclid now
+#             runs on the signed values and normalises the sign at the end.
+#   lcm       inherited the same negation. `|lcm(T::MIN, x)|` is a multiple of
+#             `2^(bits-1)` for every non-zero `x` and so is never
+#             representable, making that one a diagnosable panic rather than a
+#             rescued value.
+
+# Every width up to 32 bits, at and just below its maximum. A prime AT the max
+# is the shape that trapped; its composite neighbour pins that the new bound
+# did not simply make everything look prime.
+#
+# 64-bit maxima are deliberately absent: trial division on a prime near
+# `@int_max(i64)` runs ~3e9 iterations before `i` passes `isqrt(n)`, which is a
+# minutes-long case, not a test. The rewritten bound is width-independent, and
+# the six widths below (three of them wider than the `i32` repro) exercise it.
+[[case]]
+name = "math_is_prime_at_type_maxima"
+description = "is_prime answers correctly for primes at/near @int_max of i8/u8/i16/u16/i32/u32 (RUE-1708)."
+differential_opt = true
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """i8 127 true
+i8 126 false
+u8 251 true
+u8 255 false
+i16 32749 true
+i16 32767 false
+u16 65521 true
+u16 65535 false
+i32 2147483647 true
+i32 2147483646 false
+u32 4294967291 true
+u32 4294967295 false
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    // i8: 127 == @int_max(i8) is prime; 126 is not.
+    let a: i8 = @int_max(i8);
+    let b: i8 = 126;
+    println("i8 " + @to_string(a) + " " + std.fmt.bool_to_string(std.math.is_prime(i8, a)));
+    println("i8 " + @to_string(b) + " " + std.fmt.bool_to_string(std.math.is_prime(i8, b)));
+
+    // u8: 251 is the largest u8 prime; 255 == @int_max(u8) is 3*5*17.
+    let c: u8 = 251;
+    let d: u8 = @int_max(u8);
+    println("u8 " + @to_string(c) + " " + std.fmt.bool_to_string(std.math.is_prime(u8, c)));
+    println("u8 " + @to_string(d) + " " + std.fmt.bool_to_string(std.math.is_prime(u8, d)));
+
+    // i16: 32749 is the largest i16 prime; 32767 == @int_max(i16) is 7*31*151.
+    let e: i16 = 32749;
+    let f: i16 = @int_max(i16);
+    println("i16 " + @to_string(e) + " " + std.fmt.bool_to_string(std.math.is_prime(i16, e)));
+    println("i16 " + @to_string(f) + " " + std.fmt.bool_to_string(std.math.is_prime(i16, f)));
+
+    // u16: 65521 is the largest u16 prime; 65535 == @int_max(u16) is composite.
+    let g: u16 = 65521;
+    let h: u16 = @int_max(u16);
+    println("u16 " + @to_string(g) + " " + std.fmt.bool_to_string(std.math.is_prime(u16, g)));
+    println("u16 " + @to_string(h) + " " + std.fmt.bool_to_string(std.math.is_prime(u16, h)));
+
+    // i32: @int_max(i32) == 2^31-1 IS prime (Mersenne) — the original repro.
+    let i: i32 = @int_max(i32);
+    let j: i32 = 2147483646;
+    println("i32 " + @to_string(i) + " " + std.fmt.bool_to_string(std.math.is_prime(i32, i)));
+    println("i32 " + @to_string(j) + " " + std.fmt.bool_to_string(std.math.is_prime(i32, j)));
+
+    // u32: 4294967291 == 2^32-5 is the largest u32 prime.
+    let k: u32 = 4294967291;
+    let l: u32 = @int_max(u32);
+    println("u32 " + @to_string(k) + " " + std.fmt.bool_to_string(std.math.is_prime(u32, k)));
+    println("u32 " + @to_string(l) + " " + std.fmt.bool_to_string(std.math.is_prime(u32, l)));
+    0
+}
+""" }]
+
+# The small end and the negatives, so the rewritten bound is pinned across the
+# whole domain rather than only at the top.
+[[case]]
+name = "math_is_prime_small_and_negative"
+description = "is_prime rejects everything below 2 (i64::MIN included) and classifies 0..9 correctly."
+differential_opt = true
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = "ffttftftff\nMIN false\n"
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    // n = 0..9 -> f f t t f t f t f f
+    let mut out = StrBuf.new();
+    let mut n: i64 = 0;
+    while n < 10 {
+        if std.math.is_prime(i64, n) { out = out + "t"; } else { out = out + "f"; }
+        n += 1;
+    }
+    println(out);
+    // A negative, and specifically i64::MIN: the `n < 2` guard must reject it
+    // before the new `n / i` bound is ever evaluated.
+    let mn: i64 = @int_min(i64);
+    println("MIN " + std.fmt.bool_to_string(std.math.is_prime(i64, mn)));
+    0
+}
+""" }]
+
+# gcd with a T::MIN operand. Every answer here is representable, so every one
+# of these previously-trapping calls must now simply produce it.
+[[case]]
+name = "math_gcd_at_type_min"
+description = "gcd(T::MIN, x) returns the true gcd instead of trapping on the negation (RUE-1708)."
+differential_opt = true
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """gcd(MIN,2)=2
+gcd(2,MIN)=2
+gcd(MIN,6)=2
+gcd(MIN,1)=1
+gcd(MIN,-1)=1
+gcd(MIN,MAX)=1
+gcd(MIN,2^62)=4611686018427387904
+gcd(MIN,MIN+1)=1
+gcd(i8,MIN,2)=2
+gcd(i8,MIN,12)=4
+gcd(i32,MIN,-6)=2
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let mn: i64 = @int_min(i64);
+    let mx: i64 = @int_max(i64);
+    let one: i64 = 1;
+    let two: i64 = 2;
+    let six: i64 = 6;
+    let p62: i64 = 4611686018427387904;
+    println("gcd(MIN,2)=" + @to_string(std.math.gcd(i64, mn, two)));
+    println("gcd(2,MIN)=" + @to_string(std.math.gcd(i64, two, mn)));
+    println("gcd(MIN,6)=" + @to_string(std.math.gcd(i64, mn, six)));
+    // Magnitude-1 operands are answered before Euclid runs, because the
+    // remainder `T::MIN % -1` traps on its own (the quotient overflows).
+    println("gcd(MIN,1)=" + @to_string(std.math.gcd(i64, mn, one)));
+    println("gcd(MIN,-1)=" + @to_string(std.math.gcd(i64, mn, 0 - one)));
+    println("gcd(MIN,MAX)=" + @to_string(std.math.gcd(i64, mn, mx)));
+    // The largest representable answer involving MIN: gcd(2^63, 2^62).
+    println("gcd(MIN,2^62)=" + @to_string(std.math.gcd(i64, mn, p62)));
+    println("gcd(MIN,MIN+1)=" + @to_string(std.math.gcd(i64, mn, mn + 1)));
+
+    // The same hole existed at every signed width, so check narrower ones too.
+    let i8mn: i8 = @int_min(i8);
+    let i8a: i8 = 2;
+    let i8b: i8 = 12;
+    println("gcd(i8,MIN,2)=" + @to_string(std.math.gcd(i8, i8mn, i8a)));
+    println("gcd(i8,MIN,12)=" + @to_string(std.math.gcd(i8, i8mn, i8b)));
+    let i32mn: i32 = @int_min(i32);
+    let i32b: i32 = 0 - 6;
+    println("gcd(i32,MIN,-6)=" + @to_string(std.math.gcd(i32, i32mn, i32b)));
+    0
+}
+""" }]
+
+# The ordinary domain — every sign combination, both zero cases, and unsigned
+# instantiations — so the sign-at-the-end rewrite is pinned against everything
+# the old body handled, not just the corner it broke on.
+[[case]]
+name = "math_gcd_signs_zero_and_unsigned"
+description = "gcd stays non-negative for every sign combination, gcd(0,0)==0, and unsigned T instantiates at all."
+differential_opt = true
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """12 12 12 12
+0 36 36
+1 1 1
+25 50 3
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let a: i64 = 48;
+    let b: i64 = 36;
+    let z: i64 = 0;
+    let one: i64 = 1;
+    println(@to_string(std.math.gcd(i64, a, b)) + " "
+        + @to_string(std.math.gcd(i64, 0 - a, b)) + " "
+        + @to_string(std.math.gcd(i64, a, 0 - b)) + " "
+        + @to_string(std.math.gcd(i64, 0 - a, 0 - b)));
+    println(@to_string(std.math.gcd(i64, z, z)) + " "
+        + @to_string(std.math.gcd(i64, z, b)) + " "
+        + @to_string(std.math.gcd(i64, b, z)));
+    let p17: i64 = 17;
+    let p13: i64 = 13;
+    println(@to_string(std.math.gcd(i64, p17, p13)) + " "
+        + @to_string(std.math.gcd(i64, one, b)) + " "
+        + @to_string(std.math.gcd(i64, 0 - one, b)));
+
+    // UNSIGNED instantiations. The pre-RUE-1708 body reached for unary `-`,
+    // which E0801 rejects outright on an unsigned type, so `gcd` did not even
+    // COMPILE at unsigned `T` — despite its doc claiming to work for any `T`.
+    // The rewrite spells the negation `zero - x`, so these now build and run.
+    let s8: i8 = 0 - 100;
+    let t8: i8 = 75;
+    let u8a: u8 = 200;
+    let u8b: u8 = 150;
+    let u64a: u64 = @int_max(u64);
+    let u64b: u64 = 3;
+    println(@to_string(std.math.gcd(i8, s8, t8)) + " "
+        + @to_string(std.math.gcd(u8, u8a, u8b)) + " "
+        + @to_string(std.math.gcd(u64, u64a, u64b)));
+    0
+}
+""" }]
+
+# The gcd inputs whose true answer is |T::MIN| == 2^(bits-1) and so genuinely
+# does not fit in T. These stay failures, but honest ones: the panic names the
+# reason instead of reporting a bare "integer overflow" from a negation.
+[[case]]
+name = "math_gcd_unrepresentable_result_panics"
+description = "gcd(MIN, 0) panics naming the unrepresentable |T::MIN|, after a representable MIN call succeeds."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+stdout = "2\n"
+runtime_error_contains = ["panic: gcd: |T::MIN| is not representable in T"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let mn: i64 = @int_min(i64);
+    let two: i64 = 2;
+    let z: i64 = 0;
+    // Representable first, so the panic below is provably about the MIN/0
+    // pairing and not about MIN appearing as an operand at all.
+    println(@to_string(std.math.gcd(i64, mn, two)));
+    println(@to_string(std.math.gcd(i64, mn, z)));
+    0
+}
+""" }]
+
+[[case]]
+name = "math_gcd_min_with_min_panics"
+description = "gcd(MIN, MIN) == 2^(bits-1) does not fit in T and panics rather than overflowing."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["panic: gcd: |T::MIN| is not representable in T"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let mn: i64 = @int_min(i64);
+    println(@to_string(std.math.gcd(i64, mn, mn)));
+    0
+}
+""" }]
+
+# lcm: the zero short-circuit still wins (even against MIN), and a non-zero MIN
+# operand is rejected with a message instead of trapping in the negation.
+[[case]]
+name = "math_lcm_zero_and_type_min"
+description = "lcm(0, MIN) and lcm(MIN, 0) are 0; a non-zero MIN operand panics as unrepresentable."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+stdout = """12 12 12
+0 0 0 0
+"""
+runtime_error_contains = ["panic: lcm: a T::MIN operand has no representable lcm"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let four: i64 = 4;
+    let six: i64 = 6;
+    let z: i64 = 0;
+    let mn: i64 = @int_min(i64);
+    let two: i64 = 2;
+    println(@to_string(std.math.lcm(i64, four, six)) + " "
+        + @to_string(std.math.lcm(i64, 0 - four, six)) + " "
+        + @to_string(std.math.lcm(i64, four, 0 - six)));
+    // `lcm(0, _) == 0` holds even when the other operand is MIN: the zero
+    // short-circuit runs before the MIN check.
+    println(@to_string(std.math.lcm(i64, z, six)) + " "
+        + @to_string(std.math.lcm(i64, six, z)) + " "
+        + @to_string(std.math.lcm(i64, z, mn)) + " "
+        + @to_string(std.math.lcm(i64, mn, z)));
+    println(@to_string(std.math.lcm(i64, mn, two)));
+    0
+}
+""" }]
