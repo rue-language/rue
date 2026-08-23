@@ -1791,6 +1791,9 @@ mod tests {
 
     #[test]
     fn reserved_exports_are_separate_and_targeted() {
+        assert_eq!(classify_export("rue_darwin_sigtramp"), None);
+        assert_eq!(ReservedExportId::from_symbol("rue_darwin_sigtramp"), None);
+        assert_eq!(RuntimeHelperId::from_symbol("rue_darwin_sigtramp"), None);
         assert_eq!(ReservedExportId::ALL.len(), RESERVED_EXPORTS.len());
         for (index, id) in ReservedExportId::ALL.iter().copied().enumerate() {
             assert_eq!(id as usize, index);

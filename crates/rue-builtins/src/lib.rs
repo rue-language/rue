@@ -524,6 +524,7 @@ mod tests {
         assert!(!is_reserved_function_name("memcpy2"));
         assert!(!is_reserved_function_name("my_memcpy"));
         assert!(!is_reserved_function_name("_main_loop"));
+        assert!(!is_reserved_function_name("rue_darwin_sigtramp"));
     }
 
     #[test]
