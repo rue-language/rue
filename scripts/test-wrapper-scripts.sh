@@ -450,6 +450,33 @@ test_testsh_cli_examples_survive_case_chdir() {
   rm -rf "$sb"
 }
 
+# A filtered test.sh run keeps the ordinary crate-unit coverage that quick-test
+# uses, but must not pull in the slow/heavy oracle corpora or the opt-in stress
+# ladder. Assert the complete Buck invocation, including its real //crates/...
+# selection, so an exclusions-only change cannot pass while running zero units.
+test_testsh_filtered_unit_selection_matches_quick_policy() {
+  local sb; sb="$(mktemp -d)"
+  cp "$SRC_ROOT/test.sh" "$sb/test.sh"; chmod +x "$sb/test.sh"
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_CALL_LOG"
+exit 0
+EOF
+  chmod +x "$sb/buck2"
+
+  local rc=0
+  (cd "$sb" && FAKE_CALL_LOG="$sb/calls.log" ./test.sh 'parser::tests::case' \
+    >/dev/null 2>&1) || rc=$?
+  check "test.sh: filtered run succeeds with the fake Buck" \
+    "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+  check "test.sh: filtered unit step retains the crate-wide selection" \
+    "$([ "$(grep -c '^test //crates/...' "$sb/calls.log" 2>/dev/null)" -eq 1 ] && echo 0 || echo 1)"
+  check "test.sh: filtered unit step matches the canonical quick policy" \
+    "$(grep -Fxq 'test //crates/... --include rue_test_tier_premerge --exclude rue_not_quick --exclude rue_dedicated_suite --always-exclude --ignore-tests-attribute' \
+      "$sb/calls.log" && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
 # ===========================================================================
 # RUE-590 — the sanitizer gives repository examples the bundled std library
 # ===========================================================================
@@ -1477,6 +1504,7 @@ test_clippy_gate_reads_diagnostics_and_fails_closed
 test_rue_named_test_tiers_delegate_to_testsh
 test_rue_quick_delegates_to_quick_testsh
 test_testsh_cli_examples_survive_case_chdir
+test_testsh_filtered_unit_selection_matches_quick_policy
 test_rue_unit_maps_crate_and_forwards_args
 test_rue_unit_zero_match_fails_loud
 test_rue_unit_failing_test_propagates_exit

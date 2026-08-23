@@ -19,7 +19,9 @@ set -euo pipefail
 # silently omitted. (RUE-132, RUE-144)
 #
 # With a pattern argument, the spec/UI/CLI suites are instead run directly
-# with the filter (unit tests still run in full, as before).
+# with the filter. The crate-unit step uses the same premerge-only selection as
+# quick-test.sh, so filtered runs retain ordinary unit coverage without pulling
+# in slow corpora or opt-in stress suites.
 #
 # READING THE RESULT (RUE-579). This script's EXIT CODE is authoritative:
 # `buck2 test` returns non-zero when any target fails and `set -e` propagates
@@ -189,9 +191,17 @@ if [[ $# -eq 0 ]]; then
     ./buck2 test "${test_args[@]}"
 else
     # Unit tests live under //crates/...; the suite sh_tests are at the repo
-    # root, so this scope keeps them out of the unfiltered step below.
+    # root, so this scope keeps them out of the filtered unit step below. Keep
+    # this selector in lockstep with quick-test.sh: the premerge label retains
+    # ordinary crate units while excluding the slow and stress tiers, and the
+    # quick-policy exclusions omit not-quick tooling and dedicated suites.
     echo "Running unit tests..."
-    ./buck2 test //crates/...
+    ./buck2 test //crates/... \
+        --include rue_test_tier_premerge \
+        --exclude rue_not_quick \
+        --exclude rue_dedicated_suite \
+        --always-exclude \
+        --ignore-tests-attribute
 
     # RUE-1163: each harness has a command_alias carrying the corpus's declared
     # inputs, so a filtered run plumbs no environment by hand. The previous
