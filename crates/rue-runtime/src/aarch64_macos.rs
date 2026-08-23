@@ -425,6 +425,7 @@ const SA_ONSTACK: i32 = 0x0001;
 // returns, so no `sigreturn` epilogue is required (the same reasoning as the
 // x86-64 Linux restorer, which also never runs because the handler exits).
 core::arch::global_asm!(
+    ".private_extern _rue_darwin_sigtramp",
     ".globl _rue_darwin_sigtramp",
     ".p2align 2",
     "_rue_darwin_sigtramp:",
