@@ -140,7 +140,9 @@ const VALUE_TAKING_FLAGS: &[&str] = &[
 ];
 
 /// Whether `argument` has the shape of a specification selector: a section
-/// (`4.2`, `4.3a`) or a single paragraph (`4.2:5`).
+/// (`4.2`, `4.3a`) or a single paragraph (`4.2:5`, `4.3:3a`). Paragraph
+/// components use the traceability ID grammar's ASCII-alphanumeric alphabet,
+/// with a leading digit required to keep malformed values out of libtest.
 ///
 /// libtest filters match *test names* (`section.id::case_name`), which never
 /// contain paragraph IDs — so before RUE-1161 the documented
@@ -159,8 +161,11 @@ fn is_spec_selector(argument: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
         && subsection.starts_with(|c: char| c.is_ascii_digit());
-    let paragraph_ok =
-        paragraph.is_none_or(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    let paragraph_ok = paragraph.is_none_or(|p| {
+        !p.is_empty()
+            && p.bytes().all(|b| b.is_ascii_alphanumeric())
+            && p.starts_with(|c: char| c.is_ascii_digit())
+    });
     chapter_ok && subsection_ok && paragraph_ok
 }
 
@@ -407,6 +412,8 @@ mod runner_tests {
         assert!(is_spec_selector("4.3a"));
         assert!(is_spec_selector("4.2:5"));
         assert!(is_spec_selector("11.10:123"));
+        assert!(is_spec_selector("4.3:3a"));
+        assert!(is_spec_selector("4.3:30ABC"));
 
         assert!(!is_spec_selector("arithmetic"));
         assert!(!is_spec_selector("expressions.arithmetic"));
@@ -414,6 +421,10 @@ mod runner_tests {
         assert!(!is_spec_selector("4."));
         assert!(!is_spec_selector("4.2:"));
         assert!(!is_spec_selector("4.2:x"));
+        assert!(!is_spec_selector("4.2:3_"));
+        assert!(!is_spec_selector("4.2:3-"));
+        assert!(!is_spec_selector("4.2:3:4"));
+        assert!(!is_spec_selector("4.2:3a:"));
     }
 
     #[test]
@@ -426,6 +437,8 @@ mod runner_tests {
 
         assert_eq!(selectors(&["--spec", "4.2:5"]), vec!["4.2:5".to_string()]);
         assert_eq!(selectors(&["--spec=4.2:5"]), vec!["4.2:5".to_string()]);
+        assert_eq!(selectors(&["4.3:3a"]), vec!["4.3:3a".to_string()]);
+        assert_eq!(harness_args(&["4.3:3a"]), vec!["rue-spec".to_string()]);
 
         // A name filter still reaches libtest untouched.
         assert!(selectors(&["arithmetic"]).is_empty());
