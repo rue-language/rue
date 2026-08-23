@@ -68,6 +68,27 @@ compile_stderr_not_contains = [
 ]
 
 [[case]]
+name = "parser_recovery_reversed_json_span_is_normalized"
+description = """
+Parser recovery can temporarily produce a reversed primary span. The JSON
+formatter clamps that range while preserving the reachable parser diagnostics;
+this is an end-to-end regression for the published span invariant.
+"""
+files = [{ path = "main.rue", source = "fn main() -> i32 { let fn = 2; 0 }" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = [
+  "error E0100 main.rue:1:24",
+  "error E0100 main.rue:1:24",
+]
+error_contains = [
+  '"code":"E0100"',
+  '"start":23',
+  '"end":23',
+]
+
+[[case]]
 name = "narrow_frame_array_slice_error_has_source_span"
 description = "RUE-1595: whole-array borrowing into a slice reports the stable source-level E0908 diagnostic with the coercion argument's primary span, rather than the backend's spanless E9001."
 files = [{ path = "main.rue", source = """
