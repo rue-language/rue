@@ -72,6 +72,22 @@ pub(crate) struct CodegenUnitQueryKey {
     #[cfg(test)]
     inject_failure: bool,
     memo_hash: u64,
+    /// The ADR-0074 digest of this key's own fields, derived once at
+    /// construction.
+    ///
+    /// `stable_hash` is called several times per unit — by the codegen family
+    /// itself, by `CodegenUnitBatchKey`, and by every `ObjectProjectionQueryKey`
+    /// that wraps this one — and each call used to re-walk the recursive
+    /// `FunctionInstanceKey` beneath it, at roughly 44,000 instructions
+    /// against about 500 for a flat key. Deriving the digest once and
+    /// absorbing those sixteen bytes keeps equal keys equal-digested while
+    /// walking the tree a single time.
+    ///
+    /// This is a deliberately coarse digest in the sense `QueryKey` permits:
+    /// two keys sharing it are separated by typed `Eq`, exactly as the
+    /// retained semantic versions of one function already share
+    /// `CfgQueryKey`'s digest.
+    stable_digest: rue_query::StableKeyHash,
     /// Formatted on the first diagnostic, cycle render, or abort that asks
     /// what this node is *called* (ADR-0074). Ordinary compilation never
     /// reads it: eagerly formatting `{function:?}` here walked the whole
@@ -124,6 +140,24 @@ impl CodegenUnitQueryKey {
         let memo_hash = hasher.finish();
         let data_model = target.data_model();
         let code_model = CodeModel::for_target(target);
+        let mut digest = rue_query::StableHasher::new();
+        function.hash(&mut digest);
+        target.hash(&mut digest);
+        data_model.hash(&mut digest);
+        code_model.hash(&mut digest);
+        std::mem::discriminant(&optimization).hash(&mut digest);
+        BACKEND_EPOCH.hash(&mut digest);
+        ABI_LAYOUT_EPOCH.hash(&mut digest);
+        request.lowering.hash(&mut digest);
+        request.mir.hash(&mut digest);
+        request.liveness.hash(&mut digest);
+        request.regalloc.hash(&mut digest);
+        request.asm.hash(&mut digest);
+        optimized_cfg.stable_hash(&mut digest);
+        optimized_cfg_batch.hash(&mut digest);
+        #[cfg(test)]
+        inject_failure.hash(&mut digest);
+        let stable_digest = digest.finish128();
         Self {
             function,
             target,
@@ -138,6 +172,7 @@ impl CodegenUnitQueryKey {
             #[cfg(test)]
             inject_failure,
             memo_hash,
+            stable_digest,
             display_identity: OnceLock::new(),
         }
     }
@@ -196,24 +231,12 @@ impl QueryKey for CodegenUnitQueryKey {
             .clone()
     }
 
-    /// The same field set `memo_hash` covers, absorbed structurally.
+    /// The digest derived once at construction, over the field set documented
+    /// on `stable_digest`.
     fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
-        self.function.hash(hasher);
-        self.target.hash(hasher);
-        self.data_model.hash(hasher);
-        self.code_model.hash(hasher);
-        std::mem::discriminant(&self.optimization).hash(hasher);
-        self.backend_epoch.hash(hasher);
-        self.abi_layout_epoch.hash(hasher);
-        self.request.lowering.hash(hasher);
-        self.request.mir.hash(hasher);
-        self.request.liveness.hash(hasher);
-        self.request.regalloc.hash(hasher);
-        self.request.asm.hash(hasher);
-        self.optimized_cfg.stable_hash(hasher);
-        self.optimized_cfg_batch.hash(hasher);
-        #[cfg(test)]
-        self.inject_failure.hash(hasher);
+        let digest = self.stable_digest.to_u128();
+        hasher.write_u64(digest as u64);
+        hasher.write_u64((digest >> 64) as u64);
     }
 }
 
