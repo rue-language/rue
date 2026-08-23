@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use ahash::{AHashMap, AHashSet};
 use lasso::{Spur, ThreadedRodeo};
-use rue_error::{CompileError, CompileResult, PreviewFeatures};
+use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeatures};
 use rue_rir::{
     InstData, InstRef, Rir, RirParam, RirParamMode, RirTypeSyntaxBuilder, RirTypeSyntaxRef,
     SymbolHandle,
@@ -96,6 +96,7 @@ fn publish_provider_body_breakdown(
     );
 }
 
+#[cfg(test)]
 fn intern_synthetic_argument_name(interner: &ThreadedRodeo, index: usize) -> Spur {
     let mut bytes = [0_u8; 3 + 20];
     bytes[..3].copy_from_slice(b"arg");
@@ -116,6 +117,29 @@ fn intern_synthetic_argument_name(interner: &ThreadedRodeo, index: usize) -> Spu
     interner.get_or_intern(name)
 }
 
+fn intern_synthetic_argument_name_in_space(
+    space: &rue_rir::SharedSymbolSpace,
+    index: usize,
+) -> Option<Spur> {
+    let mut bytes = [0_u8; 3 + 20];
+    bytes[..3].copy_from_slice(b"arg");
+    let mut value = index;
+    let mut start = bytes.len();
+    loop {
+        start -= 1;
+        bytes[start] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    let digits = bytes.len() - start;
+    bytes.copy_within(start.., 3);
+    let end = 3 + digits;
+    let name = std::str::from_utf8(&bytes[..end]).expect("synthetic argument name is ASCII");
+    space.try_intern(name).ok()
+}
+
 /// The one spelling of a member callable name, built from an already-rendered
 /// owner component.
 ///
@@ -130,6 +154,19 @@ fn member_callable_name_for_owner(owner: &str, method: &str, has_self: bool) -> 
     name.push_str(separator);
     name.push_str(method);
     name
+}
+
+fn check_shared_interner(
+    space: &rue_rir::SharedSymbolSpace,
+    phase: &'static str,
+) -> CompileResult<()> {
+    if let Some(kind) = space.interner_failure() {
+        return Err(CompileError::without_span(rue_error::interner_error_kind(
+            kind,
+            format!("{phase} shared symbol interner failed: {kind}"),
+        )));
+    }
+    Ok(())
 }
 
 fn append_file_callable_name(mut module_path: String, name: &str) -> String {
@@ -956,6 +993,19 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
+    fn intern_name(&self, name: impl AsRef<str>) -> Option<Spur> {
+        self.state.symbol_space().try_intern(name).ok()
+    }
+
+    fn intern_name_at(&self, name: impl AsRef<str>, span: Span) -> CompileResult<Spur> {
+        self.state.symbol_space().try_intern(name).map_err(|kind| {
+            CompileError::new(
+                rue_error::interner_error_kind(kind, "provider-generated symbol interning failed"),
+                span,
+            )
+        })
+    }
+
     fn issued_anonymous_identity_for_type(
         &self,
         ty: Type,
@@ -990,27 +1040,43 @@ where
         target: Target,
         preview: PreviewFeatures,
         well_known: &ProviderWellKnownOptionFacts<K, M>,
-    ) -> Option<Self> {
-        let state = bundle.provider_body_state(source.clone());
+    ) -> Result<Option<Self>, super::body_identity::IdentityMintError> {
+        let state = bundle.try_provider_body_state(source.clone())?;
         let rir = bundle.view();
         let endpoint = ProviderEndpointFacts::with_state(provider, &state, rir.clone());
         let calls = ProviderCallFacts::with_state(provider, &state, rir.clone());
         let mut aggregate = ProviderAggregateFacts::with_state(&state);
         if let Some(locator) = source.definition_source(&key) {
             if locator.file_id != file {
-                return None;
+                return Ok(None);
             }
             aggregate.register_file_path(file, &locator.physical_path);
         }
-        let function_token =
-            endpoint.register_body_owner(key.clone(), file, name, owner_kind, owner_name);
-        let function_symbol = state.identity_context().name_symbol(name);
+        let function_token = endpoint
+            .register_body_owner(key.clone(), file, name, owner_kind, owner_name)
+            .ok_or(super::body_identity::IdentityMintError::Interner(
+                state
+                    .symbol_space()
+                    .interner_failure()
+                    .unwrap_or(lasso::LassoErrorKind::FailedAllocation),
+            ))?;
+        let function_symbol = state
+            .symbol_space()
+            .try_intern(name)
+            .map_err(super::body_identity::IdentityMintError::Interner)?;
         let interner = state.interner();
         let type_pool = state.type_pool();
-        let known = KnownSymbols::new(&interner);
-        endpoint
-            .install_well_known_option_types(&well_known.nominals, &well_known.option_by_payload)?;
-        endpoint.finalize_containment_metadata()?;
+        let known = KnownSymbols::new_in_space(state.symbol_space())
+            .map_err(super::body_identity::IdentityMintError::Interner)?;
+        if endpoint
+            .install_well_known_option_types(&well_known.nominals, &well_known.option_by_payload)
+            .is_none()
+        {
+            return Ok(None);
+        }
+        if endpoint.finalize_containment_metadata().is_none() {
+            return Ok(None);
+        }
         let mut host = Self {
             endpoint,
             calls,
@@ -1079,9 +1145,14 @@ where
             current_anonymous_identity: None,
         };
         for identity in &well_known.nominals {
-            host.install_canonical_anonymous_identity(identity)?;
+            if host
+                .install_canonical_anonymous_identity(identity)
+                .is_none()
+            {
+                return Ok(None);
+            }
         }
-        Some(host)
+        Ok(Some(host))
     }
 
     fn push_durable_type_syntax(
@@ -1092,9 +1163,7 @@ where
     ) -> Option<RirTypeSyntaxRef> {
         use crate::SemanticImportType as T;
         let named = |builder: &mut RirTypeSyntaxBuilder<Spur>, name: &str| {
-            builder
-                .push_named_type(self.interner.get_or_intern(name))
-                .ok()
+            builder.push_named_type(self.intern_name(name)?).ok()
         };
         match ty {
             T::I8 => named(builder, "i8"),
@@ -1176,10 +1245,16 @@ where
         syntax: &crate::DurableCallableTypeSyntax,
     ) -> Option<ProviderCallableTypeSyntax> {
         let mut builder = RirTypeSyntaxBuilder::default();
+        for symbol in syntax.syntax.symbols().iter() {
+            self.intern_name(symbol.as_ref())?;
+        }
         let mapped = builder
             .append_remapped(
                 &syntax.syntax,
-                |symbol| self.interner.get_or_intern(symbol.as_ref()),
+                |symbol| {
+                    self.intern_name(symbol.as_ref())
+                        .expect("type-syntax symbols were admitted before remapping")
+                },
                 || Ok::<_, std::convert::Infallible>(()),
             )
             .ok()?;
@@ -1344,7 +1419,7 @@ where
             .resolve_function_call_from(&key, &function, returns_type, file)
             .ok()?;
         self.install_durable_callable_metadata(info, &function, false, exact_type_syntax, file);
-        let token = self.endpoint.register_function(key.clone(), file, &name);
+        let token = self.endpoint.register_function(key.clone(), file, &name)?;
         self.function_infos.borrow_mut().insert(symbol, info);
         self.function_tokens
             .borrow_mut()
@@ -1404,24 +1479,27 @@ where
                 let token = match kind {
                     crate::StableDefinitionKind::Struct | crate::StableDefinitionKind::Enum => self
                         .endpoint
-                        .register_named_nominal(definition.clone(), file.index(), &name, kind),
-                    crate::StableDefinitionKind::Function => {
-                        self.endpoint
-                            .register_function(definition.clone(), file, &name)
-                    }
+                        .register_named_nominal(definition.clone(), file.index(), &name, kind)
+                        .ok_or(())?,
+                    crate::StableDefinitionKind::Function => self
+                        .endpoint
+                        .register_function(definition.clone(), file, &name)
+                        .ok_or(())?,
                     crate::StableDefinitionKind::ValueConst
                     | crate::StableDefinitionKind::ModuleBinding
                     | crate::StableDefinitionKind::Destructor
                     | crate::StableDefinitionKind::Method
                     | crate::StableDefinitionKind::AssociatedFunction => {
                         let owner = self.source.definition_owner_name(definition);
-                        self.endpoint.register_body_owner(
-                            definition.clone(),
-                            file,
-                            &name,
-                            kind,
-                            owner.as_deref(),
-                        )
+                        self.endpoint
+                            .register_body_owner(
+                                definition.clone(),
+                                file,
+                                &name,
+                                kind,
+                                owner.as_deref(),
+                            )
+                            .ok_or(())?
                     }
                 };
                 self.anonymous_definition_tokens
@@ -1472,10 +1550,10 @@ where
         }
         let module = self.modules_by_file.borrow().get(&file)?.clone();
         let name = self.interner.resolve(&source_symbol);
-        let internal = self.interner.get_or_intern(append_file_callable_name(
+        let internal = self.intern_name(append_file_callable_name(
             self.source.module_path(&module),
             name,
-        ));
+        ))?;
         if self.function_infos.borrow().contains_key(&internal) {
             return Some(internal);
         }
@@ -1502,7 +1580,7 @@ where
             .resolve_function_call_from(&key, &function, returns_type, file)
             .ok()?;
         self.install_durable_callable_metadata(info, &function, false, exact_type_syntax, file);
-        let token = self.endpoint.register_function(key.clone(), file, name);
+        let token = self.endpoint.register_function(key.clone(), file, name)?;
         self.function_infos.borrow_mut().insert(internal, info);
         self.function_tokens
             .borrow_mut()
@@ -1634,7 +1712,12 @@ where
         self.type_pool.struct_symbol_name(struct_id)
     }
 
-    fn member_callable_symbol(&self, struct_id: StructId, method: &str, has_self: bool) -> Spur {
+    fn member_callable_symbol(
+        &self,
+        struct_id: StructId,
+        method: &str,
+        has_self: bool,
+    ) -> Option<Spur> {
         self.member_callable_symbol_for_owner(
             &self.member_callable_owner(struct_id),
             method,
@@ -1642,9 +1725,13 @@ where
         )
     }
 
-    fn member_callable_symbol_for_owner(&self, owner: &str, method: &str, has_self: bool) -> Spur {
-        self.interner
-            .get_or_intern(member_callable_name_for_owner(owner, method, has_self))
+    fn member_callable_symbol_for_owner(
+        &self,
+        owner: &str,
+        method: &str,
+        has_self: bool,
+    ) -> Option<Spur> {
+        self.intern_name(member_callable_name_for_owner(owner, method, has_self))
     }
 
     /// The handle for a member callable of an owner whose own spelling the
@@ -1671,16 +1758,16 @@ where
         method_symbol: Spur,
         method: &str,
         has_self: bool,
-    ) -> Spur {
+    ) -> Option<Spur> {
         let Some(owner_symbol) = owner_symbol else {
             return self.member_callable_symbol_for_owner(owner, method, has_self);
         };
-        self.state.symbol_space().derived_symbol(
-            owner_symbol,
-            method_symbol,
-            u8::from(has_self),
-            || member_callable_name_for_owner(owner, method, has_self),
-        )
+        self.state
+            .symbol_space()
+            .try_derived_symbol(owner_symbol, method_symbol, u8::from(has_self), || {
+                member_callable_name_for_owner(owner, method, has_self)
+            })
+            .ok()
     }
 
     /// The handle the shared space already holds for an owner's own spelling,
@@ -1732,7 +1819,7 @@ where
             info.returns_borrow = *returns_borrow;
             info.returns_inout = *returns_inout;
         }
-        let full_symbol = self.member_callable_symbol(struct_id, name, has_self);
+        let full_symbol = self.member_callable_symbol(struct_id, name, has_self)?;
         let token = self.endpoint.register_body_owner(
             key.clone(),
             self.owner_file,
@@ -1743,7 +1830,7 @@ where
                 crate::StableDefinitionKind::AssociatedFunction
             },
             Some(&owner),
-        );
+        )?;
         self.function_tokens
             .borrow_mut()
             .insert(full_symbol, (token, key));
@@ -1809,7 +1896,7 @@ where
         }
         let info = self.named_method_info_for_symbol(struct_id, symbol)?;
         let full_symbol =
-            self.member_callable_symbol(struct_id, self.interner.resolve(&symbol), info.has_self);
+            self.member_callable_symbol(struct_id, self.interner.resolve(&symbol), info.has_self)?;
         self.function_tokens
             .borrow()
             .get(&full_symbol)
@@ -1959,11 +2046,11 @@ where
             let source_symbol = info.value.as_function()?.spur();
             let alias_symbol =
                 if let Some(module) = self.source.foreign_function_module(&self.key, &function) {
-                    self.interner.get_or_intern(&format!(
+                    self.intern_name(format!(
                         "{}${}",
                         self.source.module_path(&module),
                         self.source.definition_name(&function)?
-                    ))
+                    ))?
                 } else {
                     source_symbol
                 };
@@ -2000,7 +2087,7 @@ where
         };
         let token = self
             .endpoint
-            .register_named_nominal(key.clone(), file.index(), name, kind);
+            .register_named_nominal(key.clone(), file.index(), name, kind)?;
         let imported = crate::SemanticImportType::Nominal(key.clone());
         self.register_import_nominal_identities(&imported).ok()?;
         let ty = self
@@ -2033,12 +2120,15 @@ where
                 crate::DurableNominalBody::Struct { .. } => crate::StableDefinitionKind::Struct,
                 crate::DurableNominalBody::Enum { .. } => crate::StableDefinitionKind::Enum,
             };
-            let token = self.endpoint.register_named_nominal(
-                key.clone(),
-                self.owner_file.index(),
-                nominal.name.as_ref(),
-                kind,
-            );
+            let token = self
+                .endpoint
+                .register_named_nominal(
+                    key.clone(),
+                    self.owner_file.index(),
+                    nominal.name.as_ref(),
+                    kind,
+                )
+                .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
             self.nominal_tokens
                 .borrow_mut()
                 .insert(ty, (token, key.clone()));
@@ -2048,9 +2138,10 @@ where
         else {
             return Err(crate::SemanticBodyExportFailure::MissingStableIdentity);
         };
-        let token =
-            self.endpoint
-                .register_named_nominal(key.clone(), self.owner_file.index(), name, kind);
+        let token = self
+            .endpoint
+            .register_named_nominal(key.clone(), self.owner_file.index(), name, kind)
+            .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
         self.nominal_tokens
             .borrow_mut()
             .insert(ty, (token, key.clone()));
@@ -2134,12 +2225,15 @@ where
                 crate::DurableNominalBody::Struct { .. } => crate::StableDefinitionKind::Struct,
                 crate::DurableNominalBody::Enum { .. } => crate::StableDefinitionKind::Enum,
             };
-            let token = self.endpoint.register_named_nominal(
-                key.clone(),
-                self.owner_file.index(),
-                nominal.name.as_ref(),
-                kind,
-            );
+            let token = self
+                .endpoint
+                .register_named_nominal(
+                    key.clone(),
+                    self.owner_file.index(),
+                    nominal.name.as_ref(),
+                    kind,
+                )
+                .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
             self.nominal_tokens
                 .borrow_mut()
                 .insert(ty, (token, key.clone()));
@@ -2244,12 +2338,15 @@ where
                         .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?
                         .resolve_provider_type(value)
                         .map_err(|_| crate::SemanticBodyExportFailure::MissingStableIdentity)?;
-                    let token = self.endpoint.register_named_nominal(
-                        key.clone(),
-                        self.owner_file.index(),
-                        nominal.name.as_ref(),
-                        kind,
-                    );
+                    let token = self
+                        .endpoint
+                        .register_named_nominal(
+                            key.clone(),
+                            self.owner_file.index(),
+                            nominal.name.as_ref(),
+                            kind,
+                        )
+                        .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
                     registration_token = Some(token);
                     self.import_nominal_registrations
                         .borrow_mut()
@@ -2485,14 +2582,11 @@ where
             V::Bool(value) => ConstValue::Bool(*value),
             V::Type(ty) => ConstValue::Type(self.materialize_durable_type(ty)?),
             V::Function(definition) => ConstValue::Function(
-                self.interner
-                    .get_or_intern(&self.source.definition_name(definition)?)
+                self.intern_name(&self.source.definition_name(definition)?)?
                     .into(),
             ),
             V::Unit => ConstValue::Unit,
-            V::String(value) => {
-                ConstValue::String(self.interner.get_or_intern(value.as_ref()).into())
-            }
+            V::String(value) => ConstValue::String(self.intern_name(value.as_ref())?.into()),
         })
     }
 
@@ -2751,14 +2845,14 @@ where
                 .map(|(ty, _, _)| resolve(ty))
                 .collect::<Option<Vec<_>>>()?;
             let return_type = resolve(&method.result)?;
-            let name = self.interner.get_or_intern(method.name.as_ref());
+            let name = self.intern_name(method.name.as_ref())?;
             let callable = self.member_callable_symbol_for_issued_owner(
                 owner_symbol,
                 &owner_name,
                 name,
                 &method.name,
                 method.has_self,
-            );
+            )?;
             let kind = if method.name.as_ref() == "__drop" {
                 crate::AnonymousMemberKind::Destructor
             } else if method.has_self {
@@ -2784,9 +2878,13 @@ where
             if self.endpoint.method_info(struct_id, name).is_some() {
                 continue;
             }
+            let parameter_names = (0..parameter_types.len())
+                .map(|index| {
+                    intern_synthetic_argument_name_in_space(self.state.symbol_space(), index)
+                })
+                .collect::<Option<Vec<_>>>()?;
             let params = self.state.allocate_params(
-                (0..parameter_types.len())
-                    .map(|index| intern_synthetic_argument_name(&self.interner, index)),
+                parameter_names,
                 parameter_types.iter().copied(),
                 method.parameters.iter().map(|(_, mode, _)| *mode),
                 method.parameters.iter().map(|(_, _, comptime)| *comptime),
@@ -2903,14 +3001,14 @@ where
             .anonymous_definition_module(identity)
             .is_some_and(|module| self.source.module_is_trusted_standard_library(&module));
         for method in methods {
-            let name = self.interner.get_or_intern(method.name.as_ref());
+            let name = self.intern_name(method.name.as_ref())?;
             let callable = self.member_callable_symbol_for_issued_owner(
                 owner_symbol,
                 &owner_name,
                 name,
                 &method.name,
                 method.has_self,
-            );
+            )?;
             let kind = if method.name.as_ref() == "__drop" {
                 crate::AnonymousMemberKind::Destructor
             } else if method.has_self {
@@ -2933,6 +3031,11 @@ where
             if self.endpoint.method_info(struct_id, name).is_some() {
                 continue;
             }
+            let parameter_names = (0..method.parameters.len())
+                .map(|index| {
+                    intern_synthetic_argument_name_in_space(self.state.symbol_space(), index)
+                })
+                .collect::<Option<Vec<_>>>()?;
             self.anonymous_methods.borrow_mut().insert(
                 (struct_id, name),
                 MethodCallInfo {
@@ -2946,8 +3049,7 @@ where
                     returns_borrow: trusted_std_accessor_owner && method.returns_borrow,
                     returns_inout: trusted_std_accessor_owner && method.returns_inout,
                     params: self.state.allocate_params(
-                        (0..method.parameters.len())
-                            .map(|index| intern_synthetic_argument_name(&self.interner, index)),
+                        parameter_names,
                         method
                             .parameters
                             .iter()
@@ -2990,9 +3092,11 @@ where
                 ConstValue::Type(self.materialize_type_instance(ty)?)
             }
             CanonicalArgumentValue::Unit => ConstValue::Unit,
-            CanonicalArgumentValue::String(value) => {
-                ConstValue::String(self.interner.get_or_intern(value.as_ref()).into())
-            }
+            CanonicalArgumentValue::String(value) => ConstValue::String(
+                self.intern_name(value.as_ref())
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?
+                    .into(),
+            ),
             CanonicalArgumentValue::Function(function) => {
                 let FunctionInstanceKey::Definition(definition) = function.as_ref() else {
                     return Err(crate::SemanticBodyExportFailure::MissingStableIdentity);
@@ -3001,10 +3105,13 @@ where
                     .source
                     .definition_name(definition)
                     .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
-                let symbol = self.interner.get_or_intern(&name);
-                let token =
-                    self.endpoint
-                        .register_function(definition.clone(), self.owner_file, &name);
+                let symbol = self
+                    .intern_name(&name)
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                let token = self
+                    .endpoint
+                    .register_function(definition.clone(), self.owner_file, &name)
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
                 self.function_tokens
                     .borrow_mut()
                     .insert(symbol, (token, definition.clone()));
@@ -3351,7 +3458,9 @@ where
     M: Clone + Eq + Hash + Ord,
 {
     fn type_syntax_symbol(&mut self, name: &str) -> Spur {
-        self.interner.get_or_intern(name)
+        self.state.symbol_space().try_intern(name).expect(
+            "type-syntax symbol interning must succeed before this infallible legacy boundary",
+        )
     }
 
     fn type_syntax_module_binding(
@@ -3466,7 +3575,10 @@ where
     }
 
     fn type_syntax_make_str(&mut self, span: Span) -> CompileResult<Type> {
-        let name = self.interner.get_or_intern("str");
+        let name =
+            self.state.symbol_space().try_intern("str").expect(
+                "builtin str interning must succeed before this infallible legacy boundary",
+            );
         self.nominal_type_for_symbol(span.file_id, name)
             .filter(|ty| ty.as_struct().is_some())
             .ok_or_else(|| {
@@ -3540,8 +3652,11 @@ where
                     span,
                 )
             })?;
-        self.generated_structs
-            .insert(self.interner.get_or_intern(&format!("Str({capacity})")), id);
+        let name = self
+            .interner
+            .get(format!("Str({capacity})"))
+            .expect("generated Str name must be admitted before publication");
+        self.generated_structs.insert(name, id);
         Ok(Type::new_struct(id))
     }
 
@@ -3581,7 +3696,10 @@ where
             .parameters
             .iter()
             .map(|parameter| crate::SemanticTypeConstructorParameter {
-                name: self.interner.get_or_intern(parameter.name.as_ref()),
+                name: self
+                    .interner
+                    .get(parameter.name.as_ref())
+                    .expect("signature parameter names must be admitted before analysis"),
                 is_comptime: parameter.is_comptime,
                 is_type: matches!(parameter.ty, crate::SemanticImportType::ComptimeType),
             })
@@ -3871,6 +3989,9 @@ where
     }
     fn body_interner(&self) -> &ThreadedRodeo {
         &self.interner
+    }
+    fn try_intern_body_symbol(&self, text: impl AsRef<str>) -> Result<Spur, lasso::LassoErrorKind> {
+        self.state.symbol_space().try_intern(text)
     }
     fn body_type_pool(&self) -> &TypeInternPool {
         // This accessor is the engine's containment-read boundary. The pool's
@@ -4410,16 +4531,16 @@ where
         self.target
     }
     fn builtin_arch_id(&self) -> Option<EnumId> {
-        self.endpoint
-            .endpoint_builtin_enum(self.interner.get_or_intern_static("Arch"))
+        self.intern_name("Arch")
+            .and_then(|symbol| self.endpoint.endpoint_builtin_enum(symbol))
     }
     fn builtin_os_id(&self) -> Option<EnumId> {
-        self.endpoint
-            .endpoint_builtin_enum(self.interner.get_or_intern_static("Os"))
+        self.intern_name("Os")
+            .and_then(|symbol| self.endpoint.endpoint_builtin_enum(symbol))
     }
     fn builtin_data_model_id(&self) -> Option<EnumId> {
-        self.endpoint
-            .endpoint_builtin_enum(self.interner.get_or_intern_static("DataModel"))
+        self.intern_name("DataModel")
+            .and_then(|symbol| self.endpoint.endpoint_builtin_enum(symbol))
     }
     fn destructor_span(&self, _struct_id: StructId) -> Option<Span> {
         None
@@ -4574,6 +4695,20 @@ where
 }
 
 /// Run the canonical ordinary expression engine over one exact local RIR.
+fn identity_mint_compile_error(error: super::body_identity::IdentityMintError) -> CompileError {
+    match error {
+        super::body_identity::IdentityMintError::Interner(kind) => {
+            CompileError::without_span(rue_error::interner_error_kind(
+                kind,
+                format!("provider semantic interner failed while minting a symbol: {kind}"),
+            ))
+        }
+        other => CompileError::without_span(ErrorKind::InternalError(format!(
+            "provider identity bootstrap failed: {other:?}"
+        ))),
+    }
+}
+
 pub fn analyze_provider_ordinary_body<P, S, K, M>(
     provider: &P,
     source: S,
@@ -4596,349 +4731,377 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
-    let owner_file = bundle.source_file_id().ok_or_else(|| {
-        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-            "provider body RIR does not have one source file".into(),
-        ))
-    })?;
-    let host_setup_started = Instant::now();
-    let mut host = ProviderBodyHost::new(
-        provider, source, bundle, key, owner_file, name, owner_kind, owner_name, target, preview,
-        well_known,
-    )
-    .ok_or_else(|| {
-        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-            "provider body host could not be constructed".into(),
-        ))
-    })?;
-    let initial_anonymous_identities = host
-        .canonical_anonymous_types
-        .values()
-        .cloned()
-        .collect::<AHashSet<_>>();
-    let infer = InferenceContext::new(&host);
-    let host_setup_ns = elapsed_ns(host_setup_started);
-    let expression_engine_started = Instant::now();
-    let (analyzed, body_span) = match owner_kind {
-        crate::StableDefinitionKind::Function => {
-            let info = host
-                .endpoint
-                .endpoint_function_info(host.function_symbol)
-                .ok_or_else(|| {
-                    CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
-                        name.to_owned(),
-                    ))
-                })?;
-            let declaration = host
-                .endpoint
-                .first_free_function(name, owner_file)
-                .ok_or_else(|| {
-                    CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
-                        name.to_owned(),
-                    ))
-                })?;
-            host.reject_free_function_accessor(declaration)?;
-            let (return_type, body) = match &host.rir.rir().get(declaration).data {
-                InstData::FnDecl {
-                    return_type, body, ..
-                } => (*return_type, *body),
-                _ => unreachable!("registered provider function points at FnDecl"),
-            };
-            let body_span = host.rir.rir().get(body).span;
-            // The durable call-site signature may normalize body-local types
-            // such as `Str(N)` to their coercion surface. Resolve the exact
-            // declared return spelling for body checking; explicit parameters
-            // retain their exact canonical facts and need no second lookup.
-            let return_type = host.resolve_body_type(return_type, info.span)?;
-            let params = host
-                .state
-                .param_data(info.params)
-                .iter()
-                .map(|(name, ty, mode, comptime)| (*name, *ty, *mode, *comptime))
-                .collect();
-            host.endpoint
-                .finalize_containment_metadata()
-                .ok_or_else(|| {
-                    CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                        "provider function containment metadata is unavailable".into(),
-                    ))
-                })?;
-            (
-                OrdinaryBodyEngine::new(&mut host).analyze_single_function_resolved(
-                    &infer,
-                    name,
-                    return_type,
-                    params,
-                    body,
-                    info.span,
-                    info.allow_unused_variable,
-                    info.allow_unreachable_code,
-                )?,
-                body_span,
-            )
-        }
-        crate::StableDefinitionKind::Method | crate::StableDefinitionKind::AssociatedFunction => {
-            let owner_name = owner_name.ok_or_else(|| {
-                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                    "provider member body has no owner".into(),
-                ))
-            })?;
-            let declaration = host
-                .endpoint
-                .named_method_declaration(owner_file, owner_name, name)
-                .ok_or_else(|| {
-                    CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
-                        name.to_owned(),
-                    ))
-                })?;
-            let info = host
-                .calls
-                .method_info(&host.key, owner_file, owner_name, name)
-                .ok_or_else(|| {
-                    CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
-                        name.to_owned(),
-                    ))
-                })?;
-            let (return_type, body) = match &host.rir.rir().get(declaration).data {
-                InstData::FnDecl {
-                    return_type, body, ..
-                } => (*return_type, *body),
-                _ => unreachable!("registered provider member points at FnDecl"),
-            };
-            let body_span = host.rir.rir().get(body).span;
-            let return_type = if matches!(
-                host.rir.rir().type_syntax().node(return_type),
-                Some(rue_rir::RirTypeSyntaxNode::Named(symbol))
-                    if host.rir.rir().type_syntax().symbol(*symbol)
-                        .is_some_and(|symbol| host.interner.resolve(symbol) == "Self")
-            ) {
-                info.struct_type
-            } else {
-                host.resolve_body_type(return_type, info.span)?
-            };
-            let params = host
-                .state
-                .param_data(info.params)
-                .iter()
-                .map(|(name, ty, mode, comptime)| (*name, *ty, *mode, *comptime))
-                .collect();
-            let full_name = host.member_callable_name(
-                info.struct_type
-                    .as_struct()
-                    .expect("named method receiver must be a struct"),
-                name,
-                info.has_self,
-            );
-            let full_symbol = host.interner.get_or_intern(&full_name);
-            let owner_token = host.function_tokens.borrow()[&host.function_symbol].clone();
-            host.function_tokens
-                .borrow_mut()
-                .insert(full_symbol, owner_token);
-            host.endpoint
-                .finalize_containment_metadata()
-                .ok_or_else(|| {
-                    CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                        "provider method containment metadata is unavailable".into(),
-                    ))
-                })?;
-            (
-                OrdinaryBodyEngine::new(&mut host).analyze_named_method_resolved(
-                    &infer,
-                    &full_name,
-                    return_type,
-                    params,
-                    body,
-                    info.span,
-                    info.struct_type,
-                    info.has_self,
-                    info.self_mode,
-                    info.self_is_mut,
-                    info.returns_borrow,
-                    info.returns_inout,
-                )?,
-                body_span,
-            )
-        }
-        crate::StableDefinitionKind::Destructor => {
-            let owner_name = owner_name.ok_or_else(|| {
-                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                    "provider destructor body has no owner".into(),
-                ))
-            })?;
-            let declaration = host
-                .endpoint
-                .destructor(owner_file, owner_name)
-                .ok_or_else(|| {
-                    CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(format!(
-                        "{owner_name}.__drop"
-                    )))
-                })?;
-            let (body, declaration_span) = match &host.rir.rir().get(declaration).data {
-                InstData::DropFnDecl { body, .. } => (*body, host.rir.rir().get(declaration).span),
-                _ => unreachable!("registered provider destructor points at DropFnDecl"),
-            };
-            let body_span = host.rir.rir().get(body).span;
-            let owner_symbol = host.interner.get_or_intern(owner_name);
-            let owner_type = host
-                .nominal_type_for_symbol(owner_file, owner_symbol)
-                .ok_or_else(|| {
-                    CompileError::without_span(rue_error::ErrorKind::UnknownType(
-                        owner_name.to_owned(),
-                    ))
-                })?;
-            let full_name = format!(
-                "{}.__drop",
-                host.type_pool.struct_symbol_name(
-                    owner_type
-                        .as_struct()
-                        .expect("named destructor owner must be a struct")
-                )
-            );
-            let full_symbol = host.interner.get_or_intern(&full_name);
-            let owner_token = host.function_tokens.borrow()[&host.function_symbol].clone();
-            host.function_tokens
-                .borrow_mut()
-                .insert(full_symbol, owner_token);
-            host.endpoint
-                .finalize_containment_metadata()
-                .ok_or_else(|| {
-                    CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                        "provider destructor containment metadata is unavailable".into(),
-                    ))
-                })?;
-            (
-                OrdinaryBodyEngine::new(&mut host).analyze_named_destructor(
-                    &infer,
-                    &full_name,
-                    body,
-                    declaration_span,
-                    owner_type,
-                )?,
-                body_span,
-            )
-        }
-        _ => {
-            return Err(CompileError::without_span(
-                rue_error::ErrorKind::InvalidCompilerInput(
-                    "provider body request does not own an executable body".into(),
-                ),
-            ));
-        }
-    };
-    let expression_engine_ns = elapsed_ns(expression_engine_started);
-    let expression_breakdown = host
-        .expression_breakdown
-        .expect("provider ordinary body analysis records its expression breakdown");
-    let specialization_selection_started = Instant::now();
-    let (mut function, warnings, strings, referenced_functions, referenced_methods) = analyzed;
-    function.ordinary_owner = Some(host.owner);
-    let (function, selected_calls, mut referenced_specializations) =
-        crate::specialize::select_provider_body_specializations(&mut host, function)?;
-    referenced_specializations.extend(referenced_methods.iter().filter_map(|(owner, method)| {
-        let info = host.method_info_for_symbol(*owner, *method)?;
-        let callable =
-            host.member_callable_symbol(*owner, host.interner.resolve(method), info.has_self);
-        host.anonymous_function_identities
-            .borrow()
-            .get(&callable)
+    let result = (|| -> CompileResult<ProviderOrdinaryBody<K, M>> {
+        let owner_file = bundle.source_file_id().ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                "provider body RIR does not have one source file".into(),
+            ))
+        })?;
+        let host_setup_started = Instant::now();
+        let mut host = ProviderBodyHost::new(
+            provider, source, bundle, key, owner_file, name, owner_kind, owner_name, target,
+            preview, well_known,
+        )
+        .map_err(identity_mint_compile_error)?
+        .ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                "provider body host could not be constructed".into(),
+            ))
+        })?;
+        let initial_anonymous_identities = host
+            .canonical_anonymous_types
+            .values()
             .cloned()
-    }));
-    referenced_specializations.extend(host.observed_comptime_producers.borrow().iter().cloned());
-    host.specialized_function_identities.borrow_mut().extend(
-        selected_calls
-            .iter()
-            .zip(referenced_specializations.iter())
-            .map(|((symbol, _), instance)| (*symbol, instance.clone())),
-    );
-    let selected_calls = selected_calls.into_iter().collect::<AHashMap<_, _>>();
-    let specialization_selection_ns = elapsed_ns(specialization_selection_started);
-    let body_export_started = Instant::now();
-    let export = super::semantic_body_export::export_body(
-        &host,
-        host.owner,
-        body_span,
-        &function,
-        &strings,
-        &warnings,
-        Some(&selected_calls),
-        &referenced_methods,
-    )
-    .map_err(|failure| {
-        CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
-            "provider body export failed: {failure:?}"
-        )))
-    })?;
-    let body_export_ns = elapsed_ns(body_export_started);
-    let result_projection_started = Instant::now();
-    let mut referenced_definitions = referenced_functions
-        .iter()
-        .filter_map(|symbol| {
-            host.function_tokens
-                .borrow()
-                .get(symbol)
-                .map(|(_, key)| key.clone())
-        })
-        .collect::<AHashSet<_>>();
-    referenced_definitions.extend(
-        referenced_methods
-            .iter()
-            .filter_map(|(owner, method)| host.named_method_definition(*owner, *method)),
-    );
-    let referenced_definitions = referenced_definitions.into_iter().collect();
-    let referenced_values = host
-        .observed_named_definitions
-        .borrow()
-        .iter()
-        .cloned()
-        .collect();
-    let produced_anonymous_nominals = host
-        .produced_anonymous_nominals(&initial_anonymous_identities)
+            .collect::<AHashSet<_>>();
+        let infer = InferenceContext::new(&host);
+        let host_setup_ns = elapsed_ns(host_setup_started);
+        let expression_engine_started = Instant::now();
+        let (analyzed, body_span) = match owner_kind {
+            crate::StableDefinitionKind::Function => {
+                let info = host
+                    .endpoint
+                    .endpoint_function_info(host.function_symbol)
+                    .ok_or_else(|| {
+                        CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
+                            name.to_owned(),
+                        ))
+                    })?;
+                let declaration = host
+                    .endpoint
+                    .first_free_function(name, owner_file)
+                    .ok_or_else(|| {
+                        CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
+                            name.to_owned(),
+                        ))
+                    })?;
+                host.reject_free_function_accessor(declaration)?;
+                let (return_type, body) = match &host.rir.rir().get(declaration).data {
+                    InstData::FnDecl {
+                        return_type, body, ..
+                    } => (*return_type, *body),
+                    _ => unreachable!("registered provider function points at FnDecl"),
+                };
+                let body_span = host.rir.rir().get(body).span;
+                // The durable call-site signature may normalize body-local types
+                // such as `Str(N)` to their coercion surface. Resolve the exact
+                // declared return spelling for body checking; explicit parameters
+                // retain their exact canonical facts and need no second lookup.
+                let return_type = host.resolve_body_type(return_type, info.span)?;
+                let params = host
+                    .state
+                    .param_data(info.params)
+                    .iter()
+                    .map(|(name, ty, mode, comptime)| (*name, *ty, *mode, *comptime))
+                    .collect();
+                host.endpoint
+                    .finalize_containment_metadata()
+                    .ok_or_else(|| {
+                        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                            "provider function containment metadata is unavailable".into(),
+                        ))
+                    })?;
+                (
+                    OrdinaryBodyEngine::new(&mut host).analyze_single_function_resolved(
+                        &infer,
+                        name,
+                        return_type,
+                        params,
+                        body,
+                        info.span,
+                        info.allow_unused_variable,
+                        info.allow_unreachable_code,
+                    )?,
+                    body_span,
+                )
+            }
+            crate::StableDefinitionKind::Method
+            | crate::StableDefinitionKind::AssociatedFunction => {
+                let owner_name = owner_name.ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                        "provider member body has no owner".into(),
+                    ))
+                })?;
+                let declaration = host
+                    .endpoint
+                    .named_method_declaration(owner_file, owner_name, name)
+                    .ok_or_else(|| {
+                        CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
+                            name.to_owned(),
+                        ))
+                    })?;
+                let info = host
+                    .calls
+                    .method_info(&host.key, owner_file, owner_name, name)
+                    .ok_or_else(|| {
+                        CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
+                            name.to_owned(),
+                        ))
+                    })?;
+                let (return_type, body) = match &host.rir.rir().get(declaration).data {
+                    InstData::FnDecl {
+                        return_type, body, ..
+                    } => (*return_type, *body),
+                    _ => unreachable!("registered provider member points at FnDecl"),
+                };
+                let body_span = host.rir.rir().get(body).span;
+                let return_type = if matches!(
+                    host.rir.rir().type_syntax().node(return_type),
+                    Some(rue_rir::RirTypeSyntaxNode::Named(symbol))
+                        if host.rir.rir().type_syntax().symbol(*symbol)
+                            .is_some_and(|symbol| host.interner.resolve(symbol) == "Self")
+                ) {
+                    info.struct_type
+                } else {
+                    host.resolve_body_type(return_type, info.span)?
+                };
+                let params = host
+                    .state
+                    .param_data(info.params)
+                    .iter()
+                    .map(|(name, ty, mode, comptime)| (*name, *ty, *mode, *comptime))
+                    .collect();
+                let full_name = host.member_callable_name(
+                    info.struct_type
+                        .as_struct()
+                        .expect("named method receiver must be a struct"),
+                    name,
+                    info.has_self,
+                );
+                let full_symbol = host.intern_name_at(&full_name, body_span)?;
+                let owner_token = host.function_tokens.borrow()[&host.function_symbol].clone();
+                host.function_tokens
+                    .borrow_mut()
+                    .insert(full_symbol, owner_token);
+                host.endpoint
+                    .finalize_containment_metadata()
+                    .ok_or_else(|| {
+                        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                            "provider method containment metadata is unavailable".into(),
+                        ))
+                    })?;
+                (
+                    OrdinaryBodyEngine::new(&mut host).analyze_named_method_resolved(
+                        &infer,
+                        &full_name,
+                        return_type,
+                        params,
+                        body,
+                        info.span,
+                        info.struct_type,
+                        info.has_self,
+                        info.self_mode,
+                        info.self_is_mut,
+                        info.returns_borrow,
+                        info.returns_inout,
+                    )?,
+                    body_span,
+                )
+            }
+            crate::StableDefinitionKind::Destructor => {
+                let owner_name = owner_name.ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                        "provider destructor body has no owner".into(),
+                    ))
+                })?;
+                let declaration = host
+                    .endpoint
+                    .destructor(owner_file, owner_name)
+                    .ok_or_else(|| {
+                        CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
+                            format!("{owner_name}.__drop"),
+                        ))
+                    })?;
+                let (body, declaration_span) = match &host.rir.rir().get(declaration).data {
+                    InstData::DropFnDecl { body, .. } => {
+                        (*body, host.rir.rir().get(declaration).span)
+                    }
+                    _ => unreachable!("registered provider destructor points at DropFnDecl"),
+                };
+                let body_span = host.rir.rir().get(body).span;
+                let owner_symbol = host.intern_name_at(owner_name, body_span)?;
+                let owner_type = host
+                    .nominal_type_for_symbol(owner_file, owner_symbol)
+                    .ok_or_else(|| {
+                        CompileError::without_span(rue_error::ErrorKind::UnknownType(
+                            owner_name.to_owned(),
+                        ))
+                    })?;
+                let full_name = format!(
+                    "{}.__drop",
+                    host.type_pool.struct_symbol_name(
+                        owner_type
+                            .as_struct()
+                            .expect("named destructor owner must be a struct")
+                    )
+                );
+                let full_symbol = host.intern_name_at(&full_name, body_span)?;
+                let owner_token = host.function_tokens.borrow()[&host.function_symbol].clone();
+                host.function_tokens
+                    .borrow_mut()
+                    .insert(full_symbol, owner_token);
+                host.endpoint
+                    .finalize_containment_metadata()
+                    .ok_or_else(|| {
+                        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                            "provider destructor containment metadata is unavailable".into(),
+                        ))
+                    })?;
+                (
+                    OrdinaryBodyEngine::new(&mut host).analyze_named_destructor(
+                        &infer,
+                        &full_name,
+                        body,
+                        declaration_span,
+                        owner_type,
+                    )?,
+                    body_span,
+                )
+            }
+            _ => {
+                return Err(CompileError::without_span(
+                    rue_error::ErrorKind::InvalidCompilerInput(
+                        "provider body request does not own an executable body".into(),
+                    ),
+                ));
+            }
+        };
+        let expression_engine_ns = elapsed_ns(expression_engine_started);
+        let expression_breakdown = host
+            .expression_breakdown
+            .expect("provider ordinary body analysis records its expression breakdown");
+        let specialization_selection_started = Instant::now();
+        let (mut function, warnings, strings, referenced_functions, referenced_methods) = analyzed;
+        function.ordinary_owner = Some(host.owner);
+        let (function, selected_calls, mut referenced_specializations) =
+            crate::specialize::select_provider_body_specializations(&mut host, function)?;
+        referenced_specializations.extend(referenced_methods.iter().filter_map(
+            |(owner, method)| {
+                let info = host.method_info_for_symbol(*owner, *method)?;
+                let callable = host.member_callable_symbol(
+                    *owner,
+                    host.interner.resolve(method),
+                    info.has_self,
+                )?;
+                host.anonymous_function_identities
+                    .borrow()
+                    .get(&callable)
+                    .cloned()
+            },
+        ));
+        referenced_specializations
+            .extend(host.observed_comptime_producers.borrow().iter().cloned());
+        host.specialized_function_identities.borrow_mut().extend(
+            selected_calls
+                .iter()
+                .zip(referenced_specializations.iter())
+                .map(|((symbol, _), instance)| (*symbol, instance.clone())),
+        );
+        let selected_calls = selected_calls.into_iter().collect::<AHashMap<_, _>>();
+        let specialization_selection_ns = elapsed_ns(specialization_selection_started);
+        let body_export_started = Instant::now();
+        let export = super::semantic_body_export::export_body(
+            &host,
+            host.owner,
+            body_span,
+            &function,
+            &strings,
+            &warnings,
+            Some(&selected_calls),
+            &referenced_methods,
+        )
         .map_err(|failure| {
             CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
-                "provider ordinary produced-nominal export failed: {failure:?}"
+                "provider body export failed: {failure:?}"
             )))
         })?;
-    let work = host.provider_body_work.snapshot();
-    let definition_tokens = host
-        .function_tokens
-        .into_inner()
-        .into_values()
-        .chain(host.nominal_tokens.into_inner().into_values())
-        .chain(
-            host.anonymous_definition_tokens
-                .into_inner()
-                .into_iter()
-                .map(|(key, token)| (token, key)),
-        )
-        .collect();
-    let module_tokens = host.module_tokens.into_inner().into_values().collect();
-    let result_projection_ns = elapsed_ns(result_projection_started);
-    publish_provider_body_breakdown(
-        host_setup_ns,
-        expression_engine_ns,
-        specialization_selection_ns,
-        body_export_ns,
-        result_projection_ns,
-        expression_breakdown,
-    );
-    Ok(ProviderOrdinaryBody {
-        owner: host.owner,
-        work,
-        export,
-        function,
-        warnings,
-        strings,
-        referenced_functions,
-        referenced_methods,
-        referenced_definitions,
-        referenced_values,
-        referenced_specializations,
-        produced_anonymous_nominals,
-        type_pool: host.type_pool,
-        interner: host.interner,
-        definition_tokens,
-        module_tokens,
-    })
+        let body_export_ns = elapsed_ns(body_export_started);
+        let result_projection_started = Instant::now();
+        let mut referenced_definitions = referenced_functions
+            .iter()
+            .filter_map(|symbol| {
+                host.function_tokens
+                    .borrow()
+                    .get(symbol)
+                    .map(|(_, key)| key.clone())
+            })
+            .collect::<AHashSet<_>>();
+        referenced_definitions.extend(
+            referenced_methods
+                .iter()
+                .filter_map(|(owner, method)| host.named_method_definition(*owner, *method)),
+        );
+        let referenced_definitions = referenced_definitions.into_iter().collect();
+        let referenced_values = host
+            .observed_named_definitions
+            .borrow()
+            .iter()
+            .cloned()
+            .collect();
+        let produced_anonymous_nominals = host
+            .produced_anonymous_nominals(&initial_anonymous_identities)
+            .map_err(|failure| {
+                CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
+                    "provider ordinary produced-nominal export failed: {failure:?}"
+                )))
+            })?;
+        let work = host.provider_body_work.snapshot();
+        let definition_tokens = host
+            .function_tokens
+            .into_inner()
+            .into_values()
+            .chain(host.nominal_tokens.into_inner().into_values())
+            .chain(
+                host.anonymous_definition_tokens
+                    .into_inner()
+                    .into_iter()
+                    .map(|(key, token)| (token, key)),
+            )
+            .collect();
+        let module_tokens = host.module_tokens.into_inner().into_values().collect();
+        let result_projection_ns = elapsed_ns(result_projection_started);
+        publish_provider_body_breakdown(
+            host_setup_ns,
+            expression_engine_ns,
+            specialization_selection_ns,
+            body_export_ns,
+            result_projection_ns,
+            expression_breakdown,
+        );
+        check_shared_interner(bundle.symbol_space(), "ordinary provider analysis")?;
+        Ok(ProviderOrdinaryBody {
+            owner: host.owner,
+            work,
+            export,
+            function,
+            warnings,
+            strings,
+            referenced_functions,
+            referenced_methods,
+            referenced_definitions,
+            referenced_values,
+            referenced_specializations,
+            produced_anonymous_nominals,
+            type_pool: host.type_pool,
+            interner: host.interner,
+            definition_tokens,
+            module_tokens,
+        })
+    })();
+    match (
+        result,
+        check_shared_interner(bundle.symbol_space(), "ordinary provider analysis"),
+    ) {
+        (Err(error), _)
+            if matches!(
+                &error.kind,
+                ErrorKind::CompilerResourceLimit(_) | ErrorKind::CompilerResourceExhaustion(_)
+            ) =>
+        {
+            Err(error)
+        }
+        (_, Err(error)) => Err(error),
+        (result, Ok(())) => result,
+    }
 }
 
 fn anonymous_member_in_producer(
@@ -5088,467 +5251,502 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
-    let owner_file = bundle.source_file_id().ok_or_else(|| {
-        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-            "provider anonymous body RIR does not have one source file".into(),
-        ))
-    })?;
-    let TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(durable_owner)) = owner
-    else {
-        return Err(CompileError::without_span(
-            rue_error::ErrorKind::InvalidCompilerInput(
-                "anonymous member owner is not an anonymous nominal".into(),
-            ),
-        ));
-    };
-    let declaration = {
-        let view = bundle.view();
-        let producer_root = anonymous_producer_root(
-            view.rir(),
-            view.rir_interner(),
-            candidate_root,
-            &source_key,
-            &durable_owner.producer,
+    let result = (|| -> CompileResult<ProviderAnonymousBody<K, M>> {
+        let owner_file = bundle.source_file_id().ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                "provider anonymous body RIR does not have one source file".into(),
+            ))
+        })?;
+        let TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(durable_owner)) = owner
+        else {
+            return Err(CompileError::without_span(
+                rue_error::ErrorKind::InvalidCompilerInput(
+                    "anonymous member owner is not an anonymous nominal".into(),
+                ),
+            ));
+        };
+        let declaration = {
+            let view = bundle.view();
+            let producer_root = anonymous_producer_root(
+                view.rir(),
+                view.rir_interner(),
+                candidate_root,
+                &source_key,
+                &durable_owner.producer,
+            )
+            .map_err(|detail| {
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                    detail.into(),
+                ))
+            })?;
+            anonymous_member_in_producer(
+                view.rir(),
+                view.rir_interner(),
+                producer_root,
+                &durable_owner.anchor,
+                member,
+            )
+            .map_err(|detail| {
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                    detail.into(),
+                ))
+            })?
+        };
+        let host_setup_started = Instant::now();
+        let mut host = ProviderBodyHost::new(
+            provider,
+            source,
+            bundle,
+            source_key.clone(),
+            owner_file,
+            member.name.as_ref(),
+            match member.kind {
+                crate::AnonymousMemberKind::Method => crate::StableDefinitionKind::Method,
+                crate::AnonymousMemberKind::AssociatedFunction => {
+                    crate::StableDefinitionKind::AssociatedFunction
+                }
+                crate::AnonymousMemberKind::Destructor => crate::StableDefinitionKind::Destructor,
+            },
+            None,
+            target,
+            preview,
+            well_known,
         )
-        .map_err(|detail| {
-            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(detail.into()))
-        })?;
-        anonymous_member_in_producer(
-            view.rir(),
-            view.rir_interner(),
-            producer_root,
-            &durable_owner.anchor,
-            member,
-        )
-        .map_err(|detail| {
-            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(detail.into()))
-        })?
-    };
-    let host_setup_started = Instant::now();
-    let mut host = ProviderBodyHost::new(
-        provider,
-        source,
-        bundle,
-        source_key.clone(),
-        owner_file,
-        member.name.as_ref(),
-        match member.kind {
-            crate::AnonymousMemberKind::Method => crate::StableDefinitionKind::Method,
-            crate::AnonymousMemberKind::AssociatedFunction => {
-                crate::StableDefinitionKind::AssociatedFunction
-            }
-            crate::AnonymousMemberKind::Destructor => crate::StableDefinitionKind::Destructor,
-        },
-        None,
-        target,
-        preview,
-        well_known,
-    )
-    .ok_or_else(|| {
-        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-            "provider anonymous body host could not be constructed".into(),
-        ))
-    })?;
-    host.current_declaration_override = Some(declaration);
-    let issued_owner = host
-        .register_and_issue_anonymous_identity(durable_owner)
+        .map_err(identity_mint_compile_error)?
         .ok_or_else(|| {
             CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                "anonymous member owner identities are unavailable".into(),
+                "provider anonymous body host could not be constructed".into(),
             ))
         })?;
-    host.endpoint
-        .register_anonymous_nominal(issued_owner.clone(), (**durable_owner).clone());
-    let owner_type = host
-        .state
-        .identity_context()
-        .pool_mut()
-        .ok_or_else(|| {
-            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                "anonymous member owner identity pool is unavailable".into(),
-            ))
-        })?
-        .resolve_provider_type(&crate::SemanticImportType::AnonymousNominal(
-            (**durable_owner).clone(),
-        ))
-        .map_err(|failure| {
-            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(format!(
-                "anonymous member owner shape is unavailable: {failure:?}"
-            )))
-        })?;
-    host.endpoint
-        .finalize_containment_metadata()
-        .ok_or_else(|| {
-            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                "anonymous member owner containment metadata is unavailable".into(),
-            ))
-        })?;
-    let struct_id = owner_type.as_struct().ok_or_else(|| {
-        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-            "anonymous member owner is not a struct".into(),
-        ))
-    })?;
-    host.canonical_anonymous_types
-        .insert(owner_type, issued_owner.clone());
-    host.anon_struct_identities
-        .insert(issued_owner.clone(), struct_id);
-    host.anonymous_struct_ids.insert(struct_id);
-    let type_captures = host.source.anonymous_type_captures(durable_owner);
-    let mut type_subst = AHashMap::with_capacity(type_captures.len());
-    for (name, durable_type) in type_captures {
-        let ty = host
+        host.current_declaration_override = Some(declaration);
+        let issued_owner = host
+            .register_and_issue_anonymous_identity(durable_owner)
+            .ok_or_else(|| {
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                    "anonymous member owner identities are unavailable".into(),
+                ))
+            })?;
+        host.endpoint
+            .register_anonymous_nominal(issued_owner.clone(), (**durable_owner).clone());
+        let owner_type = host
             .state
             .identity_context()
             .pool_mut()
-            .and_then(|mut pool| pool.resolve_provider_type(&durable_type).ok())
             .ok_or_else(|| {
                 CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                    "anonymous member type capture cannot be materialized".into(),
+                    "anonymous member owner identity pool is unavailable".into(),
                 ))
+            })?
+            .resolve_provider_type(&crate::SemanticImportType::AnonymousNominal(
+                (**durable_owner).clone(),
+            ))
+            .map_err(|failure| {
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(format!(
+                    "anonymous member owner shape is unavailable: {failure:?}"
+                )))
             })?;
-        let symbol = host
-            .interner
-            .get_or_intern(&ty.safe_name_with_pool(Some(&host.type_pool)));
-        if let Some(id) = ty.as_struct() {
-            host.generated_structs.insert(symbol, id);
-        } else if let Some(id) = ty.as_enum() {
-            host.generated_enums.insert(symbol, id);
-        }
-        if host.endpoint.durable_anonymous_identity(ty).is_some() {
-            host.issued_anonymous_identity_for_type(ty).ok_or_else(|| {
-                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                    "anonymous member type capture identity cannot be issued".into(),
-                ))
-            })?;
-        } else if host.endpoint.durable_named_identity(ty).is_some() {
-            host.ensure_named_nominal_identity(ty, host.interner.resolve(&symbol))
-                .map_err(|_| {
-                    CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                        "anonymous member type capture identity cannot be registered".into(),
-                    ))
-                })?;
-        }
-        type_subst.insert(host.interner.get_or_intern(name.as_ref()), ty);
-    }
-    if !type_subst.is_empty() {
-        host.anon_struct_type_subst.insert(struct_id, type_subst);
-    }
-    let value_captures = host.source.anonymous_value_captures(durable_owner);
-    let mut captured_values = AHashMap::with_capacity(value_captures.len());
-    for (name, durable_value) in value_captures {
-        let value = host
-            .materialize_durable_const_value(&durable_value)
+        host.endpoint
+            .finalize_containment_metadata()
             .ok_or_else(|| {
                 CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                    "anonymous member value capture cannot be materialized".into(),
+                    "anonymous member owner containment metadata is unavailable".into(),
                 ))
             })?;
-        captured_values.insert(host.interner.get_or_intern(name.as_ref()), value);
-    }
-    if !captured_values.is_empty() {
-        host.anon_struct_captured_values
-            .insert(struct_id, captured_values);
-    }
-    let initial_anonymous_identities = host
-        .canonical_anonymous_types
-        .values()
-        .cloned()
-        .collect::<AHashSet<_>>();
-
-    let (params, body, has_self, self_mode, self_is_mut, returns_borrow, returns_inout, span) =
-        match &host.rir.rir().get(declaration).data {
-            InstData::FnDecl {
-                params,
-                body,
-                has_self,
-                self_mode,
-                self_is_mut,
-                returns_borrow,
-                returns_inout,
-                ..
-            } => (
-                params.clone(),
-                *body,
-                *has_self,
-                *self_mode,
-                *self_is_mut,
-                *returns_borrow,
-                *returns_inout,
-                host.rir.rir().get(declaration).span,
-            ),
-            _ => {
-                return Err(CompileError::without_span(
-                    rue_error::ErrorKind::InvalidCompilerInput(
-                        "anonymous member fragment did not lower to a method".into(),
-                    ),
-                ));
-            }
-        };
-    let expected_kind = if member.name.as_ref() == "__drop" {
-        crate::AnonymousMemberKind::Destructor
-    } else if has_self {
-        crate::AnonymousMemberKind::Method
-    } else {
-        crate::AnonymousMemberKind::AssociatedFunction
-    };
-    if expected_kind != member.kind {
-        return Err(CompileError::without_span(
-            rue_error::ErrorKind::InvalidCompilerInput(
-                "anonymous member kind disagrees with its producer fragment".into(),
-            ),
-        ));
-    }
-    let issued_identity = FunctionInstanceKey::AnonymousMember {
-        owner: Node::new(TypeInstanceKey::Nominal(
-            crate::NominalInstanceKey::Anonymous(Node::new(issued_owner.clone())),
-        )),
-        member: member.clone(),
-    };
-    host.current_anonymous_identity = Some(issued_identity.clone());
-    host.register_provider_anonymous_method_endpoints_with_issued(
-        durable_owner,
-        owner_type,
-        issued_owner,
-    )
-    .ok_or_else(|| {
-        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-            "anonymous member sibling endpoints are unavailable".into(),
-        ))
-    })?;
-    let full_name = host.member_callable_name(struct_id, &member.name, has_self);
-    let full_symbol = host.interner.get_or_intern(&full_name);
-    host.function_symbol = full_symbol;
-    let owner_token = host
-        .function_tokens
-        .borrow()
-        .values()
-        .next()
-        .cloned()
-        .ok_or_else(|| {
+        let struct_id = owner_type.as_struct().ok_or_else(|| {
             CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                "anonymous member has no producer token".into(),
+                "anonymous member owner is not a struct".into(),
             ))
         })?;
-    host.function_tokens
-        .borrow_mut()
-        .insert(full_symbol, owner_token);
-
-    let params = host
-        .rir
-        .rir()
-        .params(&params)
-        .values()
-        .collect::<Vec<RirParam>>();
-    let projected = host
-        .source
-        .anonymous_methods(durable_owner)
-        .into_iter()
-        .find(|candidate| candidate.name == member.name)
-        .ok_or_else(|| {
-            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                "anonymous member signature is unavailable from its producer".into(),
-            ))
-        })?;
-    if projected.has_self != has_self
-        || projected.self_mode != self_mode
-        || projected.parameters.len() != params.len()
-        || !projected
-            .parameters
-            .iter()
-            .zip(&params)
-            .all(|((_, mode, comptime), parameter)| {
-                *mode == parameter.mode && *comptime == parameter.is_comptime
-            })
-    {
-        return Err(CompileError::without_span(
-            rue_error::ErrorKind::InvalidCompilerInput(
-                "anonymous member signature disagrees with its producer fragment".into(),
-            ),
-        ));
-    }
-    let materialize = |host: &mut ProviderBodyHost<'_, P, S, K, M>,
-                       ty: &crate::DurableAnonymousMethodType<K, M>| {
-        let ty = match ty {
-            crate::DurableAnonymousMethodType::SelfType => owner_type,
-            crate::DurableAnonymousMethodType::Concrete(ty) => host
+        host.canonical_anonymous_types
+            .insert(owner_type, issued_owner.clone());
+        host.anon_struct_identities
+            .insert(issued_owner.clone(), struct_id);
+        host.anonymous_struct_ids.insert(struct_id);
+        let type_captures = host.source.anonymous_type_captures(durable_owner);
+        let mut type_subst = AHashMap::with_capacity(type_captures.len());
+        for (name, durable_type) in type_captures {
+            let ty = host
                 .state
                 .identity_context()
-                .pool_mut()?
-                .resolve_provider_type(ty)
-                .ok()?,
-        };
-        let symbol = host
-            .interner
-            .get_or_intern(&ty.safe_name_with_pool(Some(&host.type_pool)));
-        if host.endpoint.durable_anonymous_identity(ty).is_some() {
-            host.issued_anonymous_identity_for_type(ty)?;
-        } else if host.endpoint.durable_named_identity(ty).is_some() {
-            host.ensure_named_nominal_identity(ty, host.interner.resolve(&symbol))
-                .ok()?;
-        }
-        Some(ty)
-    };
-    let mut resolved_params = params
-        .iter()
-        .zip(&projected.parameters)
-        .map(|(parameter, (projected_type, _, _))| {
-            materialize(&mut host, projected_type)
-                .map(|ty| (parameter.name, ty, parameter.mode, parameter.is_comptime))
+                .pool_mut()
+                .and_then(|mut pool| pool.resolve_provider_type(&durable_type).ok())
                 .ok_or_else(|| {
                     CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                        "anonymous member parameter type cannot be materialized".into(),
+                        "anonymous member type capture cannot be materialized".into(),
                     ))
-                })
-        })
-        .collect::<CompileResult<Vec<_>>>()?;
-    let return_type = materialize(&mut host, &projected.result).ok_or_else(|| {
-        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-            "anonymous member result type cannot be materialized".into(),
-        ))
-    })?;
-    let infer = InferenceContext::new(&host);
-    let host_setup_ns = elapsed_ns(host_setup_started);
-    let expression_engine_started = Instant::now();
-    if has_self {
-        resolved_params.insert(
-            0,
-            (
-                host.interner.get_or_intern("self"),
-                owner_type,
-                self_mode,
-                false,
-            ),
-        );
-    }
-    let analyzed = OrdinaryBodyEngine::new(&mut host).analyze_method_with_identity_kind_resolved(
-        &infer,
-        issued_identity.clone(),
-        &full_name,
-        return_type,
-        resolved_params,
-        body,
-        span,
-        owner_type,
-        self_is_mut,
-        member.kind == crate::AnonymousMemberKind::Destructor,
-        returns_borrow || returns_inout,
-    )?;
-    let expression_engine_ns = elapsed_ns(expression_engine_started);
-    let expression_breakdown = host
-        .expression_breakdown
-        .expect("provider anonymous body analysis records its expression breakdown");
-    let specialization_selection_started = Instant::now();
-    let (function, warnings, strings, referenced_functions, referenced_methods) = analyzed;
-    let (function, selected_calls, mut referenced_specializations) =
-        crate::specialize::select_provider_body_specializations(&mut host, function)?;
-    referenced_specializations.extend(referenced_methods.iter().filter_map(|(owner, method)| {
-        let info = host.method_info_for_symbol(*owner, *method)?;
-        let callable =
-            host.member_callable_symbol(*owner, host.interner.resolve(method), info.has_self);
-        host.anonymous_function_identities
-            .borrow()
-            .get(&callable)
+                })?;
+            let symbol = host.intern_name_at(
+                ty.safe_name_with_pool(Some(&host.type_pool)),
+                host.rir.rir().get(declaration).span,
+            )?;
+            if let Some(id) = ty.as_struct() {
+                host.generated_structs.insert(symbol, id);
+            } else if let Some(id) = ty.as_enum() {
+                host.generated_enums.insert(symbol, id);
+            }
+            if host.endpoint.durable_anonymous_identity(ty).is_some() {
+                host.issued_anonymous_identity_for_type(ty).ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                        "anonymous member type capture identity cannot be issued".into(),
+                    ))
+                })?;
+            } else if host.endpoint.durable_named_identity(ty).is_some() {
+                host.ensure_named_nominal_identity(ty, host.interner.resolve(&symbol))
+                    .map_err(|_| {
+                        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                            "anonymous member type capture identity cannot be registered".into(),
+                        ))
+                    })?;
+            }
+            type_subst.insert(
+                host.intern_name_at(name.as_ref(), host.rir.rir().get(declaration).span)?,
+                ty,
+            );
+        }
+        if !type_subst.is_empty() {
+            host.anon_struct_type_subst.insert(struct_id, type_subst);
+        }
+        let value_captures = host.source.anonymous_value_captures(durable_owner);
+        let mut captured_values = AHashMap::with_capacity(value_captures.len());
+        for (name, durable_value) in value_captures {
+            let value = host
+                .materialize_durable_const_value(&durable_value)
+                .ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                        "anonymous member value capture cannot be materialized".into(),
+                    ))
+                })?;
+            captured_values.insert(
+                host.intern_name_at(name.as_ref(), host.rir.rir().get(declaration).span)?,
+                value,
+            );
+        }
+        if !captured_values.is_empty() {
+            host.anon_struct_captured_values
+                .insert(struct_id, captured_values);
+        }
+        let initial_anonymous_identities = host
+            .canonical_anonymous_types
+            .values()
             .cloned()
-    }));
-    referenced_specializations.extend(host.observed_comptime_producers.borrow().iter().cloned());
-    host.specialized_function_identities.borrow_mut().extend(
-        selected_calls
+            .collect::<AHashSet<_>>();
+
+        let (params, body, has_self, self_mode, self_is_mut, returns_borrow, returns_inout, span) =
+            match &host.rir.rir().get(declaration).data {
+                InstData::FnDecl {
+                    params,
+                    body,
+                    has_self,
+                    self_mode,
+                    self_is_mut,
+                    returns_borrow,
+                    returns_inout,
+                    ..
+                } => (
+                    params.clone(),
+                    *body,
+                    *has_self,
+                    *self_mode,
+                    *self_is_mut,
+                    *returns_borrow,
+                    *returns_inout,
+                    host.rir.rir().get(declaration).span,
+                ),
+                _ => {
+                    return Err(CompileError::without_span(
+                        rue_error::ErrorKind::InvalidCompilerInput(
+                            "anonymous member fragment did not lower to a method".into(),
+                        ),
+                    ));
+                }
+            };
+        let expected_kind = if member.name.as_ref() == "__drop" {
+            crate::AnonymousMemberKind::Destructor
+        } else if has_self {
+            crate::AnonymousMemberKind::Method
+        } else {
+            crate::AnonymousMemberKind::AssociatedFunction
+        };
+        if expected_kind != member.kind {
+            return Err(CompileError::without_span(
+                rue_error::ErrorKind::InvalidCompilerInput(
+                    "anonymous member kind disagrees with its producer fragment".into(),
+                ),
+            ));
+        }
+        let issued_identity = FunctionInstanceKey::AnonymousMember {
+            owner: Node::new(TypeInstanceKey::Nominal(
+                crate::NominalInstanceKey::Anonymous(Node::new(issued_owner.clone())),
+            )),
+            member: member.clone(),
+        };
+        host.current_anonymous_identity = Some(issued_identity.clone());
+        host.register_provider_anonymous_method_endpoints_with_issued(
+            durable_owner,
+            owner_type,
+            issued_owner,
+        )
+        .ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                "anonymous member sibling endpoints are unavailable".into(),
+            ))
+        })?;
+        let full_name = host.member_callable_name(struct_id, &member.name, has_self);
+        let full_symbol = host.intern_name_at(&full_name, host.rir.rir().get(declaration).span)?;
+        host.function_symbol = full_symbol;
+        let owner_token = host
+            .function_tokens
+            .borrow()
+            .values()
+            .next()
+            .cloned()
+            .ok_or_else(|| {
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                    "anonymous member has no producer token".into(),
+                ))
+            })?;
+        host.function_tokens
+            .borrow_mut()
+            .insert(full_symbol, owner_token);
+
+        let params = host
+            .rir
+            .rir()
+            .params(&params)
+            .values()
+            .collect::<Vec<RirParam>>();
+        let projected = host
+            .source
+            .anonymous_methods(durable_owner)
+            .into_iter()
+            .find(|candidate| candidate.name == member.name)
+            .ok_or_else(|| {
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                    "anonymous member signature is unavailable from its producer".into(),
+                ))
+            })?;
+        if projected.has_self != has_self
+            || projected.self_mode != self_mode
+            || projected.parameters.len() != params.len()
+            || !projected
+                .parameters
+                .iter()
+                .zip(&params)
+                .all(|((_, mode, comptime), parameter)| {
+                    *mode == parameter.mode && *comptime == parameter.is_comptime
+                })
+        {
+            return Err(CompileError::without_span(
+                rue_error::ErrorKind::InvalidCompilerInput(
+                    "anonymous member signature disagrees with its producer fragment".into(),
+                ),
+            ));
+        }
+        let materialize = |host: &mut ProviderBodyHost<'_, P, S, K, M>,
+                           ty: &crate::DurableAnonymousMethodType<K, M>| {
+            let ty = match ty {
+                crate::DurableAnonymousMethodType::SelfType => owner_type,
+                crate::DurableAnonymousMethodType::Concrete(ty) => host
+                    .state
+                    .identity_context()
+                    .pool_mut()?
+                    .resolve_provider_type(ty)
+                    .ok()?,
+            };
+            let symbol = host.intern_name(ty.safe_name_with_pool(Some(&host.type_pool)))?;
+            if host.endpoint.durable_anonymous_identity(ty).is_some() {
+                host.issued_anonymous_identity_for_type(ty)?;
+            } else if host.endpoint.durable_named_identity(ty).is_some() {
+                host.ensure_named_nominal_identity(ty, host.interner.resolve(&symbol))
+                    .ok()?;
+            }
+            Some(ty)
+        };
+        let mut resolved_params = params
             .iter()
-            .zip(referenced_specializations.iter())
-            .map(|((symbol, _), instance)| (*symbol, instance.clone())),
-    );
-    let selected_calls = selected_calls.into_iter().collect::<AHashMap<_, _>>();
-    let body_span = host.rir.rir().get(body).span;
-    let specialization_selection_ns = elapsed_ns(specialization_selection_started);
-    let body_export_started = Instant::now();
-    let export = super::semantic_body_export::export_body(
-        &host,
-        crate::BodyOwnerToken::new(0, 0),
-        body_span,
-        &function,
-        &strings,
-        &warnings,
-        Some(&selected_calls),
-        &referenced_methods,
-    )
-    .map(|export| crate::SemanticAnonymousBodyExport {
-        identity: issued_identity,
-        body: export.body,
-    })
-    .map_err(|failure| {
-        CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
-            "provider anonymous body export failed: {failure:?}"
-        )))
-    })?;
-    let body_export_ns = elapsed_ns(body_export_started);
-    let result_projection_started = Instant::now();
-    let produced_anonymous_nominals = host
-        .produced_anonymous_nominals(&initial_anonymous_identities)
+            .zip(&projected.parameters)
+            .map(|(parameter, (projected_type, _, _))| {
+                materialize(&mut host, projected_type)
+                    .map(|ty| (parameter.name, ty, parameter.mode, parameter.is_comptime))
+                    .ok_or_else(|| {
+                        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                            "anonymous member parameter type cannot be materialized".into(),
+                        ))
+                    })
+            })
+            .collect::<CompileResult<Vec<_>>>()?;
+        let return_type = materialize(&mut host, &projected.result).ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                "anonymous member result type cannot be materialized".into(),
+            ))
+        })?;
+        let infer = InferenceContext::new(&host);
+        let host_setup_ns = elapsed_ns(host_setup_started);
+        let expression_engine_started = Instant::now();
+        if has_self {
+            resolved_params.insert(
+                0,
+                (
+                    host.intern_name_at("self", span)?,
+                    owner_type,
+                    self_mode,
+                    false,
+                ),
+            );
+        }
+        let analyzed = OrdinaryBodyEngine::new(&mut host)
+            .analyze_method_with_identity_kind_resolved(
+                &infer,
+                issued_identity.clone(),
+                &full_name,
+                return_type,
+                resolved_params,
+                body,
+                span,
+                owner_type,
+                self_is_mut,
+                member.kind == crate::AnonymousMemberKind::Destructor,
+                returns_borrow || returns_inout,
+            )?;
+        let expression_engine_ns = elapsed_ns(expression_engine_started);
+        let expression_breakdown = host
+            .expression_breakdown
+            .expect("provider anonymous body analysis records its expression breakdown");
+        let specialization_selection_started = Instant::now();
+        let (function, warnings, strings, referenced_functions, referenced_methods) = analyzed;
+        let (function, selected_calls, mut referenced_specializations) =
+            crate::specialize::select_provider_body_specializations(&mut host, function)?;
+        referenced_specializations.extend(referenced_methods.iter().filter_map(
+            |(owner, method)| {
+                let info = host.method_info_for_symbol(*owner, *method)?;
+                let callable = host.member_callable_symbol(
+                    *owner,
+                    host.interner.resolve(method),
+                    info.has_self,
+                )?;
+                host.anonymous_function_identities
+                    .borrow()
+                    .get(&callable)
+                    .cloned()
+            },
+        ));
+        referenced_specializations
+            .extend(host.observed_comptime_producers.borrow().iter().cloned());
+        host.specialized_function_identities.borrow_mut().extend(
+            selected_calls
+                .iter()
+                .zip(referenced_specializations.iter())
+                .map(|((symbol, _), instance)| (*symbol, instance.clone())),
+        );
+        let selected_calls = selected_calls.into_iter().collect::<AHashMap<_, _>>();
+        let body_span = host.rir.rir().get(body).span;
+        let specialization_selection_ns = elapsed_ns(specialization_selection_started);
+        let body_export_started = Instant::now();
+        let export = super::semantic_body_export::export_body(
+            &host,
+            crate::BodyOwnerToken::new(0, 0),
+            body_span,
+            &function,
+            &strings,
+            &warnings,
+            Some(&selected_calls),
+            &referenced_methods,
+        )
+        .map(|export| crate::SemanticAnonymousBodyExport {
+            identity: issued_identity,
+            body: export.body,
+        })
         .map_err(|failure| {
             CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
-                "provider anonymous produced-nominal export failed: {failure:?}"
+                "provider anonymous body export failed: {failure:?}"
             )))
         })?;
-    let mut referenced_definitions = referenced_functions
-        .iter()
-        .filter_map(|symbol| {
-            host.function_tokens
-                .borrow()
-                .get(symbol)
-                .map(|(_, key)| key.clone())
-        })
-        .collect::<AHashSet<_>>();
-    referenced_definitions.extend(
-        referenced_methods
+        let body_export_ns = elapsed_ns(body_export_started);
+        let result_projection_started = Instant::now();
+        let produced_anonymous_nominals = host
+            .produced_anonymous_nominals(&initial_anonymous_identities)
+            .map_err(|failure| {
+                CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
+                    "provider anonymous produced-nominal export failed: {failure:?}"
+                )))
+            })?;
+        let mut referenced_definitions = referenced_functions
             .iter()
-            .filter_map(|(owner, method)| host.named_method_definition(*owner, *method)),
-    );
-    let referenced_definitions = referenced_definitions.into_iter().collect();
-    let referenced_values = host
-        .observed_named_definitions
-        .borrow()
-        .iter()
-        .cloned()
-        .collect();
-    let work = host.provider_body_work.snapshot();
-    let definition_tokens = host
-        .function_tokens
-        .into_inner()
-        .into_values()
-        .chain(host.nominal_tokens.into_inner().into_values())
-        .chain(
-            host.anonymous_definition_tokens
-                .into_inner()
-                .into_iter()
-                .map(|(key, token)| (token, key)),
-        )
-        .collect();
-    let module_tokens = host.module_tokens.into_inner().into_values().collect();
-    let result_projection_ns = elapsed_ns(result_projection_started);
-    publish_provider_body_breakdown(
-        host_setup_ns,
-        expression_engine_ns,
-        specialization_selection_ns,
-        body_export_ns,
-        result_projection_ns,
-        expression_breakdown,
-    );
-    Ok(ProviderAnonymousBody {
-        work,
-        export,
-        body_span,
-        function,
-        warnings,
-        strings,
-        type_pool: host.type_pool,
-        interner: host.interner,
-        produced_anonymous_nominals,
-        referenced_definitions,
-        referenced_values,
-        referenced_specializations,
-        definition_tokens,
-        module_tokens,
-    })
+            .filter_map(|symbol| {
+                host.function_tokens
+                    .borrow()
+                    .get(symbol)
+                    .map(|(_, key)| key.clone())
+            })
+            .collect::<AHashSet<_>>();
+        referenced_definitions.extend(
+            referenced_methods
+                .iter()
+                .filter_map(|(owner, method)| host.named_method_definition(*owner, *method)),
+        );
+        let referenced_definitions = referenced_definitions.into_iter().collect();
+        let referenced_values = host
+            .observed_named_definitions
+            .borrow()
+            .iter()
+            .cloned()
+            .collect();
+        let work = host.provider_body_work.snapshot();
+        let definition_tokens = host
+            .function_tokens
+            .into_inner()
+            .into_values()
+            .chain(host.nominal_tokens.into_inner().into_values())
+            .chain(
+                host.anonymous_definition_tokens
+                    .into_inner()
+                    .into_iter()
+                    .map(|(key, token)| (token, key)),
+            )
+            .collect();
+        let module_tokens = host.module_tokens.into_inner().into_values().collect();
+        let result_projection_ns = elapsed_ns(result_projection_started);
+        publish_provider_body_breakdown(
+            host_setup_ns,
+            expression_engine_ns,
+            specialization_selection_ns,
+            body_export_ns,
+            result_projection_ns,
+            expression_breakdown,
+        );
+        check_shared_interner(bundle.symbol_space(), "anonymous provider analysis")?;
+        Ok(ProviderAnonymousBody {
+            work,
+            export,
+            body_span,
+            function,
+            warnings,
+            strings,
+            type_pool: host.type_pool,
+            interner: host.interner,
+            produced_anonymous_nominals,
+            referenced_definitions,
+            referenced_values,
+            referenced_specializations,
+            definition_tokens,
+            module_tokens,
+        })
+    })();
+    match (
+        result,
+        check_shared_interner(bundle.symbol_space(), "anonymous provider analysis"),
+    ) {
+        (Err(error), _)
+            if matches!(
+                &error.kind,
+                ErrorKind::CompilerResourceLimit(_) | ErrorKind::CompilerResourceExhaustion(_)
+            ) =>
+        {
+            Err(error)
+        }
+        (_, Err(error)) => Err(error),
+        (result, Ok(())) => result,
+    }
 }
 
 /// Run one exact specialization request through the provider-backed body host.
@@ -5573,197 +5771,219 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
-    let owner_file = bundle.source_file_id().ok_or_else(|| {
-        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-            "provider specialized body RIR does not have one source file".into(),
-        ))
-    })?;
-    let host_setup_started = Instant::now();
-    let mut host = ProviderBodyHost::new(
-        provider,
-        source,
-        bundle,
-        base,
-        owner_file,
-        name,
-        crate::StableDefinitionKind::Function,
-        None,
-        target,
-        preview,
-        well_known,
-    )
-    .ok_or_else(|| {
-        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-            "provider specialization host could not be constructed".into(),
-        ))
-    })?;
-    // A generic free function reaches analysis only through its
-    // specializations, so the 6.6:3/6.6:4 accessor gate runs here as well.
-    if let Some(declaration) = host.endpoint.first_free_function(name, owner_file) {
-        host.reject_free_function_accessor(declaration)?;
-    }
-    let initial_anonymous_identities = host
-        .canonical_anonymous_types
-        .values()
-        .cloned()
-        .collect::<AHashSet<_>>();
-    let type_args = arguments
-        .types
-        .iter()
-        .map(|ty| host.materialize_type_instance(ty))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|failure| {
-            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(format!(
-                "provider specialization type argument is unavailable: {failure:?}"
-            )))
-        })?;
-    let value_args = arguments
-        .values
-        .iter()
-        .map(|value| host.materialize_argument_value(value))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|failure| {
-            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(format!(
-                "provider specialization value argument is unavailable: {failure:?}"
-            )))
-        })?;
-    let key = crate::specialize::SpecializationKey {
-        base_name: host.function_symbol,
-        type_args,
-        value_args,
-    };
-    host.endpoint
-        .finalize_containment_metadata()
-        .ok_or_else(|| {
+    let result = (|| -> CompileResult<ProviderSpecializedBody<K, M>> {
+        let owner_file = bundle.source_file_id().ok_or_else(|| {
             CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                "provider specialization containment metadata is unavailable".into(),
+                "provider specialized body RIR does not have one source file".into(),
             ))
         })?;
-    let infer = InferenceContext::new(&host);
-    let host_setup_ns = elapsed_ns(host_setup_started);
-    let expression_engine_started = Instant::now();
-    let specialized =
-        crate::specialize::analyze_one_specialization_with_host(&mut host, &infer, key)?;
-    let expression_engine_ns = elapsed_ns(expression_engine_started);
-    let expression_breakdown = host
-        .expression_breakdown
-        .expect("provider specialized body analysis records its expression breakdown");
-    let body_span = host
-        .rir
-        .rir()
-        .get(
-            host.endpoint
-                .endpoint_function_info(host.function_symbol)
-                .ok_or_else(|| {
-                    CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
-                        name.to_owned(),
-                    ))
-                })?
-                .body,
+        let host_setup_started = Instant::now();
+        let mut host = ProviderBodyHost::new(
+            provider,
+            source,
+            bundle,
+            base,
+            owner_file,
+            name,
+            crate::StableDefinitionKind::Function,
+            None,
+            target,
+            preview,
+            well_known,
         )
-        .span;
-    let specialization_selection_started = Instant::now();
-    let (function, selected_calls, referenced_specializations) =
-        crate::specialize::select_provider_body_specializations(&mut host, specialized.function)?;
-    host.specialized_function_identities.borrow_mut().extend(
-        selected_calls
+        .map_err(identity_mint_compile_error)?
+        .ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                "provider specialization host could not be constructed".into(),
+            ))
+        })?;
+        // A generic free function reaches analysis only through its
+        // specializations, so the 6.6:3/6.6:4 accessor gate runs here as well.
+        if let Some(declaration) = host.endpoint.first_free_function(name, owner_file) {
+            host.reject_free_function_accessor(declaration)?;
+        }
+        let initial_anonymous_identities = host
+            .canonical_anonymous_types
+            .values()
+            .cloned()
+            .collect::<AHashSet<_>>();
+        let type_args = arguments
+            .types
             .iter()
-            .zip(referenced_specializations.iter())
-            .map(|((symbol, _), instance)| (*symbol, instance.clone())),
-    );
-    let selected_calls = selected_calls.into_iter().collect::<AHashMap<_, _>>();
-    let specialization_selection_ns = elapsed_ns(specialization_selection_started);
-    let body_export_started = Instant::now();
-    let body = super::semantic_body_export::export_body(
-        &host,
-        host.owner,
-        body_span,
-        &function,
-        &specialized.local_strings,
-        &specialized.warnings,
-        Some(&selected_calls),
-        &specialized.referenced_methods,
-    )
-    .map_err(|failure| {
-        CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
-            "provider specialization export failed: {failure:?}"
-        )))
-    })?
-    .body;
-    let body_export_ns = elapsed_ns(body_export_started);
-    let result_projection_started = Instant::now();
-    let mut referenced_definitions = specialized
-        .referenced_functions
-        .iter()
-        .filter_map(|symbol| {
-            host.function_tokens
-                .borrow()
-                .get(symbol)
-                .map(|(_, key)| key.clone())
-        })
-        .collect::<AHashSet<_>>();
-    referenced_definitions.extend(
-        specialized
-            .referenced_methods
+            .map(|ty| host.materialize_type_instance(ty))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|failure| {
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(format!(
+                    "provider specialization type argument is unavailable: {failure:?}"
+                )))
+            })?;
+        let value_args = arguments
+            .values
             .iter()
-            .filter_map(|(owner, method)| host.named_method_definition(*owner, *method)),
-    );
-    let referenced_definitions = referenced_definitions.into_iter().collect();
-    let referenced_values = host
-        .observed_named_definitions
-        .borrow()
-        .iter()
-        .cloned()
-        .collect();
-    let export = crate::SemanticSpecializedBodyExport {
-        identity: specialized.identity,
-        body,
-        dependencies: specialized.dependencies.into(),
-        dependency_boundary_complete: specialized.dependency_boundary_complete,
-    };
-    let produced_anonymous_nominals = host
-        .produced_anonymous_nominals(&initial_anonymous_identities)
+            .map(|value| host.materialize_argument_value(value))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|failure| {
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(format!(
+                    "provider specialization value argument is unavailable: {failure:?}"
+                )))
+            })?;
+        let key = crate::specialize::SpecializationKey {
+            base_name: host.function_symbol,
+            type_args,
+            value_args,
+        };
+        host.endpoint
+            .finalize_containment_metadata()
+            .ok_or_else(|| {
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                    "provider specialization containment metadata is unavailable".into(),
+                ))
+            })?;
+        let infer = InferenceContext::new(&host);
+        let host_setup_ns = elapsed_ns(host_setup_started);
+        let expression_engine_started = Instant::now();
+        let specialized =
+            crate::specialize::analyze_one_specialization_with_host(&mut host, &infer, key)?;
+        let expression_engine_ns = elapsed_ns(expression_engine_started);
+        let expression_breakdown = host
+            .expression_breakdown
+            .expect("provider specialized body analysis records its expression breakdown");
+        let body_span = host
+            .rir
+            .rir()
+            .get(
+                host.endpoint
+                    .endpoint_function_info(host.function_symbol)
+                    .ok_or_else(|| {
+                        CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
+                            name.to_owned(),
+                        ))
+                    })?
+                    .body,
+            )
+            .span;
+        let specialization_selection_started = Instant::now();
+        let (function, selected_calls, referenced_specializations) =
+            crate::specialize::select_provider_body_specializations(
+                &mut host,
+                specialized.function,
+            )?;
+        host.specialized_function_identities.borrow_mut().extend(
+            selected_calls
+                .iter()
+                .zip(referenced_specializations.iter())
+                .map(|((symbol, _), instance)| (*symbol, instance.clone())),
+        );
+        let selected_calls = selected_calls.into_iter().collect::<AHashMap<_, _>>();
+        let specialization_selection_ns = elapsed_ns(specialization_selection_started);
+        let body_export_started = Instant::now();
+        let body = super::semantic_body_export::export_body(
+            &host,
+            host.owner,
+            body_span,
+            &function,
+            &specialized.local_strings,
+            &specialized.warnings,
+            Some(&selected_calls),
+            &specialized.referenced_methods,
+        )
         .map_err(|failure| {
             CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
-                "provider specialization produced-nominal export failed: {failure:?}"
+                "provider specialization export failed: {failure:?}"
             )))
-        })?;
-    let work = host.provider_body_work.snapshot();
-    let definition_tokens = host
-        .function_tokens
-        .into_inner()
-        .into_values()
-        .chain(host.nominal_tokens.into_inner().into_values())
-        .chain(
-            host.anonymous_definition_tokens
-                .into_inner()
-                .into_iter()
-                .map(|(key, token)| (token, key)),
-        )
-        .collect();
-    let module_tokens = host.module_tokens.into_inner().into_values().collect();
-    let result_projection_ns = elapsed_ns(result_projection_started);
-    publish_provider_body_breakdown(
-        host_setup_ns,
-        expression_engine_ns,
-        specialization_selection_ns,
-        body_export_ns,
-        result_projection_ns,
-        expression_breakdown,
-    );
-    Ok(ProviderSpecializedBody {
-        work,
-        export,
-        function,
-        warnings: specialized.warnings,
-        strings: specialized.local_strings,
-        type_pool: host.type_pool,
-        interner: host.interner,
-        produced_anonymous_nominals,
-        referenced_definitions,
-        referenced_values,
-        referenced_specializations,
-        definition_tokens,
-        module_tokens,
-    })
+        })?
+        .body;
+        let body_export_ns = elapsed_ns(body_export_started);
+        let result_projection_started = Instant::now();
+        let mut referenced_definitions = specialized
+            .referenced_functions
+            .iter()
+            .filter_map(|symbol| {
+                host.function_tokens
+                    .borrow()
+                    .get(symbol)
+                    .map(|(_, key)| key.clone())
+            })
+            .collect::<AHashSet<_>>();
+        referenced_definitions.extend(
+            specialized
+                .referenced_methods
+                .iter()
+                .filter_map(|(owner, method)| host.named_method_definition(*owner, *method)),
+        );
+        let referenced_definitions = referenced_definitions.into_iter().collect();
+        let referenced_values = host
+            .observed_named_definitions
+            .borrow()
+            .iter()
+            .cloned()
+            .collect();
+        let export = crate::SemanticSpecializedBodyExport {
+            identity: specialized.identity,
+            body,
+            dependencies: specialized.dependencies.into(),
+            dependency_boundary_complete: specialized.dependency_boundary_complete,
+        };
+        let produced_anonymous_nominals = host
+            .produced_anonymous_nominals(&initial_anonymous_identities)
+            .map_err(|failure| {
+                CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
+                    "provider specialization produced-nominal export failed: {failure:?}"
+                )))
+            })?;
+        let work = host.provider_body_work.snapshot();
+        let definition_tokens = host
+            .function_tokens
+            .into_inner()
+            .into_values()
+            .chain(host.nominal_tokens.into_inner().into_values())
+            .chain(
+                host.anonymous_definition_tokens
+                    .into_inner()
+                    .into_iter()
+                    .map(|(key, token)| (token, key)),
+            )
+            .collect();
+        let module_tokens = host.module_tokens.into_inner().into_values().collect();
+        let result_projection_ns = elapsed_ns(result_projection_started);
+        publish_provider_body_breakdown(
+            host_setup_ns,
+            expression_engine_ns,
+            specialization_selection_ns,
+            body_export_ns,
+            result_projection_ns,
+            expression_breakdown,
+        );
+        check_shared_interner(bundle.symbol_space(), "specialized provider analysis")?;
+        Ok(ProviderSpecializedBody {
+            work,
+            export,
+            function,
+            warnings: specialized.warnings,
+            strings: specialized.local_strings,
+            type_pool: host.type_pool,
+            interner: host.interner,
+            produced_anonymous_nominals,
+            referenced_definitions,
+            referenced_values,
+            referenced_specializations,
+            definition_tokens,
+            module_tokens,
+        })
+    })();
+    match (
+        result,
+        check_shared_interner(bundle.symbol_space(), "specialized provider analysis"),
+    ) {
+        (Err(error), _)
+            if matches!(
+                &error.kind,
+                ErrorKind::CompilerResourceLimit(_) | ErrorKind::CompilerResourceExhaustion(_)
+            ) =>
+        {
+            Err(error)
+        }
+        (_, Err(error)) => Err(error),
+        (result, Ok(())) => result,
+    }
 }

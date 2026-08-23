@@ -17,6 +17,13 @@ use rue_span::FileId;
 use crate::retained_charge::RetainedCharge;
 use crate::{CanonicalMergedProgram, SemanticSymbolUniverse, SourceRevision};
 
+fn interner_resource_error(kind: lasso::LassoErrorKind) -> CompileError {
+    CompileError::without_span(rue_lexer::interner_error_kind(
+        kind,
+        format!("this compilation could not intern another spelling: {kind}"),
+    ))
+}
+
 /// Classify a RIR construction failure for the user.
 ///
 /// Spec C.1:2 makes exceeding a published implementation limit a diagnosable
@@ -429,7 +436,13 @@ impl DeclarationBodyPlan {
                     "body-plan symbol universe did not preserve stable ordinals",
                 )));
             }
-            dense_remap.push(interner.get_or_intern(spelling));
+            let symbol = rue_lexer::try_intern(interner, spelling).map_err(|kind| {
+                BodyPlanMaterializationFailure::Build(RirPayloadBuildError::InternerFailure {
+                    family: "interned strings",
+                    kind,
+                })
+            })?;
+            dense_remap.push(symbol);
         }
         checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
         let symbol_finished_ns = elapsed();
@@ -538,6 +551,7 @@ fn lower_parsed_declaration_body_plan_internal(
         .ok_or(DeclarationBodyPlanBuildFailure::MissingCandidate)?;
     let symbols = lasso::ThreadedRodeo::new();
     let symbol_failure = RefCell::<Option<Arc<str>>>::new(None);
+    let interner_failure = RefCell::<Option<lasso::LassoErrorKind>>::new(None);
     let aborted = RefCell::new(None);
     let mut cancellation_check = || match checkpoint() {
         Ok(()) => true,
@@ -549,9 +563,20 @@ fn lower_parsed_declaration_body_plan_internal(
         }
     };
     let (editor, declaration, method_owner) = {
+        // AstGen's historical symbol-normalizer callback is infallible.  A
+        // failed insertion therefore needs a control-flow sentinel while the
+        // walk finishes; `interner_failure` is checked immediately after that
+        // walk and before validation or `finish_declaration_body_plan`, so the
+        // sentinel can never key or publish a successful declaration artifact.
         let mut generator = AstGen::with_symbol_normalizer(&symbols, |local| {
             match module.try_resolve_raw_symbol(local) {
-                Some(spelling) => symbols.get_or_intern(spelling),
+                Some(spelling) => match rue_lexer::try_intern(&symbols, spelling) {
+                    Ok(symbol) => symbol,
+                    Err(kind) => {
+                        *interner_failure.borrow_mut() = Some(kind);
+                        lasso::Spur::default()
+                    }
+                },
                 None => {
                     if symbol_failure.borrow().is_none() {
                         *symbol_failure.borrow_mut() = Some(Arc::from(format!(
@@ -559,7 +584,13 @@ fn lower_parsed_declaration_body_plan_internal(
                             local.into_usize()
                         )));
                     }
-                    symbols.get_or_intern("_@rue:invalid-candidate-symbol")
+                    match rue_lexer::try_intern(&symbols, "_@rue:invalid-candidate-symbol") {
+                        Ok(symbol) => symbol,
+                        Err(kind) => {
+                            *interner_failure.borrow_mut() = Some(kind);
+                            lasso::Spur::default()
+                        }
+                    }
                 }
             }
         });
@@ -613,9 +644,13 @@ fn lower_parsed_declaration_body_plan_internal(
                 return Err(DeclarationBodyPlanBuildFailure::Query(abort));
             }
             Err(rue_rir::AstGenFinishError::Payload(error)) => {
-                return Err(DeclarationBodyPlanBuildFailure::Payload(Arc::from(
-                    error.to_string(),
-                )));
+                return Err(
+                    if error.is_resource_limit() || error.is_resource_exhaustion() {
+                        DeclarationBodyPlanBuildFailure::Build(error)
+                    } else {
+                        DeclarationBodyPlanBuildFailure::Payload(Arc::from(error.to_string()))
+                    },
+                );
             }
         };
         (editor, root.declaration, owner)
@@ -626,6 +661,14 @@ fn lower_parsed_declaration_body_plan_internal(
     if let Some(error) = symbol_failure.into_inner() {
         return Err(DeclarationBodyPlanBuildFailure::ForeignSymbol(error));
     }
+    if let Some(kind) = interner_failure.into_inner() {
+        return Err(DeclarationBodyPlanBuildFailure::Build(
+            RirPayloadBuildError::InternerFailure {
+                family: "interned strings",
+                kind,
+            },
+        ));
+    }
     validate_candidate_root(&editor, declaration, candidate, &symbols)?;
     let method_owner = if let Some(owner) = method_owner {
         let owner_name = module
@@ -635,7 +678,12 @@ fn lower_parsed_declaration_body_plan_internal(
                     "method owner name is foreign to the parsed module symbol universe",
                 ))
             })?;
-        let owner_name = symbols.get_or_intern(owner_name);
+        let owner_name = rue_lexer::try_intern(&symbols, owner_name).map_err(|kind| {
+            DeclarationBodyPlanBuildFailure::Build(RirPayloadBuildError::InternerFailure {
+                family: "interned strings",
+                kind,
+            })
+        })?;
         Some(PackedRirMethodOwner {
             declaration,
             name: owner_name,
@@ -1179,7 +1227,13 @@ pub(crate) fn compose_module_rir_from_candidate_artifacts(
             "module source length exceeds RIR span capacity",
         ))
     })?;
-    let symbols = SemanticSymbolUniverse::from_modules(std::slice::from_ref(&module));
+    let symbols =
+        SemanticSymbolUniverse::from_modules(std::slice::from_ref(&module)).map_err(|error| {
+            DeclarationBodyPlanBuildFailure::Build(RirPayloadBuildError::InternerFailure {
+                family: "interned strings",
+                kind: error.0,
+            })
+        })?;
     let mut editor = RirEditor::new();
     #[cfg(test)]
     let mut declaration_roots = AHashMap::with_capacity(artifacts.len());
@@ -1208,7 +1262,14 @@ pub(crate) fn compose_module_rir_from_candidate_artifacts(
             if ordinal & 63 == 0 {
                 checkpoint().map_err(DeclarationBodyPlanBuildFailure::Query)?;
             }
-            local_symbols.push(symbols.interner().get_or_intern(spelling));
+            local_symbols.push(rue_lexer::try_intern(symbols.interner(), spelling).map_err(
+                |kind| {
+                    DeclarationBodyPlanBuildFailure::Build(RirPayloadBuildError::InternerFailure {
+                        family: "interned strings",
+                        kind,
+                    })
+                },
+            )?);
         }
         let mut symbols_translated = 0usize;
         let appended = if let Some(methods) = methods {
@@ -1404,7 +1465,8 @@ fn lower_module_rir_with_work_internal(
     >,
     cancellation_check: Option<&mut dyn FnMut() -> bool>,
 ) -> Result<CandidateModuleRirOutput, (CompileError, CanonicalRirWork)> {
-    let symbols = SemanticSymbolUniverse::from_modules(std::slice::from_ref(&module));
+    let symbols = SemanticSymbolUniverse::from_modules(std::slice::from_ref(&module))
+        .expect("test module symbol universe must fit the published interner bound");
     let view = crate::parsed_modules::ParsedAstView::from_module(module.clone());
     let first_error = RefCell::<Option<CompileError>>::new(None);
     let mut work = CanonicalRirWork {
@@ -1422,9 +1484,8 @@ fn lower_module_rir_with_work_internal(
                         if slot.is_none() {
                             *slot = Some(error);
                         }
-                        symbols
-                            .interner()
-                            .get_or_intern("__rue_invalid_local_symbol")
+                        rue_lexer::try_intern(symbols.interner(), "__rue_invalid_local_symbol")
+                            .expect("test symbol universe must fit the published interner bound")
                     }
                 }
             });
@@ -1518,6 +1579,7 @@ pub(crate) fn project_candidate_module_rirs_with_work(
     merged: &CanonicalMergedProgram,
     modules: &[std::sync::Arc<CandidateModuleRirOutput>],
     query_work: CanonicalRirWork,
+    max_interner_entries: usize,
 ) -> Result<CanonicalRirOutput, (CompileError, CanonicalRirWork)> {
     let ast = merged.ast();
     if modules.len() != ast.modules().len()
@@ -1536,7 +1598,27 @@ pub(crate) fn project_candidate_module_rirs_with_work(
             query_work,
         ));
     }
-    let symbols = SemanticSymbolUniverse::from_modules(ast.modules());
+    let symbols =
+        SemanticSymbolUniverse::from_modules_with_limit(ast.modules(), max_interner_entries)
+            .map_err(|error| (interner_resource_error(error.0), query_work))?;
+    // `append_remapped_with_spans` deliberately exposes an infallible symbol
+    // callback, so consume every module symbol through the bounded interner
+    // before entering that append boundary.  This keeps exhaustion typed and
+    // leaves the callback as a pure lookup over the proven complete map.
+    for lowered in modules {
+        for (_, spelling) in lowered.symbols.interner().iter() {
+            if symbols.interner().get(spelling).is_none()
+                && symbols.interner().len() >= max_interner_entries
+            {
+                return Err((
+                    interner_resource_error(lasso::LassoErrorKind::KeySpaceExhaustion),
+                    query_work,
+                ));
+            }
+            rue_lexer::try_intern(symbols.interner(), spelling)
+                .map_err(|kind| (interner_resource_error(kind), query_work))?;
+        }
+    }
     let mut editor = RirEditor::new();
     let mut module_ranges = Vec::with_capacity(modules.len());
     let mut work = query_work;
@@ -1550,7 +1632,10 @@ pub(crate) fn project_candidate_module_rirs_with_work(
                         .interner()
                         .try_resolve(&local)
                         .expect("validated module RIR symbol belongs to its module universe");
-                    symbols.interner().get_or_intern(text)
+                    symbols
+                        .interner()
+                        .get(text)
+                        .expect("module projection pre-interned every source symbol")
                 },
                 |span| rue_span::Span::with_file(parsed.file_id(), span.start, span.end),
             )
@@ -1649,6 +1734,17 @@ mod tests {
         assert_eq!(
             rir_build_error_kind(
                 "ctx",
+                &RirPayloadBuildError::InternerFailure {
+                    family: "interned strings",
+                    kind: lasso::LassoErrorKind::FailedAllocation,
+                },
+            )
+            .code(),
+            rue_error::ErrorCode::COMPILER_RESOURCE_EXHAUSTION
+        );
+        assert_eq!(
+            rir_build_error_kind(
+                "ctx",
                 &RirPayloadBuildError::InvalidBuilderInput {
                     family: "call args",
                     reason: "bad request",
@@ -1656,6 +1752,29 @@ mod tests {
             )
             .code(),
             rue_error::ErrorCode::INTERNAL_ERROR
+        );
+    }
+
+    #[test]
+    fn canonical_merge_interning_exhaustion_is_a_resource_diagnostic() {
+        // The bound is injected into the session-owned revision symbol space,
+        // so canonical materialization and its worker queries observe it
+        // without process- or thread-local mutation.
+        let snapshot = snapshot(
+            &[
+                (1, "/first.rue", "first.rue", "fn first() {}"),
+                (2, "/second.rue", "second.rue", "fn second() {}"),
+            ],
+            1,
+        );
+        let mut session = crate::CompilerSession::with_interner_limit(20);
+        session.update(&snapshot).into_result().unwrap();
+        let errors = session.canonical_rir().unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind.code() == rue_error::ErrorCode::COMPILER_RESOURCE_LIMIT),
+            "canonical merge must report E1401, got {errors:?}"
         );
     }
 
@@ -2233,8 +2352,13 @@ fn target(inout values: [i32; 4]) -> type {
             items_visited: 1,
             ..CanonicalRirWork::default()
         };
-        let (_, failure_work) =
-            project_candidate_module_rirs_with_work(&merged, &[], query_work).unwrap_err();
+        let (_, failure_work) = project_candidate_module_rirs_with_work(
+            &merged,
+            &[],
+            query_work,
+            rue_lexer::MAX_INTERNED_STRINGS,
+        )
+        .unwrap_err();
         assert_eq!(failure_work, query_work);
     }
 

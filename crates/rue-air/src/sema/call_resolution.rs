@@ -177,7 +177,7 @@ where
     }
 
     /// Intern a body-local name in the shared provider identity universe.
-    pub fn name_symbol(&self, name: &str) -> Spur {
+    pub fn name_symbol(&self, name: &str) -> Result<Spur, lasso::LassoErrorKind> {
         self.identity.pool().intern_name(name)
     }
 
@@ -185,14 +185,18 @@ where
     /// body-local overlay. The `ConstInfo` type belongs to this driver's shared
     /// identity universe.
     pub fn register_value_const(&self, file: FileId, name: &str, info: ConstInfo) {
-        let name = self.identity.pool().intern_name(name);
+        let Ok(name) = self.identity.pool().intern_name(name) else {
+            return;
+        };
         self.value_consts
             .borrow_mut()
             .insert((file.index(), name), info);
     }
 
     pub fn value_const(&self, file: FileId, name: &str) -> Option<ConstInfo> {
-        let name = self.identity.pool().intern_name(name);
+        let Ok(name) = self.identity.pool().intern_name(name) else {
+            return None;
+        };
         self.value_consts
             .borrow()
             .get(&(file.index(), name))
@@ -200,14 +204,18 @@ where
     }
 
     pub fn register_module_binding(&self, file: FileId, name: &str, info: ConstInfo) {
-        let name = self.identity.pool().intern_name(name);
+        let Ok(name) = self.identity.pool().intern_name(name) else {
+            return;
+        };
         self.module_bindings
             .borrow_mut()
             .insert((file.index(), name), info);
     }
 
     pub fn module_binding(&self, file: FileId, name: &str) -> Option<ConstInfo> {
-        let name = self.identity.pool().intern_name(name);
+        let Ok(name) = self.identity.pool().intern_name(name) else {
+            return None;
+        };
         self.module_bindings
             .borrow()
             .get(&(file.index(), name))
@@ -307,6 +315,7 @@ where
         let info = self.identity.pool_mut()?.resolve_method(key, handle).ok()?;
         self.identity
             .register_named_method(owner_file, owner_type_name, method, info)
+            .ok()?
             .then_some(info)
     }
 
@@ -319,7 +328,7 @@ where
         owner: &str,
         method: &str,
         info: MethodInfo,
-    ) -> bool {
+    ) -> Result<bool, lasso::LassoErrorKind> {
         self.identity
             .register_anonymous_method(file, owner, method, info)
     }

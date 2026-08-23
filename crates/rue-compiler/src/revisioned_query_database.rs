@@ -11437,6 +11437,7 @@ impl Default for RevisionedQueryDatabase {
         Self::with_declaration_memo_retention_and_concurrency(
             DECLARATION_QUERY_MEMO_RETENTION,
             crate::query_concurrency(),
+            u32::MAX as usize,
         )
     }
 }
@@ -11447,7 +11448,11 @@ impl RevisionedQueryDatabase {
     /// eviction-lifecycle tests pass a small cap so exceeding it stays cheap.
     #[cfg(test)]
     pub(crate) fn with_declaration_memo_retention(declaration_memo_retention: usize) -> Self {
-        Self::with_declaration_memo_retention_and_concurrency(declaration_memo_retention, 1)
+        Self::with_declaration_memo_retention_and_concurrency(
+            declaration_memo_retention,
+            1,
+            rue_lexer::MAX_INTERNED_STRINGS,
+        )
     }
 
     #[cfg(test)]
@@ -11455,12 +11460,23 @@ impl RevisionedQueryDatabase {
         Self::with_declaration_memo_retention_and_concurrency(
             DECLARATION_QUERY_MEMO_RETENTION,
             query_concurrency,
+            rue_lexer::MAX_INTERNED_STRINGS,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_interner_limit(max_entries: usize) -> Self {
+        Self::with_declaration_memo_retention_and_concurrency(
+            DECLARATION_QUERY_MEMO_RETENTION,
+            1,
+            max_entries,
         )
     }
 
     fn with_declaration_memo_retention_and_concurrency(
         declaration_memo_retention: usize,
         query_concurrency: usize,
+        max_interner_entries: usize,
     ) -> Self {
         let runtime = CompilerQueryRuntime(QueryRuntime::new(query_concurrency));
         let body_reachability_meter = Arc::new(BodyReachabilityMeter::default());
@@ -16299,7 +16315,7 @@ impl RevisionedQueryDatabase {
                     lookup_root_lease: lookup_root_lease.clone(),
                     runtime: runtime.clone(),
                     shared_durable_payloads: shared_durable_payloads.clone(),
-                    symbol_space: RevisionSymbolSpace::default(),
+                    symbol_space: RevisionSymbolSpace::with_owner_bound(max_interner_entries),
                     #[cfg(test)]
                     inject_body_transaction_failure: inject_body_transaction_failure.clone(),
                     #[cfg(test)]
@@ -17464,15 +17480,30 @@ impl BodyInputResolver {
 /// each other's space and abandon each other's bodies without progressing;
 /// keeping the recent few makes that need more simultaneously live revisions
 /// than the engine pins, while still bounding how many interners are resident.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct RevisionSymbolSpace {
-    generations: rue_rir::SymbolSpaceGenerations,
     live: Mutex<VecDeque<(Revision, rue_rir::SharedSymbolSpace)>>,
+    generations: rue_rir::SymbolSpaceGenerations,
+    max_entries: usize,
+}
+
+impl Default for RevisionSymbolSpace {
+    fn default() -> Self {
+        Self::with_owner_bound(rue_lexer::MAX_INTERNED_STRINGS)
+    }
 }
 
 impl RevisionSymbolSpace {
     /// How many revisions' equality spaces stay live at once.
     const WINDOW: usize = 4;
+
+    fn with_owner_bound(max_entries: usize) -> Self {
+        Self {
+            live: Mutex::new(VecDeque::new()),
+            generations: rue_rir::SymbolSpaceGenerations::default(),
+            max_entries,
+        }
+    }
 
     /// The live generation for `revision`, minting it if this revision has no
     /// live generation yet.
@@ -17484,7 +17515,9 @@ impl RevisionSymbolSpace {
         if let Some((_, space)) = live.iter().find(|(pinned, _)| *pinned == revision) {
             return space.clone();
         }
-        let space = self.generations.next_generation();
+        let space = self
+            .generations
+            .next_generation_with_owner_bound(self.max_entries);
         live.push_back((revision, space.clone()));
         while live.len() > Self::WINDOW {
             if let Some((_, evicted)) = live.pop_front() {
@@ -25740,6 +25773,13 @@ mod tests {
                 },
                 rue_error::ErrorCode::COMPILER_RESOURCE_EXHAUSTION,
             ),
+            (
+                rue_rir::RirPayloadBuildError::InternerFailure {
+                    family: "packed test",
+                    kind: lasso::LassoErrorKind::FailedAllocation,
+                },
+                rue_error::ErrorCode::COMPILER_RESOURCE_EXHAUSTION,
+            ),
         ];
         for (error, expected) in cases {
             let artifact_kind =
@@ -30425,6 +30465,7 @@ fn main() -> i32 {
             &merged,
             &module_rirs,
             query_work,
+            rue_lexer::MAX_INTERNED_STRINGS,
         )
         .unwrap();
         assert_eq!(projected_rir.work().modules_visited, 2);
@@ -36514,7 +36555,7 @@ fn main() -> i32 {
                     .named_method_info(&shift_key, file, "Widget", "shift")
                     .expect("named_method_info resolves");
                 let compact_owner = named.struct_type.as_struct().expect("Widget is a struct");
-                let compact_name = facts.name_symbol("shift");
+                let compact_name = facts.name_symbol("shift").expect("shift is interned");
                 assert_eq!(
                     endpoints
                         .method_info(compact_owner, compact_name)
@@ -36528,7 +36569,9 @@ fn main() -> i32 {
                     ..named
                 };
                 assert!(
-                    facts.register_anonymous_method(file, "Widget", "shift", anonymous),
+                    facts
+                        .register_anonymous_method(file, "Widget", "shift", anonymous)
+                        .expect("shift name is admitted"),
                     "the anonymous method registers atomically under both lookup keys"
                 );
                 let info = facts
@@ -36719,8 +36762,9 @@ fn main() -> i32 {
                     DurableDeclSource::from_declarations(&decls),
                     rue_air::BodyRirView::from_parts(rir_ref, interner),
                 );
-                let token =
-                    facts.register_named_nominal(box_key, file.index(), "Box", Kind::Struct);
+                let token = facts
+                    .register_named_nominal(box_key, file.index(), "Box", Kind::Struct)
+                    .expect("Box name is admitted");
                 let ty = facts
                     .resolve_instance_type(&TypeInstanceKey::<
                         SemanticDefinitionToken,
@@ -36817,12 +36861,15 @@ fn main() -> i32 {
                     rue_air::BodyRirView::from_parts(rir_ref, interner),
                 );
                 let named = |token: DTok| -> T<DTok, MTok> { T::Nominal(N::Named(token)) };
-                let point_token =
-                    facts.register_named_nominal(point_key.clone(), 1, "Point", Kind::Struct);
-                let holder_token =
-                    facts.register_named_nominal(holder_key.clone(), 1, "Holder", Kind::Struct);
-                let color_token =
-                    facts.register_named_nominal(color_key.clone(), 1, "Color", Kind::Enum);
+                let point_token = facts
+                    .register_named_nominal(point_key.clone(), 1, "Point", Kind::Struct)
+                    .expect("Point name is admitted");
+                let holder_token = facts
+                    .register_named_nominal(holder_key.clone(), 1, "Holder", Kind::Struct)
+                    .expect("Holder name is admitted");
+                let color_token = facts
+                    .register_named_nominal(color_key.clone(), 1, "Color", Kind::Enum)
+                    .expect("Color name is admitted");
 
                 let point_ty = facts
                     .resolve_instance_type(&named(point_token))
@@ -37114,12 +37161,9 @@ fn main() -> i32 {
                     adapter,
                     rue_air::BodyRirView::from_parts(rir, interner),
                 );
-                let point_token = facts.register_named_nominal(
-                    point_key.clone(),
-                    file.index(),
-                    "Point",
-                    Kind::Struct,
-                );
+                let point_token = facts
+                    .register_named_nominal(point_key.clone(), file.index(), "Point", Kind::Struct)
+                    .expect("Point name is admitted");
 
                 // Module identity — r4b-3 / the flip (pool-refused arm).
                 let module = facts.resolve_instance_type(&T::Module(MTok::new(0, 0)));
@@ -39859,6 +39903,8 @@ fn main() -> i32 {
                         function,
                         canonical: body.clone(),
                         body_span,
+                        #[cfg(test)]
+                        interner_limit: None,
                     }),
                     materialization: Arc::new(facts),
                 },

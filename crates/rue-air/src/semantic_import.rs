@@ -10,7 +10,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 use ahash::AHashMap;
-use lasso::{Spur, ThreadedRodeo};
+use lasso::{LassoErrorKind, Spur, ThreadedRodeo};
 use rue_span::FileId;
 
 use crate::Node;
@@ -21,6 +21,7 @@ use crate::{
     SemanticBodyProjection, SemanticImportedBody, StructDef, StructField, StructId, Type,
     TypeInstanceKey, TypeInternPool,
 };
+use rue_rir::SharedSymbolSpace;
 use rue_span::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -356,8 +357,11 @@ impl<K, M> SemanticImportConstValue<K, M> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemanticImportFailure {
+    /// The body-local symbol domain rejected a new spelling. Preserve the
+    /// lasso classification so the compiler can distinguish E1401 from E1402.
+    Interner(LassoErrorKind),
     DuplicateNominal,
     DuplicateNominalLocalIdentity,
     DuplicateFunction,
@@ -613,7 +617,11 @@ enum LocalNominal {
 /// epoch-branded wrappers, so request-local IDs cannot cross epoch boundaries.
 pub struct SemanticImportEpoch<K: Ord, M: Ord> {
     epoch: Arc<()>,
-    interner: ThreadedRodeo,
+    interner: Arc<ThreadedRodeo>,
+    /// The owner of the local interner. Keeping insertion behind this space
+    /// lets canonical callers inject their request-local bound without a
+    /// mutable or thread-local test override.
+    symbol_space: SharedSymbolSpace,
     type_pool: TypeInternPool,
     module_registry: ModuleRegistry,
     nominals: AHashMap<NominalInstanceKey<K, M>, LocalNominal>,
@@ -719,7 +727,13 @@ where
                 )),
             },
             |_| Err(SemanticBodyImportFailure::UnsupportedGenericCall),
-            |name| interner.get_or_intern(name),
+            |name| {
+                interner.try_get_or_intern(name).map_err(|error| {
+                    SemanticBodyImportFailure::Semantic(SemanticImportFailure::Interner(
+                        error.kind(),
+                    ))
+                })
+            },
         )
     }
 
@@ -738,7 +752,7 @@ where
             (Spur, Vec<Type>, Vec<crate::sema::ConstValue>),
             SemanticBodyImportFailure,
         >,
-        intern: impl Fn(&str) -> Spur,
+        intern: impl Fn(&str) -> Result<Spur, SemanticBodyImportFailure>,
     ) -> Result<SemanticImportedBody<K, M>, SemanticBodyImportFailure> {
         use SemanticBodyImportFailure as F;
         let body_len = body_span
@@ -925,7 +939,7 @@ where
                     let args = call_args(args, current)?;
                     air.add_call(
                         Some(*runtime),
-                        intern(runtime.helper().helper().symbol),
+                        intern(runtime.helper().helper().symbol)?,
                         &args,
                         ty,
                         span,
@@ -948,7 +962,7 @@ where
                     name,
                     args,
                 } => {
-                    let name = intern(name.as_ref());
+                    let name = intern(name.as_ref())?;
                     if args.iter().any(|arg| arg.mode != crate::AirArgMode::Normal) {
                         return Err(F::InvalidParameterModes);
                     }
@@ -1175,20 +1189,36 @@ where
         })
     }
     pub fn new(
+        nominals: Vec<SemanticImportNominal<K>>,
+        function_keys: Vec<(K, Arc<str>)>,
+        module_keys: Vec<M>,
+    ) -> Result<Self, SemanticImportFailure> {
+        Self::new_in_space(
+            nominals,
+            function_keys,
+            module_keys,
+            SharedSymbolSpace::private(),
+        )
+    }
+
+    fn new_in_space(
         mut nominals: Vec<SemanticImportNominal<K>>,
         mut function_keys: Vec<(K, Arc<str>)>,
         mut module_keys: Vec<M>,
+        symbol_space: SharedSymbolSpace,
     ) -> Result<Self, SemanticImportFailure> {
         nominals.sort_by(|a, b| a.key.cmp(&b.key));
         function_keys.sort_by(|a, b| a.0.cmp(&b.0));
         module_keys.sort();
 
-        let interner = ThreadedRodeo::new();
+        let interner = symbol_space.interner().clone();
         let type_pool = TypeInternPool::new();
         let module_registry = ModuleRegistry::new();
         let mut builtins = BTreeMap::new();
         for builtin in rue_builtins::BUILTIN_ENUMS {
-            let symbol = interner.get_or_intern(builtin.name);
+            let symbol = symbol_space
+                .try_intern(builtin.name)
+                .map_err(SemanticImportFailure::Interner)?;
             let (id, _) = type_pool.register_enum(
                 symbol,
                 EnumDef {
@@ -1222,7 +1252,9 @@ where
             if !function_identities.insert(name.clone()) {
                 return Err(SemanticImportFailure::DuplicateFunctionLocalIdentity);
             }
-            let symbol = interner.get_or_intern(name.as_ref());
+            let symbol = symbol_space
+                .try_intern(name.as_ref())
+                .map_err(SemanticImportFailure::Interner)?;
             if functions
                 .insert(FunctionInstanceKey::Definition(key), symbol)
                 .is_some()
@@ -1259,7 +1291,9 @@ where
             }
             let file_id = module_files[&nominal.module_path];
             let name = nominal.name.clone();
-            let symbol = interner.get_or_intern(name.as_ref());
+            let symbol = symbol_space
+                .try_intern(name.as_ref())
+                .map_err(SemanticImportFailure::Interner)?;
             let value = match nominal.kind {
                 SemanticImportNominalKind::Struct => {
                     let (id, _) = type_pool.declare_struct(
@@ -1301,7 +1335,9 @@ where
         // stable core `str` identity. Preserve that order so a fresh epoch's
         // packed nominal IDs match exported AIR exactly. StrBuf is deliberately
         // absent: it is an ordinary source nominal supplied by std.
-        let str_symbol = interner.get_or_intern("str");
+        let str_symbol = symbol_space
+            .try_intern("str")
+            .map_err(SemanticImportFailure::Interner)?;
         let ptr_id = type_pool.intern_ptr_const_from_type(Type::U8);
         let (str_id, _) = type_pool.register_struct(
             str_symbol,
@@ -1333,6 +1369,7 @@ where
         let mut epoch = Self {
             epoch: Arc::new(()),
             interner,
+            symbol_space,
             type_pool,
             module_registry,
             nominals: local,
@@ -1356,9 +1393,27 @@ where
     /// reachable-program universe. Duplicate identities and duplicate local
     /// symbols fail before a body can be imported.
     pub fn new_local(
+        nominals: Vec<SemanticLocalNominal<K, M>>,
+        callables: Vec<SemanticLocalCallable<K, M>>,
+        modules: Vec<M>,
+    ) -> Result<Self, SemanticImportFailure>
+    where
+        K: Eq,
+        M: Clone + Eq,
+    {
+        Self::new_local_in_space(nominals, callables, modules, SharedSymbolSpace::private())
+    }
+
+    /// Construct a body-local epoch using the caller-owned symbol space.
+    ///
+    /// The compiler uses this for request-local CFG materialization so the
+    /// actual AIR insertion path, rather than a post-hoc length check, is
+    /// governed by the same bounded/fallible policy as other canonical names.
+    pub fn new_local_in_space(
         mut nominals: Vec<SemanticLocalNominal<K, M>>,
         mut callables: Vec<SemanticLocalCallable<K, M>>,
         modules: Vec<M>,
+        symbol_space: SharedSymbolSpace,
     ) -> Result<Self, SemanticImportFailure>
     where
         K: Eq,
@@ -1381,7 +1436,7 @@ where
         if modules.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(SemanticImportFailure::DuplicateModule);
         }
-        let mut epoch = Self::new(Vec::new(), Vec::new(), modules)?;
+        let mut epoch = Self::new_in_space(Vec::new(), Vec::new(), modules, symbol_space)?;
         epoch.functions.reserve(callables.len());
         epoch.nominals.reserve(nominals.len());
 
@@ -1390,7 +1445,10 @@ where
             if !callable_symbols.insert(callable.symbol.clone()) {
                 return Err(SemanticImportFailure::DuplicateCallableLocalIdentity);
             }
-            let symbol = epoch.interner.get_or_intern(callable.symbol.as_ref());
+            let symbol = epoch
+                .symbol_space
+                .try_intern(callable.symbol.as_ref())
+                .map_err(SemanticImportFailure::Interner)?;
             if epoch
                 .functions
                 .insert(callable.key.clone(), symbol)
@@ -1441,7 +1499,10 @@ where
                 return Err(SemanticImportFailure::DuplicateNominalLocalIdentity);
             }
             let file_id = module_files[&nominal.module_path];
-            let symbol = epoch.interner.get_or_intern(nominal.name.as_ref());
+            let symbol = epoch
+                .symbol_space
+                .try_intern(nominal.name.as_ref())
+                .map_err(SemanticImportFailure::Interner)?;
             let local = match nominal.kind {
                 SemanticImportNominalKind::Struct => {
                     let (id, _) = epoch.type_pool.declare_struct(
@@ -1580,7 +1641,11 @@ where
                 )?;
                 Ok((symbol, Vec::new(), Vec::new()))
             },
-            |value| self.interner.get_or_intern(value),
+            |value| {
+                self.symbol_space.try_intern(value).map_err(|kind| {
+                    SemanticBodyImportFailure::Semantic(SemanticImportFailure::Interner(kind))
+                })
+            },
         )?;
         let materialized_types = additional_types
             .iter()
@@ -1627,7 +1692,7 @@ where
             param_modes,
             allow_unreachable_code,
             type_pool: self.type_pool.freeze(),
-            interner: Arc::new(self.interner),
+            interner: self.interner,
             aggregate_types,
             materialized_types,
             strings,
@@ -1658,7 +1723,10 @@ where
             if kind != SemanticImportNominalKind::Struct {
                 return Err(SemanticImportFailure::BuiltinNominalKindMismatch);
             }
-            let symbol = self.interner.get_or_intern(name.as_ref());
+            let symbol = self
+                .symbol_space
+                .try_intern(name.as_ref())
+                .map_err(SemanticImportFailure::Interner)?;
             if let Some(existing) = type_pool.get_struct_by_file_name(FileId::DEFAULT, symbol) {
                 return Ok(LocalNominal::Struct(
                     existing
@@ -1785,7 +1853,10 @@ where
                     .try_intern_ptr_mut(value)
                     .map_err(|_| SemanticImportFailure::InvalidStructuralType)?,
                 F::Slice { element, name } => {
-                    let symbol = self.interner.get_or_intern(name.as_ref());
+                    let symbol = self
+                        .symbol_space
+                        .try_intern(name.as_ref())
+                        .map_err(SemanticImportFailure::Interner)?;
                     let pointer = type_pool.intern_ptr_const_from_type(element);
                     let (id, _) = type_pool.register_struct(
                         symbol,
@@ -1894,9 +1965,12 @@ where
             // The epoch owns an isolated interner, so the content round-trips
             // through it for validation; durable const payloads are never
             // installed into a live analyzer (install fails closed on consts).
-            SemanticImportConstValue::String(content) => {
-                ConstValue::String(self.interner.get_or_intern(content.as_ref()).into())
-            }
+            SemanticImportConstValue::String(content) => ConstValue::String(
+                self.symbol_space
+                    .try_intern(content.as_ref())
+                    .map_err(SemanticImportFailure::Interner)?
+                    .into(),
+            ),
         })
     }
 
@@ -2253,7 +2327,7 @@ where
         &self.type_pool
     }
     pub fn interner(&self) -> &ThreadedRodeo {
-        &self.interner
+        self.interner.as_ref()
     }
     pub fn module_registry(&self) -> &ModuleRegistry {
         &self.module_registry

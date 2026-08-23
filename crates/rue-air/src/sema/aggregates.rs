@@ -200,7 +200,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }) else {
             return Ok(None);
         };
-        let method = self.body_interner().get_or_intern("equals_borrowed");
+        let method = self.intern_body_symbol("equals_borrowed")?;
         if self.method_info((struct_id, method)).is_none() {
             return Ok(None);
         }
@@ -210,11 +210,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let (rhs_arg, rhs_scope) =
             self.materialize_borrow_argument(air, rhs.air_ref, rhs.ty, span, ctx)?;
         temp_scope.extend(rhs_scope);
-        let call_name = self.body_interner().get_or_intern(&self.method_symbol(
-            struct_id,
-            "equals_borrowed",
-            false,
-        ));
+        let call_name =
+            self.intern_body_symbol(&self.method_symbol(struct_id, "equals_borrowed", false))?;
         let equal = air.add_call(
             None,
             call_name,

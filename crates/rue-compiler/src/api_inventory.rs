@@ -87,7 +87,7 @@ fn local_semantic_materialization_is_an_inert_exact_fact_boundary() {
         "pub(crate) fn new(",
         "pub(crate) fn identity(&self) -> &StableDefinitionKey",
         "pub(crate) fn lang_item(&self) -> Option<rue_air::LangItem>",
-        "rue_air::SemanticImportEpoch::new_local(",
+        "rue_air::SemanticImportEpoch::new_local_in_space(",
         ".materialize_local_body_with_types(",
         "FunctionInstanceKey::AnonymousMember",
         "materialize_canonical_body_with_indexes(",
@@ -178,8 +178,8 @@ fn cfg_queries_own_local_semantic_materialization_and_terminal_domains() {
         );
     }
     for required in [
-        "crate::local_semantic_materialization::materialize_canonical_body_with_indexes(",
-        "crate::local_semantic_materialization::materialize_semantic_body_with_indexes(",
+        "crate::local_semantic_materialization::materialize_canonical_body_with_indexes_in_space(",
+        "crate::local_semantic_materialization::materialize_semantic_body_with_indexes_in_space(",
     ] {
         let live_calls = cfg
             .lines()
@@ -296,6 +296,24 @@ fn codegen_queries_consume_only_registered_optimized_cfg_domains() {
             && session.contains("semantic functions only so focused tests can inspect units")
             && !session.contains("_foreign_symbols: &[String]"),
         "collection must retain only the test-only pre-object inspection adapter"
+    );
+}
+
+#[test]
+fn bounded_symbol_space_constructor_is_owner_only() {
+    // rue-rir is a separate crate, so the revision owner cannot use a
+    // crate-private constructor. The constructor is deliberately doc-hidden;
+    // this inventory is the scoped-authority gate that keeps its only normal
+    // build caller inside RevisionSymbolSpace, while the public test seam
+    // remains CompilerSession::with_interner_limit (cfg(test) only).
+    let database = include_str!("revisioned_query_database.rs");
+    let production = database.rsplit_once("#[cfg(test)]").unwrap().0;
+    assert_eq!(
+        production
+            .matches("next_generation_with_owner_bound")
+            .count(),
+        1,
+        "only the revision owner may inject the test bound"
     );
 }
 

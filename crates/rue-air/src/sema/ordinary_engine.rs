@@ -112,6 +112,14 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
     fn generated_structs(&self) -> &AHashMap<Spur, StructId>;
 
     fn body_interner(&self) -> &ThreadedRodeo;
+    /// Fallible form used by every body-derived spelling. Canonical hosts
+    /// route this through their owning revision symbol policy; standalone
+    /// hosts retain their private interner and its exact Lasso classification.
+    fn try_intern_body_symbol(&self, text: impl AsRef<str>) -> Result<Spur, lasso::LassoErrorKind> {
+        self.body_interner()
+            .try_get_or_intern(text)
+            .map_err(|error| error.kind())
+    }
     fn body_type_pool(&self) -> &TypeInternPool;
     fn struct_id_for_name(&self, name: Spur) -> Option<StructId>;
     fn generated_structs_mut(&mut self) -> &mut AHashMap<Spur, StructId>;
@@ -313,6 +321,17 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn body_interner(&self) -> &ThreadedRodeo {
         self.storage.body_interner()
     }
+    pub(crate) fn intern_body_symbol(&self, text: impl AsRef<str>) -> CompileResult<Spur> {
+        self.storage.try_intern_body_symbol(text).map_err(|kind| {
+            CompileError::without_span(rue_error::interner_error_kind(
+                kind,
+                "body symbol interning failed",
+            ))
+        })
+    }
+    pub(crate) fn intern_index_path_segment(&self, index: u64) -> CompileResult<Spur> {
+        self.intern_body_symbol(index.to_string())
+    }
     pub(crate) fn body_type_pool(&self) -> &TypeInternPool {
         self.storage.body_type_pool()
     }
@@ -399,13 +418,17 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn record_body_callable_dependency(&mut self, symbol: Spur) {
         self.storage.record_body_callable_dependency(symbol)
     }
-    pub(crate) fn record_body_method_dependency(&mut self, key: (StructId, Spur)) {
+    pub(crate) fn record_body_method_dependency(
+        &mut self,
+        key: (StructId, Spur),
+    ) -> CompileResult<()> {
         let Some(info) = self.method_info(key) else {
-            return;
+            return Ok(());
         };
         let symbol = self.method_symbol(key.0, self.body_interner().resolve(&key.1), info.has_self);
-        let symbol = self.body_interner().get_or_intern(&symbol);
+        let symbol = self.intern_body_symbol(&symbol)?;
         self.record_body_callable_dependency(symbol);
+        Ok(())
     }
     pub(crate) fn record_specialization_dependency(
         &mut self,
@@ -797,7 +820,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     }
     pub(crate) fn get_or_create_str_struct(&mut self, _span: Span) -> CompileResult<Type> {
         use crate::types::{StructDef, StructField};
-        let type_sym = self.body_interner().get_or_intern("str");
+        let type_sym = self.intern_body_symbol("str")?;
         if let Some(struct_id) = self.storage.struct_id_for_name(type_sym) {
             return Ok(Type::new_struct(struct_id));
         }
@@ -997,8 +1020,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     ) -> CompileResult<Type> {
         let symbols = segments
             .iter()
-            .map(|segment| self.body_interner().get_or_intern(segment))
-            .collect::<Vec<_>>();
+            .map(|segment| self.intern_body_symbol(segment))
+            .collect::<CompileResult<Vec<_>>>()?;
         let mut builder = rue_rir::RirTypeSyntaxBuilder::default();
         let root = builder.push_qualified_type(symbols).map_err(|failure| {
             CompileError::new(
@@ -1119,8 +1142,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         self.guard_anonymous_digest_collision(digest, &identity)?;
         let id = self.storage.body_type_pool().reserve_struct_id();
         let name = super::anon_structs::anonymous_struct_name(digest);
-        let name_spur = self.storage.body_interner().get_or_intern(&name);
-        let drop_marker = self.storage.body_interner().get_or_intern("__drop");
+        let name_spur = self.intern_body_symbol(&name)?;
+        let drop_marker = self.intern_body_symbol("__drop")?;
         let has_destructor = sigs.iter().any(|sig| sig.name == drop_marker);
         let is_copy = !has_destructor
             && fields
@@ -1176,7 +1199,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         let digest = self.stable_anonymous_identity_digest(&identity);
         self.guard_anonymous_digest_collision(digest, &identity)?;
         let name = super::anon_structs::anonymous_enum_name(digest);
-        let name_spur = self.storage.body_interner().get_or_intern(&name);
+        let name_spur = self.intern_body_symbol(&name)?;
         let def = crate::types::EnumDef {
             name: Arc::from(name.as_str()),
             variants: names.iter().map(|n| Arc::from(n.as_str())).collect(),
@@ -1556,7 +1579,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         for (_, ty, _, is_comptime) in &param_info {
             reject_runtime_type_value(*ty, *is_comptime, span)?;
         }
-        let function_symbol = self.storage.body_interner().get_or_intern(fn_name);
+        let function_symbol = self.intern_body_symbol(fn_name)?;
         let producer = self
             .canonical_function_producer(function_symbol, &AHashMap::new(), &AHashMap::new())
             .map_err(|failure| {
@@ -1642,7 +1665,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         AHashSet<Spur>,
         std::collections::HashSet<(StructId, Spur)>,
     )> {
-        let symbol = self.storage.body_interner().get_or_intern(full_name);
+        let symbol = self.intern_body_symbol(full_name)?;
         let identity = crate::FunctionInstanceKey::Definition(
             self.storage.function_identity(symbol).map_err(|failure| {
                 CompileError::new(
@@ -1653,7 +1676,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 )
             })?,
         );
-        let self_name = self.storage.body_interner().get_or_intern("self");
+        let self_name = self.intern_body_symbol("self")?;
         let mut resolved_params = Vec::with_capacity(params.len() + usize::from(has_self));
         if has_self {
             resolved_params.push((self_name, struct_type, self_mode, false));
@@ -1708,7 +1731,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         let struct_id = struct_type
             .as_struct()
             .expect("method receiver must be a struct");
-        let self_type_name = self.storage.body_interner().get_or_intern("Self");
+        let self_type_name = self.intern_body_symbol("Self")?;
         let mut type_subst = self.storage.anon_struct_type_subst(struct_id);
         type_subst.insert(self_type_name, struct_type);
         let captured_values = self.storage.anon_struct_captured_values(struct_id);
@@ -1786,10 +1809,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         AHashSet<Spur>,
         std::collections::HashSet<(StructId, Spur)>,
     )> {
-        let self_name = self.storage.body_interner().get_or_intern("self");
+        let self_name = self.intern_body_symbol("self")?;
         let params = [(self_name, struct_type, RirParamMode::Normal, false)];
         let identity_token = self.storage.function_identity(
-            self.storage.body_interner().get_or_intern(full_name),
+            self.intern_body_symbol(full_name)?,
         ).map_err(|failure| {
             CompileError::new(
                 ErrorKind::InternalError(format!(
@@ -1954,7 +1977,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // every method body — named or anonymous struct — that actually
         // reaches analysis. By-value `self` (Normal) and destructors are
         // unaffected.
-        let self_sym = self.body_interner().get_or_intern("self");
+        let self_sym = self.intern_body_symbol("self")?;
         if let Some((_, _, mode, _)) = params
             .iter()
             .find(|(name, _, mode, _)| *name == self_sym && *mode != RirParamMode::Normal)

@@ -37,6 +37,10 @@ pub enum RirPayloadBuildError {
     CapacityFailure {
         family: &'static str,
     },
+    InternerFailure {
+        family: &'static str,
+        kind: lasso::LassoErrorKind,
+    },
     InvalidBuilderInput {
         family: &'static str,
         reason: &'static str,
@@ -49,12 +53,14 @@ impl RirPayloadBuildError {
     /// to pick `E1401` over an internal-error code.
     pub fn is_resource_limit(&self) -> bool {
         matches!(self, Self::ResourceLimitExceeded { .. })
+            || matches!(self, Self::InternerFailure { kind, .. } if !kind.is_failed_alloc())
     }
 
     /// Whether this failure is an allocation failure for an otherwise
     /// representable request (`E1402`), not a limit rejection.
     pub fn is_resource_exhaustion(&self) -> bool {
         matches!(self, Self::CapacityFailure { .. })
+            || matches!(self, Self::InternerFailure { kind, .. } if kind.is_failed_alloc())
     }
 }
 
@@ -70,6 +76,9 @@ impl fmt::Display for RirPayloadBuildError {
             }
             Self::CapacityFailure { family } => {
                 write!(f, "could not reserve storage for RIR {family} payload")
+            }
+            Self::InternerFailure { family, kind } => {
+                write!(f, "could not intern RIR {family} spelling: {kind:?}")
             }
             Self::InvalidBuilderInput { family, reason } => {
                 write!(f, "invalid RIR {family} builder input: {reason}")

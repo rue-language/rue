@@ -346,6 +346,9 @@ pub trait DurableAnonymousSource<K, M> {
 /// closed refusal — the pool never approximates an identity it cannot mint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::sema) enum IdentityMintError {
+    /// The shared revision symbol space rejected a new spelling. Preserve the
+    /// exact allocator/key-space classification for the compiler boundary.
+    Interner(lasso::LassoErrorKind),
     /// A named nominal key resolves to no durable metadata.
     MissingNominal,
     /// A callable (function / method) key resolves to no durable signature.
@@ -610,13 +613,24 @@ where
     }
 
     fn with_space_mode(source: S, space: SharedSymbolSpace, allow_post_seal_overlay: bool) -> Self {
-        Self {
-            pool: Rc::new(RefCell::new(BodyIdentityPool::new(source, space))),
+        Self::with_space_mode_fallible(source, space, allow_post_seal_overlay)
+            .unwrap_or_else(|error| panic!("private provider identity bootstrap failed: {error:?}"))
+    }
+
+    fn with_space_mode_fallible(
+        source: S,
+        space: SharedSymbolSpace,
+        allow_post_seal_overlay: bool,
+    ) -> Result<Self, IdentityMintError> {
+        Ok(Self {
+            pool: Rc::new(RefCell::new(
+                BodyIdentityPool::try_new(source, space).map_err(IdentityMintError::Interner)?,
+            )),
             modules: Rc::new(RefCell::new(ProviderModuleRegistry::default())),
             methods: Rc::new(RefCell::new(ProviderMethodRegistry::default())),
             frozen: Rc::new(Cell::new(false)),
             allow_post_seal_overlay,
-        }
+        })
     }
 
     /// Return the interner authority shared by all provider fact state in this
@@ -626,7 +640,7 @@ where
     }
 
     /// Intern a provider-facing name in the shared body authority.
-    pub fn name_symbol(&self, name: &str) -> Spur {
+    pub fn name_symbol(&self, name: &str) -> Result<Spur, lasso::LassoErrorKind> {
         self.pool.borrow().intern_name(name)
     }
 
@@ -683,16 +697,16 @@ where
         owner: &str,
         method: &str,
         info: MethodInfo,
-    ) -> bool {
+    ) -> Result<bool, lasso::LassoErrorKind> {
         let Some(owner_id) = info.struct_type.as_struct() else {
-            return false;
+            return Ok(false);
         };
-        let method_symbol = self.pool().intern_name(method);
-        self.methods.borrow_mut().register_anonymous(
+        let method_symbol = self.pool().intern_name(method)?;
+        Ok(self.methods.borrow_mut().register_anonymous(
             (owner_id, method_symbol),
             (file, Arc::from(owner), Arc::from(method)),
             info,
-        )
+        ))
     }
 
     /// Install one named method under both lookup preimages. The registry keeps
@@ -704,16 +718,16 @@ where
         owner: &str,
         method: &str,
         info: MethodInfo,
-    ) -> bool {
+    ) -> Result<bool, lasso::LassoErrorKind> {
         let Some(owner_id) = info.struct_type.as_struct() else {
-            return false;
+            return Ok(false);
         };
-        let method_symbol = self.pool().intern_name(method);
-        self.methods.borrow_mut().register_named(
+        let method_symbol = self.pool().intern_name(method)?;
+        Ok(self.methods.borrow_mut().register_named(
             (owner_id, method_symbol),
             (file, Arc::from(owner), Arc::from(method)),
             info,
-        )
+        ))
     }
 
     pub(in crate::sema) fn method(&self, key: (StructId, Spur)) -> Option<MethodInfo> {
@@ -776,13 +790,21 @@ where
     S: DurableNominalSource<K, M>,
 {
     pub fn new(source: S, space: SharedSymbolSpace) -> Self {
-        let identity = ProviderIdentityContext::with_space_mode(source, space.clone(), true);
+        Self::try_new(source, space).expect("provider identity bootstrap must fit its symbol space")
+    }
+
+    pub(in crate::sema) fn try_new(
+        source: S,
+        space: SharedSymbolSpace,
+    ) -> Result<Self, IdentityMintError> {
+        let identity =
+            ProviderIdentityContext::with_space_mode_fallible(source, space.clone(), true)?;
         let type_pool = identity.type_pool();
-        Self {
+        Ok(Self {
             identity,
             type_pool,
             space,
-        }
+        })
     }
 
     pub fn identity_context(&self) -> ProviderIdentityContext<K, M, S> {
@@ -924,13 +946,16 @@ where
 {
     /// Create an empty pool with the builtin enums and the core `str` identity
     /// pre-registered, mirroring a fresh import epoch.
-    pub(in crate::sema) fn new(source: S, space: SharedSymbolSpace) -> Self {
+    pub(in crate::sema) fn try_new(
+        source: S,
+        space: SharedSymbolSpace,
+    ) -> Result<Self, lasso::LassoErrorKind> {
         let interner = Arc::clone(space.interner());
         let type_pool = Rc::new(TypeInternPool::new());
         let mut builtins = AHashMap::new();
 
         for builtin in rue_builtins::BUILTIN_ENUMS {
-            let symbol = interner.get_or_intern(builtin.name);
+            let symbol = space.try_intern(builtin.name)?;
             let (id, _) = type_pool.register_enum(
                 symbol,
                 EnumDef {
@@ -950,7 +975,7 @@ where
         // The core `str` identity: an ordinary builtin struct paired with a
         // runtime definition. Registered exactly as `SemanticImportedProgram::new`
         // registers it.
-        let str_symbol = interner.get_or_intern("str");
+        let str_symbol = space.try_intern("str")?;
         let ptr_id = type_pool.intern_ptr_const_from_type(Type::U8);
         let (str_id, _) = type_pool.register_struct(
             str_symbol,
@@ -980,7 +1005,7 @@ where
             PoolNominal::Struct(str_id),
         );
 
-        Self {
+        Ok(Self {
             type_pool,
             space,
             interner,
@@ -1007,7 +1032,15 @@ where
             well_known_poisoned: None,
             const_values: AHashMap::new(),
             const_poisoned: AHashMap::new(),
-        }
+        })
+    }
+
+    /// Compatibility constructor for request-local identity contexts. The
+    /// canonical provider path uses [`Self::try_new`] so a revision-shared
+    /// symbol-space failure reaches the compiler boundary as a typed error.
+    #[cfg(test)]
+    pub(in crate::sema) fn new(source: S, space: SharedSymbolSpace) -> Self {
+        Self::try_new(source, space).expect("test identity pool bootstrap must fit")
     }
 
     /// The body-local pool. Downstream reads (`struct_def`, `enum_def`,
@@ -1077,15 +1110,22 @@ where
         self.record_anonymous_identity(key, ty);
     }
 
-    /// Intern a source name into the pool's own interner, returning its
+    /// Intern a source name into the pool's shared interner, returning its
     /// pool-relative [`Spur`]. The provider-driven endpoint driver
     /// ([`super::body_endpoint::ProviderEndpointFacts`]) interns each consulted
     /// name here — the `interner.get_or_intern` analog of the epoch's
     /// `interner.get` — so the symbol it then reverses through
     /// [`Self::resolve_symbol`] and keys the overlay on stays in this pool's own
     /// symbol space, never the shared whole-program interner's.
-    pub(in crate::sema) fn intern_name(&self, name: &str) -> Spur {
-        self.interner.get_or_intern(name)
+    pub(in crate::sema) fn try_intern_name(
+        &self,
+        name: &str,
+    ) -> Result<Spur, lasso::LassoErrorKind> {
+        self.space.try_intern(name)
+    }
+
+    pub(in crate::sema) fn intern_name(&self, name: &str) -> Result<Spur, lasso::LassoErrorKind> {
+        self.try_intern_name(name)
     }
 
     fn record_struct_identity(&mut self, key: K, id: StructId) {
@@ -1146,9 +1186,14 @@ where
     /// to a literal first; that reduction is the caller's job (the type-syntax
     /// resolver), so the pool takes an already-reduced `u64` and never re-derives
     /// a non-literal capacity.
-    pub(in crate::sema) fn get_or_create_str_fixed(&mut self, capacity: u64) -> Type {
+    pub(in crate::sema) fn get_or_create_str_fixed(
+        &mut self,
+        capacity: u64,
+    ) -> Result<Type, IdentityMintError> {
         let name: Arc<str> = Arc::from(format!("Str({capacity})").as_str());
-        let symbol = self.interner.get_or_intern(&name);
+        let symbol = self
+            .intern_name(&name)
+            .map_err(IdentityMintError::Interner)?;
         let ptr_id = self.type_pool.intern_ptr_const_from_type(Type::U8);
         let (id, _) = self.type_pool.register_struct(
             symbol,
@@ -1173,7 +1218,7 @@ where
                 file_id: FileId::DEFAULT,
             },
         );
-        Type::new_struct(id)
+        Ok(Type::new_struct(id))
     }
 
     /// Mint (on first consult) or dedup a concrete [`Type`] for a durable type.
@@ -1204,7 +1249,7 @@ where
                     if *kind != SemanticImportNominalKind::Struct {
                         return Err(IdentityMintError::BuiltinNominalKindMismatch);
                     }
-                    self.get_or_create_str_fixed(capacity)
+                    self.get_or_create_str_fixed(capacity)?
                 } else {
                     match self.builtins.get(&(name.clone(), *kind)).copied() {
                         Some(PoolNominal::Struct(id)) => Type::new_struct(id),
@@ -1253,7 +1298,9 @@ where
                 // exactly as `SemanticImportedProgram::import_type_local`
                 // registers it (ptr + len, builtin, copy).
                 let element = self.resolve(element)?;
-                let symbol = self.interner.get_or_intern(name.as_ref());
+                let symbol = self
+                    .intern_name(name.as_ref())
+                    .map_err(IdentityMintError::Interner)?;
                 let pointer = self.type_pool.intern_ptr_const_from_type(element);
                 let (id, _) = self.type_pool.register_struct(
                     symbol,
@@ -1352,7 +1399,9 @@ where
             .ok_or(IdentityMintError::MissingNominal)?;
         let requested_file = self.source.nominal_file_id(key);
         let file_id = self.file_for_module(&module_path, requested_file)?;
-        let symbol = self.interner.get_or_intern(name.as_ref());
+        let symbol = self
+            .intern_name(name.as_ref())
+            .map_err(IdentityMintError::Interner)?;
         let name = name.clone();
         match body {
             DurableNominalBody::Struct {
@@ -1508,7 +1557,9 @@ where
             .ok_or(IdentityMintError::MissingNominal)?;
 
         let file_id = self.file_for_module(&module_path, None)?;
-        let symbol = self.interner.get_or_intern(name.as_ref());
+        let symbol = self
+            .intern_name(name.as_ref())
+            .map_err(IdentityMintError::Interner)?;
         let name = name.clone();
 
         match body {
@@ -2040,9 +2091,10 @@ where
         // anonymous closure (ADR-0076).
         let (name, symbol) = self
             .space
-            .keyed_symbol_spelling(digest, ANON_NAME_SPELLING, || {
+            .try_keyed_symbol_spelling(digest, ANON_NAME_SPELLING, || {
                 super::anon_structs::anonymous_struct_name(digest)
-            });
+            })
+            .map_err(IdentityMintError::Interner)?;
         let has_destructor = method_names
             .iter()
             .any(|method| method.as_ref() == ANON_DROP_METHOD);
@@ -2132,7 +2184,9 @@ where
 
         let name = super::anon_structs::anonymous_enum_name(digest);
 
-        let symbol = self.interner.get_or_intern(&name);
+        let symbol = self
+            .intern_name(&name)
+            .map_err(IdentityMintError::Interner)?;
         let (id, _) = self.type_pool.register_enum(
             symbol,
             EnumDef {
@@ -2671,7 +2725,10 @@ where
             // Resolve the type first: on failure the arena is untouched (alloc is
             // the final step), so only the callable key is poisoned.
             let ty = self.resolve_callable_type(key, &parameter.ty)?;
-            names.push(self.interner.get_or_intern(parameter.name.as_ref()));
+            names.push(
+                self.intern_name(parameter.name.as_ref())
+                    .map_err(IdentityMintError::Interner)?,
+            );
             types.push(ty);
             modes.push(match parameter.mode {
                 SemanticParameterMode::Value => RirParamMode::Normal,
@@ -2811,12 +2868,18 @@ where
                     self.const_poisoned.insert(key.clone(), err.clone());
                     return Err(err);
                 };
-                ConstValue::Function(self.interner.get_or_intern(name.as_ref()).into())
+                ConstValue::Function(
+                    self.intern_name(name.as_ref())
+                        .map_err(IdentityMintError::Interner)?
+                        .into(),
+                )
             }
             V::Unit => ConstValue::Unit,
-            V::String(value) => {
-                ConstValue::String(self.interner.get_or_intern(value.as_ref()).into())
-            }
+            V::String(value) => ConstValue::String(
+                self.intern_name(value.as_ref())
+                    .map_err(IdentityMintError::Interner)?
+                    .into(),
+            ),
         })
     }
 }
@@ -2961,6 +3024,18 @@ impl BodyRirBundle {
         S: DurableNominalSource<K, M>,
     {
         ProviderBodyAnalysisState::new(source, self.space.clone())
+    }
+
+    pub(in crate::sema) fn try_provider_body_state<K, M, S>(
+        &self,
+        source: S,
+    ) -> Result<ProviderBodyAnalysisState<K, M, S>, IdentityMintError>
+    where
+        K: Clone + Eq + Hash,
+        M: Eq + Hash,
+        S: DurableNominalSource<K, M>,
+    {
+        ProviderBodyAnalysisState::try_new(source, self.space.clone())
     }
 
     pub fn instruction_count(&self) -> usize {
@@ -3230,7 +3305,7 @@ mod tests {
         // RIR-local and provider-created names are the same Spur, not merely
         // strings that were translated between two interner universes.
         let context = state.identity_context();
-        assert_eq!(context.name_symbol("Widget"), widget);
+        assert_eq!(context.name_symbol("Widget").unwrap(), widget);
         assert!(Arc::ptr_eq(&context.interner(), &interner));
         let stable_type_pool = state.type_pool();
         let opposite_order_context = state.identity_context();
@@ -3239,8 +3314,8 @@ mod tests {
             &opposite_order_context.interner()
         ));
         assert_eq!(
-            context.name_symbol("FacadeFirst"),
-            opposite_order_context.name_symbol("FacadeFirst"),
+            context.name_symbol("FacadeFirst").unwrap(),
+            opposite_order_context.name_symbol("FacadeFirst").unwrap(),
             "facade construction order does not fork symbol identity"
         );
 
@@ -3476,7 +3551,7 @@ mod tests {
         assert!(
             state
                 .interner()
-                .resolve(&state.identity_context().name_symbol("Widget"))
+                .resolve(&state.identity_context().name_symbol("Widget").unwrap())
                 == "Widget",
             "a retired space still resolves the handles it issued"
         );
@@ -4661,6 +4736,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn revision_shared_interner_exhaustion_is_typed_at_anonymous_mint_boundary() {
+        let key = anon_key(AnonymousNominalKind::Struct, 77, 0);
+        let shape = DurableAnonymousShape::Struct {
+            fields: vec![(Arc::from("value"), DType::I32)],
+            struct_method_names: Vec::new(),
+        };
+        let mut durable = source([]);
+        durable.anonymous_shapes.insert(key.clone(), shape);
+        let bootstrap_entries = rue_builtins::BUILTIN_ENUMS.len() + 1; // + core `str`
+        let mut pool = BodyIdentityPool::new(
+            durable,
+            SharedSymbolSpace::with_owner_bound(bootstrap_entries),
+        );
+        assert_eq!(
+            pool.find_or_create_anon(&key),
+            Err(IdentityMintError::Interner(
+                lasso::LassoErrorKind::KeySpaceExhaustion
+            ))
+        );
+    }
+
     /// A field-only anonymous struct mints byte-identically to the epoch's
     /// `find_or_create_anon_struct`: the `__anon_struct_{digest}` name, private,
     /// copyable iff every field is. Dedups by producer key on repeat, and a later
@@ -5273,7 +5370,7 @@ mod tests {
     #[test]
     fn str_fixed_arm_mints_and_dedups() {
         let mut pool = pool([]);
-        let str8 = pool.get_or_create_str_fixed(8);
+        let str8 = pool.get_or_create_str_fixed(8).unwrap();
         let id = str8.as_struct().unwrap();
         let def = pool.type_pool().struct_def(id);
         assert_eq!(&*def.name, "Str(8)");
@@ -5285,8 +5382,12 @@ mod tests {
         assert_eq!(def.fields[1].name, "len");
         assert_eq!(def.fields[1].ty, Type::U64);
         // Same capacity dedups; a different capacity mints a distinct struct.
-        assert_eq!(pool.get_or_create_str_fixed(8), str8, "repeat dedups");
-        let str16 = pool.get_or_create_str_fixed(16);
+        assert_eq!(
+            pool.get_or_create_str_fixed(8).unwrap(),
+            str8,
+            "repeat dedups"
+        );
+        let str16 = pool.get_or_create_str_fixed(16).unwrap();
         assert_ne!(str16, str8);
         assert_eq!(
             &*pool.type_pool().struct_def(str16.as_struct().unwrap()).name,

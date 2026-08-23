@@ -364,7 +364,9 @@ where
     /// Callers populate this from durable declaration keys or from an upstream
     /// lookup whose provider edge has already been recorded.
     pub fn register_named_nominal(&mut self, key: K, file: FileId, name: &str) {
-        let symbol = self.identity.pool().intern_name(name);
+        let Ok(symbol) = self.identity.pool().intern_name(name) else {
+            return;
+        };
         self.by_file_name.insert((file.index(), symbol), key);
     }
 
@@ -375,7 +377,9 @@ where
     }
 
     pub fn register_value_const(&self, file: FileId, name: &str, info: ConstInfo) {
-        let name = self.identity.pool().intern_name(name);
+        let Ok(name) = self.identity.pool().intern_name(name) else {
+            return;
+        };
         self.value_consts
             .borrow_mut()
             .insert((file.index(), name), info);
@@ -383,7 +387,9 @@ where
 
     /// Recover an installed value constant with its complete assembled payload.
     pub fn value_const(&self, file: FileId, name: &str) -> Option<ConstInfo> {
-        let name = self.identity.pool().intern_name(name);
+        let Ok(name) = self.identity.pool().intern_name(name) else {
+            return None;
+        };
         self.value_consts
             .borrow()
             .get(&(file.index(), name))
@@ -391,7 +397,9 @@ where
     }
 
     pub fn register_module_binding(&self, file: FileId, name: &str, info: ConstInfo) {
-        let name = self.identity.pool().intern_name(name);
+        let Ok(name) = self.identity.pool().intern_name(name) else {
+            return;
+        };
         self.module_bindings
             .borrow_mut()
             .insert((file.index(), name), info);
@@ -399,7 +407,9 @@ where
 
     /// Recover an installed module binding with its complete assembled payload.
     pub fn module_binding(&self, file: FileId, name: &str) -> Option<ConstInfo> {
-        let name = self.identity.pool().intern_name(name);
+        let Ok(name) = self.identity.pool().intern_name(name) else {
+            return None;
+        };
         self.module_bindings
             .borrow()
             .get(&(file.index(), name))
@@ -438,13 +448,17 @@ where
     /// nominal machinery, as a pool [`Type`]. Equal to the epoch's
     /// `structs_by_file_name` lookup under the durable-key bijection.
     pub fn struct_in_file(&self, file: FileId, name: &str) -> Option<Type> {
-        let symbol = self.identity.pool().intern_name(name);
+        let Ok(symbol) = self.identity.pool().intern_name(name) else {
+            return None;
+        };
         AggregateFacts::aggregate_struct_in_file(self, file, symbol).map(Type::new_struct)
     }
 
     /// (P) The enum declared as `(file, name)`, as a pool [`Type`].
     pub fn enum_in_file(&self, file: FileId, name: &str) -> Option<Type> {
-        let symbol = self.identity.pool().intern_name(name);
+        let Ok(symbol) = self.identity.pool().intern_name(name) else {
+            return None;
+        };
         AggregateFacts::aggregate_enum_in_file(self, file, symbol).map(Type::new_enum)
     }
 
@@ -452,14 +466,18 @@ where
     /// as a pool [`Type`]. Names beyond the pre-registered builtin set fail closed
     /// (r6 builtin facts).
     pub fn builtin_struct(&self, name: &str) -> Option<Type> {
-        let symbol = self.identity.pool().intern_name(name);
+        let Ok(symbol) = self.identity.pool().intern_name(name) else {
+            return None;
+        };
         AggregateFacts::aggregate_builtin_struct(self, symbol).map(Type::new_struct)
     }
 
     /// (P) The builtin enum for a bare name (one of `BUILTIN_ENUMS`), as a pool
     /// [`Type`].
     pub fn builtin_enum(&self, name: &str) -> Option<Type> {
-        let symbol = self.identity.pool().intern_name(name);
+        let Ok(symbol) = self.identity.pool().intern_name(name) else {
+            return None;
+        };
         AggregateFacts::aggregate_builtin_enum(self, symbol).map(Type::new_enum)
     }
 
@@ -467,7 +485,9 @@ where
     /// the r1c struct→enum→const short-circuit, driven from the pool. The const
     /// fall-through consults the installed body-local const overlay.
     pub fn select_module_type_member(&self, file: FileId, name: &str) -> ProviderModuleMember {
-        let symbol = self.identity.pool().intern_name(name);
+        let Ok(symbol) = self.identity.pool().intern_name(name) else {
+            return ProviderModuleMember::Absent;
+        };
         match select_module_type_member(self, file, symbol) {
             ModuleTypeMember::Struct(id) => ProviderModuleMember::Struct(Type::new_struct(id)),
             ModuleTypeMember::Enum(id) => ProviderModuleMember::Enum(Type::new_enum(id)),
@@ -479,7 +499,9 @@ where
     /// Run the provider-generic [`select_qualified_type`] over this driver: the
     /// r1c enum→struct order.
     pub fn select_qualified_type(&self, file: FileId, name: &str) -> ProviderQualifiedType {
-        let symbol = self.identity.pool().intern_name(name);
+        let Ok(symbol) = self.identity.pool().intern_name(name) else {
+            return ProviderQualifiedType::Absent;
+        };
         match select_qualified_type(self, file, symbol) {
             QualifiedType::Enum(id) => ProviderQualifiedType::Enum(Type::new_enum(id)),
             QualifiedType::Struct(id) => ProviderQualifiedType::Struct(Type::new_struct(id)),
@@ -489,7 +511,9 @@ where
 
     /// Run the provider-generic [`select_qualified_enum`] over this driver.
     pub fn select_qualified_enum(&self, file: FileId, name: &str) -> Option<Type> {
-        let symbol = self.identity.pool().intern_name(name);
+        let Ok(symbol) = self.identity.pool().intern_name(name) else {
+            return None;
+        };
         select_qualified_enum(self, file, symbol).map(Type::new_enum)
     }
 
@@ -497,7 +521,9 @@ where
     /// for an unqualified head (`local_type = None`): the const→struct→builtin
     /// order, including an installed const arm.
     pub fn select_struct_literal_head(&self, file: FileId, name: &str) -> ProviderStructHead {
-        let symbol = self.identity.pool().intern_name(name);
+        let Ok(symbol) = self.identity.pool().intern_name(name) else {
+            return ProviderStructHead::Absent;
+        };
         match select_struct_literal_head(self, None, file, symbol) {
             StructLiteralHead::Bound(ty) => ProviderStructHead::Bound(ty),
             StructLiteralHead::Named(id) => ProviderStructHead::Named(Type::new_struct(id)),

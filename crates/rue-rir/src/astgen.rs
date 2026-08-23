@@ -87,6 +87,8 @@ pub struct AstGen<'a> {
     normalize_symbol: Box<dyn Fn(Spur) -> Spur + 'a>,
     cancellation_check: Option<Box<dyn FnMut() -> bool + 'a>>,
     canceled: bool,
+    #[cfg(test)]
+    interner_limit: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -168,7 +170,15 @@ impl<'a> AstGen<'a> {
             normalize_symbol: Box::new(normalize_symbol),
             cancellation_check: None,
             canceled: false,
+            #[cfg(test)]
+            interner_limit: None,
         }
+    }
+
+    #[cfg(test)]
+    fn with_interner_limit_for_test(mut self, max_entries: usize) -> Self {
+        self.interner_limit = Some(max_entries);
+        self
     }
 
     pub fn install_cancellation_check(&mut self, check: impl FnMut() -> bool + 'a) {
@@ -346,6 +356,30 @@ impl<'a> AstGen<'a> {
         (self.normalize_symbol)(symbol)
     }
 
+    /// Intern compiler-generated names through the same bounded symbol space
+    /// as source symbols.  The generator still completes its structural walk
+    /// with a harmless placeholder after exhaustion so the typed failure can
+    /// be returned at `try_finish_editor`, before any RIR is published.
+    fn intern(&mut self, text: impl AsRef<str>) -> Spur {
+        #[cfg(test)]
+        if self.interner_limit.is_some_and(|limit| {
+            self.interner.len() >= limit && self.interner.get(text.as_ref()).is_none()
+        }) {
+            self.record_interner_failure(
+                "interned strings",
+                lasso::LassoErrorKind::KeySpaceExhaustion,
+            );
+            return Spur::default();
+        }
+        match rue_lexer::try_intern(self.interner, text) {
+            Ok(symbol) => symbol,
+            Err(kind) => {
+                self.record_interner_failure("interned strings", kind);
+                Spur::default()
+            }
+        }
+    }
+
     fn with_structural_segment<T>(
         &mut self,
         segment: crate::RirStructuralPathSegment,
@@ -461,6 +495,13 @@ impl<'a> AstGen<'a> {
         if self.payload_error.is_none() {
             self.payload_error =
                 Some(crate::RirPayloadBuildError::InvalidBuilderInput { family, reason });
+        }
+    }
+
+    fn record_interner_failure(&mut self, family: &'static str, kind: lasso::LassoErrorKind) {
+        if self.payload_error.is_none() {
+            self.payload_error =
+                Some(crate::RirPayloadBuildError::InternerFailure { family, kind });
         }
     }
 
@@ -1431,7 +1472,7 @@ impl<'a> AstGen<'a> {
             }
             Expr::SelfExpr(self_expr) => {
                 // `self` in method bodies is just a variable reference to the implicit self parameter
-                let name = self.interner.get_or_intern("self");
+                let name = self.intern("self");
                 self.rir.add_inst(Inst {
                     data: InstData::VarRef { name, anchor: None },
                     span: self_expr.span,
@@ -1752,7 +1793,7 @@ impl<'a> AstGen<'a> {
             self.symbol(id.name)
         } else {
             let init = self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), coll_expr);
-            let name = self.interner.get_or_intern(format!("@rue:for:coll:{n}"));
+            let name = self.intern(format!("@rue:for:coll:{n}"));
             let alloc = self
                 .rir
                 .add_alloc(&[], Some(name), false, None, init, false, span)
@@ -1762,8 +1803,8 @@ impl<'a> AstGen<'a> {
         };
 
         // let mut __p: u64 = 0;   (position — usize is u64)
-        let p_name = self.interner.get_or_intern(format!("@rue:for:pos:{n}"));
-        let u64_sym = self.interner.get_or_intern("u64");
+        let p_name = self.intern(format!("@rue:for:pos:{n}"));
+        let u64_sym = self.intern("u64");
         let u64_type = self.rir.add_named_type(u64_sym).unwrap_or_else(|error| {
             if self.payload_error.is_none() {
                 self.payload_error = Some(type_syntax_build_error(error));
@@ -1785,7 +1826,7 @@ impl<'a> AstGen<'a> {
         // Sema's not-iterable type error (E0206) anchors on the intrinsic, and
         // it should underline the offending iterable expression.
         let iter_span = coll_expr.span();
-        let len_name = self.interner.get_or_intern(format!("@rue:for:len:{n}"));
+        let len_name = self.intern(format!("@rue:for:len:{n}"));
         let coll_for_len = self.rir.add_inst(Inst {
             data: InstData::VarRef {
                 name: coll_name,
@@ -1859,9 +1900,7 @@ impl<'a> AstGen<'a> {
         // collection still owns and drops it, RUE-259).
         let binder_name: Option<Spur> = match &for_expr.binder {
             LetPattern::Ident(id) => Some(self.symbol(id.name)),
-            LetPattern::Wildcard(_) => {
-                Some(self.interner.get_or_intern(format!("_@rue:for:elem:{n}")))
-            }
+            LetPattern::Wildcard(_) => Some(self.intern(format!("_@rue:for:elem:{n}"))),
         };
         let p_for_get = self.rir.add_inst(Inst {
             data: InstData::VarRef {
@@ -2224,7 +2263,7 @@ impl<'a> AstGen<'a> {
         );
         let n = self.compound_counter;
         self.compound_counter += 1;
-        let name = self.interner.get_or_intern(format!("@rue:place:{n}"));
+        let name = self.intern(format!("@rue:place:{n}"));
         let alloc = self
             .rir
             .add_alloc(&[], Some(name), false, None, init, false, index.span())
@@ -2476,6 +2515,28 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
         (rir, interner)
+    }
+
+    #[test]
+    fn generated_for_name_preserves_interner_failure_kind() {
+        let (tokens, source_interner) = Lexer::new("fn main() { for x in [1] {} }")
+            .tokenize()
+            .unwrap();
+        let (ast, _) = Parser::new(tokens, source_interner).parse().unwrap();
+        let limited = ThreadedRodeo::new();
+        let mut astgen = AstGen::with_symbol_normalizer(&limited, |symbol| symbol)
+            .with_interner_limit_for_test(0);
+        astgen.append_items(&ast.items);
+        let error = astgen
+            .try_finish()
+            .expect_err("generated name must hit the bound");
+        assert!(matches!(
+            error,
+            crate::RirPayloadBuildError::InternerFailure {
+                kind: lasso::LassoErrorKind::KeySpaceExhaustion,
+                ..
+            }
+        ));
     }
 
     fn type_spelling(rir: &Rir, interner: &ThreadedRodeo, reference: RirTypeSyntaxRef) -> String {
@@ -3981,7 +4042,8 @@ mod tests {
         let interner = ThreadedRodeo::new();
         let span = rue_span::Span::new(0, 1);
         let ident = rue_parser::ast::Ident {
-            name: interner.get_or_intern("i32"),
+            name: rue_lexer::try_intern(&interner, "i32")
+                .expect("test AstGen interner must fit the published interner bound"),
             span,
         };
         let array = TypeExpr::Array {

@@ -168,16 +168,6 @@ pub(crate) enum ElementwiseConsumption {
     NotElementwise,
 }
 
-/// Intern the move-path segment for a constant array index (RUE-186).
-///
-/// Element paths reuse the field-path representation: index K becomes the
-/// interned decimal string of K. Identifiers can never be all digits, so
-/// these segments cannot collide with field names (see
-/// [`super::context::FieldPath`]).
-pub(crate) fn index_path_segment(interner: &ThreadedRodeo, index: u64) -> Spur {
-    interner.get_or_intern(index.to_string())
-}
-
 /// True when a move-path segment encodes a constant array index (all-digit
 /// interned string; see [`index_path_segment`]).
 pub(crate) fn is_index_segment(interner: &ThreadedRodeo, seg: Spur) -> bool {

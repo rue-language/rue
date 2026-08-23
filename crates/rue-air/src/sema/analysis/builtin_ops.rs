@@ -98,7 +98,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ErrorKind::InternalError("canonical StrBuf lang item is not a struct".to_string()),
             span,
         )?;
-        let method = self.body_interner().get_or_intern("concat_borrowed");
+        let method = self.intern_body_symbol("concat_borrowed")?;
         if self
             .call_facts()
             .call_method_info(struct_id, method)
@@ -110,12 +110,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
         ctx.referenced_methods.insert((struct_id, method));
-        self.record_body_method_dependency((struct_id, method));
-        let call_name = self.body_interner().get_or_intern(&self.method_symbol(
-            struct_id,
-            "concat_borrowed",
-            false,
-        ));
+        self.record_body_method_dependency((struct_id, method))?;
+        let call_name =
+            self.intern_body_symbol(&self.method_symbol(struct_id, "concat_borrowed", false))?;
         let arg_mode = AirArgMode::Borrow;
 
         let (lhs_arg, mut temp_scope) =
@@ -225,7 +222,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let runtime_helper = operation
             .runtime_helper()
             .expect("print builtin must map to a runtime helper");
-        let call_name = self.body_interner().get_or_intern(runtime_helper.symbol);
+        let call_name = self.intern_body_symbol(runtime_helper.symbol)?;
 
         // A StrBuf source reads its `{ptr, len}` prefix through the trusted
         // accessors and passes them as separate scalars (the `*Projected`

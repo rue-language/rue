@@ -4,6 +4,7 @@ rue_crate(
     name = "rue-error",
     deps = [
         "//crates/rue-span:rue-span",
+        "//third-party:lasso",
         "//third-party:thiserror",
     ],
 )

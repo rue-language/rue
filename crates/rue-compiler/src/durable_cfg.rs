@@ -505,6 +505,7 @@ impl RetainedCharge for CfgDomainProjection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CfgDomainFailure {
+    Interner(lasso::LassoErrorKind),
     Shape,
     Unsupported,
     Missing,
@@ -606,7 +607,9 @@ impl CfgDomainProjection {
             if current_symbols.contains_key(stable) {
                 continue;
             }
-            let symbol = new_interner.get_or_intern(old_interner.resolve(live));
+            let symbol = new_interner
+                .try_get_or_intern(old_interner.resolve(live))
+                .map_err(|error| CfgDomainFailure::Interner(error.kind()))?;
             current_symbols.insert(stable.clone(), symbol);
             self.symbols.push((symbol, stable.clone()));
         }
@@ -1148,7 +1151,9 @@ impl CfgDomainProjection {
                 TypeKind::Struct(id) => {
                     let definition = type_pool.struct_def(id);
                     if let Some(name) = &definition.destructor {
-                        let symbol = interner.get_or_intern(name);
+                        let symbol = interner
+                            .try_get_or_intern(name)
+                            .map_err(|error| CfgDomainFailure::Interner(error.kind()))?;
                         if let Some(callable) = stable_callable(symbol) {
                             symbols.push((symbol, StableCfgSymbol::Callable(callable)));
                         } else if let Some(CanonicalType::AnonymousNominal(owner)) = type_positions
