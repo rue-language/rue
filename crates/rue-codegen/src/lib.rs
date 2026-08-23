@@ -534,8 +534,12 @@ pub use x86_64::{Operand, Reg, X86Inst, X86Mir};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aarch64::MAX_ADD_SUB_IMMEDIATE;
     use lasso::ThreadedRodeo;
-    use rue_air::{AirEditor, AirValidationContext, FrozenTypeInternPool, Type, TypeInternPool};
+    use rue_air::{
+        AirEditor, AirValidationContext, FrozenTypeInternPool, Type, TypeInternPool,
+        layout::SLOT_BYTES,
+    };
     use rue_cfg::{CfgBuilder, ValidatedCfg};
     use rue_span::Span;
 
@@ -617,6 +621,19 @@ mod tests {
     }
 
     fn test_cfg() -> (ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
+        test_cfg_with_locals(0)
+    }
+
+    fn test_cfg_with_locals(
+        num_locals: u32,
+    ) -> (ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
+        test_cfg_with_locals_named(num_locals, "main")
+    }
+
+    fn test_cfg_with_locals_named(
+        num_locals: u32,
+        fn_name: &str,
+    ) -> (ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
         let mut air = AirEditor::new(Type::I32);
 
         let const_ref = air.add_const(42, Type::I32, Span::new(0, 2));
@@ -629,9 +646,9 @@ mod tests {
             .expect("test AIR must validate");
         let cfg_output = CfgBuilder::build(
             &air,
+            num_locals,
             0,
-            0,
-            "main",
+            fn_name,
             &type_pool,
             vec![],
             &interner,
@@ -793,6 +810,53 @@ mod tests {
 
         // Should have no strings
         assert!(machine_code.strings.is_empty());
+    }
+
+    #[test]
+    fn large_frame_codegen_emits_on_both_architectures_without_large_fixture_data() {
+        // One slot above the immediate sequence's byte capacity forces the
+        // real frame prologue/epilogue through the large-SP materialization
+        // path. The CFG itself remains a constant return, so this allocates
+        // only compact slot metadata rather than an aggregate-sized AIR body.
+        let num_locals = (MAX_ADD_SUB_IMMEDIATE as u64 / SLOT_BYTES + 1) as u32;
+        let (cfg, type_pool, interner) = test_cfg_with_locals_named(num_locals, "large_frame");
+
+        let x86 = x86_64::generate(&cfg, &type_pool, &[], &interner)
+            .expect("x86-64 large frame generation should succeed");
+        assert!(!x86.code.is_empty());
+
+        let arm = aarch64::generate(
+            &cfg,
+            &type_pool,
+            &[],
+            &interner,
+            rue_target::Target::Aarch64Linux,
+        )
+        .expect("AArch64 large frame generation should succeed");
+        assert!(!arm.code.is_empty());
+
+        let words = arm
+            .code
+            .chunks_exact(4)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()));
+        let words = words.collect::<Vec<_>>();
+        let has_large_sp_adjust = words.iter().copied().any(|word| {
+            (word & 0xFF200000) == 0xCB200000
+                && ((word >> 16) & 0x1F) == 15
+                && ((word >> 5) & 0x1F) == 31
+                && (word & 0x1F) == 31
+                && ((word >> 13) & 0x7) == 3
+        }) && words.iter().copied().any(|word| {
+            (word & 0xFF200000) == 0x8B200000
+                && ((word >> 16) & 0x1F) == 15
+                && ((word >> 5) & 0x1F) == 31
+                && (word & 0x1F) == 31
+                && ((word >> 13) & 0x7) == 3
+        });
+        assert!(
+            has_large_sp_adjust,
+            "AArch64 frame must use UXTX register ADD/SUB through x15: {words:x?}"
+        );
     }
 
     #[test]
