@@ -49,6 +49,20 @@ struct LoopContext {
     /// For break/continue, we drop scopes from current down to (but not including)
     /// this depth.
     scope_depth: usize,
+    /// Move state snapshots from break edges targeting this loop, joined with
+    /// `MoveState::intersect` when the loop is popped. Continue edges are
+    /// intentionally not recorded: they do not reach the loop exit.
+    break_state: Option<MoveState>,
+}
+
+impl LoopContext {
+    /// Add one targeted break edge to the loop exit join.
+    fn record_break(&mut self, state: MoveState) {
+        self.break_state = Some(match self.break_state.take() {
+            None => state,
+            Some(previous) => previous.intersect(&state),
+        });
+    }
 }
 
 /// Information about a slot that became live in a scope.
@@ -1766,14 +1780,6 @@ impl<'a> CfgBuilder<'a> {
                 let body_block = self.cfg.new_block();
                 let exit_block = self.cfg.new_block();
 
-                // The body may execute zero times, so moves inside the
-                // condition/body are not "moved on all paths" at the loop
-                // exit: restore the pre-loop move state after lowering.
-                // (Sema's back-edge move recheck already rejects moving an
-                // outer variable inside a loop, so this conservatism cannot
-                // actually reintroduce a double-drop in accepted programs.)
-                let moved_before_loop = self.moved.clone();
-
                 // Jump to header
                 self.goto_no_args(self.current_block, header_block);
 
@@ -1796,6 +1802,11 @@ impl<'a> CfgBuilder<'a> {
                     return Self::diverged();
                 };
 
+                // The false branch leaves the loop without entering the body,
+                // so its state is the state after evaluating the condition.
+                // This is a real exit edge even when the loop has no break.
+                let moved_after_condition = self.moved.clone();
+
                 // Push loop context with current scope depth. Pushed AFTER the
                 // condition (see above) so break/continue in the BODY target this
                 // loop. The scope depth is captured before the loop body is lowered,
@@ -1805,6 +1816,7 @@ impl<'a> CfgBuilder<'a> {
                     header: header_block,
                     exit: exit_block,
                     scope_depth: self.scope_stack.len(),
+                    break_state: None,
                 });
 
                 // Branch: if true go to body, if false exit
@@ -1832,8 +1844,15 @@ impl<'a> CfgBuilder<'a> {
                     self.goto_no_args(self.current_block, header_block);
                 }
 
-                self.loop_stack.pop();
-                self.moved = moved_before_loop;
+                let break_state = self
+                    .loop_stack
+                    .pop()
+                    .expect("while loop context missing")
+                    .break_state;
+                self.moved = match break_state {
+                    Some(break_state) => moved_after_condition.intersect(&break_state),
+                    None => moved_after_condition,
+                };
 
                 // Continue after loop
                 self.current_block = exit_block;
@@ -1860,8 +1879,7 @@ impl<'a> CfgBuilder<'a> {
                 let exit_block = self.cfg.new_block();
 
                 // The exit is only reached via break, and different breaks
-                // may have different move states; conservatively restore the
-                // pre-loop state after lowering (see the Loop arm above).
+                // may have different move states; join those states below.
                 let moved_before_loop = self.moved.clone();
 
                 // Jump to body
@@ -1874,6 +1892,7 @@ impl<'a> CfgBuilder<'a> {
                     header: body_block,
                     exit: exit_block,
                     scope_depth: self.scope_stack.len(),
+                    break_state: None,
                 });
 
                 // Lower body
@@ -1885,8 +1904,16 @@ impl<'a> CfgBuilder<'a> {
                     self.goto_no_args(self.current_block, body_block);
                 }
 
-                self.loop_stack.pop();
-                self.moved = moved_before_loop;
+                let break_state = self
+                    .loop_stack
+                    .pop()
+                    .expect("infinite loop context missing")
+                    .break_state;
+                // An infinite loop has no implicit exit edge. A breakless
+                // loop remains unreachable, so retain the entry state only
+                // for the never-typed/divergent path below. Otherwise, the
+                // joined break edges are the complete exit state.
+                self.moved = break_state.unwrap_or(moved_before_loop);
 
                 // Continue after loop (only reachable via break).
                 // Set Unreachable as the initial terminator. If there's code after the loop
@@ -2073,10 +2100,21 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::Break => {
                 // Emit drops for slots in scopes created inside the loop
-                let loop_ctx = self.loop_stack.last().expect("break outside loop");
-                let target_depth = loop_ctx.scope_depth;
-                let exit_block = loop_ctx.exit;
+                let loop_index = self
+                    .loop_stack
+                    .len()
+                    .checked_sub(1)
+                    .expect("break outside loop");
+                let target_depth = self.loop_stack[loop_index].scope_depth;
+                let exit_block = self.loop_stack[loop_index].exit;
                 self.emit_drops_for_loop_exit(target_depth, span);
+
+                // The state at a break is an exit edge of the targeted loop.
+                // Record it after lowering the break's surrounding value and
+                // loop-local drops; only the innermost context is updated.
+                let break_state = self.moved.clone();
+                let loop_ctx = &mut self.loop_stack[loop_index];
+                loop_ctx.record_break(break_state);
 
                 self.goto_no_args(self.current_block, exit_block);
 
@@ -3629,6 +3667,41 @@ mod tests {
         assert_eq!(
             joined.maybe_moved_paths_of(slot),
             AHashSet::from([shared, left_only, right_only])
+        );
+    }
+
+    #[test]
+    fn loop_break_join_preserves_partial_field_paths() {
+        let slot = MovedSlot::Local(4);
+        let moved_on_both = vec![0];
+        let moved_on_left = vec![1];
+        let moved_on_right = vec![2];
+        let mut left = MoveState::default();
+        left.mark_path(slot, moved_on_both.clone());
+        left.mark_path(slot, moved_on_left.clone());
+        let mut right = MoveState::default();
+        right.mark_path(slot, moved_on_both.clone());
+        right.mark_path(slot, moved_on_right.clone());
+
+        let mut context = LoopContext {
+            header: BlockId::from_raw(0),
+            exit: BlockId::from_raw(1),
+            scope_depth: 0,
+            break_state: None,
+        };
+        context.record_break(left);
+        context.record_break(right);
+        let joined = context
+            .break_state
+            .expect("break edges should produce an exit state");
+
+        assert_eq!(
+            joined.moved_paths_of(slot),
+            AHashSet::from([moved_on_both.clone()])
+        );
+        assert_eq!(
+            joined.maybe_moved_paths_of(slot),
+            AHashSet::from([moved_on_both, moved_on_left, moved_on_right])
         );
     }
 
