@@ -4265,7 +4265,7 @@ mod tests {
                 struct_body(
                     vec![
                         ("value", DType::I64),
-                        ("next", DType::PtrMut(Box::new(DType::Nominal(0)))),
+                        ("next", DType::PtrMut(Arc::new(DType::Nominal(0)))),
                     ],
                     false,
                     false,
@@ -4295,7 +4295,7 @@ mod tests {
 
         // Array dedup.
         let array_ty = DType::Array {
-            element: Box::new(DType::I32),
+            element: Arc::new(DType::I32),
             len: 4,
         };
         let a1 = pool.resolve(&array_ty).unwrap();
@@ -4306,7 +4306,7 @@ mod tests {
         assert_eq!(render(pool.type_pool(), a1), "[i32; 4]");
 
         // Pointer dedup.
-        let ptr_ty = DType::PtrConst(Box::new(DType::I32));
+        let ptr_ty = DType::PtrConst(Arc::new(DType::I32));
         let p1 = pool.resolve(&ptr_ty).unwrap();
         let len_after_ptr = pool.type_pool().len();
         let p2 = pool.resolve(&ptr_ty).unwrap();
@@ -4320,7 +4320,7 @@ mod tests {
 
         // Array of a nominal renders through the minted child.
         let array_of_cell = DType::Array {
-            element: Box::new(DType::Nominal(0)),
+            element: Arc::new(DType::Nominal(0)),
             len: 3,
         };
         let ac = pool.resolve(&array_of_cell).unwrap();
@@ -4362,7 +4362,7 @@ mod tests {
         // Array of nominal.
         let pool_arr = pool
             .resolve(&DType::Array {
-                element: Box::new(DType::Nominal(0)),
+                element: Arc::new(DType::Nominal(0)),
                 len: 3,
             })
             .unwrap();
@@ -4372,14 +4372,14 @@ mod tests {
 
         // Pointer of nominal.
         let pool_ptr = pool
-            .resolve(&DType::PtrConst(Box::new(DType::Nominal(0))))
+            .resolve(&DType::PtrConst(Arc::new(DType::Nominal(0))))
             .unwrap();
         let twin_ptr = twin.try_intern_ptr_const(twin_widget).unwrap();
         assert_eq!(render(pool.type_pool(), pool_ptr), render(&twin, twin_ptr));
 
         // Nested ptr-of-ptr.
         let pool_pp = pool
-            .resolve(&DType::PtrMut(Box::new(DType::PtrConst(Box::new(
+            .resolve(&DType::PtrMut(Arc::new(DType::PtrConst(Arc::new(
                 DType::I32,
             )))))
             .unwrap();
@@ -5299,7 +5299,7 @@ mod tests {
         let slice = pool
             .resolve(&DType::Slice {
                 name: Arc::from("__slice_i64"),
-                element: Box::new(DType::I64),
+                element: Arc::new(DType::I64),
             })
             .unwrap();
         let id = slice.as_struct().unwrap();
@@ -5313,7 +5313,7 @@ mod tests {
         let again = pool
             .resolve(&DType::Slice {
                 name: Arc::from("__slice_i64"),
-                element: Box::new(DType::I64),
+                element: Arc::new(DType::I64),
             })
             .unwrap();
         assert_eq!(slice, again, "repeat slice consult dedups");

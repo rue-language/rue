@@ -72,15 +72,15 @@ pub(crate) fn semantic_type_from_instance(
             name: name.clone(),
         },
         T::Array { element, len } => S::Array {
-            element: Box::new(semantic_type_from_instance(element)),
+            element: Arc::new(semantic_type_from_instance(element)),
             len: *len,
         },
         T::Slice { element, name } => S::Slice {
-            element: Box::new(semantic_type_from_instance(element)),
+            element: Arc::new(semantic_type_from_instance(element)),
             name: name.clone(),
         },
-        T::PtrConst(element) => S::PtrConst(Box::new(semantic_type_from_instance(element))),
-        T::PtrMut(element) => S::PtrMut(Box::new(semantic_type_from_instance(element))),
+        T::PtrConst(element) => S::PtrConst(Arc::new(semantic_type_from_instance(element))),
+        T::PtrMut(element) => S::PtrMut(Arc::new(semantic_type_from_instance(element))),
         T::Module(module) => S::Module(module.clone()),
         T::GenericParameter(index) => S::GenericParameter(*index),
     }

@@ -4256,18 +4256,18 @@ fn substitute_durable_generics(
             .cloned()
             .unwrap_or_else(|| ty.clone()),
         T::Array { element, len } => T::Array {
-            element: Box::new(substitute_durable_generics(element, type_arguments)),
+            element: Arc::new(substitute_durable_generics(element, type_arguments)),
             len: *len,
         },
         T::Slice { element, name } => T::Slice {
-            element: Box::new(substitute_durable_generics(element, type_arguments)),
+            element: Arc::new(substitute_durable_generics(element, type_arguments)),
             name: name.clone(),
         },
-        T::PtrConst(pointee) => T::PtrConst(Box::new(substitute_durable_generics(
+        T::PtrConst(pointee) => T::PtrConst(Arc::new(substitute_durable_generics(
             pointee,
             type_arguments,
         ))),
-        T::PtrMut(pointee) => T::PtrMut(Box::new(substitute_durable_generics(
+        T::PtrMut(pointee) => T::PtrMut(Arc::new(substitute_durable_generics(
             pointee,
             type_arguments,
         ))),
@@ -6583,15 +6583,15 @@ pub(crate) fn durable_type_from_instance_key(
         T::Nominal(crate::NominalInstanceKey::Named(key)) => D::Nominal(key.clone()),
         T::Nominal(crate::NominalInstanceKey::Anonymous(key)) => D::AnonymousNominal(key.clone()),
         T::Array { element, len } => D::Array {
-            element: Box::new(durable_type_from_instance_key(element)?),
+            element: Arc::new(durable_type_from_instance_key(element)?),
             len: *len,
         },
         T::Slice { element, name } => D::Slice {
-            element: Box::new(durable_type_from_instance_key(element)?),
+            element: Arc::new(durable_type_from_instance_key(element)?),
             name: name.clone(),
         },
-        T::PtrConst(value) => D::PtrConst(Box::new(durable_type_from_instance_key(value)?)),
-        T::PtrMut(value) => D::PtrMut(Box::new(durable_type_from_instance_key(value)?)),
+        T::PtrConst(value) => D::PtrConst(Arc::new(durable_type_from_instance_key(value)?)),
+        T::PtrMut(value) => D::PtrMut(Arc::new(durable_type_from_instance_key(value)?)),
         T::Module(value) => D::Module(value.clone()),
         T::GenericParameter(index) => D::GenericParameter(*index),
     })
@@ -8369,7 +8369,7 @@ impl SemanticConstEvaluator<'_, '_> {
                 };
                 Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
                     V::Type(crate::durable_semantics::DurableType::Array {
-                        element: Box::new(element),
+                        element: Arc::new(element),
                         len,
                     }),
                     crate::durable_semantics::DurableType::ComptimeType,
@@ -10347,7 +10347,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
     > {
         Ok(match length {
             Some(len) => crate::durable_semantics::DurableType::Array {
-                element: Box::new(element),
+                element: Arc::new(element),
                 len,
             },
             None => crate::durable_semantics::DurableType::ComptimeType,
@@ -10361,7 +10361,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         QueryAbort,
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
-        Ok(crate::durable_semantics::DurableType::PtrConst(Box::new(
+        Ok(crate::durable_semantics::DurableType::PtrConst(Arc::new(
             pointee,
         )))
     }
@@ -10373,7 +10373,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         QueryAbort,
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
-        Ok(crate::durable_semantics::DurableType::PtrMut(Box::new(
+        Ok(crate::durable_semantics::DurableType::PtrMut(Arc::new(
             pointee,
         )))
     }
@@ -10388,7 +10388,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
         Ok(crate::durable_semantics::DurableType::Slice {
-            element: Box::new(element),
+            element: Arc::new(element),
             name: Arc::from(syntax),
         })
     }
@@ -24462,7 +24462,7 @@ impl<'p, 'o, 'db>
         length: Option<u64>,
     ) -> rue_air::SemanticProviderResult<crate::DurableType, Self::Abort, Self::Failure> {
         Ok(crate::DurableType::Array {
-            element: Box::new(element),
+            element: Arc::new(element),
             len: length.expect("concrete type resolution always resolves array lengths"),
         })
     }
@@ -24471,14 +24471,14 @@ impl<'p, 'o, 'db>
         &mut self,
         pointee: crate::DurableType,
     ) -> rue_air::SemanticProviderResult<crate::DurableType, Self::Abort, Self::Failure> {
-        Ok(crate::DurableType::PtrConst(Box::new(pointee)))
+        Ok(crate::DurableType::PtrConst(Arc::new(pointee)))
     }
 
     fn ptr_mut_type(
         &mut self,
         pointee: crate::DurableType,
     ) -> rue_air::SemanticProviderResult<crate::DurableType, Self::Abort, Self::Failure> {
-        Ok(crate::DurableType::PtrMut(Box::new(pointee)))
+        Ok(crate::DurableType::PtrMut(Arc::new(pointee)))
     }
 
     fn slice_type(
@@ -24494,7 +24494,7 @@ impl<'p, 'o, 'db>
         // fact needing no boundary op — the overlay/pool mints the same
         // fat-pointer struct on materialization (RUE-1091 r6a — slice name facts).
         Ok(crate::DurableType::Slice {
-            element: Box::new(element),
+            element: Arc::new(element),
             name: Arc::from(syntax),
         })
     }
@@ -28657,7 +28657,7 @@ fn main() -> i32 {
                 signature: Signature::Struct {
                     fields: vec![(
                         Arc::from("next"),
-                        T::PtrConst(Box::new(T::Nominal(identity.key.clone())))
+                        T::PtrConst(Arc::new(T::Nominal(identity.key.clone())))
                     )]
                     .into(),
                     is_copy: false,
@@ -35393,23 +35393,23 @@ fn main() -> i32 {
             (
                 "[i32; 2]",
                 T::Array {
-                    element: Box::new(T::I32),
+                    element: Arc::new(T::I32),
                     len: 2,
                 },
             ),
             (
                 "[u8; 4]",
                 T::Array {
-                    element: Box::new(T::U8),
+                    element: Arc::new(T::U8),
                     len: 4,
                 },
             ),
-            ("ptr const i32", T::PtrConst(Box::new(T::I32))),
-            ("ptr mut u64", T::PtrMut(Box::new(T::U64))),
+            ("ptr const i32", T::PtrConst(Arc::new(T::I32))),
+            ("ptr mut u64", T::PtrMut(Arc::new(T::U64))),
             (
                 "ptr const [i32; 2]",
-                T::PtrConst(Box::new(T::Array {
-                    element: Box::new(T::I32),
+                T::PtrConst(Arc::new(T::Array {
+                    element: Arc::new(T::I32),
                     len: 2,
                 })),
             ),
@@ -35490,7 +35490,7 @@ fn main() -> i32 {
         assert_eq!(
             resolved,
             Some(T::Slice {
-                element: Box::new(T::I32),
+                element: Arc::new(T::I32),
                 name: Arc::from("[i32]"),
             }),
             "`[i32]` resolves to the slice durable identity keyed by the slice syntax"
@@ -35701,7 +35701,7 @@ fn main() -> i32 {
         let (resolved, _m, _d) =
             resolve_type_via_provider(&database, revision, &scope, "Buffer(2)", None);
         let buffer_type = T::Array {
-            element: Box::new(T::I32),
+            element: Arc::new(T::I32),
             len: 2,
         };
         assert_eq!(
@@ -35737,7 +35737,7 @@ fn main() -> i32 {
         let (resolved, _m, _d) =
             resolve_type_via_provider(&database, revision, &scope, "[i32; N]", None);
         let expected = T::Array {
-            element: Box::new(T::I32),
+            element: Arc::new(T::I32),
             len: 3,
         };
         assert_eq!(resolved, Some(expected.clone()));

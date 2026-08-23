@@ -653,7 +653,7 @@ where
             .identity
             .pool_mut()?
             .resolve(&SemanticImportType::Slice {
-                element: Box::new(element.clone()),
+                element: Arc::new(element.clone()),
                 name: Arc::from(name),
             })
             .ok()?

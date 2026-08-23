@@ -1104,7 +1104,7 @@ pub(crate) fn materialize_semantic_body_with_indexes(
                     fields: vec![
                         (
                             Arc::from("ptr"),
-                            rue_air::SemanticImportType::PtrConst(Box::new(
+                            rue_air::SemanticImportType::PtrConst(Arc::new(
                                 crate::drop_glue::semantic_type_from_instance(element),
                             )),
                         ),
@@ -1600,7 +1600,7 @@ pub(crate) fn select_materialization_facts(
     };
     require_type(&body.return_type);
     if !body.strings.is_empty() {
-        require_type(&rue_air::SemanticImportType::PtrConst(Box::new(
+        require_type(&rue_air::SemanticImportType::PtrConst(Arc::new(
             rue_air::SemanticImportType::U8,
         )));
     }
@@ -2167,7 +2167,7 @@ mod tests {
         let full = select(rue_air::SemanticImportType::AnonymousNominal(
             identity.clone(),
         ));
-        let opaque = select(rue_air::SemanticImportType::PtrConst(Box::new(
+        let opaque = select(rue_air::SemanticImportType::PtrConst(Arc::new(
             rue_air::SemanticImportType::AnonymousNominal(identity),
         )));
 
