@@ -19,6 +19,14 @@ pub use crate::import_discovery::{
     ImportDemandRoots, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportDiscoveryWave,
     ImportInputRevision, ImportObservation, ImportObservationLedger, ImportObservationStatus,
 };
+/// A diagnostic's source location, as the diagnostic types already hand it out.
+///
+/// `CompileError::span` is public and returns one of these, so a consumer that
+/// inspects where a diagnostic landed has to be able to name what it is already
+/// holding. It sits here rather than in the supported facade on purpose: the
+/// span representation is an implementation detail the compiler reserves the
+/// right to change, and the facade's compatibility policy would freeze it.
+pub use rue_span::Span;
 
 /// Begin a fresh external-input observation generation.
 ///

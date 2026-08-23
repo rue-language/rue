@@ -101,11 +101,35 @@ crashes hiding inside a JSON stream.
 
 ## Ordering
 
-Diagnostic order is deterministic and independent of `-j`/`--jobs`: the
-compiler sorts its published diagnostics before handing them to a formatter,
-and the JSON formatter preserves that order exactly (it never re-sorts or
-groups by file, unlike the text formatter's per-file snippet rendering). Two
-runs of the same inputs produce byte-identical JSON.
+Two pressures decide diagnostic order, and only one of them picks a specific
+order. Reproducibility is why an order is defined at all: two runs over the same
+inputs owe a consumer byte-identical output, whatever `-j`/`--jobs` was. But
+reproducibility is satisfied by *any* fixed order, so it cannot choose one.
+Usefulness chooses: a person reads a program top to bottom and wants its first
+complaint first.
+
+So the CLI sorts a batch into **source order** — by the path of the file each
+diagnostic lands in, then by byte offset within that file — before handing it to
+a formatter, and the JSON formatter preserves that order exactly (it never
+re-sorts or groups by file, unlike the text formatter's per-file snippet
+rendering). The sort is stable, so diagnostics sharing a location keep the
+publication order upstream has already fixed. Diagnostics with no span belong to
+the compilation rather than to any one line, and come first.
+
+This is ADR-0063's rule made real: "execution order never determines
+presentation order", with batches sorted by "stable source identity, current
+source positions, and producer order" — the path, the anchor, and (via the
+stable sort) the order upstream published in.
+
+The sort lives at the render boundary (`DiagnosticOutput` in
+`crates/rue/src/main.rs`), not upstream in the query engine. The engine's own
+canonical ordering answers a different question — which diagnostics are the same
+diagnostic, for red/green identity — and ADR-0063 deliberately keeps current
+source locations out of that comparison: they are "a separately stamped
+presentation projection and do not participate in semantic terminal equality".
+Ordering by position there would couple a cursor's position back into the
+equality that decides stamp reuse, so editing a line above a diagnostic would
+invalidate the world. Downstream of every stamp, position costs nothing.
 
 CLI cases pin this with `json_diagnostic_order`, which asserts the exact
 `"<severity> <code> <file>:<line>:<column>"` sequence across the whole stderr
