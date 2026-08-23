@@ -1013,3 +1013,173 @@ fn main() -> i32 {
 """ }]
 stdout = "1\n2\n"
 exit_code = 0
+
+# RUE-1711: a path holding a NUL byte is `InvalidInput`, not a silent operation
+# on the truncated prefix. `StrBuf` carries its own length so it can hold a NUL,
+# but the NUL-terminated copy handed to the kernel cannot express one — before
+# the check, `remove("victim\0decoy")` marshalled to `"victim"` and returned
+# `Ok` after removing a file the caller never named. That is reachable by any
+# program building paths from untrusted bytes, which byte-string paths invite.
+#
+# The staged `victim` file is what makes this a real assertion rather than a
+# spelling check: the old behavior is not merely "wrong error" but "wrong file
+# gone", so the reopen at the end is the half that would have failed.
+[[case]]
+name = "fs_path_with_nul_does_not_hit_the_truncated_path"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+// "victim" + NUL + "decoy" — a C string built from these bytes is "victim".
+fn victim_nul_decoy() -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow "victim");
+    out.push(0);
+    out.append_str(borrow "decoy");
+    out
+}
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let OR = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+
+    match F.create(borrow mk("victim")) {
+        OR.Ok(f) => { match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 71; } }; },
+        OR.Err(_e) => { return 72; },
+    };
+
+    match std.fs.remove(borrow victim_nul_decoy()) {
+        CR.Ok(_u) => { return 73; },
+        CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 74; } },
+    };
+
+    // The file the truncated path named is still there.
+    match F.open(borrow mk("victim")) {
+        OR.Ok(f) => { match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 75; } }; },
+        OR.Err(_e) => { return 76; },
+    };
+
+    @dbg(0);
+    0
+}
+""" }]
+stdout = "0\n"
+exit_code = 0
+
+# RUE-1711: the rejection is a property of the module, not of one function, so
+# every path-taking entry point is checked here — including both operands of
+# `rename`, where only one is checked if the guard is written per-call rather
+# than per-operation.
+#
+# The `create_dir_all` tail is the case a check placed at marshalling time alone
+# would not cover: with the NUL in the SECOND component, `deep` is created and
+# only then does the child mkdir see the bad bytes, leaving a directory behind
+# for a request that was never representable. `create_dir_all` is documented as
+# non-atomic on failure, which makes checking it up front the only way to keep
+# the rejection side-effect-free.
+[[case]]
+name = "fs_path_with_nul_rejected_at_every_entry_point"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn nul_after(head: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow head);
+    out.push(0);
+    out.append_str(borrow "tail");
+    out
+}
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let OR = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    let MR = std.result.Result(std.fs.Metadata, FE);
+    let DR = std.result.Result(std.fs.DirEntries, FE);
+
+    match F.open(borrow nul_after("staged")) {
+        OR.Ok(_x) => { return 11; },
+        OR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 12; } },
+    };
+    match F.create(borrow nul_after("staged")) {
+        OR.Ok(_x) => { return 13; },
+        OR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 14; } },
+    };
+    match F.append(borrow nul_after("staged")) {
+        OR.Ok(_x) => { return 15; },
+        OR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 16; } },
+    };
+    match std.fs.metadata(borrow nul_after("staged")) {
+        MR.Ok(_m) => { return 17; },
+        MR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 18; } },
+    };
+    match std.fs.remove(borrow nul_after("staged")) {
+        CR.Ok(_u) => { return 19; },
+        CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 20; } },
+    };
+
+    // Both rename operands, one at a time.
+    match std.fs.rename(borrow nul_after("staged"), borrow mk("moved")) {
+        CR.Ok(_u) => { return 21; },
+        CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 22; } },
+    };
+    match std.fs.rename(borrow mk("staged"), borrow nul_after("moved")) {
+        CR.Ok(_u) => { return 23; },
+        CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 24; } },
+    };
+
+    match std.fs.create_dir(borrow nul_after("dir")) {
+        CR.Ok(_u) => { return 25; },
+        CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 26; } },
+    };
+    match std.fs.remove_dir(borrow nul_after("dir")) {
+        CR.Ok(_u) => { return 27; },
+        CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 28; } },
+    };
+    match std.fs.read_dir(borrow nul_after("dir")) {
+        DR.Ok(_d) => { return 29; },
+        DR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 30; } },
+    };
+    match std.fs.walk(borrow nul_after("dir")) {
+        DR.Ok(_d) => { return 31; },
+        DR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 32; } },
+    };
+
+    // NUL in the second component: rejected, and `deep` is not left behind.
+    let mut nested = SB.new();
+    nested.append_str(borrow "deep/inner");
+    nested.push(0);
+    nested.append_str(borrow "tail");
+    match std.fs.create_dir_all(borrow nested) {
+        CR.Ok(_u) => { return 33; },
+        CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 34; } },
+    };
+    match std.fs.metadata(borrow mk("deep")) {
+        MR.Ok(_m) => { return 35; },
+        MR.Err(e) => match e { FE.NotFound => {}, _ => { return 36; } },
+    };
+
+    @dbg(0);
+    0
+}
+""" }]
+stdout = "0\n"
+exit_code = 0
