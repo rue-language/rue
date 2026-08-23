@@ -15,6 +15,19 @@ of that — they pass on malformed JSON as long as the bytes appear somewhere.
 """
 
 [[case]]
+name = "empty_call_argument_is_at_comma"
+description = "The CLI JSON surface preserves the dedicated parser diagnostic and its comma span."
+files = [{ path = "main.rue", source = "fn helper() {} fn main() { helper(,); }" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0102 main.rue:1:35"]
+error_contains = [
+  '"code":"E0102"',
+  '"message":"expected argument before `,`"',
+]
+
+[[case]]
 name = "compile_error_is_json"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 { true }
