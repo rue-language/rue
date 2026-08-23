@@ -407,7 +407,7 @@ fn create_struct_drop_glue_function(
     let param_modes = vec![false; num_param_slots as usize];
 
     Ok(AnalyzedFunction {
-        identity: rue_air::FunctionInstanceKey::DropGlue(Box::new(identity)),
+        identity: rue_air::FunctionInstanceKey::DropGlue(Arc::new(identity)),
         callable_kind: rue_air::AnalyzedCallableKind::DropGlue,
         ordinary_owner: None,
         name: fn_name,
@@ -538,7 +538,7 @@ fn create_array_drop_glue_function(
     let param_modes = vec![false; num_param_slots as usize];
 
     Ok(AnalyzedFunction {
-        identity: rue_air::FunctionInstanceKey::DropGlue(Box::new(identity)),
+        identity: rue_air::FunctionInstanceKey::DropGlue(Arc::new(identity)),
         callable_kind: rue_air::AnalyzedCallableKind::DropGlue,
         ordinary_owner: None,
         name: fn_name,
@@ -678,7 +678,7 @@ fn create_enum_drop_glue_function(
     let param_modes = vec![false; num_param_slots as usize];
 
     Ok(AnalyzedFunction {
-        identity: rue_air::FunctionInstanceKey::DropGlue(Box::new(identity)),
+        identity: rue_air::FunctionInstanceKey::DropGlue(Arc::new(identity)),
         callable_kind: rue_air::AnalyzedCallableKind::DropGlue,
         ordinary_owner: None,
         name: fn_name,
@@ -729,7 +729,7 @@ mod tests {
             name: Arc::from("Owned"),
         };
         let owner = crate::TypeInstanceKey::Array {
-            element: Box::new(element.clone()),
+            element: Arc::new(element.clone()),
             len: 3,
         };
         let facts = crate::type_queries::DropGlueFacts {
@@ -796,15 +796,15 @@ mod tests {
             TypeKind::Array(id) => {
                 let (element, len) = type_pool.array_def(id);
                 T::Array {
-                    element: Box::new(test_type_identity(element, type_pool)),
+                    element: Arc::new(test_type_identity(element, type_pool)),
                     len,
                 }
             }
-            TypeKind::PtrConst(id) => T::PtrConst(Box::new(test_type_identity(
+            TypeKind::PtrConst(id) => T::PtrConst(Arc::new(test_type_identity(
                 type_pool.ptr_const_def(id),
                 type_pool,
             ))),
-            TypeKind::PtrMut(id) => T::PtrMut(Box::new(test_type_identity(
+            TypeKind::PtrMut(id) => T::PtrMut(Arc::new(test_type_identity(
                 type_pool.ptr_mut_def(id),
                 type_pool,
             ))),

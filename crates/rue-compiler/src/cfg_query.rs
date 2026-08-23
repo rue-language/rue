@@ -964,18 +964,18 @@ fn type_instance_from_semantic(
             crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity.clone()))
         }
         T::Array { element, len } => crate::TypeInstanceKey::Array {
-            element: Box::new(type_instance_from_semantic(element)),
+            element: Arc::new(type_instance_from_semantic(element)),
             len: *len,
         },
         T::Slice { element, name } => crate::TypeInstanceKey::Slice {
-            element: Box::new(type_instance_from_semantic(element)),
+            element: Arc::new(type_instance_from_semantic(element)),
             name: name.clone(),
         },
         T::PtrConst(element) => {
-            crate::TypeInstanceKey::PtrConst(Box::new(type_instance_from_semantic(element)))
+            crate::TypeInstanceKey::PtrConst(Arc::new(type_instance_from_semantic(element)))
         }
         T::PtrMut(element) => {
-            crate::TypeInstanceKey::PtrMut(Box::new(type_instance_from_semantic(element)))
+            crate::TypeInstanceKey::PtrMut(Arc::new(type_instance_from_semantic(element)))
         }
         T::Module(module) => crate::TypeInstanceKey::Module(module.clone()),
         T::GenericParameter(index) => crate::TypeInstanceKey::GenericParameter(*index),
@@ -1199,7 +1199,7 @@ fn materialize_and_build_cfg(
         }
         CfgSemanticInput::DropGlue { owner, .. } => {
             crate::local_semantic_materialization::materialize_semantic_body_with_indexes(
-                crate::FunctionInstanceKey::DropGlue(Box::new(owner.clone())),
+                crate::FunctionInstanceKey::DropGlue(Arc::new(owner.clone())),
                 body,
                 body_span,
                 &facts.declarations,

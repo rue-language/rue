@@ -327,17 +327,17 @@ fn canonical_type_instance(ty: &CanonicalType) -> Option<crate::TypeInstanceKey>
             crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity.clone()))
         }
         CanonicalType::Array { element, len } => crate::TypeInstanceKey::Array {
-            element: Box::new(canonical_type_instance(element)?),
+            element: Arc::new(canonical_type_instance(element)?),
             len: *len,
         },
         CanonicalType::PtrConst(element) => {
-            crate::TypeInstanceKey::PtrConst(Box::new(canonical_type_instance(element)?))
+            crate::TypeInstanceKey::PtrConst(Arc::new(canonical_type_instance(element)?))
         }
         CanonicalType::PtrMut(element) => {
-            crate::TypeInstanceKey::PtrMut(Box::new(canonical_type_instance(element)?))
+            crate::TypeInstanceKey::PtrMut(Arc::new(canonical_type_instance(element)?))
         }
         CanonicalType::Slice { element, name } => crate::TypeInstanceKey::Slice {
-            element: Box::new(canonical_type_instance(element)?),
+            element: Arc::new(canonical_type_instance(element)?),
             name: name.clone(),
         },
         CanonicalType::Module(module) => crate::TypeInstanceKey::Module(module.clone()),
@@ -885,7 +885,7 @@ impl CfgDomainProjection {
                         (&type_pool.struct_def(id).destructor, stable)
                     {
                         let callable = crate::FunctionInstanceKey::AnonymousMember {
-                            owner: Box::new(crate::TypeInstanceKey::Nominal(
+                            owner: Arc::new(crate::TypeInstanceKey::Nominal(
                                 crate::NominalInstanceKey::Anonymous(identity.clone()),
                             )),
                             member: crate::AnonymousMemberKey {
@@ -931,7 +931,7 @@ impl CfgDomainProjection {
                 .unwrap_or_else(|| {
                     crate::StableSymbolEncoder::encode(&crate::StableSymbolId::Callable(
                         crate::StableCallableId::Function(crate::FunctionInstanceKey::DropGlue(
-                            Box::new(owner.clone()),
+                            Arc::new(owner.clone()),
                         )),
                     ))
                 });
@@ -1158,7 +1158,7 @@ impl CfgDomainProjection {
                                 symbol,
                                 StableCfgSymbol::Callable(
                                     crate::FunctionInstanceKey::AnonymousMember {
-                                        owner: Box::new(crate::TypeInstanceKey::Nominal(
+                                        owner: Arc::new(crate::TypeInstanceKey::Nominal(
                                             crate::NominalInstanceKey::Anonymous(owner.clone()),
                                         )),
                                         member: crate::AnonymousMemberKey {

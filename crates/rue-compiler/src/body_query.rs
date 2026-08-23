@@ -923,7 +923,7 @@ mod tests {
     #[test]
     fn cloned_body_keys_share_one_lazy_display_identity() {
         let key = BodyQueryKey::new(
-            crate::FunctionInstanceKey::DropGlue(Box::new(crate::TypeInstanceKey::I64)),
+            crate::FunctionInstanceKey::DropGlue(Arc::new(crate::TypeInstanceKey::I64)),
             crate::semantic_query_nucleus::SemanticQueryConfiguration {
                 target: rue_target::Target::X86_64Linux,
                 preview_features: crate::StablePreviewFeatures::new(

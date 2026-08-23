@@ -213,8 +213,8 @@ fn nested_anonymous_identity() -> crate::AnonymousNominalKey<&'static str, &'sta
     };
     AnonymousNominalKey {
         kind: AnonymousNominalKind::Struct,
-        producer: StableProducerId::Function(Box::new(FunctionInstanceKey::AnonymousMember {
-            owner: Box::new(TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(
+        producer: StableProducerId::Function(Arc::new(FunctionInstanceKey::AnonymousMember {
+            owner: Arc::new(TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(
                 nested,
             ))),
             member: AnonymousMemberKey {
@@ -228,7 +228,7 @@ fn nested_anonymous_identity() -> crate::AnonymousNominalKey<&'static str, &'sta
                 TypeInstanceKey::Nominal(NominalInstanceKey::Named("outer-type")),
                 TypeInstanceKey::Module("outer-module"),
             ]),
-            values: Arc::from([CanonicalArgumentValue::Function(Box::new(
+            values: Arc::from([CanonicalArgumentValue::Function(Arc::new(
                 FunctionInstanceKey::Definition("argument-function"),
             ))]),
         },
@@ -2765,7 +2765,7 @@ where
             self.anonymous_function_identities.borrow_mut().insert(
                 callable,
                 FunctionInstanceKey::AnonymousMember {
-                    owner: Box::new(TypeInstanceKey::Nominal(
+                    owner: Arc::new(TypeInstanceKey::Nominal(
                         crate::NominalInstanceKey::Anonymous(issued_identity.clone()),
                     )),
                     member: crate::AnonymousMemberKey {
@@ -2917,7 +2917,7 @@ where
             self.anonymous_function_identities.borrow_mut().insert(
                 callable,
                 FunctionInstanceKey::AnonymousMember {
-                    owner: Box::new(TypeInstanceKey::Nominal(
+                    owner: Arc::new(TypeInstanceKey::Nominal(
                         crate::NominalInstanceKey::Anonymous(issued_identity.clone()),
                     )),
                     member: crate::AnonymousMemberKey {
@@ -4002,15 +4002,15 @@ where
             TypeKind::Array(id) => {
                 let (element, len) = self.type_pool.array_def(id);
                 TypeInstanceKey::Array {
-                    element: Box::new(recurse(element)?),
+                    element: Arc::new(recurse(element)?),
                     len,
                 }
             }
             TypeKind::PtrConst(id) => {
-                TypeInstanceKey::PtrConst(Box::new(recurse(self.type_pool.ptr_const_def(id))?))
+                TypeInstanceKey::PtrConst(Arc::new(recurse(self.type_pool.ptr_const_def(id))?))
             }
             TypeKind::PtrMut(id) => {
-                TypeInstanceKey::PtrMut(Box::new(recurse(self.type_pool.ptr_mut_def(id))?))
+                TypeInstanceKey::PtrMut(Arc::new(recurse(self.type_pool.ptr_mut_def(id))?))
             }
             TypeKind::Struct(id) => match self.body_struct_identity(id)? {
                 crate::NominalInstanceKey::Builtin { kind, name } => {
@@ -4049,9 +4049,9 @@ where
             ConstValue::Integer(value) => CanonicalArgumentValue::Integer(value),
             ConstValue::Bool(value) => CanonicalArgumentValue::Bool(value),
             ConstValue::Type(ty) => {
-                CanonicalArgumentValue::Type(Box::new(self.canonical_type_instance(ty)?))
+                CanonicalArgumentValue::Type(Arc::new(self.canonical_type_instance(ty)?))
             }
-            ConstValue::Function(symbol) => CanonicalArgumentValue::Function(Box::new(
+            ConstValue::Function(symbol) => CanonicalArgumentValue::Function(Arc::new(
                 FunctionInstanceKey::Definition(self.function_identity(symbol.spur())?),
             )),
             ConstValue::String(symbol) => {
@@ -4256,7 +4256,7 @@ where
             };
         let producer = (|| {
             Some(FunctionInstanceKey::Specialization {
-                base: Box::new(FunctionInstanceKey::Definition(
+                base: Arc::new(FunctionInstanceKey::Definition(
                     self.function_tokens.borrow().get(&name)?.0,
                 )),
                 arguments: crate::CanonicalArguments {
@@ -5306,7 +5306,7 @@ where
         ));
     }
     let issued_identity = FunctionInstanceKey::AnonymousMember {
-        owner: Box::new(TypeInstanceKey::Nominal(
+        owner: Arc::new(TypeInstanceKey::Nominal(
             crate::NominalInstanceKey::Anonymous(issued_owner.clone()),
         )),
         member: member.clone(),

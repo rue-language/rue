@@ -4651,7 +4651,7 @@ fn evaluate_type_shape(
         {
             TypeShapeValue::Available(TypeShape::Struct {
                 fields: Arc::from([
-                    (Arc::from("ptr"), T::PtrConst(Box::new(T::U8))),
+                    (Arc::from("ptr"), T::PtrConst(Arc::new(T::U8))),
                     (Arc::from("len"), T::U64),
                 ]),
             })
@@ -5029,7 +5029,7 @@ fn evaluate_type_facts(
                     .iter()
                     .find(|method| method.has_self && method.name.as_ref() == "__drop")
                     .map(|_| crate::FunctionInstanceKey::AnonymousMember {
-                        owner: Box::new(key.ty.clone()),
+                        owner: Arc::new(key.ty.clone()),
                         member: crate::AnonymousMemberKey {
                             kind: crate::AnonymousMemberKind::Destructor,
                             name: Arc::from("__drop"),
@@ -6184,7 +6184,7 @@ fn evaluate_drop_glue(
             machine_symbol: facts.needs_drop.then(|| {
                 Arc::from(crate::StableSymbolEncoder::encode(
                     &crate::StableSymbolId::Callable(crate::StableCallableId::Function(
-                        crate::FunctionInstanceKey::DropGlue(Box::new(key.ty.clone())),
+                        crate::FunctionInstanceKey::DropGlue(Arc::new(key.ty.clone())),
                     )),
                 ))
             }),
@@ -6745,17 +6745,17 @@ fn body_type_instance(
             crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity.clone()))
         }
         T::Array { element, len } => crate::TypeInstanceKey::Array {
-            element: Box::new(body_type_instance(element)),
+            element: Arc::new(body_type_instance(element)),
             len: *len,
         },
         T::Slice { element, name } => crate::TypeInstanceKey::Slice {
-            element: Box::new(body_type_instance(element)),
+            element: Arc::new(body_type_instance(element)),
             name: name.clone(),
         },
         T::PtrConst(element) => {
-            crate::TypeInstanceKey::PtrConst(Box::new(body_type_instance(element)))
+            crate::TypeInstanceKey::PtrConst(Arc::new(body_type_instance(element)))
         }
-        T::PtrMut(element) => crate::TypeInstanceKey::PtrMut(Box::new(body_type_instance(element))),
+        T::PtrMut(element) => crate::TypeInstanceKey::PtrMut(Arc::new(body_type_instance(element))),
         T::Module(module) => crate::TypeInstanceKey::Module(module.clone()),
         T::GenericParameter(index) => crate::TypeInstanceKey::GenericParameter(*index),
     }
@@ -12956,7 +12956,7 @@ impl RevisionedQueryDatabase {
                         // query control rather than a fabricated semantic fact.
                         _ => return Err(QueryAbort::Canceled),
                     };
-                    let owner = crate::StableProducerId::Function(Box::new(
+                    let owner = crate::StableProducerId::Function(Arc::new(
                         key.instance
                             .with_collapsed_empty_specializations()
                             .into_owned(),
@@ -14058,9 +14058,9 @@ impl RevisionedQueryDatabase {
                                                     .expect("durable value arguments have canonical identities")
                                                     .into(),
                                             };
-                                            let producer = crate::StableProducerId::Function(Box::new(
+                                            let producer = crate::StableProducerId::Function(Arc::new(
                                                 crate::FunctionInstanceKey::Specialization {
-                                                    base: Box::new(crate::FunctionInstanceKey::Definition(
+                                                    base: Arc::new(crate::FunctionInstanceKey::Definition(
                                                         producer_key,
                                                     )),
                                                     arguments: canonical_arguments.clone(),
@@ -22475,7 +22475,7 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
                 values: values.into(),
             };
             let producer = crate::FunctionInstanceKey::Specialization {
-                base: Box::new(crate::FunctionInstanceKey::Definition(definition.clone())),
+                base: Arc::new(crate::FunctionInstanceKey::Definition(definition.clone())),
                 arguments,
             };
             self.provider
@@ -26278,7 +26278,7 @@ mod tests {
             .collect::<Vec<_>>()
             .into();
         let wide = |base: crate::FunctionInstanceKey| crate::FunctionInstanceKey::Specialization {
-            base: Box::new(base),
+            base: Arc::new(base),
             arguments: crate::CanonicalArguments {
                 types: shared.clone(),
                 values: Arc::new([]),
@@ -26294,7 +26294,7 @@ mod tests {
         // set is reachable a second time through a different kind of edge.
         let nested = crate::AnonymousNominalKey {
             kind: crate::semantic_identity::AnonymousNominalKind::Struct,
-            producer: crate::StableProducerId::Function(Box::new(wide(free_function_instance(
+            producer: crate::StableProducerId::Function(Arc::new(wide(free_function_instance(
                 &module, "nested",
             )))),
             anchor: crate::semantic_identity::StructuralAnchor::new(vec![
@@ -26306,7 +26306,7 @@ mod tests {
             },
         };
         let key = crate::FunctionInstanceKey::Specialization {
-            base: Box::new(key),
+            base: Arc::new(key),
             arguments: crate::CanonicalArguments {
                 types: Arc::from([crate::TypeInstanceKey::Nominal(
                     crate::NominalInstanceKey::Anonymous(nested.clone()),
@@ -30553,7 +30553,7 @@ fn main() -> i32 {
             unreachable!("digest-test helper uses a function producer")
         };
         let mut wrapped = canonical.clone();
-        wrapped.producer = crate::StableProducerId::Function(Box::new(
+        wrapped.producer = crate::StableProducerId::Function(Arc::new(
             crate::FunctionInstanceKey::Specialization {
                 base,
                 arguments: crate::CanonicalArguments::default(),
@@ -33125,11 +33125,11 @@ fn main() -> i32 {
             named_type_instance(&module, "Padded", crate::StableDefinitionKind::Struct);
         let choice_key = named_type_instance(&module, "Choice", crate::StableDefinitionKind::Enum);
         let inner_array_key = crate::TypeInstanceKey::Array {
-            element: Box::new(padded_key.clone()),
+            element: Arc::new(padded_key.clone()),
             len: 2,
         };
         let outer_array_key = crate::TypeInstanceKey::Array {
-            element: Box::new(inner_array_key),
+            element: Arc::new(inner_array_key),
             len: 3,
         };
 
@@ -33215,13 +33215,13 @@ fn main() -> i32 {
         let shape_edit =
             source("linear struct Foo { value: i64, extra: i64 }\ndrop fn Foo(self) {}");
         let foo = named_type_instance(&module, "Foo", crate::StableDefinitionKind::Struct);
-        let pointer = crate::TypeInstanceKey::PtrConst(Box::new(foo.clone()));
+        let pointer = crate::TypeInstanceKey::PtrConst(Arc::new(foo.clone()));
         let slice = crate::TypeInstanceKey::Slice {
-            element: Box::new(foo.clone()),
+            element: Arc::new(foo.clone()),
             name: Arc::from("FooSlice"),
         };
         let zero_array = crate::TypeInstanceKey::Array {
-            element: Box::new(foo.clone()),
+            element: Arc::new(foo.clone()),
             len: 0,
         };
         let mut database = RevisionedQueryDatabase::default();
@@ -33378,7 +33378,7 @@ fn main() -> i32 {
             let glue = request_call_abi(
                 &database,
                 revision,
-                crate::FunctionInstanceKey::DropGlue(Box::new(owner.clone())),
+                crate::FunctionInstanceKey::DropGlue(Arc::new(owner.clone())),
                 target,
             );
             assert_eq!(glue.convention, C::Native);
@@ -33498,7 +33498,7 @@ fn main() -> i32 {
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let named = free_function_instance(&module, "named");
         let callable = crate::FunctionInstanceKey::Specialization {
-            base: Box::new(free_function_instance(&module, "sized")),
+            base: Arc::new(free_function_instance(&module, "sized")),
             arguments: crate::CanonicalArguments {
                 types: Arc::from([]),
                 values: Arc::from([crate::CanonicalArgumentValue::Integer(7)]),
@@ -33563,7 +33563,7 @@ fn main() -> i32 {
         );
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let producer = crate::FunctionInstanceKey::Specialization {
-            base: Box::new(free_function_instance(&module, "Box")),
+            base: Arc::new(free_function_instance(&module, "Box")),
             arguments: crate::CanonicalArguments::default(),
         };
         let configuration = semantic_configuration();
@@ -33586,7 +33586,7 @@ fn main() -> i32 {
             produced.0[0].identity.clone(),
         ));
         let callable = crate::FunctionInstanceKey::AnonymousMember {
-            owner: Box::new(owner),
+            owner: Arc::new(owner),
             member: crate::AnonymousMemberKey {
                 kind: crate::AnonymousMemberKind::Destructor,
                 name: Arc::from("__drop"),
@@ -36670,15 +36670,15 @@ fn main() -> i32 {
                 // `resolve_instance_type` walk.
                 let array_ty = facts
                     .resolve_instance_type(&T::Array {
-                        element: Box::new(T::I64),
+                        element: Arc::new(T::I64),
                         len: 3,
                     })
                     .expect("array arm resolves");
                 let ptr_const_ty = facts
-                    .resolve_instance_type(&T::PtrConst(Box::new(named(point_token))))
+                    .resolve_instance_type(&T::PtrConst(Arc::new(named(point_token))))
                     .expect("ptr const arm resolves over a nominal");
                 let ptr_mut_ty = facts
-                    .resolve_instance_type(&T::PtrMut(Box::new(T::I64)))
+                    .resolve_instance_type(&T::PtrMut(Arc::new(T::I64)))
                     .expect("ptr mut arm resolves");
                 let i64_ty = facts
                     .resolve_instance_type(&T::I64)
@@ -36954,7 +36954,7 @@ fn main() -> i32 {
                 // (positive differential in
                 // `provider_endpoint_facts_slice_arm_resolves_after_registration`).
                 let slice = facts.resolve_instance_type(&T::Slice {
-                    element: Box::new(T::I64),
+                    element: Arc::new(T::I64),
                     name: std::sync::Arc::from("[]i64"),
                 });
                 // A genuine non-builtin name (not any builtin under any regime)
@@ -37192,7 +37192,7 @@ fn main() -> i32 {
         let durable_source_symbol = projection.anonymous_nominals[0].source_symbol().clone();
         let durable_drop_glue_symbol =
             crate::local_semantic_materialization::rooted_callable_symbol(
-                &crate::FunctionInstanceKey::DropGlue(Box::new(crate::TypeInstanceKey::Nominal(
+                &crate::FunctionInstanceKey::DropGlue(Arc::new(crate::TypeInstanceKey::Nominal(
                     crate::NominalInstanceKey::Anonymous(durable_identity.clone()),
                 ))),
             );
@@ -37563,7 +37563,7 @@ fn main() -> i32 {
                     .register_generated_slice(&D::I64, "[i64]")
                     .expect("register mints the slice struct");
                 let key = T::Slice {
-                    element: Box::new(T::I64),
+                    element: Arc::new(T::I64),
                     name: std::sync::Arc::from("[i64]"),
                 };
                 let first = facts.resolve_instance_type(&key).expect("slice resolves");
@@ -38599,7 +38599,7 @@ fn main() -> i32 {
             values: Arc::from([crate::CanonicalArgumentValue::Integer(7)]),
         };
         let instance = crate::FunctionInstanceKey::Specialization {
-            base: Box::new(crate::FunctionInstanceKey::Definition(base.clone())),
+            base: Arc::new(crate::FunctionInstanceKey::Definition(base.clone())),
             arguments: arguments.clone(),
         };
         let configuration = semantic_configuration();
@@ -38815,7 +38815,7 @@ fn main() -> i32 {
         let revision = revision_for(&mut database, &snapshot);
         let configuration = semantic_configuration();
         let pair_instance = crate::FunctionInstanceKey::Specialization {
-            base: Box::new(free_function_instance(&module, "Pair")),
+            base: Arc::new(free_function_instance(&module, "Pair")),
             arguments: crate::CanonicalArguments::default(),
         };
         let registered_key =
@@ -39507,7 +39507,7 @@ fn main() -> i32 {
             unreachable!()
         };
         let specialization = |value| crate::FunctionInstanceKey::Specialization {
-            base: Box::new(crate::FunctionInstanceKey::Definition(base.clone())),
+            base: Arc::new(crate::FunctionInstanceKey::Definition(base.clone())),
             arguments: crate::CanonicalArguments {
                 types: Arc::from([]),
                 values: Arc::from([crate::CanonicalArgumentValue::Integer(value)]),
@@ -40205,7 +40205,7 @@ fn main() -> i32 {
             |file_id, text| source_snapshot(&[(file_id, "/main.rue", "main.rue", text)], file_id);
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let producer = crate::FunctionInstanceKey::Specialization {
-            base: Box::new(free_function_instance(&module, "Box")),
+            base: Arc::new(free_function_instance(&module, "Box")),
             arguments: crate::CanonicalArguments::default(),
         };
         let producer_key =
@@ -40236,7 +40236,7 @@ fn main() -> i32 {
                     .expect("producer publishes a body-bearing anonymous get method");
                 crate::body_query::BodyQueryKey::new(
                     crate::FunctionInstanceKey::AnonymousMember {
-                        owner: Box::new(crate::TypeInstanceKey::Nominal(
+                        owner: Arc::new(crate::TypeInstanceKey::Nominal(
                             crate::NominalInstanceKey::Anonymous(owner.identity.clone()),
                         )),
                         member: crate::AnonymousMemberKey {
@@ -40418,7 +40418,7 @@ fn main() -> i32 {
         let source = |text: &str| source_snapshot(&[(1, "/main.rue", "main.rue", text)], 1);
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let producer = crate::FunctionInstanceKey::Specialization {
-            base: Box::new(free_function_instance(&module, "Box")),
+            base: Arc::new(free_function_instance(&module, "Box")),
             arguments: crate::CanonicalArguments::default(),
         };
         let member_key =
@@ -40444,7 +40444,7 @@ fn main() -> i32 {
                     .unwrap();
                 crate::body_query::BodyQueryKey::new(
                     crate::FunctionInstanceKey::AnonymousMember {
-                        owner: Box::new(crate::TypeInstanceKey::Nominal(
+                        owner: Arc::new(crate::TypeInstanceKey::Nominal(
                             crate::NominalInstanceKey::Anonymous(owner.identity.clone()),
                         )),
                         member: crate::AnonymousMemberKey {
@@ -40612,7 +40612,7 @@ fn main() -> i32 {
         );
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let producer = crate::FunctionInstanceKey::Specialization {
-            base: Box::new(free_function_instance(&module, "Outer")),
+            base: Arc::new(free_function_instance(&module, "Outer")),
             arguments: crate::CanonicalArguments::default(),
         };
         let member_key =
@@ -40642,7 +40642,7 @@ fn main() -> i32 {
                     .unwrap_or_else(|| panic!("anonymous producer has no body-bearing {name}"));
                 crate::body_query::BodyQueryKey::new(
                     crate::FunctionInstanceKey::AnonymousMember {
-                        owner: Box::new(crate::TypeInstanceKey::Nominal(
+                        owner: Arc::new(crate::TypeInstanceKey::Nominal(
                             crate::NominalInstanceKey::Anonymous(owner.identity.clone()),
                         )),
                         member: crate::AnonymousMemberKey {
@@ -40931,7 +40931,7 @@ fn main() -> i32 {
         );
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let producer = crate::FunctionInstanceKey::Specialization {
-            base: Box::new(free_function_instance(&module, "Box")),
+            base: Arc::new(free_function_instance(&module, "Box")),
             arguments: crate::CanonicalArguments::default(),
         };
         let mut database = RevisionedQueryDatabase::default();
@@ -40954,7 +40954,7 @@ fn main() -> i32 {
             .expect("Box publishes one anonymous struct");
         let mismatched = crate::body_query::BodyQueryKey::new(
             crate::FunctionInstanceKey::AnonymousMember {
-                owner: Box::new(crate::TypeInstanceKey::Nominal(
+                owner: Arc::new(crate::TypeInstanceKey::Nominal(
                     crate::NominalInstanceKey::Anonymous(owner.identity.clone()),
                 )),
                 member: crate::AnonymousMemberKey {
@@ -41002,7 +41002,7 @@ fn main() -> i32 {
         );
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let producer = crate::FunctionInstanceKey::Specialization {
-            base: Box::new(free_function_instance(&module, "Box")),
+            base: Arc::new(free_function_instance(&module, "Box")),
             arguments: crate::CanonicalArguments::default(),
         };
         let mut database = RevisionedQueryDatabase::default();
@@ -41035,7 +41035,7 @@ fn main() -> i32 {
             .unwrap();
         let get = crate::body_query::BodyQueryKey::new(
             crate::FunctionInstanceKey::AnonymousMember {
-                owner: Box::new(crate::TypeInstanceKey::Nominal(
+                owner: Arc::new(crate::TypeInstanceKey::Nominal(
                     crate::NominalInstanceKey::Anonymous(owner.identity.clone()),
                 )),
                 member: crate::AnonymousMemberKey {
@@ -41194,7 +41194,7 @@ fn main() -> i32 {
 
         let unsupported = crate::body_query::BodyQueryKey::new(
             crate::FunctionInstanceKey::Specialization {
-                base: Box::new(free_function_instance(
+                base: Arc::new(free_function_instance(
                     &ModuleId::from_logical_path("main.rue").unwrap(),
                     "selected",
                 )),
@@ -42149,7 +42149,7 @@ fn main() -> i32 {
         let module = ModuleId::from_logical_path("m.rue").unwrap();
         let configuration = semantic_configuration();
         let instance = |name| crate::FunctionInstanceKey::Specialization {
-            base: Box::new(free_function_instance(&module, name)),
+            base: Arc::new(free_function_instance(&module, name)),
             arguments: crate::CanonicalArguments::default(),
         };
         let first_instance = instance("First");
@@ -42373,7 +42373,7 @@ fn main() -> i32 {
         assert_eq!(projected.len(), 1);
         let declaration_identity = projected[0].identity.clone();
         let produced_instance = crate::FunctionInstanceKey::Specialization {
-            base: Box::new(free_function_instance(&module, "Produced")),
+            base: Arc::new(free_function_instance(&module, "Produced")),
             arguments: crate::CanonicalArguments::default(),
         };
         let produced_key = crate::body_query::BodyQueryKey::new(
@@ -42624,7 +42624,7 @@ fn main() -> i32 {
         );
         crate::AnonymousNominalKey {
             kind,
-            producer: crate::StableProducerId::Function(Box::new(
+            producer: crate::StableProducerId::Function(Arc::new(
                 crate::FunctionInstanceKey::Definition(definition),
             )),
             anchor: rue_rir::RirStructuralAnchor::new(vec![
@@ -42689,7 +42689,7 @@ fn main() -> i32 {
         let crate::StableProducerId::Function(producer) = &canonical.producer else {
             unreachable!()
         };
-        wrapped.producer = crate::StableProducerId::Function(Box::new(
+        wrapped.producer = crate::StableProducerId::Function(Arc::new(
             crate::FunctionInstanceKey::Specialization {
                 base: producer.clone(),
                 arguments: crate::CanonicalArguments::default(),

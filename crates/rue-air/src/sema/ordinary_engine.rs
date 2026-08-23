@@ -857,7 +857,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 .into(),
         };
         Ok(IssuedFunctionInstanceKey::Specialization {
-            base: Box::new(IssuedFunctionInstanceKey::Definition(
+            base: Arc::new(IssuedFunctionInstanceKey::Definition(
                 self.storage.function_identity(function_name)?,
             )),
             arguments,
@@ -1093,12 +1093,12 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             base
         } else {
             IssuedFunctionInstanceKey::Specialization {
-                base: Box::new(base),
+                base: Arc::new(base),
                 arguments: arguments.clone(),
             }
         };
         Ok((
-            IssuedStableProducerId::Function(Box::new(function)),
+            IssuedStableProducerId::Function(Arc::new(function)),
             arguments,
         ))
     }
@@ -1699,7 +1699,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             reject_runtime_type_value(*ty, *is_comptime, span)?;
         }
         let producer = (
-            crate::StableProducerId::Function(Box::new(identity.clone())),
+            crate::StableProducerId::Function(Arc::new(identity.clone())),
             crate::CanonicalArguments::default(),
         );
         let previous = self
@@ -1800,7 +1800,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         })?;
         let identity = crate::FunctionInstanceKey::Definition(identity_token);
         let producer = (
-            crate::StableProducerId::Function(Box::new(identity.clone())),
+            crate::StableProducerId::Function(Arc::new(identity.clone())),
             crate::CanonicalArguments::default(),
         );
         let previous = self

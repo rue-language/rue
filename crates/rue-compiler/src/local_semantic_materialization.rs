@@ -287,7 +287,7 @@ fn collect_slice_sources(
                 output.insert(
                     name.clone(),
                     crate::TypeInstanceKey::Slice {
-                        element: Box::new(element),
+                        element: Arc::new(element),
                         name: name.clone(),
                     },
                 );
@@ -1002,7 +1002,7 @@ pub(crate) fn materialize_semantic_body_with_indexes(
                     .iter()
                     .find(|method| method.has_self && method.name.as_ref() == "__drop")
                     .map(|_| FunctionInstanceKey::AnonymousMember {
-                        owner: Box::new(crate::TypeInstanceKey::Nominal(
+                        owner: Arc::new(crate::TypeInstanceKey::Nominal(
                             crate::NominalInstanceKey::Anonymous(nominal.identity.clone()),
                         )),
                         member: crate::AnonymousMemberKey {
@@ -1490,7 +1490,7 @@ pub(crate) fn select_materialization_facts(
                                     }
                                     if method.has_self && method.name.as_ref() == "__drop" {
                                         self.callable(&FunctionInstanceKey::AnonymousMember {
-                                            owner: Box::new(crate::TypeInstanceKey::Nominal(
+                                            owner: Arc::new(crate::TypeInstanceKey::Nominal(
                                                 crate::NominalInstanceKey::Anonymous(key.clone()),
                                             )),
                                             member: crate::AnonymousMemberKey {
@@ -1711,7 +1711,7 @@ pub(crate) fn select_drop_glue_materialization_facts(
     callable_symbols: &ahash::AHashMap<FunctionInstanceKey, Arc<str>>,
     interner: &mut LocalMaterializationFactInterner,
 ) -> Result<LocalMaterializationFacts, LocalFactSelectionFailure> {
-    let identity = FunctionInstanceKey::DropGlue(Box::new(owner.clone()));
+    let identity = FunctionInstanceKey::DropGlue(Arc::new(owner.clone()));
     let mut roots = vec![(0, crate::drop_glue::semantic_type_from_instance(owner))];
     roots.extend(facts.nested.iter().enumerate().map(|(index, ty)| {
         (
@@ -1796,7 +1796,7 @@ mod tests {
         let module = ModuleId::from_validated_canonical("a.rue");
         let mut interner = LocalMaterializationFactInterner::default();
         let callable = |name: &str| LocalCallableFact {
-            identity: FunctionInstanceKey::DropGlue(Box::new(crate::TypeInstanceKey::I32)),
+            identity: FunctionInstanceKey::DropGlue(Arc::new(crate::TypeInstanceKey::I32)),
             symbol: Arc::from(name),
         };
 
@@ -2189,7 +2189,7 @@ mod tests {
     #[test]
     fn anonymous_destructor_instances_keep_the_cleanup_callable_kind() {
         let destructor = FunctionInstanceKey::AnonymousMember {
-            owner: Box::new(crate::TypeInstanceKey::I32),
+            owner: Arc::new(crate::TypeInstanceKey::I32),
             member: crate::AnonymousMemberKey {
                 kind: crate::AnonymousMemberKind::Destructor,
                 name: Arc::from("__drop"),
@@ -2201,7 +2201,7 @@ mod tests {
         );
         assert_eq!(
             callable_kind_for_identity(&FunctionInstanceKey::Specialization {
-                base: Box::new(destructor),
+                base: Arc::new(destructor),
                 arguments: crate::CanonicalArguments::default(),
             }),
             rue_air::AnalyzedCallableKind::Destructor

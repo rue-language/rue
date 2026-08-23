@@ -31,8 +31,8 @@ pub struct AnonymousMemberKey {
 pub enum CanonicalArgumentValue<D, M> {
     Integer(i128),
     Bool(bool),
-    Type(Box<TypeInstanceKey<D, M>>),
-    Function(Box<FunctionInstanceKey<D, M>>),
+    Type(Arc<TypeInstanceKey<D, M>>),
+    Function(Arc<FunctionInstanceKey<D, M>>),
     Unit,
     String(Arc<str>),
 }
@@ -67,7 +67,7 @@ impl<D, M> Default for CanonicalArguments<D, M> {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StableProducerId<D, M> {
     Definition(D),
-    Function(Box<FunctionInstanceKey<D, M>>),
+    Function(Arc<FunctionInstanceKey<D, M>>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -111,15 +111,15 @@ pub enum TypeInstanceKey<D, M> {
     },
     Nominal(NominalInstanceKey<D, M>),
     Array {
-        element: Box<Self>,
+        element: Arc<Self>,
         len: u64,
     },
     Slice {
-        element: Box<Self>,
+        element: Arc<Self>,
         name: Arc<str>,
     },
-    PtrConst(Box<Self>),
-    PtrMut(Box<Self>),
+    PtrConst(Arc<Self>),
+    PtrMut(Arc<Self>),
     Module(M),
     GenericParameter(u32),
 }
@@ -129,14 +129,14 @@ pub enum TypeInstanceKey<D, M> {
 pub enum FunctionInstanceKey<D, M> {
     Definition(D),
     Specialization {
-        base: Box<FunctionInstanceKey<D, M>>,
+        base: Arc<FunctionInstanceKey<D, M>>,
         arguments: CanonicalArguments<D, M>,
     },
     AnonymousMember {
-        owner: Box<TypeInstanceKey<D, M>>,
+        owner: Arc<TypeInstanceKey<D, M>>,
         member: AnonymousMemberKey,
     },
-    DropGlue(Box<TypeInstanceKey<D, M>>),
+    DropGlue(Arc<TypeInstanceKey<D, M>>),
 }
 
 impl<D, M> CanonicalArgumentValue<D, M> {
@@ -150,10 +150,10 @@ impl<D, M> CanonicalArgumentValue<D, M> {
         Ok(match self {
             Self::Integer(value) => CanonicalArgumentValue::Integer(*value),
             Self::Bool(value) => CanonicalArgumentValue::Bool(*value),
-            Self::Type(value) => CanonicalArgumentValue::Type(Box::new(
+            Self::Type(value) => CanonicalArgumentValue::Type(Arc::new(
                 value.try_map_identities(definition, module)?,
             )),
-            Self::Function(value) => CanonicalArgumentValue::Function(Box::new(
+            Self::Function(value) => CanonicalArgumentValue::Function(Arc::new(
                 value.try_map_identities(definition, module)?,
             )),
             Self::Unit => CanonicalArgumentValue::Unit,
@@ -200,7 +200,7 @@ impl<D, M> AnonymousNominalKey<D, M> {
                 StableProducerId::Definition(value) => {
                     StableProducerId::Definition(definition(value)?)
                 }
-                StableProducerId::Function(value) => StableProducerId::Function(Box::new(
+                StableProducerId::Function(value) => StableProducerId::Function(Arc::new(
                     value.try_map_identities(definition, module)?,
                 )),
             },
@@ -229,7 +229,7 @@ impl<D: Clone, M: Clone> AnonymousNominalKey<D, M> {
                     std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(self),
                     std::borrow::Cow::Owned(collapsed) => std::borrow::Cow::Owned(Self {
                         kind: self.kind,
-                        producer: StableProducerId::Function(Box::new(collapsed)),
+                        producer: StableProducerId::Function(Arc::new(collapsed)),
                         anchor: self.anchor.clone(),
                         arguments: self.arguments.clone(),
                     }),
@@ -262,7 +262,7 @@ impl<D: Clone, M: Clone> FunctionInstanceKey<D, M> {
                     std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(self),
                     std::borrow::Cow::Owned(base) => {
                         std::borrow::Cow::Owned(Self::Specialization {
-                            base: Box::new(base),
+                            base: Arc::new(base),
                             arguments: arguments.clone(),
                         })
                     }
@@ -307,18 +307,18 @@ impl<D, M> TypeInstanceKey<D, M> {
                 }
             }),
             Self::Array { element, len } => TypeInstanceKey::Array {
-                element: Box::new(element.try_map_identities(definition, module)?),
+                element: Arc::new(element.try_map_identities(definition, module)?),
                 len: *len,
             },
             Self::Slice { element, name } => TypeInstanceKey::Slice {
-                element: Box::new(element.try_map_identities(definition, module)?),
+                element: Arc::new(element.try_map_identities(definition, module)?),
                 name: name.clone(),
             },
             Self::PtrConst(value) => {
-                TypeInstanceKey::PtrConst(Box::new(value.try_map_identities(definition, module)?))
+                TypeInstanceKey::PtrConst(Arc::new(value.try_map_identities(definition, module)?))
             }
             Self::PtrMut(value) => {
-                TypeInstanceKey::PtrMut(Box::new(value.try_map_identities(definition, module)?))
+                TypeInstanceKey::PtrMut(Arc::new(value.try_map_identities(definition, module)?))
             }
             Self::Module(value) => TypeInstanceKey::Module(module(value)?),
             Self::GenericParameter(index) => TypeInstanceKey::GenericParameter(*index),
@@ -335,14 +335,14 @@ impl<D, M> FunctionInstanceKey<D, M> {
         Ok(match self {
             Self::Definition(value) => FunctionInstanceKey::Definition(definition(value)?),
             Self::Specialization { base, arguments } => FunctionInstanceKey::Specialization {
-                base: Box::new(base.try_map_identities(definition, module)?),
+                base: Arc::new(base.try_map_identities(definition, module)?),
                 arguments: arguments.try_map_identities(definition, module)?,
             },
             Self::AnonymousMember { owner, member } => FunctionInstanceKey::AnonymousMember {
-                owner: Box::new(owner.try_map_identities(definition, module)?),
+                owner: Arc::new(owner.try_map_identities(definition, module)?),
                 member: member.clone(),
             },
-            Self::DropGlue(value) => FunctionInstanceKey::DropGlue(Box::new(
+            Self::DropGlue(value) => FunctionInstanceKey::DropGlue(Arc::new(
                 value.try_map_identities(definition, module)?,
             )),
         })

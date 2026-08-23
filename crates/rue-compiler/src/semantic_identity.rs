@@ -8,6 +8,7 @@
 #![allow(dead_code)] // Phase-4 seams consumed incrementally by later query families.
 
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 use crate::{ModuleId, StableDefinitionKey, bound_definitions::StableNamedTypeKey};
 
@@ -333,18 +334,18 @@ pub(crate) fn type_instance_from_semantic(
             TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(key.clone()))
         }
         T::Array { element, len } => TypeInstanceKey::Array {
-            element: Box::new(type_instance_from_semantic(element)?),
+            element: Arc::new(type_instance_from_semantic(element)?),
             len: *len,
         },
         T::Slice { element, name } => TypeInstanceKey::Slice {
-            element: Box::new(type_instance_from_semantic(element)?),
+            element: Arc::new(type_instance_from_semantic(element)?),
             name: name.clone(),
         },
         T::PtrConst(pointee) => {
-            TypeInstanceKey::PtrConst(Box::new(type_instance_from_semantic(pointee)?))
+            TypeInstanceKey::PtrConst(Arc::new(type_instance_from_semantic(pointee)?))
         }
         T::PtrMut(pointee) => {
-            TypeInstanceKey::PtrMut(Box::new(type_instance_from_semantic(pointee)?))
+            TypeInstanceKey::PtrMut(Arc::new(type_instance_from_semantic(pointee)?))
         }
         T::Module(module) => TypeInstanceKey::Module(module.clone()),
         T::GenericParameter(index) => TypeInstanceKey::GenericParameter(*index),
@@ -359,9 +360,9 @@ pub(crate) fn argument_value_from_semantic(
         V::Integer(value) => CanonicalArgumentValue::Integer(*value),
         V::Bool(value) => CanonicalArgumentValue::Bool(*value),
         V::Type(value) => {
-            CanonicalArgumentValue::Type(Box::new(type_instance_from_semantic(value)?))
+            CanonicalArgumentValue::Type(Arc::new(type_instance_from_semantic(value)?))
         }
-        V::Function(value) => CanonicalArgumentValue::Function(Box::new(
+        V::Function(value) => CanonicalArgumentValue::Function(Arc::new(
             FunctionInstanceKey::Definition(value.clone()),
         )),
         V::Unit => CanonicalArgumentValue::Unit,
@@ -383,7 +384,7 @@ pub(crate) fn function_instance_from_specialization(
         .map(argument_value_from_semantic)
         .collect::<Option<Vec<_>>>()?;
     Some(FunctionInstanceKey::Specialization {
-        base: Box::new(FunctionInstanceKey::Definition(value.base.clone())),
+        base: Arc::new(FunctionInstanceKey::Definition(value.base.clone())),
         arguments: CanonicalArguments {
             types: types.into(),
             values: values.into(),
@@ -916,7 +917,7 @@ mod tests {
 
         let owner = &sites[0];
         let member = FunctionInstanceKey::AnonymousMember {
-            owner: Box::new(TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(
+            owner: Arc::new(TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(
                 owner.clone(),
             ))),
             member: AnonymousMemberKey {
