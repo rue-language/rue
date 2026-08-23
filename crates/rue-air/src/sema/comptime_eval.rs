@@ -135,10 +135,7 @@ static EMPTY_MODULE_MEMBERS: LazyLock<AHashMap<InstRef, ConstValue>> = LazyLock:
 pub(crate) struct ComptimeEnv<'a> {
     /// Definition-relative producer root for anonymous identity issuance.
     producer: Option<InstRef>,
-    canonical_identity: Option<(
-        super::anon_structs::IssuedStableProducerId,
-        super::anon_structs::IssuedCanonicalArguments,
-    )>,
+    canonical_identity: Option<super::anon_structs::IssuedStableProducerId>,
     /// Comptime type parameters in scope (e.g. `T` -> `i32`).
     type_subst: &'a AHashMap<Spur, Type>,
     /// Comptime value parameters in scope (e.g. `N` -> `42`).
@@ -250,10 +247,7 @@ impl<'a> ComptimeEnv<'a> {
     pub(crate) fn for_analysis(ctx: &'a AnalysisContext) -> Self {
         Self {
             producer: Some(ctx.producer),
-            canonical_identity: Some((
-                ctx.canonical_producer.clone(),
-                ctx.canonical_producer_arguments.clone(),
-            )),
+            canonical_identity: Some(ctx.canonical_producer.clone()),
             type_subst: &ctx.comptime_type_vars,
             value_subst: &ctx.comptime_value_vars,
             resolved_types: Some(ctx.resolved_types),
@@ -983,7 +977,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let method_sigs =
                     self.extract_anon_method_sigs(methods, &local_type_subst, &local_value_subst);
 
-                let Some((producer, arguments)) = env.canonical_identity.clone() else {
+                let Some(producer) = env.canonical_identity.clone() else {
                     return Ok(None);
                 };
                 let (struct_ty, _is_new) = self.find_or_create_anon_struct(
@@ -991,7 +985,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         kind: crate::AnonymousNominalKind::Struct,
                         producer,
                         anchor: anchor.clone(),
-                        arguments,
                     },
                     &struct_fields,
                     &method_sigs,
@@ -1114,7 +1107,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     variant_payloads.push(tys);
                 }
 
-                let Some((producer, arguments)) = env.canonical_identity.clone() else {
+                let Some(producer) = env.canonical_identity.clone() else {
                     return Ok(None);
                 };
                 let enum_ty = self.find_or_create_anon_enum(
@@ -1122,7 +1115,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         kind: crate::AnonymousNominalKind::Enum,
                         producer,
                         anchor: anchor.clone(),
-                        arguments,
                     },
                     &variant_names,
                     &variant_payloads,

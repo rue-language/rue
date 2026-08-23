@@ -561,7 +561,6 @@ impl<D: RetainedCharge, M: RetainedCharge> RetainedCharge for rue_air::Anonymous
         self.producer
             .retained_charge()
             .saturating_add(self.anchor.retained_charge())
-            .saturating_add(self.arguments.retained_charge())
     }
 }
 

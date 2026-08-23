@@ -4142,26 +4142,37 @@ fn durable_type_diagnostic_name(ty: &crate::durable_semantics::DurableType) -> S
             crate::StableProducerId::Definition(key) => key.name().to_owned(),
             crate::StableProducerId::Function(function) => {
                 let name = function_name(function).unwrap_or("anonymous");
-                let mut arguments = key
-                    .arguments
-                    .types
-                    .iter()
-                    .filter_map(durable_type_from_instance_key)
-                    .map(|ty| durable_type_diagnostic_name(&ty))
-                    .collect::<Vec<_>>();
-                arguments.extend(key.arguments.values.iter().map(|value| match value {
-                    crate::CanonicalArgumentValue::Integer(value) => value.to_string(),
-                    crate::CanonicalArgumentValue::Bool(value) => value.to_string(),
-                    crate::CanonicalArgumentValue::Type(value) => {
-                        durable_type_from_instance_key(value).map_or_else(
-                            || "type".to_owned(),
-                            |ty| durable_type_diagnostic_name(&ty),
-                        )
-                    }
-                    crate::CanonicalArgumentValue::Function(_) => "function".to_owned(),
-                    crate::CanonicalArgumentValue::Unit => "()".to_owned(),
-                    crate::CanonicalArgumentValue::String(value) => format!("\"{value}\""),
-                }));
+                // The comptime arguments live inside the producer
+                // specialization; the key carries no second copy (RUE-1699).
+                let applied = key.producer_arguments();
+                let mut arguments = applied
+                    .map(|applied| {
+                        applied
+                            .types
+                            .iter()
+                            .filter_map(durable_type_from_instance_key)
+                            .map(|ty| durable_type_diagnostic_name(&ty))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                arguments.extend(
+                    applied
+                        .into_iter()
+                        .flat_map(|applied| applied.values.iter())
+                        .map(|value| match value {
+                            crate::CanonicalArgumentValue::Integer(value) => value.to_string(),
+                            crate::CanonicalArgumentValue::Bool(value) => value.to_string(),
+                            crate::CanonicalArgumentValue::Type(value) => {
+                                durable_type_from_instance_key(value.as_ref()).map_or_else(
+                                    || "type".to_owned(),
+                                    |ty| durable_type_diagnostic_name(&ty),
+                                )
+                            }
+                            crate::CanonicalArgumentValue::Function(_) => "function".to_owned(),
+                            crate::CanonicalArgumentValue::Unit => "()".to_owned(),
+                            crate::CanonicalArgumentValue::String(value) => format!("\"{value}\""),
+                        }),
+                );
                 if arguments.is_empty() {
                     name.to_owned()
                 } else {
@@ -6510,10 +6521,11 @@ fn visit_instance_anonymous_nominals<'a>(
             return;
         }
         visit(identity);
+        // The producer is the key's whole reach: the comptime arguments it was
+        // minted under live inside that producer's specialization (RUE-1699).
         if let crate::StableProducerId::Function(function) = &identity.producer {
             instance_function(function, seen, visit);
         }
-        arguments(&identity.arguments, seen, visit);
     }
 
     fn instance_type<'a, F: FnMut(&'a crate::AnonymousNominalKey)>(
@@ -6987,7 +6999,6 @@ struct SemanticConstEvaluator<'a, 'provider> {
     import_occurrences: BTreeMap<rue_rir::InstRef, (u32, Arc<str>)>,
     locals: BTreeMap<Arc<str>, EvaluatedSemanticConst>,
     producer: crate::StableProducerId,
-    canonical_arguments: crate::CanonicalArguments,
     next_call: u32,
     expected_type: Option<crate::durable_semantics::DurableType>,
 }
@@ -8259,7 +8270,6 @@ impl SemanticConstEvaluator<'_, '_> {
             kind,
             producer: self.producer.clone(),
             anchor,
-            arguments: self.canonical_arguments.clone(),
         }
         .with_canonical_producer()
         .into_owned();
@@ -13731,8 +13741,6 @@ impl RevisionedQueryDatabase {
                                                     import_occurrences,
                                                     locals: BTreeMap::new(),
                                                     producer: const_producer.clone(),
-                                                    canonical_arguments:
-                                                        crate::CanonicalArguments::default(),
                                                     next_call: 0,
                                                     expected_type,
                                                 };
@@ -14202,7 +14210,7 @@ impl RevisionedQueryDatabase {
                                                     base: Node::new(crate::FunctionInstanceKey::Definition(
                                                         producer_key,
                                                     )),
-                                                    arguments: canonical_arguments.clone(),
+                                                    arguments: canonical_arguments,
                                                 },
                                             ));
                                             let mut locals = BTreeMap::new();
@@ -14245,7 +14253,6 @@ impl RevisionedQueryDatabase {
                                                     import_occurrences,
                                                     locals,
                                                     producer: producer.clone(),
-                                                    canonical_arguments,
                                                     next_call: 0,
                                                     expected_type: Some(expected_type),
                                                 };
@@ -26436,7 +26443,6 @@ mod tests {
             anchor: crate::semantic_identity::StructuralAnchor::new(vec![
                 crate::semantic_identity::StructuralPathSegment::AnonymousType(ordinal),
             ]),
-            arguments: crate::CanonicalArguments::default(),
         };
 
         // One slice, cloned into every specialization below, so each of the
@@ -26474,10 +26480,6 @@ mod tests {
             anchor: crate::semantic_identity::StructuralAnchor::new(vec![
                 crate::semantic_identity::StructuralPathSegment::AnonymousType(LEAVES),
             ]),
-            arguments: crate::CanonicalArguments {
-                types: shared.clone(),
-                values: Arc::new([]),
-            },
         };
         let key = crate::FunctionInstanceKey::Specialization {
             base: Node::new(key),
@@ -37078,7 +37080,7 @@ fn main() -> i32 {
     fn provider_endpoint_facts_deferred_arms_are_pinned_gaps() {
         use crate::StableDefinitionKind as Kind;
         use rue_air::{
-            AnonymousNominalKey, AnonymousNominalKind, CanonicalArguments, NominalInstanceKey as N,
+            AnonymousNominalKey, AnonymousNominalKind, NominalInstanceKey as N,
             SemanticModuleToken as MTok, StableProducerId, TypeInstanceKey as T,
         };
         // A one-nominal program so the anonymous producer has a real definition
@@ -37148,7 +37150,6 @@ fn main() -> i32 {
                         kind: AnonymousNominalKind::Struct,
                         producer: StableProducerId::Definition(point_token),
                         anchor: rue_rir::RirStructuralAnchor::new(Vec::new()),
-                        arguments: CanonicalArguments::default(),
                     },
                 ))));
                 (
@@ -37186,7 +37187,7 @@ fn main() -> i32 {
     #[test]
     fn provider_endpoint_facts_anonymous_arm_mints_after_registration() {
         use rue_air::{
-            AnonymousNominalKey, AnonymousNominalKind, CanonicalArguments, NominalInstanceKey as N,
+            AnonymousNominalKey, AnonymousNominalKind, NominalInstanceKey as N,
             SemanticDefinitionToken as DTok, StableProducerId, TypeInstanceKey as T,
         };
         // `Holder`'s field `p: Pair()` forces the epoch to instantiate the
@@ -37278,7 +37279,6 @@ fn main() -> i32 {
                     kind: AnonymousNominalKind::Struct,
                     producer: StableProducerId::Definition(DTok::new(0x5b, 1)),
                     anchor: rue_rir::RirStructuralAnchor::new(Vec::new()),
-                    arguments: CanonicalArguments::default(),
                 };
                 facts.register_anonymous_nominal(issued.clone(), identity_for_probe.clone());
                 let via_arm = facts
@@ -37305,7 +37305,7 @@ fn main() -> i32 {
             "the anonymous struct retains the produced field vocabulary"
         );
         assert_eq!(
-            pool_render.symbol, "__anon_struct_1b69917d6af6484829216c9eea0c652a",
+            pool_render.symbol, "__anon_struct_5451c1711507279538bfbd6f415d97aa",
             "the mangled symbol is the stable digest spelling"
         );
         assert!(!pool_render.is_pub, "an anonymous nominal is not `pub`");
@@ -37323,7 +37323,7 @@ fn main() -> i32 {
     #[test]
     fn provider_endpoint_facts_anonymous_enum_mints_from_durable_identity() {
         use rue_air::{
-            AnonymousNominalKey, AnonymousNominalKind, CanonicalArguments, NominalInstanceKey as N,
+            AnonymousNominalKey, AnonymousNominalKind, NominalInstanceKey as N,
             SemanticDefinitionToken as DTok, StableProducerId, TypeInstanceKey as T,
         };
         // `Holder`'s field `o: Wrap()` forces the epoch to instantiate the
@@ -37418,7 +37418,6 @@ fn main() -> i32 {
                     kind: AnonymousNominalKind::Enum,
                     producer: StableProducerId::Definition(DTok::new(0x5b, 1)),
                     anchor: rue_rir::RirStructuralAnchor::new(Vec::new()),
-                    arguments: CanonicalArguments::default(),
                 };
                 facts.register_anonymous_nominal(issued.clone(), identity_for_probe.clone());
                 let via_arm = facts
@@ -42816,7 +42815,6 @@ fn main() -> i32 {
                 rue_rir::RirStructuralPathSegment::Body,
                 rue_rir::RirStructuralPathSegment::AnonymousType(0),
             ]),
-            arguments: crate::CanonicalArguments::default(),
         }
     }
 

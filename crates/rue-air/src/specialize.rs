@@ -79,6 +79,13 @@ struct SpecializationInfo {
 /// `fact(n - 1)`, RUE-166) and ever-growing type instantiation such as
 /// `f(Pair(T), ...)` inside `f` — without threading provenance through every
 /// sema work queue.
+///
+/// The type-instantiation half of that was unreachable until RUE-1699. An
+/// anonymous nominal's identity named its comptime arguments twice, so the
+/// work of instantiating round `n` doubled with `n` and `f(Pair(T), ...)` hung
+/// well before round 64 rather than reporting E1200. A budget that cannot be
+/// reached is not a budget, so `cli.anonymous_identity_nesting` pins that this
+/// one is.
 pub const MAX_SPECIALIZATION_ROUNDS: usize = 64;
 
 /// Maximum nesting depth of a *comptime call* — one `comptime`-evaluated
@@ -432,37 +439,6 @@ where
         ));
     }
 
-    let canonical_arguments = crate::CanonicalArguments {
-        types: key
-            .type_args
-            .iter()
-            .map(|ty| host.canonical_type_instance(*ty))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|failure| {
-                CompileError::new(
-                    ErrorKind::InternalError(format!(
-                        "failed to issue provider specialization arguments: {failure:?}"
-                    )),
-                    base_info.span,
-                )
-            })?
-            .into(),
-        values: key
-            .value_args
-            .iter()
-            .copied()
-            .map(|value| host.canonical_argument_value(value))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|failure| {
-                CompileError::new(
-                    ErrorKind::InternalError(format!(
-                        "failed to issue provider specialization arguments: {failure:?}"
-                    )),
-                    base_info.span,
-                )
-            })?
-            .into(),
-    };
     let identity = OrdinaryBodyEngine::new(host)
         .canonical_specialization_instance(key.base_name, &key.type_args, &key.value_args)
         .map_err(|failure| {
@@ -478,12 +454,9 @@ where
     // narrower canonical form: an empty specialization is the base function.
     // Normalize at the producer boundary so the body, its produced facts, and
     // final composition all name the same anonymous nominal.
-    let producer = (
-        crate::StableProducerId::Function(Node::new(
-            identity.with_collapsed_empty_specializations().into_owned(),
-        )),
-        canonical_arguments,
-    );
+    let producer = crate::StableProducerId::Function(Node::new(
+        identity.with_collapsed_empty_specializations().into_owned(),
+    ));
     let previous = host.replace_active_anonymous_producer(Some(producer));
     let analysis = {
         let mut engine = OrdinaryBodyEngine::new(host);

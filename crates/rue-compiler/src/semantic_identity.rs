@@ -638,9 +638,10 @@ fn encode_type(value: &TypeInstanceKey, output: &mut String) {
         TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(value)) => {
             tag(output, 14);
             encode_nominal_kind(value.kind, output);
+            // The producer carries the comptime arguments the nominal was
+            // minted under; the key holds no second copy (RUE-1699).
             encode_producer(&value.producer, output);
             encode_anchor(&value.anchor, output);
-            encode_arguments(&value.arguments, output);
         }
         TypeInstanceKey::Array { element, len } => {
             tag(output, 15);
@@ -809,18 +810,25 @@ mod tests {
     #[test]
     fn anonymous_identity_includes_producer_anchor_arguments_and_kind() {
         let producer = definition("m", "make");
+        // The comptime argument reaches the key through the producer
+        // specialization that consumed it -- the key carries no second copy
+        // (RUE-1699) -- so varying it still has to vary the identity.
         let make = |kind, ordinal, argument| {
             TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(Node::new(
                 AnonymousNominalKey {
                     kind,
-                    producer: StableProducerId::Definition(producer.clone()),
+                    producer: StableProducerId::Function(Node::new(
+                        FunctionInstanceKey::Specialization {
+                            base: Node::new(FunctionInstanceKey::Definition(producer.clone())),
+                            arguments: CanonicalArguments {
+                                types: vec![argument].into(),
+                                values: Arc::new([]),
+                            },
+                        },
+                    )),
                     anchor: StructuralAnchor::new(vec![StructuralPathSegment::AnonymousType(
                         ordinal,
                     )]),
-                    arguments: CanonicalArguments {
-                        types: vec![argument].into(),
-                        values: Arc::new([]),
-                    },
                 },
             )))
         };
@@ -854,7 +862,6 @@ mod tests {
                 StructuralPathSegment::Body,
                 StructuralPathSegment::AnonymousType(ordinal),
             ]),
-            arguments: CanonicalArguments::default(),
         };
         vec![
             site("First", AnonymousNominalKind::Struct, 0),
@@ -987,7 +994,6 @@ mod tests {
             kind: AnonymousNominalKind::Struct,
             producer: StableProducerId::Definition(definition("m", "Unrelated")),
             anchor: StructuralAnchor::new(vec![StructuralPathSegment::AnonymousType(9)]),
-            arguments: CanonicalArguments::default(),
         };
         let widened = AnonymousSymbolPlan::with_forced_digests(
             sites

@@ -104,12 +104,20 @@ pub fn stable_anonymous_identity_digest(identity: &AnonymousNominalKey<String, S
 /// edge wrapper made `Hash` an accelerator, which is right for map probes and
 /// wrong for a name.
 ///
-/// The stream reproduces what the derive produced before, byte for byte, so no
-/// symbol moves: a variant writes its zero-based index the way the derive wrote
-/// its discriminant, then its fields in declaration order. Fields that cannot
-/// reach an identity edge delegate to `Hash`, which keeps this to the types
-/// that actually carry the recursion. `durable_encode_agrees_with_the_derived_hash`
-/// pins the equivalence over every variant.
+/// The stream keeps the derive's shape: a variant writes its zero-based index
+/// the way the derive wrote its discriminant, then its fields in declaration
+/// order. Fields that cannot reach an identity edge delegate to `Hash`, which
+/// keeps this to the types that actually carry the recursion.
+/// `the_durable_encoding_is_pinned` pins the resulting digest over a corpus
+/// that reaches every variant, so a byte change here fails loudly rather than
+/// silently renaming anonymous nominals.
+///
+/// It is not a promise that the bytes never change. Dropping the duplicated
+/// comptime arguments from `AnonymousNominalKey` (RUE-1699) changed them once,
+/// deliberately: the stream used to expand each nesting level's arguments
+/// twice, which made the name of a `Pair(Pair(..))` cost `2^depth` bytes to
+/// spell. Anonymous nominals were renamed by that, and the pins were
+/// re-derived with it.
 trait DurableEncode {
     fn durable_encode<H: Hasher>(&self, state: &mut H);
 }
@@ -137,7 +145,6 @@ impl DurableEncode for AnonymousNominalKey<String, String> {
         self.kind.hash(state);
         self.producer.durable_encode(state);
         self.anchor.hash(state);
-        self.arguments.durable_encode(state);
     }
 }
 
@@ -402,10 +409,6 @@ mod tests {
                 RirStructuralPathSegment::Body,
                 RirStructuralPathSegment::AnonymousType(site),
             ]),
-            arguments: CanonicalArguments {
-                types: Arc::new([]),
-                values: Arc::new([]),
-            },
         }
     }
 
@@ -594,24 +597,32 @@ mod tests {
     fn anonymous_identity_digest_encoding_is_stable() {
         let identity = AnonymousNominalKey {
             kind: AnonymousNominalKind::Struct,
-            producer: StableProducerId::Definition("root::make".to_string()),
+            // The producer carries the comptime arguments; the key holds no
+            // second copy of them (RUE-1699).
+            producer: StableProducerId::Function(Node::new(
+                crate::FunctionInstanceKey::Specialization {
+                    base: Node::new(crate::FunctionInstanceKey::Definition(
+                        "root::make".to_string(),
+                    )),
+                    arguments: CanonicalArguments {
+                        types: Arc::new([]),
+                        values: Arc::new([
+                            CanonicalArgumentValue::Integer(42),
+                            CanonicalArgumentValue::Bool(true),
+                            CanonicalArgumentValue::String(Arc::from("rue")),
+                        ]),
+                    },
+                },
+            )),
             anchor: RirStructuralAnchor::new(vec![
                 RirStructuralPathSegment::Body,
                 RirStructuralPathSegment::AnonymousType(2),
             ]),
-            arguments: CanonicalArguments {
-                types: Arc::new([]),
-                values: Arc::new([
-                    CanonicalArgumentValue::Integer(42),
-                    CanonicalArgumentValue::Bool(true),
-                    CanonicalArgumentValue::String(Arc::from("rue")),
-                ]),
-            },
         };
 
         assert_eq!(
             stable_anonymous_identity_digest(&identity),
-            0xdf10_a209_9a1d_9f9b_e7ee_009c_9e2d_4bfd
+            0x5dd4_5727_95c5_0a51_5c8b_1728_5bde_4c55
         );
     }
 
@@ -647,111 +658,112 @@ mod tests {
     /// corpus is what makes that pin worth having.
     /// The durable stream is a name, so every byte of it is pinned.
     ///
-    /// These digests were taken while `#[derive(Hash)]` still produced them, by
-    /// running both over this corpus and asserting they agreed; they are the
-    /// values the compiler has always spelled. The corpus reaches every variant
-    /// of every type on the identity graph, so a wrong discriminant or a dropped
-    /// field fails here rather than in somebody's object file.
+    /// The corpus reaches every variant of every type on the identity graph, so
+    /// a wrong discriminant or a dropped field fails here rather than in
+    /// somebody's object file.
     ///
     /// A change here is a rename of every anonymous nominal in every program
     /// carrying the affected shape. If one of these moves, that is the question
-    /// to answer -- not a number to update.
+    /// to answer -- not a number to update. These values were re-derived once,
+    /// for RUE-1699: the key stopped carrying a duplicate of the comptime
+    /// arguments its producer already held, because expanding them twice per
+    /// nesting level made spelling a `Pair(Pair(..))` name cost `2^depth`.
     const DURABLE_DIGESTS: &[(&str, &str)] = &[
         (
             "producer function definition (struct)",
-            "ec4e05a47384afca3cbc60877deb11a1",
+            "195d3c9d440c159ad0ae7f0b7a4d1de1",
         ),
         (
             "producer function specialization (struct)",
-            "878a69cf8779bc9a48e2bd0544895579",
+            "ca4c7f5e999942ac317eea397b8eb7b9",
         ),
         (
             "producer function anonymous member (struct)",
-            "1260949fa05dc692262ee74e0f057549",
+            "a0f6d1b911a8b73bcf9e95468cfc0b89",
         ),
         (
             "producer function drop glue (struct)",
-            "feb0b5ff79bf7b5f6daffe2bf6fb4add",
+            "3dd9e5593da58c5612c555e6a22c161d",
         ),
         (
             "producer definition (struct)",
-            "102ac552074f2e057dbff637257de7ad",
+            "569f2d4791c9b9c41cdfdfd0b9d326ed",
         ),
         (
             "producer function definition (enum)",
-            "aa02e4b0ac3b48d540c230ba46e34a8a",
+            "5108964facdc19c0cd0f91a4544f550a",
         ),
         (
             "producer function specialization (enum)",
-            "41eb8a04200f269d447f161118dcf0c8",
+            "55a4f077d61bfbb1d63a460a964d42c8",
         ),
         (
             "producer function anonymous member (enum)",
-            "eef3756d48c04504ec585b0c9fdbe48e",
+            "a9dd7404e8587e7b9fd58bf48823000e",
         ),
         (
             "producer function drop glue (enum)",
-            "e7ac96de412bb160557f77281d9eb5ac",
+            "f826a50f9acaffcadc564d082adc50ac",
         ),
         (
             "producer definition (enum)",
-            "d5bdc23d3b48f603dbcef3a152e9904e",
+            "da5aacbfbef0aef026e67aba5e029bce",
         ),
-        ("type argument i8", "e0c66905387d6c46fdbaa414c52799cb"),
-        ("type argument i16", "a7bd95777f6cdb173a0e93887e8cae0a"),
-        ("type argument i32", "6eb4c1e9c65c49e7766282fc37f1c249"),
-        ("type argument i64", "35abee5c0d4bb8b7b2b6726ff156d688"),
-        ("type argument u8", "c4e9b73c1cbfb1060c6ae645df9348cf"),
-        ("type argument u16", "8be0e3ae63af1fd648bed5b998f85d0e"),
-        ("type argument u32", "52d81020aa9e8ea68512c52d525d714d"),
-        ("type argument u64", "19cf3c92f18dfd76c166b4a10bc2858c"),
-        ("type argument bool", "187fcc976ff8e2c8e05a1fb290503bc3"),
-        ("type argument unit", "df76f909b6e851991cae0f2649b55002"),
-        ("type argument never", "a66e257bfdd7c0695901fe9a031a6441"),
+        ("type argument i8", "f46890c9edae2062b1b8f0e4fc1d751b"),
+        ("type argument i16", "d68f2a7411d4a289116dd80ac2cb67ea"),
+        ("type argument i32", "79ad53d51c60800b7a603e4f3ed64ab9"),
+        ("type argument i64", "5bd3ed7f40870231da15257505843d88"),
+        ("type argument u8", "ff2db488ab12dfb443078bcbd84eabdf"),
+        ("type argument u16", "e1544e32cf3961daa2bc72f19efc9eae"),
+        ("type argument u32", "84727793d9c53f5d0baed9361b07817d"),
+        ("type argument u64", "6699113dfdebc1836b63c05be1b5744c"),
+        ("type argument bool", "b1f1bedc6b92e2e2f230e72c97b86d93"),
+        ("type argument unit", "941858868fb9650951e5ce525e666062"),
+        ("type argument never", "373681e79a45428bbad83496da714331"),
         (
             "type argument comptime type",
-            "6d6551ee44c72f399555ee0dbc7f7880",
+            "195d1b91be6bc4b21a8d1bbca11f3600",
         ),
         (
             "type argument builtin nominal",
-            "dae8f74ff631dfbb5643285ee2ffde5a",
+            "92cff19c4393afa67e2981906b7fb062",
         ),
         (
             "type argument nominal builtin",
-            "5128dfe22a2aa39c948d84498d582bd2",
+            "68ca48c2cffefba3d9d68cdd2a73ebe2",
         ),
         (
             "type argument nominal named",
-            "7144ea40e647c7cde9c7b11e0ab16de3",
+            "73285bb4e38dbcd4d42774916580828b",
         ),
         (
             "type argument nominal anonymous",
-            "6fa6b24ea532fde7e7546e7476ab40e0",
+            "b610995a7a0a5a2f01a4766158f49dd8",
         ),
-        ("type argument array", "99fb17ebe88d5c5f0a1ab06162733b00"),
-        ("type argument slice", "5072f209978bb5e8d566967123cff101"),
+        ("type argument array", "003788fe6b2c8165a4c95f7965a45980"),
+        ("type argument slice", "73df50e35f655ca3ec88f09a2afab7f1"),
         (
             "type argument ptr const",
-            "9421f255fc67768bb4d91ad2d0bb7ef9",
+            "f6da0548ef37b12c018edc22e7d0c3e9",
         ),
-        ("type argument ptr mut", "4aaf44af8392b42eb072d2290e071758"),
-        ("type argument module", "d3cc1e52047ff5ace920ebe291a95930"),
+        ("type argument ptr mut", "d5bfcc0208407ee02fd14c26485a20d8"),
+        ("type argument module", "55aefd31c30c409d8a3a9bf533127728"),
         (
             "type argument generic parameter",
-            "d0012436d84d1f9e2873daf39f84330b",
+            "98b217483beec3a432eecd109faeae1b",
         ),
-        ("value argument integer", "0469a1c56713c80c74604122db9e55a7"),
-        ("value argument bool", "fe732a2a655b565c0fcce5096ab1169d"),
-        ("value argument type", "cee5a98f51731f766e3032758eca1220"),
+        ("value argument integer", "be5c384afb58f04ad9fd48fb1d6a7477"),
+        ("value argument bool", "4a98ecef054fe3f34e2b094f43aa2a2d"),
+        ("value argument type", "edb2a6e94399c580493d624249cd1c60"),
         (
             "value argument function",
-            "e7aa6ef862691885f26f904f8a7266ba",
+            "0a084736373a516e249c16205eb0992a",
         ),
-        ("value argument unit", "23984bb60e0a0ac714765f9d6f166e63"),
-        ("value argument string", "25a900804c416e384a4a53053854435a"),
+        ("value argument unit", "8995093016a312b0bcbc59fbd712d173"),
+        ("value argument string", "07a99b3ee5d1dd4eb58221ba1d5d438a"),
         (
             "multiple arguments of both streams",
-            "beab0bd64921e55eaa3feea66bb5b4e4",
+            "2bc17b86f81eb5117f24cb2af526f4ec",
         ),
     ];
 
@@ -899,12 +911,26 @@ mod tests {
             kind: AnonymousNominalKind::Enum,
             producer: crate::StableProducerId::Definition("pkg/inner.rue::p".to_owned()),
             anchor: anchor(&[RirStructuralPathSegment::Body]),
-            arguments: crate::CanonicalArguments::default(),
         }
     }
 
     fn anchor(segments: &[RirStructuralPathSegment]) -> rue_rir::RirStructuralAnchor {
         rue_rir::RirStructuralAnchor::new(segments.to_vec())
+    }
+
+    /// The producer of a nominal minted under `arguments`. Comptime arguments
+    /// reach an anonymous key only through the specialization that consumed
+    /// them (RUE-1699), so every argument shape in the corpus is spelled this
+    /// way.
+    fn applied_producer(
+        arguments: crate::CanonicalArguments<String, String>,
+    ) -> crate::StableProducerId<String, String> {
+        crate::StableProducerId::Function(Node::new(crate::FunctionInstanceKey::Specialization {
+            base: Node::new(crate::FunctionInstanceKey::Definition(
+                "pkg/m.rue::d".to_owned(),
+            )),
+            arguments,
+        }))
     }
 
     /// One identity per shape worth separating, each labelled so a failure
@@ -924,7 +950,6 @@ mod tests {
                         kind,
                         producer: crate::StableProducerId::Function(Node::new(function)),
                         anchor: anchor(&[RirStructuralPathSegment::AnonymousType(1)]),
-                        arguments: crate::CanonicalArguments::default(),
                     },
                 ));
             }
@@ -934,7 +959,6 @@ mod tests {
                     kind,
                     producer: crate::StableProducerId::Definition("pkg/m.rue::d".to_owned()),
                     anchor: anchor(&[RirStructuralPathSegment::ReturnType]),
-                    arguments: crate::CanonicalArguments::default(),
                 },
             ));
         }
@@ -945,12 +969,11 @@ mod tests {
                 format!("type argument {type_label}"),
                 AnonymousNominalKey {
                     kind: AnonymousNominalKind::Struct,
-                    producer: crate::StableProducerId::Definition("pkg/m.rue::d".to_owned()),
-                    anchor: anchor(&[RirStructuralPathSegment::FieldType(2)]),
-                    arguments: crate::CanonicalArguments {
+                    producer: applied_producer(crate::CanonicalArguments {
                         types: vec![ty].into(),
                         values: Arc::new([]),
-                    },
+                    }),
+                    anchor: anchor(&[RirStructuralPathSegment::FieldType(2)]),
                 },
             ));
         }
@@ -961,12 +984,11 @@ mod tests {
                 format!("value argument {value_label}"),
                 AnonymousNominalKey {
                     kind: AnonymousNominalKind::Struct,
-                    producer: crate::StableProducerId::Definition("pkg/m.rue::d".to_owned()),
-                    anchor: anchor(&[RirStructuralPathSegment::Method(0)]),
-                    arguments: crate::CanonicalArguments {
+                    producer: applied_producer(crate::CanonicalArguments {
                         types: Arc::new([]),
                         values: vec![value].into(),
-                    },
+                    }),
+                    anchor: anchor(&[RirStructuralPathSegment::Method(0)]),
                 },
             ));
         }
@@ -977,16 +999,7 @@ mod tests {
             "multiple arguments of both streams".to_owned(),
             AnonymousNominalKey {
                 kind: AnonymousNominalKind::Enum,
-                producer: crate::StableProducerId::Definition("pkg/m.rue::d".to_owned()),
-                anchor: anchor(&[
-                    RirStructuralPathSegment::Statement(4),
-                    RirStructuralPathSegment::VariantPayload {
-                        variant: 1,
-                        payload: 2,
-                    },
-                    RirStructuralPathSegment::Operand(9),
-                ]),
-                arguments: crate::CanonicalArguments {
+                producer: applied_producer(crate::CanonicalArguments {
                     types: every_type_variant()
                         .into_iter()
                         .map(|(_, ty)| ty)
@@ -997,7 +1010,15 @@ mod tests {
                         .map(|(_, value)| value)
                         .collect::<Vec<_>>()
                         .into(),
-                },
+                }),
+                anchor: anchor(&[
+                    RirStructuralPathSegment::Statement(4),
+                    RirStructuralPathSegment::VariantPayload {
+                        variant: 1,
+                        payload: 2,
+                    },
+                    RirStructuralPathSegment::Operand(9),
+                ]),
             },
         ));
 

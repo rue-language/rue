@@ -213,16 +213,14 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
     ) -> CompileResult<Type>;
     fn replace_active_anonymous_producer(
         &mut self,
-        producer: Option<(IssuedStableProducerId, IssuedCanonicalArguments)>,
-    ) -> Option<(IssuedStableProducerId, IssuedCanonicalArguments)>;
+        producer: Option<IssuedStableProducerId>,
+    ) -> Option<IssuedStableProducerId>;
     fn body_rir_ref(&self) -> &Rir;
     /// Whole-arena census of inline type-constructor head shapes (RUE-596),
     /// taken by the body RIR index build. Zero proves the inference
     /// precompute's reachability scan would collect no candidates.
     fn body_inline_ctor_head_candidates(&self) -> usize;
-    fn active_anonymous_producer(
-        &self,
-    ) -> Option<&(IssuedStableProducerId, IssuedCanonicalArguments)>;
+    fn active_anonymous_producer(&self) -> Option<&IssuedStableProducerId>;
     fn body_declaration_type_observer(
         &self,
     ) -> Option<&(
@@ -324,9 +322,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn known_symbols(&self) -> &KnownSymbols {
         self.storage.known_symbols()
     }
-    pub(crate) fn active_anonymous_producer(
-        &self,
-    ) -> Option<&(IssuedStableProducerId, IssuedCanonicalArguments)> {
+    pub(crate) fn active_anonymous_producer(&self) -> Option<&IssuedStableProducerId> {
         self.storage.active_anonymous_producer()
     }
     pub(crate) fn function_info(&self, name: Spur) -> Option<FunctionCallInfo> {
@@ -1053,13 +1049,22 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             _ => false,
         }
     }
+    /// The canonical producer identity of one function instance: the base
+    /// definition when it takes no comptime arguments, and the specialization
+    /// over those arguments when it does.
+    ///
+    /// The arguments are not returned alongside it. They used to be, and every
+    /// anonymous nominal minted under this producer stored that second copy
+    /// next to the producer that already carried it, which made a nested
+    /// instantiation's identity a binary tree instead of a chain (RUE-1699).
+    /// `AnonymousNominalKey::producer_arguments` reads them back off the
+    /// producer for the callers that render them.
     pub(crate) fn canonical_function_producer(
         &self,
         name: Spur,
         tys: &AHashMap<Spur, Type>,
         vals: &AHashMap<Spur, ConstValue>,
-    ) -> Result<(IssuedStableProducerId, IssuedCanonicalArguments), crate::SemanticBodyExportFailure>
-    {
+    ) -> Result<IssuedStableProducerId, crate::SemanticBodyExportFailure> {
         use crate::SemanticBodyExportFailure as F;
         let function = OrdinaryBodyAnalysisHost::function_info(self.storage, name)
             .ok_or(F::MissingStableIdentity)?;
@@ -1098,10 +1103,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 arguments: arguments.clone(),
             }
         };
-        Ok((
-            IssuedStableProducerId::Function(Node::new(function)),
-            arguments,
-        ))
+        Ok(IssuedStableProducerId::Function(Node::new(function)))
     }
     pub(crate) fn find_or_create_anon_struct(
         &mut self,
@@ -1565,7 +1567,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                     span,
                 )
             })?;
-        let crate::StableProducerId::Function(identity) = &producer.0 else {
+        let crate::StableProducerId::Function(identity) = &producer else {
             unreachable!("a callable body producer is always a function")
         };
         let identity = (**identity).clone();
@@ -1699,10 +1701,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         for (_, ty, _, is_comptime) in &resolved_params {
             reject_runtime_type_value(*ty, *is_comptime, span)?;
         }
-        let producer = (
-            crate::StableProducerId::Function(Node::new(identity.clone())),
-            crate::CanonicalArguments::default(),
-        );
+        let producer = crate::StableProducerId::Function(Node::new(identity.clone()));
         let previous = self
             .storage
             .replace_active_anonymous_producer(Some(producer));
@@ -1800,10 +1799,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             )
         })?;
         let identity = crate::FunctionInstanceKey::Definition(identity_token);
-        let producer = (
-            crate::StableProducerId::Function(Node::new(identity.clone())),
-            crate::CanonicalArguments::default(),
-        );
+        let producer = crate::StableProducerId::Function(Node::new(identity.clone()));
         let previous = self
             .storage
             .replace_active_anonymous_producer(Some(producer));
@@ -2088,15 +2084,14 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // so that type parameters can be resolved during struct initialization.
         let comptime_type_vars = type_subst.map(|s| s.clone()).unwrap_or_else(AHashMap::new);
         let comptime_value_vars = value_subst.map(|s| s.clone()).unwrap_or_else(AHashMap::new);
-        let (canonical_producer, canonical_producer_arguments) =
-            self.active_anonymous_producer().cloned().ok_or_else(|| {
-                CompileError::new(
-                    ErrorKind::InternalError(
-                        "body analysis started without a canonical producer identity".into(),
-                    ),
-                    self.body_rir_ref().get(body).span,
-                )
-            })?;
+        let canonical_producer = self.active_anonymous_producer().cloned().ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::InternalError(
+                    "body analysis started without a canonical producer identity".into(),
+                ),
+                self.body_rir_ref().get(body).span,
+            )
+        })?;
         let crate::StableProducerId::Function(canonical_function_identity) = &canonical_producer
         else {
             return Err(CompileError::new(
@@ -2110,7 +2105,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         let mut ctx = AnalysisContext {
             producer: body,
             canonical_producer,
-            canonical_producer_arguments,
             canonical_function_identity,
             current_file_id: self.body_rir_ref().get(body).span.file_id,
             locals: AHashMap::new(),
