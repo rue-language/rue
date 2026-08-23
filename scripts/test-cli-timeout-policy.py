@@ -46,6 +46,26 @@ class TimeoutPolicyTests(unittest.TestCase):
         self.assertEqual(expected, 3000)
         self.assertEqual(timeout, 5000)
 
+    def test_shared_shard_family_uses_maximum_not_shard_zero(self):
+        loads = {
+            "version": 1,
+            "shard_count": 3,
+            "platforms": {"macos": {"loads_ms": [1000, 2000, 500]}},
+        }
+        policy = {
+            "expected_cost_multiplier_percent": 150,
+            "fixed_headroom_ms": 500,
+            "minimum_shard_timeout_ms": 1,
+        }
+        shard_timeout, shard_expected = MODULE.timeout_for_target(
+            "//:cli-tests-shard-0", loads, "macos", policy
+        )
+        family_timeout, family_expected = MODULE.timeout_for_shard_family(
+            loads, "macos", policy
+        )
+        self.assertEqual((shard_timeout, shard_expected), (2000, 1000))
+        self.assertEqual((family_timeout, family_expected), (3500, 2000))
+
     def test_unmodeled_platform_and_bad_shard_index_are_rejected(self):
         loads = {
             "version": 1,
@@ -169,11 +189,11 @@ class BuckActionBoundTests(unittest.TestCase):
         "platforms": {"linux-x64": {"loads_ms": [1000, 1000]}},
     }
 
-    def fixture(self, directory, cli_seconds):
+    def fixture(self, directory, cli_seconds, shard_seconds=9999):
         buck = Path(directory) / "BUCK"
         buck.write_text(
             f"_CLI_TESTS_TIMEOUT_SECONDS = {cli_seconds}\n"
-            "_CLI_SHARD_TIMEOUT_SECONDS = 9999\n"
+            f"_CLI_SHARD_TIMEOUT_SECONDS = {shard_seconds}\n"
             'cached_corpus_suite(\n    name = "cli-tests-slow",\n'
             "    timeout_seconds = 9999,\n)\n"
         )
@@ -193,6 +213,38 @@ class BuckActionBoundTests(unittest.TestCase):
             self.assertEqual(len(errors), 1, errors)
             self.assertIn("//:cli-tests", errors[0])
             self.assertIn("A healthy run would be killed", errors[0])
+
+    def test_shared_shard_bound_checks_the_true_maximum_not_shard_zero(self):
+        loads = {
+            "version": 1,
+            "shard_count": 2,
+            "platforms": {"linux-x64": {"loads_ms": [1000, 3000]}},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            # Two seconds is above shard 0's one-second derived deadline, but
+            # below the three-second deadline required by the family maximum.
+            buck = self.fixture(directory, 9999, shard_seconds=2)
+            errors = MODULE.check_buck_timeouts(buck, loads, self.POLICY)
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn(MODULE.SHARD_FAMILY_TARGET, errors[0])
+            self.assertIn("shared CLI shard family", errors[0])
+            self.assertIn("maximum shard load 3000ms", errors[0])
+
+    def test_shared_shard_bound_is_checked_against_each_platform_maximum(self):
+        loads = {
+            "version": 1,
+            "shard_count": 2,
+            "platforms": {
+                "linux-x64": {"loads_ms": [1000, 1000]},
+                "macos": {"loads_ms": [1000, 3000]},
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            buck = self.fixture(directory, 9999, shard_seconds=2)
+            errors = MODULE.check_buck_timeouts(buck, loads, self.POLICY)
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn("macos", errors[0])
+            self.assertIn("maximum shard load 3000ms", errors[0])
 
     def test_missing_bound_is_an_error_not_a_silent_pass(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -32,6 +32,7 @@ POLICY_KEYS = {
     "minimum_monolith_timeout_ms",
     "minimum_slow_suite_timeout_ms",
 }
+SHARD_FAMILY_TARGET = "//:cli-tests-shard-*"
 
 
 def load_policy(path: Path) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
@@ -143,6 +144,25 @@ def timeout_for_target(
     raise ValueError(f"no CLI timeout policy for target {target}")
 
 
+def timeout_for_shard_family(
+    loads: dict | None, platform_name: str, policy: dict[str, int]
+) -> tuple[int, int]:
+    """Derive the shared action bound for all CLI shards on one platform.
+
+    Buck gives every ``//:cli-tests-shard-*`` action the same timeout, so the
+    family bound must cover the most expensive shard rather than a particular
+    shard index.  Per-shard deadlines remain available through
+    :func:`timeout_for_target` for consumers that need them.
+    """
+    if loads is None:
+        raise ValueError(f"{SHARD_FAMILY_TARGET} requires --shard-loads")
+    expected = max(platform_loads(loads, platform_name))
+    return (
+        derive_timeout_ms(expected, policy["minimum_shard_timeout_ms"], policy),
+        expected,
+    )
+
+
 # RUE-1163: the corpus actions' outer bounds, as spelled in the root BUCK file.
 # A corpus runs as a build action now, which gets no test-executor timeout, so
 # `timeout_seconds` is the only thing that stops a wedged harness — and it must
@@ -151,7 +171,7 @@ def timeout_for_target(
 # bound while the policy allowed 3600s, so a healthy run could be killed.
 BUCK_TIMEOUT_PATTERNS = {
     "//:cli-tests": re.compile(r"^_CLI_TESTS_TIMEOUT_SECONDS = (\d+)$", re.MULTILINE),
-    "//:cli-tests-shard-0": re.compile(
+    SHARD_FAMILY_TARGET: re.compile(
         r"^_CLI_SHARD_TIMEOUT_SECONDS = (\d+)$", re.MULTILINE
     ),
     "//:cli-tests-slow": re.compile(
@@ -161,7 +181,7 @@ BUCK_TIMEOUT_PATTERNS = {
 
 
 def buck_timeouts(buck_path: Path) -> dict[str, int]:
-    """The action bounds the root BUCK file declares, keyed by target."""
+    """The root BUCK action bounds, keyed by target or shared shard family."""
     text = buck_path.read_text()
     found = {}
     for target, pattern in BUCK_TIMEOUT_PATTERNS.items():
@@ -177,22 +197,39 @@ def check_buck_timeouts(
 ) -> list[str]:
     """Report action bounds that cut inside the derived correctness deadline.
 
-    Every platform the shard-loads report models is checked, because the BUCK
-    value is one static number while the derived deadline is per-platform: a
-    bound that is generous on the fastest runner and short on the slowest is
-    still a bound that kills healthy runs.
+    Every modeled platform is checked, because the BUCK value is one static
+    number while the derived deadline is per-platform: a bound that is
+    generous on the fastest runner and short on the slowest is still a bound
+    that kills healthy runs.  The shared shard-family bound is compared with
+    the maximum shard load on each platform; the monolith keeps its true
+    whole-inventory calculation.
     """
     platforms = sorted(loads["platforms"])
     errors = []
     for target, declared_seconds in buck_timeouts(buck_path).items():
         for platform_name in platforms:
-            required_ms, _ = timeout_for_target(target, loads, platform_name, policy)
+            if target == SHARD_FAMILY_TARGET:
+                required_ms, expected_ms = timeout_for_shard_family(
+                    loads, platform_name, policy
+                )
+            else:
+                required_ms, expected_ms = timeout_for_target(
+                    target, loads, platform_name, policy
+                )
             required_seconds = math.ceil(required_ms / 1000)
             if declared_seconds < required_seconds:
+                if target == SHARD_FAMILY_TARGET:
+                    detail = (
+                        f"the shared CLI shard family (maximum shard load "
+                        f"{expected_ms}ms)"
+                    )
+                else:
+                    detail = target
                 errors.append(
-                    f"{target}: BUCK bounds the corpus action at {declared_seconds}s, "
-                    f"inside the {required_seconds}s correctness deadline the policy "
-                    f"derives for {platform_name}. A healthy run would be killed."
+                    f"{target}: BUCK bounds {detail} at {declared_seconds}s, "
+                    f"inside the {required_seconds}s correctness deadline the "
+                    f"policy derives for {platform_name}. A healthy run would "
+                    "be killed."
                 )
     return errors
 
