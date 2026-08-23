@@ -41468,36 +41468,41 @@ fn main() -> i32 {
             .unwrap();
         let deleted_root_metrics = database.body_closure_root_metrics();
 
+        // Exact membership is the published contract, which is what this
+        // compares. The sequence `reached` happens to arrive in is the identity
+        // total order, an implementation detail of the key comparator; pinning
+        // it here made this test fail for a comparator change that published
+        // the same closure.
         let reached = |request: &BodyClosureRequest| {
             let rue_query::QueryOutcome::Success(output) = request.terminal.outcome() else {
                 unreachable!("BodyClosure publishes typed values")
             };
-            output.reached.to_vec()
+            output.reached.iter().cloned().collect::<BTreeSet<_>>()
         };
         assert_eq!(
             reached(&first),
-            vec![
+            BTreeSet::from([
                 leaf.clone(),
                 free_function_instance(&module, "main"),
                 stable.clone(),
-            ]
+            ])
         );
         assert_eq!(
             reached(&added_closure),
-            vec![
+            BTreeSet::from([
                 added.clone(),
                 leaf.clone(),
                 free_function_instance(&module, "main"),
                 stable.clone(),
-            ]
+            ])
         );
         assert_eq!(
             reached(&deleted_closure),
-            vec![
+            BTreeSet::from([
                 added.clone(),
                 free_function_instance(&module, "main"),
                 stable.clone(),
-            ]
+            ])
         );
         assert_eq!(
             (first_root_metrics.1, first_root_metrics.2),
@@ -41947,10 +41952,15 @@ fn main() -> i32 {
             1,
         );
         let module = ModuleId::from_logical_path("main.rue").unwrap();
-        let roots = [
+        // `RevisionedQueryDatabase::body_closure` sorts and dedups roots before
+        // dispatch, and the evaluator asserts it received them that way. This
+        // fixture goes straight at the family, so it canonicalises the same way
+        // rather than relying on the spelling order happening to be ascending.
+        let mut roots = [
             free_function_instance(&module, "first"),
             free_function_instance(&module, "second"),
         ];
+        roots.sort();
         let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
         let revision = revision_for(&mut database, &snapshot);
         let _injection = database.inject_body_transaction_failure_for_test();
@@ -42707,10 +42717,24 @@ fn main() -> i32 {
         };
         let forward = register(entries.to_vec());
         let reverse = register(entries.iter().cloned().rev().collect());
+
+        // The property is in the name: whichever order the registrar sees the
+        // entries in, it reports the same collision.
         assert_eq!(forward, reverse);
+
+        // And it reports the lowest colliding digest, naming its two smallest
+        // identities in ascending order. Deriving the expectation from the same
+        // total order the registrar uses keeps this about the selection rule
+        // rather than about which spelling a particular comparator ranks first.
+        let mut digest_seven = entries
+            .iter()
+            .filter(|(digest, _)| *digest == 7)
+            .map(|(_, identity)| identity.clone())
+            .collect::<Vec<_>>();
+        digest_seven.sort();
         assert_eq!(
             forward,
-            Some((7, entries[0].1.clone(), entries[1].1.clone()))
+            Some((7, digest_seven[0].clone(), digest_seven[1].clone()))
         );
     }
 
