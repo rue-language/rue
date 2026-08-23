@@ -109,6 +109,59 @@ impl WatchInput {
     }
 }
 
+/// Report whether any accepted filesystem observation has changed.
+///
+/// Requested aliases, canonical targets, and expected-absence probes are all
+/// part of the observation. Canonical fingerprints are read once for aliased
+/// inputs so polling and publication share the same filesystem semantics.
+pub fn watch_inputs_changed(inputs: &[WatchInput]) -> bool {
+    watch_inputs_changed_with_reader(inputs, WatchFingerprint::read)
+}
+
+pub fn watch_inputs_changed_with_reader<F>(inputs: &[WatchInput], mut read: F) -> bool
+where
+    F: FnMut(&Path) -> Option<WatchFingerprint>,
+{
+    let mut canonical_fingerprints = AHashMap::new();
+    inputs.iter().any(|input| {
+        let requested = input.requested_path();
+        let canonical = input.canonical_path();
+        if input.expected_fingerprint().is_none() {
+            return !matches!(
+                fs::canonicalize(requested),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            );
+        }
+        if requested != canonical && fs::canonicalize(requested).ok().as_deref() != Some(canonical)
+        {
+            return true;
+        }
+
+        let observed = canonical_fingerprints
+            .entry(canonical.to_owned())
+            .or_insert_with(|| read(canonical));
+        *observed != input.expected_fingerprint()
+    })
+}
+
+pub fn watch_input_fingerprints(inputs: &[WatchInput]) -> Vec<Option<WatchFingerprint>> {
+    let mut canonical_fingerprints = AHashMap::new();
+    inputs
+        .iter()
+        .map(|input| {
+            if input.requested_path() != input.canonical_path()
+                && fs::canonicalize(input.requested_path()).ok().as_deref()
+                    != Some(input.canonical_path())
+            {
+                return None;
+            }
+            *canonical_fingerprints
+                .entry(input.canonical_path().to_owned())
+                .or_insert_with(|| WatchFingerprint::read(input.canonical_path()))
+        })
+        .collect()
+}
+
 #[derive(Debug)]
 pub(crate) struct SourceManifest {
     path: PathBuf,

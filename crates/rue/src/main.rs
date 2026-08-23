@@ -2328,11 +2328,13 @@ mod tests {
                 host.source_snapshot().files().map(|source| source.path),
             )
             .unwrap();
+            let watch_inputs = host.watch_inputs();
             compile::execute_cancellable(compile::CancellableCompileRequest {
                 host,
                 options: options.clone(),
                 destination: publication,
                 cancellation: rue_compiler::unstable::CompilationCancellation::new(),
+                watch_inputs,
             })
         };
 

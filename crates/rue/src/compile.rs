@@ -1,8 +1,10 @@
 use rue_compiler::unstable::{CancellableCompileOutcome, CompilationCancellation, OneShotMetrics};
 use rue_compiler::{CompileErrors, CompileOptions, CompileWarning};
-use rue_driver::FilesystemCompilerHost;
+use rue_driver::{FilesystemCompilerHost, WatchInput};
 
-use crate::output::{PublicationDestination, PublishRequest, publish_executable};
+use crate::output::{
+    PublicationDestination, PublishRequest, publish_executable, publish_watch_executable,
+};
 
 /// Typed ownership boundary for the compile/link/publish operation.
 pub(crate) struct CompileRequest<'a> {
@@ -16,6 +18,7 @@ pub(crate) struct CancellableCompileRequest<'a> {
     pub(crate) options: CompileOptions,
     pub(crate) destination: PublicationDestination,
     pub(crate) cancellation: CompilationCancellation,
+    pub(crate) watch_inputs: Vec<WatchInput>,
 }
 
 pub(crate) enum CompileCycleOutcome {
@@ -30,6 +33,12 @@ pub(crate) struct LinkedExecutable {
     metrics: OneShotMetrics,
     linked_bytes: Vec<u8>,
     destination: PublicationDestination,
+    observation: PublicationObservation,
+}
+
+enum PublicationObservation {
+    OneShot,
+    Watch(Vec<WatchInput>),
 }
 
 pub(crate) struct PublishedExecutable {
@@ -51,6 +60,7 @@ pub(crate) fn execute(request: CompileRequest<'_>) -> Result<LinkedExecutable, C
         metrics,
         linked_bytes: output.elf,
         destination: request.destination,
+        observation: PublicationObservation::OneShot,
     })
 }
 
@@ -68,6 +78,7 @@ pub(crate) fn execute_cancellable(request: CancellableCompileRequest<'_>) -> Com
                 metrics,
                 linked_bytes: output.elf,
                 destination: request.destination,
+                observation: PublicationObservation::Watch(request.watch_inputs),
             }))
         }
         CancellableCompileOutcome::Errors(errors) => CompileCycleOutcome::Errors(errors),
@@ -78,16 +89,32 @@ pub(crate) fn execute_cancellable(request: CancellableCompileRequest<'_>) -> Com
 impl LinkedExecutable {
     /// Finalize and publish the linked bytes after compiler timing/accounting closes.
     pub(crate) fn publish(self) -> PublicationAttempt {
-        let publication = publish_executable(PublishRequest {
-            destination: self.destination,
-            bytes: &self.linked_bytes,
-            target: self.target,
-        });
-        PublicationAttempt {
-            warnings: self.warnings,
-            result: publication.map(|()| PublishedExecutable {
-                metrics: self.metrics,
+        let LinkedExecutable {
+            target,
+            warnings,
+            metrics,
+            linked_bytes,
+            destination,
+            observation,
+        } = self;
+        let publication = match observation {
+            PublicationObservation::OneShot => publish_executable(PublishRequest {
+                destination,
+                bytes: &linked_bytes,
+                target,
             }),
+            PublicationObservation::Watch(inputs) => publish_watch_executable(
+                PublishRequest {
+                    destination,
+                    bytes: &linked_bytes,
+                    target,
+                },
+                &inputs,
+            ),
+        };
+        PublicationAttempt {
+            warnings,
+            result: publication.map(|()| PublishedExecutable { metrics }),
         }
     }
 }

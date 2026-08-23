@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+#[cfg(test)]
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -10,7 +10,12 @@ use std::time::{Duration, Instant};
 
 use rue_compiler::unstable::{CompilationCancellation, SourceInfo};
 use rue_compiler::{CompileOptions, LinkerMode};
-use rue_driver::{FilesystemCompilerHost, SourceLoadError, WatchFingerprint, WatchInput};
+#[cfg(test)]
+use rue_driver::watch_inputs_changed_with_reader;
+use rue_driver::{
+    FilesystemCompilerHost, SourceLoadError, WatchFingerprint, WatchInput,
+    watch_input_fingerprints, watch_inputs_changed,
+};
 
 use crate::compile::{CancellableCompileRequest, CompileCycleOutcome, execute_cancellable};
 use crate::output;
@@ -150,9 +155,9 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
             .collect();
         let diagnostics = DiagnosticOutput::new(request.error_format, source_infos);
 
-        let destination = match output::preflight_destination(
+        let destination = match output::preflight_watch_destination(
             Path::new(&request.output_path),
-            source_snapshot.files().map(|source| source.path),
+            &inputs,
         ) {
             Ok(destination) => destination,
             Err(output::PublishError::WouldClobberSource) => {
@@ -183,9 +188,11 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
             options: request.compile_options.clone(),
             destination,
             cancellation,
+            watch_inputs: inputs.clone(),
         });
 
         let changed_before_publication = monitor.changed() || inputs_changed(&inputs);
+        let mut publication_changed = false;
         if changed_before_publication {
             test_event("canceled-before-publication");
             eprintln!(
@@ -213,6 +220,14 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
                             "Error: output path '{}' became an input source; keeping the last successful executable",
                             request.output_path
                         ),
+                        Err(output::PublishError::InputsChanged) => {
+                            publication_changed = true;
+                            test_event("canceled-at-publication");
+                            eprintln!(
+                                "Watch cycle canceled after {} ms; a newer source revision is available",
+                                cycle_started.elapsed().as_millis()
+                            );
+                        }
                         Err(error) => diagnostics.print_error(&error.into_compile_error()),
                     }
                 }
@@ -234,7 +249,12 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
             }
         }
 
-        let changed = monitor.finish() || inputs_changed(&inputs);
+        let monitor_changed = monitor.finish();
+        let changed = watch_cycle_changed(
+            publication_changed,
+            monitor_changed,
+            inputs_changed(&inputs),
+        );
         if !changed {
             wait_for_change(&inputs);
         }
@@ -295,51 +315,27 @@ fn debounce(inputs: &[WatchInput]) {
 }
 
 fn inputs_changed(inputs: &[WatchInput]) -> bool {
-    inputs_changed_with_reader(inputs, WatchFingerprint::read)
+    watch_inputs_changed(inputs)
+}
+
+fn watch_cycle_changed(
+    publication_changed: bool,
+    monitor_changed: bool,
+    observed_changed: bool,
+) -> bool {
+    publication_changed || monitor_changed || observed_changed
 }
 
 fn current_fingerprints(inputs: &[WatchInput]) -> Vec<Option<WatchFingerprint>> {
-    let mut canonical_fingerprints = HashMap::new();
-    inputs
-        .iter()
-        .map(|input| {
-            if input.requested_path() != input.canonical_path()
-                && fs::canonicalize(input.requested_path()).ok().as_deref()
-                    != Some(input.canonical_path())
-            {
-                return None;
-            }
-            *canonical_fingerprints
-                .entry(input.canonical_path().to_owned())
-                .or_insert_with(|| WatchFingerprint::read(input.canonical_path()))
-        })
-        .collect()
+    watch_input_fingerprints(inputs)
 }
 
-fn inputs_changed_with_reader<F>(inputs: &[WatchInput], mut read: F) -> bool
+#[cfg(test)]
+fn inputs_changed_with_reader<F>(inputs: &[WatchInput], read: F) -> bool
 where
     F: FnMut(&Path) -> Option<WatchFingerprint>,
 {
-    let mut canonical_fingerprints = HashMap::new();
-    inputs.iter().any(|input| {
-        let requested = input.requested_path();
-        let canonical = input.canonical_path();
-        if input.expected_fingerprint().is_none() {
-            return !matches!(
-                fs::canonicalize(requested),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound
-            );
-        }
-        if requested != canonical && fs::canonicalize(requested).ok().as_deref() != Some(canonical)
-        {
-            return true;
-        }
-
-        let observed = canonical_fingerprints
-            .entry(canonical.to_owned())
-            .or_insert_with(|| read(canonical));
-        *observed != input.expected_fingerprint()
-    })
+    watch_inputs_changed_with_reader(inputs, read)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -368,6 +364,13 @@ impl PollBackoff {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn final_publication_change_latches_reobserve() {
+        assert!(watch_cycle_changed(true, false, false));
+        assert!(watch_cycle_changed(true, false, true));
+        assert!(!watch_cycle_changed(false, false, false));
+    }
 
     #[test]
     fn detects_content_changes_even_when_file_length_is_unchanged() {

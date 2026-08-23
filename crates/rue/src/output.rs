@@ -4,6 +4,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use rue_driver::{WatchInput, watch_inputs_changed};
 use rue_error::{CompileError, ErrorKind};
 use rue_target::Target;
 
@@ -18,12 +19,13 @@ pub(crate) struct PublishRequest<'a> {
 
 pub(crate) struct PublicationDestination {
     path: PathBuf,
-    source_paths: Vec<String>,
+    source_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
 pub(crate) enum PublishError {
     WouldClobberSource,
+    InputsChanged,
     Io {
         operation: &'static str,
         paths: Vec<PathBuf>,
@@ -49,6 +51,7 @@ impl PublishError {
             Self::WouldClobberSource => {
                 "output path is also an input source file; refusing to overwrite it".to_owned()
             }
+            Self::InputsChanged => "an accepted input changed before output publication".to_owned(),
             Self::Io {
                 operation,
                 paths,
@@ -112,9 +115,11 @@ fn output_would_clobber(
 fn validate_destination(destination: &PublicationDestination) -> Result<(), PublishError> {
     let output_key = clobber_key(&destination.path);
     let output_metadata = fs::metadata(&destination.path).ok();
-    if destination.source_paths.iter().any(|source| {
-        output_would_clobber(&output_key, output_metadata.as_ref(), Path::new(source))
-    }) {
+    if destination
+        .source_paths
+        .iter()
+        .any(|source| output_would_clobber(&output_key, output_metadata.as_ref(), source))
+    {
         return Err(PublishError::WouldClobberSource);
     }
     Ok(())
@@ -126,12 +131,31 @@ pub(crate) fn preflight_destination<'a>(
     path: &Path,
     source_paths: impl IntoIterator<Item = &'a str>,
 ) -> Result<PublicationDestination, PublishError> {
+    preflight_destination_paths(path, source_paths.into_iter().map(PathBuf::from))
+}
+
+fn preflight_destination_paths(
+    path: &Path,
+    source_paths: impl IntoIterator<Item = PathBuf>,
+) -> Result<PublicationDestination, PublishError> {
     let destination = PublicationDestination {
         path: path.to_owned(),
-        source_paths: source_paths.into_iter().map(str::to_owned).collect(),
+        source_paths: source_paths.into_iter().collect(),
     };
     validate_destination(&destination)?;
     Ok(destination)
+}
+
+pub(crate) fn preflight_watch_destination(
+    path: &Path,
+    inputs: &[WatchInput],
+) -> Result<PublicationDestination, PublishError> {
+    let source_paths = inputs
+        .iter()
+        .flat_map(|input| [input.requested_path(), input.canonical_path()])
+        .map(Path::to_owned)
+        .collect::<Vec<_>>();
+    preflight_destination_paths(path, source_paths)
 }
 
 struct PendingOutput(PathBuf);
@@ -217,9 +241,32 @@ pub(crate) fn publish_executable(request: PublishRequest<'_>) -> Result<(), Publ
     publish_executable_with_finalizer(request, finalize_executable)
 }
 
+/// Publish a watch candidate only if the accepted source observations still
+/// hold at the final publication boundary.
+pub(crate) fn publish_watch_executable(
+    request: PublishRequest<'_>,
+    inputs: &[WatchInput],
+) -> Result<(), PublishError> {
+    publish_executable_with_finalizer_and_observation(
+        request,
+        Some(inputs),
+        finalize_executable,
+        || {},
+    )
+}
+
 fn publish_executable_with_finalizer(
     request: PublishRequest<'_>,
     finalizer: impl FnOnce(&Path, Target) -> Result<(), PublishError>,
+) -> Result<(), PublishError> {
+    publish_executable_with_finalizer_and_observation(request, None, finalizer, || {})
+}
+
+fn publish_executable_with_finalizer_and_observation(
+    request: PublishRequest<'_>,
+    watch_inputs: Option<&[WatchInput]>,
+    finalizer: impl FnOnce(&Path, Target) -> Result<(), PublishError>,
+    before_rename: impl FnOnce(),
 ) -> Result<(), PublishError> {
     validate_destination(&request.destination)?;
     let destination = &request.destination.path;
@@ -241,6 +288,22 @@ fn publish_executable_with_finalizer(
     drop(file);
 
     finalizer(&pending.0, request.target)?;
+
+    // The hook is used only by deterministic unit tests to mutate an input in
+    // the narrow window this check protects: after finalization/signing and
+    // before the atomic replacement.
+    before_rename();
+    // The destination may have become an alias of an input while the
+    // candidate was being finalized. Check it at the same boundary as the
+    // accepted-input observations, before the atomic replacement.
+    let destination_error = validate_destination(&request.destination).err();
+    let all_inputs_changed = watch_inputs.is_some_and(watch_inputs_changed);
+    if let Some(error) = destination_error {
+        return Err(error);
+    }
+    if all_inputs_changed {
+        return Err(PublishError::InputsChanged);
+    }
 
     replace_destination(&pending.0, destination).map_err(|error| {
         PublishError::io(
@@ -371,6 +434,63 @@ mod tests {
         ));
         assert_eq!(fs::read(&destination).unwrap(), b"old executable");
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn changed_accepted_input_at_final_boundary_preserves_destination() {
+        let directory = temporary_directory("publish-input-change");
+        let source = directory.join("main.rue");
+        let destination = directory.join("program");
+        fs::write(&source, b"old source").unwrap();
+        fs::write(&destination, b"old executable").unwrap();
+        let publication_destination =
+            preflight_destination(&destination, [source.to_str().unwrap()]).unwrap();
+        let watch_inputs = vec![WatchInput::new(
+            source.clone(),
+            source.clone(),
+            rue_driver::WatchFingerprint::from_bytes(b"old source"),
+        )];
+
+        let result = publish_executable_with_finalizer_and_observation(
+            PublishRequest {
+                destination: publication_destination,
+                bytes: b"new executable",
+                target: Target::X86_64Linux,
+            },
+            Some(&watch_inputs),
+            |temporary, _target| {
+                fs::metadata(temporary).unwrap();
+                Ok(())
+            },
+            || fs::write(&source, b"new source").unwrap(),
+        );
+
+        assert!(matches!(result, Err(PublishError::InputsChanged)));
+        assert_eq!(fs::read(&destination).unwrap(), b"old executable");
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
+        assert!(fs::read_dir(&directory).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".program.rue-tmp-")
+        }));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn watch_preflight_refuses_an_expected_absence_output_collision() {
+        let directory = temporary_directory("watch-absence-clobber");
+        let destination = directory.join("candidate.rue");
+        let inputs = vec![WatchInput::expected_absence(destination.clone())];
+
+        assert!(matches!(
+            preflight_watch_destination(&destination, &inputs),
+            Err(PublishError::WouldClobberSource)
+        ));
+        assert!(!destination.exists());
         fs::remove_dir_all(directory).unwrap();
     }
 
