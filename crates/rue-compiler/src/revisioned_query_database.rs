@@ -1037,7 +1037,10 @@ struct PublishedRootLookupLease {
     /// FIFO, for rederivation-after-eviction detection. The typed key shares its
     /// immutable strings with the observation; bookkeeping never materializes a
     /// presentation identity.
-    incarnations: BTreeMap<LookupObservationKey, (u64, u64)>,
+    /// Probed and updated by key only; `incarnation_order` owns the recency
+    /// order, so nothing iterates this and a `BTreeMap` here only bought a
+    /// module-path and name string comparison at every level of every probe.
+    incarnations: ahash::AHashMap<LookupObservationKey, (u64, u64)>,
     /// Recency order of `incarnations`, keyed by a monotonic observation
     /// generation. Refreshing a hot key removes its one old order entry in
     /// logarithmic time rather than scanning the full 4096-key history.

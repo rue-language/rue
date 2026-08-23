@@ -1112,7 +1112,9 @@ fn materialize_and_build_cfg(
             materialization,
             body_span,
         } => {
-            let mut slots = std::collections::BTreeMap::new();
+            // Probed by type inside the drop-glue synthesizer and never
+            // iterated, so this is a bucket selector, not an ordered map.
+            let mut slots = ahash::AHashMap::new();
             let plan_types = collect_plan_types(owner, facts)
                 .into_iter()
                 .collect::<Vec<_>>();
@@ -1328,8 +1330,12 @@ fn materialize_and_build_cfg(
     // issuing and validating a duplicate top-level TypeFacts request.
     let drop_glue_terminals =
         context.query_registered_adaptive_batch(drop_glues, drop_dependencies.clone())?;
-    let mut drop_glue_symbols = std::collections::BTreeMap::new();
-    let mut destructor_symbols = std::collections::BTreeMap::new();
+    // Both maps are built here, threaded straight to the codegen-domain
+    // projection, and only ever probed by key there. Nothing iterates them, so
+    // their order is not observable and a `BTreeMap` only buys a recursive
+    // `TypeInstanceKey` comparison at every level of every probe.
+    let mut drop_glue_symbols = ahash::AHashMap::new();
+    let mut destructor_symbols = ahash::AHashMap::new();
     for (query, terminal) in drop_dependencies.iter().zip(drop_glue_terminals) {
         let QueryOutcome::Success(crate::type_queries::DropGlueValue::Available(facts)) =
             terminal.outcome()
@@ -1391,8 +1397,8 @@ fn build_cfg(
     key: &CfgQueryKey,
     materialized: crate::local_semantic_materialization::LocalSemanticMaterialization,
     domains: crate::durable_cfg::CfgDomainProjection,
-    drop_glue_symbols: std::collections::BTreeMap<crate::TypeInstanceKey, Arc<str>>,
-    destructor_symbols: std::collections::BTreeMap<crate::TypeInstanceKey, Arc<str>>,
+    drop_glue_symbols: ahash::AHashMap<crate::TypeInstanceKey, Arc<str>>,
+    destructor_symbols: ahash::AHashMap<crate::TypeInstanceKey, Arc<str>>,
     breakdown: CfgConstructionBreakdown,
 ) -> Result<CfgValue, QueryAbort> {
     context.record_work(rue_query::WorkItem::new("cfg.build.attempts", 1));
@@ -1448,7 +1454,9 @@ fn build_cfg(
                 configuration: key.configuration.clone(),
             }),
     )?;
-    let mut call_abi_facts = std::collections::BTreeMap::new();
+    // Probed by callable identity inside the codegen-domain projection and
+    // never iterated, so this is a bucket selector, not an ordered map.
+    let mut call_abi_facts = ahash::AHashMap::new();
     for (callable, terminal) in callables.into_iter().zip(call_abi_terminals) {
         let QueryOutcome::Success(value) = terminal.outcome() else {
             unreachable!("CallAbi publishes typed values")
@@ -1856,13 +1864,22 @@ pub(crate) fn apply_general_inlining(
     }
     context.check_canceled()?;
 
-    let mut records = std::collections::BTreeMap::new();
-    for (key, value) in keys.iter().zip(values) {
-        let CfgValue::Available(record) = value else {
-            return Ok((values.to_vec(), std::collections::BTreeSet::new()));
-        };
-        records.insert(key.cfg.function.clone(), record.clone());
-    }
+    // Collecting sorts once and bulk-builds the tree; inserting one entry at a
+    // time searched the growing tree for each, and every level of that search
+    // is a recursive `FunctionInstanceKey` comparison. `BTreeMap`'s
+    // `FromIterator` sorts stably and keeps the last of equal keys, so a
+    // repeated function still resolves to the same record `insert` left.
+    let Some(records) = keys
+        .iter()
+        .zip(values)
+        .map(|(key, value)| match value {
+            CfgValue::Available(record) => Some((key.cfg.function.clone(), record.clone())),
+            _ => None,
+        })
+        .collect::<Option<std::collections::BTreeMap<_, _>>>()
+    else {
+        return Ok((values.to_vec(), std::collections::BTreeSet::new()));
+    };
 
     // Membership in the batch is asked once per call instruction across every
     // function, and again for every edge when the call graph is built.
@@ -1924,19 +1941,25 @@ pub(crate) fn apply_general_inlining(
         callsites.insert(function.clone(), calls);
     }
 
-    let mut graph = std::collections::BTreeMap::new();
-    for function in records.keys() {
-        graph.insert(
-            function.clone(),
-            edges
-                .get(function)
-                .into_iter()
-                .flatten()
-                .filter(|callee| record_keys.contains(*callee))
-                .cloned()
-                .collect::<Vec<_>>(),
-        );
-    }
+    // `records` is ordered and its keys are distinct, so this collect hands
+    // `BTreeMap` an already-sorted sequence and bulk-builds the tree. Inserting
+    // one node at a time instead searched the growing tree for every entry,
+    // paying a recursive `FunctionInstanceKey` comparison at each level.
+    let graph = records
+        .keys()
+        .map(|function| {
+            (
+                function.clone(),
+                edges
+                    .get(function)
+                    .into_iter()
+                    .flatten()
+                    .filter(|callee| record_keys.contains(*callee))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
     let recursive = recursive_scc_nodes(&graph);
     // Membership and by-key lookup only; `records` keeps its ordered iteration
     // above, and `recursive` its ordered construction. Both are probed once per
@@ -2047,7 +2070,7 @@ pub(crate) fn apply_general_inlining(
         let mut spliced = false;
         let mut failed = None;
         for (call, callee_function) in selected {
-            let Some(callee) = records.get(&callee_function) else {
+            let Some(callee) = record_lookup.get(&callee_function).copied() else {
                 continue;
             };
             let (callee_cfg, string_map) = match domains.import_accessor_cfg(

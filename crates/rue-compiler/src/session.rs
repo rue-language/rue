@@ -5066,7 +5066,10 @@ impl CompilerSession {
                 };
                 (identity, symbol)
             })
-            .collect::<BTreeMap<_, _>>();
+            // Probed by identity when a body's callable facts are selected,
+            // never iterated. An ordered map here charged a recursive
+            // `FunctionInstanceKey` comparison per level of every probe.
+            .collect::<ahash::AHashMap<_, _>>();
         let mut cfg_inputs = Vec::with_capacity(identities.len());
         let warning_references = self.rooted_warning_references(&graph, cancellation.clone())?;
         let mut warnings = rooted_unused_function_warnings(&graph, &warning_references);
