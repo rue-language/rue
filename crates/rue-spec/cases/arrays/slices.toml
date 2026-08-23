@@ -693,6 +693,7 @@ fn main() -> i32 {
 }
 """
 exit_code = 101
+runtime_error = "index out of bounds"
 
 # The trap fires before the element is read: an index one past the end is out
 # of range even though the storage beyond it is the caller's own frame.
@@ -710,6 +711,7 @@ fn main() -> i32 {
 }
 """
 exit_code = 101
+runtime_error = "index out of bounds"
 
 # A negative index is out of range, not a backwards offset.
 [[case]]
@@ -725,6 +727,7 @@ fn main() -> i32 {
 }
 """
 exit_code = 101
+runtime_error = "index out of bounds"
 
 # The bounds check does not depend on the element type: a struct-element view
 # traps on an out-of-range index exactly as a scalar-element one does.

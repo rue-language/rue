@@ -3685,14 +3685,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// The slice `base_result` is the synthetic 2-word fat-pointer struct
     /// `{ptr: ptr const T, len: u64}`. The read desugars to, in order:
     ///
-    /// 1. a runtime bounds check `@assert(i < len)` — traps with exit 101 (the
-    ///    same discipline as array indexing) when the index is out of range;
+    /// 1. a typed compiler bounds check — traps with exit 101 through the
+    ///    dedicated bounds runtime helper (the same path as array indexing)
+    ///    when the index is out of range;
     /// 2. `@ptr_read(@ptr_offset(ptr, i))` — `@ptr_offset` scales by
     ///    `size_of(T)`, so this reads the i-th element.
     ///
-    /// Everything is built from existing intrinsics, so no new codegen (or
-    /// backend-specific work) is required; the fat pointer flows through the
-    /// same struct/field/pointer paths the manual `{ptr,len}` form already uses.
+    /// The check uses the existing conditional trap lowering and the fat
+    /// pointer flows through the same struct/field/pointer paths the manual
+    /// `{ptr,len}` form already uses, so both backends share one implementation.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn analyze_slice_index_get(
         &mut self,
@@ -3765,12 +3766,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx,
         )?;
 
-        // Runtime bounds check: `@assert(index >= 0); @assert(index < len)`
-        // traps (exit 101) when the index is out of range. Unsigned indices only
-        // need the upper-bound check; signed indices also need the lower-bound
-        // check so `s[-1]` cannot pass the signed `index < len` comparison and
-        // read before the backing array.
-        let lower_assert_ref = if index_result.ty.is_signed() {
+        // Runtime bounds check: the condition is kept in AIR as a side-effect
+        // intrinsic, but its typed runtime identity is BoundsCheck rather than
+        // source-level @assert. Codegen lowers that identity through the shared
+        // conditional-trap machinery to the same dedicated bounds helper used
+        // by fixed-array indexing. Unsigned indices only need the upper-bound
+        // check; signed indices also need the lower-bound check so `s[-1]`
+        // cannot read before the backing array.
+        let lower_check_ref = if index_result.ty.is_signed() {
             let zero_ref = air.add_inst(AirInst {
                 data: AirInstData::Const(0),
                 ty: index_result.ty,
@@ -3782,7 +3785,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             });
             Some(air.add_intrinsic(
-                Some(crate::RuntimeCallKind::AssertFailed),
+                Some(crate::RuntimeCallKind::BoundsCheck),
                 self.known_symbols().assert,
                 &[lower_bound_ref],
                 Type::UNIT,
@@ -3796,8 +3799,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: Type::BOOL,
             span,
         });
-        let upper_assert_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::AssertFailed),
+        let upper_check_ref = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::BoundsCheck),
             self.known_symbols().assert,
             &[upper_bound_ref],
             Type::UNIT,
@@ -3823,9 +3826,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Demand-driven lowering only pulls the returned value's dependencies,
         // so the bounds-check assertion (a pure side effect) must be an explicit
         // statement of the block that yields the element.
-        let stmt_refs: Vec<AirRef> = lower_assert_ref
+        let stmt_refs: Vec<AirRef> = lower_check_ref
             .into_iter()
-            .chain(std::iter::once(upper_assert_ref))
+            .chain(std::iter::once(upper_check_ref))
             .collect();
         let block_ref = air.add_block(&stmt_refs, elem_ref, elem_ty, span)?;
         Ok(AnalysisResult::with_continues(

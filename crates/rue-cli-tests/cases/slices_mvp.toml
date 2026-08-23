@@ -71,6 +71,7 @@ fn main() -> i32 {
 """ }]
 args = ["main.rue", "-o", "prog"]
 exit_code = 101
+runtime_error_contains = ["index out of bounds"]
 
 # Signed negative indices must trap too. Slice indexing should match array
 # bounds semantics: any index below zero is out of bounds, not a huge pointer
@@ -88,6 +89,7 @@ fn main() -> i32 {
 """ }]
 args = ["main.rue", "-o", "prog"]
 exit_code = 101
+runtime_error_contains = ["index out of bounds"]
 
 # A constant read-index resolves the element position (discriminating value: the
 # middle element 5 catches an off-by-one or wrong-stride lowering).
