@@ -183,9 +183,9 @@ linear struct Invalid { value: i32 }  // ERROR: linear types cannot be @copy
 
 A linear value **MUST** be consumed on every control-flow path on which it goes out of scope. It is a compile-time error for a linear value to be consumed in only some branches of a conditional (`if`/`else` or `match`): the paths that do not consume it would drop it implicitly.
 
-{{ rule(id="3.8:51", cat="normative") }}
+{{ rule(id="3.8:51", cat="legality-rule") }}
 
-A control-flow path that diverges (for example, by executing a `return` expression) does not reach the end of the value's scope, and so is exempt from the consumption requirement on that path.
+A control-flow path that diverges before a scope's end never reaches that scope's end, and so is exempt from the consumption check applied *there* on that path (the diverging path contributes nothing to 3.8:50's branch requirement). Divergence is not an amnesty from consumption: an exit that unwinds scopes — a `return` expression (including the implicit return of a `?` expression's failure path, 4.15:7), a `break`, or a `continue` — ends the scopes it exits at the exit itself and drops their live bindings there (4.9:7, 4.8:21), so a linear value held by any scope the exit unwinds — including, for a `return` or `?`, a pass-by-value parameter (3.8:62) — **MUST** already have been consumed in the state in force when the exit executes. It is a compile-time error otherwise, exactly as at the scope's end (3.8:32, 3.8:50): the exit's drops would otherwise destroy the value unconsumed.
 
 {{ rule(id="3.8:52", cat="example") }}
 

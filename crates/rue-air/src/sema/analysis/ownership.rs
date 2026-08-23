@@ -5,11 +5,12 @@
 //! them. It extends the canonical body-analysis engine rather than
 //! introducing peer analysis state.
 
-use super::super::context::{LocalVar, VariableMoveState};
+use super::super::context::{LocalVar, ParamInfo, VariableMoveState};
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 use crate::inst::AirPlaceRef;
 use crate::scope::ScopedContext;
+use ahash::AHashMap;
 
 /// The position into which a value is being placed when the ADR-0043 two-types
 /// string model (RUE-386) requires a *first-class* `str`: a bare `str`
@@ -4471,50 +4472,204 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let Some(local) = ctx.locals.get(symbol) else {
                 continue;
             };
-
-            // Only check types that require consumption: linear structs
-            // themselves, and non-empty arrays whose elements carry one (an
-            // array of linear values must be consumed — as a whole, or
-            // element-wise via constant-index moves (RUE-186); dropping it
-            // would silently drop every element).
-            if !self.type_requires_consumption(local.ty) {
-                continue;
-            }
-
-            // Consumption must hold on EVERY path (must-consume).
-            // `full_move` alone is may-move (union at branch joins): a value
-            // consumed in only one branch of an if/match still leaks on the
-            // other paths.
             let state = ctx.moved_vars.get(symbol);
-            if state.is_some_and(|s| s.full_move_on_all_paths) {
-                continue;
+            self.check_linear_binding_consumed(*symbol, local, state)?;
+        }
+
+        Ok(())
+    }
+
+    /// The must-consume obligation for one binding against one move state —
+    /// the shared kernel of the scope-exit walk above and the early-exit edge
+    /// walk below ([`Self::check_linear_values_at_exit_edge`]).
+    ///
+    /// Consumption must hold on EVERY path (must-consume): `full_move` alone
+    /// is may-move (union at branch joins), so a value consumed in only one
+    /// branch of an if/match still leaks on the other paths. Only types that
+    /// require consumption are checked: linear structs themselves, and
+    /// non-empty arrays whose elements carry one (an array of linear values
+    /// must be consumed — as a whole, or element-wise via constant-index
+    /// moves (RUE-186); dropping it would silently drop every element).
+    fn check_linear_binding_consumed(
+        &self,
+        symbol: Spur,
+        local: &LocalVar,
+        state: Option<&VariableMoveState>,
+    ) -> CompileResult<()> {
+        if !self.type_requires_consumption(local.ty) {
+            return Ok(());
+        }
+        if state.is_some_and(|s| s.full_move_on_all_paths) {
+            return Ok(());
+        }
+
+        // Element-wise consumption of a linear array (RUE-186, spec
+        // 3.8:71): moving every element out (constant indices) on every
+        // path satisfies the array's must-consume obligation. Partial
+        // element consumption is an error naming the missing elements.
+        match self.check_array_elementwise_consumption(local.ty, state, symbol, local.span)? {
+            ElementwiseConsumption::Complete => return Ok(()),
+            ElementwiseConsumption::NotElementwise => {}
+        }
+
+        // Per-place residue (core §5.6, spec 3.8:60, RUE-1591): consuming
+        // exactly the linear sub-places of an infectious carrier
+        // discharges its obligation, and the non-linear residue is left
+        // for the ordinary scope-exit drop walk.
+        let Some(residue) = self.residual_linear_place(local.ty, state, &mut Vec::new()) else {
+            return Ok(());
+        };
+
+        let name = self.body_interner().resolve(&symbol);
+        let err = linear_not_consumed_error(
+            name,
+            local.span,
+            Self::residue_consumed_on_some_path(state, &residue),
+        );
+        let err = self.note_residual_linear_place(err, symbol, &residue);
+        Err(self.attach_infectious_linear_note(err, local.ty))
+    }
+
+    /// The must-consume obligation for one by-value parameter against one
+    /// move state (spec 3.8:62, RUE-61): the callee owns its pass-by-value
+    /// parameters and drops them at exit unless moved out, so a by-value
+    /// parameter carrying a linear value must be consumed on every path —
+    /// exactly like a linear local. `inout`/`borrow` parameters stay owned by
+    /// the caller and comptime parameters are substituted away, so both are
+    /// exempt here; the destructor exemption for `self` (3.8:62) is the
+    /// caller's to apply, since it is a property of the body, not of the
+    /// parameter.
+    ///
+    /// Shared by the end-of-body check in `analyze_function_internal` (the
+    /// fall-through exit) and the early-exit edge walk below (RUE-1614), so
+    /// both exits enforce one rule with one diagnostic shape.
+    pub(crate) fn check_linear_param_consumed(
+        &self,
+        param: &ParamInfo,
+        state: Option<&VariableMoveState>,
+        span: Span,
+    ) -> CompileResult<()> {
+        if param.mode != RirParamMode::Normal || param.is_comptime {
+            return Ok(());
+        }
+        if !self.type_requires_consumption(param.ty) {
+            return Ok(());
+        }
+        if state.is_some_and(|s| s.full_move_on_all_paths) {
+            return Ok(());
+        }
+        // Element-wise consumption of a linear array parameter (RUE-186)
+        // satisfies the obligation like a whole move.
+        match self.check_array_elementwise_consumption(param.ty, state, param.name, span)? {
+            ElementwiseConsumption::Complete => return Ok(()),
+            ElementwiseConsumption::NotElementwise => {}
+        }
+        // Per-place residue (core §5.6, RUE-1591): a by-value parameter of an
+        // infectious carrier is consumed by consuming its linear sub-places;
+        // the rest is dropped by the ordinary exit walk, exactly as for a
+        // local.
+        let Some(residue) = self.residual_linear_place(param.ty, state, &mut Vec::new()) else {
+            return Ok(());
+        };
+        let name = self.body_interner().resolve(&param.name);
+        let err = linear_not_consumed_error(
+            name,
+            span,
+            Self::residue_consumed_on_some_path(state, &residue),
+        )
+        .with_note(format!(
+            "parameter '{name}' is passed by value, so this function owns it \
+             and must consume it (pass it on, return it, or destructure it)"
+        ));
+        let err = self.note_residual_linear_place(err, param.name, &residue);
+        Err(self.attach_infectious_linear_note(err, param.ty))
+    }
+
+    /// RUE-1614: enforce the linear must-consume obligation at an early-exit
+    /// EDGE — a `return`, the `?` operator's failure path, a `break`, or a
+    /// `continue` — against the move state in force AT that edge.
+    ///
+    /// The scope-exit walk above runs over the state at each block's
+    /// fall-through exit. After a *conditional* early exit the enclosing
+    /// branch joins carry only the non-diverging continuation (diverging arms
+    /// are excluded from the join), so the edge's own state is never observed
+    /// by any scope-exit check — a linear value live only across the edge
+    /// escaped into the exit's unwind drops and was destroyed unconsumed.
+    /// (A *straight-line* early exit is caught without this walk: the
+    /// enclosing block's divergence snapshot re-runs the scope-exit check on
+    /// the state at the divergence.)
+    ///
+    /// The walk visits every binding introduced by the scope frames the edge
+    /// unwinds — `ctx.scope_stack[first_unwound_frame..]` — innermost frame
+    /// first, entries in declaration order within a frame (matching the
+    /// scope-exit walk's report order). Because `locals`/`moved_vars` are
+    /// keyed by NAME (RUE-522), a frame entry's saved shadow value is
+    /// virtually restored as the walk unwinds past it, exactly as `pop_scope`
+    /// would, so shadowed outer bindings are checked with their OWN state,
+    /// and a comptime alias that merely hides a local restores the hidden
+    /// binding for the outer frames' checks.
+    ///
+    /// `function_exit` additionally checks the by-value parameters (spec
+    /// 3.8:62) — a `return` or `?` unwinds them too — unless the body is a
+    /// destructor, whose `self` is disposed of by the drop glue (3.8:62).
+    /// `break`/`continue` pass `false`: bindings outside the loop stay live
+    /// and may still be consumed after it.
+    pub(crate) fn check_linear_values_at_exit_edge(
+        &self,
+        ctx: &AnalysisContext,
+        first_unwound_frame: usize,
+        function_exit: bool,
+    ) -> CompileResult<()> {
+        // The virtually-unwound view: a symbol present here has had its
+        // innermost binding(s) unwound, and maps to the shadowed binding (or
+        // absence) that pop_scope would restore.
+        let mut unwound_locals: AHashMap<Spur, Option<&LocalVar>> = AHashMap::new();
+        let mut unwound_moves: AHashMap<Spur, Option<&VariableMoveState>> = AHashMap::new();
+
+        for frame_idx in (first_unwound_frame..ctx.scope_stack.len()).rev() {
+            let frame = &ctx.scope_stack[frame_idx];
+            // Pushed pairwise with `frame` by `insert_local` and
+            // `bind_comptime_type_var`, so `move_frame[k]` below is the same
+            // binding as `frame[k]` (a desync would index out of bounds).
+            let move_frame = &ctx.moved_scope_stack[frame_idx];
+
+            // Resolve the binding each entry introduced (reverse order, so a
+            // later same-name entry's saved shadow value feeds the earlier
+            // entry), then check in declaration order.
+            let mut resolved: Vec<(Spur, Option<&LocalVar>, Option<&VariableMoveState>)> =
+                Vec::with_capacity(frame.len());
+            for (k, (symbol, old_local)) in frame.iter().enumerate().rev() {
+                let local = match unwound_locals.get(symbol) {
+                    Some(saved) => *saved,
+                    None => ctx.locals.get(symbol),
+                };
+                let state = match unwound_moves.get(symbol) {
+                    Some(saved) => *saved,
+                    None => ctx.moved_vars.get(symbol),
+                };
+                resolved.push((*symbol, local, state));
+                unwound_locals.insert(*symbol, old_local.as_ref());
+                unwound_moves.insert(*symbol, move_frame[k].1.as_ref());
             }
-
-            // Element-wise consumption of a linear array (RUE-186, spec
-            // 3.8:71): moving every element out (constant indices) on every
-            // path satisfies the array's must-consume obligation. Partial
-            // element consumption is an error naming the missing elements.
-            match self.check_array_elementwise_consumption(local.ty, state, *symbol, local.span)? {
-                ElementwiseConsumption::Complete => continue,
-                ElementwiseConsumption::NotElementwise => {}
+            for (symbol, local, state) in resolved.into_iter().rev() {
+                // An entry can name a non-local binding (a comptime type
+                // alias hiding a local pushes one); it introduces no value.
+                let Some(local) = local else { continue };
+                self.check_linear_binding_consumed(symbol, local, state)?;
             }
+        }
 
-            // Per-place residue (core §5.6, spec 3.8:60, RUE-1591): consuming
-            // exactly the linear sub-places of an infectious carrier
-            // discharges its obligation, and the non-linear residue is left
-            // for the ordinary scope-exit drop walk.
-            let Some(residue) = self.residual_linear_place(local.ty, state, &mut Vec::new()) else {
-                continue;
-            };
-
-            let name = self.body_interner().resolve(&*symbol);
-            let err = linear_not_consumed_error(
-                name,
-                local.span,
-                Self::residue_consumed_on_some_path(state, &residue),
-            );
-            let err = self.note_residual_linear_place(err, *symbol, &residue);
-            return Err(self.attach_infectious_linear_note(err, local.ty));
+        if function_exit && !ctx.is_destructor {
+            // The parameter diagnostic points at the body, matching the
+            // end-of-body check's shape (there is no binding span to cite).
+            let body_span = self.body_rir_ref().get(ctx.producer).span;
+            for param in ctx.params {
+                let state = match unwound_moves.get(&param.name) {
+                    Some(saved) => *saved,
+                    None => ctx.moved_vars.get(&param.name),
+                };
+                self.check_linear_param_consumed(param, state, body_span)?;
+            }
         }
 
         Ok(())

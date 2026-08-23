@@ -424,6 +424,15 @@ const ENTRIES: &[Entry] = &[
         external(ExternalDependencyKind::SystemCall),
         &["aarch64-linux"],
     ),
+    // RUE-1614: the legal consume-before-`?` regression case exercises the
+    // early-return failure edge through @parse_i64, which the oracle does
+    // not model (same debt as the expressions.try entries above).
+    Entry::new(
+        "types.move-semantics",
+        "linear_consumed_before_try_accepted",
+        intrinsic(UnsupportedIntrinsicKind::ParseI64),
+        &[],
+    ),
     Entry::new(
         "types.mutable_strings",
         "string_growth_on_append",

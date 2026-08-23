@@ -15,7 +15,7 @@ use rue_rir::{InstRef, Rir, RirParamMode, RirTypeSyntaxRef};
 use rue_span::{FileId, Span};
 
 use super::aggregate_resolution::is_accessible as aggregate_is_accessible;
-use super::analysis::{ElementwiseConsumption, FirstClassStrSite, linear_not_consumed_error};
+use super::analysis::FirstClassStrSite;
 use super::anon_structs::{
     IssuedCanonicalArguments, IssuedFunctionInstanceKey, IssuedStableProducerId,
 };
@@ -2149,6 +2149,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             inline_resolved_types: Vec::new(),
             place_aliases: AHashMap::new(),
             try_operand: false,
+            is_destructor,
         };
 
         // Accessor body shape (ADR-0062 phase 1): the body block must end in
@@ -2191,46 +2192,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // substituted away; destructors are exempt (see the doc comment).
         if !is_destructor {
             for p in &param_vec {
-                if p.mode != RirParamMode::Normal || p.is_comptime {
-                    continue;
-                }
-                if !self.type_requires_consumption(p.ty) {
-                    continue;
-                }
                 let state = self.moved_state(&ctx, &p.name);
-                if !state.is_some_and(|s| s.full_move_on_all_paths) {
-                    // Element-wise consumption of a linear array parameter
-                    // (RUE-186) satisfies the obligation like a whole move.
-                    match self.check_array_elementwise_consumption(
-                        p.ty,
-                        state,
-                        p.name,
-                        self.body_rir_ref().get(body).span,
-                    )? {
-                        ElementwiseConsumption::Complete => continue,
-                        ElementwiseConsumption::NotElementwise => {}
-                    }
-                    // Per-place residue (core §5.6, RUE-1591): a by-value
-                    // parameter of an infectious carrier is consumed by
-                    // consuming its linear sub-places; the rest is dropped by
-                    // the ordinary exit walk, exactly as for a local.
-                    let Some(residue) = self.residual_linear_place(p.ty, state, &mut Vec::new())
-                    else {
-                        continue;
-                    };
-                    let name = self.body_interner().resolve(&p.name);
-                    let err = linear_not_consumed_error(
-                        name,
-                        self.body_rir_ref().get(body).span,
-                        Self::residue_consumed_on_some_path(state, &residue),
-                    )
-                    .with_note(format!(
-                        "parameter '{name}' is passed by value, so this function owns it \
-                         and must consume it (pass it on, return it, or destructure it)"
-                    ));
-                    let err = self.note_residual_linear_place(err, p.name, &residue);
-                    return Err(self.attach_infectious_linear_note(err, p.ty));
-                }
+                self.check_linear_param_consumed(p, state, self.body_rir_ref().get(body).span)?;
             }
         }
 

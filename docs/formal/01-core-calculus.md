@@ -507,13 +507,20 @@ Its second clause covers the paths that never reach `Σf`. A body ending in
 `return` has `Σf = ⊥` (§5.7), which discharges nothing: the function's scopes
 end at the `return` instead, so the obligation must hold in the state in force
 *there* — the same "consumed on only some paths" discipline §5.5's join applies
-to branches (`3.8:50`). **Compiler divergence** (observed 2026-08-23 while
-verifying this premise; not yet filed): the compiler checks the obligation
-path-insensitively, so a linear binding consumed on the fall-through path but
-still live across an early `return` is accepted, and its destructor runs on the
-return path — an implicit drop of a value the program never consumed, which is
-what `3.8:32/62/66` forbid. The core states the prose rule; the compiler is the
-artifact in the wrong (RUE-305).
+to branches (`3.8:50`). **Compiler agreement (RUE-1614, resolved).** The
+divergence recorded here — the obligation checked only at fall-through scope
+exits, so a linear binding consumed on the fall-through path but still live
+across a conditional early `return` was accepted, its destructor running on
+the return path (an implicit drop of a value the program never consumed,
+which is what `3.8:32/62/66` forbid) — **no longer reproduces** (re-verified
+2026-08-23, RUE-1614). The compiler now enforces the residual obligation at
+every early-exit edge, against the state in force at the edge after the
+operand's own consumptions: `return` and the `?` failure path check every
+open scope plus the by-value parameters (a destructor's `self` stays exempt,
+`3.8:62`), and `break`/`continue` check exactly the scopes the edge unwinds,
+so a linear bound outside the loop stays consumable after it. The surface
+spec's `3.8:51` — which had stated the diverging-path exemption broadly
+enough to read as an amnesty — now states the same edge rule.
 
 The `borrow` and `inout` restrictions are **callee-polarity** rules: the caller
 may not touch a lent place while the loan is live, while the callee may touch the
