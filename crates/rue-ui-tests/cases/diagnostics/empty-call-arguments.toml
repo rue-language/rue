@@ -1,0 +1,31 @@
+[section]
+id = "diagnostics.empty_call_arguments"
+name = "Empty call argument recovery"
+description = "Empty argument slots are diagnosed at the comma and parsing continues."
+
+[[case]]
+name = "free_call_points_at_empty_slot"
+description = "The command-line diagnostic pins the dedicated wording and comma caret for a free call."
+source = "fn helper() {} fn main() { helper(,); }"
+compile_fail = true
+expected_error = """
+error: [E0102]: expected argument before `,`
+ --> test.rue:1:35
+  |
+1 | fn helper() {} fn main() { helper(,); }
+  |                                   ^
+  |
+"""
+
+[[case]]
+name = "later_error_survives_recovery"
+description = "Consuming `(,)` leaves the following independent malformed statement available for diagnosis."
+source = "fn helper() {} fn main() -> i32 { helper(,); let x = ; 0 }"
+compile_fail = true
+error_contains = ["expected argument before `,`", "expected expression"]
+
+[[case]]
+name = "legal_empty_and_trailing_lists"
+description = "A truly empty list and a legal trailing comma remain accepted."
+source = "fn helper() {} fn with_arg(x: i32) {} fn main() { helper(); with_arg(1,); }"
+exit_code = 0

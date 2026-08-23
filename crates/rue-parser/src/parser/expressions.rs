@@ -237,17 +237,8 @@ impl Parser {
     fn ident_expr(&mut self) -> PResult<Expr> {
         let start = self.start();
         let name = self.ident()?;
-        let name_end = name.span.end;
         if self.at(TokenKind::LParen) {
-            let recovered_empty_args =
-                self.nth(1) == TokenKind::Comma && self.nth(2) == TokenKind::RParen;
             let args = self.call_args()?;
-            if recovered_empty_args {
-                self.error_at(
-                    "expected semicolon after expression",
-                    Span::with_file(self.file_id, start, name_end),
-                );
-            }
             if self.at(TokenKind::LBrace) && self.looks_like_fields() {
                 let fields = self.field_inits()?;
                 Ok(Expr::StructLit(StructLitExpr {
@@ -261,11 +252,7 @@ impl Parser {
                 Ok(Expr::Call(CallExpr {
                     name,
                     args,
-                    span: if recovered_empty_args {
-                        Span::with_file(self.file_id, start, name_end)
-                    } else {
-                        self.span_from(start)
-                    },
+                    span: self.span_from(start),
                 }))
             }
         } else if self.at(TokenKind::LBrace) && self.looks_like_fields() {
@@ -416,7 +403,8 @@ impl Parser {
         self.expect(TokenKind::LParen)?;
         let mut args = Vec::new();
         if self.at(TokenKind::Comma) && self.nth(1) == TokenKind::RParen {
-            self.bump();
+            let comma = self.bump();
+            self.error_at("expected argument before `,`", comma.span);
             self.bump();
             return Ok(args);
         }
@@ -749,6 +737,60 @@ mod tests {
             Ok(_) => Vec::new(),
             Err(errors) => errors.iter().map(|error| error.to_string()).collect(),
         }
+    }
+
+    fn parse_error_spans(source: &str) -> Vec<(String, Span)> {
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        match Parser::new(tokens, interner).parse() {
+            Ok(_) => Vec::new(),
+            Err(errors) => errors
+                .iter()
+                .map(|error| (error.to_string(), error.span().unwrap()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn empty_call_argument_is_diagnosed_at_the_comma_for_every_call_form() {
+        let sources = [
+            "fn f() { g(,); }",
+            "fn f(s: S) { s.m(,); }",
+            "fn f() { Pair(,) { field: 1 } }",
+            "fn f() { module.Pair(,) { field: 1 } }",
+            "fn f(x: i32) -> i32 { match x { Result(,).Ok(v) => v } }",
+            "fn f(x: i32) -> i32 { match x { module.Result(,).Ok(v) => v } }",
+        ];
+
+        for source in sources {
+            let errors = parse_error_spans(source);
+            let comma = source.find(',').unwrap() as u32;
+            assert_eq!(
+                errors,
+                vec![(
+                    "expected argument before `,`".to_string(),
+                    Span::new(comma, comma + 1),
+                )],
+                "unexpected diagnostics for `{source}`"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_call_argument_recovers_to_later_diagnostics() {
+        assert_eq!(
+            parse_errors("fn f() -> i32 { g(,); let x = ; 0 }"),
+            vec![
+                "expected argument before `,`",
+                "expected expression, found ';'",
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_and_trailing_call_argument_lists_remain_legal() {
+        assert!(parses("fn f() { g(); }"));
+        assert!(parses("fn f() { g(1,); }"));
+        assert!(parses("fn f() { if g() { g(1,) } }"));
     }
 
     #[test]
