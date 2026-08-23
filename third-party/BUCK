@@ -1171,12 +1171,15 @@ rue_rust_library(
     crate_root = "vendor/lasso-0.7.3/src/lib.rs",
     edition = "2021",
     features = [
+        "ahash",
+        "ahasher",
         "dashmap",
         "default",
         "multi-threaded",
     ],
     visibility = [],
     deps = [
+        ":ahash-0.8.12",
         ":dashmap-6.1.0",
         ":hashbrown-0.14.5",
     ],
