@@ -8,7 +8,7 @@
 # inputs like any other action, so the merge_group run reuses the result the PR
 # run uploaded rather than re-running the suite.
 #
-# usage: scripts/corpus-action STAMP HARNESS [ARG ...]
+# usage: scripts/corpus-action STAMP HARNESS --timeout-runner RUNNER... -- [ARG ...]
 #
 # Buck expands $(location) and $(exe_target) inside a genrule to paths relative
 # to the action's working directory, which is not the project root. The corpus
@@ -19,14 +19,29 @@
 # because `$(...)` is Buck's own macro syntax.
 set -uo pipefail
 
-if [[ $# -lt 2 ]]; then
-    echo "usage: scripts/corpus-action STAMP HARNESS [ARG ...]" >&2
+if [[ $# -lt 5 || "$3" != "--timeout-runner" ]]; then
+    echo "usage: scripts/corpus-action STAMP HARNESS --timeout-runner RUNNER... -- [ARG ...]" >&2
     exit 2
 fi
 
 stamp="$1"
 harness="$2"
-shift 2
+shift 3
+
+# RunInfo can be a command plus arguments (the Python bootstrap is
+# `python3 <script>`), so parse it as a delimited command rather than assuming
+# that the first token is an executable path. The harness arguments follow the
+# second `--` unchanged.
+timeout_runner_args=()
+while [[ $# -gt 0 && "$1" != "--" ]]; do
+    timeout_runner_args+=("$1")
+    shift
+done
+if [[ $# -eq 0 || ${#timeout_runner_args[@]} -eq 0 ]]; then
+    echo "error: timeout runner command is missing its '--' delimiter" >&2
+    exit 2
+fi
+shift
 
 # Resolve a path without requiring GNU realpath (macOS runners ship BSD tools
 # and no coreutils). A directory resolves directly; anything else resolves
@@ -63,6 +78,13 @@ done
 unset RUE_CORPUS_ABSOLUTIZE
 
 harness="$(absolutize "$harness")" || exit 2
+if [[ ${#timeout_runner_args[@]} -eq 1 ]]; then
+    timeout_runner_args[0]="$(absolutize "${timeout_runner_args[0]}")" || exit 2
+else
+    # The first token is the declared interpreter (`python3`); the bootstrap
+    # script is the second token and is relative to the action's cwd.
+    timeout_runner_args[1]="$(absolutize "${timeout_runner_args[1]}")" || exit 2
+fi
 
 # The per-case budgets in execution_contracts.toml are the honest gates. This
 # outer bound only replaces the test executor's timeout, which a build action
@@ -70,10 +92,49 @@ harness="$(absolutize "$harness")" || exit 2
 # and reports nothing useful.
 timeout_seconds="${RUE_CORPUS_TIMEOUT_SECONDS:-}"
 unset RUE_CORPUS_TIMEOUT_SECONDS
-if [[ -n "$timeout_seconds" ]] && command -v timeout >/dev/null 2>&1; then
-    timeout "$timeout_seconds" "$harness" "$@"
+if [[ -n "$timeout_seconds" ]]; then
+    timeout_marker="$(mktemp "${TMPDIR:-/tmp}/rue-corpus-timeout.XXXXXX")" || {
+        echo "error: cannot create corpus timeout marker" >&2
+        exit 2
+    }
+    cleanup_timeout_marker() {
+        rm -f "$timeout_marker"
+    }
+    trap cleanup_timeout_marker EXIT
+
+    # The wrapper is a separate shell process from the Python runner. Forward
+    # cancellation explicitly so the runner can terminate and reap the entire
+    # harness process group before this action exits.
+    cancel_signal=0
+    runner_pid=""
+    forward_signal() {
+        cancel_signal="$1"
+        if [[ -n "$runner_pid" ]]; then
+            kill "-$1" "$runner_pid" 2>/dev/null || true
+        fi
+    }
+    trap 'forward_signal 2' INT
+    trap 'forward_signal 15' TERM
+    "${timeout_runner_args[@]}" "$timeout_seconds" "$timeout_marker" "$harness" "$@" &
+    runner_pid=$!
+    if [[ "$cancel_signal" -ne 0 ]]; then
+        kill "-$cancel_signal" "$runner_pid" 2>/dev/null || true
+    fi
+    wait "$runner_pid"
     status=$?
-    if [[ "$status" -eq 124 ]]; then
+    if [[ "$cancel_signal" -ne 0 ]]; then
+        # A trapped signal interrupts the first wait. Ignore further
+        # cancellation signals while the second wait reaps the runner; this
+        # keeps a repeated INT/TERM from interrupting cleanup and leaking the
+        # harness process group.
+        trap '' INT TERM
+        wait "$runner_pid"
+        reap_status=$?
+        trap - INT TERM
+        status=$((128 + cancel_signal))
+    fi
+    trap - INT TERM
+    if [[ "$status" -eq 124 && -s "$timeout_marker" ]]; then
         echo "error: corpus harness exceeded ${timeout_seconds}s: $harness $*" >&2
     fi
 else

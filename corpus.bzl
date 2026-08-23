@@ -143,6 +143,9 @@ def _corpus_action_impl(ctx: AnalysisContext) -> list[Provider]:
             ctx.attrs.wrapper[RunInfo],
             stamp.as_output(),
             ctx.attrs.harness[RunInfo],
+            "--timeout-runner",
+            ctx.attrs.timeout_runner[RunInfo],
+            "--",
             ctx.attrs.harness_args,
         ),
         env = action_env,
@@ -205,6 +208,10 @@ _corpus_action = rule(
         "harness_args": attrs.list(attrs.string(), default = []),
         "repetition": attrs.string(default = ""),
         "timeout_seconds": attrs.option(attrs.int(), default = None),
+        # A cacheable action may not discover a host timeout binary from PATH.
+        # Keep the portable runner in the action graph so it is a declared,
+        # cache-keyed input on every platform.
+        "timeout_runner": attrs.dep(providers = [RunInfo], default = "//:corpus-timeout-runner"),
         "wrapper": attrs.dep(providers = [RunInfo], default = "//:corpus-action"),
     },
 )
