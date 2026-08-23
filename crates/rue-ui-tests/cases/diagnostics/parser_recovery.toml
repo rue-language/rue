@@ -61,3 +61,65 @@ fn ok() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = ["expected '.', found '=>'", "found '->'"]
+
+# Reserved keywords in a let pattern are diagnosed at the keyword once. The
+# item-level recovery scan must not add a second, narrower diagnostic for the
+# same token.
+[[case]]
+name = "reserved_let_fn_has_one_exact_diagnostic"
+source = "fn main() -> i32 { let fn = 2; 0 }"
+compile_fail = true
+expected_error = """
+error: [E0100]: expected 'mut' or identifier or '_', found 'fn'
+ --> test.rue:1:24
+  |
+1 | fn main() -> i32 { let fn = 2; 0 }
+  |                        ^^
+  |
+"""
+
+[[case]]
+name = "reserved_let_struct_has_one_exact_diagnostic"
+source = "fn main() -> i32 { let struct = 2; 0 }"
+compile_fail = true
+expected_error = """
+error: [E0100]: expected 'mut' or identifier or '_', found 'struct'
+ --> test.rue:1:24
+  |
+1 | fn main() -> i32 { let struct = 2; 0 }
+  |                        ^^^^^^
+  |
+"""
+
+[[case]]
+name = "missing_item_name_and_malformed_method_continue_recovery"
+source = "struct { fn () {} }\nfn main() -> i32 { 0 }"
+compile_fail = true
+expected_error = """
+error: [E0100]: expected identifier, found '{'
+ --> test.rue:1:8
+  |
+1 | struct { fn () {} }
+  |        ^
+  |
+error: [E0100]: expected identifier, found 'fn'
+ --> test.rue:1:10
+  |
+1 | struct { fn () {} }
+  |          ^^
+  |
+error: aborting due to 2 previous errors
+"""
+
+[[case]]
+name = "intrinsic_at_non_identifier_reports_offending_token_once"
+source = "fn main() -> i32 { @1(2); 0 }"
+compile_fail = true
+expected_error = """
+error: [E0100]: expected identifier or 'drop', found integer
+ --> test.rue:1:21
+  |
+1 | fn main() -> i32 { @1(2); 0 }
+  |                     ^
+  |
+"""
