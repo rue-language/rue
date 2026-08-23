@@ -23053,11 +23053,14 @@ fn project_provider_anonymous_methods(
         .iter()
         .map(|(_, ty)| ty.clone())
         .collect::<Vec<_>>();
+    // The owner's canonical form does not change across the projection, and
+    // deriving it walks the producer spine. It used to be re-derived inside the
+    // closure below, which runs once per parameter type of every method.
+    let canonical_owner = nominal.identity.with_canonical_producer();
     let ty = |ty: &SourceType| match ty {
         SourceType::SelfType => rue_air::DurableAnonymousMethodType::SelfType,
         SourceType::Concrete(crate::DurableType::AnonymousNominal(identity))
-            if identity.with_canonical_producer().as_ref()
-                == nominal.identity.with_canonical_producer().as_ref() =>
+            if identity.with_canonical_producer().as_ref() == canonical_owner.as_ref() =>
         {
             rue_air::DurableAnonymousMethodType::SelfType
         }
