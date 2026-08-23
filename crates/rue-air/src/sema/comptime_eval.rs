@@ -301,6 +301,1203 @@ fn comptime_panic_err(reason: String, span: Span) -> CompileError {
     CompileError::new(ErrorKind::ComptimeEvaluationFailed { reason }, span)
 }
 
+/// A call prepared by the semantic host. It contains no borrowed RIR or
+/// mutable host state, so the evaluator can enter it after the host borrow has
+/// ended and own all recursive frame transitions.
+#[derive(Debug)]
+struct PreparedComptimeCall {
+    name: Spur,
+    body: InstRef,
+    file: FileId,
+    span: Span,
+    function_span: Span,
+    callee_types: AHashMap<Spur, Type>,
+    callee_values: AHashMap<Spur, ConstValue>,
+}
+
+/// Semantic call facts copied out of RIR before invoking the host. Keeping
+/// spans here preserves mode diagnostics without allowing preparation hooks to
+/// inspect or recursively traverse RIR arguments.
+type ComptimeArgMode = (rue_rir::RirArgMode, Span);
+
+#[derive(Debug, Clone, Copy)]
+struct ComptimeCallAdmission {
+    name: Spur,
+    function: crate::sema::info::FunctionCallInfo,
+}
+
+struct ComptimeEngine<'e, 'h, H: OrdinaryBodyAnalysisHost> {
+    body: &'e mut OrdinaryBodyEngine<'h, H>,
+    call_depth: usize,
+}
+
+impl<'e, 'h, H: OrdinaryBodyAnalysisHost> ComptimeEngine<'e, 'h, H> {
+    fn new(body: &'e mut OrdinaryBodyEngine<'h, H>) -> Self {
+        Self {
+            body,
+            call_depth: 0,
+        }
+    }
+
+    fn evaluate(
+        &mut self,
+        inst_ref: InstRef,
+        env: &mut ComptimeEnv,
+    ) -> CompileResult<Option<ConstValue>> {
+        self.eval(inst_ref, env)
+    }
+
+    /// Evaluate a named call through a child frame. The body host receives
+    /// only the semantically named call operation; recursive expression edges
+    /// stay in this engine.
+    fn evaluate_call(
+        &mut self,
+        name: Spur,
+        args: &rue_rir::RirCallArgsRange,
+        env: &mut ComptimeEnv,
+        span: Span,
+    ) -> CompileResult<Option<ConstValue>> {
+        let args = self.body.body_rir_ref().call_args(args).to_vec();
+        let arg_modes: Vec<ComptimeArgMode> = args
+            .iter()
+            .map(|arg| (arg.mode, self.body.body_rir_ref().get(arg.value).span))
+            .collect();
+        let Some(admission) =
+            self.body
+                .admit_comptime_call(name, args.len(), &arg_modes, env, false)?
+        else {
+            return Ok(None);
+        };
+        let mut values = Vec::with_capacity(args.len());
+        for arg in &args {
+            let Some(value) = self.eval(arg.value, env)? else {
+                return Ok(None);
+            };
+            values.push(value);
+        }
+        let Some((callee_types, callee_values)) =
+            self.body.bind_comptime_call(&admission, &values, span)?
+        else {
+            return Ok(None);
+        };
+        if let Some(result) = self.body.reduce_external_comptime_call(
+            admission.name,
+            &callee_types,
+            &callee_values,
+            span,
+        ) {
+            return result;
+        }
+        let Some(plan) =
+            self.body
+                .prepare_local_comptime_call(admission, callee_types, callee_values, span)?
+        else {
+            return Ok(None);
+        };
+        self.enter_call(plan, span)
+    }
+
+    fn enter_call(
+        &mut self,
+        plan: PreparedComptimeCall,
+        call_span: Span,
+    ) -> CompileResult<Option<ConstValue>> {
+        self.run_prepared(plan, call_span)
+    }
+
+    fn evaluate_prepared_root(
+        &mut self,
+        plan: PreparedComptimeCall,
+    ) -> CompileResult<Option<ConstValue>> {
+        let span = plan.span;
+        // Direct type-constructor reductions are calls in the language model;
+        // their root consumes the first call-depth slot. Expression roots,
+        // entered through `eval_const_expr`, are not calls and do not enter
+        // this method.
+        self.run_prepared(plan, span)
+    }
+
+    fn run_prepared(
+        &mut self,
+        plan: PreparedComptimeCall,
+        call_span: Span,
+    ) -> CompileResult<Option<ConstValue>> {
+        if self.call_depth >= MAX_COMPTIME_CALL_DEPTH {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "specialization of '{}' exceeded the maximum nesting depth ({}); \
+                         is a comptime-recursive function missing a compile-time-known \
+                         base case, or a generic function recursively instantiating \
+                         itself with new types?",
+                        self.body.body_interner().resolve(&plan.name),
+                        MAX_COMPTIME_CALL_DEPTH
+                    ),
+                },
+                plan.function_span,
+            ));
+        }
+        let canonical_identity = self
+            .body
+            .canonical_function_producer(plan.name, &plan.callee_types, &plan.callee_values)
+            .map_err(|failure| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "failed to issue canonical comptime producer: {failure:?}"
+                    )),
+                    plan.span,
+                )
+            })?;
+        let body = plan.body;
+        let mut child_env = ComptimeEnv::with_subst(&plan.callee_types, &plan.callee_values);
+        child_env.producer = Some(body);
+        child_env.canonical_identity = Some(canonical_identity);
+        child_env.defining_file = Some(plan.file);
+        self.call_depth += 1;
+        let result = self.eval(body, &mut child_env);
+        self.call_depth -= 1;
+        let result = result.map_err(|error| {
+            OrdinaryBodyEngine::<H>::label_ctor_instantiation_site(error, call_span)
+        });
+        self.body.finish_comptime_call(&plan, result)
+    }
+
+    fn evaluate_method_call(
+        &mut self,
+        receiver: InstRef,
+        method: Spur,
+        args: &rue_rir::RirCallArgsRange,
+        env: &mut ComptimeEnv,
+        span: Span,
+    ) -> CompileResult<Option<ConstValue>> {
+        let args = self.body.body_rir_ref().call_args(args).to_vec();
+        let Some((file_id, segments)) = self.decode_module_path(receiver, env)? else {
+            return Ok(None);
+        };
+        let Some(name) = self
+            .body
+            .resolve_module_comptime_callable(file_id, &segments, method, span)?
+        else {
+            return Ok(None);
+        };
+        let arg_modes: Vec<ComptimeArgMode> = args
+            .iter()
+            .map(|arg| (arg.mode, self.body.body_rir_ref().get(arg.value).span))
+            .collect();
+        let Some(admission) =
+            self.body
+                .admit_comptime_call(name, args.len(), &arg_modes, env, true)?
+        else {
+            return Ok(None);
+        };
+        let mut values = Vec::with_capacity(args.len());
+        for arg in &args {
+            let Some(value) = self.eval(arg.value, env)? else {
+                return Ok(None);
+            };
+            values.push(value);
+        }
+        let Some((callee_types, callee_values)) =
+            self.body.bind_comptime_call(&admission, &values, span)?
+        else {
+            return Ok(None);
+        };
+        if let Some(result) = self.body.reduce_external_comptime_call(
+            admission.name,
+            &callee_types,
+            &callee_values,
+            span,
+        ) {
+            return result;
+        }
+        let Some(plan) =
+            self.body
+                .prepare_local_comptime_call(admission, callee_types, callee_values, span)?
+        else {
+            return Ok(None);
+        };
+        self.enter_call(plan, span)
+    }
+
+    /// Decode only the syntactic module path for a method call. Resolution of
+    /// the path's declarations and visibility stays in the semantic host; the
+    /// engine owns this RIR edge so hosts never need to inspect child
+    /// instructions to discover a callable.
+    fn decode_module_path(
+        &self,
+        receiver: InstRef,
+        env: &ComptimeEnv,
+    ) -> CompileResult<Option<(FileId, Vec<Spur>)>> {
+        let mut chain_rev = Vec::new();
+        let mut cursor = receiver;
+        let root = loop {
+            match self.body.body_rir_ref().get(cursor).data {
+                InstData::VarRef { name, .. } => break name,
+                InstData::FieldGet { base, field } => {
+                    chain_rev.push(field);
+                    cursor = base;
+                }
+                _ => return Ok(None),
+            }
+        };
+        if env.locals.contains_key(&root)
+            || env
+                .runtime_locals
+                .is_some_and(|locals| locals.contains_key(&root))
+            || env
+                .runtime_binding_names
+                .is_some_and(|names| names.contains(&root))
+            || env.type_subst.contains_key(&root)
+            || env.value_subst.contains_key(&root)
+        {
+            return Ok(None);
+        }
+        let Some(file_id) = env.defining_file else {
+            return Ok(None);
+        };
+        chain_rev.reverse();
+        let mut segments = Vec::with_capacity(chain_rev.len() + 1);
+        segments.push(root);
+        segments.extend(chain_rev);
+        Ok(Some((file_id, segments)))
+    }
+
+    fn eval_int_operands(
+        &mut self,
+        lhs: InstRef,
+        rhs: InstRef,
+        env: &mut ComptimeEnv,
+    ) -> CompileResult<Option<(i128, i128)>> {
+        let Some(l) = self.eval(lhs, env)?.and_then(ConstValue::as_int_value) else {
+            return Ok(None);
+        };
+        let Some(r) = self.eval(rhs, env)?.and_then(ConstValue::as_int_value) else {
+            return Ok(None);
+        };
+        Ok(Some((l, r)))
+    }
+
+    /// The single compile-time evaluation engine. See the module docs for the
+    /// outcome encoding (`Ok(Some)` / `Ok(None)` / `Err`).
+    fn eval(
+        &mut self,
+        inst_ref: InstRef,
+        env: &mut ComptimeEnv,
+    ) -> CompileResult<Option<ConstValue>> {
+        let inst = {
+            let source = self.body.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
+        let span = inst.span;
+        match &inst.data {
+            // Integer literals. The literal itself must fit its resolved type
+            // (the inner expression of a comptime block never goes through
+            // `analyze_literal`, so this is where `300` at type u8 is caught).
+            InstData::IntConst(value) => {
+                let v = *value as i128;
+                if let Some(ty) = self.body.const_expr_type(env, inst_ref) {
+                    if !const_int_fits(v, ty) {
+                        return Err(CompileError::new(
+                            ErrorKind::LiteralOutOfRange {
+                                value: *value,
+                                ty: ty.safe_name_with_pool(Some(self.body.body_type_pool())),
+                            },
+                            span,
+                        ));
+                    }
+                }
+                Ok(Some(ConstValue::Integer(v)))
+            }
+
+            // Float literals stop here for the same reason they stop in
+            // `analyze_inst_dispatch` (ADR-0065, RUE-1069): there is no
+            // `comptime_float` value in `ConstValue` yet. Naming the real
+            // reason matters more here than elsewhere — falling through to
+            // the generic "not knowable at compile time" would be actively
+            // wrong about a literal, which is the most compile-time-knowable
+            // thing there is. Delete this arm when Phase 4 lands.
+            InstData::FloatConst { .. } => {
+                self.body.require_preview(
+                    rue_error::PreviewFeature::Floats,
+                    "a floating-point literal",
+                    span,
+                )?;
+                Err(CompileError::new(ErrorKind::FloatNotYetImplemented, span))
+            }
+
+            // Boolean literals
+            InstData::BoolConst(value) => Ok(Some(ConstValue::Bool(*value))),
+
+            // Unit literal
+            InstData::UnitConst => Ok(Some(ConstValue::Unit)),
+
+            // Unary negation: -expr
+            InstData::Neg { operand } => {
+                let ty = self.body.const_expr_type(env, inst_ref);
+                if let Some(ty) = ty {
+                    if ty.is_unsigned() {
+                        return Err(CompileError::new(
+                            ErrorKind::CannotNegate(
+                                ty.safe_name_with_pool(Some(self.body.body_type_pool())),
+                            ),
+                            span,
+                        ));
+                    }
+                }
+                if let InstData::IntConst(magnitude) = &self.body.body_rir_ref().get(*operand).data
+                {
+                    // The literal path uses mathematical magnitude semantics:
+                    // unlike an ordinary runtime value, `128` must not first
+                    // canonicalize to -128 before becoming `-128`.
+                    let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
+                        || CheckedIntegerResult::from_raw((*magnitude as i128).checked_neg()),
+                        |integer| integer.checked_neg_literal_report_i128(*magnitude as i128),
+                    );
+                    self.body.finish_arith(result, ty, "-", span)
+                } else {
+                    match self.eval(*operand, env)? {
+                        Some(ConstValue::Integer(n)) => {
+                            let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
+                                || CheckedIntegerResult::from_raw(n.checked_neg()),
+                                |integer| integer.checked_neg_report_i128(n),
+                            );
+                            self.body.finish_arith(result, ty, "-", span)
+                        }
+                        // Can't negate a boolean, type, or unit
+                        _ => Ok(None),
+                    }
+                }
+            }
+
+            // Logical NOT: !expr
+            InstData::Not { operand } => {
+                match self.eval(*operand, env)? {
+                    Some(ConstValue::Bool(b)) => Ok(Some(ConstValue::Bool(!b))),
+                    // Can't logical-NOT an integer, type, or unit
+                    _ => Ok(None),
+                }
+            }
+
+            // Binary arithmetic operations, checked at the operand type
+            InstData::Add { lhs, rhs } => {
+                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
+                    return Ok(None);
+                };
+                let ty = self.body.const_expr_type(env, inst_ref);
+                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
+                    || CheckedIntegerResult::from_raw(l.checked_add(r)),
+                    |integer| integer.checked_add_report_i128(l, r),
+                );
+                self.body.finish_arith(result, ty, "+", span)
+            }
+            InstData::Sub { lhs, rhs } => {
+                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
+                    return Ok(None);
+                };
+                let ty = self.body.const_expr_type(env, inst_ref);
+                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
+                    || CheckedIntegerResult::from_raw(l.checked_sub(r)),
+                    |integer| integer.checked_sub_report_i128(l, r),
+                );
+                self.body.finish_arith(result, ty, "-", span)
+            }
+            InstData::Mul { lhs, rhs } => {
+                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
+                    return Ok(None);
+                };
+                let ty = self.body.const_expr_type(env, inst_ref);
+                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
+                    || CheckedIntegerResult::from_raw(l.checked_mul(r)),
+                    |integer| integer.checked_mul_report_i128(l, r),
+                );
+                self.body.finish_arith(result, ty, "*", span)
+            }
+            InstData::Div { lhs, rhs } | InstData::Mod { lhs, rhs } => {
+                let is_div = matches!(&inst.data, InstData::Div { .. });
+                let op = if is_div { "/" } else { "%" };
+                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
+                    return Ok(None);
+                };
+                let ty = self.body.const_expr_type(env, inst_ref);
+                if r == 0 {
+                    let what = if is_div { "division" } else { "remainder" };
+                    return match ty {
+                        Some(_) => Err(comptime_panic_err(
+                            format!("{} by zero (this operation would panic at runtime)", what),
+                            span,
+                        )),
+                        // Untyped fallback: defer to the runtime check.
+                        None => Ok(None),
+                    };
+                }
+                // Untyped evaluation retains its historical i64 fallback;
+                // typed MIN / -1 trapping is owned by the kernel report.
+                if r == -1 && ty.is_none() && l == i128::from(i64::MIN) {
+                    return Ok(None);
+                }
+                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
+                    || {
+                        CheckedIntegerResult::from_raw(if is_div {
+                            l.checked_div(r)
+                        } else {
+                            l.checked_rem(r)
+                        })
+                    },
+                    |integer| {
+                        if is_div {
+                            integer.checked_div_report_i128(l, r)
+                        } else {
+                            integer.checked_rem_report_i128(l, r)
+                        }
+                    },
+                );
+                self.body.finish_arith(result, ty, op, span)
+            }
+
+            // Comparison operations
+            InstData::Eq { lhs, rhs } => {
+                let l = self.eval(*lhs, env)?;
+                let r = self.eval(*rhs, env)?;
+                match (l, r) {
+                    (Some(ConstValue::Integer(a)), Some(ConstValue::Integer(b))) => {
+                        Ok(Some(ConstValue::Bool(a == b)))
+                    }
+                    (Some(ConstValue::Bool(a)), Some(ConstValue::Bool(b))) => {
+                        Ok(Some(ConstValue::Bool(a == b)))
+                    }
+                    _ => Ok(None), // Mixed or non-constant operands
+                }
+            }
+            InstData::Ne { lhs, rhs } => {
+                let l = self.eval(*lhs, env)?;
+                let r = self.eval(*rhs, env)?;
+                match (l, r) {
+                    (Some(ConstValue::Integer(a)), Some(ConstValue::Integer(b))) => {
+                        Ok(Some(ConstValue::Bool(a != b)))
+                    }
+                    (Some(ConstValue::Bool(a)), Some(ConstValue::Bool(b))) => {
+                        Ok(Some(ConstValue::Bool(a != b)))
+                    }
+                    _ => Ok(None),
+                }
+            }
+            InstData::Lt { lhs, rhs } => {
+                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
+                    return Ok(None);
+                };
+                Ok(Some(ConstValue::Bool(l < r)))
+            }
+            InstData::Gt { lhs, rhs } => {
+                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
+                    return Ok(None);
+                };
+                Ok(Some(ConstValue::Bool(l > r)))
+            }
+            InstData::Le { lhs, rhs } => {
+                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
+                    return Ok(None);
+                };
+                Ok(Some(ConstValue::Bool(l <= r)))
+            }
+            InstData::Ge { lhs, rhs } => {
+                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
+                    return Ok(None);
+                };
+                Ok(Some(ConstValue::Bool(l >= r)))
+            }
+
+            // Logical operations: short-circuit like the runtime, so a
+            // non-constant (or would-panic) RHS is irrelevant when the LHS
+            // already decides the result.
+            InstData::And { lhs, rhs } => match self.eval(*lhs, env)? {
+                Some(ConstValue::Bool(false)) => Ok(Some(ConstValue::Bool(false))),
+                Some(ConstValue::Bool(true)) => match self.eval(*rhs, env)? {
+                    Some(ConstValue::Bool(b)) => Ok(Some(ConstValue::Bool(b))),
+                    _ => Ok(None),
+                },
+                _ => Ok(None),
+            },
+            InstData::Or { lhs, rhs } => match self.eval(*lhs, env)? {
+                Some(ConstValue::Bool(true)) => Ok(Some(ConstValue::Bool(true))),
+                Some(ConstValue::Bool(false)) => match self.eval(*rhs, env)? {
+                    Some(ConstValue::Bool(b)) => Ok(Some(ConstValue::Bool(b))),
+                    _ => Ok(None),
+                },
+                _ => Ok(None),
+            },
+
+            // Bitwise operations. For values in range of their type these are
+            // closed (no overflow possible), so no range check is needed.
+            InstData::BitAnd { lhs, rhs } => {
+                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
+                    return Ok(None);
+                };
+                Ok(Some(ConstValue::Integer(l & r)))
+            }
+            InstData::BitOr { lhs, rhs } => {
+                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
+                    return Ok(None);
+                };
+                Ok(Some(ConstValue::Integer(l | r)))
+            }
+            InstData::BitXor { lhs, rhs } => {
+                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
+                    return Ok(None);
+                };
+                Ok(Some(ConstValue::Integer(l ^ r)))
+            }
+
+            // Shifts: the amount is masked modulo the bit width and the
+            // result truncated to the operand width (spec 4.3a:10), exactly
+            // matching the runtime semantics (RUE-29).
+            InstData::Shl { lhs, rhs } | InstData::Shr { lhs, rhs } => {
+                let is_shl = matches!(&inst.data, InstData::Shl { .. });
+                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
+                    return Ok(None);
+                };
+                match self.body.const_expr_type(env, inst_ref) {
+                    Some(ty) => {
+                        let integer = ty
+                            .integer_semantics()
+                            .expect("const_expr_type returned non-integer");
+                        // Two's-complement AND masks negative amounts the same
+                        // way the hardware masks the count register.
+                        let v = integer.shift_i128(l, r, is_shl);
+                        Ok(Some(ConstValue::Integer(v)))
+                    }
+                    None => {
+                        // Without the operand type the width is unknown, so
+                        // only fold amounts < 8 (safe for every width) and
+                        // defer the rest to runtime.
+                        if !(0..8).contains(&r) {
+                            return Ok(None);
+                        }
+                        Ok(Some(ConstValue::Integer(if is_shl {
+                            l << r
+                        } else {
+                            l >> r
+                        })))
+                    }
+                }
+            }
+
+            // Bitwise NOT: truncated to the operand width (`~0` as u8 = 255).
+            InstData::BitNot { operand } => {
+                let Some(n) = self.eval(*operand, env)?.and_then(ConstValue::as_int_value) else {
+                    return Ok(None);
+                };
+                let v = match self.body.const_expr_type(env, inst_ref) {
+                    Some(ty) => ty
+                        .integer_semantics()
+                        .expect("bitnot requires an integer type")
+                        .bitnot_i128(n),
+                    None => !n,
+                };
+                Ok(Some(ConstValue::Integer(v)))
+            }
+
+            // Comptime block: comptime { expr } is compile-time evaluable if its inner expr is
+            InstData::Comptime { expr } => self.eval(*expr, env),
+
+            // Block: evaluate `let` statements into the environment, then the
+            // tail expression. Loops, assignments and calls are not supported
+            // and make the block non-evaluable.
+            InstData::Block { instructions } => {
+                let stmt_refs = self.body.body_rir_ref().block_insts(instructions).to_vec();
+                if stmt_refs.is_empty() {
+                    return Ok(Some(ConstValue::Unit));
+                }
+                // Bindings are scoped to the block.
+                let saved_locals = env.locals.clone();
+                let mut result = Some(ConstValue::Unit);
+                for (i, stmt_ref) in stmt_refs.iter().copied().enumerate() {
+                    let is_tail = i + 1 == stmt_refs.len();
+                    let value = if let InstData::Alloc { name, init, .. } =
+                        &self.body.body_rir_ref().get(stmt_ref).data
+                    {
+                        let (name, init) = (*name, *init);
+                        let Some(v) = self.eval(init, env)? else {
+                            env.locals = saved_locals;
+                            return Ok(None);
+                        };
+                        if let Some(name) = name {
+                            env.locals.insert(name, v);
+                        }
+                        // A `let` statement itself evaluates to unit.
+                        ConstValue::Unit
+                    } else {
+                        let Some(v) = self.eval(stmt_ref, env)? else {
+                            env.locals = saved_locals;
+                            return Ok(None);
+                        };
+                        v
+                    };
+                    if is_tail {
+                        result = Some(value);
+                    }
+                }
+                env.locals = saved_locals;
+                Ok(result)
+            }
+
+            // Comptime-known `if`: select the taken branch and reduce to its
+            // value. This is what lets an `if` in a `-> type` body pick a
+            // struct/enum branch at compile time (spec 4.14:17, RUE-262) — the
+            // same branch selection ordinary comptime values already relied on
+            // through the block/let path, now available as an expression. A
+            // non-constant condition makes the whole `if` non-evaluable.
+            InstData::Branch {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                let (cond, then_block, else_block) = (*cond, *then_block, *else_block);
+                match self.eval(cond, env)? {
+                    Some(ConstValue::Bool(true)) => self.eval(then_block, env),
+                    Some(ConstValue::Bool(false)) => match else_block {
+                        Some(else_block) => self.eval(else_block, env),
+                        // `if c { .. }` with no else yields unit when false.
+                        None => Ok(Some(ConstValue::Unit)),
+                    },
+                    // Non-constant (or non-bool) condition: not evaluable.
+                    _ => Ok(None),
+                }
+            }
+
+            // Comptime-known `match`: evaluate the scrutinee, select the first
+            // arm whose pattern matches, and reduce to that arm's body value
+            // (spec 4.14:19, RUE-262). An enum-variant (`Path`) pattern isn't
+            // representable as a `ConstValue`, and a non-constant scrutinee is
+            // not decidable here — both make the `match` non-evaluable.
+            InstData::Match { scrutinee, arms } => {
+                let scrutinee = *scrutinee;
+                let Some(scrut) = self.eval(scrutinee, env)? else {
+                    return Ok(None);
+                };
+                let arms = self.body.body_rir_ref().match_arms(arms).to_vec();
+                for (pattern, body) in arms.iter() {
+                    match const_pattern_matches(pattern, scrut) {
+                        Some(true) => return self.eval(*body, env),
+                        Some(false) => continue,
+                        // Undecidable pattern (e.g. an enum-variant `Path`
+                        // against a non-representable scrutinee): bail out.
+                        None => return Ok(None),
+                    }
+                }
+                // No arm matched. Exhaustiveness checking should make this
+                // unreachable for a well-typed match; treat as non-evaluable.
+                Ok(None)
+            }
+
+            // Anonymous struct type: evaluate to a comptime type value,
+            // resolving field types through the type substitution.
+            InstData::AnonStructType {
+                fields,
+                methods,
+                anchor,
+            } => {
+                let field_decls = self.body.body_rir_ref().anon_struct_fields(fields).to_vec();
+
+                // Comptime `let` locals in scope participate in field-type
+                // resolution (`let Inner = Mk(T); struct { x: Inner }`,
+                // RUE-575), alongside the enclosing parameters.
+                let (local_type_subst, local_value_subst) = env.substs_with_locals();
+
+                let mut struct_fields = Vec::with_capacity(field_decls.len());
+                for (name_sym, type_sym) in field_decls {
+                    let name_str = self.body.body_interner().resolve(&name_sym).to_string();
+                    // Field types resolve through both the type substitution
+                    // (`comptime T: type`) and the value substitution
+                    // (`comptime N: i32`, so an `[i32; N]` field gets a concrete
+                    // length at each specialization; RUE-16).
+                    let Some(field_ty) = self
+                        .body
+                        .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+                            type_sym,
+                            &local_type_subst,
+                            &local_value_subst,
+                            span,
+                        )
+                    else {
+                        return Ok(None);
+                    };
+                    struct_fields.push(StructField {
+                        name: name_str,
+                        ty: field_ty,
+                    });
+                }
+
+                // Extract method signatures for structural equality comparison
+                let method_sigs = self.body.extract_anon_method_sigs(
+                    methods,
+                    &local_type_subst,
+                    &local_value_subst,
+                );
+
+                let Some(producer) = env.canonical_identity.clone() else {
+                    return Ok(None);
+                };
+                let (struct_ty, _is_new) = self.body.find_or_create_anon_struct(
+                    crate::AnonymousNominalKey {
+                        kind: crate::AnonymousNominalKind::Struct,
+                        producer,
+                        anchor: anchor.clone(),
+                    },
+                    &struct_fields,
+                    &method_sigs,
+                    &local_value_subst,
+                )?;
+
+                // Register methods if present and not yet registered for this
+                // struct (it may have been created earlier without methods).
+                if !self
+                    .body
+                    .body_rir_ref()
+                    .anon_struct_methods(methods)
+                    .is_empty()
+                {
+                    // A method that declares its own `comptime T: type`
+                    // parameter would need per-call monomorphization over that
+                    // parameter, which is unsupported (RUE-284). Reject it at
+                    // the method declaration so the enclosing `-> type`
+                    // reduction cannot degrade into an unrelated E1200 at the
+                    // instantiation site.
+                    if let Some((method_span, method_name)) =
+                        self.body.find_method_own_comptime_type_param(methods)
+                    {
+                        return Err(CompileError::new(
+                            ErrorKind::ComptimeEvaluationFailed {
+                                reason: format!(
+                                    "method '{}' declares its own `comptime` type parameter, \
+                                     which is not yet supported (a method cannot be \
+                                     monomorphized over its own type parameter); \
+                                     move the type parameter to the enclosing type \
+                                     constructor instead",
+                                    method_name
+                                ),
+                            },
+                            method_span,
+                        ));
+                    }
+                    let Some(struct_id) = struct_ty.as_struct() else {
+                        return Ok(None);
+                    };
+
+                    let method_refs = self.body.body_rir_ref().anon_struct_methods(methods);
+                    let first_method_ref = method_refs.get(0).unwrap();
+                    let first_method_inst = self.body.body_rir_ref().get(first_method_ref);
+                    if let InstData::FnDecl {
+                        name: method_name, ..
+                    } = &first_method_inst.data
+                    {
+                        let needs_registration = !self.body.has_method((struct_id, *method_name));
+
+                        if needs_registration
+                            && self
+                                .body
+                                .register_anon_struct_methods_for_comptime_with_subst(
+                                    struct_id,
+                                    struct_ty,
+                                    methods,
+                                    &local_type_subst,
+                                    &local_value_subst,
+                                )
+                                .is_none()
+                        {
+                            // Registration failure (e.g. duplicate method
+                            // names) makes the type non-evaluable; the
+                            // caller reports the comptime failure.
+                            return Ok(None);
+                        }
+
+                        // Remember the enclosing type substitution (e.g.
+                        // `T -> i32` for `Vec(i32)`) so it resolves inside every
+                        // method *body*, not just the signatures registered
+                        // above (RUE-313). Method bodies are analyzed later, in
+                        // a separate pass that has no other way to recover the
+                        // constructor's type parameters.
+                        if needs_registration && !local_type_subst.is_empty() {
+                            self.body
+                                .set_anon_struct_type_subst(struct_id, local_type_subst.clone());
+                        }
+                    }
+                }
+                Ok(Some(ConstValue::Type(struct_ty)))
+            }
+
+            // Anonymous enum type: evaluate to a comptime type value, resolving
+            // each variant's payload types through the type/value substitution.
+            // The enum analog of the AnonStructType arm above — this is what
+            // makes `fn Option(comptime T: type) -> type { enum { Some(T), None } }`
+            // monomorphize per instantiation (ADR-0038, RUE-6 phase 2).
+            InstData::AnonEnumType {
+                variants,
+                payloads,
+                anchor,
+            } => {
+                let variant_syms: Vec<lasso::Spur> = self
+                    .body
+                    .body_rir_ref()
+                    .anon_enum_variants(variants)
+                    .to_vec();
+                let payload_symbols: Vec<Vec<rue_rir::RirTypeSyntaxRef>> = self
+                    .body
+                    .body_rir_ref()
+                    .anon_enum_payloads(payloads, variants)
+                    .map(|payload| payload.to_vec())
+                    .collect();
+
+                // Decode the self-describing payload region into per-variant
+                // type-symbol lists (parallel to `variant_syms`), then resolve
+                // each payload type through the substitutions.
+                // Comptime `let` locals participate in payload-type
+                // resolution, matching the struct arm (RUE-575).
+                let (enum_type_subst, enum_value_subst) = env.substs_with_locals();
+
+                let mut variant_names: Vec<String> = Vec::with_capacity(variant_syms.len());
+                let mut variant_payloads: Vec<Vec<Type>> = Vec::with_capacity(variant_syms.len());
+                for (&vsym, symbols) in variant_syms.iter().zip(payload_symbols) {
+                    variant_names.push(self.body.body_interner().resolve(&vsym).to_string());
+                    let mut tys: Vec<Type> = Vec::with_capacity(symbols.len());
+                    for ty_sym in symbols {
+                        let Some(ty) = self
+                            .body
+                            .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+                                ty_sym,
+                                &enum_type_subst,
+                                &enum_value_subst,
+                                span,
+                            )
+                        else {
+                            return Ok(None);
+                        };
+                        tys.push(ty);
+                    }
+                    variant_payloads.push(tys);
+                }
+
+                let Some(producer) = env.canonical_identity.clone() else {
+                    return Ok(None);
+                };
+                let enum_ty = self.body.find_or_create_anon_enum(
+                    crate::AnonymousNominalKey {
+                        kind: crate::AnonymousNominalKind::Enum,
+                        producer,
+                        anchor: anchor.clone(),
+                    },
+                    &variant_names,
+                    &variant_payloads,
+                )?;
+                Ok(Some(ConstValue::Type(enum_ty)))
+            }
+
+            // TypeConst: a type used as a value (e.g., `i32` in `identity(i32, 42)`)
+            InstData::TypeConst { type_name } => {
+                let type_name = *type_name;
+                // Type parameters in scope substitute first.
+                if let Some(type_symbol) = self.body.rir_type_named_symbol(type_name) {
+                    if let Some(&ty) = env.type_subst.get(&type_symbol) {
+                        return Ok(Some(ConstValue::Type(ty)));
+                    }
+                    // A named type (primitive / struct / enum) resolves directly.
+                    if let Some(ty) = self.body.resolve_named_type_value(type_symbol, span)? {
+                        return Ok(Some(ConstValue::Type(ty)));
+                    }
+                }
+                // A *composite* or *unit* type value — `[i32; 2]`, `()`,
+                // `ptr const T` — is an equally-valid type argument (Appendix A
+                // treats them as unambiguous type spellings; RUE-565). Its
+                // TypeConst carries the composite spelling as the interned
+                // `type_name`, so decode it through the full comptime type
+                // resolver under the current substitutions (an inner element /
+                // pointee naming an enclosing `comptime T` still resolves). An
+                // unresolvable spelling stays non-evaluable (`None`).
+                Ok(self
+                    .body
+                    .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+                        type_name,
+                        env.type_subst,
+                        env.value_subst,
+                        span,
+                    )
+                    .map(ConstValue::Type))
+            }
+
+            // An array-repeat expression `[T; N]` used as a comptime *type* value
+            // (RUE-565). The surface form `[i32; 2]` in expression position parses
+            // as an array-repeat literal whose element is a type value; when that
+            // element reduces to a `ConstValue::Type`, the whole expression is the
+            // array TYPE `[T; N]` — a legal type-constructor argument
+            // (`Option([i32; 2])`). A repeat over a *runtime* element is a genuine
+            // array value literal and is not comptime-foldable here (`None`).
+            InstData::ArrayRepeat { value, count } => {
+                let (value, count) = (*value, count.clone());
+                let Some(ConstValue::Type(elem_ty)) = self.eval(value, env)? else {
+                    return Ok(None);
+                };
+                let len = match count {
+                    RepeatCount::Literal(n) => n,
+                    RepeatCount::Named(sym) => {
+                        let name = self.body.body_interner().resolve(&sym).to_string();
+                        match self.body.resolve_array_length(
+                            &ArrayLen::Named(name),
+                            span,
+                            Some(env.value_subst),
+                        ) {
+                            Ok(n) => n,
+                            Err(_) => return Ok(None),
+                        }
+                    }
+                };
+                let array_type_id = self.body.get_or_create_array_type(elem_ty, len);
+                Ok(Some(ConstValue::Type(Type::new_array(array_type_id))))
+            }
+
+            // VarRef: comptime let-bindings, comptime parameters, file-level
+            // constants, then type names.
+            InstData::VarRef { name, .. } => {
+                // 1. `let` bindings inside the comptime expression
+                if let Some(&v) = env.locals.get(name) {
+                    return Ok(Some(v));
+                }
+                // 2. Runtime locals shadow comptime parameters and file-level
+                //    constants: a reference that resolves to one is not
+                //    compile-time evaluable (spec 4.14:6).
+                if let Some(locals) = env.runtime_locals {
+                    if locals.contains_key(name) {
+                        return Ok(None);
+                    }
+                }
+                if let Some(names) = env.runtime_binding_names
+                    && names.contains(name)
+                {
+                    return Ok(None);
+                }
+                // 3. Comptime type parameters in scope
+                if let Some(&ty) = env.type_subst.get(name) {
+                    return Ok(Some(ConstValue::Type(ty)));
+                }
+                // 4. Comptime value parameters in scope
+                if let Some(&v) = env.value_subst.get(name) {
+                    return Ok(Some(v));
+                }
+                // 5. Runtime parameters shadow file-level constants and type
+                //    names. A comptime parameter with a concrete value was
+                //    already handled by the substitution maps above.
+                if let Some((params, param_index)) = env.runtime_params {
+                    if param_index.get(params, *name).is_some() {
+                        return Ok(None);
+                    }
+                }
+                // 6. File-level constants: the value was evaluated once
+                //    (and range-checked against the declared type) during
+                //    declaration gathering — use it directly. Re-evaluating
+                //    the initializer here would fail for forms only the
+                //    declaration collector can resolve (module member
+                //    access, RUE-160) and was exponential for const chains.
+                //    Module-typed constants never appear in this table
+                //    (module bindings are a distinct tagged resolution).
+                //    Privacy applies here too (E0460, RUE-183): the table is
+                //    global, so a const initializer in one directory could
+                //    otherwise read a private constant from another. The
+                //    VarRef's own span locates the referencing file;
+                //    speculative callers (`try_evaluate_const*`) swallow the
+                //    error and defer to runtime analysis, which re-checks.
+                if let Some(info) = self.body.value_const(&(span.file_id, *name)) {
+                    self.body.record_body_named_dependency(
+                        super::NamedConstDependencyTargetEvent::ValueConst {
+                            file: info.span.file_id.index(),
+                            name: self.body.body_interner().resolve(name).to_string(),
+                        },
+                    );
+                    self.body.check_unqualified_visibility(
+                        "constant",
+                        self.body.body_interner().resolve(name),
+                        info.span.file_id,
+                        info.is_pub,
+                        span,
+                    )?;
+                    // String constants stay out of the comptime engine: no
+                    // engine operation consumes them (no comptime string
+                    // params or string arithmetic), so treat a reference as
+                    // non-evaluable instead of leaking a value the arms
+                    // below would mis-type (RUE-957). Use sites materialize
+                    // string constants through the runtime path instead.
+                    if matches!(info.value, super::ConstValue::String(_)) {
+                        return Ok(None);
+                    }
+                    return Ok(Some(info.value));
+                }
+                // 7. Type names used as values (e.g. `Point` in
+                //    `fn make_type() -> type { Point }`)
+                let resolved = self.body.resolve_named_type_value(*name, span)?;
+                if let Some(ty) = resolved {
+                    match ty.kind() {
+                        TypeKind::Struct(id) => {
+                            let def = self
+                                .body
+                                .body_type_pool()
+                                .struct_metadata(id)
+                                .expect("struct type must have declaration metadata");
+                            self.body.record_body_named_dependency(
+                                super::NamedConstDependencyTargetEvent::NamedType {
+                                    file: def.file_id.index(),
+                                    name: def.name.to_string(),
+                                    kind: super::DeclarationTypeDependencyTargetKind::Struct,
+                                },
+                            );
+                        }
+                        TypeKind::Enum(id) => {
+                            let def = self
+                                .body
+                                .body_type_pool()
+                                .enum_metadata(id)
+                                .expect("enum type must have declaration metadata");
+                            self.body.record_body_named_dependency(
+                                super::NamedConstDependencyTargetEvent::NamedType {
+                                    file: def.file_id.index(),
+                                    name: def.name.to_string(),
+                                    kind: super::DeclarationTypeDependencyTargetKind::Enum,
+                                },
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(resolved.map(ConstValue::Type))
+            }
+
+            // Call to a `-> type` function: reduce it to the resulting type
+            // value when the callee is a type constructor and every argument
+            // is compile-time known. This makes comptime type-function calls
+            // compose in ANY position — a delegating return body
+            // (`fn Alias() -> type { Point() }`), a nested argument
+            // (`WrapA(WrapA(i32))`), and chains thereof (RUE-251).
+            InstData::Call { name, args } => {
+                let name = *name;
+                self.evaluate_call(name, args, env, span)
+            }
+
+            // Module-member access (`m.CONST`) as an operand of a larger const
+            // initializer. The value was pre-resolved from the module's file
+            // (with privacy checks) before evaluation — see the
+            // `const_module_members` field — since the engine has no file or
+            // constant-collector context to resolve it here. A member absent
+            // from the map may still be a member-access *type* path used as a
+            // comptime type-constructor argument (`std.strbuf.StrBuf` in
+            // `Result(std.strbuf.StrBuf, i32)`, RUE-948): resolve that chain to
+            // its nominal type through the same walker the qualified
+            // type-annotation position uses. A base that is neither a
+            // pre-resolved member value nor a module type path (a runtime
+            // value's field) stays non-evaluable, so the caller reports it
+            // (RUE-267).
+            InstData::FieldGet { .. } => {
+                if let Some(&value) = env.const_module_members.get(&inst_ref) {
+                    return Ok(Some(value));
+                }
+                self.body.eval_field_get_type_path(inst_ref, span, env)
+            }
+
+            // Type intrinsic in comptime position. `@require_droppable(T)` is the
+            // owning-container well-formedness gate (RUE-388/RUE-646): std's
+            // `ArrayBuf(T)` calls it in its `-> type` constructor body so that
+            // instantiating the container with an element type it cannot yet
+            // correctly own — one that is `linear` — is rejected at instantiation
+            // time (E0499). Droppable-but-non-linear elements are accepted: the
+            // container runs each live element's drop glue before freeing its
+            // buffer (RUE-646). It reduces to unit so the surrounding block
+            // body still yields the `struct { .. }` tail. `@size_of`/`@align_of`
+            // are not comptime-foldable here and stay non-evaluable (spec
+            // 4.14:29); `@int_max`/`@int_min` depend only on the type identity,
+            // not layout, so they evaluate to their integer bound (RUE-694).
+            InstData::TypeIntrinsic { name, type_arg } => {
+                let (name, type_arg) = (*name, *type_arg);
+                let gate = self.body.body_interner().resolve(&name);
+                // Both well-formedness gates reduce to unit at comptime:
+                // `@require_droppable` (instantiation-time, rejects `linear`) and
+                // `@require_trivially_droppable` (read-time, rejects drop glue —
+                // RUE-651). Any other type intrinsic (`@size_of`/`@align_of`) is
+                // not comptime-foldable here.
+                let is_droppable_gate = gate == "require_droppable";
+                let is_trivial_gate = gate == "require_trivially_droppable";
+                let is_int_bound = gate == "int_max" || gate == "int_min";
+                if is_int_bound {
+                    let is_max = gate == "int_max";
+                    // A still-unresolved type parameter makes the intrinsic
+                    // non-evaluable here; it folds at a concrete instantiation.
+                    let Some(int_ty) = self
+                        .body
+                        .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+                            type_arg,
+                            env.type_subst,
+                            env.value_subst,
+                            span,
+                        )
+                    else {
+                        return Ok(None);
+                    };
+                    let bound = if is_max {
+                        int_ty.int_max()
+                    } else {
+                        int_ty.int_min()
+                    };
+                    // A non-integer argument is diagnosed by runtime analysis
+                    // (`analyze_type_intrinsic`, E0702); stay non-evaluable
+                    // rather than duplicating the diagnostic.
+                    return Ok(bound.map(ConstValue::Integer));
+                }
+                if !is_droppable_gate && !is_trivial_gate {
+                    return Ok(None);
+                }
+                // Resolve the element type through the enclosing comptime
+                // substitutions (`T -> Inner` for `ArrayBuf(Inner)`); a
+                // still-unresolved type parameter makes the gate non-evaluable
+                // (it will be re-checked at a concrete instantiation).
+                let Some(elem_ty) = self
+                    .body
+                    .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+                        type_arg,
+                        env.type_subst,
+                        env.value_subst,
+                        span,
+                    )
+                else {
+                    return Ok(None);
+                };
+                if is_trivial_gate {
+                    self.body.check_trivially_droppable(elem_ty, span)?;
+                } else {
+                    self.body.check_require_droppable(elem_ty, span)?;
+                }
+                Ok(Some(ConstValue::Unit))
+            }
+
+            // Module-qualified comptime type-constructor call in value position,
+            // e.g. `let O = b.Mk(T)` inside a `-> type` constructor body that is
+            // being reduced (RUE-511). The receiver must be an unshadowed
+            // `VarRef` naming a module binding of the *defining* file; membership
+            // and visibility are validated before the call is reduced through the
+            // same path unqualified calls take. Any other receiver (a runtime
+            // value's method, a shadowed name) is a genuine runtime call and
+            // stays non-evaluable.
+            InstData::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                let (receiver, method) = (*receiver, *method);
+                self.evaluate_method_call(receiver, method, args, env, span)
+            }
+
+            // Everything else requires runtime evaluation
+            _ => Ok(None),
+        }
+    }
+}
+
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Try to evaluate an RIR expression as a compile-time constant, with no
     /// substitutions or type context.
@@ -495,999 +1692,41 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 
-    /// Evaluate both operands of a binary operation as integers.
-    ///
-    /// Returns `Ok(None)` if either operand is not a compile-time integer.
-    fn eval_int_operands(
-        &mut self,
-        lhs: InstRef,
-        rhs: InstRef,
-        env: &mut ComptimeEnv,
-    ) -> CompileResult<Option<(i128, i128)>> {
-        let Some(l) = self
-            .eval_const_expr(lhs, env)?
-            .and_then(ConstValue::as_int_value)
-        else {
-            return Ok(None);
-        };
-        let Some(r) = self
-            .eval_const_expr(rhs, env)?
-            .and_then(ConstValue::as_int_value)
-        else {
-            return Ok(None);
-        };
-        Ok(Some((l, r)))
-    }
-
-    /// The single compile-time evaluation engine. See the module docs for the
-    /// outcome encoding (`Ok(Some)` / `Ok(None)` / `Err`).
+    /// Thin adapter into the frame-owned canonical evaluator.
     pub(crate) fn eval_const_expr(
         &mut self,
         inst_ref: InstRef,
         env: &mut ComptimeEnv,
     ) -> CompileResult<Option<ConstValue>> {
-        let inst = {
-            let source = self.body_rir_ref().get(inst_ref);
-            rue_rir::Inst {
-                data: source.data.clone(),
-                span: source.span,
-            }
-        };
-        let span = inst.span;
-        match &inst.data {
-            // Integer literals. The literal itself must fit its resolved type
-            // (the inner expression of a comptime block never goes through
-            // `analyze_literal`, so this is where `300` at type u8 is caught).
-            InstData::IntConst(value) => {
-                let v = *value as i128;
-                if let Some(ty) = self.const_expr_type(env, inst_ref) {
-                    if !const_int_fits(v, ty) {
-                        return Err(CompileError::new(
-                            ErrorKind::LiteralOutOfRange {
-                                value: *value,
-                                ty: ty.safe_name_with_pool(Some(self.body_type_pool())),
-                            },
-                            span,
-                        ));
-                    }
-                }
-                Ok(Some(ConstValue::Integer(v)))
-            }
-
-            // Float literals stop here for the same reason they stop in
-            // `analyze_inst_dispatch` (ADR-0065, RUE-1069): there is no
-            // `comptime_float` value in `ConstValue` yet. Naming the real
-            // reason matters more here than elsewhere — falling through to
-            // the generic "not knowable at compile time" would be actively
-            // wrong about a literal, which is the most compile-time-knowable
-            // thing there is. Delete this arm when Phase 4 lands.
-            InstData::FloatConst { .. } => {
-                self.require_preview(
-                    rue_error::PreviewFeature::Floats,
-                    "a floating-point literal",
-                    span,
-                )?;
-                Err(CompileError::new(ErrorKind::FloatNotYetImplemented, span))
-            }
-
-            // Boolean literals
-            InstData::BoolConst(value) => Ok(Some(ConstValue::Bool(*value))),
-
-            // Unit literal
-            InstData::UnitConst => Ok(Some(ConstValue::Unit)),
-
-            // Unary negation: -expr
-            InstData::Neg { operand } => {
-                let ty = self.const_expr_type(env, inst_ref);
-                if let Some(ty) = ty {
-                    if ty.is_unsigned() {
-                        return Err(CompileError::new(
-                            ErrorKind::CannotNegate(
-                                ty.safe_name_with_pool(Some(self.body_type_pool())),
-                            ),
-                            span,
-                        ));
-                    }
-                }
-                if let InstData::IntConst(magnitude) = &self.body_rir_ref().get(*operand).data {
-                    // The literal path uses mathematical magnitude semantics:
-                    // unlike an ordinary runtime value, `128` must not first
-                    // canonicalize to -128 before becoming `-128`.
-                    let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
-                        || CheckedIntegerResult::from_raw((*magnitude as i128).checked_neg()),
-                        |integer| integer.checked_neg_literal_report_i128(*magnitude as i128),
-                    );
-                    self.finish_arith(result, ty, "-", span)
-                } else {
-                    match self.eval_const_expr(*operand, env)? {
-                        Some(ConstValue::Integer(n)) => {
-                            let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
-                                || CheckedIntegerResult::from_raw(n.checked_neg()),
-                                |integer| integer.checked_neg_report_i128(n),
-                            );
-                            self.finish_arith(result, ty, "-", span)
-                        }
-                        // Can't negate a boolean, type, or unit
-                        _ => Ok(None),
-                    }
-                }
-            }
-
-            // Logical NOT: !expr
-            InstData::Not { operand } => {
-                match self.eval_const_expr(*operand, env)? {
-                    Some(ConstValue::Bool(b)) => Ok(Some(ConstValue::Bool(!b))),
-                    // Can't logical-NOT an integer, type, or unit
-                    _ => Ok(None),
-                }
-            }
-
-            // Binary arithmetic operations, checked at the operand type
-            InstData::Add { lhs, rhs } => {
-                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
-                    return Ok(None);
-                };
-                let ty = self.const_expr_type(env, inst_ref);
-                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
-                    || CheckedIntegerResult::from_raw(l.checked_add(r)),
-                    |integer| integer.checked_add_report_i128(l, r),
-                );
-                self.finish_arith(result, ty, "+", span)
-            }
-            InstData::Sub { lhs, rhs } => {
-                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
-                    return Ok(None);
-                };
-                let ty = self.const_expr_type(env, inst_ref);
-                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
-                    || CheckedIntegerResult::from_raw(l.checked_sub(r)),
-                    |integer| integer.checked_sub_report_i128(l, r),
-                );
-                self.finish_arith(result, ty, "-", span)
-            }
-            InstData::Mul { lhs, rhs } => {
-                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
-                    return Ok(None);
-                };
-                let ty = self.const_expr_type(env, inst_ref);
-                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
-                    || CheckedIntegerResult::from_raw(l.checked_mul(r)),
-                    |integer| integer.checked_mul_report_i128(l, r),
-                );
-                self.finish_arith(result, ty, "*", span)
-            }
-            InstData::Div { lhs, rhs } | InstData::Mod { lhs, rhs } => {
-                let is_div = matches!(&inst.data, InstData::Div { .. });
-                let op = if is_div { "/" } else { "%" };
-                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
-                    return Ok(None);
-                };
-                let ty = self.const_expr_type(env, inst_ref);
-                if r == 0 {
-                    let what = if is_div { "division" } else { "remainder" };
-                    return match ty {
-                        Some(_) => Err(comptime_panic_err(
-                            format!("{} by zero (this operation would panic at runtime)", what),
-                            span,
-                        )),
-                        // Untyped fallback: defer to the runtime check.
-                        None => Ok(None),
-                    };
-                }
-                // Untyped evaluation retains its historical i64 fallback;
-                // typed MIN / -1 trapping is owned by the kernel report.
-                if r == -1 && ty.is_none() && l == i128::from(i64::MIN) {
-                    return Ok(None);
-                }
-                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
-                    || {
-                        CheckedIntegerResult::from_raw(if is_div {
-                            l.checked_div(r)
-                        } else {
-                            l.checked_rem(r)
-                        })
-                    },
-                    |integer| {
-                        if is_div {
-                            integer.checked_div_report_i128(l, r)
-                        } else {
-                            integer.checked_rem_report_i128(l, r)
-                        }
-                    },
-                );
-                self.finish_arith(result, ty, op, span)
-            }
-
-            // Comparison operations
-            InstData::Eq { lhs, rhs } => {
-                let l = self.eval_const_expr(*lhs, env)?;
-                let r = self.eval_const_expr(*rhs, env)?;
-                match (l, r) {
-                    (Some(ConstValue::Integer(a)), Some(ConstValue::Integer(b))) => {
-                        Ok(Some(ConstValue::Bool(a == b)))
-                    }
-                    (Some(ConstValue::Bool(a)), Some(ConstValue::Bool(b))) => {
-                        Ok(Some(ConstValue::Bool(a == b)))
-                    }
-                    _ => Ok(None), // Mixed or non-constant operands
-                }
-            }
-            InstData::Ne { lhs, rhs } => {
-                let l = self.eval_const_expr(*lhs, env)?;
-                let r = self.eval_const_expr(*rhs, env)?;
-                match (l, r) {
-                    (Some(ConstValue::Integer(a)), Some(ConstValue::Integer(b))) => {
-                        Ok(Some(ConstValue::Bool(a != b)))
-                    }
-                    (Some(ConstValue::Bool(a)), Some(ConstValue::Bool(b))) => {
-                        Ok(Some(ConstValue::Bool(a != b)))
-                    }
-                    _ => Ok(None),
-                }
-            }
-            InstData::Lt { lhs, rhs } => {
-                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
-                    return Ok(None);
-                };
-                Ok(Some(ConstValue::Bool(l < r)))
-            }
-            InstData::Gt { lhs, rhs } => {
-                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
-                    return Ok(None);
-                };
-                Ok(Some(ConstValue::Bool(l > r)))
-            }
-            InstData::Le { lhs, rhs } => {
-                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
-                    return Ok(None);
-                };
-                Ok(Some(ConstValue::Bool(l <= r)))
-            }
-            InstData::Ge { lhs, rhs } => {
-                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
-                    return Ok(None);
-                };
-                Ok(Some(ConstValue::Bool(l >= r)))
-            }
-
-            // Logical operations: short-circuit like the runtime, so a
-            // non-constant (or would-panic) RHS is irrelevant when the LHS
-            // already decides the result.
-            InstData::And { lhs, rhs } => match self.eval_const_expr(*lhs, env)? {
-                Some(ConstValue::Bool(false)) => Ok(Some(ConstValue::Bool(false))),
-                Some(ConstValue::Bool(true)) => match self.eval_const_expr(*rhs, env)? {
-                    Some(ConstValue::Bool(b)) => Ok(Some(ConstValue::Bool(b))),
-                    _ => Ok(None),
-                },
-                _ => Ok(None),
-            },
-            InstData::Or { lhs, rhs } => match self.eval_const_expr(*lhs, env)? {
-                Some(ConstValue::Bool(true)) => Ok(Some(ConstValue::Bool(true))),
-                Some(ConstValue::Bool(false)) => match self.eval_const_expr(*rhs, env)? {
-                    Some(ConstValue::Bool(b)) => Ok(Some(ConstValue::Bool(b))),
-                    _ => Ok(None),
-                },
-                _ => Ok(None),
-            },
-
-            // Bitwise operations. For values in range of their type these are
-            // closed (no overflow possible), so no range check is needed.
-            InstData::BitAnd { lhs, rhs } => {
-                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
-                    return Ok(None);
-                };
-                Ok(Some(ConstValue::Integer(l & r)))
-            }
-            InstData::BitOr { lhs, rhs } => {
-                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
-                    return Ok(None);
-                };
-                Ok(Some(ConstValue::Integer(l | r)))
-            }
-            InstData::BitXor { lhs, rhs } => {
-                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
-                    return Ok(None);
-                };
-                Ok(Some(ConstValue::Integer(l ^ r)))
-            }
-
-            // Shifts: the amount is masked modulo the bit width and the
-            // result truncated to the operand width (spec 4.3a:10), exactly
-            // matching the runtime semantics (RUE-29).
-            InstData::Shl { lhs, rhs } | InstData::Shr { lhs, rhs } => {
-                let is_shl = matches!(&inst.data, InstData::Shl { .. });
-                let Some((l, r)) = self.eval_int_operands(*lhs, *rhs, env)? else {
-                    return Ok(None);
-                };
-                match self.const_expr_type(env, inst_ref) {
-                    Some(ty) => {
-                        let integer = ty
-                            .integer_semantics()
-                            .expect("const_expr_type returned non-integer");
-                        // Two's-complement AND masks negative amounts the same
-                        // way the hardware masks the count register.
-                        let v = integer.shift_i128(l, r, is_shl);
-                        Ok(Some(ConstValue::Integer(v)))
-                    }
-                    None => {
-                        // Without the operand type the width is unknown, so
-                        // only fold amounts < 8 (safe for every width) and
-                        // defer the rest to runtime.
-                        if !(0..8).contains(&r) {
-                            return Ok(None);
-                        }
-                        Ok(Some(ConstValue::Integer(if is_shl {
-                            l << r
-                        } else {
-                            l >> r
-                        })))
-                    }
-                }
-            }
-
-            // Bitwise NOT: truncated to the operand width (`~0` as u8 = 255).
-            InstData::BitNot { operand } => {
-                let Some(n) = self
-                    .eval_const_expr(*operand, env)?
-                    .and_then(ConstValue::as_int_value)
-                else {
-                    return Ok(None);
-                };
-                let v = match self.const_expr_type(env, inst_ref) {
-                    Some(ty) => ty
-                        .integer_semantics()
-                        .expect("bitnot requires an integer type")
-                        .bitnot_i128(n),
-                    None => !n,
-                };
-                Ok(Some(ConstValue::Integer(v)))
-            }
-
-            // Comptime block: comptime { expr } is compile-time evaluable if its inner expr is
-            InstData::Comptime { expr } => self.eval_const_expr(*expr, env),
-
-            // Block: evaluate `let` statements into the environment, then the
-            // tail expression. Loops, assignments and calls are not supported
-            // and make the block non-evaluable.
-            InstData::Block { instructions } => {
-                let stmt_refs = self.body_rir_ref().block_insts(instructions).to_vec();
-                if stmt_refs.is_empty() {
-                    return Ok(Some(ConstValue::Unit));
-                }
-                // Bindings are scoped to the block.
-                let saved_locals = env.locals.clone();
-                let mut result = Some(ConstValue::Unit);
-                for (i, stmt_ref) in stmt_refs.iter().copied().enumerate() {
-                    let is_tail = i + 1 == stmt_refs.len();
-                    let value = if let InstData::Alloc { name, init, .. } =
-                        &self.body_rir_ref().get(stmt_ref).data
-                    {
-                        let (name, init) = (*name, *init);
-                        let Some(v) = self.eval_const_expr(init, env)? else {
-                            env.locals = saved_locals;
-                            return Ok(None);
-                        };
-                        if let Some(name) = name {
-                            env.locals.insert(name, v);
-                        }
-                        // A `let` statement itself evaluates to unit.
-                        ConstValue::Unit
-                    } else {
-                        let Some(v) = self.eval_const_expr(stmt_ref, env)? else {
-                            env.locals = saved_locals;
-                            return Ok(None);
-                        };
-                        v
-                    };
-                    if is_tail {
-                        result = Some(value);
-                    }
-                }
-                env.locals = saved_locals;
-                Ok(result)
-            }
-
-            // Comptime-known `if`: select the taken branch and reduce to its
-            // value. This is what lets an `if` in a `-> type` body pick a
-            // struct/enum branch at compile time (spec 4.14:17, RUE-262) — the
-            // same branch selection ordinary comptime values already relied on
-            // through the block/let path, now available as an expression. A
-            // non-constant condition makes the whole `if` non-evaluable.
-            InstData::Branch {
-                cond,
-                then_block,
-                else_block,
-            } => {
-                let (cond, then_block, else_block) = (*cond, *then_block, *else_block);
-                match self.eval_const_expr(cond, env)? {
-                    Some(ConstValue::Bool(true)) => self.eval_const_expr(then_block, env),
-                    Some(ConstValue::Bool(false)) => match else_block {
-                        Some(else_block) => self.eval_const_expr(else_block, env),
-                        // `if c { .. }` with no else yields unit when false.
-                        None => Ok(Some(ConstValue::Unit)),
-                    },
-                    // Non-constant (or non-bool) condition: not evaluable.
-                    _ => Ok(None),
-                }
-            }
-
-            // Comptime-known `match`: evaluate the scrutinee, select the first
-            // arm whose pattern matches, and reduce to that arm's body value
-            // (spec 4.14:19, RUE-262). An enum-variant (`Path`) pattern isn't
-            // representable as a `ConstValue`, and a non-constant scrutinee is
-            // not decidable here — both make the `match` non-evaluable.
-            InstData::Match { scrutinee, arms } => {
-                let scrutinee = *scrutinee;
-                let Some(scrut) = self.eval_const_expr(scrutinee, env)? else {
-                    return Ok(None);
-                };
-                let arms = self.body_rir_ref().match_arms(arms).to_vec();
-                for (pattern, body) in arms.iter() {
-                    match const_pattern_matches(pattern, scrut) {
-                        Some(true) => return self.eval_const_expr(*body, env),
-                        Some(false) => continue,
-                        // Undecidable pattern (e.g. an enum-variant `Path`
-                        // against a non-representable scrutinee): bail out.
-                        None => return Ok(None),
-                    }
-                }
-                // No arm matched. Exhaustiveness checking should make this
-                // unreachable for a well-typed match; treat as non-evaluable.
-                Ok(None)
-            }
-
-            // Anonymous struct type: evaluate to a comptime type value,
-            // resolving field types through the type substitution.
-            InstData::AnonStructType {
-                fields,
-                methods,
-                anchor,
-            } => {
-                let field_decls = self.body_rir_ref().anon_struct_fields(fields).to_vec();
-
-                // Comptime `let` locals in scope participate in field-type
-                // resolution (`let Inner = Mk(T); struct { x: Inner }`,
-                // RUE-575), alongside the enclosing parameters.
-                let (local_type_subst, local_value_subst) = env.substs_with_locals();
-
-                let mut struct_fields = Vec::with_capacity(field_decls.len());
-                for (name_sym, type_sym) in field_decls {
-                    let name_str = self.body_interner().resolve(&name_sym).to_string();
-                    // Field types resolve through both the type substitution
-                    // (`comptime T: type`) and the value substitution
-                    // (`comptime N: i32`, so an `[i32; N]` field gets a concrete
-                    // length at each specialization; RUE-16).
-                    let Some(field_ty) = self
-                        .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-                            type_sym,
-                            &local_type_subst,
-                            &local_value_subst,
-                            span,
-                        )
-                    else {
-                        return Ok(None);
-                    };
-                    struct_fields.push(StructField {
-                        name: name_str,
-                        ty: field_ty,
-                    });
-                }
-
-                // Extract method signatures for structural equality comparison
-                let method_sigs =
-                    self.extract_anon_method_sigs(methods, &local_type_subst, &local_value_subst);
-
-                let Some(producer) = env.canonical_identity.clone() else {
-                    return Ok(None);
-                };
-                let (struct_ty, _is_new) = self.find_or_create_anon_struct(
-                    crate::AnonymousNominalKey {
-                        kind: crate::AnonymousNominalKind::Struct,
-                        producer,
-                        anchor: anchor.clone(),
-                    },
-                    &struct_fields,
-                    &method_sigs,
-                    &local_value_subst,
-                )?;
-
-                // Register methods if present and not yet registered for this
-                // struct (it may have been created earlier without methods).
-                if !self.body_rir_ref().anon_struct_methods(methods).is_empty() {
-                    // A method that declares its own `comptime T: type`
-                    // parameter would need per-call monomorphization over that
-                    // parameter, which is unsupported (RUE-284). Reject it at
-                    // the method declaration so the enclosing `-> type`
-                    // reduction cannot degrade into an unrelated E1200 at the
-                    // instantiation site.
-                    if let Some((method_span, method_name)) =
-                        self.find_method_own_comptime_type_param(methods)
-                    {
-                        return Err(CompileError::new(
-                            ErrorKind::ComptimeEvaluationFailed {
-                                reason: format!(
-                                    "method '{}' declares its own `comptime` type parameter, \
-                                     which is not yet supported (a method cannot be \
-                                     monomorphized over its own type parameter); \
-                                     move the type parameter to the enclosing type \
-                                     constructor instead",
-                                    method_name
-                                ),
-                            },
-                            method_span,
-                        ));
-                    }
-                    let Some(struct_id) = struct_ty.as_struct() else {
-                        return Ok(None);
-                    };
-
-                    let method_refs = self.body_rir_ref().anon_struct_methods(methods);
-                    let first_method_ref = method_refs.get(0).unwrap();
-                    let first_method_inst = self.body_rir_ref().get(first_method_ref);
-                    if let InstData::FnDecl {
-                        name: method_name, ..
-                    } = &first_method_inst.data
-                    {
-                        let needs_registration = !self.has_method((struct_id, *method_name));
-
-                        if needs_registration
-                            && self
-                                .register_anon_struct_methods_for_comptime_with_subst(
-                                    struct_id,
-                                    struct_ty,
-                                    methods,
-                                    &local_type_subst,
-                                    &local_value_subst,
-                                )
-                                .is_none()
-                        {
-                            // Registration failure (e.g. duplicate method
-                            // names) makes the type non-evaluable; the
-                            // caller reports the comptime failure.
-                            return Ok(None);
-                        }
-
-                        // Remember the enclosing type substitution (e.g.
-                        // `T -> i32` for `Vec(i32)`) so it resolves inside every
-                        // method *body*, not just the signatures registered
-                        // above (RUE-313). Method bodies are analyzed later, in
-                        // a separate pass that has no other way to recover the
-                        // constructor's type parameters.
-                        if needs_registration && !local_type_subst.is_empty() {
-                            self.set_anon_struct_type_subst(struct_id, local_type_subst.clone());
-                        }
-                    }
-                }
-                Ok(Some(ConstValue::Type(struct_ty)))
-            }
-
-            // Anonymous enum type: evaluate to a comptime type value, resolving
-            // each variant's payload types through the type/value substitution.
-            // The enum analog of the AnonStructType arm above — this is what
-            // makes `fn Option(comptime T: type) -> type { enum { Some(T), None } }`
-            // monomorphize per instantiation (ADR-0038, RUE-6 phase 2).
-            InstData::AnonEnumType {
-                variants,
-                payloads,
-                anchor,
-            } => {
-                let variant_syms: Vec<lasso::Spur> =
-                    self.body_rir_ref().anon_enum_variants(variants).to_vec();
-                let payload_symbols: Vec<Vec<rue_rir::RirTypeSyntaxRef>> = self
-                    .body_rir_ref()
-                    .anon_enum_payloads(payloads, variants)
-                    .map(|payload| payload.to_vec())
-                    .collect();
-
-                // Decode the self-describing payload region into per-variant
-                // type-symbol lists (parallel to `variant_syms`), then resolve
-                // each payload type through the substitutions.
-                // Comptime `let` locals participate in payload-type
-                // resolution, matching the struct arm (RUE-575).
-                let (enum_type_subst, enum_value_subst) = env.substs_with_locals();
-
-                let mut variant_names: Vec<String> = Vec::with_capacity(variant_syms.len());
-                let mut variant_payloads: Vec<Vec<Type>> = Vec::with_capacity(variant_syms.len());
-                for (&vsym, symbols) in variant_syms.iter().zip(payload_symbols) {
-                    variant_names.push(self.body_interner().resolve(&vsym).to_string());
-                    let mut tys: Vec<Type> = Vec::with_capacity(symbols.len());
-                    for ty_sym in symbols {
-                        let Some(ty) = self
-                            .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-                                ty_sym,
-                                &enum_type_subst,
-                                &enum_value_subst,
-                                span,
-                            )
-                        else {
-                            return Ok(None);
-                        };
-                        tys.push(ty);
-                    }
-                    variant_payloads.push(tys);
-                }
-
-                let Some(producer) = env.canonical_identity.clone() else {
-                    return Ok(None);
-                };
-                let enum_ty = self.find_or_create_anon_enum(
-                    crate::AnonymousNominalKey {
-                        kind: crate::AnonymousNominalKind::Enum,
-                        producer,
-                        anchor: anchor.clone(),
-                    },
-                    &variant_names,
-                    &variant_payloads,
-                )?;
-                Ok(Some(ConstValue::Type(enum_ty)))
-            }
-
-            // TypeConst: a type used as a value (e.g., `i32` in `identity(i32, 42)`)
-            InstData::TypeConst { type_name } => {
-                let type_name = *type_name;
-                // Type parameters in scope substitute first.
-                if let Some(type_symbol) = self.rir_type_named_symbol(type_name) {
-                    if let Some(&ty) = env.type_subst.get(&type_symbol) {
-                        return Ok(Some(ConstValue::Type(ty)));
-                    }
-                    // A named type (primitive / struct / enum) resolves directly.
-                    if let Some(ty) = self.resolve_named_type_value(type_symbol, span)? {
-                        return Ok(Some(ConstValue::Type(ty)));
-                    }
-                }
-                // A *composite* or *unit* type value — `[i32; 2]`, `()`,
-                // `ptr const T` — is an equally-valid type argument (Appendix A
-                // treats them as unambiguous type spellings; RUE-565). Its
-                // TypeConst carries the composite spelling as the interned
-                // `type_name`, so decode it through the full comptime type
-                // resolver under the current substitutions (an inner element /
-                // pointee naming an enclosing `comptime T` still resolves). An
-                // unresolvable spelling stays non-evaluable (`None`).
-                Ok(self
-                    .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-                        type_name,
-                        env.type_subst,
-                        env.value_subst,
-                        span,
-                    )
-                    .map(ConstValue::Type))
-            }
-
-            // An array-repeat expression `[T; N]` used as a comptime *type* value
-            // (RUE-565). The surface form `[i32; 2]` in expression position parses
-            // as an array-repeat literal whose element is a type value; when that
-            // element reduces to a `ConstValue::Type`, the whole expression is the
-            // array TYPE `[T; N]` — a legal type-constructor argument
-            // (`Option([i32; 2])`). A repeat over a *runtime* element is a genuine
-            // array value literal and is not comptime-foldable here (`None`).
-            InstData::ArrayRepeat { value, count } => {
-                let (value, count) = (*value, count.clone());
-                let Some(ConstValue::Type(elem_ty)) = self.eval_const_expr(value, env)? else {
-                    return Ok(None);
-                };
-                let len = match count {
-                    RepeatCount::Literal(n) => n,
-                    RepeatCount::Named(sym) => {
-                        let name = self.body_interner().resolve(&sym).to_string();
-                        match self.resolve_array_length(
-                            &ArrayLen::Named(name),
-                            span,
-                            Some(env.value_subst),
-                        ) {
-                            Ok(n) => n,
-                            Err(_) => return Ok(None),
-                        }
-                    }
-                };
-                let array_type_id = self.get_or_create_array_type(elem_ty, len);
-                Ok(Some(ConstValue::Type(Type::new_array(array_type_id))))
-            }
-
-            // VarRef: comptime let-bindings, comptime parameters, file-level
-            // constants, then type names.
-            InstData::VarRef { name, .. } => {
-                // 1. `let` bindings inside the comptime expression
-                if let Some(&v) = env.locals.get(name) {
-                    return Ok(Some(v));
-                }
-                // 2. Runtime locals shadow comptime parameters and file-level
-                //    constants: a reference that resolves to one is not
-                //    compile-time evaluable (spec 4.14:6).
-                if let Some(locals) = env.runtime_locals {
-                    if locals.contains_key(name) {
-                        return Ok(None);
-                    }
-                }
-                if let Some(names) = env.runtime_binding_names
-                    && names.contains(name)
-                {
-                    return Ok(None);
-                }
-                // 3. Comptime type parameters in scope
-                if let Some(&ty) = env.type_subst.get(name) {
-                    return Ok(Some(ConstValue::Type(ty)));
-                }
-                // 4. Comptime value parameters in scope
-                if let Some(&v) = env.value_subst.get(name) {
-                    return Ok(Some(v));
-                }
-                // 5. Runtime parameters shadow file-level constants and type
-                //    names. A comptime parameter with a concrete value was
-                //    already handled by the substitution maps above.
-                if let Some((params, param_index)) = env.runtime_params {
-                    if param_index.get(params, *name).is_some() {
-                        return Ok(None);
-                    }
-                }
-                // 6. File-level constants: the value was evaluated once
-                //    (and range-checked against the declared type) during
-                //    declaration gathering — use it directly. Re-evaluating
-                //    the initializer here would fail for forms only the
-                //    declaration collector can resolve (module member
-                //    access, RUE-160) and was exponential for const chains.
-                //    Module-typed constants never appear in this table
-                //    (module bindings are a distinct tagged resolution).
-                //    Privacy applies here too (E0460, RUE-183): the table is
-                //    global, so a const initializer in one directory could
-                //    otherwise read a private constant from another. The
-                //    VarRef's own span locates the referencing file;
-                //    speculative callers (`try_evaluate_const*`) swallow the
-                //    error and defer to runtime analysis, which re-checks.
-                if let Some(info) = self.value_const(&(span.file_id, *name)) {
-                    self.record_body_named_dependency(
-                        super::NamedConstDependencyTargetEvent::ValueConst {
-                            file: info.span.file_id.index(),
-                            name: self.body_interner().resolve(name).to_string(),
-                        },
-                    );
-                    self.check_unqualified_visibility(
-                        "constant",
-                        self.body_interner().resolve(name),
-                        info.span.file_id,
-                        info.is_pub,
-                        span,
-                    )?;
-                    // String constants stay out of the comptime engine: no
-                    // engine operation consumes them (no comptime string
-                    // params or string arithmetic), so treat a reference as
-                    // non-evaluable instead of leaking a value the arms
-                    // below would mis-type (RUE-957). Use sites materialize
-                    // string constants through the runtime path instead.
-                    if matches!(info.value, super::ConstValue::String(_)) {
-                        return Ok(None);
-                    }
-                    return Ok(Some(info.value));
-                }
-                // 7. Type names used as values (e.g. `Point` in
-                //    `fn make_type() -> type { Point }`)
-                let resolved = self.resolve_named_type_value(*name, span)?;
-                if let Some(ty) = resolved {
-                    match ty.kind() {
-                        TypeKind::Struct(id) => {
-                            let def = self
-                                .body_type_pool()
-                                .struct_metadata(id)
-                                .expect("struct type must have declaration metadata");
-                            self.record_body_named_dependency(
-                                super::NamedConstDependencyTargetEvent::NamedType {
-                                    file: def.file_id.index(),
-                                    name: def.name.to_string(),
-                                    kind: super::DeclarationTypeDependencyTargetKind::Struct,
-                                },
-                            );
-                        }
-                        TypeKind::Enum(id) => {
-                            let def = self
-                                .body_type_pool()
-                                .enum_metadata(id)
-                                .expect("enum type must have declaration metadata");
-                            self.record_body_named_dependency(
-                                super::NamedConstDependencyTargetEvent::NamedType {
-                                    file: def.file_id.index(),
-                                    name: def.name.to_string(),
-                                    kind: super::DeclarationTypeDependencyTargetKind::Enum,
-                                },
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-                Ok(resolved.map(ConstValue::Type))
-            }
-
-            // Call to a `-> type` function: reduce it to the resulting type
-            // value when the callee is a type constructor and every argument
-            // is compile-time known. This makes comptime type-function calls
-            // compose in ANY position — a delegating return body
-            // (`fn Alias() -> type { Point() }`), a nested argument
-            // (`WrapA(WrapA(i32))`), and chains thereof (RUE-251).
-            InstData::Call { name, args } => {
-                let name = *name;
-                self.eval_comptime_type_call(name, args, env, false, span)
-                    .map_err(|e| Self::label_ctor_instantiation_site(e, span))
-            }
-
-            // Module-member access (`m.CONST`) as an operand of a larger const
-            // initializer. The value was pre-resolved from the module's file
-            // (with privacy checks) before evaluation — see the
-            // `const_module_members` field — since the engine has no file or
-            // constant-collector context to resolve it here. A member absent
-            // from the map may still be a member-access *type* path used as a
-            // comptime type-constructor argument (`std.strbuf.StrBuf` in
-            // `Result(std.strbuf.StrBuf, i32)`, RUE-948): resolve that chain to
-            // its nominal type through the same walker the qualified
-            // type-annotation position uses. A base that is neither a
-            // pre-resolved member value nor a module type path (a runtime
-            // value's field) stays non-evaluable, so the caller reports it
-            // (RUE-267).
-            InstData::FieldGet { .. } => {
-                if let Some(&value) = env.const_module_members.get(&inst_ref) {
-                    return Ok(Some(value));
-                }
-                self.eval_field_get_type_path(inst_ref, span, env)
-            }
-
-            // Type intrinsic in comptime position. `@require_droppable(T)` is the
-            // owning-container well-formedness gate (RUE-388/RUE-646): std's
-            // `ArrayBuf(T)` calls it in its `-> type` constructor body so that
-            // instantiating the container with an element type it cannot yet
-            // correctly own — one that is `linear` — is rejected at instantiation
-            // time (E0499). Droppable-but-non-linear elements are accepted: the
-            // container runs each live element's drop glue before freeing its
-            // buffer (RUE-646). It reduces to unit so the surrounding block
-            // body still yields the `struct { .. }` tail. `@size_of`/`@align_of`
-            // are not comptime-foldable here and stay non-evaluable (spec
-            // 4.14:29); `@int_max`/`@int_min` depend only on the type identity,
-            // not layout, so they evaluate to their integer bound (RUE-694).
-            InstData::TypeIntrinsic { name, type_arg } => {
-                let (name, type_arg) = (*name, *type_arg);
-                let gate = self.body_interner().resolve(&name);
-                // Both well-formedness gates reduce to unit at comptime:
-                // `@require_droppable` (instantiation-time, rejects `linear`) and
-                // `@require_trivially_droppable` (read-time, rejects drop glue —
-                // RUE-651). Any other type intrinsic (`@size_of`/`@align_of`) is
-                // not comptime-foldable here.
-                let is_droppable_gate = gate == "require_droppable";
-                let is_trivial_gate = gate == "require_trivially_droppable";
-                let is_int_bound = gate == "int_max" || gate == "int_min";
-                if is_int_bound {
-                    let is_max = gate == "int_max";
-                    // A still-unresolved type parameter makes the intrinsic
-                    // non-evaluable here; it folds at a concrete instantiation.
-                    let Some(int_ty) = self
-                        .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-                            type_arg,
-                            env.type_subst,
-                            env.value_subst,
-                            span,
-                        )
-                    else {
-                        return Ok(None);
-                    };
-                    let bound = if is_max {
-                        int_ty.int_max()
-                    } else {
-                        int_ty.int_min()
-                    };
-                    // A non-integer argument is diagnosed by runtime analysis
-                    // (`analyze_type_intrinsic`, E0702); stay non-evaluable
-                    // rather than duplicating the diagnostic.
-                    return Ok(bound.map(ConstValue::Integer));
-                }
-                if !is_droppable_gate && !is_trivial_gate {
-                    return Ok(None);
-                }
-                // Resolve the element type through the enclosing comptime
-                // substitutions (`T -> Inner` for `ArrayBuf(Inner)`); a
-                // still-unresolved type parameter makes the gate non-evaluable
-                // (it will be re-checked at a concrete instantiation).
-                let Some(elem_ty) = self
-                    .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-                        type_arg,
-                        env.type_subst,
-                        env.value_subst,
-                        span,
-                    )
-                else {
-                    return Ok(None);
-                };
-                if is_trivial_gate {
-                    self.check_trivially_droppable(elem_ty, span)?;
-                } else {
-                    self.check_require_droppable(elem_ty, span)?;
-                }
-                Ok(Some(ConstValue::Unit))
-            }
-
-            // Module-qualified comptime type-constructor call in value position,
-            // e.g. `let O = b.Mk(T)` inside a `-> type` constructor body that is
-            // being reduced (RUE-511). The receiver must be an unshadowed
-            // `VarRef` naming a module binding of the *defining* file; membership
-            // and visibility are validated before the call is reduced through the
-            // same path unqualified calls take. Any other receiver (a runtime
-            // value's method, a shadowed name) is a genuine runtime call and
-            // stays non-evaluable.
-            InstData::MethodCall {
-                receiver,
-                method,
-                args,
-            } => {
-                let (receiver, method) = (*receiver, *method);
-                self.eval_module_qualified_comptime_call(receiver, method, args, span, env)
-            }
-
-            // Everything else requires runtime evaluation
-            _ => Ok(None),
-        }
+        ComptimeEngine::new(self).evaluate(inst_ref, env)
     }
 
-    /// Reduce a module-qualified comptime type-constructor call written in
-    /// *value position* inside a reducing `-> type` constructor body — the
-    /// cross-module analogue of the `Call` arm's `eval_comptime_type_call`
-    /// (RUE-511). Returns `Ok(None)` (a runtime call, non-evaluable) unless the
-    /// receiver is an unshadowed `VarRef` that names a module binding of the
-    /// environment's `defining_file`, and the named member is a `-> type`
-    /// constructor that actually belongs to that module's file.
-    ///
-    /// The receiver module's defining file is authoritative, so a same-named
-    /// constructor in a different file cannot satisfy `b.Mk`. Visibility is
-    /// enforced the same way the qualified type-annotation
-    /// path enforces it (E0460/E0706 surface as the reduction's E1200 here since
-    /// the comptime engine cannot itself emit a diagnostic mid-reduction).
-    fn eval_module_qualified_comptime_call(
+    /// Complete a child frame after the engine has evaluated its body. This
+    /// hook owns only semantic bookkeeping; it never walks RIR or starts a
+    /// second evaluator.
+    fn finish_comptime_call(
         &mut self,
-        receiver: InstRef,
-        method: Spur,
-        args: &rue_rir::RirCallArgsRange,
-        span: Span,
-        env: &mut ComptimeEnv,
+        plan: &PreparedComptimeCall,
+        result: CompileResult<Option<ConstValue>>,
     ) -> CompileResult<Option<ConstValue>> {
-        // The receiver may be a bare import binding (`ab.Mk(..)`) or a
-        // re-export chain through module facades (`std.arraybuf.ArrayBuf(..)`,
-        // RUE-609); collect the dotted spine down to its root name. Any other
-        // receiver shape (a runtime value's method) is a genuine runtime call
-        // and stays non-evaluable.
-        let mut chain_rev: Vec<Spur> = Vec::new();
-        let mut cursor = receiver;
-        let recv_name = loop {
-            match self.body_rir_ref().get(cursor).data {
-                InstData::VarRef { name, .. } => break name,
-                InstData::FieldGet { base, field } => {
-                    chain_rev.push(field);
-                    cursor = base;
-                }
-                _ => return Ok(None),
-            }
-        };
-        // A `let`-binding, runtime local, or comptime parameter of the same name
-        // shadows the module import (spec 4.14:6) — then this is not a module
-        // call and is non-evaluable.
-        if env.locals.contains_key(&recv_name) {
-            return Ok(None);
+        if let Ok(Some(ConstValue::Type(ty))) = &result {
+            self.record_ctor_type_display(plan.name, *ty, &plan.callee_types, &plan.callee_values);
         }
-        if let Some(locals) = env.runtime_locals {
-            if locals.contains_key(&recv_name) {
-                return Ok(None);
-            }
-        }
-        // The precompute's walk conveys runtime locals through this set rather
-        // than `runtime_locals`; the qualified-constant walk already honors it,
-        // and the same spec 4.14:6 shadowing applies to a qualified call.
-        if let Some(names) = env.runtime_binding_names
-            && names.contains(&recv_name)
-        {
-            return Ok(None);
-        }
-        if env.type_subst.contains_key(&recv_name) || env.value_subst.contains_key(&recv_name) {
-            return Ok(None);
-        }
-        // The receiver's root names an import of the file whose body is being
-        // reduced; any further segments walk re-export bindings in the
-        // imported files (the same walk qualified type annotations use).
-        let Some(file_id) = env.defining_file else {
-            return Ok(None);
-        };
-        let module_file_id = if chain_rev.is_empty() {
+        result
+    }
+
+    /// Resolve a decoded module path to its semantic callable key. The engine
+    /// has already decoded the receiver's RIR shape and applied lexical
+    /// shadowing; this hook performs only declaration/visibility lookup.
+    fn resolve_module_comptime_callable(
+        &mut self,
+        file_id: FileId,
+        segments: &[Spur],
+        method: Spur,
+        span: Span,
+    ) -> CompileResult<Option<Spur>> {
+        let recv_name = segments[0];
+        let module_file_id = if segments.len() == 1 {
             // Resolve through the declaration namespace, not the raw binding
             // table: while declarations are being bound, the defining file's
             // import constant may not be collected yet. A struct field like
@@ -1507,14 +1746,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let module_file_id = module_def.file_id;
             module_file_id
         } else {
-            let mut segment_strings: Vec<String> =
-                vec![self.body_interner().resolve(&recv_name).to_owned()];
-            segment_strings.extend(
-                chain_rev
-                    .iter()
-                    .rev()
-                    .map(|s| self.body_interner().resolve(s).to_owned()),
-            );
+            let segment_strings: Vec<String> = segments
+                .iter()
+                .map(|s| self.body_interner().resolve(s).to_owned())
+                .collect();
             let segments: Vec<&str> = segment_strings.iter().map(String::as_str).collect();
             // Walk failures (unknown member, non-module segment, privacy) make
             // the call non-evaluable here; the caller reports the comptime
@@ -1548,10 +1783,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             fn_info.is_pub,
             span,
         )?;
-        // Reduce through the shared path; arguments are evaluated in the current
-        // environment so `T` (an enclosing comptime parameter) still resolves.
-        self.eval_comptime_type_call(function_key, args, env, true, span)
-            .map_err(|e| Self::label_ctor_instantiation_site(e, span))
+        Ok(Some(function_key))
     }
 
     /// Reduce a member-access chain (`std.strbuf.StrBuf`) that appears in
@@ -1825,41 +2057,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 
-    /// Reduce a call to a comptime-evaluable function to its resulting value,
-    /// when every argument is compile-time known. Shared by
-    /// [`eval_const_expr`]'s `Call` arm (so nested/delegating calls compose)
-    /// and the analysis pass (RUE-251).
-    ///
-    /// Two callee shapes reduce here:
-    ///
-    /// - **`-> type` constructors** — reduce to a [`ConstValue::Type`], so
-    ///   `Pair(i32)` composes in any position (RUE-251).
-    /// - **Value-returning functions with all-comptime (or no) parameters** —
-    ///   reduce to their [`ConstValue::Integer`]/[`ConstValue::Bool`] result,
-    ///   which is what lets a comptime-recursive `fn fact(comptime n: i32)`
-    ///   produce a compile-time constant usable as an array length or inside a
-    ///   `comptime { }` block (RUE-163 facet 1, spec 4.14:5). A function with
-    ///   any *runtime* parameter is a genuine runtime call and is left
-    ///   non-evaluable, so ordinary calls like `add(3, 5)` (runtime `a`, `b`)
-    ///   are not folded here.
-    ///
-    /// Returns `Ok(None)` — not an error — for an unknown callee, a
-    /// non-const argument, an arity mismatch, or a call that does not meet the
-    /// implicit-comptime gate: the call is then just a runtime call and simply
-    /// non-evaluable here. An explicit argument mode that disagrees with the
-    /// callee is a source error and returns `Err`, as does a failure while
-    /// reducing the body (arithmetic overflow, recursion-depth overrun);
-    /// opportunistic callers swallow those errors.
-    ///
-    /// [`eval_const_expr`]: Self::eval_const_expr
-    fn eval_comptime_type_call(
+    /// Admit a comptime-evaluable call without traversing child RIR. This is
+    /// deliberately the complete call-site admission order: resolve and
+    /// record the dependency, check arity and explicit modes, then apply the
+    /// implicit-comptime eligibility gate. Argument expressions are evaluated
+    /// only after this returns.
+    fn admit_comptime_call(
         &mut self,
         name: Spur,
-        args: &rue_rir::RirCallArgsRange,
+        arg_count: usize,
+        arg_modes: &[ComptimeArgMode],
         env: &mut ComptimeEnv,
         name_is_resolved_key: bool,
-        span: Span,
-    ) -> CompileResult<Option<ConstValue>> {
+    ) -> CompileResult<Option<ComptimeCallAdmission>> {
         // During declaration binding, the callee may simply not be collected yet:
         // constant initializers and struct-field / enum-payload types can
         // evaluate before the source-order sweep reaches the callee's `FnDecl`
@@ -1895,15 +2105,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let param_names = param_data.names().to_vec();
         let param_modes = param_data.modes().to_vec();
         let param_comptime = param_data.comptime().to_vec();
-        let param_comptime_type = self.comptime_type_param_flags(&fn_info);
-        let args = self.body_rir_ref().call_args(args).to_vec();
-        if args.len() != param_names.len() {
+        if arg_count != param_names.len() {
             return Ok(None);
         }
-        // A comptime reduction is still a source-level call. Validate its
-        // explicit passing modes before the evaluator erases them while
-        // binding constant arguments (RUE-634).
-        self.validate_explicit_call_modes(&args, param_modes.iter().copied())?;
+        self.validate_explicit_call_modes_owned(arg_modes, param_modes.iter().copied())?;
 
         // Same gate as `analyze_call`'s implicit-comptime path. A `-> type`
         // constructor reduces with no args (a nullary type alias) or when every
@@ -1923,21 +2128,63 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !eligible {
             return Ok(None);
         }
-        // Evaluate each argument compositionally in the current environment,
-        // so a nested type-function call (`WrapA(i32)` inside
-        // `WrapA(WrapA(i32))`) and references to enclosing comptime
-        // params/aliases both resolve. A non-const argument makes the whole
-        // call non-evaluable.
+        Ok(Some(ComptimeCallAdmission {
+            name: name_key,
+            function: fn_info,
+        }))
+    }
+
+    fn validate_explicit_call_modes_owned(
+        &self,
+        args: &[ComptimeArgMode],
+        expected_modes: impl ExactSizeIterator<Item = rue_rir::RirParamMode>,
+    ) -> CompileResult<()> {
+        assert_eq!(args.len(), expected_modes.len());
+        for ((actual, span), expected) in args.iter().copied().zip(expected_modes) {
+            use rue_rir::RirArgMode;
+            match (expected, actual) {
+                (rue_rir::RirParamMode::Inout, RirArgMode::Inout)
+                | (rue_rir::RirParamMode::Borrow, RirArgMode::Borrow)
+                | (rue_rir::RirParamMode::Normal, RirArgMode::Normal) => {}
+                (rue_rir::RirParamMode::Inout, _) => {
+                    return Err(CompileError::new(ErrorKind::InoutKeywordMissing, span));
+                }
+                (rue_rir::RirParamMode::Borrow, _) => {
+                    return Err(CompileError::new(ErrorKind::BorrowKeywordMissing, span));
+                }
+                (rue_rir::RirParamMode::Normal, actual) => {
+                    let mode = match actual {
+                        RirArgMode::Inout => "inout",
+                        RirArgMode::Borrow => "borrow",
+                        RirArgMode::Normal => unreachable!(),
+                    };
+                    return Err(
+                        CompileError::new(ErrorKind::UnexpectedCallArgumentMode { mode }, span)
+                            .with_help(format!(
+                                "remove the `{mode}` keyword; this argument is passed without an explicit mode"
+                            )),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Bind already-evaluated values to an admitted call. This has no body
+    /// lookup or substitution validation, allowing external/provider results
+    /// to remain authoritative before local-only checks run.
+    fn bind_comptime_call(
+        &self,
+        admission: &ComptimeCallAdmission,
+        values: &[ConstValue],
+        _span: Span,
+    ) -> CompileResult<Option<(AHashMap<Spur, Type>, AHashMap<Spur, ConstValue>)>> {
+        let param_data = self.body_param_data(admission.function.params);
+        let param_names = param_data.names().to_vec();
+        let param_comptime_type = self.comptime_type_param_flags(&admission.function);
         let mut callee_types: AHashMap<Spur, Type> = AHashMap::new();
         let mut callee_values: AHashMap<Spur, ConstValue> = AHashMap::new();
-        for (i, arg) in args.iter().enumerate() {
-            let Some(v) = self.eval_const_expr(arg.value, env)? else {
-                return Ok(None);
-            };
-            // Provider-backed callable facts can materialize a callee without
-            // retaining its source RIR parameter symbols. The evaluated value
-            // is still authoritative for a missing flag: only a `type`-typed
-            // comptime parameter can accept `ConstValue::Type`.
+        for (i, v) in values.iter().copied().enumerate() {
             let is_comptime_type = param_comptime_type
                 .get(i)
                 .copied()
@@ -1949,15 +2196,49 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 (true, ConstValue::Unit) => {
                     callee_types.insert(param_names[i], Type::UNIT);
                 }
-                (true, _) => return Ok(None),
+                (true, _) => {
+                    return Ok(None);
+                }
                 (false, value) => {
                     callee_values.insert(param_names[i], value);
                 }
             }
         }
-        // The callee body sees only its own parameters. Reduce it with the
-        // freshly-built substitution maps.
-        self.reduce_type_ctor_body(name_key, &callee_types, &callee_values, span)
+        Ok(Some((callee_types, callee_values)))
+    }
+
+    /// Finish an admitted local call after its arguments have been evaluated.
+    /// Provider calls must be queried before this hook so their cached result
+    /// or diagnostic remains authoritative.
+    fn prepare_local_comptime_call(
+        &mut self,
+        admission: ComptimeCallAdmission,
+        callee_types: AHashMap<Spur, Type>,
+        callee_values: AHashMap<Spur, ConstValue>,
+        span: Span,
+    ) -> CompileResult<Option<PreparedComptimeCall>> {
+        let name_key = admission.name;
+        let fn_body_info = self.function_body_info(name_key);
+        let Some(fn_body_info) = fn_body_info else {
+            return Ok(None);
+        };
+        let fn_info = crate::sema::info::FunctionCallInfo::from_body(fn_body_info);
+        self.validate_comptime_call_substitutions(
+            name_key,
+            &fn_info,
+            &callee_types,
+            &callee_values,
+            fn_body_info.span,
+        )?;
+        Ok(Some(PreparedComptimeCall {
+            name: name_key,
+            body: fn_body_info.body,
+            file: fn_body_info.file_id,
+            span,
+            function_span: fn_body_info.span,
+            callee_types,
+            callee_values,
+        }))
     }
 
     pub(crate) fn validate_comptime_value_for_type(
@@ -2066,6 +2347,35 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
+    fn prepare_comptime_body(
+        &mut self,
+        name: Spur,
+        callee_types: &AHashMap<Spur, Type>,
+        callee_values: &AHashMap<Spur, ConstValue>,
+        span: Span,
+    ) -> CompileResult<Option<PreparedComptimeCall>> {
+        let Some(fn_body_info) = self.function_body_info(name) else {
+            return Ok(None);
+        };
+        let fn_info = crate::sema::info::FunctionCallInfo::from_body(fn_body_info);
+        self.validate_comptime_call_substitutions(
+            name,
+            &fn_info,
+            callee_types,
+            callee_values,
+            fn_body_info.span,
+        )?;
+        Ok(Some(PreparedComptimeCall {
+            name,
+            body: fn_body_info.body,
+            file: fn_body_info.file_id,
+            span,
+            function_span: fn_body_info.span,
+            callee_types: callee_types.clone(),
+            callee_values: callee_values.clone(),
+        }))
+    }
+
     /// Reduce a comptime-evaluable function body under concrete substitutions.
     /// This is the shared path for type constructors and value-returning
     /// comptime functions, so it validates the argument contract once before
@@ -2083,65 +2393,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         {
             return result;
         }
-        let Some(fn_body_info) = self.function_body_info(name) else {
+        let Some(plan) = self.prepare_comptime_body(name, callee_types, callee_values, span)?
+        else {
             return Ok(None);
         };
-        let fn_info = crate::sema::info::FunctionCallInfo::from_body(fn_body_info);
-        self.validate_comptime_call_substitutions(
-            name,
-            &fn_info,
-            callee_types,
-            callee_values,
-            fn_body_info.span,
-        )?;
-        let fn_body = fn_body_info.body;
-        let fn_span = fn_body_info.span;
-        let fn_file = fn_body_info.file_id;
-        let canonical_identity = self
-            .canonical_function_producer(name, callee_types, callee_values)
-            .map_err(|failure| {
-                CompileError::new(
-                    ErrorKind::InternalError(format!(
-                        "failed to issue canonical comptime producer: {failure:?}"
-                    )),
-                    fn_span,
-                )
-            })?;
-        let mut callee_env = ComptimeEnv::with_subst(callee_types, callee_values);
-        callee_env.producer = Some(fn_body);
-        callee_env.canonical_identity = Some(canonical_identity);
-        // The callee body is code from the callee's file: a module-qualified
-        // comptime call inside it (`let O = b.Mk(T)`) names an import of *that*
-        // file, so the receiver must resolve against the callee's module
-        // bindings, not the instantiation site's (RUE-511).
-        callee_env.defining_file = Some(fn_file);
-        let depth = self.comptime_type_call_depth() + 1;
-        self.set_comptime_type_call_depth(depth);
-        if self.comptime_type_call_depth() > MAX_COMPTIME_CALL_DEPTH {
-            self.set_comptime_type_call_depth(self.comptime_type_call_depth() - 1);
-            return Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "specialization of '{}' exceeded the maximum nesting depth ({}); \
-                         is a comptime-recursive function missing a compile-time-known \
-                         base case, or a generic function recursively instantiating \
-                         itself with new types?",
-                        self.body_interner().resolve(&name),
-                        MAX_COMPTIME_CALL_DEPTH
-                    ),
-                },
-                fn_span,
-            ));
-        }
-        let result = self.eval_const_expr(fn_body, &mut callee_env);
-        self.set_comptime_type_call_depth(self.comptime_type_call_depth() - 1);
-        // Record the human-readable instantiation spelling for a
-        // constructor-produced anonymous type, so diagnostics print
-        // `ArrayBuf(i64)` instead of `__anon_struct_4` (RUE-610).
-        if let Ok(Some(ConstValue::Type(t))) = &result {
-            self.record_ctor_type_display(name, *t, callee_types, callee_values);
-        }
-        result
+        ComptimeEngine::new(self).evaluate_prepared_root(plan)
     }
 
     /// Record `Ctor(args...)` as the display name for an anonymous type just

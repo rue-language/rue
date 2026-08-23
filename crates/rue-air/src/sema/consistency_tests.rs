@@ -118,6 +118,7 @@ mod tests {
     const CALLS_SOURCE: &str = include_str!("analysis/calls.rs");
     const INTRINSICS_SOURCE: &str = include_str!("analysis/intrinsics.rs");
     const ORDINARY_ENGINE_SOURCE: &str = include_str!("ordinary_engine.rs");
+    const COMPTIME_EVAL_SOURCE: &str = include_str!("comptime_eval.rs");
     const SEMA_ROOT_SOURCE: &str = include_str!("mod.rs");
     const ANALYSIS_ROOT_SOURCE: &str = include_str!("analysis.rs");
     const INSTRUCTIONS_SOURCE: &str = include_str!("analysis/instructions.rs");
@@ -294,6 +295,81 @@ mod tests {
         assert!(
             !engine.contains("pub(crate) fn analyze_named_method("),
             "the obsolete named-method facade must not return"
+        );
+    }
+
+    #[test]
+    fn comptime_body_adapter_cannot_reintroduce_rir_dispatch() {
+        let source = COMPTIME_EVAL_SOURCE;
+        assert_eq!(
+            source.matches("fn eval_const_expr").count(),
+            1,
+            "the body adapter must have one canonical entry point"
+        );
+        assert!(source.contains("struct ComptimeEngine") && source.contains("fn eval("));
+        assert!(
+            !source.contains("fn eval_comptime_type_call"),
+            "the deleted recursive type-call evaluator must not return"
+        );
+        assert!(
+            source.contains("fn admit_comptime_call")
+                && source.contains("fn bind_comptime_call")
+                && source.contains("fn prepare_local_comptime_call")
+                && source.contains("fn finish_comptime_call"),
+            "call admission, binding, preparation, and completion must be named hooks"
+        );
+        fn function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+            let start = source.find(signature).expect("semantic hook exists");
+            let body = &source[start..];
+            let open = body.find('{').expect("semantic hook body opens");
+            let mut depth = 0;
+            for (offset, ch) in body[open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return &body[..open + offset + 1];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("semantic hook body closes");
+        }
+        for signature in [
+            "fn admit_comptime_call(",
+            "fn bind_comptime_call(",
+            "fn prepare_local_comptime_call(",
+            "fn resolve_module_comptime_callable(",
+            "fn finish_comptime_call(",
+        ] {
+            let body = function_body(source, signature);
+            assert!(
+                !body.contains("InstRef"),
+                "{signature} may not receive child RIR refs"
+            );
+            assert!(
+                !body.contains("RirCallArg")
+                    && !body.contains("eval_const_expr")
+                    && !body.contains("ComptimeEngine::new"),
+                "{signature} must not recurse or invoke an evaluator"
+            );
+        }
+        let adapter = source
+            .split_once("pub(crate) fn eval_const_expr")
+            .expect("comptime adapter exists")
+            .1;
+        let adapter = adapter
+            .split_once("/// Resolve a decoded module path")
+            .map_or(adapter, |(prefix, _)| prefix);
+        assert!(
+            !adapter.contains("match &inst.data") && !adapter.contains("InstData::"),
+            "the body adapter must delegate; RIR dispatch belongs to ComptimeEngine"
+        );
+        assert!(
+            !ORDINARY_ENGINE_SOURCE.contains("eval_const_expr"),
+            "ordinary body analysis must not retain a comptime evaluator"
         );
     }
 

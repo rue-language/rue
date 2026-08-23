@@ -278,8 +278,6 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
     fn declaration_binding_active(&self) -> bool;
     fn known_linear_during_binding(&self, ty: Type) -> Option<bool>;
     fn known_drop_glue_during_binding(&self, ty: Type) -> Option<bool>;
-    fn comptime_type_call_depth(&self) -> usize;
-    fn set_comptime_type_call_depth(&mut self, depth: usize);
     fn has_ctor_type_display(&self, ty: Type) -> bool;
     fn record_body_ctor_type_display(&mut self, ty: Type, display: String);
     fn trusted_try_producer(&self, ty: Type) -> Option<super::anon_structs::TrustedTryProducer>;
@@ -1273,12 +1271,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     }
     pub(crate) fn declaration_binding_active(&self) -> bool {
         self.storage.declaration_binding_active()
-    }
-    pub(crate) fn comptime_type_call_depth(&self) -> usize {
-        self.storage.comptime_type_call_depth()
-    }
-    pub(crate) fn set_comptime_type_call_depth(&mut self, depth: usize) {
-        self.storage.set_comptime_type_call_depth(depth)
     }
     pub(crate) fn generated_structs(&self) -> &AHashMap<Spur, StructId> {
         self.storage.generated_structs()

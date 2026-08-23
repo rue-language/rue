@@ -938,7 +938,6 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     body_work: BodyAnalysisWork,
     expression_breakdown: Option<ExpressionAnalysisBreakdown>,
     recovered_errors: Vec<CompileError>,
-    comptime_depth: usize,
     deferred_ownership: Vec<super::DeferredOwnershipGate>,
     ctor_displays: AHashMap<Type, String>,
     current_anonymous_identity:
@@ -1073,7 +1072,6 @@ where
             body_work: BodyAnalysisWork::default(),
             expression_breakdown: None,
             recovered_errors: Vec::new(),
-            comptime_depth: 0,
             deferred_ownership: Vec::new(),
             ctor_displays: AHashMap::new(),
             current_anonymous_identity: None,
@@ -4519,12 +4517,6 @@ where
     }
     fn known_drop_glue_during_binding(&self, _ty: Type) -> Option<bool> {
         None
-    }
-    fn comptime_type_call_depth(&self) -> usize {
-        self.comptime_depth
-    }
-    fn set_comptime_type_call_depth(&mut self, depth: usize) {
-        self.comptime_depth = depth;
     }
     fn has_ctor_type_display(&self, ty: Type) -> bool {
         self.ctor_displays.contains_key(&ty)
