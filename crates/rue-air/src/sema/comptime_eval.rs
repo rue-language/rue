@@ -117,7 +117,7 @@ pub(super) fn validate_comptime_value_for_type_impl(
 }
 use super::{DeferredOwnershipGate, DeferredOwnershipGateKind};
 use crate::integer_semantics::CheckedIntegerResult;
-use crate::specialize::MAX_SPECIALIZATION_ROUNDS;
+use crate::specialize::MAX_COMPTIME_CALL_DEPTH;
 use crate::types::{ArrayLen, StructField, Type, TypeKind};
 
 fn elapsed_ns(started: Instant) -> u64 {
@@ -2125,7 +2125,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         callee_env.defining_file = Some(fn_file);
         let depth = self.comptime_type_call_depth() + 1;
         self.set_comptime_type_call_depth(depth);
-        if self.comptime_type_call_depth() > MAX_SPECIALIZATION_ROUNDS {
+        if self.comptime_type_call_depth() > MAX_COMPTIME_CALL_DEPTH {
             self.set_comptime_type_call_depth(self.comptime_type_call_depth() - 1);
             return Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {
@@ -2135,7 +2135,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                          base case, or a generic function recursively instantiating \
                          itself with new types?",
                         self.body_interner().resolve(&name),
-                        MAX_SPECIALIZATION_ROUNDS
+                        MAX_COMPTIME_CALL_DEPTH
                     ),
                 },
                 fn_span,

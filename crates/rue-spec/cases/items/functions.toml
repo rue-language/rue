@@ -1043,6 +1043,72 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
+name = "nested_inout_under_outer_borrow_rejected"
+spec = ["6.1:30"]
+description = "The nested spelling of the borrow/inout conflict: a shared loan spans the whole call, so an `inout` loan taken inside another argument overlaps it and is rejected (RUE-1696)"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(borrow s: str, x: i32) -> u8 { s[0] }
+fn grow(inout s: StrBuf) -> i32 {
+    s.append_str(borrow "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+    0
+}
+fn main() -> i32 {
+    let mut b = StrBuf.from_str(borrow "hello");
+    let byte = read_first(borrow b, grow(inout b));
+    if byte == 104 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = "cannot borrow 'b'"
+
+[[case]]
+name = "nested_inout_under_outer_borrow_rejected_reversed_order"
+spec = ["6.1:30"]
+description = "Argument order does not matter: the outer call's shared loan covers the whole argument list before any of it is evaluated"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(x: i32, borrow s: str) -> u8 { s[0] }
+fn grow(inout s: StrBuf) -> i32 {
+    s.append_str(borrow "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+    0
+}
+fn main() -> i32 {
+    let mut b = StrBuf.from_str(borrow "hello");
+    let byte = read_first(grow(inout b), borrow b);
+    if byte == 104 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = "cannot borrow 'b'"
+
+[[case]]
+name = "nested_inout_of_other_root_under_borrow_ok"
+spec = ["6.1:30"]
+description = "Root-granular: a nested `inout` loan of a DIFFERENT variable does not overlap the outer shared loan and stays legal"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(borrow s: str, x: i32) -> u8 { s[0] }
+fn grow(inout s: StrBuf) -> i32 {
+    s.append_str(borrow "XXXX");
+    0
+}
+fn main() -> i32 {
+    let b = StrBuf.from_str(borrow "hello");
+    let mut c = StrBuf.from_str(borrow "world");
+    let byte = read_first(borrow b, grow(inout c));
+    if byte == 104 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
 name = "borrow_multiple_same_var_ok"
 spec = ["6.1:28"]
 description = "Multiple borrows of the same variable is allowed"

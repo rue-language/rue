@@ -1,0 +1,177 @@
+# A nested `inout` loan must not run while an outer argument of the SAME call
+# holds a shared (`borrow`) loan of the same root (RUE-1696).
+#
+# `borrow s: str` does not pass an address: the argument is snapshotted into a
+# `{ptr, len}` view over the StrBuf's heap buffer at argument-evaluation time
+# (`coerce_borrow_str_operand_to_view`). The shared loan spans the whole call,
+# so a sibling argument that reallocates the same StrBuf frees the buffer that
+# view points at, and the callee reads freed memory — a use-after-free in
+# safe code. Before the fix `read_first(borrow b, grow(inout b))` compiled and
+# printed 0 (freed memory) instead of 104.
+#
+# The flat spelling `f(borrow b, inout b)` was already E0430; only the nested
+# spelling `f(borrow b, g(inout b))` escaped, because the ordinary-call loan
+# frame was consulted for by-value MOVES only, never for a nested loan.
+#
+# The opposite nesting (an outer `inout` loan with a nested `borrow`, and the
+# accumulator idiom `add(mul(x, y, inout flags), z, inout flags)`) stays legal:
+# an `inout` argument passes the root's address, not a snapshot, so a nested
+# access observes ordinary sequenced mutation.
+
+[section]
+id = "cli.nested_loan_str_view"
+name = "Nested inout under an outer shared loan"
+description = "A nested `inout` of a root the same call already borrows is rejected; the outer argument's str/slice view would dangle (RUE-1696)."
+
+[[case]]
+name = "nested_inout_under_borrow_str_view_rejected"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "RUE-1696 repro: the nested `grow(inout b)` reallocates the buffer that the sibling `borrow b` argument was already snapshotted into a `str` view over."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(borrow s: str, x: i32) -> u8 { s[0] }
+fn grow(inout s: StrBuf) -> i32 {
+    s.append_str(borrow "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+    0
+}
+fn main() -> i32 {
+    let mut b = StrBuf.from_str(borrow "hello");
+    let byte = read_first(borrow b, grow(inout b));
+    @dbg(byte);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0430", "cannot borrow 'b'", "dangling"]
+
+[[case]]
+name = "nested_inout_under_borrow_str_view_rejected_reversed_order"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "Argument order does not matter: the outer call's shared loan covers the whole argument list before any of it is evaluated."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(x: i32, borrow s: str) -> u8 { s[0] }
+fn grow(inout s: StrBuf) -> i32 {
+    s.append_str(borrow "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+    0
+}
+fn main() -> i32 {
+    let mut b = StrBuf.from_str(borrow "hello");
+    let byte = read_first(grow(inout b), borrow b);
+    @dbg(byte);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0430", "cannot borrow 'b'"]
+
+[[case]]
+name = "nested_inout_under_borrow_struct_rejected"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "Root-granular, like the other exclusivity rules: the loan is on the root, so a `borrow` of the whole struct conflicts with a nested `inout` of one of its fields."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+struct Holder { buf: StrBuf, n: i32 }
+fn peek(borrow h: Holder, x: i32) -> i32 { h.n }
+fn grow(inout s: StrBuf) -> i32 {
+    s.append_str(borrow "XXXX");
+    0
+}
+fn main() -> i32 {
+    let mut h = Holder { buf: StrBuf.from_str(borrow "hello"), n: 7 };
+    let n = peek(borrow h, grow(inout h.buf));
+    @dbg(n);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0430", "cannot borrow 'h'"]
+
+[[case]]
+name = "no_nested_mutation_reads_live_buffer"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "Control: the same call shape with a nested call that touches no loaned root keeps compiling and reads the live buffer (104 = 'h')."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(borrow s: str, x: i32) -> u8 { s[0] }
+fn other(x: i32) -> i32 { x }
+fn main() -> i32 {
+    let mut b = StrBuf.from_str(borrow "hello");
+    let byte = read_first(borrow b, other(0));
+    @dbg(byte);
+    0
+}
+""" }]
+stdout = "104\n"
+exit_code = 0
+
+[[case]]
+name = "nested_inout_of_a_different_root_stays_legal"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "Accepted: the nested `inout` loans a DIFFERENT root, so nothing the outer argument snapshotted can be reallocated."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(borrow s: str, x: i32) -> u8 { s[0] }
+fn grow(inout s: StrBuf) -> i32 {
+    s.append_str(borrow "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+    0
+}
+fn main() -> i32 {
+    let mut b = StrBuf.from_str(borrow "hello");
+    let mut c = StrBuf.from_str(borrow "world");
+    let byte = read_first(borrow b, grow(inout c));
+    @dbg(byte);
+    @dbg(c.len());
+    0
+}
+""" }]
+stdout = "104\n69\n"
+exit_code = 0
+
+[[case]]
+name = "nested_borrow_under_outer_borrow_stays_legal"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "Accepted: a nested `borrow` of the same root ends before the outer call begins and cannot invalidate anything (spec 6.1:36)."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(borrow s: str, x: i32) -> u8 { s[0] }
+fn peek(borrow s: StrBuf) -> i32 { 0 }
+fn main() -> i32 {
+    let b = StrBuf.from_str(borrow "hello");
+    let byte = read_first(borrow b, peek(borrow b));
+    @dbg(byte);
+    0
+}
+""" }]
+stdout = "104\n"
+exit_code = 0
+
+[[case]]
+name = "nested_inout_under_outer_inout_stays_legal"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "Accepted: an outer `inout` loan passes an address rather than a snapshot, so the nested-inout accumulator idiom keeps working and both writes land."
+files = [{ path = "main.rue", source = """
+fn mul(a: i32, b: i32, inout flags: i32) -> i32 {
+    flags = flags + 1;
+    a * b
+}
+fn add(a: i32, b: i32, inout flags: i32) -> i32 {
+    flags = flags + 10;
+    a + b
+}
+fn main() -> i32 {
+    let mut flags = 0;
+    let total = add(mul(3, 4, inout flags), 5, inout flags);
+    @dbg(total);
+    @dbg(flags);
+    0
+}
+""" }]
+stdout = "17\n11\n"
+exit_code = 0

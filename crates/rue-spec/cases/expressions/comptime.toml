@@ -1575,6 +1575,35 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+# =============================================================================
+# Const position evaluates identically to body position (RUE-1733)
+# =============================================================================
+# `const X = f(..)` is reduced by the durable, declaration-time evaluator, while
+# `let x = f(..)` inside a body is reduced by the in-body engine. 4.14:3 makes
+# them one language, so the case below asserts the *same* call agrees in both
+# positions. The two engines used to spend different comptime call-depth
+# budgets, so a recursion 40 deep compiled in a body and was rejected as too
+# deep in a const initializer.
+
+[[case]]
+name = "comptime_const_position_recursion_depth_parity"
+spec = ["4.14:3", "4.14:5"]
+description = "A comptime recursion 40 deep is accepted in const position exactly as in body position - RUE-1733"
+# 40 sits between the two budgets the evaluators used to disagree on (the
+# durable path stopped at 32, the in-body engine at 64); both now spend the one
+# shared MAX_COMPTIME_CALL_DEPTH, so this program compiles either way.
+source = """
+fn count(comptime n: i64) -> i64 { comptime { if n == 0 { 0 } else { count(n - 1) + 1 } } }
+const X: i64 = count(40);
+fn main() -> i32 {
+    let y: i64 = count(40);
+    if X != y { return 1; }
+    if X != 40 { return 2; }
+    42
+}
+"""
+exit_code = 42
+
 # 4.14:2 says evaluation follows runtime semantics *exactly*, which binds every
 # position a comptime value is produced in, not just a `comptime { }` block
 # inside a body. A const initializer reduces the same call through a different

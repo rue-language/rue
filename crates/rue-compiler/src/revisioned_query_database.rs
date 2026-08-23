@@ -4291,6 +4291,48 @@ fn durable_const_fits_type(
     }
 }
 
+/// Build the E0481 for an array length that is already *fully concrete* and
+/// still cannot be a length.
+///
+/// This must be a domain diagnostic rather than an opaque `Resolution` failure.
+/// A `Resolution` failure means "this provider could not resolve the syntax
+/// yet", which the comptime-call reduction is entitled to treat as
+/// non-evaluable; the caller then reports whatever it makes of an unreduced
+/// call. So `fn Buf(comptime n: i64) -> type { struct { data: [i64; n] } }`
+/// applied as `Buf(-1)` lost its real "array length is negative" error and
+/// surfaced as an unrelated E1200 about storing a type value at runtime
+/// (RUE-1734). Every caller below has a concrete integer in hand — a still
+/// unsubstituted `comptime n` returns `Ok(None)` well before this point — so the
+/// error is a genuine well-formedness failure and must be reported as one.
+///
+/// The wording mirrors `rue_air::sema::typeck`'s local provider so the same
+/// program reports the same text whichever provider resolved the length.
+fn durable_named_array_length_failure(
+    name: &str,
+    value: i128,
+) -> crate::semantic_query_nucleus::SemanticNucleusFailure {
+    let reason = if value < 0 {
+        format!("array length '{name}' is negative ({value})")
+    } else {
+        format!("array length '{name}' ({value}) is too large")
+    };
+    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+        rue_error::ErrorKind::InvalidArrayLength { reason },
+    )
+}
+
+/// The unnamed counterpart of [`durable_named_array_length_failure`], for a
+/// length that arrived as a literal or an already-evaluated comptime value.
+fn durable_literal_array_length_failure(
+    value: i128,
+) -> crate::semantic_query_nucleus::SemanticNucleusFailure {
+    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+        rue_error::ErrorKind::InvalidArrayLength {
+            reason: format!("array length must be non-negative, got {value}"),
+        },
+    )
+}
+
 /// Describe integer type `ty` for the canonical width-truncating semantics in
 /// [`rue_air::integer_semantics`], which the in-body comptime engine already
 /// uses — sharing it is what keeps the two evaluators from disagreeing about
@@ -7069,7 +7111,17 @@ thread_local! {
         const { std::cell::Cell::new(0) };
 }
 
-const SEMANTIC_COMPTIME_MAX_DEPTH: usize = 32;
+/// Comptime call-nesting budget for the durable (declaration-time) evaluator.
+///
+/// This is the *same* constant the in-body engine spends at its comptime-call
+/// site (`rue_air::sema::comptime_eval`), deliberately shared rather than
+/// duplicated: a comptime call must be accepted in both positions or rejected
+/// in both. The durable path used to stop at 32 while a body stopped at 64, so
+/// `let x: i64 = count(40)` compiled while `const X: i64 = count(40)` was
+/// rejected with a depth-exceeded E1200 (RUE-1733). See
+/// [`rue_air::specialize::MAX_COMPTIME_CALL_DEPTH`] for why the shared value is
+/// neither of the two old budgets.
+const SEMANTIC_COMPTIME_MAX_DEPTH: usize = rue_air::specialize::MAX_COMPTIME_CALL_DEPTH;
 
 struct SemanticComptimeCallDepthGuard(usize);
 
@@ -10334,20 +10386,21 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
         match length {
-            rue_air::SemanticValueSyntax::Integer(value) => {
-                u64::try_from(value).map(Some).map_err(|_| {
-                    Self::provider_failure_value(format!(
-                        "array length `{value}` is negative or too large"
+            rue_air::SemanticValueSyntax::Integer(value) => u64::try_from(value)
+                .map(Some)
+                .map_err(|_| {
+                    rue_air::SemanticProviderError::Failure(durable_literal_array_length_failure(
+                        value,
                     ))
-                })
-            }
+                }),
             rue_air::SemanticValueSyntax::Name(name) => {
                 if let Some(crate::durable_semantics::DurableConstValue::Integer(value)) =
                     self.value_substitutions.get(name)
                 {
-                    return u64::try_from(*value).map(Some).map_err(|_| {
-                        Self::provider_failure_value(format!(
-                            "array length `{name}` is negative or too large"
+                    let value = *value;
+                    return u64::try_from(value).map(Some).map_err(|_| {
+                        rue_air::SemanticProviderError::Failure(durable_named_array_length_failure(
+                            name, value,
                         ))
                     });
                 }
@@ -10395,8 +10448,8 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                     ));
                 };
                 u64::try_from(value).map(Some).map_err(|_| {
-                    Self::provider_failure_value(format!(
-                        "array length `{name}` is negative or too large"
+                    rue_air::SemanticProviderError::Failure(durable_named_array_length_failure(
+                        name, value,
                     ))
                 })
             }
@@ -10415,10 +10468,9 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         let crate::durable_semantics::DurableConstValue::Integer(value) = value else {
             return Self::provider_failure("array length is not an integer");
         };
-        u64::try_from(*value).map(Some).map_err(|_| {
-            Self::provider_failure_value(format!(
-                "array length `{value}` is negative or too large"
-            ))
+        let value = *value;
+        u64::try_from(value).map(Some).map_err(|_| {
+            rue_air::SemanticProviderError::Failure(durable_literal_array_length_failure(value))
         })
     }
 

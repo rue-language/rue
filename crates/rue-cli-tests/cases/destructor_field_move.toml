@@ -174,3 +174,77 @@ fn main() -> i32 {
 """ }]
 stdout = "900\n800\n7\n100\n"
 exit_code = 0
+
+[[case]]
+name = "field_move_out_of_computed_destructor_type_rejected"
+description = "RUE-1697: the rule does not depend on how the value was produced. A COMPUTED base (`make().inner`) spills to a temporary that is dropped whole, so the same moved-out hole appears; before the fix this compiled and the destructor printed garbage instead of 9."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+struct Outer { inner: Inner, tag: i32 }
+
+drop fn Outer(self) {
+    @dbg(self.tag);
+}
+
+fn make() -> Outer {
+    Outer { inner: Inner { v: 5 }, tag: 9 }
+}
+
+fn main() -> i32 {
+    let y = make().inner;
+    @dbg(y.v);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0456", "cannot move field `inner` out of a value of type 'Outer'", "destructor"]
+
+[[case]]
+name = "copy_field_of_computed_destructor_type_stays_legal"
+description = "Control: a Copy field of a computed destructor-having value is READ, not moved, so it stays legal; the temporary's destructor still runs exactly once, on the whole value."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+struct Outer { inner: Inner, tag: i32 }
+
+drop fn Outer(self) {
+    @dbg(self.tag);
+}
+
+fn make() -> Outer {
+    Outer { inner: Inner { v: 5 }, tag: 9 }
+}
+
+fn main() -> i32 {
+    @dbg(make().tag);
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "9\n9\n100\n"
+exit_code = 0
+
+[[case]]
+name = "field_move_out_of_computed_dtor_free_type_stays_legal"
+description = "Control (the RUE-62/RUE-258 shape): moving a non-Copy field out of a computed value whose own type has NO destructor stays legal, and the temporary's field glue does not re-drop the extracted field — `7` prints once from the new owner at scope exit, not twice."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) {
+    @dbg(self.v);
+}
+
+struct Plain { inner: Inner, tag: i32 }
+
+fn make_plain() -> Plain {
+    Plain { inner: Inner { v: 7 }, tag: 3 }
+}
+
+fn main() -> i32 {
+    let y = make_plain().inner;
+    @dbg(y.v);
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "7\n100\n7\n"
+exit_code = 0
