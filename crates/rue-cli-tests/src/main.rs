@@ -1071,6 +1071,7 @@ enum WatchScenarioKind {
     Edit,
     Cancel,
     Delete,
+    SymlinkRetarget,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1081,6 +1082,8 @@ struct WatchEdit {
     source: Option<String>,
     #[serde(default)]
     delete: bool,
+    #[serde(default)]
+    symlink_target: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -2432,15 +2435,33 @@ fn wait_for_watch_event(
     ))
 }
 
+#[cfg(unix)]
+fn replace_watch_symlink(path: &Path, target: &str) -> Result<(), String> {
+    std::fs::remove_file(path)
+        .map_err(|error| format!("failed to replace watch symlink: {error}"))?;
+    std::os::unix::fs::symlink(target, path)
+        .map_err(|error| format!("failed to retarget watch symlink: {error}"))
+}
+
+#[cfg(not(unix))]
+fn replace_watch_symlink(_path: &Path, _target: &str) -> Result<(), String> {
+    Err("watch symlink retarget is only supported on Unix".into())
+}
+
 fn write_watch_edit(dir: &Path, edit: &WatchEdit) -> Result<(), String> {
     let path = dir.join(&edit.path);
-    match (edit.delete, &edit.source) {
-        (true, None) => std::fs::remove_file(&path)
+    match (
+        edit.delete,
+        edit.source.as_deref(),
+        edit.symlink_target.as_deref(),
+    ) {
+        (true, None, None) => std::fs::remove_file(&path)
             .map_err(|error| format!("failed to delete watch fixture {}: {error}", edit.path)),
-        (false, Some(source)) => std::fs::write(&path, source)
+        (false, Some(source), None) => std::fs::write(&path, source)
             .map_err(|error| format!("failed to update watch fixture {}: {error}", edit.path)),
+        (false, None, Some(target)) => replace_watch_symlink(&path, target),
         _ => Err(format!(
-            "watch edit {} must specify exactly one of delete or source",
+            "watch edit {} must specify exactly one of delete, source, or symlink_target",
             edit.path
         )),
     }
@@ -2499,6 +2520,11 @@ fn run_watch_case(
     if scenario.kind == WatchScenarioKind::Delete && scenario.edits.len() != 2 {
         return Err(TestFailure::assertion(
             "delete watch scenario requires delete and restore edits",
+        ));
+    }
+    if scenario.kind == WatchScenarioKind::SymlinkRetarget && scenario.edits.len() != 1 {
+        return Err(TestFailure::assertion(
+            "symlink-retarget watch scenario requires exactly one edit",
         ));
     }
 
@@ -2643,6 +2669,9 @@ fn run_watch_case(
                         "watch acquired toolchain modules before reobserve completed".into(),
                     );
                 }
+            }
+            WatchScenarioKind::SymlinkRetarget => {
+                wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
             }
         }
         assert_watch_program(contract, &program, scenario.expected_exit_codes[1])
