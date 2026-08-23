@@ -2802,6 +2802,124 @@ mod tests {
         ImportDiscoveryContext::new(epoch, "/project", Some("/sdk"), "all").unwrap()
     }
 
+    #[test]
+    fn classify_module_keeps_project_identities_stable_across_relocation() {
+        fn classify(context: &ImportDiscoveryContext, path: &Path) -> ModuleId {
+            let path = normalize_path(&path.to_string_lossy());
+            classify_module(context, &path, &path).unwrap()
+        }
+
+        fn identities(root: &Path) -> Vec<ModuleId> {
+            let project = root.join("project");
+            let context =
+                ImportDiscoveryContext::new(1, project.to_string_lossy(), None, "all").unwrap();
+            [
+                project.join("main.rue"),
+                // The production path normalizer resolves nested and parent-relative
+                // spellings before classify_module assigns the durable identity.
+                project.join("./left/nested/../entry.rue"),
+                root.join("dep.rue"),
+                project.join("right/shared.rue"),
+            ]
+            .iter()
+            .map(|path| classify(&context, path))
+            .collect()
+        }
+
+        let base = if cfg!(windows) {
+            PathBuf::from(r"C:\rue-import-discovery-relocation")
+        } else {
+            PathBuf::from("/tmp/rue-import-discovery-relocation")
+        };
+        let expected = [
+            "main.rue",
+            "left/entry.rue",
+            "../dep.rue",
+            "right/shared.rue",
+        ]
+        .into_iter()
+        .map(ModuleId::from_logical_path)
+        .map(Result::unwrap)
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            identities(&base.join("a")),
+            expected,
+            "project-relative identities include nested and parent-relative sources"
+        );
+        assert_eq!(
+            identities(&base.join("a-deliberately-much-longer-relocated-source-root")),
+            expected,
+            "moving the physical project root does not change module identities"
+        );
+    }
+
+    #[test]
+    fn classify_module_keeps_external_std_namespace_stable() {
+        fn classify(context: &ImportDiscoveryContext, path: &Path) -> ModuleId {
+            let path = normalize_path(&path.to_string_lossy());
+            classify_module(context, &path, &path).unwrap()
+        }
+
+        fn identities(project: &Path, std_root: &Path) -> Vec<ModuleId> {
+            let context = ImportDiscoveryContext::new(
+                1,
+                project.to_string_lossy(),
+                Some(std_root.to_string_lossy().as_ref()),
+                "all",
+            )
+            .unwrap();
+            [
+                project.join("main.rue"),
+                std_root.join("_std.rue"),
+                std_root.join("math/float.rue"),
+                project.join("@rue-std/math/float.rue"),
+            ]
+            .iter()
+            .map(|path| classify(&context, path))
+            .collect()
+        }
+
+        let base = if cfg!(windows) {
+            PathBuf::from(r"C:\rue-import-discovery-std")
+        } else {
+            PathBuf::from("/tmp/rue-import-discovery-std")
+        };
+        let first = identities(&base.join("build-a/project"), &base.join("toolchain-a/std"));
+        let second = identities(
+            &base.join("different-depth/build-b/project"),
+            &base.join("a-different-toolchain-location/std"),
+        );
+        let expected = vec![
+            ModuleId::from_logical_path("main.rue").unwrap(),
+            ModuleId::from_trusted_standard_library_path("\0rue-std/_std.rue").unwrap(),
+            ModuleId::from_trusted_standard_library_path("\0rue-std/math/float.rue").unwrap(),
+            ModuleId::from_logical_path("@rue-std/math/float.rue").unwrap(),
+        ];
+
+        assert_eq!(first, expected);
+        assert_eq!(second, expected);
+        assert!(first[1].is_trusted_standard_library());
+        assert!(!first[3].is_trusted_standard_library());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn classify_module_rejects_unnamed_cross_volume_source() {
+        let context = ImportDiscoveryContext::new(1, r"C:\project", None, "all").unwrap();
+        let error = classify_module(
+            &context,
+            r"D:\dependency\helper.rue",
+            r"D:\dependency\helper.rue",
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("project-relative durable identity")
+        );
+    }
+
     fn identity() -> PhysicalFileIdentity {
         PhysicalFileIdentity::new(1, 2)
     }
