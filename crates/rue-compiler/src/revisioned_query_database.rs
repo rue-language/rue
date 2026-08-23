@@ -30704,13 +30704,13 @@ fn main() -> i32 {
         );
 
         let mut registry = CanonicalAnonymousNominalRegistry::default();
-        registry.extend([thin.clone()]);
+        registry.extend([&thin]);
         let canonical_thin = registry.get(&canonical).unwrap();
         let wrapped_thin = registry.get(&wrapped).unwrap();
         assert_eq!(canonical_thin.as_ref(), &thin);
         assert!(Rc::ptr_eq(&canonical_thin, &wrapped_thin));
-        registry.extend([rich.clone()]);
-        registry.extend([thin]);
+        registry.extend([&rich]);
+        registry.extend([&thin]);
 
         assert_eq!(registry.by_identity.len(), 1);
         let canonical_rich = registry.get(&canonical).unwrap();
