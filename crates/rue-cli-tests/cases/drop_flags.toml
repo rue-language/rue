@@ -74,6 +74,85 @@ fn main() -> i32 {
 """ }]
 stdout = "3\n777\n"
 
+# RUE-1737: a partial field move on a break edge must reach the loop exit's
+# MoveState. Joining the move and non-move break paths keeps the enclosing
+# aggregate drop field-granular on the former path and whole-value on the
+# latter.
+[[case]]
+name = "loop_break_partial_field_move_drops_once"
+description = "Multiple infinite-loop breaks join partial-field move state without double-dropping the moved field."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+struct Pair { first: D, second: D }
+fn consume(d: D) -> i32 { d.v }
+fn run(move_first: bool) -> i32 {
+    let pair = Pair { first: D { v: 1 }, second: D { v: 2 } };
+    loop {
+        if move_first { consume(pair.first); break; }
+        break;
+    }
+    @dbg(100);
+    0
+}
+fn main() -> i32 {
+    run(true);
+    run(false);
+    0
+}
+""" }]
+stdout = "1\n100\n2\n100\n1\n2\n"
+
+[[case]]
+name = "while_break_partial_field_move_drops_once"
+description = "While-loop condition-false and multiple break paths preserve partial-field drop state."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+struct Pair { first: D, second: D }
+fn consume(d: D) -> i32 { d.v }
+fn run(move_first: bool) -> i32 {
+    let pair = Pair { first: D { v: 1 }, second: D { v: 2 } };
+    let mut i = 0;
+    while i < 1 {
+        if move_first { consume(pair.first); break; }
+        break;
+    }
+    @dbg(200);
+    0
+}
+fn main() -> i32 {
+    run(true);
+    run(false);
+    0
+}
+""" }]
+stdout = "1\n200\n2\n200\n1\n2\n"
+
+# The same regression with heap-owning StrBuf fields exercises the real
+# destructor/drop-glue ownership path in addition to the trace fixture above.
+[[case]]
+name = "while_break_partial_strbuf_field_does_not_double_free"
+description = "A StrBuf field moved on a while break is not freed again by the enclosing aggregate."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+struct Pair { first: StrBuf, second: StrBuf }
+fn consume(s: StrBuf) -> i32 { 1 }
+fn main() -> i32 {
+    let pair = Pair { first: "first", second: "second" };
+    let mut i = 0;
+    while i < 1 {
+        consume(pair.first);
+        break;
+    }
+    @dbg(300);
+    0
+}
+""" }]
+stdout = "300\n"
+
 [[case]]
 name = "divergent_move_then_reassign_drops_new_value"
 description = "Reassignment after a divergent move re-arms the flag."
