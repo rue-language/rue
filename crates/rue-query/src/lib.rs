@@ -12073,20 +12073,41 @@ fn outcomes_equal<V>(
     }
 }
 
+/// Aggregate one attempt's work contributions, name-ordered.
+///
+/// A tree keyed by the metric name allocated a node per distinct identity and
+/// compared names on the way to each, then a second allocation collected the
+/// result out again. An attempt records a handful of identities, so sorting the
+/// contributions and merging equal neighbours reaches the same name-ordered
+/// vector with one allocation and `n log n` comparisons of a short list.
 fn canonical_work(work: Vec<WorkItem>) -> Vec<(Arc<str>, u64)> {
-    let mut aggregate = BTreeMap::<Arc<str>, u64>::new();
-    for item in work {
-        *aggregate.entry(item.identity).or_default() += item.amount;
-    }
-    aggregate.into_iter().collect()
+    merge_sorted_by_identity(
+        work.into_iter()
+            .map(|item| (item.identity, item.amount))
+            .collect(),
+    )
 }
 
 fn canonical_reduced_work(work: Vec<(Arc<str>, u64)>) -> Vec<(Arc<str>, u64)> {
-    let mut aggregate = BTreeMap::<Arc<str>, u64>::new();
-    for (identity, amount) in work {
-        *aggregate.entry(identity).or_default() += amount;
+    merge_sorted_by_identity(work)
+}
+
+fn merge_sorted_by_identity(mut work: Vec<(Arc<str>, u64)>) -> Vec<(Arc<str>, u64)> {
+    if work.len() > 1 {
+        work.sort_by(|(left, _), (right, _)| left.cmp(right));
+        let mut written = 0;
+        for index in 1..work.len() {
+            if work[written].0 == work[index].0 {
+                let amount = work[index].1;
+                work[written].1 += amount;
+            } else {
+                written += 1;
+                work.swap(written, index);
+            }
+        }
+        work.truncate(written + 1);
     }
-    aggregate.into_iter().collect()
+    work
 }
 
 /// Canonicalizes the members of one detected cycle for rendering.
