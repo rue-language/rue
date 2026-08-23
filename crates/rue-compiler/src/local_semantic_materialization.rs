@@ -403,7 +403,11 @@ impl<T: Clone + Eq + Hash> SliceInterner<T> {
     /// it as the shared copy. Returns whether the slice was reused.
     fn intern(&mut self, values: Vec<T>) -> (Arc<[T]>, bool) {
         use std::hash::Hasher;
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // Bucket selector only: the scan below compares slice contents, so a
+        // collision costs one extra comparison rather than sharing a wrong
+        // slice. SipHash over every selected fact slice was measurable on the
+        // fresh-compile materialization path.
+        let mut hasher = rue_query::StableHasher::new();
         values.hash(&mut hasher);
         let bucket = self.buckets.entry(hasher.finish()).or_default();
         if let Some(shared) = bucket

@@ -4,8 +4,6 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use sha2::{Digest, Sha256};
-
 use crate::ModuleId;
 
 /// Durable-key name for the canonical semantic namespace taxonomy.
@@ -58,19 +56,17 @@ struct StableDefinitionIdentity {
 #[derive(Clone)]
 pub struct StableDefinitionKey(Arc<StableDefinitionIdentity>);
 
-struct DefinitionIdentityDigester(Sha256);
-
-impl Hasher for DefinitionIdentityDigester {
-    fn finish(&self) -> u64 {
-        let digest = self.0.clone().finalize();
-        u64::from_le_bytes(digest[..8].try_into().expect("SHA-256 prefix length"))
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        self.0.update(bytes);
-    }
-}
-
+/// Bucket-selector digest for one issued definition identity.
+///
+/// This is a hash-table accelerator, never a durable or serialized value:
+/// [`StableDefinitionKey`]'s `PartialEq` and `Ord` remain authoritative over
+/// the complete fields, so a collision here costs one extra field comparison
+/// in a bucket and can never conflate distinct keys. That makes a
+/// cryptographic digest unnecessary — issuance previously ran SHA-256 over
+/// every module, name, and owner string, which measured 1.9% of a fresh
+/// Lattice compile purely to select buckets. `StableHasher` is the
+/// repository's fixed-key, byte-order-independent mixer, so the accelerator
+/// stays deterministic across processes at a fraction of the cost.
 fn definition_hash_accelerator(
     module: &ModuleId,
     namespace: StableDefinitionNamespace,
@@ -78,17 +74,14 @@ fn definition_hash_accelerator(
     name: &Arc<str>,
     owner: &Option<StableNamedTypeKey>,
 ) -> [u8; 16] {
-    let mut hasher = DefinitionIdentityDigester(Sha256::new());
-    hasher.write(b"rue.stable-definition-key\0v1\0sha256\0");
+    let mut hasher = rue_query::StableHasher::new();
+    hasher.write(b"rue.stable-definition-key\0v2\0stable-hasher\0");
     module.hash(&mut hasher);
     namespace.hash(&mut hasher);
     kind.hash(&mut hasher);
     name.hash(&mut hasher);
     owner.hash(&mut hasher);
-    let digest = hasher.0.finalize();
-    digest[..16]
-        .try_into()
-        .expect("SHA-256 accelerator prefix length")
+    hasher.finish128().to_u128().to_le_bytes()
 }
 
 impl StableDefinitionKey {

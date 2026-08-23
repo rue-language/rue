@@ -48,7 +48,9 @@ pub(crate) struct ObjectProjectionQueryKey {
     pub(crate) object_format: ObjectFormat,
     pub(crate) abi_layout_epoch: u32,
     pub(crate) object_writer_epoch: u32,
-    display_identity: Arc<str>,
+    /// Lazy (ADR-0074): formatting this forced the codegen key's identity,
+    /// which walks the whole recursive function identity.
+    display_identity: OnceLock<Arc<str>>,
 }
 
 impl ObjectProjectionQueryKey {
@@ -56,19 +58,24 @@ impl ObjectProjectionQueryKey {
         let target = codegen.target;
         let object_format = ObjectFormat::for_target(target);
         let abi_layout_epoch = codegen.abi_layout_epoch;
-        let codegen_identity = codegen.shared_stable_identity();
-        let display_identity: Arc<str> = format!(
-            "object-projection;{codegen_identity};target={target:?};format={object_format:?};abi-layout={abi_layout_epoch};writer={OBJECT_WRITER_EPOCH}"
-        )
-        .into();
         Self {
             abi_layout_epoch,
             codegen,
             target,
             object_format,
             object_writer_epoch: OBJECT_WRITER_EPOCH,
-            display_identity,
+            display_identity: OnceLock::new(),
         }
+    }
+
+    fn format_identity(&self) -> String {
+        let codegen_identity = self.codegen.shared_stable_identity();
+        let target = self.target;
+        let object_format = self.object_format;
+        let abi_layout_epoch = self.abi_layout_epoch;
+        format!(
+            "object-projection;{codegen_identity};target={target:?};format={object_format:?};abi-layout={abi_layout_epoch};writer={OBJECT_WRITER_EPOCH}"
+        )
     }
 }
 
@@ -96,11 +103,13 @@ impl Hash for ObjectProjectionQueryKey {
 
 impl QueryKey for ObjectProjectionQueryKey {
     fn stable_identity(&self) -> String {
-        self.display_identity.to_string()
+        self.format_identity()
     }
 
     fn shared_stable_identity(&self) -> Arc<str> {
-        self.display_identity.clone()
+        self.display_identity
+            .get_or_init(|| self.format_identity().into())
+            .clone()
     }
 
     fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {

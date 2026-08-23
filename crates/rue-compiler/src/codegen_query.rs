@@ -8,7 +8,7 @@
 
 use std::{
     hash::{Hash, Hasher},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use rue_query::{QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutcome, QueryOutput};
@@ -72,7 +72,11 @@ pub(crate) struct CodegenUnitQueryKey {
     #[cfg(test)]
     inject_failure: bool,
     memo_hash: u64,
-    display_identity: Arc<str>,
+    /// Formatted on the first diagnostic, cycle render, or abort that asks
+    /// what this node is *called* (ADR-0074). Ordinary compilation never
+    /// reads it: eagerly formatting `{function:?}` here walked the whole
+    /// recursive function identity and allocated for every constructed key.
+    display_identity: OnceLock<Arc<str>>,
 }
 
 impl CodegenUnitQueryKey {
@@ -94,7 +98,11 @@ impl CodegenUnitQueryKey {
         optimized_cfg_batch: Option<Arc<crate::revisioned_query_database::OptimizedCfgBatchKey>>,
     ) -> Self {
         let function = optimized_cfg.cfg.function.clone();
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // A memo bucket selector, not an identity: `PartialEq` below compares
+        // the complete fields, so this only has to be fast and deterministic.
+        // `DefaultHasher` is SipHash-1-3, which dominated key construction on
+        // a fresh Lattice compile.
+        let mut hasher = rue_query::StableHasher::new();
         function.hash(&mut hasher);
         target.hash(&mut hasher);
         target.data_model().hash(&mut hasher);
@@ -116,11 +124,6 @@ impl CodegenUnitQueryKey {
         let memo_hash = hasher.finish();
         let data_model = target.data_model();
         let code_model = CodeModel::for_target(target);
-        let display_identity: Arc<str> = format!(
-            "{function:?};target={target:?};data-model={data_model:?};code-model={code_model:?};opt={optimization:?};backend={BACKEND_EPOCH};abi-layout={ABI_LAYOUT_EPOCH};batch={}",
-            optimized_cfg_batch.is_some()
-        )
-        .into();
         Self {
             function,
             target,
@@ -135,8 +138,20 @@ impl CodegenUnitQueryKey {
             #[cfg(test)]
             inject_failure,
             memo_hash,
-            display_identity,
+            display_identity: OnceLock::new(),
         }
+    }
+
+    fn format_identity(&self) -> String {
+        let function = &self.function;
+        let target = self.target;
+        let data_model = self.data_model;
+        let code_model = self.code_model;
+        let optimization = self.optimization;
+        format!(
+            "{function:?};target={target:?};data-model={data_model:?};code-model={code_model:?};opt={optimization:?};backend={BACKEND_EPOCH};abi-layout={ABI_LAYOUT_EPOCH};batch={}",
+            self.optimized_cfg_batch.is_some()
+        )
     }
 }
 
@@ -172,11 +187,13 @@ impl Hash for CodegenUnitQueryKey {
 }
 impl QueryKey for CodegenUnitQueryKey {
     fn stable_identity(&self) -> String {
-        self.display_identity.to_string()
+        self.format_identity()
     }
 
     fn shared_stable_identity(&self) -> Arc<str> {
-        self.display_identity.clone()
+        self.display_identity
+            .get_or_init(|| self.format_identity().into())
+            .clone()
     }
 
     /// The same field set `memo_hash` covers, absorbed structurally.

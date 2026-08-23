@@ -1,4 +1,8 @@
-use std::collections::HashMap;
+// Local, request-scoped maps keyed by dense type/symbol identities. Equality
+// stays authoritative, so the hasher is a bucket selector: `ahash` replaces
+// SipHash here because CFG domain projection rebuilds these maps for every
+// body on the fresh-compile path.
+use ahash::AHashMap as HashMap;
 use std::sync::Arc;
 
 use lasso::{Key, Spur};
@@ -12,7 +16,7 @@ type CanonicalType = SemanticImportType<crate::StableDefinitionKey, crate::Modul
 #[cfg(test)]
 pub(crate) struct CfgTypeAdmissionIndex<'a> {
     pool: &'a rue_air::FrozenTypeInternPool,
-    aggregates: &'a HashMap<Type, crate::TypeInstanceKey>,
+    aggregates: &'a std::collections::HashMap<Type, crate::TypeInstanceKey>,
     live_by_stable: Option<HashMap<CanonicalType, Type>>,
 }
 
@@ -20,7 +24,7 @@ pub(crate) struct CfgTypeAdmissionIndex<'a> {
 impl<'a> CfgTypeAdmissionIndex<'a> {
     pub(crate) fn new(
         pool: &'a rue_air::FrozenTypeInternPool,
-        aggregates: &'a HashMap<Type, crate::TypeInstanceKey>,
+        aggregates: &'a std::collections::HashMap<Type, crate::TypeInstanceKey>,
     ) -> Self {
         Self {
             pool,
@@ -128,7 +132,7 @@ fn live_instruction_kind(data: &AirInstData) -> rue_air::SemanticBodyInstKind {
 fn canonical_type_from_live_cached(
     ty: Type,
     pool: &rue_air::FrozenTypeInternPool,
-    aggregates: &HashMap<Type, crate::TypeInstanceKey>,
+    aggregates: &std::collections::HashMap<Type, crate::TypeInstanceKey>,
     stable_by_live: &mut HashMap<Type, CanonicalType>,
 ) -> Result<CanonicalType, CfgDomainFailure> {
     if let Some(stable) = stable_by_live.get(&ty) {
@@ -239,7 +243,7 @@ fn record_cfg_type(
     types: &mut Vec<(Type, CanonicalType)>,
     ty: Type,
     pool: &rue_air::FrozenTypeInternPool,
-    aggregates: &HashMap<Type, crate::TypeInstanceKey>,
+    aggregates: &std::collections::HashMap<Type, crate::TypeInstanceKey>,
     stable_by_live: &mut HashMap<Type, CanonicalType>,
 ) -> Result<(), CfgDomainFailure> {
     match canonical_type_from_live_cached(ty, pool, aggregates, stable_by_live) {
@@ -562,7 +566,7 @@ impl CfgDomainProjection {
             .types
             .iter()
             .map(|(_, stable)| stable.clone())
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<ahash::AHashSet<_>>();
         for (_, stable) in &old.types {
             if live_primitive(stable).is_some() || !stable_types.insert(stable.clone()) {
                 continue;
@@ -614,11 +618,7 @@ impl CfgDomainProjection {
             old_symbols.entry(*live).or_insert(stable);
         }
         let mut indices = first_string_indices(strings)?;
-        let mut domain_strings = self
-            .strings
-            .iter()
-            .cloned()
-            .collect::<std::collections::HashSet<_>>();
+        let mut domain_strings = self.strings.iter().cloned().collect::<ahash::AHashSet<_>>();
         let mut additions = Vec::new();
         let mut string_map = std::collections::BTreeMap::new();
         for (old_index, stable) in &old.strings {
@@ -1142,10 +1142,7 @@ impl CfgDomainProjection {
             .iter()
             .map(|(current, _)| *current)
             .collect::<Vec<_>>();
-        let mut enqueued = pending
-            .iter()
-            .copied()
-            .collect::<std::collections::HashSet<_>>();
+        let mut enqueued = pending.iter().copied().collect::<ahash::AHashSet<_>>();
         let mut visited = std::collections::HashSet::new();
         let mut incomplete = false;
         while let Some(current) = pending.pop() {
@@ -1362,7 +1359,7 @@ mod tests {
         let old = projection(symbol);
         let mut current = projection(symbol);
         let pool = rue_air::TypeInternPool::new().freeze();
-        let aggregates = HashMap::new();
+        let aggregates = std::collections::HashMap::new();
         let mut admission = CfgTypeAdmissionIndex::new(&pool, &aggregates);
 
         current.admit_stable_types(&old, &mut admission).unwrap();
