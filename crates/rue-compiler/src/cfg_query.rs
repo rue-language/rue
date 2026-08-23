@@ -1864,20 +1864,38 @@ pub(crate) fn apply_general_inlining(
         records.insert(key.cfg.function.clone(), record.clone());
     }
 
+    // Membership in the batch is asked once per call instruction across every
+    // function, and again for every edge when the call graph is built.
+    // `records` is a `BTreeMap` whose keys are recursive function identities,
+    // so each probe walks a tree O(log n) times. A hash set answers the same
+    // question once per probe; `records` keeps its ordered iteration, which
+    // call-site selection depends on.
+    let record_keys: ahash::AHashSet<crate::FunctionInstanceKey> =
+        records.keys().cloned().collect();
+
     // Keep every edge, including duplicate edges. The multiplicity is useful
     // for deterministic call-site selection and makes the graph description
     // honest even though SCC detection only needs its distinct neighbors.
-    let mut edges = std::collections::BTreeMap::<
-        crate::FunctionInstanceKey,
-        Vec<crate::FunctionInstanceKey>,
-    >::new();
-    let mut callsites = std::collections::BTreeMap::<
+    // These three are only ever inserted into and looked up by key; nothing
+    // iterates them, so their ordering is not observable and they do not need
+    // to pay a recursive-identity comparison per probe. `records` and `graph`
+    // stay ordered, because iteration order there does reach the output
+    // through call-site selection and SCC detection.
+    let mut edges: ahash::AHashMap<crate::FunctionInstanceKey, Vec<crate::FunctionInstanceKey>> =
+        ahash::AHashMap::new();
+    let mut callsites: ahash::AHashMap<
         crate::FunctionInstanceKey,
         Vec<(rue_cfg::CfgValue, crate::FunctionInstanceKey)>,
-    >::new();
-    let mut has_calls = std::collections::BTreeMap::new();
+    > = ahash::AHashMap::new();
+    let mut has_calls: ahash::AHashMap<crate::FunctionInstanceKey, bool> = ahash::AHashMap::new();
     for (function, record) in &records {
         let mut calls = Vec::new();
+        // Every edge found in this iteration belongs to `function`, so the
+        // callees accumulate locally and land in `edges` once. Going through
+        // `edges.entry(function.clone())` per call instruction cost a
+        // `BTreeMap` probe over a recursive identity plus a deep key clone,
+        // for each of them.
+        let mut function_edges: Vec<crate::FunctionInstanceKey> = Vec::new();
         let mut any_call = false;
         for block in record.cfg.blocks() {
             for &value in &block.insts {
@@ -1893,14 +1911,14 @@ pub(crate) fn apply_general_inlining(
                 let Some(callee) = record.domains.callable_for_symbol(name) else {
                     continue;
                 };
-                edges
-                    .entry(function.clone())
-                    .or_default()
-                    .push(callee.clone());
-                if records.contains_key(&callee) {
+                function_edges.push(callee.clone());
+                if record_keys.contains(&callee) {
                     calls.push((value, callee));
                 }
             }
+        }
+        if !function_edges.is_empty() {
+            edges.insert(function.clone(), function_edges);
         }
         has_calls.insert(function.clone(), any_call);
         callsites.insert(function.clone(), calls);
@@ -1914,7 +1932,7 @@ pub(crate) fn apply_general_inlining(
                 .get(function)
                 .into_iter()
                 .flatten()
-                .filter(|callee| records.contains_key(*callee))
+                .filter(|callee| record_keys.contains(*callee))
                 .cloned()
                 .collect::<Vec<_>>(),
         );
