@@ -90,9 +90,10 @@
 //! - `tier = "slow"` on a section or `[[automatic_example]]`: keep exhaustive
 //!   or full-program large-example coverage behind the dedicated slow Buck
 //!   target
-//! - `known_bug = "RUE-NN"`: expected failure (xfail). An ordinary assertion
-//!   failure is ignored with the bug reference. A fatal subprocess failure or
-//!   unexpected pass fails loudly.
+//! - `known_bug = "RUE-123"`: expected failure (xfail), using the canonical
+//!   `RUE-<positive integer>` spelling with no leading zeroes. An ordinary
+//!   assertion failure is ignored with the bug reference. A fatal subprocess
+//!   failure or unexpected pass fails loudly.
 //! - `only_on = ["x86-64-linux", ...]`: run the case only on these hosts
 //!   (ignored elsewhere). For behavior that depends on the host platform,
 //!   e.g. whether `--target X` is a cross-compile or a native compile.
@@ -3198,6 +3199,22 @@ fn invalid_executable_target(case: &Case) -> Option<&str> {
         .filter(|target| target.parse::<Target>().is_err())
 }
 
+/// Return whether `marker` is the canonical spelling of a Rue issue marker.
+///
+/// Keep this deliberately stricter than merely checking for a numeric suffix:
+/// issue references are part of the corpus metadata, so alternate spellings
+/// such as `RUE-01` should not silently become a second identity for `RUE-1`.
+fn is_canonical_known_bug_marker(marker: &str) -> bool {
+    let Some(number) = marker.strip_prefix("RUE-") else {
+        return false;
+    };
+    let bytes = number.as_bytes();
+    !bytes.is_empty()
+        && bytes[0].is_ascii_digit()
+        && bytes[0] != b'0'
+        && bytes[1..].iter().all(u8::is_ascii_digit)
+}
+
 /// Symbol-table expectations require a produced executable, so they cannot
 /// accompany `compile_fail`, and asserting an empty table contradicts
 /// asserting its contents (RUE-1173). Returns the load-time error, if any.
@@ -3217,6 +3234,14 @@ fn invalid_symbol_expectations(case: &Case) -> Option<&'static str> {
 
 fn unknown_only_on_targets(case: &Case) -> Vec<&str> {
     case.only_on
+        .iter()
+        .map(String::as_str)
+        .filter(|platform| !KNOWN_TARGETS.contains(platform))
+        .collect()
+}
+
+fn unknown_known_bug_on_targets(case: &Case) -> Vec<&str> {
+    case.known_bug_on
         .iter()
         .map(String::as_str)
         .filter(|platform| !KNOWN_TARGETS.contains(platform))
@@ -3256,6 +3281,17 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
                 // load time so the doc comment's promise is enforced, not merely
                 // documented (RUE-132).
                 for case in &tf.cases {
+                    if let Some(marker) = case.known_bug.as_deref()
+                        && !is_canonical_known_bug_marker(marker)
+                    {
+                        eprintln!(
+                            "error: {}: case '{}' has invalid known_bug marker {:?}; expected canonical RUE-<positive integer> (for example, RUE-123)",
+                            path.display(),
+                            case.name,
+                            marker,
+                        );
+                        std::process::exit(1);
+                    }
                     if let Some(target) = invalid_executable_target(case) {
                         eprintln!(
                             "error: {}: case '{}' has unknown executable_target '{}' (known: {})",
@@ -3293,6 +3329,17 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
                             path.display(),
                             case.name,
                             unknown_platforms.join(", "),
+                            KNOWN_TARGETS.join(", ")
+                        );
+                        std::process::exit(1);
+                    }
+                    let unknown_known_bug_platforms = unknown_known_bug_on_targets(case);
+                    if !unknown_known_bug_platforms.is_empty() {
+                        eprintln!(
+                            "error: {}: case '{}' has unknown known_bug_on platform(s): {} (known: {})",
+                            path.display(),
+                            case.name,
+                            unknown_known_bug_platforms.join(", "),
                             KNOWN_TARGETS.join(", ")
                         );
                         std::process::exit(1);
@@ -4886,6 +4933,37 @@ mod tests {
     }
 
     #[test]
+    fn unknown_known_bug_on_target_is_rejected() {
+        let case = Case {
+            name: "known_bug_platform_typo".to_string(),
+            known_bug_on: vec!["x86_64-linux".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(unknown_known_bug_on_targets(&case), vec!["x86_64-linux"]);
+    }
+
+    #[test]
+    fn known_bug_marker_requires_canonical_positive_issue_number() {
+        for marker in ["RUE-1", "RUE-123"] {
+            assert!(
+                is_canonical_known_bug_marker(marker),
+                "canonical marker should be accepted: {marker}"
+            );
+        }
+
+        for marker in [
+            "", "TYPO", "BUG-1", "RUE-", "RUE-0", "RUE-00", "RUE-01", "RUE-+1", "RUE-1x", " rue-1",
+            "RUE-1 ", "rue-1",
+        ] {
+            assert!(
+                !is_canonical_known_bug_marker(marker),
+                "malformed marker should be rejected: {marker:?}"
+            );
+        }
+    }
+
+    #[test]
     fn known_only_on_targets_are_accepted() {
         let case = Case {
             name: "known_platforms".to_string(),
@@ -4897,6 +4975,20 @@ mod tests {
         };
 
         assert!(unknown_only_on_targets(&case).is_empty());
+    }
+
+    #[test]
+    fn known_bug_on_targets_are_accepted() {
+        let case = Case {
+            name: "known_bug_platforms".to_string(),
+            known_bug_on: KNOWN_TARGETS
+                .iter()
+                .map(|target| (*target).to_string())
+                .collect(),
+            ..Default::default()
+        };
+
+        assert!(unknown_known_bug_on_targets(&case).is_empty());
     }
 
     #[test]
@@ -5024,7 +5116,7 @@ mod tests {
                 path: "main.rue".to_string(),
                 source: "fn main() -> i32 { 0 }".to_string(),
             }],
-            known_bug: Some("RUE-PROBE".to_string()),
+            known_bug: Some("RUE-999999".to_string()),
             differential_opt: true,
             stdout: Some(String::new()),
             exit_code: Some(0),
@@ -5046,7 +5138,7 @@ mod tests {
         assert!(error.is_fatal());
         assert!(error.contains("at -O0"));
         assert!(matches!(
-            known_bug_disposition("RUE-PROBE", Err(error)),
+            known_bug_disposition("RUE-999999", Err(error)),
             KnownBugDisposition::Fail(message) if message.contains("INTERNAL COMPILER ERROR")
         ));
     }
@@ -5055,14 +5147,14 @@ mod tests {
     fn known_bug_disposition_ignores_only_ordinary_failures_and_rejects_xpass() {
         assert!(matches!(
             known_bug_disposition(
-                "RUE-PROBE",
+                "RUE-999999",
                 Err(TestFailure::assertion("wrong output\nmore detail"))
             ),
             KnownBugDisposition::Ignore(message)
-                if message == "known bug RUE-PROBE (expected failure): wrong output"
+                if message == "known bug RUE-999999 (expected failure): wrong output"
         ));
         assert!(matches!(
-            known_bug_disposition("RUE-PROBE", Ok(())),
+            known_bug_disposition("RUE-999999", Ok(())),
             KnownBugDisposition::Fail(message) if message.contains("test PASSED")
         ));
     }

@@ -1357,6 +1357,23 @@ rue_sh_test(
     ],
 )
 
+# RUE-1743/RUE-1764: known_bug metadata is an executable xfail contract. Keep
+# its canonical marker spelling and platform vocabulary enforced by the real
+# CLI corpus loader, not only by parser helper unit tests, so malformed
+# metadata cannot silently absorb a failure in a filtered or cached corpus
+# action.
+rue_sh_test(
+    name = "cli-known-bug-marker-validation",
+    test = "scripts/test-cli-known-bug-markers.sh",
+    env = {
+        "RUE_CLI_HARNESS": "$(exe_target //crates/rue-cli-tests:rue-cli-tests)",
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
+        "RUE_REPO_DIR": "$(location :cli-test-fixtures)",
+        "RUE_STD_DIR": "$(location :std)/std",
+    },
+)
+
 rue_sh_test(
     name = "cli-timeout-policy-tool-tests",
     test = "scripts/test-cli-timeout-policy.py",
