@@ -1734,8 +1734,10 @@ window = 3
                 },
                 environment: fingerprint("AMD EPYC 7763"),
             },
+            boundary: None,
             workloads: vec![WorkloadObservation {
                 workload: "startup".to_string(),
+                boundary: None,
                 samples: latencies
                     .iter()
                     .map(|ns| {
@@ -1749,6 +1751,8 @@ window = 3
                             output_binary_bytes: 12_288,
                             phases: accounting(ns * batch),
                             boundary_evidence: Vec::new(),
+                            boundary_processes: Vec::new(),
+                            boundary_work_processes: Vec::new(),
                         }
                     })
                     .collect(),

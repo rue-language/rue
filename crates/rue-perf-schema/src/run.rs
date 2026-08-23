@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::BuildBoundaryEvidence;
+use crate::encoding::{RunBoundary, WorkloadBoundary};
 
 /// A published wall-clock phase.
 ///
@@ -232,10 +233,30 @@ pub struct Sample {
     pub phases: PhaseAccounting,
     /// One independent runner/compiler proof for each process in this sample.
     ///
-    /// Empty only for historical protocol-v1 suites. Protocol v2 requires
-    /// exactly `batch_size` entries and validates each one against its epoch.
+    /// The full-evidence (schema v1) encoding. Empty for historical
+    /// protocol-v1 suites, and always empty in the stored (schema v2)
+    /// encoding, where each process is committed to by digest instead.
+    /// Protocol v2 under the full-evidence encoding requires exactly
+    /// `batch_size` entries and validates each one against its epoch.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub boundary_evidence: Vec<BuildBoundaryEvidence>,
+    /// Per-process identity digests, schema v2 only.
+    ///
+    /// One entry per process, in spawn order: the tagged SHA-256 of that
+    /// process's reassembled `{runner, compiler}` pair
+    /// ([`crate::identity_digest`]). Protocol v2 requires exactly
+    /// `batch_size` entries, each equal to the digest of the workload's
+    /// retained witness.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boundary_processes: Vec<String>,
+    /// Per-process deterministic-work digests, schema v2 only.
+    ///
+    /// Present exactly when the epoch's `worker_setting` is `one` — the only
+    /// setting under which `compiler_work` is required to agree across
+    /// processes. A parallel epoch stores none: a digest of unstored bytes
+    /// that are expected to differ certifies nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boundary_work_processes: Vec<String>,
 }
 
 impl Sample {
@@ -256,6 +277,10 @@ impl Sample {
 pub struct WorkloadObservation {
     /// The workload's logical identifier, as declared by the suite revision.
     pub workload: String,
+    /// Workload-invariant boundary evidence and retained members, schema v2
+    /// only ([`WorkloadBoundary`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<WorkloadBoundary>,
     /// Raw samples in collection order.
     ///
     /// All samples are stored, including invalid ones. Consumers exclude
@@ -457,6 +482,9 @@ pub struct RunObject {
     pub schema_version: u32,
     /// Identity and configuration of the run.
     pub identity: RunIdentity,
+    /// Run-invariant boundary evidence, schema v2 only ([`RunBoundary`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<RunBoundary>,
     /// Per-workload raw samples, sorted by workload identifier.
     pub workloads: Vec<WorkloadObservation>,
     /// Structured evidence of everything that failed.
@@ -597,6 +625,8 @@ mod tests {
             output_binary_bytes: 1,
             phases: accounting(100, 100, 0, 0),
             boundary_evidence: Vec::new(),
+            boundary_processes: Vec::new(),
+            boundary_work_processes: Vec::new(),
         };
         assert_eq!(sample.driver_overhead_ns(), Some(50));
     }
@@ -610,6 +640,8 @@ mod tests {
             output_binary_bytes: 1,
             phases: accounting(100, 100, 0, 0),
             boundary_evidence: Vec::new(),
+            boundary_processes: Vec::new(),
+            boundary_work_processes: Vec::new(),
         };
         assert_eq!(sample.driver_overhead_ns(), None);
     }

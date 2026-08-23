@@ -22,6 +22,9 @@
 use std::collections::BTreeMap;
 
 use crate::RUN_SCHEMA_VERSION;
+use crate::encoding::{
+    FULL_EVIDENCE_SCHEMA_VERSION, identity_digest, reassemble_witness, work_digest,
+};
 use crate::manifest::Manifest;
 use crate::run::{FailureRecord, Phase, RunObject, Sample};
 use crate::sanity::{is_commit, is_utc_timestamp, samples_beyond_policy};
@@ -30,12 +33,16 @@ use crate::stats::median;
 /// A reason a run may not enter a series at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
-    /// The run was written under a schema version this crate does not
-    /// implement. There is no compatibility path, by design.
+    /// The run was written under a schema version ahead of this crate.
+    ///
+    /// Readers implement every version that can still be in the store —
+    /// [`FULL_EVIDENCE_SCHEMA_VERSION`] and [`RUN_SCHEMA_VERSION`] — and
+    /// refuse only versions they do not know. Refusal applies forward,
+    /// never backward.
     UnsupportedSchemaVersion {
         /// The version the run object declares.
         found: u32,
-        /// The version this crate implements.
+        /// The newest version this crate implements.
         expected: u32,
     },
     /// The run names a suite revision the manifest does not declare.
@@ -398,7 +405,9 @@ impl ValidationOutcome {
 pub fn validate_run(manifest: &Manifest, run: &RunObject) -> ValidationOutcome {
     let mut errors = Vec::new();
 
-    if run.schema_version != RUN_SCHEMA_VERSION {
+    if run.schema_version != FULL_EVIDENCE_SCHEMA_VERSION
+        && run.schema_version != RUN_SCHEMA_VERSION
+    {
         // Nothing below can be trusted to mean what it appears to mean, so this
         // is the one failure that stops validation short.
         return ValidationOutcome {
@@ -527,6 +536,43 @@ fn check_boundary_evidence(
     epoch: &crate::manifest::PlatformEpoch,
     errors: &mut Vec<ValidationError>,
 ) {
+    // Encoding shape dispatches on the record's schema version; what must be
+    // proven dispatches on the suite's protocol version. The two cross here
+    // and nowhere else.
+    if run.schema_version == RUN_SCHEMA_VERSION {
+        check_boundary_evidence_encoded(run, suite, epoch, errors);
+        return;
+    }
+    // The full-evidence encoding must not smuggle in v2 shapes: a v1 record
+    // carrying digests or blocks is malformed, not partially upgraded.
+    if run.boundary.is_some() {
+        if let Some(observation) = run.workloads.first() {
+            errors.push(ValidationError::BoundaryEvidenceMismatch {
+                workload: observation.workload.clone(),
+                sample_index: 0,
+                detail: "a full-evidence record must not carry a run boundary block".to_string(),
+            });
+        }
+    }
+    for observation in &run.workloads {
+        if observation.boundary.is_some() {
+            errors.push(ValidationError::BoundaryEvidenceMismatch {
+                workload: observation.workload.clone(),
+                sample_index: 0,
+                detail: "a full-evidence record must not carry a workload boundary block"
+                    .to_string(),
+            });
+        }
+        for (sample_index, sample) in observation.samples.iter().enumerate() {
+            if !sample.boundary_processes.is_empty() || !sample.boundary_work_processes.is_empty() {
+                errors.push(ValidationError::BoundaryEvidenceMismatch {
+                    workload: observation.workload.clone(),
+                    sample_index: sample_index as u32,
+                    detail: "a full-evidence record must not carry per-process digests".to_string(),
+                });
+            }
+        }
+    }
     for observation in &run.workloads {
         let mut expected_output = None;
         let mut expected_work = None;
@@ -609,6 +655,246 @@ fn check_boundary_evidence(
                     sample_index: sample_index as u32,
                     detail,
                 });
+            }
+        }
+    }
+}
+
+/// The stored (schema v2) half of the boundary check: witness plus digests.
+///
+/// Every guarantee the full-evidence path checks per process is re-derived
+/// here from the retained witness and the per-process digests: semantic
+/// validity of the witness against the epoch policy, output-size agreement
+/// per sample, and cross-process identity — a process's digest equal to the
+/// witness digest is the digest-level statement of the byte-equality the
+/// full path asserted.
+fn check_boundary_evidence_encoded(
+    run: &RunObject,
+    suite: &crate::manifest::SuiteRevision,
+    epoch: &crate::manifest::PlatformEpoch,
+    errors: &mut Vec<ValidationError>,
+) {
+    let mut push = |workload: &str, sample_index: u32, detail: String| {
+        errors.push(ValidationError::BoundaryEvidenceMismatch {
+            workload: workload.to_string(),
+            sample_index,
+            detail,
+        });
+    };
+    match (suite.protocol_version, &epoch.boundary) {
+        (1, None) => {
+            // A protocol-1 suite carries no evidence under either encoding.
+            if run.boundary.is_some() {
+                if let Some(observation) = run.workloads.first() {
+                    push(
+                        &observation.workload,
+                        0,
+                        "historical protocol v1 must not carry boundary evidence".to_string(),
+                    );
+                }
+            }
+            for observation in &run.workloads {
+                if observation.boundary.is_some() {
+                    push(
+                        &observation.workload,
+                        0,
+                        "historical protocol v1 must not carry boundary evidence".to_string(),
+                    );
+                }
+                for (sample_index, sample) in observation.samples.iter().enumerate() {
+                    if !sample.boundary_evidence.is_empty()
+                        || !sample.boundary_processes.is_empty()
+                        || !sample.boundary_work_processes.is_empty()
+                    {
+                        push(
+                            &observation.workload,
+                            sample_index as u32,
+                            "historical protocol v1 must not carry boundary evidence".to_string(),
+                        );
+                    }
+                }
+            }
+        }
+        (2, Some(policy)) => {
+            let Some(run_boundary) = run.boundary.as_ref() else {
+                for observation in &run.workloads {
+                    push(
+                        &observation.workload,
+                        0,
+                        "schema v2 protocol-2 record carries no run boundary block".to_string(),
+                    );
+                }
+                return;
+            };
+            let one_worker = policy.worker_setting == crate::WorkerSetting::One;
+            for observation in &run.workloads {
+                let Some(workload_boundary) = observation.boundary.as_ref() else {
+                    push(
+                        &observation.workload,
+                        0,
+                        "schema v2 protocol-2 record carries no workload boundary block"
+                            .to_string(),
+                    );
+                    continue;
+                };
+                let (runner, compiler) = reassemble_witness(run_boundary, workload_boundary);
+                let witness_sample = workload_boundary.critical_path_source.sample_index;
+                let witness_evidence = crate::BuildBoundaryEvidence {
+                    runner,
+                    compiler,
+                    critical_path: workload_boundary.critical_path.clone(),
+                    compiler_work: workload_boundary.compiler_work,
+                };
+                if let Err(detail) = witness_evidence.validate_against(policy, &epoch.target) {
+                    push(
+                        &observation.workload,
+                        witness_sample,
+                        format!("witness: {detail}"),
+                    );
+                }
+                let witness_digest =
+                    match identity_digest(&witness_evidence.runner, &witness_evidence.compiler) {
+                        Ok(digest) => digest,
+                        Err(error) => {
+                            push(
+                                &observation.workload,
+                                witness_sample,
+                                format!("witness cannot be digested: {error}"),
+                            );
+                            continue;
+                        }
+                    };
+                let witness_work_digest = if one_worker {
+                    match work_digest(&workload_boundary.compiler_work) {
+                        Ok(digest) => Some(digest),
+                        Err(error) => {
+                            push(
+                                &observation.workload,
+                                witness_sample,
+                                format!("witness work cannot be digested: {error}"),
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
+                let sample_count = observation.samples.len() as u32;
+                for (member, source) in [
+                    (
+                        "critical_path_source",
+                        workload_boundary.critical_path_source,
+                    ),
+                    (
+                        "compiler_work_source",
+                        workload_boundary.compiler_work_source,
+                    ),
+                ] {
+                    if source.sample_index >= sample_count {
+                        push(
+                            &observation.workload,
+                            0,
+                            format!(
+                                "{member} names sample {} of {sample_count}",
+                                source.sample_index
+                            ),
+                        );
+                    }
+                }
+                for (sample_index, sample) in observation.samples.iter().enumerate() {
+                    let sample_index = sample_index as u32;
+                    if !sample.boundary_evidence.is_empty() {
+                        push(
+                            &observation.workload,
+                            sample_index,
+                            "schema v2 record must not carry inline boundary evidence".to_string(),
+                        );
+                        continue;
+                    }
+                    if sample.boundary_processes.len() != sample.batch_size as usize {
+                        push(
+                            &observation.workload,
+                            sample_index,
+                            format!(
+                                "expected {} process proofs, found {}",
+                                sample.batch_size,
+                                sample.boundary_processes.len()
+                            ),
+                        );
+                        continue;
+                    }
+                    if workload_boundary.runner.output_size_bytes != sample.output_binary_bytes {
+                        push(
+                            &observation.workload,
+                            sample_index,
+                            format!(
+                                "proof output size {} disagrees with sample size {}",
+                                workload_boundary.runner.output_size_bytes,
+                                sample.output_binary_bytes
+                            ),
+                        );
+                    }
+                    if let Some(process) = sample
+                        .boundary_processes
+                        .iter()
+                        .position(|digest| digest != &witness_digest)
+                    {
+                        push(
+                            &observation.workload,
+                            sample_index,
+                            format!(
+                                "process {process}: identity digest disagrees with the workload                                  witness"
+                            ),
+                        );
+                    }
+                    match &witness_work_digest {
+                        Some(expected) => {
+                            if sample.boundary_work_processes.len() != sample.batch_size as usize {
+                                push(
+                                    &observation.workload,
+                                    sample_index,
+                                    format!(
+                                        "expected {} work digests, found {}",
+                                        sample.batch_size,
+                                        sample.boundary_work_processes.len()
+                                    ),
+                                );
+                            } else if sample
+                                .boundary_work_processes
+                                .iter()
+                                .any(|digest| digest != expected)
+                            {
+                                push(
+                                    &observation.workload,
+                                    sample_index,
+                                    "one-worker fresh processes reported nondeterministic                                      compiler work"
+                                        .to_string(),
+                                );
+                            }
+                        }
+                        None => {
+                            if !sample.boundary_work_processes.is_empty() {
+                                push(
+                                    &observation.workload,
+                                    sample_index,
+                                    "a parallel-epoch record must not carry work digests"
+                                        .to_string(),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (protocol, boundary) => {
+            for observation in &run.workloads {
+                push(
+                    &observation.workload,
+                    0,
+                    format!(
+                        "unsupported protocol/boundary pairing: protocol {protocol},                          policy {boundary:?}"
+                    ),
+                );
             }
         }
     }
@@ -974,12 +1260,17 @@ window = 10
             output_binary_bytes: 131_072,
             phases: accounting(root_ns),
             boundary_evidence: Vec::new(),
+            boundary_processes: Vec::new(),
+            boundary_work_processes: Vec::new(),
         }
     }
 
     pub(crate) fn sample_run() -> RunObject {
         RunObject {
-            schema_version: RUN_SCHEMA_VERSION,
+            // The deep per-process checks below exercise the full-evidence
+            // encoding; the stored encoding's checks live in the encoded
+            // tests and in crate::encoding.
+            schema_version: FULL_EVIDENCE_SCHEMA_VERSION,
             identity: RunIdentity {
                 suite_revision: 1,
                 epoch: 1,
@@ -1011,13 +1302,16 @@ window = 10
                     architecture: "x86_64".to_string(),
                 },
             },
+            boundary: None,
             workloads: vec![
                 WorkloadObservation {
                     workload: "caldera".to_string(),
+                    boundary: None,
                     samples: vec![sample(1, 900_000_000), sample(1, 910_000_000)],
                 },
                 WorkloadObservation {
                     workload: "startup".to_string(),
+                    boundary: None,
                     samples: vec![sample(40, 400_000_000), sample(40, 404_000_000)],
                 },
             ],
@@ -1233,6 +1527,7 @@ window = 10
         let mut run = sample_run();
         run.workloads.push(WorkloadObservation {
             workload: "surprise".to_string(),
+            boundary: None,
             samples: vec![sample(1, 5)],
         });
         let outcome = validate_run(&manifest(), &run);
@@ -1570,6 +1865,205 @@ window = 10
             ),
             "{:?}",
             outcome.errors
+        );
+    }
+
+    // ---- The stored (schema v2) encoding, and the dual-version reader ----
+
+    const BOUNDARY_MANIFEST: &str = r#"
+[[suite]]
+revision = 2
+timing_schema_version = 1
+protocol_version = 2
+boundary = "fresh_source_to_native_v1"
+
+[[suite.workloads]]
+id = "startup"
+source = "performance/workloads/startup/main.rue"
+question = "What does a minimal fresh compilation cost end to end?"
+
+[[epoch]]
+id = 3
+collection = true
+platform = "x86_64-linux"
+suite_revision = 2
+target = "x86-64-linux"
+args = ["-O3", "-j1"]
+toolchain_hash = "toolchain-aaa"
+
+[epoch.boundary]
+boundary = "fresh_source_to_native_v1"
+pipeline = "canonical_rooted_query_graph_v1"
+compiler_build_profile = "release_thin_lto"
+optimization = "o3"
+linker = "internal"
+output_kind = "native_executable"
+worker_setting = "one"
+allowed_input_classes = ["workload_source", "trusted_standard_library_source"]
+allowed_embedded_asset_classes = ["bundled_runtime_archive"]
+required_stages = ["source_discovery_and_parsing", "program_construction", "semantic_analysis", "cfg_and_optimization", "backend", "object_generation", "linking", "output_publication"]
+
+[epoch.workload_source_hashes]
+startup = "startup-ddd"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.startup]
+samples = 2
+batch_size = 2
+
+[epoch.flagging]
+k = 3.0
+window = 10
+"#;
+
+    pub(crate) fn boundary_manifest() -> Manifest {
+        Manifest::parse(BOUNDARY_MANIFEST).expect("fixture boundary manifest is valid")
+    }
+
+    /// A protocol-2 run in the full-evidence encoding, consistent with
+    /// [`boundary_manifest`] and appendable under it.
+    pub(crate) fn boundary_run() -> RunObject {
+        let evidence = crate::boundary::tests::evidence();
+        let mut run = sample_run();
+        run.identity.suite_revision = 2;
+        run.identity.epoch = 3;
+        run.identity.pins.invocation.target = "x86-64-linux".to_string();
+        run.identity.pins.invocation.args = vec!["-O3".to_string(), "-j1".to_string()];
+        run.identity.pins.workload_source_hashes =
+            BTreeMap::from([("startup".to_string(), "startup-ddd".to_string())]);
+        let mut sample = sample(2, 900_000_000);
+        sample.output_binary_bytes = evidence.runner.output_size_bytes;
+        sample.boundary_evidence = vec![evidence.clone(), evidence];
+        run.workloads = vec![WorkloadObservation {
+            workload: "startup".to_string(),
+            boundary: None,
+            samples: vec![sample.clone(), sample],
+        }];
+        run
+    }
+
+    #[test]
+    fn a_full_evidence_protocol_two_run_is_appendable() {
+        let outcome = validate_run(&boundary_manifest(), &boundary_run());
+        assert_eq!(outcome.errors, Vec::new());
+        assert!(outcome.publishes_headline());
+    }
+
+    #[test]
+    fn the_encoded_form_validates_exactly_like_the_full_form() {
+        let full = boundary_run();
+        let encoded = crate::encode_v2(&full).expect("fixture encodes");
+        let full_outcome = validate_run(&boundary_manifest(), &full);
+        let encoded_outcome = validate_run(&boundary_manifest(), &encoded);
+        assert_eq!(encoded_outcome.errors, full_outcome.errors);
+        assert_eq!(encoded_outcome.errors, Vec::new());
+        assert!(encoded_outcome.publishes_headline());
+    }
+
+    #[test]
+    fn a_tampered_process_digest_fails_the_witness_comparison() {
+        let mut encoded = crate::encode_v2(&boundary_run()).unwrap();
+        encoded.workloads[0].samples[1].boundary_processes[1] = "0".repeat(64);
+        let outcome = validate_run(&boundary_manifest(), &encoded);
+        assert!(
+            outcome.errors.iter().any(|error| matches!(
+                error,
+                ValidationError::BoundaryEvidenceMismatch { sample_index: 1, detail, .. }
+                    if detail.contains("identity digest disagrees")
+            )),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+    }
+
+    #[test]
+    fn a_stored_record_must_not_carry_inline_evidence() {
+        let full = boundary_run();
+        let mut encoded = crate::encode_v2(&full).unwrap();
+        encoded.workloads[0].samples[0].boundary_evidence =
+            full.workloads[0].samples[0].boundary_evidence.clone();
+        let outcome = validate_run(&boundary_manifest(), &encoded);
+        assert!(
+            outcome.errors.iter().any(|error| matches!(
+                error,
+                ValidationError::BoundaryEvidenceMismatch { detail, .. }
+                    if detail.contains("must not carry inline boundary evidence")
+            )),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+    }
+
+    #[test]
+    fn a_one_worker_record_without_work_digests_is_rejected() {
+        let mut encoded = crate::encode_v2(&boundary_run()).unwrap();
+        encoded.workloads[0].samples[0].boundary_work_processes = Vec::new();
+        let outcome = validate_run(&boundary_manifest(), &encoded);
+        assert!(
+            outcome.errors.iter().any(|error| matches!(
+                error,
+                ValidationError::BoundaryEvidenceMismatch { detail, .. }
+                    if detail.contains("expected 2 work digests, found 0")
+            )),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+    }
+
+    #[test]
+    fn a_stored_record_missing_its_workload_block_is_rejected() {
+        let mut encoded = crate::encode_v2(&boundary_run()).unwrap();
+        encoded.workloads[0].boundary = None;
+        let outcome = validate_run(&boundary_manifest(), &encoded);
+        assert!(
+            outcome.errors.iter().any(|error| matches!(
+                error,
+                ValidationError::BoundaryEvidenceMismatch { detail, .. }
+                    if detail.contains("no workload boundary block")
+            )),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+    }
+
+    #[test]
+    fn a_full_evidence_record_must_not_carry_digests() {
+        let mut full = boundary_run();
+        full.workloads[0].samples[0].boundary_processes = vec!["0".repeat(64); 2];
+        let outcome = validate_run(&boundary_manifest(), &full);
+        assert!(
+            outcome.errors.iter().any(|error| matches!(
+                error,
+                ValidationError::BoundaryEvidenceMismatch { detail, .. }
+                    if detail.contains("must not carry per-process digests")
+            )),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+    }
+
+    #[test]
+    fn both_store_versions_read_and_versions_ahead_refuse() {
+        // Readers implement every version still in the store; refusal applies
+        // forward, never backward.
+        let full = boundary_run();
+        assert_eq!(full.schema_version, FULL_EVIDENCE_SCHEMA_VERSION);
+        assert!(validate_run(&boundary_manifest(), &full).is_appendable());
+        let encoded = crate::encode_v2(&full).unwrap();
+        assert_eq!(encoded.schema_version, RUN_SCHEMA_VERSION);
+        assert!(validate_run(&boundary_manifest(), &encoded).is_appendable());
+        let mut ahead = encoded;
+        ahead.schema_version = RUN_SCHEMA_VERSION + 1;
+        let outcome = validate_run(&boundary_manifest(), &ahead);
+        assert_eq!(
+            outcome.errors,
+            vec![ValidationError::UnsupportedSchemaVersion {
+                found: RUN_SCHEMA_VERSION + 1,
+                expected: RUN_SCHEMA_VERSION,
+            }]
         );
     }
 }

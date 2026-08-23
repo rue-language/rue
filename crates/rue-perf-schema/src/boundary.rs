@@ -993,7 +993,7 @@ impl BuildBoundaryEvidence {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn distribution() -> DurationDistribution {
@@ -1020,7 +1020,7 @@ mod tests {
         distribution.log2_buckets[6] += 1;
     }
 
-    fn evidence() -> BuildBoundaryEvidence {
+    pub(crate) fn evidence() -> BuildBoundaryEvidence {
         let output_sha256 = "a".repeat(64);
         BuildBoundaryEvidence {
             runner: RunnerBoundaryEvidence {
