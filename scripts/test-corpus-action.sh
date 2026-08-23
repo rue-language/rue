@@ -219,7 +219,7 @@ t_plumbing_is_hidden() {
 # source helper that the Buck `python_bootstrap_binary` wraps, so the check
 # exercises the macOS path even though GNU timeout is not installed here.
 t_timeout() {
-    local dir status output started finished elapsed
+    local dir status output started finished elapsed diagnostic
     dir="$(sandbox)"
     printf '#!/usr/bin/env bash\nwhile :; do sleep 1; done\n' >"$dir/harness"
     chmod +x "$dir/harness"
@@ -234,8 +234,11 @@ t_timeout() {
     elapsed=$((finished - started))
     check "timed-out harness fails" "124" "$status"
     check "timed-out harness writes no stamp" "no" "$([ -e "$dir/stamp.txt" ] && echo yes || echo no)"
-    check "timed-out harness reports the focused diagnostic" \
-        "yes" "$(case "$output" in *"corpus harness exceeded 1s"*) echo yes ;; *) echo no ;; esac)"
+    case "$output" in
+        *"corpus harness exceeded 1s"*) diagnostic=yes ;;
+        *) diagnostic=no ;;
+    esac
+    check "timed-out harness reports the focused diagnostic" "yes" "$diagnostic"
     check "timed-out harness is bounded" "yes" "$([ "$elapsed" -le 5 ] && echo yes || echo no)"
     rm -rf "$dir"
 }
@@ -243,7 +246,7 @@ t_timeout() {
 # An ordinary exit 124 is still an ordinary harness result, not a timeout.
 # The private marker keeps the focused timeout diagnostic specific.
 t_exit_124_is_not_timeout() {
-    local dir status output
+    local dir status output diagnostic
     dir="$(sandbox)"
     printf '#!/usr/bin/env bash\nexit 124\n' >"$dir/harness"
     chmod +x "$dir/harness"
@@ -254,15 +257,18 @@ t_exit_124_is_not_timeout() {
     )" || status=$?
     status="${status:-0}"
     check "ordinary exit 124 is preserved" "124" "$status"
-    check "ordinary exit 124 has no timeout diagnostic" \
-        "no" "$(case "$output" in *"corpus harness exceeded"*) echo yes ;; *) echo no ;; esac)"
+    case "$output" in
+        *"corpus harness exceeded"*) diagnostic=yes ;;
+        *) diagnostic=no ;;
+    esac
+    check "ordinary exit 124 has no timeout diagnostic" "no" "$diagnostic"
     check "ordinary exit 124 writes no stamp" "no" "$([ -e "$dir/stamp.txt" ] && echo yes || echo no)"
     rm -rf "$dir"
 }
 
 # TERM-ignoring descendants must be killed with the harness process group.
 t_timeout_kills_descendants() {
-    local dir status group_pid child_pid grandchild_pid output
+    local dir status group_pid child_pid grandchild_pid output diagnostic
     dir="$(sandbox)"
     printf '#!/usr/bin/env bash\nprintf "%%s" "$$" > "$GROUP_PID_FILE"\n(\n    ( trap "" TERM; while :; do sleep 1; done ) &\n    printf "%%s" "$!" > "$GRANDCHILD_PID_FILE"\n    trap "" TERM\n    while :; do sleep 1; done\n) &\nprintf "%%s" "$!" > "$CHILD_PID_FILE"\ntrap "" TERM\nwhile :; do sleep 1; done\n' >"$dir/harness"
     chmod +x "$dir/harness"
@@ -284,15 +290,18 @@ t_timeout_kills_descendants() {
         "$([ -n "$grandchild_pid" ] && wait_pid_gone "$grandchild_pid" && echo yes || echo no)"
     check "TERM-ignoring process group is gone" "yes" \
         "$([ -n "$group_pid" ] && wait_pid_gone "$group_pid" && echo yes || echo no)"
-    check "forced cleanup retains focused diagnostic" \
-        "yes" "$(case "$output" in *"corpus harness exceeded 1s"*) echo yes ;; *) echo no ;; esac)"
+    case "$output" in
+        *"corpus harness exceeded 1s"*) diagnostic=yes ;;
+        *) diagnostic=no ;;
+    esac
+    check "forced cleanup retains focused diagnostic" "yes" "$diagnostic"
     cleanup_fixture "$dir"
 }
 
 # Signalling only corpus-action must be forwarded to the Python runner. The
 # runner then cleans the entire harness group before the wrapper returns 143.
 t_wrapper_cancellation() {
-    local dir status action_pid group_pid child_pid grandchild_pid output
+    local dir status action_pid group_pid child_pid grandchild_pid output diagnostic
     dir="$(sandbox)"
     printf '#!/usr/bin/env bash\nprintf "%%s" "$$" > "$GROUP_PID_FILE"\n(\n    ( trap "" TERM INT; while :; do sleep 1; done ) &\n    printf "%%s" "$!" > "$GRANDCHILD_PID_FILE"\n    trap "" TERM INT\n    while :; do sleep 1; done\n) &\nprintf "%%s" "$!" > "$CHILD_PID_FILE"\ntrap "" TERM INT\nwhile :; do sleep 1; done\n' >"$dir/harness"
     chmod +x "$dir/harness"
@@ -328,8 +337,11 @@ t_wrapper_cancellation() {
         "$([ -n "$child_pid" ] && wait_pid_gone "$child_pid" && echo yes || echo no)"
     check "wrapper cancellation removes the grandchild" "yes" \
         "$([ -n "$grandchild_pid" ] && wait_pid_gone "$grandchild_pid" && echo yes || echo no)"
-    check "wrapper cancellation has no timeout diagnostic" \
-        "no" "$(case "$output" in *"corpus harness exceeded"*) echo yes ;; *) echo no ;; esac)"
+    case "$output" in
+        *"corpus harness exceeded"*) diagnostic=yes ;;
+        *) diagnostic=no ;;
+    esac
+    check "wrapper cancellation has no timeout diagnostic" "no" "$diagnostic"
     cleanup_fixture "$dir"
 }
 
