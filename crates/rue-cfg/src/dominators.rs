@@ -95,24 +95,23 @@ impl DominatorTree {
 
         // Precompute successor lists once so the DFS and the fixpoint do not
         // re-decode terminators repeatedly.
-        let succs: Vec<Vec<BlockId>> = (0..n)
-            .map(|i| successors_of(cfg, BlockId::from_raw(i as u32)))
-            .collect();
+        let succs = Adjacency::successors(cfg, n);
 
         // ------------------------------------------------------------------
         // Postorder DFS from the entry. `post_order` lists reachable blocks in
         // the order their DFS finishes; the entry is last.
         // ------------------------------------------------------------------
-        let mut post_order: Vec<BlockId> = Vec::new();
+        let mut post_order: Vec<BlockId> = Vec::with_capacity(n);
         let mut post_num: Vec<Option<u32>> = vec![None; n];
         let mut visited = vec![false; n];
 
         if (entry.as_u32() as usize) < n {
             visited[entry.as_u32() as usize] = true;
             // Stack of (block, next successor index to explore).
-            let mut stack: Vec<(BlockId, usize)> = vec![(entry, 0)];
+            let mut stack: Vec<(BlockId, usize)> = Vec::with_capacity(n);
+            stack.push((entry, 0));
             while let Some(&(block, idx)) = stack.last() {
-                let block_succs = &succs[block.as_u32() as usize];
+                let block_succs = succs.of(block);
                 if idx < block_succs.len() {
                     stack.last_mut().unwrap().1 += 1;
                     let s = block_succs[idx];
@@ -140,7 +139,11 @@ impl DominatorTree {
         if (entry.as_u32() as usize) < n {
             idom[entry.as_u32() as usize] = Some(entry);
         }
-        let preds = cfg.compute_predecessors();
+        // Reversing the successor edges gives each block's predecessors in
+        // ascending source order with multiplicity, exactly as
+        // `Cfg::compute_predecessors` reports them, without a second decode of
+        // every terminator or a `Vec` per block.
+        let preds = succs.reversed(n);
 
         let mut changed = true;
         while changed {
@@ -150,7 +153,7 @@ impl DominatorTree {
                     continue;
                 }
                 let mut new_idom: Option<BlockId> = None;
-                for &p in &preds[b.as_u32() as usize] {
+                for &p in preds.of(b) {
                     // Skip predecessors the DFS never reached and predecessors
                     // whose idom is not yet computed in this sweep.
                     if post_num[p.as_u32() as usize].is_none() {
@@ -246,15 +249,37 @@ fn preorder_intervals(
     n: usize,
 ) -> (Vec<Option<u32>>, Vec<u32>) {
     // Invert `idom` into child lists. The entry's self-loop sentinel is not an
-    // edge, so it is skipped rather than made a child of itself.
-    let mut children: Vec<Vec<BlockId>> = vec![Vec::new(); n];
+    // edge, so it is skipped rather than made a child of itself. The lists are
+    // flat for the same reason the adjacency above is: this runs once per
+    // dominator tree, and every tree is rebuilt from scratch.
+    let mut child_counts = vec![0_u32; n + 1];
     for (index, parent) in idom.iter().enumerate() {
         let block = BlockId::from_raw(index as u32);
-        match *parent {
-            Some(parent) if parent != block => children[parent.as_u32() as usize].push(block),
-            _ => {}
+        if let Some(parent) = *parent
+            && parent != block
+        {
+            child_counts[parent.as_u32() as usize + 1] += 1;
         }
     }
+    for index in 0..n {
+        child_counts[index + 1] += child_counts[index];
+    }
+    let mut cursor = child_counts.clone();
+    let mut child_targets = vec![BlockId::from_raw(0); child_counts[n] as usize];
+    for (index, parent) in idom.iter().enumerate() {
+        let block = BlockId::from_raw(index as u32);
+        if let Some(parent) = *parent
+            && parent != block
+        {
+            let slot = &mut cursor[parent.as_u32() as usize];
+            child_targets[*slot as usize] = block;
+            *slot += 1;
+        }
+    }
+    let children = Adjacency {
+        offsets: child_counts,
+        targets: child_targets,
+    };
 
     let mut pre_num: Vec<Option<u32>> = vec![None; n];
     let mut subtree_last: Vec<u32> = vec![0; n];
@@ -266,9 +291,10 @@ fn preorder_intervals(
     pre_num[entry.as_u32() as usize] = Some(next);
     next += 1;
     // Stack of (block, next child index to descend into).
-    let mut stack: Vec<(BlockId, usize)> = vec![(entry, 0)];
+    let mut stack: Vec<(BlockId, usize)> = Vec::with_capacity(n);
+    stack.push((entry, 0));
     while let Some(&(block, cursor)) = stack.last() {
-        let block_children = &children[block.as_u32() as usize];
+        let block_children = children.of(block);
         if cursor < block_children.len() {
             let child = block_children[cursor];
             stack.last_mut().unwrap().1 += 1;
@@ -311,25 +337,81 @@ fn intersect(
     a
 }
 
-/// Successor blocks of `block` in control-flow order.
-fn successors_of(cfg: &Cfg, block: BlockId) -> Vec<BlockId> {
+/// Flat adjacency over block ids: `targets[offsets[i]..offsets[i + 1]]` are the
+/// edges leaving (or, once reversed, entering) block `i`.
+///
+/// A `Vec<Vec<BlockId>>` charges one allocation per block, and this tree is
+/// rebuilt from scratch on every verification and every pass that needs
+/// dominance — the verifier alone rebuilt it 9,555 times in a fresh Lattice
+/// compile. Two allocations per adjacency instead of one per block is most of
+/// what that cost was.
+struct Adjacency {
+    offsets: Vec<u32>,
+    targets: Vec<BlockId>,
+}
+
+impl Adjacency {
+    /// Successor blocks of every block, each list in control-flow order.
+    fn successors(cfg: &Cfg, n: usize) -> Self {
+        let mut offsets = Vec::with_capacity(n + 1);
+        offsets.push(0);
+        // Most terminators leave one or two edges.
+        let mut targets = Vec::with_capacity(n * 2);
+        for index in 0..n {
+            push_successors(cfg, BlockId::from_raw(index as u32), &mut targets);
+            offsets.push(targets.len() as u32);
+        }
+        Self { offsets, targets }
+    }
+
+    fn of(&self, block: BlockId) -> &[BlockId] {
+        let index = block.as_u32() as usize;
+        let start = self.offsets[index] as usize;
+        let end = self.offsets[index + 1] as usize;
+        &self.targets[start..end]
+    }
+
+    /// The same edges pointing the other way, each list in ascending source
+    /// order and keeping the multiplicity of parallel edges.
+    fn reversed(&self, n: usize) -> Self {
+        let mut offsets = vec![0_u32; n + 1];
+        for target in &self.targets {
+            offsets[target.as_u32() as usize + 1] += 1;
+        }
+        for index in 0..n {
+            offsets[index + 1] += offsets[index];
+        }
+        let mut cursor = offsets.clone();
+        let mut targets = vec![BlockId::from_raw(0); self.targets.len()];
+        for index in 0..n {
+            let source = BlockId::from_raw(index as u32);
+            for target in self.of(source) {
+                let slot = &mut cursor[target.as_u32() as usize];
+                targets[*slot as usize] = source;
+                *slot += 1;
+            }
+        }
+        Self { offsets, targets }
+    }
+}
+
+/// Append the successor blocks of `block`, in control-flow order.
+fn push_successors(cfg: &Cfg, block: BlockId, out: &mut Vec<BlockId>) {
     match &cfg.get_block(block).terminator {
-        Terminator::Goto { target, .. } => vec![*target],
+        Terminator::Goto { target, .. } => out.push(*target),
         Terminator::Branch {
             then_block,
             else_block,
             ..
-        } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. } => {
-            let mut out: Vec<BlockId> = cfg
-                .switch_cases(cases)
-                .iter()
-                .map(|(_, target)| *target)
-                .collect();
-            out.push(*default);
-            out
+        } => {
+            out.push(*then_block);
+            out.push(*else_block);
         }
-        Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => Vec::new(),
+        Terminator::Switch { cases, default, .. } => {
+            out.extend(cfg.switch_cases(cases).iter().map(|(_, target)| *target));
+            out.push(*default);
+        }
+        Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => {}
     }
 }
 
@@ -469,7 +551,9 @@ mod tests {
             if block == target {
                 return true;
             }
-            for successor in successors_of(cfg, block) {
+            let mut successors = Vec::new();
+            push_successors(cfg, block, &mut successors);
+            for successor in successors {
                 if removed == Some(successor) {
                     continue;
                 }
