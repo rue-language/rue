@@ -1575,6 +1575,67 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+# 4.14:2 says evaluation follows runtime semantics *exactly*, which binds every
+# position a comptime value is produced in, not just a `comptime { }` block
+# inside a body. A const initializer reduces the same call through a different
+# evaluator, and that one used to reject `~n` and truncating `<<` outright and
+# to mask `>>` by the wrong width (RUE-1698). These pin the two positions to
+# the same value.
+
+[[case]]
+name = "comptime_bitnot_width_aware_in_const_initializer"
+spec = ["4.14:2"]
+description = "`~` truncates to the operand width in a const initializer too: ~0 as u8 is 255, matching body position"
+source = """
+fn flip(comptime n: u8) -> u8 { comptime { ~n } }
+const X: u8 = flip(0);
+fn main() -> i32 {
+    let body: u8 = flip(0);
+    if X == 255 && body == X { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_shift_truncates_in_const_initializer"
+spec = ["4.14:2"]
+description = "A const initializer's `<<` truncates to the operand width and masks the amount mod width: 3 << 7 as u8 is 128 and 3 << 8 is 3"
+source = """
+fn shl(comptime n: u8, comptime s: u8) -> u8 { comptime { n << s } }
+const X: u8 = shl(3, 7);
+const Y: u8 = shl(3, 8);
+fn main() -> i32 {
+    if X == 128 && Y == 3 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_shift_amount_masked_in_const_initializer"
+spec = ["4.14:2"]
+description = "A const initializer's `>>` masks the amount modulo the operand width, not the evaluator's own: 200 >> 8 as u8 is 200"
+source = """
+fn shr(comptime n: u8, comptime s: u8) -> u8 { comptime { n >> s } }
+const X: u8 = shr(200, 8);
+fn main() -> i32 {
+    let body: u8 = shr(200, 8);
+    if X == 200 && body == X { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_const_initializer_overflow_still_rejected"
+spec = ["4.14:4"]
+description = "The truncating operators becoming total does not make const evaluation total: a multiply that overflows the operand type is still rejected"
+source = """
+fn sq(comptime n: u8) -> u8 { comptime { n * n } }
+const X: u8 = sq(200);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "integer overflow"
+
 [[case]]
 name = "comptime_u64_max_literal"
 spec = ["4.14:2"]
