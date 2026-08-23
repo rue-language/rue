@@ -793,11 +793,14 @@ their outgoing states:
 
 `join` must agree on every path that *carries a linear value*: if a linear-
 carrying place is MovedOut on one branch and Owned on the other, the program is
-ill-formed (`3.8:50` — a linear value consumed on only some paths). For non-linear
-(merely Affine/Copy) places the join takes `MovedOut` if either branch moved it
-(the value is conservatively considered gone), and the dynamic semantics uses a
-per-path drop flag so the runtime drops it on exactly the paths that did not
-(`3.8:73`). A branch ending in `return`/`break` has outgoing state `⊥` (diverged)
+ill-formed (`3.8:50` — a linear value consumed on only some paths). For an
+affine, non-Copy move-type place, the join is `MovedOut` if either branch has
+that place `MovedOut`, conservatively treating the value as gone. Copy uses do
+not move their places, so Copy branches never produce `MovedOut` and a Copy
+place remains `Owned` at the join. The dynamic state retains the path-specific
+move state; the array-element drop behavior of `3.8:73` is the separate rule
+that says how a joined array's elements are dropped on paths where they remain.
+A branch ending in `return`/`break` has outgoing state `⊥` (diverged)
 and is excluded from the join (`3.8:51`); its *type* is `never`, which
 (Sub-Never), §5.7, coerces to the sibling arm's type `T`, so a diverging arm
 still satisfies the (If)/(Match) same-type premise.
@@ -975,56 +978,79 @@ halves: the **back edge**, which re-enters the body, and the **break edges**,
 which exit it.
 
 ```
-  Γ;Σ;Λ ⊢ e ⇒ unit ⊣ Σ_back        e contains a break targeting this loop (syntactic — 4.8:21)
-  Σ_back = Σ  on every path rooted outside the loop            -- back-edge invariance
-  Σ_exit = join( Σ_b1, ..., Σ_bk )                             -- the k at-break states (below), §5.5's join
+  Γ;Σ;Λ ⊢ e ⇒ unit ⊣ Ω                  Ω ::= Σ | ⊥
+  e contains a break targeting this loop (syntactic — 4.8:21)
+  (B, X) = edge-observations(Γ;Σ;Λ ⊢ e ⇒ unit ⊣ Ω)
+  ∀Σ_b ∈ B: Σ_b = outside_loop(Σ)                 -- back-edge invariance (3.8:79)
+  Σ_exit = join(X),       join(∅) = ⊥              -- reachable exits (3.8:80)
   ─────────────────────────────────────────────────────── (Loop-Break)
   Γ;Σ;Λ ⊢ loop { e } ⇒ unit ⊣ Σ_exit
 ```
 
+The ordinary judgment still returns only `Ω`: `edge-observations` is a
+meta-level projection of that body derivation, not a new result sort. For a
+body derivation `D`, it records static ownership deliveries as
+
+```
+  B = { outside_loop(Σ_edge) | D has a reachable edge that returns to the next
+        iteration via ordinary body completion or a `continue` targeting this loop }
+  X = { outside_loop(Σ_edge) | D has a reachable edge exiting this loop }
+```
+
+`B` therefore contains only reachable back-edge deliveries. `X` contains
+reachable targeting-`break` states for this core `loop`; the existing `while`
+desugaring represents its reachable false-condition exits (including the
+initial zero-iteration check) as targeting `break` edges in `X`. `for` has no
+core image in §2, so its iterator-exhaustion exit required by 3.8:80 remains a
+surface/compiler obligation and is not modeled by this core rule. Reachability
+filters the edge sets, but does not change the syntactic premise that classifies
+a loop as (Loop-Div) or (Loop-Break): an unreachable targeting `break` can make
+the loop syntactically the latter while contributing no state. Thus
+`join(∅) = ⊥` means that a loop with no reachable exit has no post-loop ownership
+state and diverges. These observations record static ownership deliveries only;
+they do not specify which loop-local scopes a `continue` dynamically unwinds or
+the order of its drops, which remains outside this rule's scope.
+
 - **Back-edge invariance.** The body is typed once, under the entry state `Σ`,
-  and its fall-through state `Σ_back` must equal `Σ` on every path rooted
-  outside the loop. That makes `Σ` a fixpoint of the body by *requirement*
-  rather than by iteration — one typing pass covers every iteration, with no
-  dataflow limit construction. The premise is what rejects a move of an outer
-  binding that the body does not restore before the back edge (use-after-move
-  on the second iteration; the compiler agrees — E0205) while admitting the
-  move-then-reassign idiom, since (Assign) restores `Owned` (§5.2). Paths
-  rooted *inside* the loop are exempt: a loop-local binding's scope ends
-  within the iteration, so it does not survive to be compared.
-- **The at-break states.** Each of the `k` occurrences of `break` targeting
-  this loop contributes the ownership state `Σ_bi` in force where it fires,
-  restricted to paths rooted outside the loop — read (Break) as *delivering*
-  `unit` at `Σ_bi` to its innermost enclosing loop while its own context sees
-  `never ⊣ ⊥`. The loop's outgoing state is §5.5's `join` over exactly these
-  delivered states: a linear-carrying path must agree across every break
-  (`3.8:50` — consumed on only some exits is ill-formed), and a merely
-  Affine/Copy path moved on some break but not another joins to `MovedOut`
-  conservatively, with the dynamic per-path drop flag of `3.8:73` dropping it
-  on exactly the exits that did not move it. Loop-local bindings live at a
-  break are not part of any `Σ_bi`; their §5.6 obligations are discharged at
-  the break itself, where their scopes end (dynamically, §6.10's unwind).
-- **Compiler agreement (RUE-1293, resolved).** The divergence recorded here —
-  a loop-exit state computed from the entry state rather than from the
-  break-edge join, hence an accepted post-loop use of a value moved on a break
-  path — **no longer reproduces** (re-verified 2026-08-23, RUE-1600). The
-  compiler now implements this join: a value moved in a breaking arm is
-  `MovedOut` after the loop, and a post-loop use of it is rejected with E0205
-  citing the move at the break arm; the state really is per-break rather than
-  "moved anywhere in the body", since moving the value in the breaking arm and
-  *reassigning* it before the `break` leaves it usable after the loop (§5.2's
-  reinitialization), with the old value dropped once at the move and the new
-  one once at scope exit. The conservative `MovedOut` join plus the per-path
-  drop flag of `3.8:73` are likewise observable: a break arm that moves and a
-  break arm that does not produce exactly one drop on each path. So the core
-  and the compiler agree on (Loop-Break), and no RUE-1293 divergence remains.
+  and every state in `B` must equal `Σ` for bindings rooted outside the loop
+  (3.8:79). That makes `Σ` a fixpoint of the body by *requirement* rather than
+  by iteration — one typing pass covers every iteration, with no dataflow limit
+  construction. The premise is what rejects a move of an outer binding that the
+  body does not restore before a reachable back edge (use-after-move on the
+  second iteration; the compiler agrees — E0205) while admitting the
+  move-then-reassign idiom, since (Assign) restores `Owned` (§5.2). Unreachable
+  ordinary completion and targeting `continue` edges contribute no state; if
+  `B` is empty, no invariance check is imposed. Paths rooted *inside* the loop
+  are exempt: a loop-local binding's scope ends within the iteration, so it does
+  not survive to be compared.
+- **The reachable exit states.** Each reachable targeting `break` contributes
+  the ownership state in force where it fires, restricted to paths rooted
+  outside the loop — read (Break) as *delivering* `unit` at that state to its
+  innermost enclosing loop while its own context sees `never ⊣ ⊥`. In the
+  existing `while` desugaring, the initial and later false-condition edges are
+  represented by targeting `break` states in `X`. `for` iterator exhaustion is
+  required by 3.8:80 but has no representation in this core until §2 gives
+  `for` a core image. The loop's outgoing state is §5.5's `join(X)` (3.8:80):
+  a linear-carrying path must agree across every reachable exit (`3.8:50` —
+  consumed on only some exits is ill-formed), and an affine, non-Copy move-type
+  path joins to `MovedOut` if any reachable exit has it `MovedOut`. Copy paths
+  remain `Owned` because Copy uses never move. Loop-local bindings live at an
+  exit are not part of `X`; their §5.6 obligations are discharged at the exit
+  itself, where their scopes end (dynamically, §6.10's unwind). For arrays,
+  `3.8:73` supplies the separate per-element path-specific dropping behavior.
+- **Compiler agreement.** The compiler computes the post-loop state from the
+  reachable exit-edge join required by (Loop-Break) and 3.8:80: a value moved
+  in a breaking arm is `MovedOut` after the loop, while moving and reassigning
+  it before the `break` leaves it usable after the loop (§5.2's
+  reinitialization). Copy uses remain usable after every exit because they do
+  not move their source places.
   **Compiler agreement (RUE-1615, resolved).** The back-edge check is gated on
   an actually reachable return to the loop head. When every path through the
-  body breaks, the fall-through state `Σ_back` is `⊥`, so a move in
+  body breaks, `B` is empty, so a move in
   `loop { eat(t); break; }` is checked only against the at-break exit state and
   is not incorrectly rejected as a move in a previous iteration. Explicit
-  `continue` edges and ordinary fall-through paths remain back edges and retain
-  the recheck required by this rule.
+  `continue` edges and ordinary reachable body-completion paths remain back
+  edges and retain the recheck required by 3.8:79.
 
 A `never`-typed expression is accepted wherever a value of any type is expected —
 this is the coercion, stated as **subsumption on the bottom type** (`3.4:3/4`):
@@ -2565,7 +2591,7 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 | §5.4 borrows / exclusivity | 6.1:14–35, 6.1:20, 6.1:30 |
 | §5.5 branch join | 3.8:50/51, 3.8:73 |
 | §5.6 scope exit: residual leak check + drop | 3.8:32/62/66, 3.8:74, 3.9 (drop order) |
-| §5.7 divergence + never-coercion; (Loop-Div)/(Loop-Break) loop typing and the break-edge join | 3.4:1/2/3/4/6/6a/8, 3.4:9, 4.8:21, 3.8:50/51/73 |
+| §5.7 divergence + never-coercion; (Loop-Div)/(Loop-Break) loop typing, reachable back-edge invariance, and the break-edge join | 3.4:1/2/3/4/6/6a/8, 3.4:9, 4.8:21, 3.8:50/51/79/80 |
 | §6.2 evaluation order (contexts, left-to-right) | 4.0:3–9 |
 | §6.3 dynamic use: copy vs. move; equality borrows | 3.8:5/7/22, 4.3:3f |
 | §6.4 operator dynamics: arith/div/mod, compare, bitwise/shift | 4.2:1, 4.3:1/2, 4.3a:10, 3.1:6/13 |
