@@ -23,6 +23,8 @@ mod verify;
 
 pub use cfg_lower::CfgLower;
 pub use emit::Emitter;
+#[cfg(test)]
+pub(crate) use mir::MAX_ADD_SUB_IMMEDIATE;
 pub use mir::{Aarch64Inst, Aarch64Mir, Cond, Operand, Reg, VReg};
 pub use regalloc::RegAlloc;
 

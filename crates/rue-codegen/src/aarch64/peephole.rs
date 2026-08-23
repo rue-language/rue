@@ -14,7 +14,8 @@
 //! - `cmp r, #0` → `tst r, r` (same flags, sometimes faster)
 //!
 //! ## Category 3: Adjacent instruction combining
-//! - `add r, r, #a` + `add r, r, #b` → `add r, r, #(a+b)` (when sum fits in i32)
+//! - `add r, r, #a` + `add r, r, #b` → `add r, r, #(a+b)` (when the sum fits
+//!   the ordinary AArch64 immediate sequence)
 //!
 //! The pass operates in-place on the instruction vector for efficiency.
 //!
@@ -34,7 +35,7 @@
 //! instructions (`add`/`sub`/`mov`/shifts/`eor` without the S suffix), so
 //! they need no flags gate.
 
-use super::mir::{Aarch64Inst, Cond, Operand, Reg};
+use super::mir::{Aarch64Inst, Cond, MAX_ADD_SUB_IMMEDIATE, Operand, Reg};
 use super::schedule::writes_flags;
 
 /// Apply peephole optimizations to the instruction stream.
@@ -169,8 +170,12 @@ fn combine_adjacent(instructions: &mut Vec<Aarch64Inst>) -> usize {
                 && operands_equal(dst2, src2)
                 && operands_equal(dst1, dst2)
             {
-                // Check for overflow when combining immediates
-                if let Some(combined) = imm1.checked_add(*imm2) {
+                // Keep the combined MIR immediate within the ordinary
+                // AArch64 immediate sequence; larger values use emitter
+                // materialization and should not be synthesized here.
+                if let Some(combined) = imm1.checked_add(*imm2).filter(|combined| {
+                    (-MAX_ADD_SUB_IMMEDIATE..=MAX_ADD_SUB_IMMEDIATE).contains(combined)
+                }) {
                     // Replace first instruction with combined add
                     instructions[i] = Aarch64Inst::AddImm {
                         dst: *dst1,
@@ -204,7 +209,10 @@ fn combine_adjacent(instructions: &mut Vec<Aarch64Inst>) -> usize {
                 && operands_equal(dst2, src2)
                 && operands_equal(dst1, dst2)
             {
-                if let Some(combined) = imm1.checked_add(*imm2) {
+                if let Some(combined) = imm1
+                    .checked_add(*imm2)
+                    .filter(|combined| (0..=MAX_ADD_SUB_IMMEDIATE).contains(combined))
+                {
                     instructions[i] = Aarch64Inst::SubImm {
                         dst: *dst1,
                         src: *src1,
@@ -656,6 +664,150 @@ mod tests {
             instructions[0],
             Aarch64Inst::SubImm { imm: 30, .. }
         ));
+    }
+
+    #[test]
+    fn test_combine_adds_at_encoding_limit_but_not_above() {
+        let physical = Operand::Physical(Reg::X0);
+        let mut at_limit = vec![
+            Aarch64Inst::AddImm {
+                dst: physical,
+                src: physical,
+                imm: MAX_ADD_SUB_IMMEDIATE - 1,
+            },
+            Aarch64Inst::AddImm {
+                dst: physical,
+                src: physical,
+                imm: 1,
+            },
+            Aarch64Inst::Ret,
+        ];
+        assert_eq!(optimize(&mut at_limit), 1);
+        assert!(matches!(
+            at_limit[0],
+            Aarch64Inst::AddImm {
+                imm: MAX_ADD_SUB_IMMEDIATE,
+                ..
+            }
+        ));
+
+        let mut above_limit = vec![
+            Aarch64Inst::AddImm {
+                dst: physical,
+                src: physical,
+                imm: MAX_ADD_SUB_IMMEDIATE,
+            },
+            Aarch64Inst::AddImm {
+                dst: physical,
+                src: physical,
+                imm: 1,
+            },
+            Aarch64Inst::Ret,
+        ];
+        assert_eq!(optimize(&mut above_limit), 0);
+        assert_eq!(above_limit.len(), 3);
+    }
+
+    #[test]
+    fn test_combine_adds_signed_limit_but_not_below() {
+        let physical = Operand::Physical(Reg::X0);
+        let mut at_limit = vec![
+            Aarch64Inst::AddImm {
+                dst: physical,
+                src: physical,
+                imm: -MAX_ADD_SUB_IMMEDIATE + 1,
+            },
+            Aarch64Inst::AddImm {
+                dst: physical,
+                src: physical,
+                imm: -1,
+            },
+            Aarch64Inst::Ret,
+        ];
+        assert_eq!(optimize(&mut at_limit), 1);
+        assert!(matches!(
+            at_limit[0],
+            Aarch64Inst::AddImm { imm, .. } if imm == -MAX_ADD_SUB_IMMEDIATE
+        ));
+
+        let mut below_limit = vec![
+            Aarch64Inst::AddImm {
+                dst: physical,
+                src: physical,
+                imm: -MAX_ADD_SUB_IMMEDIATE,
+            },
+            Aarch64Inst::AddImm {
+                dst: physical,
+                src: physical,
+                imm: -1,
+            },
+            Aarch64Inst::Ret,
+        ];
+        assert_eq!(optimize(&mut below_limit), 0);
+        assert_eq!(below_limit.len(), 3);
+    }
+
+    #[test]
+    fn test_combine_subs_at_encoding_limit_but_not_above() {
+        let physical = Operand::Physical(Reg::X0);
+        let mut at_limit = vec![
+            Aarch64Inst::SubImm {
+                dst: physical,
+                src: physical,
+                imm: MAX_ADD_SUB_IMMEDIATE - 1,
+            },
+            Aarch64Inst::SubImm {
+                dst: physical,
+                src: physical,
+                imm: 1,
+            },
+            Aarch64Inst::Ret,
+        ];
+        assert_eq!(optimize(&mut at_limit), 1);
+        assert!(matches!(
+            at_limit[0],
+            Aarch64Inst::SubImm {
+                imm: MAX_ADD_SUB_IMMEDIATE,
+                ..
+            }
+        ));
+
+        let mut above_limit = vec![
+            Aarch64Inst::SubImm {
+                dst: physical,
+                src: physical,
+                imm: MAX_ADD_SUB_IMMEDIATE,
+            },
+            Aarch64Inst::SubImm {
+                dst: physical,
+                src: physical,
+                imm: 1,
+            },
+            Aarch64Inst::Ret,
+        ];
+        assert_eq!(optimize(&mut above_limit), 0);
+        assert_eq!(above_limit.len(), 3);
+    }
+
+    #[test]
+    fn test_combine_subs_rejects_negative_domain() {
+        let physical = Operand::Physical(Reg::X0);
+        let mut instructions = vec![
+            Aarch64Inst::SubImm {
+                dst: physical,
+                src: physical,
+                imm: -1,
+            },
+            Aarch64Inst::SubImm {
+                dst: physical,
+                src: physical,
+                imm: -1,
+            },
+            Aarch64Inst::Ret,
+        ];
+
+        assert_eq!(optimize(&mut instructions), 0);
+        assert_eq!(instructions.len(), 3);
     }
 
     #[test]

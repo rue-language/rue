@@ -178,6 +178,10 @@ pub(crate) const SCRATCH_SOURCE_C: Reg = Reg::X12;
 /// rewriting, with allocated values already live in registers.
 pub(crate) const SCRATCH_ADDRESS: Reg = Reg::X15;
 
+/// Largest immediate encoded by the two-instruction ADD/SUB immediate form.
+/// Values above this limit are materialized by the emitter.
+pub(crate) const MAX_ADD_SUB_IMMEDIATE: i32 = (1 << 24) - 1;
+
 /// Whether the allocator is forbidden from handing out `reg`.
 pub(crate) const fn is_reserved(reg: Reg) -> bool {
     let mut index = 0;

@@ -81,8 +81,8 @@
 use rue_error::{CompileError, CompileResult, ErrorKind, ice_error};
 
 use super::mir::{
-    Aarch64Inst, Aarch64Mir, BLOCK_LABEL_BASE, Cond, LabelId, Reg, SCRATCH_ADDRESS,
-    narrow_load_mnemonic, narrow_store_mnemonic,
+    Aarch64Inst, Aarch64Mir, BLOCK_LABEL_BASE, Cond, LabelId, MAX_ADD_SUB_IMMEDIATE, Reg,
+    SCRATCH_ADDRESS, narrow_load_mnemonic, narrow_store_mnemonic,
 };
 use crate::{EmittedCode, EmittedInst, EmittedRelocation};
 
@@ -156,10 +156,14 @@ const OPCODE_LDP_POST: u32 = 0xA8C00000;
 // Arithmetic instructions (64-bit)
 /// ADD Xd, Xn, Xm - Add (64-bit, no flags)
 const OPCODE_ADD_X: u32 = 0x8B000000;
+/// ADD Xd, Xn, Xm, UXTX; register 31 names SP in this form.
+const OPCODE_ADD_EXT_X: u32 = 0x8B206000;
 /// ADD Xd, Xn, #imm12 - Add immediate (64-bit)
 const OPCODE_ADD_IMM_X: u32 = 0x91000000;
 /// SUB Xd, Xn, Xm - Subtract (64-bit, no flags)
 const OPCODE_SUB_X: u32 = 0xCB000000;
+/// SUB Xd, Xn, Xm, UXTX; register 31 names SP in this form.
+const OPCODE_SUB_EXT_X: u32 = 0xCB206000;
 /// SUB Xd, Xn, #imm12 - Subtract immediate (64-bit)
 const OPCODE_SUB_IMM_X: u32 = 0xD1000000;
 /// SUBS Xd, Xn, Xm - Subtract and set flags (64-bit)
@@ -1944,6 +1948,26 @@ impl<'a> Emitter<'a> {
         self.emit_u32(inst);
     }
 
+    /// Emit the extended-register form used when an operand is SP.
+    ///
+    /// In the shifted-register encoding, register encoding 31 names XZR;
+    /// the extended-register encoding is the AArch64 form that names SP.
+    fn emit_add_ext_rr(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        let inst = OPCODE_ADD_EXT_X
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_sub_ext_rr(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        let inst = OPCODE_SUB_EXT_X
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
     fn emit_adds_rr32(&mut self, rd: Reg, rn: Reg, rm: Reg) {
         // ADDS Wd, Wn, Wm - 32-bit add with flags for i32 overflow detection
         let inst = OPCODE_ADDS_W
@@ -1968,11 +1992,22 @@ impl<'a> Emitter<'a> {
         // ADD for the low part. Previously the immediate was masked & 0xFFF,
         // silently truncating — e.g. epilogues of frames >4095 bytes
         // mis-adjusted SP by multiples of 4096. (RUE-129)
-        // Correctness guard (must run in release): an immediate wider than the
-        // 24 bits the two-instruction shifted form can encode would be silently
-        // truncated below, mis-adjusting SP, so plain `assert!` not
-        // `debug_assert!` (RUE-45).
-        assert!(imm < (1 << 24), "ADD immediate exceeds 24 bits: {imm}");
+        // Values above the two-instruction limit are materialized in the
+        // emitter scratch register below; the shared limit is kept named so
+        // peephole cannot synthesize an unencodable MIR immediate.
+        if imm > MAX_ADD_SUB_IMMEDIATE as u32 {
+            assert!(
+                rd != SCRATCH_ADDRESS && rn != SCRATCH_ADDRESS,
+                "large ADD immediate cannot use its scratch register as an operand"
+            );
+            self.emit_mov_imm(SCRATCH_ADDRESS, imm as i64);
+            if rd == Reg::Sp || rn == Reg::Sp {
+                self.emit_add_ext_rr(rd, rn, SCRATCH_ADDRESS);
+            } else {
+                self.emit_add_rr(rd, rn, SCRATCH_ADDRESS, false);
+            }
+            return;
+        }
         if imm > 0xFFF {
             let inst = OPCODE_ADD_IMM_X
                 | (1 << 22)
@@ -2035,11 +2070,26 @@ impl<'a> Emitter<'a> {
         // silently truncating — prologues of frames >4095 bytes UNDER-ALLOCATED
         // by multiples of 4096, so locals overlapped the caller's stack.
         // (RUE-129)
-        // Correctness guard (must run in release): an immediate wider than the
-        // 24 bits the two-instruction shifted form can encode would be silently
-        // truncated below, under-allocating the frame, so plain `assert!` not
-        // `debug_assert!` (RUE-45).
-        assert!(imm < (1 << 24), "SUB immediate exceeds 24 bits: {imm}");
+        // Values above the two-instruction limit are materialized in the
+        // emitter scratch register below; the shared limit is kept named so
+        // peephole cannot synthesize an unencodable MIR immediate.
+        if imm > MAX_ADD_SUB_IMMEDIATE as u32 {
+            assert!(
+                rd != SCRATCH_ADDRESS && rn != SCRATCH_ADDRESS,
+                "large SUB immediate cannot use its scratch register as an operand"
+            );
+            self.emit_mov_imm(SCRATCH_ADDRESS, imm as i64);
+            if rd == Reg::Sp || rn == Reg::Sp {
+                self.emit_sub_ext_rr(rd, rn, SCRATCH_ADDRESS);
+            } else {
+                let inst = OPCODE_SUB_X
+                    | (SCRATCH_ADDRESS.encoding() as u32) << 16
+                    | (rn.encoding() as u32) << 5
+                    | rd.encoding() as u32;
+                self.emit_u32(inst);
+            }
+            return;
+        }
         if imm > 0xFFF {
             let inst = OPCODE_SUB_IMM_X
                 | (1 << 22)
@@ -2734,6 +2784,57 @@ mod tests {
         assert_ne!(hi & (1 << 22), 0, "first SUB must use the LSL #12 form");
         assert_eq!((hi >> 10) & 0xFFF, 0x2, "high chunk should be 2 (=8192)");
         assert_eq!((lo >> 10) & 0xFFF, 9536 - 8192, "low chunk remainder");
+    }
+
+    #[test]
+    fn test_add_sub_imm_boundary_materializes_above_sequence_limit() {
+        let at_limit = emit_single(Aarch64Inst::AddImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: MAX_ADD_SUB_IMMEDIATE,
+        });
+        assert_eq!(at_limit.len(), 8, "the inclusive limit uses two immediates");
+
+        let above_limit = emit_single(Aarch64Inst::AddImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: MAX_ADD_SUB_IMMEDIATE + 1,
+        });
+        assert_eq!(above_limit.len(), 12, "larger add uses MOV + register add");
+        let add = u32::from_le_bytes(above_limit[8..12].try_into().unwrap());
+        assert_eq!(add & 0xFF000000, OPCODE_ADD_X);
+        assert_eq!((add >> 16) & 0x1F, SCRATCH_ADDRESS.encoding() as u32);
+        assert_eq!((add >> 5) & 0x1F, Reg::X1.encoding() as u32);
+        assert_eq!(add & 0x1F, Reg::X0.encoding() as u32);
+
+        let above_limit_sp_add = emit_single(Aarch64Inst::AddImm {
+            dst: Operand::Physical(Reg::Sp),
+            src: Operand::Physical(Reg::Sp),
+            imm: MAX_ADD_SUB_IMMEDIATE + 1,
+        });
+        let sp_add = u32::from_le_bytes(above_limit_sp_add[8..12].try_into().unwrap());
+        assert_eq!(sp_add & 0xFF200000, OPCODE_ADD_EXT_X & 0xFF200000);
+        assert_eq!((sp_add >> 16) & 0x1F, SCRATCH_ADDRESS.encoding() as u32);
+        assert_eq!((sp_add >> 5) & 0x1F, Reg::Sp.encoding() as u32);
+        assert_eq!(sp_add & 0x1F, Reg::Sp.encoding() as u32);
+        assert_eq!((sp_add >> 13) & 0x7, 3, "extended form must use UXTX");
+
+        let above_limit_sp = emit_single(Aarch64Inst::SubImm {
+            dst: Operand::Physical(Reg::Sp),
+            src: Operand::Physical(Reg::Sp),
+            imm: MAX_ADD_SUB_IMMEDIATE + 1,
+        });
+        assert_eq!(
+            above_limit_sp.len(),
+            12,
+            "larger stack subtract uses MOV + register sub"
+        );
+        let sub = u32::from_le_bytes(above_limit_sp[8..12].try_into().unwrap());
+        assert_eq!(sub & 0xFF200000, OPCODE_SUB_EXT_X & 0xFF200000);
+        assert_eq!((sub >> 16) & 0x1F, SCRATCH_ADDRESS.encoding() as u32);
+        assert_eq!((sub >> 5) & 0x1F, Reg::Sp.encoding() as u32);
+        assert_eq!(sub & 0x1F, Reg::Sp.encoding() as u32);
+        assert_eq!((sub >> 13) & 0x7, 3, "extended form must use UXTX");
     }
 
     #[test]
