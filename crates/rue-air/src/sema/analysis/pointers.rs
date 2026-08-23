@@ -7,6 +7,21 @@ use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine
 use super::*;
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
+    fn analyze_sequenced_pointer_operand(
+        &mut self,
+        air: &mut Air,
+        operand: InstRef,
+        reachable: bool,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let reachable_edges = ctx.loop_break_stack.clone();
+        let result = self.analyze_inst(air, operand, ctx)?;
+        if !reachable {
+            Self::restore_reachable_loop_edges(ctx, &reachable_edges);
+        }
+        Ok(result)
+    }
+
     /// Analyze @ptr_read / @ptr_read_unaligned intrinsic: reads value through
     /// pointer. Signature: `@ptr_read(ptr: ptr const T) -> T`.
     ///
@@ -154,6 +169,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // struct-init field-literal coercion in `analyze_struct_init`; the
         // range check keeps `@ptr_write(p_u8, 300)` an honest E0800.
         let value_inst = self.body_rir_ref().get(args[1].value);
+        let reachable_edges_before_value = ctx.loop_break_stack.clone();
         let value_result = match &value_inst.data {
             InstData::IntConst(value) if pointee_type.is_integer() => {
                 if !pointee_type.literal_fits(*value) {
@@ -176,6 +192,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 self.analyze_inst(air, args[1].value, ctx)
             })?,
         };
+        if !ptr_result.continues {
+            Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_value);
+        }
         let value_type = value_result.ty;
 
         // Check that value type matches pointee type
@@ -225,8 +244,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
-        let ptr_result = self.analyze_inst(air, args[0].value, ctx)?;
-        let offset_result = self.analyze_inst(air, args[1].value, ctx)?;
+        let ptr_result = self.analyze_sequenced_pointer_operand(air, args[0].value, true, ctx)?;
+        let offset_result =
+            self.analyze_sequenced_pointer_operand(air, args[1].value, ptr_result.continues, ctx)?;
         let ptr_type = ptr_result.ty;
         let offset_type = offset_result.ty;
 
@@ -418,9 +438,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         }
-        let size = self.analyze_inst(air, args[0].value, ctx)?;
+        let size = self.analyze_sequenced_pointer_operand(air, args[0].value, true, ctx)?;
         self.require_intrinsic_type(&intrinsic, size.ty, Type::U64, span)?;
-        let align = self.analyze_inst(air, args[1].value, ctx)?;
+        let align =
+            self.analyze_sequenced_pointer_operand(air, args[1].value, size.continues, ctx)?;
         self.require_intrinsic_type(&intrinsic, align.ty, Type::U64, span)?;
         self.require_power_of_two_align(&intrinsic, args[1].value, span, ctx)?;
         let result_ty = Type::new_ptr_mut(self.body_type_pool().intern_ptr_mut_from_type(Type::U8));
@@ -471,11 +492,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         }
-        let ptr = self.analyze_inst(air, args[0].value, ctx)?;
+        let ptr = self.analyze_sequenced_pointer_operand(air, args[0].value, true, ctx)?;
         self.require_mut_u8_pointer("realloc", ptr.ty, span)?;
-        let old_size = self.analyze_inst(air, args[1].value, ctx)?;
-        let align = self.analyze_inst(air, args[2].value, ctx)?;
-        let new_size = self.analyze_inst(air, args[3].value, ctx)?;
+        let old_size =
+            self.analyze_sequenced_pointer_operand(air, args[1].value, ptr.continues, ctx)?;
+        let align = self.analyze_sequenced_pointer_operand(
+            air,
+            args[2].value,
+            ptr.continues && old_size.continues,
+            ctx,
+        )?;
+        let new_size = self.analyze_sequenced_pointer_operand(
+            air,
+            args[3].value,
+            ptr.continues && old_size.continues && align.continues,
+            ctx,
+        )?;
         self.require_intrinsic_type("realloc", old_size.ty, Type::U64, span)?;
         self.require_intrinsic_type("realloc", align.ty, Type::U64, span)?;
         self.require_intrinsic_type("realloc", new_size.ty, Type::U64, span)?;
@@ -524,11 +556,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         }
-        let ptr = self.analyze_inst(air, args[0].value, ctx)?;
+        let ptr = self.analyze_sequenced_pointer_operand(air, args[0].value, true, ctx)?;
         self.require_mut_u8_pointer("resize", ptr.ty, span)?;
-        let old_size = self.analyze_inst(air, args[1].value, ctx)?;
-        let align = self.analyze_inst(air, args[2].value, ctx)?;
-        let new_size = self.analyze_inst(air, args[3].value, ctx)?;
+        let old_size =
+            self.analyze_sequenced_pointer_operand(air, args[1].value, ptr.continues, ctx)?;
+        let align = self.analyze_sequenced_pointer_operand(
+            air,
+            args[2].value,
+            ptr.continues && old_size.continues,
+            ctx,
+        )?;
+        let new_size = self.analyze_sequenced_pointer_operand(
+            air,
+            args[3].value,
+            ptr.continues && old_size.continues && align.continues,
+            ctx,
+        )?;
         self.require_intrinsic_type("resize", old_size.ty, Type::U64, span)?;
         self.require_intrinsic_type("resize", align.ty, Type::U64, span)?;
         self.require_intrinsic_type("resize", new_size.ty, Type::U64, span)?;
@@ -573,10 +616,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         }
-        let ptr = self.analyze_inst(air, args[0].value, ctx)?;
+        let ptr = self.analyze_sequenced_pointer_operand(air, args[0].value, true, ctx)?;
         self.require_mut_u8_pointer("free", ptr.ty, span)?;
-        let size = self.analyze_inst(air, args[1].value, ctx)?;
-        let align = self.analyze_inst(air, args[2].value, ctx)?;
+        let size =
+            self.analyze_sequenced_pointer_operand(air, args[1].value, ptr.continues, ctx)?;
+        let align = self.analyze_sequenced_pointer_operand(
+            air,
+            args[2].value,
+            ptr.continues && size.continues,
+            ctx,
+        )?;
         self.require_intrinsic_type("free", size.ty, Type::U64, span)?;
         self.require_intrinsic_type("free", align.ty, Type::U64, span)?;
         self.require_power_of_two_align("free", args[2].value, span, ctx)?;
@@ -649,11 +698,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         }
-        let dst = self.analyze_inst(air, args[0].value, ctx)?;
+        let dst = self.analyze_sequenced_pointer_operand(air, args[0].value, true, ctx)?;
         self.require_mut_u8_pointer(&intrinsic, dst.ty, span)?;
-        let src = self.analyze_inst(air, args[1].value, ctx)?;
+        let src = self.analyze_sequenced_pointer_operand(air, args[1].value, dst.continues, ctx)?;
         self.require_u8_pointer(&intrinsic, src.ty, span)?;
-        let size = self.analyze_inst(air, args[2].value, ctx)?;
+        let size = self.analyze_sequenced_pointer_operand(
+            air,
+            args[2].value,
+            dst.continues && src.continues,
+            ctx,
+        )?;
         self.require_intrinsic_type(&intrinsic, size.ty, Type::U64, span)?;
         let overlapping = name == self.known_symbols().byte_move;
         let air_ref = air.add_intrinsic(
@@ -696,11 +750,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         }
-        let dst = self.analyze_inst(air, args[0].value, ctx)?;
+        let dst = self.analyze_sequenced_pointer_operand(air, args[0].value, true, ctx)?;
         self.require_mut_u8_pointer("byte_set", dst.ty, span)?;
-        let byte = self.analyze_inst(air, args[1].value, ctx)?;
+        let byte =
+            self.analyze_sequenced_pointer_operand(air, args[1].value, dst.continues, ctx)?;
         self.require_intrinsic_type("byte_set", byte.ty, Type::U8, span)?;
-        let size = self.analyze_inst(air, args[2].value, ctx)?;
+        let size = self.analyze_sequenced_pointer_operand(
+            air,
+            args[2].value,
+            dst.continues && byte.continues,
+            ctx,
+        )?;
         self.require_intrinsic_type("byte_set", size.ty, Type::U64, span)?;
         let air_ref = air.add_intrinsic(
             Some(crate::RuntimeCallKind::ByteSet),
@@ -950,7 +1010,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut arg_refs = Vec::with_capacity(args.len());
         let mut continues = true;
         for (i, arg) in args.iter().enumerate() {
+            let reachable_edges_before_arg = ctx.loop_break_stack.clone();
             let arg_result = self.analyze_inst(air, arg.value, ctx)?;
+            if !continues {
+                Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_arg);
+            }
             continues &= arg_result.continues;
             let arg_type = arg_result.ty;
 

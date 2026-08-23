@@ -329,7 +329,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         match &inst.data {
             InstData::And { lhs, rhs } => {
                 let lhs_result = self.analyze_inst(air, *lhs, ctx)?;
+                let reachable_edges_after_lhs = ctx.loop_break_stack.clone();
                 let rhs_result = self.analyze_inst(air, *rhs, ctx)?;
+                if !lhs_result.continues {
+                    Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_lhs);
+                }
 
                 if !lhs_result.continues || !rhs_result.continues {
                     let air_ref = air.add_inst(AirInst {
@@ -350,7 +354,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             InstData::Or { lhs, rhs } => {
                 let lhs_result = self.analyze_inst(air, *lhs, ctx)?;
+                let reachable_edges_after_lhs = ctx.loop_break_stack.clone();
                 let rhs_result = self.analyze_inst(air, *rhs, ctx)?;
+                if !lhs_result.continues {
+                    Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_lhs);
+                }
 
                 if !lhs_result.continues || !rhs_result.continues {
                     let air_ref = air.add_inst(AirInst {

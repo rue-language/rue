@@ -2942,3 +2942,50 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
+
+# A break-only body has no path back to the loop head. The move is therefore
+# checked only at the break exit, not as if a second iteration could run
+# (formal core §5.7, (Loop-Break)).
+[[case]]
+name = "break_only_body_move_is_legal"
+spec = ["3.8:5", "3.8:51", "4.8:21"]
+description = "A move before an unconditional break is not a previous-iteration move."
+source = """
+struct P { x: i64 }
+
+fn consume(p: P) -> i64 { p.x }
+
+fn main() -> i32 {
+    let p = P { x: 1 };
+    loop {
+        let _ = consume(p);
+        break;
+    }
+    0
+}
+"""
+exit_code = 0
+
+# A normal fall-through path is a real back edge and retains the repeated-use
+# rejection. This is the negative control for the break-only case above.
+[[case]]
+name = "fallthrough_body_move_is_rejected"
+spec = ["3.8:5", "4.8:1", "4.8:5"]
+description = "A move in a while body that can fall through is rejected on re-entry."
+source = """
+struct P { x: i64 }
+
+fn consume(p: P) -> i64 { p.x }
+
+fn main() -> i32 {
+    let p = P { x: 1 };
+    let mut i = 0;
+    while i < 2 {
+        let _ = consume(p);
+        i = i + 1;
+    }
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0205", "previous iteration of the loop"]

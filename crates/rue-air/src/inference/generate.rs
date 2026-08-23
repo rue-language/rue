@@ -146,13 +146,34 @@ pub struct ConstraintContext<'a> {
     pub return_type: Type,
     /// How many loops we're nested inside (for break/continue validation).
     pub loop_depth: u32,
-    /// One entry per enclosing loop (innermost last); set to `true` when a
-    /// `break` targeting that loop is seen. An infinite loop containing a
-    /// break has type `()`; without one it has type `!` (see spec 4.8).
-    pub loop_break_stack: Vec<bool>,
+    /// One entry per enclosing loop (innermost last). The syntactic bit gives
+    /// an infinite loop its spec-mandated type even when its break is in dead
+    /// code; the reachable bit determines whether that break can actually
+    /// leave the loop and continue an enclosing expression (RUE-1615).
+    pub loop_break_stack: Vec<LoopBreakFact>,
     checked_depth: u32,
     /// Scope stack for efficient scope management.
     scope_stack: Vec<Vec<(Spur, Option<LocalVarInfo>)>>,
+}
+
+/// Break facts collected during constraint generation. Type inference still
+/// analyzes unreachable suffixes for diagnostics, so reachability must be
+/// restored separately from the syntactic classification (spec 4.8:21).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LoopBreakFact {
+    pub syntactic: bool,
+    pub reachable: bool,
+}
+
+fn restore_reachable_break_facts(
+    loop_break_stack: &mut [LoopBreakFact],
+    reachable_facts: &[LoopBreakFact],
+) {
+    assert_eq!(reachable_facts.len(), loop_break_stack.len());
+    for (reachable, analyzed) in loop_break_stack.iter_mut().zip(reachable_facts) {
+        reachable.syntactic |= analyzed.syntactic;
+        reachable.reachable = analyzed.reachable;
+    }
 }
 
 impl<'a> ConstraintContext<'a> {
@@ -367,6 +388,23 @@ pub struct ConstraintGenerator<'a> {
 }
 
 impl<'a> ConstraintGenerator<'a> {
+    /// Generate one operand in a left-to-right sequence. Later operands are
+    /// still visited for diagnostics after an earlier operand diverges, but
+    /// their break facts cannot reach the enclosing loop (RUE-1615).
+    fn generate_sequenced_operand(
+        &mut self,
+        inst_ref: InstRef,
+        ctx: &mut ConstraintContext,
+        reachable: bool,
+    ) -> ExprInfo {
+        let reachable_facts = ctx.loop_break_stack.clone();
+        let info = self.generate(inst_ref, ctx);
+        if !reachable {
+            restore_reachable_break_facts(&mut ctx.loop_break_stack, &reachable_facts);
+        }
+        info
+    }
+
     /// Create a new constraint generator.
     pub fn new(
         rir: &'a Rir,
@@ -1127,7 +1165,14 @@ impl<'a> ConstraintGenerator<'a> {
             | InstData::Le { lhs, rhs }
             | InstData::Ge { lhs, rhs } => {
                 let lhs_info = self.generate(*lhs, ctx);
+                let reachable_facts_after_lhs = ctx.loop_break_stack.clone();
                 let rhs_info = self.generate(*rhs, ctx);
+                if !lhs_info.continues {
+                    restore_reachable_break_facts(
+                        &mut ctx.loop_break_stack,
+                        &reachable_facts_after_lhs,
+                    );
+                }
                 continues &= lhs_info.continues && rhs_info.continues;
                 // Operands must have the same type. (Chained comparisons are
                 // rejected at parse time — validate.rs, RUE-528 — so a
@@ -1140,7 +1185,14 @@ impl<'a> ConstraintGenerator<'a> {
             // Logical operators: operands must be bool, result is bool
             InstData::And { lhs, rhs } | InstData::Or { lhs, rhs } => {
                 let lhs_info = self.generate(*lhs, ctx);
+                let reachable_facts_after_lhs = ctx.loop_break_stack.clone();
                 let rhs_info = self.generate(*rhs, ctx);
+                if !lhs_info.continues {
+                    restore_reachable_break_facts(
+                        &mut ctx.loop_break_stack,
+                        &reachable_facts_after_lhs,
+                    );
+                }
                 // Logical operators short-circuit. A diverging RHS does not
                 // eliminate the LHS path that skips it, so only divergence of
                 // the always-evaluated LHS removes normal continuation.
@@ -1375,8 +1427,8 @@ impl<'a> ConstraintGenerator<'a> {
             }
 
             InstData::PlaceSet { place, value } => {
-                let place_info = self.generate(*place, ctx);
                 let value_info = self.generate(*value, ctx);
+                let place_info = self.generate_sequenced_operand(*place, ctx, value_info.continues);
                 continues &= place_info.continues && value_info.continues;
                 if value_info.continues {
                     self.add_constraint(Constraint::equal(place_info.ty, value_info.ty, span));
@@ -1449,7 +1501,8 @@ impl<'a> ConstraintGenerator<'a> {
                     && matches!(self.interner.resolve(name), "print" | "println");
                 let result = if is_print_builtin {
                     for arg in args.iter() {
-                        arg_diverged |= !self.generate(arg.value, ctx).continues;
+                        let info = self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
+                        arg_diverged |= !info.continues;
                     }
                     InferType::Concrete(Type::UNIT)
                 } else if let Some(func) = function_key.and_then(|key| self.func_sig(key)) {
@@ -1464,7 +1517,8 @@ impl<'a> ConstraintGenerator<'a> {
                         let arg_infos: Vec<ExprInfo> = args
                             .iter()
                             .map(|arg| {
-                                let info = self.generate(arg.value, ctx);
+                                let info =
+                                    self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
                                 arg_diverged |= !info.continues;
                                 info
                             })
@@ -1599,14 +1653,17 @@ impl<'a> ConstraintGenerator<'a> {
                         // panicking and process what we can.
                         // Still process all arguments to catch type errors within them
                         for arg in args.iter() {
-                            arg_diverged |= !self.generate(arg.value, ctx).continues;
+                            let info =
+                                self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
+                            arg_diverged |= !info.continues;
                         }
                         // Return the declared return type (error will be caught in sema)
                         func.return_type.clone()
                     } else {
                         // Generate constraints for each argument
                         for (arg, param_ty) in args.iter().zip(func.param_types.iter()) {
-                            let arg_info = self.generate(arg.value, ctx);
+                            let arg_info =
+                                self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
                             arg_diverged |= !arg_info.continues;
                             // Slice parameters coerce from an array argument
                             // (`borrow arr`); skip strict equality and let sema
@@ -1625,7 +1682,8 @@ impl<'a> ConstraintGenerator<'a> {
                 } else {
                     // Unknown function - still process arguments for constraint generation
                     for arg in args.iter() {
-                        arg_diverged |= !self.generate(arg.value, ctx).continues;
+                        let info = self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
+                        arg_diverged |= !info.continues;
                     }
                     InferType::Concrete(Type::ERROR)
                 };
@@ -1641,6 +1699,14 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::Intrinsic { name, args } => {
                 let intrinsic_name = self.interner.resolve(name);
                 let args = self.rir.intrinsic_args(args);
+                let mut args_reachable = true;
+                macro_rules! generate_intrinsic_arg {
+                    ($arg:expr) => {{
+                        let info = self.generate_sequenced_operand($arg, ctx, args_reachable);
+                        args_reachable &= info.continues;
+                        info
+                    }};
+                }
 
                 let intrinsic_ty = if intrinsic_name == "intCast"
                     || intrinsic_name == "bitCast"
@@ -1656,7 +1722,7 @@ impl<'a> ConstraintGenerator<'a> {
                     for arg_ref in args.iter() {
                         // Process arguments for constraint generation; the
                         // integer check happens in sema.
-                        let _ = self.generate(*arg_ref, ctx);
+                        let _ = generate_intrinsic_arg!(*arg_ref);
                     }
                     // Return type is inferred from context - create a fresh type variable
                     let result_var = self.fresh_var();
@@ -1673,7 +1739,7 @@ impl<'a> ConstraintGenerator<'a> {
                         // Text-taking intrinsics accept every stable text view.
                         // Leave literals unconstrained so they take the
                         // canonical `str` default when std is not imported.
-                        self.generate(*arg_ref, ctx);
+                        generate_intrinsic_arg!(*arg_ref);
                     }
                     InferType::Concrete(Type::NEVER)
                 } else if intrinsic_name == "assert" {
@@ -1684,7 +1750,7 @@ impl<'a> ConstraintGenerator<'a> {
                     for arg_ref in args.iter() {
                         // As with `@panic`, a literal message keeps the stable
                         // `str` default instead of requiring imported StrBuf.
-                        self.generate(*arg_ref, ctx);
+                        generate_intrinsic_arg!(*arg_ref);
                     }
                     InferType::Concrete(Type::UNIT)
                 } else if intrinsic_name == "read_line" {
@@ -1703,7 +1769,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // literal defaults to i32 like everywhere else. Sema checks
                     // the resolved type is an integer and widens per signedness.
                     for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                        generate_intrinsic_arg!(*arg_ref);
                     }
                     self.string_infer_type()
                 } else if intrinsic_name == "parse_i32"
@@ -1716,7 +1782,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // int type) is resolved from context, so use a fresh
                     // variable and let sema validate the resolved Option shape.
                     for arg_ref in args.iter() {
-                        let info = self.generate(*arg_ref, ctx);
+                        let info = generate_intrinsic_arg!(*arg_ref);
                         if self.is_string_literal_candidate(&info.ty) {
                             self.add_constraint(Constraint::equal(
                                 info.ty,
@@ -1741,7 +1807,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // @arg_len(i) / @env_len(i): a single u64 index, returns u64
                     // (RUE-935).
                     for arg_ref in args.iter() {
-                        let info = self.generate(*arg_ref, ctx);
+                        let info = generate_intrinsic_arg!(*arg_ref);
                         self.add_constraint(Constraint::equal(
                             info.ty,
                             InferType::Concrete(Type::U64),
@@ -1753,7 +1819,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // @arg_ptr(i) / @env_ptr(i): a single u64 index, returns
                     // `ptr mut u8` (RUE-935).
                     for arg_ref in args.iter() {
-                        let info = self.generate(*arg_ref, ctx);
+                        let info = generate_intrinsic_arg!(*arg_ref);
                         self.add_constraint(Constraint::equal(
                             info.ty,
                             InferType::Concrete(Type::U64),
@@ -1775,7 +1841,7 @@ impl<'a> ConstraintGenerator<'a> {
                     let result_var = self.fresh_var();
                     let result_ty = InferType::Var(result_var);
                     for arg_ref in args.iter() {
-                        let info = self.generate(*arg_ref, ctx);
+                        let info = generate_intrinsic_arg!(*arg_ref);
                         self.add_constraint(Constraint::equal(
                             info.ty,
                             result_ty.clone(),
@@ -1794,7 +1860,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // argument keeps sema's targeted E0702 (`u64 for argument
                     // {i}`) instead of a generic unification E0206.
                     for arg_ref in args.iter() {
-                        let info = self.generate(*arg_ref, ctx);
+                        let info = generate_intrinsic_arg!(*arg_ref);
                         if matches!(self.rir.get(*arg_ref).data, InstData::IntConst(_)) {
                             self.add_constraint(Constraint::equal(
                                 info.ty,
@@ -1807,7 +1873,7 @@ impl<'a> ConstraintGenerator<'a> {
                 } else if intrinsic_name == "ptr_to_int" {
                     // @ptr_to_int: takes a pointer, returns u64
                     for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                        generate_intrinsic_arg!(*arg_ref);
                     }
                     InferType::Concrete(Type::U64)
                 } else if intrinsic_name == "ptr_write" || intrinsic_name == "ptr_write_unaligned" {
@@ -1836,7 +1902,7 @@ impl<'a> ConstraintGenerator<'a> {
                     let typed_shape = args.len() == 2;
                     let mut pointee = None;
                     for (index, arg_ref) in args.iter().enumerate() {
-                        let info = self.generate(*arg_ref, ctx);
+                        let info = generate_intrinsic_arg!(*arg_ref);
                         if !typed_shape {
                             continue;
                         }
@@ -1882,7 +1948,7 @@ impl<'a> ConstraintGenerator<'a> {
                     let typed_shape = args.len() == 1;
                     let mut pointee = None;
                     for (index, arg_ref) in args.iter().enumerate() {
-                        let info = self.generate(*arg_ref, ctx);
+                        let info = generate_intrinsic_arg!(*arg_ref);
                         if typed_shape && index == 0 {
                             pointee = self.concrete_pointee_type(&info.ty);
                         }
@@ -1899,7 +1965,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // The return type is the same as the input pointer type.
                     // We create a fresh type variable for proper inference.
                     for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                        generate_intrinsic_arg!(*arg_ref);
                     }
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
@@ -1908,7 +1974,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // pointer-shaped expression until accessor-yield analysis
                     // turns it into an indirect place.
                     for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                        generate_intrinsic_arg!(*arg_ref);
                     }
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
@@ -1922,7 +1988,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // so we create a fresh type variable for proper inference
                     // (Sema fixes it to `ptr const T`/`ptr mut T`).
                     for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                        generate_intrinsic_arg!(*arg_ref);
                     }
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
@@ -1932,7 +1998,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // operands are physical byte counts, so both are u64 and
                     // the result type is fixed rather than context-inferred.
                     for arg_ref in args.iter() {
-                        let info = self.generate(*arg_ref, ctx);
+                        let info = generate_intrinsic_arg!(*arg_ref);
                         self.add_constraint(Constraint::equal(
                             info.ty,
                             InferType::Concrete(Type::U64),
@@ -1950,7 +2016,7 @@ impl<'a> ConstraintGenerator<'a> {
                     let ptr_ty =
                         Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
                     for (i, arg_ref) in args.iter().enumerate() {
-                        let info = self.generate(*arg_ref, ctx);
+                        let info = generate_intrinsic_arg!(*arg_ref);
                         let expected = if i == 0 { ptr_ty } else { Type::U64 };
                         self.add_constraint(Constraint::equal(
                             info.ty,
@@ -1968,7 +2034,7 @@ impl<'a> ConstraintGenerator<'a> {
                     let ptr_ty =
                         Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
                     for (i, arg_ref) in args.iter().enumerate() {
-                        let info = self.generate(*arg_ref, ctx);
+                        let info = generate_intrinsic_arg!(*arg_ref);
                         let expected = if i == 0 { ptr_ty } else { Type::U64 };
                         self.add_constraint(Constraint::equal(
                             info.ty,
@@ -1988,7 +2054,7 @@ impl<'a> ConstraintGenerator<'a> {
                     let ptr_ty =
                         Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
                     for (i, arg_ref) in args.iter().enumerate() {
-                        let info = self.generate(*arg_ref, ctx);
+                        let info = generate_intrinsic_arg!(*arg_ref);
                         let expected = match i {
                             0 => Some(ptr_ty),
                             2 => Some(Type::U64),
@@ -2008,7 +2074,7 @@ impl<'a> ConstraintGenerator<'a> {
                     let ptr_ty =
                         Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
                     for (i, arg_ref) in args.iter().enumerate() {
-                        let info = self.generate(*arg_ref, ctx);
+                        let info = generate_intrinsic_arg!(*arg_ref);
                         let expected = match i {
                             0 => Some(ptr_ty),
                             1 => Some(Type::U8),
@@ -2027,7 +2093,7 @@ impl<'a> ConstraintGenerator<'a> {
                 } else if intrinsic_name == "int_to_ptr" {
                     // @int_to_ptr: returns a pointer type inferred from context
                     for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                        generate_intrinsic_arg!(*arg_ref);
                     }
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
@@ -2074,7 +2140,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // call on the binding unresolvable (RUE-142) and let a
                     // bare module expression coerce to `()` silently.
                     for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                        generate_intrinsic_arg!(*arg_ref);
                     }
                     InferType::Concrete(Type::new_module(crate::types::ModuleId::UNRESOLVED))
                 } else if intrinsic_name == "dbg"
@@ -2083,7 +2149,7 @@ impl<'a> ConstraintGenerator<'a> {
                 {
                     // The remaining known intrinsics all return unit.
                     for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                        generate_intrinsic_arg!(*arg_ref);
                     }
                     InferType::Concrete(Type::UNIT)
                 } else {
@@ -2093,16 +2159,14 @@ impl<'a> ConstraintGenerator<'a> {
                     // expected type — the same treatment @cast gets (RUE-319,
                     // here RUE-1281).
                     for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                        generate_intrinsic_arg!(*arg_ref);
                     }
                     InferType::Var(self.fresh_var())
                 };
                 // Every intrinsic evaluates its operands strictly in source
                 // order.  Keep that control fact separate from the intrinsic's
                 // ordinary value type (notably `@assert`, which remains unit).
-                continues &= args
-                    .iter()
-                    .all(|arg_ref| self.expr_continues.get(&*arg_ref).copied().unwrap_or(true));
+                continues &= args_reachable;
                 intrinsic_ty
             }
 
@@ -2157,6 +2221,7 @@ impl<'a> ConstraintGenerator<'a> {
                 self.enter_scope(ctx);
                 let mut last_ty = InferType::Concrete(Type::UNIT);
                 let mut diverged = false;
+                let mut diverged_break_stack: Option<Vec<LoopBreakFact>> = None;
                 let block_insts = self.rir.block_insts(instructions);
                 for block_inst_ref in block_insts.values() {
                     let info = self.generate(block_inst_ref, ctx);
@@ -2171,7 +2236,13 @@ impl<'a> ConstraintGenerator<'a> {
                     if !diverged {
                         diverged = !info.continues;
                         last_ty = info.ty;
+                        if diverged {
+                            diverged_break_stack = Some(ctx.loop_break_stack.clone());
+                        }
                     }
+                }
+                if let Some(reachable_facts) = diverged_break_stack {
+                    restore_reachable_break_facts(&mut ctx.loop_break_stack, &reachable_facts);
                 }
                 self.exit_scope(ctx);
                 if diverged {
@@ -2189,6 +2260,7 @@ impl<'a> ConstraintGenerator<'a> {
                 else_block,
             } => {
                 let cond_info = self.generate(*cond, ctx);
+                let reachable_facts_after_condition = ctx.loop_break_stack.clone();
                 continues &= cond_info.continues;
                 self.add_constraint(Constraint::equal(
                     cond_info.ty,
@@ -2237,7 +2309,7 @@ impl<'a> ConstraintGenerator<'a> {
 
                 let then_info = self.generate(*then_block, ctx);
 
-                if let Some(else_ref) = else_block {
+                let branch_ty = if let Some(else_ref) = else_block {
                     let else_info = self.generate(*else_ref, ctx);
 
                     // Handle Never type coercion:
@@ -2283,12 +2355,20 @@ impl<'a> ConstraintGenerator<'a> {
                     // and retains the condition-false continuation even when
                     // the then branch diverges.
                     InferType::Concrete(Type::UNIT)
+                };
+                if !cond_info.continues {
+                    restore_reachable_break_facts(
+                        &mut ctx.loop_break_stack,
+                        &reachable_facts_after_condition,
+                    );
                 }
+                branch_ty
             }
 
             // While loop
             InstData::Loop { cond, body } => {
                 let cond_info = self.generate(*cond, ctx);
+                let reachable_facts_after_condition = ctx.loop_break_stack.clone();
                 continues &= cond_info.continues;
                 self.add_constraint(Constraint::equal(
                     cond_info.ty,
@@ -2297,10 +2377,16 @@ impl<'a> ConstraintGenerator<'a> {
                 ));
 
                 ctx.loop_depth += 1;
-                ctx.loop_break_stack.push(false);
+                ctx.loop_break_stack.push(LoopBreakFact::default());
                 self.generate(*body, ctx);
                 ctx.loop_break_stack.pop();
                 ctx.loop_depth -= 1;
+                if !cond_info.continues {
+                    restore_reachable_break_facts(
+                        &mut ctx.loop_break_stack,
+                        &reachable_facts_after_condition,
+                    );
+                }
 
                 // Loops produce unit
                 InferType::Concrete(Type::UNIT)
@@ -2309,14 +2395,15 @@ impl<'a> ConstraintGenerator<'a> {
             // Infinite loop
             InstData::InfiniteLoop { body, .. } => {
                 ctx.loop_depth += 1;
-                ctx.loop_break_stack.push(false);
+                ctx.loop_break_stack.push(LoopBreakFact::default());
                 self.generate(*body, ctx);
-                let has_break = ctx.loop_break_stack.pop().unwrap_or(false);
+                let break_fact = ctx.loop_break_stack.pop().unwrap_or_default();
                 ctx.loop_depth -= 1;
 
                 // An infinite loop with a break targeting it exits with unit;
                 // without one it never returns (see spec 4.8:17 / 4.8:21).
-                if has_break {
+                if break_fact.syntactic {
+                    continues = break_fact.reachable;
                     InferType::Concrete(Type::UNIT)
                 } else {
                     continues = false;
@@ -2330,8 +2417,9 @@ impl<'a> ConstraintGenerator<'a> {
                 match value {
                     None => {
                         // Record the break against the innermost enclosing loop.
-                        if let Some(broke) = ctx.loop_break_stack.last_mut() {
-                            *broke = true;
+                        if let Some(break_fact) = ctx.loop_break_stack.last_mut() {
+                            break_fact.syntactic = true;
+                            break_fact.reachable = true;
                         }
                     }
                     Some(v) => {
@@ -2354,6 +2442,7 @@ impl<'a> ConstraintGenerator<'a> {
             // Match expression
             InstData::Match { scrutinee, arms } => {
                 let scrutinee_info = self.generate(*scrutinee, ctx);
+                let reachable_facts_after_scrutinee = ctx.loop_break_stack.clone();
                 let arms = self.rir.match_arms(arms);
 
                 // Comptime-known scrutinee (spec 4.14:19): when the scrutinee
@@ -2372,6 +2461,12 @@ impl<'a> ConstraintGenerator<'a> {
                     self.enter_scope(ctx);
                     let body_info = self.generate(selected, ctx);
                     self.exit_scope(ctx);
+                    if !scrutinee_info.continues {
+                        restore_reachable_break_facts(
+                            &mut ctx.loop_break_stack,
+                            &reachable_facts_after_scrutinee,
+                        );
+                    }
                     self.record_type(inst_ref, body_info.ty.clone());
                     return ExprInfo::with_continues(
                         body_info.ty,
@@ -2473,6 +2568,12 @@ impl<'a> ConstraintGenerator<'a> {
 
                 if non_never_arms.is_empty() {
                     // All arms diverge - result is Never
+                    if !scrutinee_info.continues {
+                        restore_reachable_break_facts(
+                            &mut ctx.loop_break_stack,
+                            &reachable_facts_after_scrutinee,
+                        );
+                    }
                     InferType::Concrete(Type::NEVER)
                 } else {
                     // Create constraints for non-Never arms to have the same type
@@ -2484,6 +2585,12 @@ impl<'a> ConstraintGenerator<'a> {
                             result_ty.clone(),
                             arm_info.span,
                         ));
+                    }
+                    if !scrutinee_info.continues {
+                        restore_reachable_break_facts(
+                            &mut ctx.loop_break_stack,
+                            &reachable_facts_after_scrutinee,
+                        );
                     }
                     result_ty
                 }
@@ -2539,7 +2646,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // (`S { a: 300 }` with a: u8 used to truncate to 44).
                     // (RUE-72)
                     for (field_name, value_ref) in fields.values() {
-                        let value_info = self.generate(value_ref, ctx);
+                        let value_info = self.generate_sequenced_operand(value_ref, ctx, continues);
                         continues &= value_info.continues;
                         if let Some(field_ty) = self.field_type_of(struct_ty, field_name) {
                             let expected = self.type_to_infer(field_ty);
@@ -2563,7 +2670,9 @@ impl<'a> ConstraintGenerator<'a> {
                     // with unresolved variables, which sema then reported as
                     // an internal compiler error (RUE-170).
                     for (_, value_ref) in fields.values() {
-                        continues &= self.generate(value_ref, ctx).continues;
+                        continues &= self
+                            .generate_sequenced_operand(value_ref, ctx, continues)
+                            .continues;
                     }
                     InferType::Concrete(Type::ERROR)
                 }
@@ -2676,8 +2785,8 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Field assignment
             InstData::FieldSet { base, field, value } => {
-                let base_info = self.generate(*base, ctx);
                 let value_info = self.generate(*value, ctx);
+                let base_info = self.generate_sequenced_operand(*base, ctx, value_info.continues);
                 continues &= base_info.continues && value_info.continues;
                 // Constrain the assigned value against the field's declared
                 // type, so a literal RHS is range-checked at the field's width
@@ -2719,10 +2828,11 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                 } else {
                     // Get element type from first element, constrain rest to match
-                    let first_info = self.generate(elements.get(0).unwrap(), ctx);
+                    let first_info =
+                        self.generate_sequenced_operand(elements.get(0).unwrap(), ctx, true);
                     continues &= first_info.continues;
                     for elem_ref in elements.values().skip(1) {
-                        let elem_info = self.generate(elem_ref, ctx);
+                        let elem_info = self.generate_sequenced_operand(elem_ref, ctx, continues);
                         continues &= elem_info.continues;
                         self.add_constraint(Constraint::equal(
                             elem_info.ty,
@@ -2793,14 +2903,18 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Array index assignment
             InstData::IndexSet { base, index, value } => {
-                let base_info = self.generate(*base, ctx);
-                let index_info = self.generate(*index, ctx);
+                let value_info = self.generate(*value, ctx);
+                let base_info = self.generate_sequenced_operand(*base, ctx, value_info.continues);
+                let index_info = self.generate_sequenced_operand(
+                    *index,
+                    ctx,
+                    value_info.continues && base_info.continues,
+                );
                 // Index must be an integer type (signed or unsigned) per spec
                 // 7.1:7. Negative/out-of-range indices trap at runtime via the
                 // bounds check, not at compile time (RUE-81/RUE-87).
                 self.add_constraint(Constraint::is_integer(index_info.ty, index_info.span));
 
-                let value_info = self.generate(*value, ctx);
                 continues &= base_info.continues && index_info.continues && value_info.continues;
 
                 // Constrain value type to match array element type
@@ -2899,6 +3013,7 @@ impl<'a> ConstraintGenerator<'a> {
                 // Generate type for receiver
                 let receiver_info = self.generate(*receiver, ctx);
                 let call_args = self.rir.call_args(args);
+                let mut arg_diverged = !receiver_info.continues;
 
                 // A string literal is otherwise defaulted only after solving,
                 // but method lookup needs a receiver type while constraints
@@ -2924,7 +3039,9 @@ impl<'a> ConstraintGenerator<'a> {
                     let param_types = method_sig.param_types.clone();
                     let return_type = method_sig.return_type.clone();
                     for (arg, param_type) in call_args.iter().zip(param_types.iter()) {
-                        let arg_info = self.generate(arg.value, ctx);
+                        let arg_info =
+                            self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
+                        arg_diverged |= !arg_info.continues;
                         self.add_constraint(Constraint::equal(
                             arg_info.ty,
                             param_type.clone(),
@@ -2935,9 +3052,7 @@ impl<'a> ConstraintGenerator<'a> {
                     return ExprInfo::with_continues(
                         return_type.clone(),
                         span,
-                        receiver_info.continues
-                            && self.call_args_continue(args)
-                            && !Self::is_never_concrete(&return_type),
+                        !arg_diverged && !Self::is_never_concrete(&return_type),
                     );
                 }
 
@@ -2970,7 +3085,12 @@ impl<'a> ConstraintGenerator<'a> {
                                 // parameter type (same as a direct Call).
                                 for (arg, param_ty) in call_args.iter().zip(func.param_types.iter())
                                 {
-                                    let arg_info = self.generate(arg.value, ctx);
+                                    let arg_info = self.generate_sequenced_operand(
+                                        arg.value,
+                                        ctx,
+                                        !arg_diverged,
+                                    );
+                                    arg_diverged |= !arg_info.continues;
                                     // Slice and `borrow str` parameters coerce
                                     // from a `borrow` argument; skip strict
                                     // equality and let sema materialize the
@@ -2998,7 +3118,15 @@ impl<'a> ConstraintGenerator<'a> {
                                 // constrains, and same-file generic Calls do too).
                                 let arg_infos: Vec<ExprInfo> = call_args
                                     .iter()
-                                    .map(|arg| self.generate(arg.value, ctx))
+                                    .map(|arg| {
+                                        let info = self.generate_sequenced_operand(
+                                            arg.value,
+                                            ctx,
+                                            !arg_diverged,
+                                        );
+                                        arg_diverged |= !info.continues;
+                                        info
+                                    })
                                     .collect();
                                 let mut type_subst: AHashMap<lasso::Spur, Type> = AHashMap::new();
                                 let mut value_subst: AHashMap<lasso::Spur, i128> = AHashMap::new();
@@ -3059,7 +3187,12 @@ impl<'a> ConstraintGenerator<'a> {
                                 // Arity mismatch: just process the arguments;
                                 // sema checks the rest.
                                 for arg in call_args.iter() {
-                                    self.generate(arg.value, ctx);
+                                    let info = self.generate_sequenced_operand(
+                                        arg.value,
+                                        ctx,
+                                        !arg_diverged,
+                                    );
+                                    arg_diverged |= !info.continues;
                                 }
                             }
                             if func.return_type == InferType::Concrete(Type::COMPTIME_TYPE) {
@@ -3072,7 +3205,9 @@ impl<'a> ConstraintGenerator<'a> {
                         } else {
                             // Unknown member - sema reports UndefinedFunction
                             for arg in call_args.iter() {
-                                self.generate(arg.value, ctx);
+                                let info =
+                                    self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
+                                arg_diverged |= !info.continues;
                             }
                             InferType::Concrete(Type::ERROR)
                         }
@@ -3118,7 +3253,9 @@ impl<'a> ConstraintGenerator<'a> {
                             result
                         } else {
                             for arg in call_args.iter() {
-                                self.generate(arg.value, ctx);
+                                let info =
+                                    self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
+                                arg_diverged |= !info.continues;
                             }
                             InferType::Var(self.fresh_var())
                         }
@@ -3153,7 +3290,12 @@ impl<'a> ConstraintGenerator<'a> {
                                     // (RUE-634/RUE-636).
                                     let defer_equality =
                                         self.is_slice_struct_type(param_type.clone());
-                                    let arg_info = self.generate(arg.value, ctx);
+                                    let arg_info = self.generate_sequenced_operand(
+                                        arg.value,
+                                        ctx,
+                                        !arg_diverged,
+                                    );
+                                    arg_diverged |= !arg_info.continues;
                                     if !defer_equality {
                                         self.add_constraint(Constraint::equal(
                                             arg_info.ty,
@@ -3167,14 +3309,21 @@ impl<'a> ConstraintGenerator<'a> {
                                 // Method not found - sema will report the error
                                 // Still generate arg types to catch errors in arguments
                                 for arg in call_args.iter() {
-                                    self.generate(arg.value, ctx);
+                                    let info = self.generate_sequenced_operand(
+                                        arg.value,
+                                        ctx,
+                                        !arg_diverged,
+                                    );
+                                    arg_diverged |= !info.continues;
                                 }
                                 InferType::Concrete(Type::ERROR)
                             }
                         } else {
                             // Non-struct receiver - sema will report the error
                             for arg in call_args.iter() {
-                                self.generate(arg.value, ctx);
+                                let info =
+                                    self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
+                                arg_diverged |= !info.continues;
                             }
                             InferType::Concrete(Type::ERROR)
                         }
@@ -3208,15 +3357,15 @@ impl<'a> ConstraintGenerator<'a> {
                             result
                         } else {
                             for arg in call_args.iter() {
-                                self.generate(arg.value, ctx);
+                                let info =
+                                    self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
+                                arg_diverged |= !info.continues;
                             }
                             InferType::Var(self.fresh_var())
                         }
                     }
                 };
-                continues &= receiver_info.continues
-                    && self.call_args_continue(args)
-                    && !Self::is_never_concrete(&result_type);
+                continues &= !arg_diverged && !Self::is_never_concrete(&result_type);
 
                 result_type
             }
@@ -3284,7 +3433,11 @@ impl<'a> ConstraintGenerator<'a> {
         ctx: &mut ConstraintContext,
     ) -> InferType {
         let lhs_info = self.generate(lhs, ctx);
+        let reachable_facts_after_lhs = ctx.loop_break_stack.clone();
         let rhs_info = self.generate(rhs, ctx);
+        if !lhs_info.continues {
+            restore_reachable_break_facts(&mut ctx.loop_break_stack, &reachable_facts_after_lhs);
+        }
 
         // A diverging operand (`!`, e.g. `n - match m {}`) makes the whole
         // expression diverge. Never coerces to any type (spec 3.4:3-4), so
@@ -3343,7 +3496,11 @@ impl<'a> ConstraintGenerator<'a> {
         ctx: &mut ConstraintContext,
     ) -> InferType {
         let lhs_info = self.generate(lhs, ctx);
+        let reachable_facts_after_lhs = ctx.loop_break_stack.clone();
         let rhs_info = self.generate(rhs, ctx);
+        if !lhs_info.continues {
+            restore_reachable_break_facts(&mut ctx.loop_break_stack, &reachable_facts_after_lhs);
+        }
         self.expr_continues
             .insert(inst_ref, lhs_info.continues && rhs_info.continues);
 
@@ -3508,8 +3665,10 @@ impl<'a> ConstraintGenerator<'a> {
                 .find_variant(self.interner.resolve(&function))
                 .map(|vidx| def.variant_payload(vidx).to_vec())?;
             let args = self.rir.call_args(args);
+            let mut arg_diverged = false;
             for (i, arg) in args.iter().enumerate() {
-                let arg_info = self.generate(arg.value, ctx);
+                let arg_info = self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
+                arg_diverged |= !arg_info.continues;
                 if let Some(&pty) = payload.get(i) {
                     // Convert the declared payload type structurally so an array
                     // payload (`[i32; 2]`) unifies with an array-literal argument
@@ -3524,9 +3683,11 @@ impl<'a> ConstraintGenerator<'a> {
         let struct_id = ty.as_struct()?;
         let method_sig = self.method_sig(&(struct_id, function))?;
         let args = self.rir.call_args(args);
+        let mut arg_diverged = false;
         for (arg, param_type) in args.iter().zip(method_sig.param_types.iter()) {
             let defer_equality = self.is_slice_struct_type(param_type.clone());
-            let arg_info = self.generate(arg.value, ctx);
+            let arg_info = self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
+            arg_diverged |= !arg_info.continues;
             if !defer_equality {
                 self.add_constraint(Constraint::equal(
                     arg_info.ty,

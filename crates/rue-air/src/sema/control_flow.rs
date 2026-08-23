@@ -27,6 +27,22 @@ use crate::scope::ScopedContext;
 use crate::types::{Type, TypeKind};
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
+    /// Discard edge snapshots collected while analyzing code after a
+    /// diverging child expression. Keep syntactic `break` classification for
+    /// loop typing, but only retain moves from edges reachable at this
+    /// sequencing boundary (spec 4.8:21; RUE-1615).
+    pub(super) fn restore_reachable_loop_edges(
+        ctx: &mut AnalysisContext,
+        reachable_edges: &[LoopEdgeStates],
+    ) {
+        assert_eq!(reachable_edges.len(), ctx.loop_break_stack.len());
+        let mut restored = reachable_edges.to_vec();
+        for (reachable, analyzed) in restored.iter_mut().zip(&ctx.loop_break_stack) {
+            reachable.broke |= analyzed.broke;
+        }
+        ctx.loop_break_stack = restored;
+    }
+
     /// Analyze a control flow instruction.
     ///
     /// Handles: Branch, Loop, InfiniteLoop, Match, Break, Continue, Ret, Block
@@ -235,6 +251,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let cond_result = ctx.with_expected_type(None, |ctx| self.analyze_inst(air, cond, ctx));
         ctx.exit_full_expression(boundary);
         let cond_result = cond_result?;
+        let reachable_edges_after_condition = ctx.loop_break_stack.clone();
 
         if let Some(else_b) = else_block {
             // Save move state before entering branches.
@@ -270,6 +287,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             // Capture else-branch's move state
             let else_moves = ctx.moved_vars.clone();
+
+            if !cond_result.continues {
+                Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_condition);
+            }
 
             // Merge move states from both branches.
             ctx.merge_branch_moves(then_moves, else_moves, !then_continues, !else_continues);
@@ -353,6 +374,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Capture then-branch's move state
             let then_moves = ctx.moved_vars.clone();
 
+            if !cond_result.continues {
+                Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_condition);
+            }
+
             // For if-without-else:
             if !then_result.continues {
                 // Then-branch diverges - code after if only runs if cond was false
@@ -403,6 +428,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let cond_result = self.analyze_inst(air, cond, ctx);
         ctx.exit_full_expression(boundary);
         let cond_result = cond_result?;
+        // The condition-false path exits the while before its body runs.
+        // Keep its ownership state separate from the body's fall-through:
+        // a body that always diverges must not overwrite this zero-iteration
+        // exit with an arbitrary state from one diverging arm.
+        let moves_after_condition = ctx.moved_vars.clone();
+        let reachable_edges_after_condition = ctx.loop_break_stack.clone();
 
         // Analyze body with its own scope. The loop_break_stack entry makes
         // breaks inside the body target this while loop, not an outer loop;
@@ -420,27 +451,43 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // break-site snapshots still on the stack, so the record popped
         // afterwards describes the post-loop scope view.
         ctx.pop_scope();
-        let (break_moves, continue_moves) = ctx
-            .loop_break_stack
-            .pop()
-            .unwrap_or_default()
-            .merged_moves();
+        let edge_record = ctx.loop_break_stack.pop().unwrap_or_default();
+        if !cond_result.continues {
+            Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_condition);
+        }
+        let (break_moves, continue_moves) = edge_record.merged_moves();
         // The back edge carries the fall-through state joined with the
         // continue-site states — a continue re-enters the loop exactly like
         // falling off the body's end — while a break path never re-enters.
         // Keep the joined state for the recheck below (RUE-1293).
-        let mut backedge_moves = ctx.moved_vars.clone();
+        let mut reachable_backedge_moves = body_result.continues.then(|| ctx.moved_vars.clone());
         if let Some(continue_moves) = &continue_moves {
-            backedge_moves = union_move_maps(&backedge_moves, continue_moves);
+            reachable_backedge_moves = Some(match reachable_backedge_moves {
+                Some(fallthrough_moves) => union_move_maps(&fallthrough_moves, continue_moves),
+                None => continue_moves.clone(),
+            });
         }
-        // A while loop's exits are the condition-false fall-through — whose
-        // state on iterations past the first is the back-edge state — AND its
-        // breaks; union in the at-break states so a move on a break path is
-        // marked after the loop too (RUE-1293).
-        ctx.moved_vars = match &break_moves {
-            Some(break_moves) => union_move_maps(&backedge_moves, break_moves),
-            None => backedge_moves.clone(),
-        };
+        // Only a condition that can complete and a body path that reaches
+        // either its fall-through or an explicit continue can return to the
+        // loop head. Break-only paths end at the loop exit and must not make
+        // the back-edge recheck reject a move that runs at most once
+        // (RUE-1615).
+        let backedge_reachable = cond_result.continues && reachable_backedge_moves.is_some();
+        // A while loop's exits are the zero-iteration condition-false path,
+        // later condition-false paths reached from the back edge, and its
+        // breaks. Join only reachable contributors: the post-body state is
+        // not an exit when every body path diverges (RUE-1615), while a move
+        // on a break path remains visible after the loop (RUE-1293).
+        let mut exit_moves = moves_after_condition;
+        if cond_result.continues {
+            if let Some(reachable_backedge_moves) = &reachable_backedge_moves {
+                exit_moves = union_move_maps(&exit_moves, reachable_backedge_moves);
+            }
+            if let Some(break_moves) = &break_moves {
+                exit_moves = union_move_maps(&exit_moves, break_moves);
+            }
+        }
+        ctx.moved_vars = exit_moves;
 
         // A while loop discards its body's result value on every iteration;
         // discarding a value that carries a linear value would implicitly
@@ -452,7 +499,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // state. Any use of a value moved by a previous iteration then errors.
         // The scratch Air and context are discarded - this pass exists only
         // for the checks.
-        if !ctx.in_loop_move_recheck && backedge_moves != moves_before_loop {
+        if backedge_reachable
+            && !ctx.in_loop_move_recheck
+            && reachable_backedge_moves.as_ref() != Some(&moves_before_loop)
+        {
             let checkpoint = air.checkpoint();
             let mut scratch_ctx = ctx.fork_for_loop_recheck();
             // Seed the back-edge recheck with the back-edge state (the
@@ -460,7 +510,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // state: break-path moves never reach the back edge, and seeding
             // them would reject a value legitimately moved only on a path
             // that exits the loop (RUE-1293).
-            scratch_ctx.moved_vars = backedge_moves;
+            scratch_ctx.moved_vars =
+                reachable_backedge_moves.expect("reachable back edge must have a move state");
             let recovered_before = self.body_analysis_recovered_errors_mut().len();
             let result = (|| -> CompileResult<()> {
                 let boundary = scratch_ctx.enter_full_expression();
@@ -551,12 +602,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // is unreachable.
         let has_break = edge_record.broke;
         let (break_moves, continue_moves) = edge_record.merged_moves();
+        // `has_break` is syntactic and controls the loop's static type even
+        // for an unreachable break (4.8:21). Only a reachable break snapshot
+        // makes this loop continue to its enclosing context; an inner loop
+        // whose reachable paths all return must not create an outer phantom
+        // back edge (RUE-1615).
+        let has_reachable_break = break_moves.is_some();
         // The back edge carries the fall-through state joined with the
         // continue-site states; keep it for the recheck below (RUE-1293).
-        let mut backedge_moves = ctx.moved_vars.clone();
+        let mut reachable_backedge_moves = body_result.continues.then(|| ctx.moved_vars.clone());
         if let Some(continue_moves) = &continue_moves {
-            backedge_moves = union_move_maps(&backedge_moves, continue_moves);
+            reachable_backedge_moves = Some(match reachable_backedge_moves {
+                Some(fallthrough_moves) => union_move_maps(&fallthrough_moves, continue_moves),
+                None => continue_moves.clone(),
+            });
         }
+        // A break-only body has no path back to the loop head. Its move state
+        // belongs exclusively to the exit join, not to a phantom iteration
+        // (RUE-1615). Explicit continue edges remain real back edges even when
+        // every other body path diverges.
+        let backedge_reachable = reachable_backedge_moves.is_some();
         // An infinite loop's only exits are its breaks, so the union of the
         // at-break states IS the exit ownership state — the back-edge state
         // re-enters the loop and never reaches the code after it (RUE-1293;
@@ -573,15 +638,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.reject_discarded_linear_value(body_result.ty, body)?;
 
         // Loop back-edge move check (see analyze_while_loop for details).
-        // Note: like Rust, this is conservative - a body that unconditionally
-        // breaks after the move still errors.
-        if !ctx.in_loop_move_recheck && backedge_moves != moves_before_loop {
+        if backedge_reachable
+            && !ctx.in_loop_move_recheck
+            && reachable_backedge_moves.as_ref() != Some(&moves_before_loop)
+        {
             let checkpoint = air.checkpoint();
             let mut scratch_ctx = ctx.fork_for_loop_recheck();
             // Seed with the back-edge state (fall-through joined with the
             // continue states), not the exit state: only the back edge's
             // moves reach the next iteration (RUE-1293).
-            scratch_ctx.moved_vars = backedge_moves;
+            scratch_ctx.moved_vars =
+                reachable_backedge_moves.expect("reachable back edge must have a move state");
             let recovered_before = self.body_analysis_recovered_errors_mut().len();
             scratch_ctx.push_scope();
             scratch_ctx.loop_depth += 1;
@@ -620,7 +687,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: loop_ty,
             span,
         });
-        Ok(AnalysisResult::with_continues(air_ref, loop_ty, has_break))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            loop_ty,
+            has_reachable_break,
+        ))
     }
 
     /// Validate an integer pattern literal against the scrutinee type and
@@ -976,6 +1047,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx.exit_full_expression(boundary);
         let scrutinee_result = scrutinee_result?;
         let scrutinee_type = scrutinee_result.ty;
+        let reachable_edges_after_scrutinee = ctx.loop_break_stack.clone();
 
         // Validate that we can match on this type (integers, booleans, and enums)
         if !scrutinee_type.is_integer() && scrutinee_type != Type::BOOL && !scrutinee_type.is_enum()
@@ -1426,6 +1498,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // `full_move_on_all_paths` intersects for the linear must-consume
         // check). Matches are exhaustive, so the arms cover every path.
         let continues = result_continues.unwrap_or(true);
+        if !scrutinee_result.continues {
+            Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_scrutinee);
+        }
         ctx.merge_arm_moves(arm_move_states);
 
         // Exhaustiveness checking
@@ -2435,6 +2510,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         if let Some(moves) = reachable_moves {
             ctx.moved_vars = moves;
+        }
+        if let Some(reachable_context) = diverged_context.as_ref() {
+            // Dead suffixes are still analyzed for diagnostics, but their
+            // break/continue snapshots cannot reach the enclosing join. Keep
+            // the snapshots from the first reachable divergence while
+            // preserving `broke` from the full analysis: loop typing is
+            // syntactic even when a break occurs only in unreachable code
+            // (4.8:21).
+            assert_eq!(
+                reachable_context.loop_break_stack.len(),
+                ctx.loop_break_stack.len()
+            );
+            let mut reachable_edges = reachable_context.loop_break_stack.clone();
+            for (reachable, analyzed) in reachable_edges.iter_mut().zip(&ctx.loop_break_stack) {
+                reachable.broke |= analyzed.broke;
+            }
+            ctx.loop_break_stack = reachable_edges;
         }
         // Pop scope to remove block-scoped variables. The reachable move
         // state is restored first so this frame removes dead locals and
