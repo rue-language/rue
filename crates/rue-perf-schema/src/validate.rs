@@ -27,7 +27,7 @@ use crate::encoding::{
 };
 use crate::manifest::Manifest;
 use crate::run::{FailureRecord, Phase, RunObject, Sample};
-use crate::sanity::{is_commit, is_utc_timestamp, samples_beyond_policy};
+use crate::sanity::{is_commit, is_sha256_digest, is_utc_timestamp, samples_beyond_policy};
 use crate::stats::median;
 
 /// A reason a run may not enter a series at all.
@@ -545,6 +545,15 @@ fn check_boundary_evidence(
     }
     // The full-evidence encoding must not smuggle in v2 shapes: a v1 record
     // carrying digests or blocks is malformed, not partially upgraded.
+    if run.full_evidence.is_some() {
+        if let Some(observation) = run.workloads.first() {
+            errors.push(ValidationError::BoundaryEvidenceMismatch {
+                workload: observation.workload.clone(),
+                sample_index: 0,
+                detail: "a full-evidence record must not name a full-evidence form".to_string(),
+            });
+        }
+    }
     if run.boundary.is_some() {
         if let Some(observation) = run.workloads.first() {
             errors.push(ValidationError::BoundaryEvidenceMismatch {
@@ -681,6 +690,30 @@ fn check_boundary_evidence_encoded(
             detail,
         });
     };
+    // Every stored (v2) record commits to its full-evidence form by content
+    // address, whatever its protocol: the name of the retained artifact for a
+    // fresh collection, of the pre-compaction original for a re-encoded one.
+    match &run.full_evidence {
+        Some(address) if is_sha256_digest(address) => {}
+        Some(address) => {
+            if let Some(observation) = run.workloads.first() {
+                push(
+                    &observation.workload,
+                    0,
+                    format!("full_evidence {address:?} is not a content address"),
+                );
+            }
+        }
+        None => {
+            if let Some(observation) = run.workloads.first() {
+                push(
+                    &observation.workload,
+                    0,
+                    "a stored record must name its full-evidence form".to_string(),
+                );
+            }
+        }
+    }
     match (suite.protocol_version, &epoch.boundary) {
         (1, None) => {
             // A protocol-1 suite carries no evidence under either encoding.
@@ -729,12 +762,17 @@ fn check_boundary_evidence_encoded(
             let one_worker = policy.worker_setting == crate::WorkerSetting::One;
             for observation in &run.workloads {
                 let Some(workload_boundary) = observation.boundary.as_ref() else {
-                    push(
-                        &observation.workload,
-                        0,
-                        "schema v2 protocol-2 record carries no workload boundary block"
-                            .to_string(),
-                    );
+                    // A workload with no samples carried no evidence under
+                    // either encoding; the full path's per-sample loop was
+                    // vacuous over it, and this path must not be stricter.
+                    if !observation.samples.is_empty() {
+                        push(
+                            &observation.workload,
+                            0,
+                            "schema v2 protocol-2 record carries no workload boundary block"
+                                .to_string(),
+                        );
+                    }
                     continue;
                 };
                 let (runner, compiler) = reassemble_witness(run_boundary, workload_boundary);
@@ -799,6 +837,18 @@ fn check_boundary_evidence_encoded(
                                 source.sample_index
                             ),
                         );
+                        continue;
+                    }
+                    let batch = observation.samples[source.sample_index as usize].batch_size;
+                    if source.process_index >= batch {
+                        push(
+                            &observation.workload,
+                            source.sample_index,
+                            format!(
+                                "{member} names process {} of a batch of {batch}",
+                                source.process_index
+                            ),
+                        );
                     }
                 }
                 for (sample_index, sample) in observation.samples.iter().enumerate() {
@@ -843,7 +893,7 @@ fn check_boundary_evidence_encoded(
                             &observation.workload,
                             sample_index,
                             format!(
-                                "process {process}: identity digest disagrees with the workload                                  witness"
+                                "process {process}: identity digest disagrees with the workload witness"
                             ),
                         );
                     }
@@ -867,7 +917,7 @@ fn check_boundary_evidence_encoded(
                                 push(
                                     &observation.workload,
                                     sample_index,
-                                    "one-worker fresh processes reported nondeterministic                                      compiler work"
+                                    "one-worker fresh processes reported nondeterministic compiler work"
                                         .to_string(),
                                 );
                             }
@@ -1303,6 +1353,7 @@ window = 10
                 },
             },
             boundary: None,
+            full_evidence: None,
             workloads: vec![
                 WorkloadObservation {
                     workload: "caldera".to_string(),
@@ -2064,6 +2115,50 @@ window = 10
                 found: RUN_SCHEMA_VERSION + 1,
                 expected: RUN_SCHEMA_VERSION,
             }]
+        );
+    }
+
+    #[test]
+    fn provenance_naming_a_nonexistent_process_is_rejected() {
+        let mut encoded = crate::encode_v2(&boundary_run()).unwrap();
+        encoded.workloads[0]
+            .boundary
+            .as_mut()
+            .unwrap()
+            .critical_path_source
+            .process_index = 999;
+        let outcome = validate_run(&boundary_manifest(), &encoded);
+        assert!(
+            outcome.errors.iter().any(|error| matches!(
+                error,
+                ValidationError::BoundaryEvidenceMismatch { detail, .. }
+                    if detail.contains("names process 999 of a batch of 2")
+            )),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+    }
+
+    #[test]
+    fn a_stored_record_must_name_its_full_evidence_form() {
+        let mut encoded = crate::encode_v2(&boundary_run()).unwrap();
+        encoded.full_evidence = None;
+        let outcome = validate_run(&boundary_manifest(), &encoded);
+        assert!(
+            outcome.errors.iter().any(|error| matches!(
+                error,
+                ValidationError::BoundaryEvidenceMismatch { detail, .. }
+                    if detail.contains("must name its full-evidence form")
+            )),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        // And the commitment is the input's own address.
+        let full = boundary_run();
+        let encoded = crate::encode_v2(&full).unwrap();
+        assert_eq!(
+            encoded.full_evidence.as_deref(),
+            Some(crate::content_address(&full).unwrap().as_str())
         );
     }
 }

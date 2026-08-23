@@ -1735,6 +1735,10 @@ window = 3
                 environment: fingerprint("AMD EPYC 7763"),
             },
             boundary: None,
+            // Direct-constructed stored records carry a placeholder
+            // commitment; validation checks the shape, and only encode_v2
+            // computes the real address.
+            full_evidence: Some("f".repeat(64)),
             workloads: vec![WorkloadObservation {
                 workload: "startup".to_string(),
                 boundary: None,
