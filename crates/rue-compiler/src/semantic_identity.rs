@@ -7,6 +7,8 @@
 
 #![allow(dead_code)] // Phase-4 seams consumed incrementally by later query families.
 
+use std::fmt::Write as _;
+
 use crate::{ModuleId, StableDefinitionKey, bound_definitions::StableNamedTypeKey};
 
 pub use rue_air::{
@@ -47,7 +49,13 @@ impl StableSymbolEncoder {
             }
             StableSymbolId::ReservedRuntime(export) => export.symbol().to_owned(),
             _ => {
-                let mut output = format!("__rue_sem_v{}_", Self::VERSION);
+                // Mangled symbols run to a few hundred bytes. `format!`
+                // returns an exact-fit allocation, so the prefix alone was
+                // followed by a growth for the first encoded field and several
+                // more after it.
+                let mut output = String::with_capacity(256);
+                write!(output, "__rue_sem_v{}_", Self::VERSION)
+                    .expect("writing to a String cannot fail");
                 encode_symbol(symbol, &mut output);
                 output
             }
@@ -405,13 +413,28 @@ fn decimal<I: itoa::Integer>(output: &mut String, value: I) {
 
 fn bytes(output: &mut String, value: &str) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
+    /// Source bytes rendered per `push_str`. Two hex digits each, so the
+    /// staging buffer is twice this.
+    const CHUNK: usize = 32;
 
     output.push('s');
     decimal(output, value.len());
     output.push('_');
-    for &byte in value.as_bytes() {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    // Every module path and definition name in every mangled symbol comes
+    // through here, so the digits are staged and appended a chunk at a time.
+    // Pushing them one `char` at a time re-checked capacity and re-encoded
+    // UTF-8 for each of the two digits of every byte, and grew the string
+    // repeatedly on the way.
+    output.reserve(value.len() * 2);
+    let mut staged = [0u8; CHUNK * 2];
+    for block in value.as_bytes().chunks(CHUNK) {
+        for (index, &byte) in block.iter().enumerate() {
+            staged[index * 2] = HEX[usize::from(byte >> 4)];
+            staged[index * 2 + 1] = HEX[usize::from(byte & 0x0f)];
+        }
+        output.push_str(
+            std::str::from_utf8(&staged[..block.len() * 2]).expect("hex digits are ASCII"),
+        );
     }
 }
 
