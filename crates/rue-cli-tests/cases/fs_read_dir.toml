@@ -727,3 +727,66 @@ tree/up_link symlink
 6
 """
 exit_code = 0
+
+# RUE-1711: both enumeration entry points inherit the path precondition, because
+# both reach the kernel through the same `File._open_with` marshalling that
+# `File.open` uses. `"listed\0decoy"` would otherwise have listed `listed` — a
+# whole directory's contents returned for a path naming something else. `walk`
+# is checked separately from `read_dir` even though it delegates to it, since
+# that delegation is the only reason it is covered at all.
+#
+# The NUL is pushed as a byte rather than written as `\0`: these sources are
+# TOML basic strings, where `\0` is not a valid escape.
+[[case]]
+name = "read_dir_interior_nul_path_rejected"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn nul_mk(a: str, b: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow a);
+    out.push(0);
+    out.append_str(borrow b);
+    out
+}
+
+fn main() -> i32 {
+    let FE = std.fs.FileError;
+    let CR = std.result.Result((), FE);
+    let DR = std.result.Result(std.fs.DirEntries, FE);
+
+    // A real directory sitting at the name the truncated path would reach.
+    match std.fs.create_dir(borrow mk("listed")) {
+        CR.Ok(_u) => {},
+        CR.Err(_e) => { return 61; },
+    };
+
+    match std.fs.read_dir(borrow nul_mk("listed", "decoy")) {
+        DR.Ok(_d) => { return 62; },
+        DR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 63; } },
+    };
+
+    match std.fs.walk(borrow nul_mk("listed", "decoy")) {
+        DR.Ok(_d) => { return 64; },
+        DR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 65; } },
+    };
+
+    // The directory itself still lists, so the rejection is about the path and
+    // not about `listed` having become unreadable.
+    match std.fs.read_dir(borrow mk("listed")) {
+        DR.Ok(_d) => { @dbg(0); },
+        DR.Err(_e) => { return 66; },
+    };
+    0
+}
+""" }]
+stdout = "0\n"
+exit_code = 0

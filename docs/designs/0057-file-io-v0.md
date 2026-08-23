@@ -109,6 +109,19 @@ touches `StrBuf`'s private buffer. There is **no `Path`/`PathBuf` abstraction in
 v0** — a byte string is the path. A typed path layer can arrive later without
 changing the syscall boundary.
 
+A byte string can hold a byte a C string cannot carry. A path containing a NUL
+of its own has no C-string spelling at all: the terminator appended here is not
+the first one the kernel meets, so the syscall reads the **prefix** and
+`"victim\0decoy"` names `victim`. Truncating is the dangerous answer, because
+nothing about it is visible to the caller — the operation reports success on a
+file they never named, and a program deriving paths from untrusted bytes (which
+byte-string paths invite) can be steered into it. Every path-taking entry point
+therefore **rejects** such a path as `FileError.InvalidInput`, the answer Rust's
+CString-based `std::fs` gives the same input, and rejects it *before*
+marshalling so the prefix is never touched. `create_dir_all` checks ahead of its
+prefix loop for that reason: it is the one operation whose non-atomic contract
+would otherwise let a rejected path leave real directories behind (RUE-1711).
+
 ### 3. Error model: a normalized `FileError`, never a raw errno
 
 Every fallible operation returns `Result(T, FileError)` (the ADR-0038 library

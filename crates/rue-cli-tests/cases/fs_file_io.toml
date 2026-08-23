@@ -1,7 +1,8 @@
 # V1 FOLLOW-UPS (ADR-0057 "Future Work"): the cases whose names begin `fs_seek_`,
 # `fs_stat_`/`fs_metadata_`, `fs_rename_`, `fs_remove_`, and `fs_mkdir_` exercise
 # seek/tell, fstat/newfstatat metadata, rename, unlink, and directory
-# create/remove. The `fs_mkdir_` group also covers `create_dir_all` (RUE-995):
+# create/remove. The `fs_interior_nul_` pair covers the path PRECONDITION those
+# entry points share (RUE-1711) rather than any one syscall. The `fs_mkdir_` group also covers `create_dir_all` (RUE-995):
 # nested creation, idempotent re-creation, the separator shapes its byte scan has
 # to collapse, and the EEXIST-but-not-a-directory case.
 # They are UNGATED, like the v0 group, because each one issues a syscall whose
@@ -1012,4 +1013,158 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "1\n2\n"
+exit_code = 0
+
+# RUE-1711: a path holding a NUL byte of its own has no C-string spelling. The
+# terminator `_path_to_cbuf` appends is not the first one the kernel meets, so
+# the syscall reads the PREFIX — `"victim\0decoy"` names `victim`. Before the
+# fix `fs.remove` of that path returned Ok and deleted `victim`: a silent
+# operation on a file the caller never wrote, reachable by any program that
+# builds paths out of untrusted bytes, which is exactly what byte-string paths
+# invite. Every path-taking entry point now answers `InvalidInput`, and it
+# answers before marshalling, so the file the prefix names is untouched.
+#
+# The NUL is pushed as a byte rather than written as `\0`: these sources are
+# TOML basic strings, where `\0` is not a valid escape.
+[[case]]
+name = "fs_interior_nul_path_rejected"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn plain(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn nul_path(a: str, b: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow a);
+    out.push(0);
+    out.append_str(borrow b);
+    out
+}
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    let MR = std.result.Result(std.fs.Metadata, FE);
+
+    // The file the truncated path would name.
+    match F.create(borrow plain("victim")) {
+        R.Ok(f) => { match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 61; } }; },
+        R.Err(_e) => { return 62; },
+    };
+
+    // The repro: this removed `victim` before the fix.
+    match std.fs.remove(borrow nul_path("victim", "decoy")) {
+        CR.Ok(_u) => { return 63; },
+        CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 64; } },
+    };
+    match std.fs.metadata(borrow plain("victim")) {
+        MR.Ok(_m) => {},
+        MR.Err(_e) => { return 65; },
+    };
+
+    // The same answer from every other path-taking entry point.
+    match F.open(borrow nul_path("victim", "decoy")) {
+        R.Ok(_x) => { return 66; },
+        R.Err(e) => match e { FE.InvalidInput => {}, _ => { return 67; } },
+    };
+    match F.create(borrow nul_path("victim", "decoy")) {
+        R.Ok(_x) => { return 68; },
+        R.Err(e) => match e { FE.InvalidInput => {}, _ => { return 69; } },
+    };
+    match F.append(borrow nul_path("victim", "decoy")) {
+        R.Ok(_x) => { return 70; },
+        R.Err(e) => match e { FE.InvalidInput => {}, _ => { return 71; } },
+    };
+    match std.fs.metadata(borrow nul_path("victim", "decoy")) {
+        MR.Ok(_m) => { return 72; },
+        MR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 73; } },
+    };
+    match std.fs.create_dir(borrow nul_path("newdir", "decoy")) {
+        CR.Ok(_u) => { return 74; },
+        CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 75; } },
+    };
+    match std.fs.remove_dir(borrow nul_path("victim", "decoy")) {
+        CR.Ok(_u) => { return 76; },
+        CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 77; } },
+    };
+
+    // `rename` reads two paths, so each one is checked; a clean `from` does not
+    // license a `to` the kernel would truncate.
+    match std.fs.rename(borrow nul_path("victim", "decoy"), borrow plain("moved")) {
+        CR.Ok(_u) => { return 78; },
+        CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 79; } },
+    };
+    match std.fs.rename(borrow plain("victim"), borrow nul_path("moved", "decoy")) {
+        CR.Ok(_u) => { return 80; },
+        CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 81; } },
+    };
+
+    // Nothing above touched the file the prefix names, and the rejected
+    // renames did not half-happen.
+    match std.fs.metadata(borrow plain("victim")) {
+        MR.Ok(_m) => {},
+        MR.Err(_e) => { return 82; },
+    };
+    match std.fs.metadata(borrow plain("moved")) {
+        MR.Ok(_m) => { return 83; },
+        MR.Err(e) => match e { FE.NotFound => {}, _ => { return 84; } },
+    };
+    0
+}
+""" }]
+exit_code = 0
+
+# RUE-1711, the `create_dir_all` half. Its prefix loop would have marshalled
+# `"nulparent\0x"` for the path `"nulparent\0x/y"`, which the kernel reads as
+# `nulparent` — so the call returned Ok having created a directory under a name
+# the caller never wrote. The check therefore runs AHEAD of that loop: this is
+# the one operation whose "NOT ATOMIC" contract would otherwise let a rejected
+# path leave real directories behind.
+[[case]]
+name = "fs_interior_nul_create_dir_all_creates_nothing"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn plain(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn nul_path(a: str, b: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow a);
+    out.push(0);
+    out.append_str(borrow b);
+    out
+}
+
+fn main() -> i32 {
+    let FE = std.fs.FileError;
+    let CR = std.result.Result((), FE);
+    let MR = std.result.Result(std.fs.Metadata, FE);
+
+    match std.fs.create_dir_all(borrow nul_path("nulparent", "x/y")) {
+        CR.Ok(_u) => { return 61; },
+        CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 62; } },
+    };
+
+    // Not even the first component: the rejection precedes any mkdirat.
+    match std.fs.metadata(borrow plain("nulparent")) {
+        MR.Ok(_m) => { return 63; },
+        MR.Err(e) => match e { FE.NotFound => {}, _ => { return 64; } },
+    };
+    0
+}
+""" }]
 exit_code = 0

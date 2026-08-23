@@ -39,7 +39,9 @@
 // `fs_stat_`/`fs_metadata_` CLI cases, which run on aarch64-macos.
 //
 // PATHS are byte-string `StrBuf`s; the syscall boundary copies the bytes into a
-// NUL-terminated buffer and never exposes that terminator to the caller.
+// NUL-terminated buffer and never exposes that terminator to the caller. A path
+// carrying a NUL byte of its own is rejected as `FileError.InvalidInput` there
+// instead of being truncated to its prefix (RUE-1711).
 //
 // ERRORS normalize to `FileError` from per-OS errno tables — a raw errno never
 // escapes. Linux and macOS give the same logical error different integers
@@ -646,8 +648,41 @@ fn _normalize_macos(e: i64) -> FileError {
 // Reads bytes through the public `StrBuf.byte_at` accessor (RUE-712 uses the
 // PR #1714 `byte_at`), so `fs` never touches `StrBuf`'s private buffer.
 // The caller frees the returned buffer with `len + 1`.
+//
+// A path holding a NUL byte of its own has no C-string spelling: the terminator
+// appended here is not the first one the kernel meets, so the syscall reads the
+// PREFIX. `"victim\0decoy"` would name `"victim"` — a silent operation on a
+// different file than the caller asked for, and a program that builds paths
+// from untrusted bytes (which is exactly what byte-string paths invite) can be
+// steered by it. Every entry point below therefore rejects such a path as
+// `FileError.InvalidInput` before marshalling it, the same answer Rust's
+// CString-based `std::fs` gives the same input (RUE-1711).
 // ---------------------------------------------------------------------------
 
+// True if `path` contains byte 0 anywhere, which makes it unrepresentable as a
+// C string. Scans through the public `byte_at` accessor for the same reason
+// `_path_to_cbuf` does. `i < n` keeps the index in range, so the `None` arm is
+// unreachable; it answers "contains a NUL" regardless, leaving the impossible
+// case on the rejecting side rather than passing an unread byte to the kernel.
+fn _path_has_interior_nul(borrow path: strbuf.StrBuf) -> bool {
+    let n = path.len();
+    let O = option.Option(u8);
+    let mut i: u64 = 0;
+    while i < n {
+        let b = match path.byte_at(i) {
+            O.Some(x) => x,
+            O.None => 0,
+        };
+        if b == 0 {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+// Marshal a validated path. The caller has already rejected a path containing
+// byte 0 (see above); this copy would otherwise hand the kernel a truncated one.
 fn _path_to_cbuf(borrow path: strbuf.StrBuf) -> ptr mut u8 {
     let n = path.len();
     let buf: ptr mut u8 = checked { @alloc(n + 1, 1) };
@@ -681,6 +716,9 @@ pub struct File {
     // Shared openat path used by the three constructors.
     fn _open_with(borrow path: strbuf.StrBuf, flags: u64, mode: u64) -> result.Result(File, FileError) {
         let R = result.Result(File, FileError);
+        if _path_has_interior_nul(borrow path) {
+            return R.Err(FileError.InvalidInput);
+        }
         let cbuf = _path_to_cbuf(borrow path);
         let addr: u64 = checked { @ptr_to_int(cbuf) };
         let free_len = path.len() + 1;
@@ -929,6 +967,9 @@ drop fn File(self) {
 // `d_type` would have reported.
 fn _metadata_at(borrow path: strbuf.StrBuf, flags: u64) -> result.Result(Metadata, FileError) {
     let R = result.Result(Metadata, FileError);
+    if _path_has_interior_nul(borrow path) {
+        return R.Err(FileError.InvalidInput);
+    }
     let cbuf = _path_to_cbuf(borrow path);
     let paddr: u64 = checked { @ptr_to_int(cbuf) };
     let free_len = path.len() + 1;
@@ -961,6 +1002,12 @@ pub fn metadata(borrow path: strbuf.StrBuf) -> result.Result(Metadata, FileError
 // existing `to` is atomically replaced (POSIX rename semantics).
 pub fn rename(borrow from: strbuf.StrBuf, borrow to: strbuf.StrBuf) -> result.Result((), FileError) {
     let R = result.Result((), FileError);
+    if _path_has_interior_nul(borrow from) {
+        return R.Err(FileError.InvalidInput);
+    }
+    if _path_has_interior_nul(borrow to) {
+        return R.Err(FileError.InvalidInput);
+    }
     let fbuf = _path_to_cbuf(borrow from);
     let faddr: u64 = checked { @ptr_to_int(fbuf) };
     let flen = from.len() + 1;
@@ -981,6 +1028,9 @@ pub fn rename(borrow from: strbuf.StrBuf, borrow to: strbuf.StrBuf) -> result.Re
 // directory path fails (EISDIR/EPERM -> the normalized error); use `remove_dir`.
 pub fn remove(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
     let R = result.Result((), FileError);
+    if _path_has_interior_nul(borrow path) {
+        return R.Err(FileError.InvalidInput);
+    }
     let cbuf = _path_to_cbuf(borrow path);
     let addr: u64 = checked { @ptr_to_int(cbuf) };
     let free_len = path.len() + 1;
@@ -998,6 +1048,10 @@ pub fn remove(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
 // success, `-errno` on failure. `create_dir` and `create_dir_all` share this so
 // there is one marshalling path; only their errno HANDLING differs (the
 // recursive form has to inspect EEXIST before deciding it is an error).
+//
+// Both reject an interior NUL before calling this, and every path reaching it
+// from `create_dir_all` is a PREFIX of one already checked, so nothing here can
+// be truncated at the syscall.
 fn _mkdirat_raw(borrow path: strbuf.StrBuf) -> i64 {
     let cbuf = _path_to_cbuf(borrow path);
     let addr: u64 = checked { @ptr_to_int(cbuf) };
@@ -1024,6 +1078,9 @@ fn _path_separator() -> u8 {
 // existing path is `Err(FileError.AlreadyExists)`.
 pub fn create_dir(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
     let R = result.Result((), FileError);
+    if _path_has_interior_nul(borrow path) {
+        return R.Err(FileError.InvalidInput);
+    }
     let ret = _mkdirat_raw(borrow path);
     if ret < 0 {
         R.Err(_normalize_errno(0 - ret))
@@ -1082,6 +1139,12 @@ fn _create_dir_idempotent(borrow path: strbuf.StrBuf) -> result.Result((), FileE
 // in place, matching `mkdir -p` and Rust's `fs::create_dir_all`.
 pub fn create_dir_all(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
     let R = result.Result((), FileError);
+    // Ahead of the prefix loop: this call creates nothing at all for a path it
+    // is going to reject, rather than leaving the components before the NUL
+    // behind as the NOT ATOMIC note above would otherwise allow.
+    if _path_has_interior_nul(borrow path) {
+        return R.Err(FileError.InvalidInput);
+    }
     let n = path.len();
     if n == 0 {
         return R.Err(FileError.NotFound);
@@ -1133,6 +1196,9 @@ pub fn create_dir_all(borrow path: strbuf.StrBuf) -> result.Result((), FileError
 // non-empty directory is `Err` (ENOTEMPTY -> `Other`, or the normalized case).
 pub fn remove_dir(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
     let R = result.Result((), FileError);
+    if _path_has_interior_nul(borrow path) {
+        return R.Err(FileError.InvalidInput);
+    }
     let cbuf = _path_to_cbuf(borrow path);
     let addr: u64 = checked { @ptr_to_int(cbuf) };
     let free_len = path.len() + 1;
