@@ -2544,11 +2544,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// one that is linear only because a field carries a linear value
     /// (infectious linearity, spec 3.8:58).
     ///
-    /// The pool's `StructDef::is_linear` is the transitive join, so it cannot
-    /// tell the two apart on its own; [`Self::infectious_linear_reason`] names
-    /// the culprit field exactly when the join — and not the declaration — is
-    /// what made the struct linear, so `is_linear` without such a reason is
-    /// the declared case.
+    /// The pool's `StructDef::declared_linear` is authoritative: it records
+    /// the source declaration verbatim and the containment-facts join never
+    /// touches it, while `StructDef::is_linear` is the transitive join and so
+    /// cannot tell the two apart on its own.
     ///
     /// The distinction is load-bearing (RUE-1591): whole-value destructuring
     /// consumption (3.8:33, 3.8:74 — the obligation belongs to the VALUE
@@ -2556,8 +2555,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// struct only. An infectious carrier follows the ordinary partial-move
     /// model of 3.8:22/3.8:28.
     pub(crate) fn struct_declared_linear(&self, struct_id: StructId) -> bool {
-        self.body_type_pool().struct_def(struct_id).is_linear
-            && self.infectious_linear_reason(struct_id).is_none()
+        let def = self.body_type_pool().struct_def(struct_id);
+        // The diagnostics helper `infectious_linear_reason` names a culprit
+        // field exactly when the join — and not the declaration — is what
+        // made the struct linear, so the old derivation must agree with the
+        // declared bit for every complete struct.
+        debug_assert_eq!(
+            def.declared_linear,
+            def.is_linear && self.infectious_linear_reason(struct_id).is_none(),
+            "declared_linear bit disagrees with the infectious-reason derivation for '{}'",
+            def.name,
+        );
+        def.declared_linear
     }
 
     /// Reject a field access that consumes (destructures) a **declared**

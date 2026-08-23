@@ -469,6 +469,7 @@ pub(crate) struct StructDeclarationMetadata {
     pub name: Arc<str>,
     pub is_copy: bool,
     pub is_linear: bool,
+    pub declared_linear: bool,
     pub destructor: Option<Arc<str>>,
     pub is_builtin: bool,
     pub is_pub: bool,
@@ -730,6 +731,7 @@ static ALIASED_STRUCT_DEF: LazyLock<StructDefEntry> = LazyLock::new(|| {
         fields: Vec::new(),
         is_copy: false,
         is_linear: false,
+        declared_linear: false,
         destructor: None,
         is_builtin: false,
         is_pub: false,
@@ -1648,6 +1650,7 @@ impl TypeInternPoolInner {
                 name: data.def.name.clone(),
                 is_copy: data.def.is_copy,
                 is_linear: data.def.is_linear,
+                declared_linear: data.def.declared_linear,
                 destructor: data.def.destructor.clone(),
                 is_builtin: data.def.is_builtin,
                 is_pub: data.def.is_pub,
@@ -1664,6 +1667,7 @@ impl TypeInternPoolInner {
                     name: data.def.name.clone(),
                     is_copy: data.def.is_copy,
                     is_linear: data.def.is_linear,
+                    declared_linear: data.def.declared_linear,
                     destructor: data.def.destructor.clone(),
                     is_builtin: data.def.is_builtin,
                     is_pub: data.def.is_pub,
@@ -4205,6 +4209,7 @@ mod tests {
             fields,
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: false,
@@ -4580,6 +4585,7 @@ mod tests {
                 }],
                 is_copy: false,
                 is_linear: false,
+                declared_linear: false,
                 destructor: Some("Owner.__drop".into()),
                 is_builtin: false,
                 is_pub: false,
@@ -5016,10 +5022,67 @@ mod tests {
         assert!(pool.type_carries_linear(Type::new_enum(choice)));
         assert!(pool.type_needs_drop(Type::new_enum(choice)));
         assert!(pool.struct_def(wrapper).is_linear);
+        // The join set `is_linear`; the source-declaration bit stays untouched.
+        assert!(!pool.struct_def(wrapper).declared_linear);
 
         let frozen = pool.freeze();
         assert!(frozen.type_carries_linear(Type::new_struct(wrapper)));
         assert!(frozen.type_needs_drop(Type::new_struct(wrapper)));
+    }
+
+    /// RUE-1604: the containment-facts join ORs `carries_linear` into
+    /// `StructDef::is_linear` but never touches `StructDef::declared_linear`,
+    /// which records the source declaration verbatim — including for a struct
+    /// that is both declared `linear` and carries a linear field.
+    #[test]
+    fn containment_join_sets_is_linear_but_never_declared_linear() {
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+
+        let mut token = struct_def("Token", vec![]);
+        token.is_linear = true;
+        token.declared_linear = true;
+        let (token, _) = pool.register_struct(declarations.get_or_intern("Token"), token);
+
+        // Declared linear AND carrying a linear field (the RUE-1591
+        // declared-and-carrying pin): both bits survive the join.
+        let mut holder = struct_def(
+            "H",
+            vec![StructField {
+                name: "t".into(),
+                ty: Type::new_struct(token),
+            }],
+        );
+        holder.is_linear = true;
+        holder.declared_linear = true;
+        let (holder, _) = pool.register_struct(declarations.get_or_intern("H"), holder);
+
+        // Not declared: the join marks it linear, the declared bit stays off.
+        let (carrier, _) = pool.register_struct(
+            declarations.get_or_intern("Carrier"),
+            struct_def(
+                "Carrier",
+                vec![StructField {
+                    name: "t".into(),
+                    ty: Type::new_struct(token),
+                }],
+            ),
+        );
+        pool.finalize_containment_metadata().unwrap();
+
+        let token_def = pool.struct_def(token);
+        assert!(token_def.is_linear);
+        assert!(token_def.declared_linear);
+        let holder_def = pool.struct_def(holder);
+        assert!(holder_def.is_linear);
+        assert!(holder_def.declared_linear);
+        let carrier_def = pool.struct_def(carrier);
+        assert!(carrier_def.is_linear);
+        assert!(!carrier_def.declared_linear);
+
+        let frozen = pool.freeze();
+        assert!(frozen.struct_def(holder).declared_linear);
+        assert!(!frozen.struct_def(carrier).declared_linear);
     }
 
     #[test]
@@ -5161,6 +5224,7 @@ mod tests {
             fields: vec![],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: false,
@@ -5188,6 +5252,7 @@ mod tests {
             fields: vec![],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: true,
@@ -5215,6 +5280,7 @@ mod tests {
             fields: vec![],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: true,
@@ -5299,6 +5365,7 @@ mod tests {
             fields: vec![],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: false,
@@ -5366,6 +5433,7 @@ mod tests {
             fields: vec![],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: false,
@@ -5401,6 +5469,7 @@ mod tests {
             fields: vec![],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: false,
@@ -5452,6 +5521,7 @@ mod tests {
             fields: vec![],
             is_copy: true,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: false,
@@ -5527,6 +5597,7 @@ mod tests {
             fields: vec![],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: false,
@@ -5559,6 +5630,7 @@ mod tests {
             fields: vec![],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: false,
@@ -5646,6 +5718,7 @@ mod tests {
                             fields: vec![],
                             is_copy: false,
                             is_linear: false,
+                            declared_linear: false,
                             destructor: None,
                             is_builtin: false,
                             is_pub: false,
@@ -5726,6 +5799,7 @@ mod tests {
             fields: vec![],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: false,
@@ -5758,6 +5832,7 @@ mod tests {
             fields: vec![],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin,
             is_pub: true,
@@ -5798,6 +5873,7 @@ mod tests {
             fields: vec![],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: true,
@@ -5866,6 +5942,7 @@ mod tests {
                 fields: vec![],
                 is_copy: true,
                 is_linear: false,
+                declared_linear: false,
                 destructor: None,
                 is_builtin: false,
                 is_pub: false,
@@ -5908,6 +5985,7 @@ mod tests {
             fields: vec![],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: true,
@@ -5970,6 +6048,7 @@ mod tests {
                 fields: vec![],
                 is_copy: false,
                 is_linear: false,
+                declared_linear: false,
                 destructor: None,
                 is_builtin: false,
                 is_pub: false,

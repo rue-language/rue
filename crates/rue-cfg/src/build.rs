@@ -3707,6 +3707,7 @@ mod tests {
                 fields,
                 is_copy: false,
                 is_linear: false,
+                declared_linear: false,
                 destructor: destructor.map(Into::into),
                 is_builtin: false,
                 is_pub: false,
@@ -3778,6 +3779,7 @@ mod tests {
                         .collect(),
                     is_copy: false,
                     is_linear: false,
+                    declared_linear: false,
                     destructor: destructor.map(FunctionInstanceKey::Definition),
                 },
             });
@@ -5844,6 +5846,7 @@ mod tests {
                 fields,
                 is_copy: false,
                 is_linear: false,
+                declared_linear: false,
                 destructor,
                 is_builtin: false,
                 is_pub: false,

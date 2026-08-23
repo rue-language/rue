@@ -658,6 +658,7 @@ mod tests {
                 fields: struct_fields,
                 is_copy: true,
                 is_linear: false,
+                declared_linear: false,
                 destructor: None,
                 is_builtin: false,
                 is_pub: false,

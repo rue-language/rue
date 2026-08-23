@@ -407,6 +407,14 @@ pub struct StructDef {
     pub is_copy: bool,
     /// Whether this struct is a linear type (must be consumed, cannot be dropped)
     pub is_linear: bool,
+    /// Whether this struct was declared `linear` in source, as opposed to
+    /// becoming linear only by containing a linear field (infectious
+    /// linearity). The containment-facts join may set [`StructDef::is_linear`]
+    /// after construction, but it never touches this bit, so it stays the
+    /// authoritative record of the source declaration. Anonymous and
+    /// compiler-injected nominals cannot be declared linear, so for them this
+    /// is always `false`.
+    pub declared_linear: bool,
     /// User-defined destructor function name, if any (e.g., "Data.__drop").
     /// Shared for the same reason as [`StructDef::name`].
     pub destructor: Option<Arc<str>>,
@@ -1579,6 +1587,7 @@ mod tests {
             ],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: false,
@@ -1605,6 +1614,7 @@ mod tests {
             fields: vec![],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: false,
@@ -1630,6 +1640,7 @@ mod tests {
             ],
             is_copy: false,
             is_linear: false,
+            declared_linear: false,
             destructor: None,
             is_builtin: false,
             is_pub: false,
