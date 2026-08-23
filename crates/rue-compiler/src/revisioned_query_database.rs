@@ -1418,13 +1418,62 @@ pub(crate) struct BackendRootCandidate {
     object_projection_terminals: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub(crate) struct OptimizedCfgBatchKey {
     pub(crate) keys: Arc<[crate::cfg_query::OptimizedCfgQueryKey]>,
     /// O2/O3 batches are request-local because their values may contain
     /// rewritten callers. Child CFG terminals remain reusable; this token
     /// prevents a rewritten whole-program result crossing request boundaries.
     pub(crate) generation: u64,
+    /// Digest and memo bucket derived once at construction.
+    ///
+    /// This key names every optimized-CFG unit in the batch, so it is
+    /// whole-program sized: on Lattice it absorbs up to 30,744 bytes. Every
+    /// `CodegenUnitQueryKey` carries a shared handle to one of these, and a
+    /// derived `Hash` made each of the 1,280 codegen keys re-walk the entire
+    /// list — 11.7 MB of hashing per fresh build, 98.4% of everything the
+    /// codegen key absorbed. Deriving both values once here makes hashing the
+    /// batch constant-time for every holder.
+    digest: rue_query::StableKeyHash,
+    memo_hash: u64,
+}
+
+impl OptimizedCfgBatchKey {
+    pub(crate) fn new(
+        keys: Arc<[crate::cfg_query::OptimizedCfgQueryKey]>,
+        generation: u64,
+    ) -> Self {
+        let mut hasher = rue_query::StableHasher::new();
+        hasher.write_usize(keys.len());
+        for key in keys.iter() {
+            key.stable_hash(&mut hasher);
+        }
+        generation.hash(&mut hasher);
+        let digest = hasher.finish128();
+        let memo_hash = hasher.finish();
+        Self {
+            keys,
+            generation,
+            digest,
+            memo_hash,
+        }
+    }
+}
+
+impl PartialEq for OptimizedCfgBatchKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.generation == other.generation
+            && (Arc::ptr_eq(&self.keys, &other.keys) || self.keys == other.keys)
+    }
+}
+
+impl Eq for OptimizedCfgBatchKey {}
+
+impl Hash for OptimizedCfgBatchKey {
+    /// A memo bucket selector; `PartialEq` above stays authoritative.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.memo_hash.hash(state);
+    }
 }
 
 impl QueryKey for OptimizedCfgBatchKey {
@@ -1438,12 +1487,12 @@ impl QueryKey for OptimizedCfgBatchKey {
         identity
     }
 
+    /// The digest derived once in [`Self::new`], over the same field set this
+    /// used to absorb per call.
     fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
-        hasher.write_usize(self.keys.len());
-        for key in self.keys.iter() {
-            key.stable_hash(hasher);
-        }
-        self.generation.hash(hasher);
+        let digest = self.digest.to_u128();
+        hasher.write_u64(digest as u64);
+        hasher.write_u64((digest >> 64) as u64);
     }
 }
 
@@ -16643,7 +16692,7 @@ impl RevisionedQueryDatabase {
         } else {
             0
         };
-        let key = OptimizedCfgBatchKey { keys, generation };
+        let key = OptimizedCfgBatchKey::new(keys, generation);
         let attempt = self.runtime.request_registered(
             &self.optimized_cfg_batches,
             revision,
