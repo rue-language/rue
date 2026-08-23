@@ -269,15 +269,30 @@ fn correct_origin_columns(rendered: String, files: &[(&str, &str)]) -> String {
 /// Correct a single rendered line if it is a `--> path:line:col` origin whose
 /// column was inflated by tab expansion; otherwise return `None`.
 fn fix_origin_line(line: &str, files: &[(&str, &str)]) -> Option<String> {
+    let marker = line.find("-->")?;
+    if !is_origin_gutter(&line[..marker]) {
+        return None;
+    }
+    let origin_start = skip_origin_prefix(line, marker + "-->".len());
+
     for (path, source) in files {
-        let needle = format!("{path}:");
-        let Some(pos) = line.find(&needle) else {
+        let Some(rendered_path) = line.get(origin_start..origin_start + path.len()) else {
             continue;
         };
+        if rendered_path != *path {
+            continue;
+        }
+        let Some(after_path) = line
+            .get(origin_start + path.len()..)
+            .filter(|suffix| suffix.starts_with(':'))
+        else {
+            continue;
+        };
+
         // After "<path>:" the origin line is exactly "<line>:<col>" plus any
         // line terminators. A stray path mention elsewhere fails to parse here
         // (trailing text makes the column non-numeric), so it is left alone.
-        let after = line[pos + needle.len()..].trim_end_matches(['\n', '\r']);
+        let after = after_path[1..].trim_end_matches(['\n', '\r']);
         let Some((line_str, col_str)) = after.split_once(':') else {
             continue;
         };
@@ -286,13 +301,43 @@ fn fix_origin_line(line: &str, files: &[(&str, &str)]) -> Option<String> {
         };
         let new_col = original_col_for_expanded(source, line_no, col);
         if new_col == col {
-            return None;
+            continue;
         }
-        let old = format!("{path}:{line_no}:{col}");
-        let new = format!("{path}:{line_no}:{new_col}");
-        return Some(line.replacen(&old, &new, 1));
+
+        let col_start = origin_start + path.len() + 1 + line_str.len() + 1;
+        let col_end = col_start + col_str.len();
+        let mut corrected = line.to_string();
+        corrected.replace_range(col_start..col_end, &new_col.to_string());
+        return Some(corrected);
     }
     None
+}
+
+/// Return the first byte after renderer gutter whitespace and ANSI styling.
+fn skip_origin_prefix(line: &str, mut offset: usize) -> usize {
+    let bytes = line.as_bytes();
+    while offset < bytes.len() {
+        if bytes[offset].is_ascii_whitespace() {
+            offset += 1;
+            continue;
+        }
+        if bytes[offset] != b'\x1b' || bytes.get(offset + 1) != Some(&b'[') {
+            break;
+        }
+        offset += 2;
+        while offset < bytes.len() && !(0x40..=0x7e).contains(&bytes[offset]) {
+            offset += 1;
+        }
+        if offset < bytes.len() {
+            offset += 1;
+        }
+    }
+    offset
+}
+
+/// Whether the bytes before an origin marker are only renderer gutter text.
+fn is_origin_gutter(prefix: &str) -> bool {
+    skip_origin_prefix(prefix, 0) == prefix.len()
 }
 
 /// Source code information for diagnostic rendering.
@@ -1593,6 +1638,75 @@ mod tests {
             output.contains("  |            ^^^^"),
             "caret should stay under `nope` after expanding the leading tab:\n{}",
             output
+        );
+    }
+
+    #[test]
+    fn test_fix_origin_line_anchors_suffix_colliding_paths_in_registration_order() {
+        let tabbed = "fn main() -> i32 {\n\treturn nope;\n}";
+        let plain = "fn main() -> i32 {\n    return 0;\n}";
+        let rendered = "  --> lib/main.rue:2:12\n";
+
+        for files in [
+            vec![("main.rue", plain), ("lib/main.rue", tabbed)],
+            vec![("lib/main.rue", tabbed), ("main.rue", plain)],
+        ] {
+            assert_eq!(
+                fix_origin_line(rendered, &files),
+                Some("  --> lib/main.rue:2:9\n".to_string()),
+                "registration order must not let main.rue match inside lib/main.rue"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fix_origin_line_rejects_same_length_wrong_path() {
+        let wrong_source = "fn main() -> i32 {\n\t\treturn nope;\n}";
+        let correct_source = "fn main() -> i32 {\n\treturn nope;\n}";
+        let rendered = "  --> lib/main.rue:2:12\n";
+
+        // `app/main.rue` has the same byte length as the rendered path, but
+        // its source would produce a different non-noop correction. Path
+        // equality must be checked before parsing the coordinate for it.
+        let files = [
+            ("app/main.rue", wrong_source),
+            ("lib/main.rue", correct_source),
+        ];
+        assert_eq!(
+            fix_origin_line(rendered, &files),
+            Some("  --> lib/main.rue:2:9\n".to_string())
+        );
+    }
+
+    #[test]
+    fn test_fix_origin_line_continues_after_noop_candidate_and_preserves_windows_paths() {
+        let tabbed = "fn main() -> i32 {\n\treturn nope;\n}";
+        let plain = "fn main() -> i32 {\n    return 0;\n}";
+
+        // Duplicate path entries model an earlier candidate that parses but
+        // cannot change the reported column; the later candidate is still
+        // considered. This also pins exact path anchoring for a Windows path.
+        let path = r"C:\project\lib\main.rue";
+        let rendered = format!("  --> {path}:2:12\n");
+        let files = [(path, plain), (path, tabbed)];
+        assert_eq!(
+            fix_origin_line(&rendered, &files),
+            Some(format!("  --> {path}:2:9\n")),
+        );
+    }
+
+    #[test]
+    fn test_fix_origin_line_single_file_controls() {
+        let tabbed = "fn main() -> i32 {\n\treturn nope;\n}";
+        let plain = "fn main() -> i32 {\n    return nope;\n}";
+
+        assert_eq!(
+            fix_origin_line("  --> main.rue:2:12\n", &[("main.rue", tabbed)]),
+            Some("  --> main.rue:2:9\n".to_string())
+        );
+        assert_eq!(
+            fix_origin_line("  --> main.rue:2:12\n", &[("main.rue", plain)]),
+            None
         );
     }
 
