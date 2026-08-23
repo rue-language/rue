@@ -13,11 +13,25 @@ A match expression provides multi-way branching based on pattern matching.
 {{ rule(id="4.7:2", cat="normative") }}
 
 ```ebnf
-match_expr = "match" expression "{" { match_arm "," } [ match_arm ] "}" ;
+match_expr     = "match" expression "{" [ match_arms ] "}" ;
+match_arms     = match_arm { "," match_arm } [ "," ] ;
 match_arm = pattern "=>" expression ;
-pattern = "_" | [ "-" ] INTEGER | BOOL | enum_variant_pattern ;
-enum_variant_pattern = IDENT "." IDENT ;
+pattern        = "_"
+               | [ "-" ] INTEGER
+               | BOOL
+               | path_pattern ;
+path_pattern   = pattern_head "." IDENT [ "(" pattern_bindings ")" ] ;
+pattern_head   = qualified_ident [ "(" [ call_args ] ")" ] ;
+pattern_bindings = pattern_binding { "," pattern_binding } [ "," ] ;
+pattern_binding = IDENT | "_" ;
 ```
+
+An enum variant is a `path_pattern`: its `pattern_head` may be a qualified
+identifier (such as `module.Enum`) or an inline type-constructor call (such as
+`Result(i32, i32)`), followed by `.` and the variant name. A bare variant
+pattern omits the optional binding list and is the all-wildcard form. An
+explicit binding list contains one or more names or `_` wildcards and may have
+a trailing comma; an empty list such as `Enum.Variant()` is not a pattern.
 
 ## Patterns
 
@@ -227,16 +241,18 @@ fn absurd(n: Never) -> i32 {
 
 {{ rule(id="4.7:30", cat="normative") }}
 
-A tuple-variant pattern binds the variant's payload into fresh names:
+A tuple-variant path pattern binds the variant's payload into fresh names:
 `EnumName.Variant(a, b)` matches a value of that variant and binds `a`, `b`
-to its payload fields in order. A binding position may instead be the wildcard
-`_`, which matches and discards that field without binding it; unlike a name it
-introduces nothing and so may repeat (`Rect(_, _)`). The number of binding
-positions **MUST** equal the variant's payload arity (see spec 6.3), with one
-carve-out: a *bare* variant pattern that supplies no binding list at all —
-`EnumName.Variant` on a variant of arity one or more — **is** the all-wildcard
-form `EnumName.Variant(_, ..., _)` and is therefore exempt from the arity rule
-(4.7:34 says the same value-context consumption applies to it).
+to its payload fields in order. The enum head may be qualified or an inline
+type-constructor head (4.7:2), and the binding list may end in a trailing
+comma, as in `EnumName.Variant(a, b,)`. A binding position may instead be the
+wildcard `_`, which matches and discards that field without binding it; unlike
+a name it introduces nothing and so may repeat (`Rect(_, _)`). The number of
+binding positions **MUST** equal the variant's payload arity (see spec 6.3),
+with one carve-out: a *bare* variant pattern that supplies no binding list at
+all — `EnumName.Variant` on a variant of arity one or more — **is** the
+all-wildcard form `EnumName.Variant(_, ..., _)` and is therefore exempt from
+the arity rule (4.7:34 says the same value-context consumption applies to it).
 
 A discarded field — one covered by `_`, or by the bare form — is bound to a
 fresh *unnameable* binding: it is moved out of the scrutinee like any other
