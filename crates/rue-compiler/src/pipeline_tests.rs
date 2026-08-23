@@ -58,10 +58,10 @@ mod tests {
             assert!(key, "owned and shared query display identities must agree");
         }
 
-        let optimized_batch = crate::revisioned_query_database::OptimizedCfgBatchKey {
-            keys: Arc::from([optimized.clone()]),
-            generation: 0,
-        };
+        let optimized_batch = crate::revisioned_query_database::OptimizedCfgBatchKey::new(
+            Arc::from([optimized.clone()]),
+            0,
+        );
         let codegen_batch = crate::revisioned_query_database::CodegenUnitBatchKey {
             keys: Arc::from([codegen.clone()]),
         };
