@@ -229,6 +229,8 @@ EOF
     "$([ "$(grep -c -- '--dry-run' "$sb/calls.log")" -eq 2 ] && echo 0 || echo 1)"
   check "storage: dry-run includes the adaptive host-free target" \
     "$([ "$(grep -c -- '--adaptive-low-disk-threshold 20' "$sb/calls.log")" -eq 2 ] && echo 0 || echo 1)"
+  check "storage: dry-run considers tracked artifacts only" \
+    "$([ "$(grep -c -- '--tracked-only' "$sb/calls.log")" -eq 2 ] && echo 0 || echo 1)"
   check "storage: dry-run protects the minimum TTL" \
     "$([ "$(grep -c -- '--adaptive-min-ttl 12h' "$sb/calls.log")" -eq 2 ] && echo 0 || echo 1)"
   check "storage: dry-run never performs a full reset" \
@@ -271,6 +273,8 @@ EOF
     "$([ "$(grep -c ':clean --stale 1w' "$sb/calls.log")" -eq 2 ] && echo 0 || echo 1)"
   check "storage: pressure guard uses adaptive materializer cleanup" \
     "$([ "$(grep -c -- '--adaptive-low-disk-threshold 20 --adaptive-min-ttl 12h' "$sb/calls.log")" -eq 2 ] && echo 0 || echo 1)"
+  check "storage: pressure guard considers tracked artifacts only" \
+    "$([ "$(grep -c -- '--tracked-only' "$sb/calls.log")" -eq 2 ] && echo 0 || echo 1)"
 
   : >"$sb/calls.log"
   cat >"$sb/fakebin/df" <<'EOF'
@@ -284,6 +288,66 @@ EOF
   check "storage: healthy guard succeeds without cleanup" "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
   check "storage: healthy guard starts no Buck cleanup" \
     "$(! grep -q ':clean ' "$sb/calls.log" 2>/dev/null && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+test_storage_guard_preserves_incremental_rustc_scaffolding() {
+  # RUE-1683: adaptive stale cleanup must not remove untracked rustc out-dir
+  # scaffolding from a live sibling worktree. The fake Buck coordinator models
+  # the old behavior by deleting that directory unless --tracked-only is set,
+  # then models a subsequent incremental build that requires it.
+  local sb rc=0; sb="$(make_sandbox rue-storage)"
+  setup_storage_root "$sb/root-1"
+  setup_storage_root "$sb/root-2"
+  mkdir -p "$sb/root-2/buck-out/v2/gen/extras/rue-codegen"
+
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+printf '%s:%s\n' "$PWD" "$*" >>"$CALLS"
+case "$1" in
+  clean)
+    if [[ "$*" == *"--stale"* && "$*" != *"--tracked-only"* ]]; then
+      rmdir "$PWD/buck-out/v2/gen/extras/rue-codegen" 2>/dev/null || true
+    fi
+    ;;
+  build)
+    [[ -d "$PWD/buck-out/v2/gen/extras/rue-codegen" ]]
+    ;;
+esac
+EOF
+  chmod +x "$sb/buck2"
+  cat >"$sb/fakebin/git" <<EOF
+#!/usr/bin/env bash
+if [[ "\$*" == *"worktree list --porcelain"* ]]; then
+  printf 'worktree %s/root-1\n\nworktree %s/root-2\n' "$sb" "$sb"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$sb/fakebin/git"
+  # Start below the emergency threshold, then recover above the adaptive
+  # target after cleanup. No host-wide disk state is touched.
+  cat >"$sb/fakebin/df" <<EOF
+#!/usr/bin/env bash
+count=0
+[[ -f "$sb/df-count" ]] && count=\$(cat "$sb/df-count")
+printf '%d\n' \$((count + 1)) >"$sb/df-count"
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+if [[ \$count -eq 0 ]]; then
+  printf 'disk 100000 95000 5000 95%% /\n'
+else
+  printf 'disk 100000 75000 25000 75%% /\n'
+fi
+EOF
+  chmod +x "$sb/fakebin/df"
+
+  run_script "$sb" rue-storage guard || rc=$?
+  check "storage: guard preserves a sibling's rustc out-dir scaffolding" \
+    "$([ -d "$sb/root-2/buck-out/v2/gen/extras/rue-codegen" ] && echo 0 || echo 1)"
+  (cd "$sb/root-2" && CALLS="$sb/calls.log" PATH="$sb/fakebin:$PATH" \
+    "$sb/buck2" build --incremental) || rc=1
+  check "storage: subsequent sibling incremental build remains viable" \
+    "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
@@ -457,6 +521,7 @@ test_jjtidy_only_deletes_proven_merged
 test_storage_git_failure_is_fail_closed
 test_storage_plans_every_registered_root
 test_storage_guard_is_host_wide_only_under_pressure
+test_storage_guard_preserves_incremental_rustc_scaffolding
 test_storage_guard_blocks_when_pressure_remains_critical
 test_storage_guard_proceeds_between_cleanup_and_hard_floors
 test_storage_guard_survives_cleanup_failure_between_floors
