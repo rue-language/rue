@@ -1266,7 +1266,10 @@ impl Linker {
             }
         }
 
-        // Handle bss sections
+        // Handle bss sections. As on the ELF path, each offset is relative to
+        // the start of the bss region, so the region's base has to be aligned
+        // at least as strictly as the strictest section in it (RUE-1646).
+        let mut max_bss_align: u64 = 1;
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
                 if !is_bss_section(&section.name) {
@@ -1274,6 +1277,7 @@ impl Linker {
                 }
 
                 let align = section.align.max(1);
+                max_bss_align = max_bss_align.max(align);
                 let padding = align_up(bss_size, align) - bss_size;
                 bss_size += padding;
 
@@ -1281,6 +1285,18 @@ impl Linker {
                 section_offsets.insert((obj_idx, sec_idx), offset);
                 bss_size += section.size;
             }
+        }
+
+        // Pad the initialized data up to that alignment before the layout below
+        // measures `merged_data.len()`, so the segment's file and VM sizes agree
+        // with where bss actually begins. The historical 8-byte floor is kept as
+        // a floor, so this can only strengthen the base's alignment, never
+        // weaken it.
+        if bss_size > 0 {
+            let bss_base_align = max_bss_align.max(8);
+            let bss_base_padding =
+                align_up(merged_data.len() as u64, bss_base_align) - merged_data.len() as u64;
+            merged_data.resize(merged_data.len() + bss_base_padding as usize, 0);
         }
 
         // Compute the final file/VM layout before placing symbols, using the
@@ -1315,11 +1331,14 @@ impl Linker {
         let text_vaddr = VM_BASE + text_file_offset;
         // __DATA segment virtual address (0 if there is no writable data)
         let data_vaddr = layout.data_vm_addr;
-        // bss begins right after the 8-aligned initialized data within the
-        // __DATA segment; `merged_data.len()` is the complete offset and must
-        // be added exactly once. (RUE-131 item 4)
+        // bss begins right after the initialized data within the __DATA
+        // segment; `merged_data.len()` is the complete offset and must be added
+        // exactly once. (RUE-131 item 4) That length is already padded to the
+        // bss base alignment above, so no rounding belongs here — rounding a
+        // second time would move the base past the length the layout was
+        // measured from (RUE-1646).
         let bss_vaddr = if bss_size > 0 {
-            data_vaddr + align_up(merged_data.len() as u64, 8)
+            data_vaddr + merged_data.len() as u64
         } else {
             0
         };
@@ -1671,8 +1690,14 @@ impl Linker {
         }
 
         // Handle .bss sections (uninitialized data - zero-filled at runtime)
-        // .bss comes after .data in memory, but doesn't take file space
-        let bss_offset_in_data = merged_data.len() as u64;
+        // .bss comes after .data in memory, but doesn't take file space.
+        //
+        // Each section's offset below is aligned RELATIVE to the start of the
+        // bss region, so an offset only lands where its section asked if the
+        // region's BASE is itself aligned at least as strictly as the strictest
+        // section in it. Track that maximum here and pad up to it below
+        // (RUE-1646).
+        let mut max_bss_align: u64 = 1;
 
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
@@ -1681,6 +1706,7 @@ impl Linker {
                 }
 
                 let align = section.align.max(1);
+                max_bss_align = max_bss_align.max(align);
                 let padding = align_up(bss_size, align) - bss_size;
                 bss_size += padding;
 
@@ -1693,6 +1719,22 @@ impl Linker {
                 bss_size += section.size;
             }
         }
+
+        // Align the bss base by padding the INITIALIZED data rather than by
+        // offsetting the base on its own. `p_filesz`, `p_memsz`, and the total
+        // file size are all derived from `merged_data.len()`, so growing the
+        // vector keeps those three in agreement with where bss actually starts;
+        // advancing the base alone would leave `p_memsz` short by the padding.
+        // The padding costs those bytes in the file, which is what buys the
+        // alignment.
+        //
+        // `data_vaddr` is page-aligned, so aligning the offset within the
+        // segment is enough to align the final virtual address for any section
+        // alignment up to a page — every alignment a real object requests.
+        let bss_base_padding =
+            align_up(merged_data.len() as u64, max_bss_align) - merged_data.len() as u64;
+        merged_data.resize(merged_data.len() + bss_base_padding as usize, 0);
+        let bss_offset_in_data = merged_data.len() as u64;
 
         // Determine which optional segments are needed
         let has_rodata = !merged_rodata.is_empty();
@@ -2703,6 +2745,129 @@ mod tests {
         assert_eq!(
             slot, main_vaddr,
             "Abs64 relocation in .data must be applied (was silently dropped)"
+        );
+    }
+
+    /// RUE-1646: every bss section's offset is aligned RELATIVE to the start of
+    /// the bss region, so those offsets only mean what they say if the region's
+    /// base carries the strictest alignment any section in it asked for. Here
+    /// `.data` is exactly 8 bytes and `.bss` wants 16, so an unpadded base sits
+    /// at a page boundary plus 8 — 8 mod 16 — and every symbol in the region
+    /// inherits that skew. The runtime's own `AtomicU64` statics live in bss,
+    /// where a skewed base is an aarch64 `LDAR` fault rather than a slowdown.
+    ///
+    /// The relocated slot is read back rather than the header alone, so this
+    /// asserts the address a program actually loads, not just the layout math.
+    #[test]
+    fn bss_base_is_aligned_to_the_strictest_bss_section() {
+        use crate::elf::{Relocation, Section, SymbolType};
+
+        let text = Section {
+            name: ".text".into(),
+            data: vec![0xC3], // ret
+            size: 1,
+            flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+            relocations: vec![],
+            align: 16,
+        };
+        // 8 bytes: the pointer slot, and also what puts the unpadded bss base
+        // at 8 mod 16.
+        let data = Section {
+            name: ".data".into(),
+            data: vec![0u8; 8],
+            size: 8,
+            flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+            relocations: vec![Relocation {
+                offset: 0,
+                symbol_index: 1,
+                rel_type: RelocationType::Abs64,
+                addend: 0,
+            }],
+            align: 8,
+        };
+        // NOBITS: no bytes in the file, `size` is the memory it needs.
+        let bss = Section {
+            name: ".bss".into(),
+            data: vec![],
+            size: 8,
+            flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+            relocations: vec![],
+            align: 16,
+        };
+        let symbols = vec![
+            Symbol {
+                name: "main".into(),
+                section_index: Some(0),
+                value: 0,
+                size: 1,
+                binding: SymbolBinding::Global,
+                sym_type: SymbolType::Func,
+            },
+            Symbol {
+                name: "bss_static".into(),
+                section_index: Some(2),
+                value: 0,
+                size: 8,
+                binding: SymbolBinding::Global,
+                sym_type: SymbolType::Object,
+            },
+        ];
+        let mut section_map = AHashMap::new();
+        section_map.insert(".text".into(), 0);
+        section_map.insert(".data".into(), 1);
+        section_map.insert(".bss".into(), 2);
+        let obj = ObjectFile {
+            sections: vec![text, data, bss],
+            symbols,
+            section_map,
+            machine: crate::elf::ElfMachine::X86_64,
+            format: ObjectFormat::Elf,
+        };
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+        let elf = linker.link("main").unwrap();
+
+        // The RW segment's p_filesz/p_memsz, which have to keep covering bss
+        // once the initialized data grows by the alignment padding.
+        let e_phoff = u64::from_le_bytes(elf[0x20..0x28].try_into().unwrap()) as usize;
+        let e_phnum = u16::from_le_bytes(elf[0x38..0x3A].try_into().unwrap()) as usize;
+        let (data_off, data_vaddr, data_filesz, data_memsz) = (0..e_phnum)
+            .map(|i| &elf[e_phoff + i * TEST_PHDR_SIZE..])
+            .find(|ph| u32::from_le_bytes(ph[4..8].try_into().unwrap()) == (PF_R | PF_W))
+            .map(|ph| {
+                (
+                    u64::from_le_bytes(ph[8..16].try_into().unwrap()),
+                    u64::from_le_bytes(ph[16..24].try_into().unwrap()),
+                    u64::from_le_bytes(ph[32..40].try_into().unwrap()),
+                    u64::from_le_bytes(ph[40..48].try_into().unwrap()),
+                )
+            })
+            .expect("RW data segment");
+
+        // The relocated slot holds `bss_static`'s final virtual address.
+        let bss_static = u64::from_le_bytes(
+            elf[data_off as usize..data_off as usize + 8]
+                .try_into()
+                .unwrap(),
+        );
+
+        assert_ne!(
+            bss_static, 0,
+            "Abs64 relocation against a bss symbol must be applied"
+        );
+        assert_eq!(
+            bss_static % 16,
+            0,
+            "bss symbol at {bss_static:#x} must honor its section's 16-byte alignment"
+        );
+        assert!(
+            bss_static >= data_vaddr + data_filesz,
+            "bss must start at or after the end of the initialized data"
+        );
+        assert!(
+            bss_static + 8 <= data_vaddr + data_memsz,
+            "p_memsz must still cover bss after the base is padded"
         );
     }
 
