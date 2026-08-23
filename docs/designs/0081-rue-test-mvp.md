@@ -9,7 +9,7 @@ accepted:
 implemented:
 spec-sections: []
 superseded-by:
-relates: ["RUE-506", "RUE-505", "RUE-504", "RUE-438", "ADR-0063", "ADR-0061", "ADR-0058", "ADR-0055", "ADR-0064", "ADR-0027", "ADR-0025", "ADR-0069"]
+relates: ["RUE-506", "RUE-505", "RUE-504", "RUE-438", "ADR-0063", "ADR-0061", "ADR-0058", "ADR-0055", "ADR-0064", "ADR-0038", "ADR-0027", "ADR-0025", "ADR-0069", "ADR-0005"]
 ---
 
 # ADR-0081: `rue test` MVP: test declarations, runner, and event protocol
@@ -156,7 +156,8 @@ longer is:
   observation is best-effort — network and time are invisible to it — so the
   cache is unsound in exactly the corners users get burned by. Steal:
   cache-as-default UX, `test2json` as stream-first output. Avoid: observed
-  hermeticity; Rue verifies statically, at item granularity.
+  hermeticity; Rue's deferred answer (§6) is static verification, at item
+  granularity.
 - **Zig**: `test "name" { }` blocks as language items, discovered by the
   compiler; the build runner drives the test binary over a stdin/stdout binary
   protocol (execute-by-index, structured results); inferred error sets are the
@@ -178,8 +179,8 @@ longer is:
 - **Bazel**: the Test Encyclopedia states the hermeticity ideal — declared
   inputs only, `TEST_TMPDIR`, pinned env — but explicitly does not enforce it,
   and its caching is target-granular. Steal: the environment contract and
-  result-caching semantics. Rue's point of departure: enforcement, at item
-  granularity.
+  result-caching semantics. Rue's point of departure (deferred, §6):
+  enforcement, at item granularity.
 - **Buck2 / tpx**: tests handed to an external runner through an explicit
   protocol boundary — the runner is a client of the build system, not a
   subroutine. Validates RUE-506's "protocol, not a trait" conclusion, which
@@ -435,7 +436,7 @@ The driver grows its first subcommand:
 ```
 rue test <root.rue> [--list] [--filter <pattern>]... [--format human|json]
          [--jobs N] [--timeout-ms N] [--shard K/N] [--target <t>] [-O<n>]
-         [--seed N] [--keep-going] ...
+         [--seed N] ...
 ```
 
 - **Dispatch rule**: the driver enters test mode when the first argument
@@ -470,7 +471,10 @@ rue test <root.rue> [--list] [--filter <pattern>]... [--format human|json]
   deferred work (§6) and are not producible in the MVP, whose whole-run
   compile failure is exit code `2`. A failure record is data: failure kind
   (`assert` / `unhandled_error` / `trap:<class>` / `exit` / `signal` /
-  `timeout` / `output_overflow` / `ice`), the pinned runtime message (the
+  `timeout` / `output_overflow`; `ice` is reserved alongside the per-test
+  `compile_error` verdict, on the same grounds — in the MVP a compiler crash
+  is a whole-run failure on stderr, not a per-test event), the pinned
+  runtime message (the
   abort-only runtime's fixed stderr strings are machine-recognizable by
   construction), exit code or signal, and a source location — in the MVP, the
   test declaration's span, except `unhandled_error`, whose record carries the
@@ -714,12 +718,14 @@ The MVP mechanism:
   choices (shuffle order, scratch naming). Making `@random_*` seedable in
   test builds — lowering to a seeded PRNG per test process — is a
   runtime/codegen change whose maintainer call is deferred with scheduling
-  and caching (§6): it would make `random`-observing tests deterministic and
-  hence cacheable, at the cost of test-mode divergence from production
-  entropy.
-- Test execution order within a run is shuffled by seed by default (verified
-  isolation makes order dependence impossible for hermetic tests; shuffling
-  keeps everyone else honest, and the seed makes any surprise reproducible).
+  (§6; its cache-key interaction travels with RUE-1622): it would make
+  `random`-observing tests deterministic and hence cacheable, at the cost of
+  test-mode divergence from production entropy.
+- Test execution order within a run is shuffled by seed by default
+  (shuffling keeps order dependence visible, and the seed makes any surprise
+  reproducible; once capability inference lands (§6), verified isolation
+  makes order dependence impossible for hermetic tests and shuffling keeps
+  everyone else honest).
 
 ### 5. Extensibility is tiered, in-language first, with no privileged built-ins
 
@@ -876,11 +882,15 @@ direction change.
   4). Verified-hermetic verdicts as cacheable artifacts keyed on closure
   fingerprints plus the pinned execution values; `--changed-only` as the
   same predicate; allocation determinism via a test-build budgeted page
-  mapper; per-test `compile_error` verdicts. Requires capability inference.
+  mapper; per-test `compile_error` verdicts. The caching and selection items
+  require capability inference; the per-test `compile_error` mechanism (§3)
+  does not, and may land independently ahead of the rest.
 - **Scheduling and flake policy** (RUE-1623; original Phase 5). Declared
   serial groups, `--reruns` for non-hermetic tests, hermetic-mismatch
-  reporting, duration-fed sharding, and the seedable `@random_*` maintainer
-  call (§4). Two of its four items require capability inference.
+  reporting, and duration-fed sharding; the seedable `@random_*` maintainer
+  call (§4) travels with it. Two of its four items — `--reruns` for
+  non-hermetic tests and hermetic-mismatch reporting — require capability
+  inference; serial groups and duration-fed sharding do not.
 - **The public provider protocol** (RUE-1624; original Phase 7). The
   versioned enumerate/execute-by-ID protocol for external test providers,
   decided together with RUE-505's format policy; JUnit and CTRF adapters as
@@ -948,8 +958,8 @@ companion project "rue test follow-ups" (§6).
       identity/sub-result shapes (§5.2), with the human renderer as its
       consumer; repro argv in every failure; CLI-suite coverage end to end.
       Includes the memo-database pressure spike (Open Questions). **This
-      phase is the MVP: usable, agent-first, zero capability claims — every
-      test simply runs.**
+      phase is the minimum usable runner: agent-first, zero capability
+      claims — every test simply runs.**
 - [ ] **Phase 2.5: structured assertion payloads** - RUE-1620. `@assert_eq`
       (and a minimal comparison family) as intrinsics producing
       expected/actual through the §5.1 channel; machine-computed diffs in
@@ -1246,5 +1256,4 @@ needs the deferred selection work plus the existing watch loop).
   and event ABI (and its v0-omitted-metadata history); Bazel Test
   Encyclopedia; Buck2 external test runner protocol; Deno permission
   scoping; Unison content-addressed test caching; Nim effect inference and
-  `effectsOf` (RFC 404); HyRTS (Zhang, ICSE 2018) on test-selection
-  granularity economics; CTRF as a cross-tool report format.
+  `effectsOf` (RFC 404); CTRF as a cross-tool report format.
