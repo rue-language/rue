@@ -2,7 +2,7 @@
 id = "expressions.match"
 spec_chapter = "4.7"
 name = "Match Expressions"
-description = "Match expressions provide multi-way branching on values. Currently supports integer and boolean patterns with wildcard (_)."
+description = "Match expressions provide multi-way branching on values, including literal, wildcard, and enum path patterns with payload bindings."
 
 # =============================================================================
 # Basic Match with Integers
@@ -514,7 +514,7 @@ compile_fail = true
 # bindings inference cannot reduce locally (RUE-954).
 [[case]]
 name = "arm_literal_typed_by_let_annotation"
-spec = ["4.7:12"]
+spec = ["4.7:2", "4.7:12"]
 source = """
 fn Opt(comptime T: type) -> type {
     enum {
@@ -971,13 +971,13 @@ error_contains = "parentheses"
 # A tuple-variant pattern binds the payload; the arity must match (4.7:30).
 [[case]]
 name = "match_payload_binding_extracts"
-spec = ["4.7:30"]
+spec = ["4.7:2", "4.7:30"]
 source = """
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 fn main() -> i32 {
     match Shape.Rect(3, 4) {
         Shape.Circle(r) => r,
-        Shape.Rect(w, h) => w + h,
+        Shape.Rect(w, h,) => w + h,
         Shape.Empty => 0,
     }
 }
@@ -988,7 +988,7 @@ exit_code = 7
 # repeat (`Rect(_, _)`) since it introduces no name (4.7:30, RUE-601).
 [[case]]
 name = "match_payload_wildcard_discard"
-spec = ["4.7:30"]
+spec = ["4.7:2", "4.7:30"]
 source = """
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 fn main() -> i32 {
@@ -1005,7 +1005,7 @@ exit_code = 42
 # the arity rule that rejects `Shape.Rect(w)` above with E0207.
 [[case]]
 name = "match_bare_variant_pattern_is_all_wildcard_form"
-spec = ["4.7:30", "4.7:34"]
+spec = ["4.7:2", "4.7:30", "4.7:34"]
 source = """
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 fn main() -> i32 {

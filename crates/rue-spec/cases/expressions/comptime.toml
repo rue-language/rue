@@ -2516,7 +2516,7 @@ exit_code = 42
 
 [[case]]
 name = "inline_type_ctor_pattern_head"
-spec = ["4.14:23"]
+spec = ["4.7:2", "4.14:23"]
 description = "A type-constructor call heads a match pattern: match r { Result(i32, i32).Ok(v) => .. } (RUE-596)"
 source = """
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
@@ -2549,7 +2549,7 @@ error_contains = "[E0209]"
 
 [[case]]
 name = "inline_type_ctor_module_qualified_pattern_head"
-spec = ["4.14:23"]
+spec = ["4.7:2", "4.14:23"]
 real_std = true
 description = "A module-qualified type-constructor call heads a match pattern: match r { std.result.Result(i32, i32).Ok(v) => .. } (RUE-947)"
 source = """
