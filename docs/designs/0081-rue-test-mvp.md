@@ -21,8 +21,11 @@ first (rue-language/rue#2239, closed unmerged) designed the full system —
 capability inference, verdict caching, scheduling, a provider protocol — and
 review concluded it was too much to ratify at once. This document is the MVP
 and stands alone; the deferred layers are summarized in §6 with their
-follow-up issues. Nothing here is ratified: Open Questions lists every
-maintainer call and the one required spike.
+follow-up issues. Not yet accepted. The acceptance-level questions — the
+declaration surface, file discovery, `--filter` semantics, and the
+failure-channel mechanism — were ruled on review 2026-08-23 and are
+recorded in the body and under Open Questions; the remaining lower-impact
+calls and the one required spike are listed there.
 
 ## Summary
 
@@ -163,7 +166,9 @@ test "parse_port rejects out-of-range values" {
   domain — insensitive to reordering and unrelated edits. The rendered ID
   spelling is pinned in the Phase 2 schema doc.
 - **Body typing**: the block has type `()`. A test passes when its process
-  exits 0; it fails when it traps, exits nonzero, or is killed.
+  exits 0 **and** the dispatcher's completion record (§3) was observed; it
+  fails when it traps, exits nonzero, is killed, or exits 0 without the
+  completion record.
 - **`?` in test bodies: unwrap-and-report.** A test body may apply `?` to
   spec 4.15:3's standard `Option`/`Result` producers, with test-specific
   failure semantics: the success arm is ordinary, and the failure arm emits
@@ -175,7 +180,13 @@ test "parse_port rejects out-of-range values" {
   rule: E0503/E0505 reject `?` in `()`-returning bodies today, so no
   existing program changes meaning. It is scoped to the test item's
   immediate block; helper functions keep ordinary `?` rules and compose by
-  being `?`-ed at the boundary. Trapping rather than propagating buys
+  being `?`-ed at the boundary. The rule ships whole in Phase 2 — legality
+  and failure-arm lowering together — because `analyze_try` builds the
+  `Option`/`Result` match and early return against the enclosing return
+  type *as it analyzes*, leaving no separable legality-only step: a
+  `()`-typed test body cannot analyze successfully until the test-specific
+  failure arm exists, so through Phase 1 test-body `?` simply remains the
+  compile error it is today. Trapping rather than propagating buys
   `@assert`-grade site attribution with no backtrace machinery, per-site
   error types (no enclosing `Err` is constructed, so spec 4.15:4's
   identical-error-type rule never applies), and no signature surface. One
@@ -212,11 +223,11 @@ test "parse_port rejects out-of-range values" {
 
   (Phase 1 must ensure the unused-item scan treats such an import as used,
   or the idiom fights the linter.) This wiring requirement is a known
-  papercut in Zig, and whether the MVP should instead auto-root test files
-  by a naming convention — probing exactly the directories the closure
-  occupies, a bounded compiler demand, not a directory walk — is an
-  explicit maintainer call in Open Questions, to be taken before Phase 2
-  freezes the discovery machinery.
+  papercut in Zig, and it is accepted for the MVP **by ruling
+  (2026-08-23)**: discovery stays import-closure-only, and directory
+  contents do not become compiler inputs. The convention-based alternative
+  is recorded under Rejected alternatives; the package-model end state
+  that may revisit it stays under Deferred design questions.
 
   Because forgetting the wiring produces silence, the MVP ships an
   **unimported-test-file warning**: given a declared candidate inventory
@@ -303,7 +314,8 @@ $ rue test app/main.rue --filter parse_port      # run a subset
   reserved in the schema for the deferred work (§6) and are unproducible in
   the MVP, whose whole-run compile failure is exit code `2`. A **failure
   record** is data: kind (`assert` / `unhandled_error` / `trap:<class>` /
-  `exit` / `signal` / `timeout` / `output_overflow`), the pinned runtime
+  `exit` / `signal` / `timeout` / `output_overflow` / `incomplete` — the
+  last for exit 0 with no completion record, §3), the pinned runtime
   message, exit code or signal, and a source location — the test
   declaration's span, except `unhandled_error`, which carries the failing
   `?` site (§1). Payload and location fields are extension points: richer
@@ -336,9 +348,13 @@ $ rue test app/main.rue --filter parse_port      # run a subset
   reached-set provenance reserved in the schema from v1.
 - **Filtering**: `--filter` matches test IDs; repeated filters union. A
   filter selecting zero tests is an error with a distinct exit code — an
-  empty selection is how a typo becomes false evidence. Whether filtering
-  narrows the analysis root set or only the run set is an open question
-  below.
+  empty selection is how a typo becomes false evidence. **By ruling
+  (2026-08-23), filtering narrows the run set, never the analysis root
+  set**: the request still roots every test in the closure, so a filtered
+  run's verdicts are identical to the same tests' verdicts in a full run —
+  the property future selection soundness requires. A broken, unselected
+  test therefore still fails the compilation, until per-test
+  `compile_error` verdicts (§6) contain it.
 - **Exit codes** (proposed): `0` all selected passed, `1` at least one
   failure, `2` compilation or runner error, `3` empty selection.
 - **Sharding**: `--shard K/N` partitions deterministically by stable ID
@@ -382,9 +398,15 @@ The MVP mechanism:
   detection stays a separate failure class. The runner keeps both pipes
   open and drained until the child exits — a stdout-writing test must never
   die with SIGPIPE because a reader closed early. A body calling
-  `std.exit(0)` before its assertions is an accepted blind spot shared by
-  every process-based runner; a dispatcher epilogue sentinel on the §5.1
-  channel is the recorded future fix if it proves worth closing.
+  `std.exit(0)` before its assertions must not report as a pass — that is
+  false-positive test evidence, not acceptable hygiene debt — so the
+  dispatcher writes a **terminal completion record** on the §5.1 channel
+  after the test body returns normally, and the runner treats exit 0 with
+  end-of-stream but no completion record as a failure (kind `incomplete`,
+  §2). Only the dispatcher's epilogue writes the record. The channel is
+  not a security boundary (§5.1), so a test could deliberately forge
+  completion — but the defect being closed is the accidental early exit,
+  and deliberate self-deception is outside every runner's threat model.
 - **The visible inventory is pinned to exact values.** The runtime captures
   loader-provided `argc`/`argv`/`envp` at entry and exposes them through
   `std.env`, so without a defined boundary a dispatched process would leak
@@ -468,14 +490,15 @@ test-body `?` failure arm (§1) are sugar over the same channel any Rue
 function can invoke before aborting; user libraries emit the same records,
 and the stream carries them without knowing who produced them.
 
-The recommended mechanism is a **dedicated inherited pipe**: its own file
-descriptor, pinned in the §3 exec contract, written through a runtime
-helper (an ABI-manifest addition under ADR-0055 rules — a maintainer call),
-drained by the runner with its own budget. The rejected shape is a framed
-region of stderr: user streams are arbitrary bytes, so any in-band framing
-can be forged, and a "separate budget" extracted from a shared capped
-stream is separate in name only. The channel is not a security boundary; it
-prevents accidental collision, which is what §2 promises.
+The mechanism — **ruled 2026-08-23** — is a **dedicated inherited pipe**:
+its own file descriptor, pinned in the §3 exec contract, written through a
+runtime helper (an ABI-manifest addition under ADR-0055 rules), drained by
+the runner with its own budget. The rejected shape was a framed region of
+stderr: user streams are arbitrary bytes, so any in-band framing can be
+forged, and a "separate budget" extracted from a shared capped stream is
+separate in name only. The channel is not a security boundary; it prevents
+accidental collision, which is what §2 promises. It also carries the §3
+terminal completion record, written by the dispatcher's epilogue alone.
 
 Its capability class is stated now rather than discovered later:
 **hermetic-compatible, on the same grounds as stdout** — runner-pinned,
@@ -589,27 +612,30 @@ companion project "rue test follow-ups" (§6).
       `Test` kind in the closed stable-definition taxonomy plus its
       namespace decision, semantic analysis as ordinary bodies rooted only
       by test requests, the warnings-scan inclusion decision (§1),
-      duplicate-name diagnostics, the test-body `?` legality rule (§1; the
-      failure-arm lowering ships with Phase 2), `test_declarations` preview
-      feature, spec sections + spec-test coverage, UI coverage. No runner:
-      `--emit`-level verification that test items parse, analyze, and are
-      invisible to executable requests.
+      duplicate-name diagnostics, `test_declarations` preview feature, spec
+      sections + spec-test coverage, UI coverage. Test-body `?` remains the
+      compile error it is today throughout this phase — the §1 rule ships
+      whole in Phase 2, since `analyze_try` has no legality-only step. No
+      runner: `--emit`-level verification that test items parse, analyze,
+      and are invisible to executable requests.
 - [ ] **Phase 2: `rue test` MVP runner** - RUE-1619. Value-aware subcommand
       dispatch; test-request root sets; dispatcher `main` and per-target
       test image through the image-planning path plus the ADR-0061 facade
       work; the loader-visible exec contract with dispatcher normalization
       to the test-visible values (§3); process-per-test execution with
       process-group timeout/kill, bounded capture, post-exit cleanup
-      (mechanics shared with `rue-test-runner`); the discovery-mechanism
-      maintainer call resolved and implemented — the unimported-test-file
-      warning over `--test-candidates` with its bounded
-      candidate-acquisition step, plus the naming convention if adopted
-      (§1); `--list`, `--filter`, `--jobs`, `--shard`, `--timeout-ms`,
-      `--seed` (shuffle), exit codes; NDJSON event stream v1.0 with schema
-      doc (a new `test-events.md` under `docs/process/`) covering encoding,
-      budgets, payload asymmetry, and the `capability_summary` unavailable
-      state (§2); the `?` failure-arm lowering (§1); the failure-channel
-      contract with reserved promotion and identity/sub-result shapes
+      (mechanics shared with `rue-test-runner`); import-closure discovery
+      as ruled, with the unimported-test-file warning over
+      `--test-candidates` and its bounded candidate-acquisition step (§1);
+      `--list`, `--filter` (run-set semantics, as ruled), `--jobs`,
+      `--shard`, `--timeout-ms`, `--seed` (shuffle), exit codes; NDJSON
+      event stream v1.0 with schema doc (a new `test-events.md` under
+      `docs/process/`) covering encoding, budgets, payload asymmetry, and
+      the `capability_summary` unavailable state (§2); the test-body `?`
+      rule whole — legality and failure-arm lowering together (§1); the
+      dispatcher completion record and its `incomplete` failure kind (§3);
+      the failure-channel contract with reserved promotion and
+      identity/sub-result shapes
       (§5.1, §5.2); the human renderer as a stream consumer; repro argv on
       every failure; CLI-suite coverage end to end. Includes the
       memo-database pressure spike (Open Questions). **This phase is the
@@ -650,10 +676,10 @@ companion project "rue test follow-ups" (§6).
 - Without caching or selection, every run executes every selected test —
   the MVP's answer is honest parallel speed, not skipped work; the
   economics wait for RUE-1622.
-- Test-only files must be wired into the import closure (§1) unless the
-  naming-convention call goes the other way — the sharpest ergonomic edge
-  in the MVP, mitigated by the orphan warning only where a build system
-  supplies the inventory.
+- Test-only files must be wired into the import closure (§1, as ruled) —
+  the sharpest ergonomic edge in the MVP, mitigated by the orphan warning
+  only where a build system supplies the inventory, and revisited only if
+  the package model makes declared sources a canonical inventory.
 - A generated dispatcher and per-target test image add a compiler-
   synthesized artifact to maintain across both backends; contextual-keyword
   parsing adds grammar subtlety.
@@ -721,49 +747,46 @@ than `?` elsewhere. The position is a compile error today, the divergence
 is exactly the failure arm, and trapping remains the better end state even
 after error conversion lands.
 
+### Convention-based test-file discovery
+
+Considered: auto-rooting conventionally named test files
+(`foo_tests.rue`) in test mode by probing exactly the directories the
+import closure occupies — a bounded, policy-scoped host demand of the same
+input shape as candidate acquisition, not a recursive walk. It would
+remove the import-wiring papercut for sibling tests and make orphan
+detection self-contained: near-miss names could warn from the same
+listing, with no build-system inventory needed. Rejected for the MVP
+(ruled 2026-08-23): it makes directory contents compiler inputs — a new
+host-input kind whose listings must join revisions and fingerprints —
+pins a filename pattern in the spec permanently, and, until per-test
+`compile_error` verdicts land (§6), gives one broken conventional file
+whole-run blast radius. Cross-directory public-API test modules would
+still need wiring or the package model under either answer. The ruling
+forecloses ambient directory probing, not the end state: under a package
+model the declared source set becomes a canonical candidate inventory,
+and rooting declared test files automatically is the natural revisit
+(Deferred design questions).
+
 ## Open Questions
 
-### Needs a ruling before acceptance
+### Ruled on review (2026-08-23)
 
-Three decisions shape the language surface and the discovery machinery;
-everything below this group can be decided within its phase.
+The three acceptance-level questions, plus the failure-channel mechanism,
+were ruled by Steve on the proposal PR; the body text records each at its
+site.
 
-- **Test declaration surface** (before Phase 1): `test "name" { }` blocks
-  (recommended, contextual keyword) vs `@test`-directive on ordinary
-  functions vs `test fn name()`. Blocks match the language's Zig-adjacent
-  shape and make the name a human sentence; a directive avoids any keyword
+- **Test declaration surface**: `test "name" { ... }` blocks, as drafted
+  (§1).
+- **File discovery**: import-closure-only for the MVP, with the optional
+  declared-candidate inventory warning; directory contents do not become
+  compiler inputs. The convention-based alternative is recorded under
+  Rejected alternatives; the package-model end state stays a deferred
   question.
-- **File discovery mechanism** (§1, before Phase 2 freezes the discovery
-  machinery): import-closure-only with the orphan warning (as drafted) vs
-  a closure-anchored naming convention — the compiler probes exactly the
-  directories the closure occupies (a bounded, policy-scoped host demand,
-  the same input shape as candidate acquisition, not a recursive walk) for
-  a conventional test-file name and auto-roots matches in test mode. The
-  convention removes the import-wiring papercut for sibling tests and
-  makes orphan detection self-contained (near-miss names warn from the
-  same listing, with no build-system inventory needed); its costs are a
-  spec-pinned filename pattern, directory contents becoming request
-  inputs, and — until per-test `compile_error` verdicts land (§6) — a
-  broken conventional file failing the whole run. Cross-directory
-  public-API test modules need wiring or the package model under either
-  answer.
-- **Does `--filter` narrow the root set or only the run set?** (§2). As
-  written, filtering selects which tests *run* while the request still
-  roots every test in the closure — so a broken, unselected test still
-  fails the compilation, and a filtered run's verdicts are identical to
-  the same tests in a full run (which future selection soundness wants).
-  The opposite reading is what most users will assume from every other
-  runner. Interacts with the deferred per-test `compile_error` verdict
-  (§6), which recovers most of the root-narrowing ergonomics without
-  giving up verdict stability.
+- **`--filter` narrows the run set, never the analysis root set** (§2).
+- **The structured failure channel is a dedicated inherited pipe** (§5.1).
 
 ### Lower-impact decisions (decidable within their phase)
 
-- **Structured failure channel mechanism** (§5.1): dedicated inherited
-  pipe via a runtime helper (recommended; an ABI change under ADR-0055
-  rules) vs a framed region of stderr (no ABI change, but forgeable by
-  user bytes). Shapes the runtime surface and event schema; decide during
-  Phase 2 design.
 - **Exit-code and `@assert` stabilization**: promote `@assert`/`@panic`
   from the reserved intrinsic bucket (4.13:5b) to normative, and decide
   whether assertion failure keeps exit 101 (recommended; distinguished by
@@ -816,8 +839,8 @@ them — recorded in the follow-up issues (§6), not here.
   argument should discover one (needs the package-model discussion,
   ADR-0047's successor). Under a package model, the declared source set
   becomes a canonical candidate inventory, at which point rooting declared
-  test files automatically becomes the natural end state of the §1
-  discovery question.
+  test files automatically becomes the natural revisit of the §1 discovery
+  ruling (see Rejected alternatives).
 
 ## Future Work
 
