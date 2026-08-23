@@ -3973,13 +3973,15 @@ impl<'a> ConstraintGenerator<'a> {
                 }
                 // A local or parameter shadows any same-named struct/enum. A
                 // local *not* bound to a comptime type value (a runtime value)
-                // has no concrete type here, so don't resolve it — a runtime
-                // value passed to a `comptime T: type` param is still rejected
-                // in sema. Forwarded type parameters (`T` inside a specialized
-                // generic body) are not in scope as runtime params/locals and
-                // resolve via `self.type_subst` above.
+                // has no concrete type here. Preserve that error through
+                // dependent substitutions so inference does not manufacture a
+                // downstream mismatch; sema reports the canonical comptime
+                // known-value diagnostic at the argument itself.
+                // Forwarded type parameters (`T` inside a specialized generic
+                // body) are not in scope as runtime params/locals and resolve
+                // via `self.type_subst` above.
                 if ctx.locals.contains_key(name) || ctx.params.contains_key(name) {
-                    return None;
+                    return Some(Type::ERROR);
                 }
                 resolve_sym(name)
             }

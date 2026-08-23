@@ -330,7 +330,7 @@ exit_code = 42
 
 [[case]]
 name = "generic_type_argument_runtime_local_shadowing_type_name_rejected"
-description = "Control: a runtime local that shadows a struct name is a value, not a type — the nominal lookup must not fire through a shadowing binding, so the call is still rejected. (The wording is the unsubstituted-`T` mismatch rather than the comptime-argument diagnostic; that is pre-existing and unchanged here.)"
+description = "A runtime local that shadows a struct name is a value, not a type — the nominal lookup must not fire through a shadowing binding, so the call gets the canonical E1201 comptime-value diagnostic."
 files = [{ path = "main.rue", source = """
 struct Foo { x: i32 }
 fn identity(comptime T: type, v: T) -> T { v }
@@ -341,5 +341,5 @@ fn main() -> i32 {
 }
 """ }]
 compile_fail = true
-error_contains = ["E0206"]
-compile_stderr_not_contains = ["E9000", "internal compiler error"]
+error_contains = ["E1201", "parameter 'T'"]
+compile_stderr_not_contains = ["E0206", "E9000", "internal compiler error"]
