@@ -151,7 +151,7 @@ fn canonical_type_from_live_cached(
         K::Array(id) => {
             let (element, len) = pool.array_def(id);
             CanonicalType::Array {
-                element: Box::new(canonical_type_from_live_cached(
+                element: Arc::new(canonical_type_from_live_cached(
                     element,
                     pool,
                     aggregates,
@@ -160,13 +160,13 @@ fn canonical_type_from_live_cached(
                 len,
             }
         }
-        K::PtrConst(id) => CanonicalType::PtrConst(Box::new(canonical_type_from_live_cached(
+        K::PtrConst(id) => CanonicalType::PtrConst(Arc::new(canonical_type_from_live_cached(
             pool.ptr_const_def(id),
             pool,
             aggregates,
             stable_by_live,
         )?)),
-        K::PtrMut(id) => CanonicalType::PtrMut(Box::new(canonical_type_from_live_cached(
+        K::PtrMut(id) => CanonicalType::PtrMut(Arc::new(canonical_type_from_live_cached(
             pool.ptr_mut_def(id),
             pool,
             aggregates,
@@ -217,18 +217,18 @@ fn canonical_type_from_instance(
             CanonicalType::AnonymousNominal(identity.clone())
         }
         T::Array { element, len } => CanonicalType::Array {
-            element: Box::new(canonical_type_from_instance(element)?),
+            element: Arc::new(canonical_type_from_instance(element)?),
             len: *len,
         },
         T::Slice { element, name } => CanonicalType::Slice {
-            element: Box::new(canonical_type_from_instance(element)?),
+            element: Arc::new(canonical_type_from_instance(element)?),
             name: name.clone(),
         },
         T::PtrConst(element) => {
-            CanonicalType::PtrConst(Box::new(canonical_type_from_instance(element)?))
+            CanonicalType::PtrConst(Arc::new(canonical_type_from_instance(element)?))
         }
         T::PtrMut(element) => {
-            CanonicalType::PtrMut(Box::new(canonical_type_from_instance(element)?))
+            CanonicalType::PtrMut(Arc::new(canonical_type_from_instance(element)?))
         }
         T::Module(module) => CanonicalType::Module(module.clone()),
         T::GenericParameter(index) => CanonicalType::GenericParameter(*index),

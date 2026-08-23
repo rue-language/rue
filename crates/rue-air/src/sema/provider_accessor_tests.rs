@@ -21,6 +21,8 @@
 //! `rue-compiler/src/revisioned_query_database.rs` and the spec suite
 //! `rue-spec/cases/items/borrow-accessors.toml` (6.6:3-6.6:14).
 
+use std::sync::Arc;
+
 use rue_error::ErrorKind;
 
 use super::provider_fixture::{FixtureKey, MethodShape, ProviderFixture, mode_param, value_param};
@@ -60,7 +62,7 @@ fn grid_fixture() -> (ProviderFixture, FixtureKey) {
         vec![(
             "cells",
             SemanticImportType::Array {
-                element: Box::new(SemanticImportType::I64),
+                element: Arc::new(SemanticImportType::I64),
                 len: 4,
             },
         )],
@@ -90,7 +92,7 @@ fn provider_mutable_accessor_marks_inout_receiver_and_place_result() {
         vec![(
             "cells",
             SemanticImportType::Array {
-                element: Box::new(SemanticImportType::I64),
+                element: Arc::new(SemanticImportType::I64),
                 len: 2,
             },
         )],

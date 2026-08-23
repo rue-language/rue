@@ -59,13 +59,13 @@ pub enum SemanticImportType<K, M> {
     Nominal(K),
     AnonymousNominal(AnonymousNominalKey<K, M>),
     Array {
-        element: Box<Self>,
+        element: Arc<Self>,
         len: u64,
     },
-    PtrConst(Box<Self>),
-    PtrMut(Box<Self>),
+    PtrConst(Arc<Self>),
+    PtrMut(Arc<Self>),
     Slice {
-        element: Box<Self>,
+        element: Arc<Self>,
         name: Arc<str>,
     },
     Module(M),
@@ -319,13 +319,13 @@ impl<K, M> SemanticImportType<K, M> {
                     T::AnonymousNominal(value.try_map_identities(key, module)?)
                 }
                 F::Array { element, len } => T::Array {
-                    element: Box::new(element),
+                    element: Arc::new(element),
                     len,
                 },
-                F::PtrConst(value) => T::PtrConst(Box::new(value)),
-                F::PtrMut(value) => T::PtrMut(Box::new(value)),
+                F::PtrConst(value) => T::PtrConst(Arc::new(value)),
+                F::PtrMut(value) => T::PtrMut(Arc::new(value)),
                 F::Slice { element, name } => T::Slice {
-                    element: Box::new(element),
+                    element: Arc::new(element),
                     name: name.clone(),
                 },
                 F::Module(value) => T::Module(module(value)?),
@@ -1947,7 +1947,7 @@ where
                         return Err(SemanticImportFailure::ForeignLocalType);
                     };
                     SemanticImportType::Slice {
-                        element: Box::new(
+                        element: Arc::new(
                             self.export_type_local_validated(
                                 self.type_pool.ptr_const_def(pointer),
                             )?,
@@ -1998,14 +1998,14 @@ where
             crate::TypeKind::Array(id) => {
                 let (element, len) = self.type_pool.array_def(id);
                 SemanticImportType::Array {
-                    element: Box::new(self.export_type_local_validated(element)?),
+                    element: Arc::new(self.export_type_local_validated(element)?),
                     len,
                 }
             }
-            crate::TypeKind::PtrConst(id) => SemanticImportType::PtrConst(Box::new(
+            crate::TypeKind::PtrConst(id) => SemanticImportType::PtrConst(Arc::new(
                 self.export_type_local_validated(self.type_pool.ptr_const_def(id))?,
             )),
-            crate::TypeKind::PtrMut(id) => SemanticImportType::PtrMut(Box::new(
+            crate::TypeKind::PtrMut(id) => SemanticImportType::PtrMut(Arc::new(
                 self.export_type_local_validated(self.type_pool.ptr_mut_def(id))?,
             )),
             crate::TypeKind::Module(id) => SemanticImportType::Module(
@@ -2349,15 +2349,15 @@ mod tests {
             },
             ImportType::Nominal("Record"),
             ImportType::Array {
-                element: Box::new(ImportType::Nominal("Record")),
+                element: Arc::new(ImportType::Nominal("Record")),
                 len: 7,
             },
             ImportType::Slice {
-                element: Box::new(ImportType::Nominal("Record")),
+                element: Arc::new(ImportType::Nominal("Record")),
                 name: Arc::from("[Record]"),
             },
-            ImportType::PtrConst(Box::new(ImportType::Nominal("Record"))),
-            ImportType::PtrMut(Box::new(ImportType::Nominal("Record"))),
+            ImportType::PtrConst(Arc::new(ImportType::Nominal("Record"))),
+            ImportType::PtrMut(Arc::new(ImportType::Nominal("Record"))),
             ImportType::Module("pkg/main.rue"),
             ImportType::GenericParameter(3),
             ImportType::AnonymousNominal(crate::AnonymousNominalKey {
@@ -2494,7 +2494,7 @@ mod tests {
             .unwrap();
         b.complete_struct(&"node", &[], false, false, false)
             .unwrap();
-        let durable = ImportType::PtrConst(Box::new(ImportType::Nominal("node")));
+        let durable = ImportType::PtrConst(Arc::new(ImportType::Nominal("node")));
         let ta = a.import_type(&durable).unwrap();
         let tb = b.import_type(&durable).unwrap();
         assert_ne!(
@@ -2542,11 +2542,11 @@ mod tests {
         }
         let left_fields = [(
             Arc::from("next"),
-            ImportType::PtrConst(Box::new(ImportType::Nominal("right"))),
+            ImportType::PtrConst(Arc::new(ImportType::Nominal("right"))),
         )];
         let right_fields = [(
             Arc::from("next"),
-            ImportType::PtrMut(Box::new(ImportType::Nominal("left"))),
+            ImportType::PtrMut(Arc::new(ImportType::Nominal("left"))),
         )];
         first
             .complete_struct(&"left", &left_fields, false, false, false)
@@ -2620,13 +2620,13 @@ mod tests {
             (
                 Arc::from("good"),
                 ImportType::Array {
-                    element: Box::new(ImportType::U8),
+                    element: Arc::new(ImportType::U8),
                     len: 4,
                 },
             ),
             (
                 Arc::from("bad"),
-                ImportType::PtrConst(Box::new(ImportType::Module("pkg/main.rue"))),
+                ImportType::PtrConst(Arc::new(ImportType::Module("pkg/main.rue"))),
             ),
         ];
 
@@ -2646,10 +2646,10 @@ mod tests {
             Arc::from("Value"),
             Arc::from([
                 ImportType::Array {
-                    element: Box::new(ImportType::U16),
+                    element: Arc::new(ImportType::U16),
                     len: 5,
                 },
-                ImportType::PtrMut(Box::new(ImportType::Module("pkg/main.rue"))),
+                ImportType::PtrMut(Arc::new(ImportType::Module("pkg/main.rue"))),
             ]),
         )];
         assert_eq!(
@@ -2688,7 +2688,7 @@ mod tests {
                     fields: Arc::new([(
                         Arc::from("items"),
                         ImportType::Array {
-                            element: Box::new(ImportType::U8),
+                            element: Arc::new(ImportType::U8),
                             len: 4,
                         },
                     )]),
@@ -2708,7 +2708,7 @@ mod tests {
                 shape: SemanticLocalNominalShape::Struct {
                     fields: Arc::new([(
                         Arc::from("invalid"),
-                        ImportType::PtrConst(Box::new(ImportType::Module("pkg/main.rue"))),
+                        ImportType::PtrConst(Arc::new(ImportType::Module("pkg/main.rue"))),
                     )]),
                     is_copy: false,
                     is_linear: false,
@@ -2758,13 +2758,13 @@ mod tests {
         let epoch = Epoch::new(vec![], vec![], vec!["pkg/main.rue"]).unwrap();
         assert_eq!(
             epoch.import_type(&ImportType::Array {
-                element: Box::new(ImportType::ComptimeType),
+                element: Arc::new(ImportType::ComptimeType),
                 len: 1,
             }),
             Err(SemanticImportFailure::InvalidStructuralType)
         );
         assert_eq!(
-            epoch.import_type(&ImportType::PtrConst(Box::new(ImportType::Module(
+            epoch.import_type(&ImportType::PtrConst(Arc::new(ImportType::Module(
                 "pkg/main.rue",
             )))),
             Err(SemanticImportFailure::InvalidStructuralType)
@@ -2787,14 +2787,14 @@ mod tests {
             (ImportType::ComptimeType, true),
             (
                 ImportType::Array {
-                    element: Box::new(ImportType::U8),
+                    element: Arc::new(ImportType::U8),
                     len: 4,
                 },
                 false,
             ),
             (
                 ImportType::Array {
-                    element: Box::new(ImportType::PtrConst(Box::new(
+                    element: Arc::new(ImportType::PtrConst(Arc::new(
                         ImportType::GenericParameter(1),
                     ))),
                     len: 2,
@@ -2822,7 +2822,7 @@ mod tests {
             .unwrap();
         let values = [
             ImportType::Array {
-                element: Box::new(ImportType::PtrConst(Box::new(ImportType::Nominal("node")))),
+                element: Arc::new(ImportType::PtrConst(Arc::new(ImportType::Nominal("node")))),
                 len: 7,
             },
             ImportType::Module("pkg/main.rue"),
@@ -3842,7 +3842,7 @@ mod tests {
         };
         let epoch = Epoch::new(vec![], vec![], vec![]).unwrap();
         let array = ImportType::Array {
-            element: Box::new(ImportType::U8),
+            element: Arc::new(ImportType::U8),
             len: 9,
         };
         let before = epoch.type_pool().stats();

@@ -695,14 +695,14 @@ where
             TypeKind::Array(id) => {
                 let (element, len) = self.type_pool.array_def(id);
                 T::Array {
-                    element: Box::new(self.export_body_type(element)?),
+                    element: Arc::new(self.export_body_type(element)?),
                     len,
                 }
             }
-            TypeKind::PtrConst(id) => T::PtrConst(Box::new(
+            TypeKind::PtrConst(id) => T::PtrConst(Arc::new(
                 self.export_body_type(self.type_pool.ptr_const_def(id))?,
             )),
-            TypeKind::PtrMut(id) => T::PtrMut(Box::new(
+            TypeKind::PtrMut(id) => T::PtrMut(Arc::new(
                 self.export_body_type(self.type_pool.ptr_mut_def(id))?,
             )),
             TypeKind::Struct(id) => {
@@ -2095,15 +2095,15 @@ where
                 return Ok(ty);
             }
             T::Array { element, len } => S::Array {
-                element: Box::new(self.type_instance_import(element)?),
+                element: Arc::new(self.type_instance_import(element)?),
                 len: *len,
             },
             T::Slice { element, name } => S::Slice {
-                element: Box::new(self.type_instance_import(element)?),
+                element: Arc::new(self.type_instance_import(element)?),
                 name: name.clone(),
             },
-            T::PtrConst(inner) => S::PtrConst(Box::new(self.type_instance_import(inner)?)),
-            T::PtrMut(inner) => S::PtrMut(Box::new(self.type_instance_import(inner)?)),
+            T::PtrConst(inner) => S::PtrConst(Arc::new(self.type_instance_import(inner)?)),
+            T::PtrMut(inner) => S::PtrMut(Arc::new(self.type_instance_import(inner)?)),
             T::Module(module) => {
                 let (id, _) = self
                     .register_module_target(module.clone())
@@ -2377,15 +2377,15 @@ where
             T::Nominal(N::Named(key)) => S::Nominal(key.clone()),
             T::Nominal(N::Anonymous(identity)) => S::AnonymousNominal(identity.clone()),
             T::Array { element, len } => S::Array {
-                element: Box::new(self.type_instance_import(element)?),
+                element: Arc::new(self.type_instance_import(element)?),
                 len: *len,
             },
             T::Slice { element, name } => S::Slice {
-                element: Box::new(self.type_instance_import(element)?),
+                element: Arc::new(self.type_instance_import(element)?),
                 name: name.clone(),
             },
-            T::PtrConst(inner) => S::PtrConst(Box::new(self.type_instance_import(inner)?)),
-            T::PtrMut(inner) => S::PtrMut(Box::new(self.type_instance_import(inner)?)),
+            T::PtrConst(inner) => S::PtrConst(Arc::new(self.type_instance_import(inner)?)),
+            T::PtrMut(inner) => S::PtrMut(Arc::new(self.type_instance_import(inner)?)),
             T::Module(module) => S::Module(module.clone()),
             T::GenericParameter(index) => S::GenericParameter(*index),
         })
@@ -2409,14 +2409,14 @@ where
             TypeKind::Array(id) => {
                 let (element, len) = self.type_pool.array_def(id);
                 T::Array {
-                    element: Box::new(self.durable_type_from_concrete(element)?),
+                    element: Arc::new(self.durable_type_from_concrete(element)?),
                     len,
                 }
             }
-            TypeKind::PtrConst(id) => T::PtrConst(Box::new(
+            TypeKind::PtrConst(id) => T::PtrConst(Arc::new(
                 self.durable_type_from_concrete(self.type_pool.ptr_const_def(id))?,
             )),
-            TypeKind::PtrMut(id) => T::PtrMut(Box::new(
+            TypeKind::PtrMut(id) => T::PtrMut(Arc::new(
                 self.durable_type_from_concrete(self.type_pool.ptr_mut_def(id))?,
             )),
             TypeKind::Struct(_) | TypeKind::Enum(_) => {
