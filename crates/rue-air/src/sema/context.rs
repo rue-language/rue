@@ -684,7 +684,7 @@ pub(crate) struct AnalysisContext<'a> {
     /// AIR place handles for accessor calls already materialized in this
     /// expression. Compound assignment reuses the same yielded place rather
     /// than expanding and loaning the accessor a second time.
-    pub accessor_place_refs: AHashMap<InstRef, (crate::inst::AirPlaceRef, Spur, Type, bool)>,
+    pub accessor_place_refs: AHashMap<InstRef, (crate::inst::AirPlaceRef, Spur, Type, bool, bool)>,
     /// Active accessor-result loans for the current full expression
     /// (ADR-0062): each entry is the receiver root, call span, and shared or
     /// exclusive mode of an expanded accessor call. The statement loop
@@ -695,6 +695,10 @@ pub(crate) struct AnalysisContext<'a> {
     /// Ordinary shared reads in the current full expression. An exclusive
     /// accessor result conflicts with these reads in either evaluation order.
     pub expression_shared_reads: Vec<(Spur, Span)>,
+    /// Completed exclusive uses in the current full expression. An accessor
+    /// result conflicts with a prior use of the same root even when that use
+    /// was a nested call whose own loan frame has already ended.
+    pub expression_exclusive_uses: Vec<(Spur, Span)>,
     /// Resolved-type overlays for accessor bodies currently being inlined,
     /// innermost last. `resolved_type_of` consults these before the body's
     /// own `resolved_types`, letting the caller's analysis walk accessor-body
@@ -712,6 +716,59 @@ pub(crate) struct AnalysisContext<'a> {
     /// registry-installed `Option(payload)`. Left `false` everywhere else, where
     /// a contextual enum may validate — but never select — the result identity.
     pub try_operand: bool,
+}
+
+pub(crate) struct FullExpressionBoundary {
+    loans: usize,
+    shared_reads: Vec<(Spur, Span)>,
+    exclusive_uses: Vec<(Spur, Span)>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ExpressionLedgerCheckpoint {
+    loans: usize,
+    shared_reads: usize,
+    exclusive_uses: usize,
+}
+
+impl AnalysisContext<'_> {
+    /// Snapshot expression-scoped semantic records before a strict operation.
+    /// If that operation does not continue, records created by its operands
+    /// cannot affect later unreachable analysis.
+    pub(crate) fn checkpoint_expression_ledgers(&self) -> ExpressionLedgerCheckpoint {
+        ExpressionLedgerCheckpoint {
+            loans: self.expression_loans.len(),
+            shared_reads: self.expression_shared_reads.len(),
+            exclusive_uses: self.expression_exclusive_uses.len(),
+        }
+    }
+
+    pub(crate) fn rollback_expression_ledgers(&mut self, checkpoint: ExpressionLedgerCheckpoint) {
+        self.expression_loans.truncate(checkpoint.loans);
+        self.expression_shared_reads
+            .truncate(checkpoint.shared_reads);
+        self.expression_exclusive_uses
+            .truncate(checkpoint.exclusive_uses);
+    }
+
+    /// Start a nested full expression. Active loans from the enclosing
+    /// expression remain visible, while completed read/use records are
+    /// isolated until the child finishes.
+    pub(crate) fn enter_full_expression(&mut self) -> FullExpressionBoundary {
+        FullExpressionBoundary {
+            loans: self.expression_loans.len(),
+            shared_reads: std::mem::take(&mut self.expression_shared_reads),
+            exclusive_uses: std::mem::take(&mut self.expression_exclusive_uses),
+        }
+    }
+
+    /// Finish a nested full expression, discarding child loans and restoring
+    /// the enclosing expression's completed read/use records.
+    pub(crate) fn exit_full_expression(&mut self, boundary: FullExpressionBoundary) {
+        self.expression_loans.truncate(boundary.loans);
+        self.expression_shared_reads = boundary.shared_reads;
+        self.expression_exclusive_uses = boundary.exclusive_uses;
+    }
 }
 
 // Import InstRef for use in resolved_types
@@ -941,6 +998,7 @@ impl<'a> AnalysisContext<'a> {
             accessor_place_refs: self.accessor_place_refs.clone(),
             expression_loans: self.expression_loans.clone(),
             expression_shared_reads: self.expression_shared_reads.clone(),
+            expression_exclusive_uses: self.expression_exclusive_uses.clone(),
             inline_resolved_types: self.inline_resolved_types.clone(),
             place_aliases: self.place_aliases.clone(),
             try_operand: false,

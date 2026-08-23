@@ -107,6 +107,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         param_types: &[Type],
         param_modes: &[RirParamMode],
         validate_semantic_types: bool,
+        call_may_continue: bool,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<CallOperands> {
         let args = self.body_rir_ref().call_args(args_range).to_vec();
@@ -115,6 +116,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             args.iter().copied(),
             param_types,
             param_modes,
+            call_may_continue,
             ctx,
         )?;
         if validate_semantic_types {
@@ -558,11 +560,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Analyze all arguments. Slice parameters (ADR-0043, RUE-322) coerce a
         // `borrow arr` argument into a by-value fat pointer here.
+        let expression_ledgers_before_call = ctx.checkpoint_expression_ledgers();
         let CallOperands {
             args: air_args,
             temp_scope,
             continues,
-        } = self.analyze_call_operands(air, args_range, &param_types, &param_modes, false, ctx)?;
+        } = self.analyze_call_operands(
+            air,
+            args_range,
+            &param_types,
+            &param_modes,
+            false,
+            !fn_info.return_type.is_never(),
+            ctx,
+        )?;
 
         // Handle generic function calls differently
         if is_generic {
@@ -770,15 +781,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             )?;
             let air_ref =
                 self.wrap_value_with_temp_scope(air, air_ref, return_type, span, temp_scope)?;
-            Ok(AnalysisResult::with_continues(
+            let result = AnalysisResult::with_continues(
                 air_ref,
                 return_type,
                 continues && !return_type.is_never(),
-            ))
+            );
+            if !result.continues {
+                ctx.rollback_expression_ledgers(expression_ledgers_before_call);
+            }
+            Ok(result)
         } else {
             // Regular non-generic call
             let return_type = base_return_type;
-            self.emit_call_result(
+            let result = self.emit_call_result(
                 air,
                 name,
                 &air_args,
@@ -786,7 +801,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return_type,
                 continues && !return_type.is_never(),
                 span,
-            )
+            )?;
+            if !result.continues {
+                ctx.rollback_expression_ledgers(expression_ledgers_before_call);
+            }
+            Ok(result)
         }
     }
 
@@ -934,6 +953,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Analyze the receiver expression. When it is a by-ref receiver,
         // `byref_arg_root` makes the var-ref / field / index reads borrow the
         // place instead of moving out of it (restored afterwards).
+        let expression_ledgers_before_call = ctx.checkpoint_expression_ledgers();
         let mut receiver_result =
             self.analyze_with_borrow_root(air, receiver, receiver_byref_root, ctx)?;
         let receiver_continues = receiver_result.continues;
@@ -1234,6 +1254,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             &method_param_types,
             &method_param_modes,
             false,
+            receiver_continues && !return_type.is_never(),
             ctx,
         );
         if receiver_frame_pushed {
@@ -1283,6 +1304,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             receiver_continues && args_result.continues && !return_type.is_never(),
             span,
         )?;
+        if call.continues
+            && receiver_mode == AirArgMode::Inout
+            && let Some(root) = self.extract_root_variable(receiver)
+        {
+            self.record_completed_exclusive_use(root, span, ctx);
+        }
+        if !call.continues {
+            ctx.rollback_expression_ledgers(expression_ledgers_before_call);
+        }
         Ok(call)
     }
 
@@ -1412,13 +1442,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // materialize their by-value fat-pointer views exactly like direct
         // calls do (RUE-559) — std functions taking `borrow s: str` are called
         // this way.
+        let expression_ledgers_before_call = ctx.checkpoint_expression_ledgers();
         let CallOperands {
             args: air_args,
             temp_scope,
             continues,
-        } = self.analyze_call_operands(air, args_range, &param_types, &param_modes, true, ctx)?;
+        } = self.analyze_call_operands(
+            air,
+            args_range,
+            &param_types,
+            &param_modes,
+            true,
+            !fn_info.return_type.is_never(),
+            ctx,
+        )?;
 
-        self.emit_call_result(
+        let result = self.emit_call_result(
             air,
             function_key,
             &air_args,
@@ -1426,7 +1465,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             fn_info.return_type,
             continues && !fn_info.return_type.is_never(),
             span,
-        )
+        )?;
+        if !result.continues {
+            ctx.rollback_expression_ledgers(expression_ledgers_before_call);
+        }
+        Ok(result)
     }
 
     /// Analyze a type-qualified associated-function call.
@@ -1573,6 +1616,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // path as free and module-member calls. In particular, `borrow str`
         // and `[T]` parameters are physical by-value views even though their
         // source modes remain Borrow (RUE-634).
+        let expression_ledgers_before_call = ctx.checkpoint_expression_ledgers();
         let CallOperands {
             args: air_args,
             temp_scope,
@@ -1583,6 +1627,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             &method_param_types,
             &method_param_modes,
             false,
+            !return_type.is_never(),
             ctx,
         )?;
 
@@ -1594,7 +1639,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let call_name = self.method_symbol(struct_id, &function_name_str, false);
         let call_name_sym = self.body_interner().get_or_intern(&call_name);
 
-        self.emit_call_result(
+        let result = self.emit_call_result(
             air,
             call_name_sym,
             &air_args,
@@ -1602,6 +1647,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return_type,
             continues && !return_type.is_never(),
             span,
-        )
+        )?;
+        if !result.continues {
+            ctx.rollback_expression_ledgers(expression_ledgers_before_call);
+        }
+        Ok(result)
     }
 }

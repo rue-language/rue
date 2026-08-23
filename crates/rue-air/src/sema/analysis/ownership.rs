@@ -1143,7 +1143,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         air: &mut Air,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<Option<PlaceTrace>> {
-        if let Some((place, root, ty, mutable)) = ctx.accessor_place_refs.get(&inst_ref).copied() {
+        if let Some((place, root, ty, mutable, continues)) =
+            ctx.accessor_place_refs.get(&inst_ref).copied()
+        {
             let cached = air.get_place(place);
             return Ok(Some(PlaceTrace {
                 base: cached.base,
@@ -1154,7 +1156,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 is_borrow_param: !mutable,
                 pending_stmts: Vec::new(),
                 via_accessor: true,
-                continues: true,
+                continues,
             }));
         }
         // Peek the receiver type without emitting anything: only proceed when
@@ -1200,6 +1202,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<PlaceTrace> {
+        let expression_ledgers_before_call = ctx.checkpoint_expression_ledgers();
         let info = self
             .call_facts()
             .call_method_info(struct_id, method)
@@ -1273,50 +1276,79 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         }
-        // Mutable accessors carry an exclusive loan; shared and exclusive
-        // accessor results conflict on the same root. The existing root loan
-        // list is intentionally expression-scoped and root-granular.
+        // Analyze guard operands before installing the result loan. Under the
+        // accessor-call evaluation rule, no accessor result exists when the
+        // receiver or a guard operand diverges.
         let loan_kind = if info.returns_inout {
             CallLoanKind::Inout
         } else {
             CallLoanKind::Borrow
         };
-        if ctx.expression_loans.iter().any(|(r, _, kind)| {
-            *r == root && (*kind == CallLoanKind::Inout || loan_kind == CallLoanKind::Inout)
-        }) {
-            return Err(CompileError::new(
-                ErrorKind::AccessorLoanConflict {
-                    variable: self.body_interner().resolve(&root).to_string(),
-                    conflict: "for another accessor result",
-                },
-                span,
-            ));
-        }
-        if loan_kind == CallLoanKind::Inout
-            && ctx
-                .expression_shared_reads
-                .iter()
-                .any(|(read_root, _)| *read_root == root)
-        {
-            return Err(CompileError::new(
-                ErrorKind::AccessorLoanConflict {
-                    variable: self.body_interner().resolve(&root).to_string(),
-                    conflict: "for an exclusive accessor result after a shared read",
-                },
-                span,
-            ));
-        }
-        ctx.expression_loans.push((root, span, loan_kind));
-        ctx.accessor_call_insts.insert(inst_ref, (method, root));
-        ctx.referenced_methods.insert((struct_id, method));
-        self.record_body_method_dependency((struct_id, method));
-
         let param_data = self.body_param_data(info.params);
         let param_types = param_data.types().to_vec();
         let param_modes = param_data.modes().to_vec();
         self.validate_call_contract_for_accessor(args_range, &param_types, &param_modes, span)?;
-        let operands =
-            self.analyze_call_operands(air, args_range, &param_types, &param_modes, false, ctx)?;
+        let operands = self.analyze_call_operands(
+            air,
+            args_range,
+            &param_types,
+            &param_modes,
+            false,
+            true,
+            ctx,
+        )?;
+        let accessor_continues = receiver_trace.continues && operands.continues;
+        if !accessor_continues {
+            ctx.rollback_expression_ledgers(expression_ledgers_before_call);
+        }
+        if accessor_continues {
+            // Mutable accessors carry an exclusive loan; shared and exclusive
+            // accessor results conflict on the same root. The root loan list
+            // is intentionally expression-scoped and root-granular.
+            if ctx.expression_loans.iter().any(|(r, _, kind)| {
+                *r == root && (*kind == CallLoanKind::Inout || loan_kind == CallLoanKind::Inout)
+            }) {
+                return Err(CompileError::new(
+                    ErrorKind::AccessorLoanConflict {
+                        variable: self.body_interner().resolve(&root).to_string(),
+                        conflict: "for another accessor result",
+                    },
+                    span,
+                ));
+            }
+            if let Some((_, exclusive_span)) = ctx
+                .expression_exclusive_uses
+                .iter()
+                .find(|(used_root, _)| *used_root == root)
+            {
+                return Err(CompileError::new(
+                    ErrorKind::AccessorLoanConflict {
+                        variable: self.body_interner().resolve(&root).to_string(),
+                        conflict: "for an accessor result after an exclusive use",
+                    },
+                    span,
+                )
+                .with_label("exclusive use here", *exclusive_span));
+            }
+            if loan_kind == CallLoanKind::Inout
+                && ctx
+                    .expression_shared_reads
+                    .iter()
+                    .any(|(read_root, _)| *read_root == root)
+            {
+                return Err(CompileError::new(
+                    ErrorKind::AccessorLoanConflict {
+                        variable: self.body_interner().resolve(&root).to_string(),
+                        conflict: "for an exclusive accessor result after a shared read",
+                    },
+                    span,
+                ));
+            }
+            ctx.expression_loans.push((root, span, loan_kind));
+        }
+        ctx.accessor_call_insts.insert(inst_ref, (method, root));
+        ctx.referenced_methods.insert((struct_id, method));
+        self.record_body_method_dependency((struct_id, method));
         let receiver_place = Self::build_place_ref(air, &receiver_trace)?;
         let receiver_value = air.add_inst(AirInst {
             data: AirInstData::PlaceRead {
@@ -1343,10 +1375,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         receiver_trace.via_accessor = true;
         receiver_trace.is_borrow_param = !info.returns_inout;
         receiver_trace.is_root_mutable = info.returns_inout;
+        receiver_trace.continues = accessor_continues;
         let yielded_place = Self::build_place_ref(air, &receiver_trace)?;
         ctx.accessor_place_refs.insert(
             inst_ref,
-            (yielded_place, root, info.return_type, info.returns_inout),
+            (
+                yielded_place,
+                root,
+                info.return_type,
+                info.returns_inout,
+                accessor_continues,
+            ),
         );
         Ok(receiver_trace)
     }
@@ -1395,7 +1434,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             span,
         });
         let value = Self::finish_traced_value(air, &mut trace, value, ty, span)?;
-        Ok(AnalysisResult::new(value, ty))
+        Ok(AnalysisResult::with_continues(value, ty, trace.continues))
     }
 
     /// The syntactic root of a place expression that may pass through
@@ -1898,6 +1937,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                     .entry(name)
                                     .or_default()
                                     .mark_path_moved(&[], span);
+                                self.record_completed_exclusive_use(name, span, ctx);
                                 moves_out = true;
                             }
                         }
@@ -1999,6 +2039,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     .entry(name)
                     .or_default()
                     .mark_path_moved(&[], span);
+                self.record_completed_exclusive_use(name, span, ctx);
             }
 
             // Mark variable as used
@@ -2367,6 +2408,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ty: Type::UNIT,
                     span,
                 });
+                if value_result.continues {
+                    self.record_completed_exclusive_use(name, span, ctx);
+                }
                 return Ok(AnalysisResult::with_continues(
                     air_ref,
                     Type::UNIT,
@@ -2445,6 +2489,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: Type::UNIT,
             span,
         });
+        if value_result.continues {
+            self.record_completed_exclusive_use(name, span, ctx);
+        }
         Ok(AnalysisResult::with_continues(
             air_ref,
             Type::UNIT,
@@ -2812,6 +2859,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     .entry(trace.root_var)
                     .or_default()
                     .mark_path_moved(&[], span);
+                if trace.continues {
+                    self.record_completed_exclusive_use(trace.root_var, span, ctx);
+                }
                 emit_move_marker = true;
             } else if !self.is_type_copy(field_type) {
                 // For non-linear types, check if accessing a non-Copy field
@@ -2859,6 +2909,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     .entry(trace.root_var)
                     .or_default()
                     .mark_path_moved(&field_path, span);
+                if trace.continues {
+                    self.record_completed_exclusive_use(trace.root_var, span, ctx);
+                }
 
                 // Export statically-trackable partial moves to drop elaboration
                 // so the moved path's drop inside the scope-exit drop is
@@ -2906,7 +2959,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if trace.via_accessor {
                 ctx.accessor_place_refs.insert(
                     inst_ref,
-                    (place_ref, trace.root_var, field_type, trace.is_root_mutable),
+                    (
+                        place_ref,
+                        trace.root_var,
+                        field_type,
+                        trace.is_root_mutable,
+                        trace.continues,
+                    ),
                 );
             }
             let mut air_ref = air.add_inst(AirInst {
@@ -3210,7 +3269,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if trace.via_accessor {
                 ctx.accessor_place_refs.insert(
                     inst_ref,
-                    (place_ref, trace.root_var, elem_type, trace.is_root_mutable),
+                    (
+                        place_ref,
+                        trace.root_var,
+                        elem_type,
+                        trace.is_root_mutable,
+                        trace.continues,
+                    ),
                 );
             }
             let mut air_ref = air.add_inst(AirInst {
@@ -3855,10 +3920,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 self.peek_place_type(place, ctx)
                     .ok_or_else(|| CompileError::new(ErrorKind::InvalidAssignmentTarget, span))
             },
-            |(_, _, ty, _)| Ok(ty),
+            |(_, _, ty, _, _)| Ok(ty),
         )?;
         let previous_expected = ctx.expected_type.replace(destination_type);
         let rhs_shared_reads_before = ctx.expression_shared_reads.len();
+        let rhs_exclusive_uses_before = ctx.expression_exclusive_uses.len();
         let value_result = self.analyze_inst(air, value, ctx);
         ctx.expected_type = previous_expected;
         let value_result = value_result?;
@@ -3878,24 +3944,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if cached.is_none() {
             ctx.expression_shared_reads
                 .truncate(rhs_shared_reads_before);
+            ctx.expression_exclusive_uses
+                .truncate(rhs_exclusive_uses_before);
         }
-        let (place_ref, root_var, mutable) = if let Some((place_ref, root, _, mutable)) = cached {
-            (place_ref, root, mutable)
-        } else {
-            let trace = self
-                .try_trace_place(place, air, ctx)?
-                .ok_or_else(|| CompileError::new(ErrorKind::InvalidAssignmentTarget, span))?;
-            if !trace.via_accessor || !trace.is_root_mutable {
-                return Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span));
-            }
-            let root = trace.root_var;
-            self.reject_mutate_iter_borrowed(root, span, ctx)?;
-            (
-                Self::build_place_ref(air, &trace)?,
-                root,
-                trace.is_root_mutable,
-            )
-        };
+        let (place_ref, root_var, mutable, place_continues) =
+            if let Some((place_ref, root, _, mutable, continues)) = cached {
+                (place_ref, root, mutable, continues)
+            } else {
+                let trace = self
+                    .try_trace_place(place, air, ctx)?
+                    .ok_or_else(|| CompileError::new(ErrorKind::InvalidAssignmentTarget, span))?;
+                if !trace.via_accessor || !trace.is_root_mutable {
+                    return Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span));
+                }
+                let root = trace.root_var;
+                self.reject_mutate_iter_borrowed(root, span, ctx)?;
+                (
+                    Self::build_place_ref(air, &trace)?,
+                    root,
+                    trace.is_root_mutable,
+                    trace.continues,
+                )
+            };
         if !mutable {
             return Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span));
         }
@@ -3911,10 +3981,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: Type::UNIT,
             span,
         });
+        let continues = value_result.continues && place_continues;
+        if continues {
+            self.record_completed_exclusive_use(root_var, span, ctx);
+        }
         Ok(AnalysisResult::with_continues(
             air_ref,
             Type::UNIT,
-            value_result.continues,
+            continues,
         ))
     }
 
@@ -4081,10 +4155,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ty: Type::UNIT,
                 span,
             });
+            let continues = trace.continues && value_result.continues;
+            if continues {
+                self.record_completed_exclusive_use(trace.root_var, span, ctx);
+            }
             return Ok(AnalysisResult::with_continues(
                 air_ref,
                 Type::UNIT,
-                value_result.continues,
+                continues,
             ));
         }
 
@@ -4288,10 +4366,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ty: Type::UNIT,
                 span,
             });
+            let continues = trace.continues && index_result.continues && value_result.continues;
+            if continues {
+                self.record_completed_exclusive_use(trace.root_var, span, ctx);
+            }
             return Ok(AnalysisResult::with_continues(
                 air_ref,
                 Type::UNIT,
-                index_result.continues && value_result.continues,
+                continues,
             ));
         }
 
@@ -4823,6 +4905,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .entry(trace.root_var)
             .or_default()
             .mark_path_moved(&elem_path, span);
+        if trace.continues {
+            self.record_completed_exclusive_use(trace.root_var, span, ctx);
+        }
         Ok(Some(k))
     }
 
@@ -5128,6 +5213,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
+    /// Remember an exclusive use after its operation has completed. A
+    /// nested call's live loan frame disappears when that call returns, but
+    /// its exclusive use still conflicts with a later accessor result in the
+    /// enclosing full expression.
+    pub(crate) fn record_completed_exclusive_use(
+        &self,
+        root: Spur,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) {
+        if !ctx
+            .expression_exclusive_uses
+            .iter()
+            .any(|(used_root, _)| *used_root == root)
+        {
+            ctx.expression_exclusive_uses.push((root, span));
+        }
+    }
+
     pub(crate) fn reject_accessor_shared_loan_conflict(
         &self,
         root: Spur,
@@ -5376,6 +5480,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         args: A,
         param_types: &[Type],
         param_modes: &[RirParamMode],
+        call_may_continue: bool,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<CallOperands>
     where
@@ -5452,7 +5557,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // 6.6:16, E0259). Args whose place roots through an accessor chain
         // (`f(inout v.get_mut(i))`) have no plain root variable here and are
         // governed by accessor expansion's own frame check instead.
-        for arg in args {
+        for arg in args.clone() {
             if !arg.is_inout() && !arg.is_borrow() {
                 continue;
             }
@@ -5471,6 +5576,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         self.body_rir_ref().get(arg.value).span,
                         ctx,
                     )?;
+                }
+            }
+        }
+        // The exclusive use is complete once this call's argument list has
+        // finished and all same-call accessor checks have succeeded. Retain
+        // it for the enclosing full expression so a later accessor result
+        // still observes the conflict.
+        if result.continues && call_may_continue {
+            for arg in args {
+                if arg.is_inout()
+                    && let Some(root) = self.extract_root_variable(arg.value)
+                {
+                    self.record_completed_exclusive_use(
+                        root,
+                        self.body_rir_ref().get(arg.value).span,
+                        ctx,
+                    );
                 }
             }
         }

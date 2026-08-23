@@ -2145,6 +2145,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             accessor_place_refs: AHashMap::new(),
             expression_loans: Vec::new(),
             expression_shared_reads: Vec::new(),
+            expression_exclusive_uses: Vec::new(),
             inline_resolved_types: Vec::new(),
             place_aliases: AHashMap::new(),
             try_operand: false,

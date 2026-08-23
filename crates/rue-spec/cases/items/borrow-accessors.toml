@@ -867,6 +867,32 @@ compile_fail = true
 error_contains = ["E0259", "while an accessor result borrows it"]
 
 [[case]]
+name = "accessor_loan_conflicts_with_completed_nested_inout"
+spec = ["6.6:10", "6.6:16"]
+description = "A completed nested exclusive use still conflicts with a later accessor result in the same full expression (E0259)."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 {
+        yield self.value;
+    }
+}
+fn g(inout p: P) -> i64 {
+    p.value = p.value + 1;
+    0
+}
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    use_two(g(inout p), p.f());
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "accessor result"]
+
+[[case]]
 name = "accessor_loan_conflicts_with_direct_sibling_inout"
 spec = ["6.6:10"]
 description = "A direct `inout` argument of the very call consuming the accessor result is an exclusive use of the borrowed root (E0259, RUE-1593)."
@@ -890,6 +916,451 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0259", "as `inout` while an accessor result borrows it"]
+
+[[case]]
+name = "completed_nested_inout_does_not_escape_full_expression"
+spec = ["6.6:8", "6.6:10"]
+description = "A completed nested exclusive use does not keep its loan beyond its full expression, so a later accessor call is legal."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 {
+        yield self.value;
+    }
+}
+fn g(inout p: P) -> i64 {
+    p.value = p.value + 1;
+    0
+}
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    g(inout p);
+    if p.f() == 3 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "completed_nested_inout_condition_does_not_reach_body"
+spec = ["6.6:8", "6.6:10"]
+description = "A condition's completed exclusive use does not leak into the separate full expression of its body."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn g(inout p: P) -> i64 { p.value = p.value + 1; 0 }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    if g(inout p) == 0 {
+        if p.f() == 99 { @panic(\"unexpected\"); }
+    }
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "completed_nested_inout_branch_arms_are_separate"
+spec = ["6.6:8", "6.6:10"]
+description = "Completed exclusive uses in sibling branch arms do not leak between their full expressions."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn g(inout p: P) -> i64 { p.value = p.value + 1; 0 }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    if true {
+        g(inout p);
+    } else {
+        if p.f() == 99 { @panic(\"unexpected\"); }
+    }
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "completed_nested_inout_loop_condition_does_not_reach_body"
+spec = ["6.6:8", "6.6:10"]
+description = "A while condition's completed exclusive use does not leak into the loop body full expression."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn pred(inout p: P) -> bool { p.value = p.value + 1; false }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    while pred(inout p) {
+        if p.f() == 99 { @panic(\"unexpected\"); }
+    }
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "accessor_loan_in_if_arm_does_not_reach_outer_inout"
+spec = ["6.6:8", "6.6:10"]
+description = "An accessor loan in an if arm ends at that arm's full-expression boundary before an outer inout use."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn g(inout p: P) -> i64 { p.value = p.value + 1; 0 }
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    use_two(if true { if p.f() == 2 { 0 } else { 1 } } else { 0 }, g(inout p));
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "shared_read_in_if_arm_does_not_reach_outer_accessor"
+spec = ["6.6:8", "6.6:16"]
+description = "A shared read in an if arm ends at that arm's full-expression boundary before an outer exclusive accessor."
+source = """
+struct V {
+    cells: [i64; 2],
+
+    fn get_mut(inout self, i: u64) -> inout i64 { yield self.cells[i]; }
+}
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut v = V { cells: [1, 2] };
+    use_two(if true { v.cells[1] } else { 0 }, v.get_mut(0));
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "enclosing_accessor_loan_conflicts_inside_if_arm"
+spec = ["6.6:16"]
+description = "An active enclosing accessor loan remains visible while an if arm is analyzed."
+source = """
+struct V {
+    cells: [i64; 2],
+
+    fn get_ref(borrow self, i: u64) -> borrow i64 { yield self.cells[i]; }
+    fn get_mut(inout self, i: u64) -> inout i64 { yield self.cells[i]; }
+}
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut v = V { cells: [1, 2] };
+    use_two(v.get_ref(0), if true { if v.get_mut(1) == 2 { 0 } else { 1 } } else { 0 });
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "accessor"]
+
+[[case]]
+name = "completed_nested_inout_match_scrutinee_does_not_reach_arm"
+spec = ["6.6:8", "6.6:10"]
+description = "A match scrutinee's completed exclusive use does not leak into an arm full expression."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn g(inout p: P) -> i64 { p.value = p.value + 1; 0 }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    match g(inout p) {
+        0 => { if p.f() == 99 { @panic(\"unexpected\"); } },
+        _ => {},
+    }
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "accessor_loan_conflicts_with_projected_nested_inout"
+spec = ["6.6:10", "6.6:16"]
+description = "A completed nested inout of a projection records its canonical root for a later accessor result."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn bump(inout value: i64) -> i64 { value = value + 1; value }
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    use_two(bump(inout p.value), p.f());
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "accessor result"]
+
+[[case]]
+name = "accessor_loan_conflicts_with_projected_inout_self"
+spec = ["6.6:10", "6.6:16"]
+description = "A completed nested inout-self call on a projection records its canonical root for a later accessor result."
+source = """
+struct Inner {
+    value: i64,
+
+    fn bump(inout self) -> i64 { self.value = self.value + 1; self.value }
+}
+struct P {
+    inner: Inner,
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut p = P { inner: Inner { value: 2 }, value: 3 };
+    use_two(p.inner.bump(), p.f());
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "accessor result"]
+
+[[case]]
+name = "accessor_loan_conflicts_with_completed_move"
+spec = ["6.6:10"]
+description = "A completed nested move remains exclusive for a later accessor result in the same full expression."
+source = """
+linear struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn take(p: P) -> i64 { p.value }
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let p = P { value: 2 };
+    use_two(take(p), p.f());
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "accessor result"]
+
+[[case]]
+name = "completed_nested_assignment_does_not_escape_discarded_statement"
+spec = ["6.6:8", "6.6:10"]
+description = "An assignment in a discarded nested-block statement does not keep an exclusive use in the enclosing full expression."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    use_two({ p.value = 3; 0 }, p.f());
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "completed_nested_inout_does_not_escape_discarded_statement"
+spec = ["6.6:8", "6.6:10"]
+description = "A nested inout in a discarded statement does not keep an exclusive use in the enclosing full expression."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn g(inout p: P) -> i64 { p.value = p.value + 1; 0 }
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    use_two({ g(inout p); 0 }, p.f());
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "completed_nested_inout_tail_reaches_enclosing_expression"
+spec = ["6.6:10", "6.6:16"]
+description = "A nested block tail belongs to the enclosing full expression and conflicts with a later accessor result."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn g(inout p: P) -> i64 { p.value = p.value + 1; 0 }
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    use_two({ 0; g(inout p) }, p.f());
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "accessor result"]
+
+[[case]]
+name = "outer_completed_inout_does_not_enter_discarded_nested_statement"
+spec = ["6.6:8", "6.6:10"]
+description = "An enclosing completed use does not enter a discarded nested-block statement's full expression."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn g(inout p: P) -> i64 { p.value = p.value + 1; 0 }
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    use_two(g(inout p), { p.f(); 0 });
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "diverging_inout_operand_does_not_complete_exclusive_use"
+spec = ["6.6:10"]
+description = "An inout call whose later operand diverges never completes, so it creates no completed-use record."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn g(inout p: P, x: i64) -> i64 { p.value = p.value + x; 0 }
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    use_two(g(inout p, @panic(\"stop\")), p.f());
+    0
+}
+"""
+compile_only = true
+
+[[case]]
+name = "never_returning_inout_call_does_not_complete_exclusive_use"
+spec = ["6.6:10"]
+description = "A never-returning inout call does not complete its exclusive use before unreachable later operands."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn stop(inout p: P) -> ! { p.value = p.value + 1; @panic(\"stop\") }
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    use_two(stop(inout p), p.f());
+    0
+}
+"""
+compile_only = true
+
+[[case]]
+name = "diverging_inout_self_call_does_not_complete_exclusive_use"
+spec = ["6.6:10"]
+description = "An inout-self call with a diverging operand never completes its exclusive use."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+    fn set(inout self, value: i64) -> i64 { self.value = value; value }
+}
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    use_two(p.set(@panic(\"stop\")), p.f());
+    0
+}
+"""
+compile_only = true
+
+[[case]]
+name = "diverging_projected_inout_self_does_not_complete_exclusive_use"
+spec = ["6.6:10"]
+description = "An inout-self call whose projected receiver diverges never completes its exclusive use."
+source = """
+struct Cell {
+    value: i64,
+
+    fn bump(inout self) -> i64 { self.value = self.value + 1; self.value }
+}
+struct P {
+    cells: [Cell; 1],
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut p = P { cells: [Cell { value: 1 }], value: 2 };
+    use_two(p.cells[if @panic("stop") { 0 } else { 0 }].bump(), p.f());
+    0
+}
+"""
+compile_only = true
+
+[[case]]
+name = "diverging_call_rolls_back_operand_accessor_loan"
+spec = ["6.6:10"]
+description = "An accessor loan from an operand of a diverging call does not reach later unreachable siblings."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn g(inout p: P) -> i64 { p.value = p.value + 1; 0 }
+fn outer(a: i64, b: i64) -> i64 { a + b }
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    use_two(outer(p.f(), @panic("stop")), g(inout p));
+    0
+}
+"""
+compile_only = true
+
+[[case]]
+name = "diverging_accessor_guard_does_not_create_result_loan"
+spec = ["6.6:10"]
+description = "A diverging accessor guard prevents the result loan and its completed-use conflict from arising."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self, guard: i64) -> borrow i64 { yield self.value; }
+}
+fn g(inout p: P) -> i64 { p.value = p.value + 1; 0 }
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    use_two(g(inout p), p.f(@panic("stop")));
+    0
+}
+"""
+compile_only = true
 
 [[case]]
 name = "accessor_loan_conflicts_with_direct_sibling_inout_reversed"
