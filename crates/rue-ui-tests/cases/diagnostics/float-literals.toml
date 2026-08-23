@@ -103,6 +103,22 @@ error_contains = [
 ]
 
 [[case]]
+name = "trailing_dot_on_float_names_the_float_without_the_dot"
+description = "A float base such as `5.5` keeps its valid spelling when the parser rejects an extra trailing dot."
+source = """
+fn main() -> i32 {
+    let x = 5.5.;
+    0
+}
+"""
+preview = "floats"
+compile_fail = true
+error_contains = [
+    "E0011",
+    "floating-point literal cannot end with `.`: write `5.5` instead of `5.5.`",
+]
+
+[[case]]
 name = "empty_exponent_names_the_literal"
 description = "`1e` is diagnosed as one malformed literal rather than an integer abutting an identifier."
 source = """
