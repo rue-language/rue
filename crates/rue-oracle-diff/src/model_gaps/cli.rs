@@ -250,6 +250,24 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
+    // RUE-1711: the interior-NUL cases are debt for the same reason as the rest
+    // of the group and not for the reason they exist — the rejection they assert
+    // happens in Rue, above the syscall, but they still build their paths with
+    // StrBuf, whose bulk byte copy is the unmodeled intrinsic. What they check is
+    // the returned `FileError` and the state of the filesystem afterward, which
+    // is the CLI assertion's job here rather than the oracle's.
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_interior_nul_path_rejected",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_interior_nul_create_dir_all_creates_nothing",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
     // RUE-1481: directory enumeration (`read_dir`/`walk`) reaches the same
     // `@byte_copy` gap as the rest of the std.fs group — every entry's path is
     // pooled through StrBuf, which copies bytes in bulk. Ungated in the case
@@ -305,6 +323,15 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.fs_read_dir",
         "walk_nested_tree_is_depth_first_preorder",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    // RUE-1711: same StrBuf byte copy as the enumeration cases above. Unlike the
+    // two symlink cases, this one stages its directory from the program itself,
+    // so it stays a single-source case and does reach a gap to register.
+    Entry::new(
+        "cli.fs_read_dir",
+        "read_dir_interior_nul_path_rejected",
         intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
