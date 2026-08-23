@@ -1436,6 +1436,16 @@ pub(crate) fn parse_source_snapshot_module(
 /// on identity, `build_module_from_staged` skips the lexer and parser but runs
 /// the identical construction tail. Anything else — no stage, a content
 /// mismatch, or an unpublished module — falls through to the fresh parse.
+/// Whether a staged wave parse describes exactly the snapshot's bytes.
+///
+/// The snapshot's store retains one buffer per distinct byte string and the
+/// wave handed that same buffer to the parser, so the pointer answers this
+/// almost always; the byte comparison is the exact fallback for the case where
+/// it does not.
+fn exact_same_source(snapshot_text: &Arc<String>, staged_text: &Arc<String>) -> bool {
+    Arc::ptr_eq(snapshot_text, staged_text) || snapshot_text.as_bytes() == staged_text.as_bytes()
+}
+
 pub(crate) fn parse_source_snapshot_module_with_stage(
     snapshot: &SourceSnapshot,
     module: &ModuleId,
@@ -1450,7 +1460,9 @@ pub(crate) fn parse_source_snapshot_module_with_stage(
     match file_id {
         Ok(file_id) => {
             if let Some(staged) = staged
-                && snapshot.source_id(file_id) == Some(&staged.source)
+                && snapshot
+                    .shared_source_text(file_id)
+                    .is_some_and(|text| exact_same_source(&text, &staged.source_text))
             {
                 return build_module_from_staged(snapshot, file_id, staged);
             }
@@ -1470,12 +1482,19 @@ pub(crate) fn parse_source_snapshot_module_with_stage(
 /// module, so no placeholder span survives into a published artifact.
 ///
 /// Exact content identity guards consumption: a staged entry is used only when
-/// its [`SourceId`] equals the snapshot's, so a source rewritten between the
+/// its source bytes equal the snapshot's, so a source rewritten between the
 /// wave and a later revision can never smuggle a stale syntax tree in.
 #[derive(Debug)]
 pub(crate) struct StagedModuleParse {
     module: ModuleId,
-    source: SourceId,
+    /// The exact shared text the wave lexed and parsed.
+    ///
+    /// This is the guard's left-hand side. It is the shared buffer rather than
+    /// a [`SourceId`] because a `SourceId` would have to digest the source a
+    /// second time — once here and once when the snapshot admits the same
+    /// buffer — and `SourceId` equality reduces to exact bytes anyway: its
+    /// version is single-valued and its digest is a function of the bytes.
+    source_text: Arc<String>,
     ast: Arc<Ast>,
     interner: ThreadedRodeo,
     tokens: Arc<[rue_lexer::Token]>,
@@ -1522,7 +1541,7 @@ pub(crate) fn parse_unpublished_module(
         projections.imports.valid,
         StagedModuleParse {
             module: module.clone(),
-            source: SourceId::from_shared_text(source.clone()),
+            source_text: source.clone(),
             ast,
             interner: outcome.interner,
             tokens: outcome.tokens,
