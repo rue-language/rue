@@ -238,11 +238,15 @@ test "parse_port rejects out-of-range values" {
   so test-only helpers do not warn in executable builds. Cost stated
   honestly: test items in the closure cost executable requests parse plus
   that syntactic scan — nothing more.
-- **Preview gate**: `test_declarations`. Declaring a test without the
-  preview enabled is the standard preview-gate diagnostic. `rue test`
-  enables the gate implicitly while the feature is in preview — itself a
-  maintainer call (Open Questions), since it would be the first
-  auto-enabled preview feature.
+- **Preview gate**: `test_declarations`, required explicitly like every
+  other preview feature — `rue test` does **not** enable it implicitly.
+  The gate covers a parser change, so any request whose closure contains
+  test items — executable builds included, which parse test items for the
+  warnings scan — needs the flag to compile at all. Auto-enabling it in
+  test mode alone would leave those same files failing ordinary builds
+  while making `rue test` the first flag to bypass ADR-0005's explicit
+  opt-in, for no net convenience. Declaring a test without the preview
+  enabled is the standard preview-gate diagnostic.
 
 ### 2. `rue test` is a driver mode emitting a versioned event stream
 
@@ -719,61 +723,64 @@ after error conversion lands.
 
 ## Open Questions
 
-### Maintainer calls needed (decisions this ADR takes a position on)
+### Needs a ruling before acceptance
 
-- **Test declaration surface**: `test "name" { }` blocks (recommended,
-  contextual keyword) vs `@test`-directive on ordinary functions vs
-  `test fn name()`. Blocks match the language's Zig-adjacent shape and make
-  the name a human sentence; a directive avoids any keyword question. Call
-  needed before Phase 1.
-- **File discovery mechanism** (§1): import-closure-only with the orphan
-  warning (as drafted) vs a closure-anchored naming convention — the
-  compiler probes exactly the directories the closure occupies (a bounded,
-  policy-scoped host demand, the same input shape as candidate
-  acquisition, not a recursive walk) for a conventional test-file name and
-  auto-roots matches in test mode. The convention removes the
-  import-wiring papercut for sibling tests and makes orphan detection
-  self-contained (near-miss names warn from the same listing, with no
-  build-system inventory needed); its costs are a spec-pinned filename
-  pattern, directory contents becoming request inputs, and — until
-  per-test `compile_error` verdicts land (§6) — a broken conventional file
-  failing the whole run. Cross-directory public-API test modules need
-  wiring or the package model under either answer. Call needed before
-  Phase 2 freezes the discovery machinery.
-- **Structured failure channel mechanism** (§5.1): dedicated inherited
-  pipe via a runtime helper (recommended; an ABI change under ADR-0055
-  rules) vs a framed region of stderr (no ABI change, but forgeable by
-  user bytes). Shapes the runtime surface and event schema; call needed
-  during Phase 2 design.
-- **Exit-code and `@assert` stabilization**: promote `@assert`/`@panic`
-  from the reserved intrinsic bucket (4.13:5b) to normative, and decide
-  whether assertion failure keeps exit 101 (recommended; distinguished by
-  pinned message) or gets a distinct code.
-- **The `scripts/rue test` homonym**: rename the wrapper subcommand (e.g.
-  `scripts/rue suite`) or accept the distinction and fix docs.
-- **Exit-code contract** (§2): the 0/1/2/3 proposal, in particular
-  empty-selection-as-error. How a future per-test `compile_error` verdict
-  maps onto exit codes is deferred with that verdict (§6, RUE-1622), but
-  agents will branch on these codes, so they need sign-off before Phase 2
-  ships.
+Three decisions shape the language surface and the discovery machinery;
+everything below this group can be decided within its phase.
+
+- **Test declaration surface** (before Phase 1): `test "name" { }` blocks
+  (recommended, contextual keyword) vs `@test`-directive on ordinary
+  functions vs `test fn name()`. Blocks match the language's Zig-adjacent
+  shape and make the name a human sentence; a directive avoids any keyword
+  question.
+- **File discovery mechanism** (§1, before Phase 2 freezes the discovery
+  machinery): import-closure-only with the orphan warning (as drafted) vs
+  a closure-anchored naming convention — the compiler probes exactly the
+  directories the closure occupies (a bounded, policy-scoped host demand,
+  the same input shape as candidate acquisition, not a recursive walk) for
+  a conventional test-file name and auto-roots matches in test mode. The
+  convention removes the import-wiring papercut for sibling tests and
+  makes orphan detection self-contained (near-miss names warn from the
+  same listing, with no build-system inventory needed); its costs are a
+  spec-pinned filename pattern, directory contents becoming request
+  inputs, and — until per-test `compile_error` verdicts land (§6) — a
+  broken conventional file failing the whole run. Cross-directory
+  public-API test modules need wiring or the package model under either
+  answer.
 - **Does `--filter` narrow the root set or only the run set?** (§2). As
   written, filtering selects which tests *run* while the request still
   roots every test in the closure — so a broken, unselected test still
   fails the compilation, and a filtered run's verdicts are identical to
   the same tests in a full run (which future selection soundness wants).
   The opposite reading is what most users will assume from every other
-  runner. Decide together with the per-test `compile_error` question.
+  runner. Interacts with the deferred per-test `compile_error` verdict
+  (§6), which recovers most of the root-narrowing ergonomics without
+  giving up verdict stability.
+
+### Lower-impact decisions (decidable within their phase)
+
+- **Structured failure channel mechanism** (§5.1): dedicated inherited
+  pipe via a runtime helper (recommended; an ABI change under ADR-0055
+  rules) vs a framed region of stderr (no ABI change, but forgeable by
+  user bytes). Shapes the runtime surface and event schema; decide during
+  Phase 2 design.
+- **Exit-code and `@assert` stabilization**: promote `@assert`/`@panic`
+  from the reserved intrinsic bucket (4.13:5b) to normative, and decide
+  whether assertion failure keeps exit 101 (recommended; distinguished by
+  pinned message) or gets a distinct code.
+- **Exit-code contract** (§2): the 0/1/2/3 proposal, in particular
+  empty-selection-as-error. How a future per-test `compile_error` verdict
+  maps onto exit codes is deferred with that verdict (§6, RUE-1622), but
+  agents will branch on these codes, so they need sign-off before Phase 2
+  ships.
 - **The `skipped` verdict has no producing mechanism**: `@skip` is
   deferred with directive-grammar work, and filtering removes tests from
   the selection rather than reporting them. Name a v1 producer (platform
   scoping is the natural candidate) or reserve `skipped` out of the v1
   taxonomy — an unproducible verdict in a published enum is a consumer
   trap.
-- **`rue test` implicitly enabling the preview gate** (§1): would be the
-  first auto-enabled preview feature against ADR-0005's explicit-opt-in
-  model. Alternatives: require the flag like every other preview feature,
-  or scope auto-enable to test requests and record a named exception in
-  ADR-0005.
+- **The `scripts/rue test` homonym**: rename the wrapper subcommand (e.g.
+  `scripts/rue suite`) or accept the distinction and fix docs.
 - **Naming**: `test_declarations` preview flag; `--test-candidates`; a new
   `test-events.md` under `docs/process/` as the schema doc home.
 
