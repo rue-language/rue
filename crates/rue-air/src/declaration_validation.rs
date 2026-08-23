@@ -48,8 +48,8 @@ pub fn const_cross_kind_collision(
     is_value_const: bool,
     has_non_const_declaration: bool,
 ) -> Option<ErrorKind> {
-    (is_value_const && has_non_const_declaration).then(|| ErrorKind::DuplicateFunctionDefinition {
-        function_name: name.to_owned(),
+    (is_value_const && has_non_const_declaration).then(|| ErrorKind::DuplicateMixedKindDefinition {
+        name: name.to_owned(),
     })
 }
 

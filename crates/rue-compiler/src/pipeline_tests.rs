@@ -1198,7 +1198,7 @@ mod tests {
         ));
         assert!(matches!(
             errors.as_slice()[1].kind,
-            ErrorKind::DuplicateFunctionDefinition { ref function_name } if function_name == "clash"
+            ErrorKind::DuplicateMixedKindDefinition { ref name } if name == "clash"
         ));
     }
 

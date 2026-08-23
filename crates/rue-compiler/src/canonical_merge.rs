@@ -205,13 +205,13 @@ fn duplicate_errors<'a>(
                         functions.insert(name, definition());
                     }
                     if let Some(first) = type_names.get(name) {
-                        errors.push(function_conflict(candidate.declaration_span, name, first));
+                        errors.push(mixed_kind_conflict(candidate.declaration_span, name, first));
                     }
                     function_names.entry(name).or_insert_with(definition);
                 }
                 DefinitionKind::Struct => {
                     if let Some(first) = function_names.get(name) {
-                        errors.push(function_conflict(candidate.declaration_span, name, first));
+                        errors.push(mixed_kind_conflict(candidate.declaration_span, name, first));
                     } else if let Some(first) = structs.get(name) {
                         errors.push(type_conflict(
                             candidate.declaration_span,
@@ -233,7 +233,7 @@ fn duplicate_errors<'a>(
                 }
                 DefinitionKind::Enum => {
                     if let Some(first) = function_names.get(name) {
-                        errors.push(function_conflict(candidate.declaration_span, name, first));
+                        errors.push(mixed_kind_conflict(candidate.declaration_span, name, first));
                     } else if let Some(first) = enums.get(name) {
                         errors.push(type_conflict(
                             candidate.declaration_span,
@@ -264,6 +264,19 @@ fn function_conflict(span: Span, name: &str, first: &CandidateDef) -> CompileErr
     CompileError::new(
         ErrorKind::DuplicateFunctionDefinition {
             function_name: name.to_owned(),
+        },
+        span,
+    )
+    .with_label(
+        format!("first defined in {}", first.physical_path),
+        first.span,
+    )
+}
+
+fn mixed_kind_conflict(span: Span, name: &str, first: &CandidateDef) -> CompileError {
+    CompileError::new(
+        ErrorKind::DuplicateMixedKindDefinition {
+            name: name.to_owned(),
         },
         span,
     )
@@ -343,7 +356,7 @@ mod tests {
         ));
         assert!(matches!(
             &errors[1].kind,
-            ErrorKind::DuplicateFunctionDefinition { function_name } if function_name == "clash"
+            ErrorKind::DuplicateMixedKindDefinition { name } if name == "clash"
         ));
         assert!(matches!(
             &errors[2].kind,

@@ -19295,8 +19295,8 @@ impl RevisionedQueryDatabase {
                             type_names.get(&name).map(|first| {
                                 (
                                     first,
-                                    rue_error::ErrorKind::DuplicateFunctionDefinition {
-                                        function_name: name.to_string(),
+                                    rue_error::ErrorKind::DuplicateMixedKindDefinition {
+                                        name: name.to_string(),
                                     },
                                 )
                             })
@@ -19306,8 +19306,8 @@ impl RevisionedQueryDatabase {
                         if let Some(first) = function_names.get(&name) {
                             Some((
                                 first,
-                                rue_error::ErrorKind::DuplicateFunctionDefinition {
-                                    function_name: name.to_string(),
+                                rue_error::ErrorKind::DuplicateMixedKindDefinition {
+                                    name: name.to_string(),
                                 },
                             ))
                         } else if let Some(first) = structs.get(&name) {
@@ -19332,8 +19332,8 @@ impl RevisionedQueryDatabase {
                         if let Some(first) = function_names.get(&name) {
                             Some((
                                 first,
-                                rue_error::ErrorKind::DuplicateFunctionDefinition {
-                                    function_name: name.to_string(),
+                                rue_error::ErrorKind::DuplicateMixedKindDefinition {
+                                    name: name.to_string(),
                                 },
                             ))
                         } else if let Some(first) = enums.get(&name) {
@@ -28485,7 +28485,7 @@ fn main() -> i32 {
                     matches!(
                         value,
                         Value::Failure(Failure::Diagnostic(
-                            rue_error::ErrorKind::DuplicateFunctionDefinition { .. }
+                            rue_error::ErrorKind::DuplicateMixedKindDefinition { .. }
                         ))
                     )
                 },

@@ -2123,7 +2123,7 @@ fn main() -> i32 {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0436", "Thing"]
+error_contains = ["E0436", "Thing", "different kind"]
 
 # fn + struct with one name in DIFFERENT files: module-scoped, legal
 # (RUE-572); the call resolves to main.rue's own fn. RUE-767 modernized this
@@ -2172,7 +2172,7 @@ fn main() -> i32 {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0436", "Color"]
+error_contains = ["E0436", "Color", "different kind"]
 
 # Regression: fn + fn duplicate still E0436 (the check that already existed).
 [[case]]
