@@ -15,6 +15,7 @@ use super::DurableSignatureParameter;
 use super::provider_fixture::{
     FixtureKey, FixtureModule, FixtureType, ProviderFixture, error_source_slice, value_param,
 };
+use crate::SemanticImportNominalKind;
 use crate::inst::{AirInstData, AirRef};
 use crate::types::Type;
 use crate::{SemanticImportConstValue, SemanticImportType, SemanticParameterMode};
@@ -798,6 +799,55 @@ fn provider_body_resolves_struct_field_types_into_the_pool() {
             "the body's type pool must intern {expected}"
         );
     }
+}
+
+#[test]
+fn provider_body_struct_field_mismatch_points_at_the_value() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_struct(
+        "Record",
+        vec![
+            ("count", SemanticImportType::I32),
+            (
+                "text",
+                SemanticImportType::BuiltinNominal {
+                    name: Arc::from("str"),
+                    kind: SemanticImportNominalKind::Struct,
+                },
+            ),
+        ],
+        false,
+    );
+    fixture.declare_function(
+        "id",
+        vec![value_param("n", SemanticImportType::I32)],
+        SemanticImportType::I32,
+    );
+    fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    let source = "fn main() -> i32 {\n\
+        let x: i32 = 1;\n\
+        let r = Record { count: 0, text: id(x) };\n\
+        0\n\
+    }";
+    let error = fixture
+        .analyze(source, "main")
+        .map(|_| ())
+        .expect_err("the str field rejects an i32 expression");
+
+    assert!(
+        matches!(&error.kind, ErrorKind::TypeMismatch { expected, found }
+            if expected == "str" && found == "i32"),
+        "the diagnostic wording must preserve its expected/found direction: {error:?}"
+    );
+    assert_eq!(error_source_slice(source, &error), "id(x)");
+    let [label] = error.diagnostic().labels.as_slice() else {
+        panic!("the mismatch must carry exactly one field label: {error:?}");
+    };
+    assert_eq!(label.message, "field 'text' expects type str");
+    assert_eq!(
+        &source[label.span.start as usize..label.span.end as usize],
+        "id(x)"
+    );
 }
 
 // Migrated from `tests::test_copy_struct_with_copy_fields`: a `@copy` struct

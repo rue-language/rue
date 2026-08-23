@@ -195,9 +195,9 @@ compile_stderr_not_contains = ["main.rue:"]
 name = "field_assign_span_in_second_file"
 description = """
 RUE-175: field-assignment shape. The E0206 for assigning a bool to an i64
-field in the imported (non-root) lib.rue must be attributed to lib.rue:4:5,
-never to the root file. (RUE-920 modernized this case from legacy positional
-inputs to @import.)
+field in the imported (non-root) lib.rue must be attributed to the RHS at
+lib.rue:4:11, never to the root file. (RUE-920 modernized this case from legacy
+positional inputs to @import; RUE-1640 narrowed it to the value expression.)
 """
 files = [
     { path = "main.rue", source = """
@@ -218,7 +218,7 @@ pub fn check() -> i32 {
 ]
 args = ["main.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0206", "lib.rue:4:5"]
+error_contains = ["E0206", "lib.rue:4:11"]
 compile_stderr_not_contains = ["main.rue:"]
 
 [[case]]

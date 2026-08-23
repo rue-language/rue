@@ -2688,7 +2688,7 @@ impl<'a> ConstraintGenerator<'a> {
                                 self.add_constraint(Constraint::equal(
                                     value_info.ty,
                                     expected,
-                                    span,
+                                    value_info.span,
                                 ));
                             }
                         }
@@ -2826,7 +2826,11 @@ impl<'a> ConstraintGenerator<'a> {
                 if let Some(field_ty) = self.known_field_type(&base_info.ty, *field) {
                     let expected = self.type_to_infer(field_ty);
                     if value_info.continues {
-                        self.add_constraint(Constraint::equal(value_info.ty, expected, span));
+                        self.add_constraint(Constraint::equal(
+                            value_info.ty,
+                            expected,
+                            value_info.span,
+                        ));
                     }
                 }
                 InferType::Concrete(Type::UNIT)

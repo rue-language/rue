@@ -59,3 +59,34 @@ compile_fail = true
 # 3:14), not the whole `for` statement: the desugared @__rue_iter_len intrinsic
 # carries the iterable's span (rue-rir component review, 2026-07-04).
 error_contains = ["3:14", "expected an array or a StrBuf, found i32"]
+
+# Struct field mismatches use the value expression's span, including when the
+# value is a nested expression and the mismatching field is not first. This
+# keeps the primary diagnostic useful instead of pointing at the whole literal
+# (RUE-1640).
+[[case]]
+name = "struct_field_type_mismatch_points_at_value_expression"
+source = """
+struct Pair { left: i32, right: bool }
+fn id(n: i32) -> i32 { n }
+
+fn main() -> i32 {
+    let x: i32 = 1;
+    Pair { left: 1, right: id(x) }
+}
+"""
+compile_fail = true
+error_contains = ["6:28", "expected bool, found i32"]
+
+[[case]]
+name = "struct_field_sema_mismatch_label_points_at_value"
+source = """
+struct Record { text: str }
+fn main() -> i32 {
+    let x: i32 = 1;
+    let r = Record { text: x };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["4:28", "field 'text' expects type str", "expected str, found i32"]

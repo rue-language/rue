@@ -53,6 +53,50 @@ compile_stderr_not_contains = [
 ]
 
 [[case]]
+name = "struct_field_mismatch_uses_value_span"
+description = "RUE-1640: a struct field assignment mismatch points at the RHS expression, including its JSON primary span."
+files = [{ path = "main.rue", source = """
+struct Pair { flag: bool }
+fn give() -> i32 { 1 }
+fn main() -> i32 {
+    let mut p = Pair { flag: true };
+    p.flag = give();
+    0
+}
+""" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0206 main.rue:5:14"]
+error_contains = [
+  '"code":"E0206"',
+  '"message":"type mismatch: expected bool, found i32"',
+  '"start":119',
+  '"end":125',
+  '"primary":true',
+]
+
+[[case]]
+name = "struct_literal_label_uses_value_span"
+description = "RUE-1640: the semantic struct-field mismatch keeps both the primary and explanatory label on the field value."
+files = [{ path = "main.rue", source = """
+struct Record { text: str }
+fn main() -> i32 {
+    let x: i32 = 1;
+    let r = Record { text: x };
+    0
+}
+""" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0206 main.rue:4:28"]
+error_contains = [
+  '"message":"type mismatch: expected str, found i32"',
+  '''"spans":[{"column":28,"end":95,"file":"main.rue","label":null,"line":4,"primary":true,"start":94},{"column":28,"end":95,"file":"main.rue","label":"field 'text' expects type str","line":4,"primary":false,"start":94}]''',
+]
+
+[[case]]
 name = "successful_compile_warning_is_json"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
