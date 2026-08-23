@@ -646,7 +646,37 @@ fn _normalize_macos(e: i64) -> FileError {
 // Reads bytes through the public `StrBuf.byte_at` accessor (RUE-712 uses the
 // PR #1714 `byte_at`), so `fs` never touches `StrBuf`'s private buffer.
 // The caller frees the returned buffer with `len + 1`.
+//
+// A `StrBuf` carries its own length and so may hold a NUL byte, but the C
+// convention this copy adopts cannot express one: the kernel stops at the first
+// NUL. Marshalling `"a\0b"` would hand it `"a"`, so an operation aimed at one
+// path would silently hit a different one (RUE-1711). Every entry point
+// therefore rejects a NUL-bearing path with `FileError.InvalidInput` before
+// marshalling it — the same contract Rust's `CString`-based fs states — which
+// is why `_path_to_cbuf` itself may assume the bytes are representable.
 // ---------------------------------------------------------------------------
+
+// True when `path` holds a NUL byte anywhere, making it unrepresentable as a C
+// string. A trailing NUL counts: `_path_to_cbuf` appends its own terminator, so
+// `"a\0"` and `"a"` marshal identically while naming different `StrBuf`s.
+// Checked BEFORE marshalling so a rejected path costs neither the allocation
+// nor the syscall.
+fn _path_has_nul(borrow path: strbuf.StrBuf) -> bool {
+    let O = option.Option(u8);
+    let n = path.len();
+    let mut i: u64 = 0;
+    while i < n {
+        let b = match path.byte_at(i) {
+            O.Some(x) => x,
+            O.None => 0,
+        };
+        if b == 0 {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
 
 fn _path_to_cbuf(borrow path: strbuf.StrBuf) -> ptr mut u8 {
     let n = path.len();
@@ -681,6 +711,9 @@ pub struct File {
     // Shared openat path used by the three constructors.
     fn _open_with(borrow path: strbuf.StrBuf, flags: u64, mode: u64) -> result.Result(File, FileError) {
         let R = result.Result(File, FileError);
+        if _path_has_nul(borrow path) {
+            return R.Err(FileError.InvalidInput);
+        }
         let cbuf = _path_to_cbuf(borrow path);
         let addr: u64 = checked { @ptr_to_int(cbuf) };
         let free_len = path.len() + 1;
@@ -929,6 +962,9 @@ drop fn File(self) {
 // `d_type` would have reported.
 fn _metadata_at(borrow path: strbuf.StrBuf, flags: u64) -> result.Result(Metadata, FileError) {
     let R = result.Result(Metadata, FileError);
+    if _path_has_nul(borrow path) {
+        return R.Err(FileError.InvalidInput);
+    }
     let cbuf = _path_to_cbuf(borrow path);
     let paddr: u64 = checked { @ptr_to_int(cbuf) };
     let free_len = path.len() + 1;
@@ -961,6 +997,9 @@ pub fn metadata(borrow path: strbuf.StrBuf) -> result.Result(Metadata, FileError
 // existing `to` is atomically replaced (POSIX rename semantics).
 pub fn rename(borrow from: strbuf.StrBuf, borrow to: strbuf.StrBuf) -> result.Result((), FileError) {
     let R = result.Result((), FileError);
+    if _path_has_nul(borrow from) || _path_has_nul(borrow to) {
+        return R.Err(FileError.InvalidInput);
+    }
     let fbuf = _path_to_cbuf(borrow from);
     let faddr: u64 = checked { @ptr_to_int(fbuf) };
     let flen = from.len() + 1;
@@ -981,6 +1020,9 @@ pub fn rename(borrow from: strbuf.StrBuf, borrow to: strbuf.StrBuf) -> result.Re
 // directory path fails (EISDIR/EPERM -> the normalized error); use `remove_dir`.
 pub fn remove(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
     let R = result.Result((), FileError);
+    if _path_has_nul(borrow path) {
+        return R.Err(FileError.InvalidInput);
+    }
     let cbuf = _path_to_cbuf(borrow path);
     let addr: u64 = checked { @ptr_to_int(cbuf) };
     let free_len = path.len() + 1;
@@ -999,12 +1041,24 @@ pub fn remove(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
 // there is one marshalling path; only their errno HANDLING differs (the
 // recursive form has to inspect EEXIST before deciding it is an error).
 fn _mkdirat_raw(borrow path: strbuf.StrBuf) -> i64 {
+    if _path_has_nul(borrow path) {
+        return 0 - _errno_einval();
+    }
     let cbuf = _path_to_cbuf(borrow path);
     let addr: u64 = checked { @ptr_to_int(cbuf) };
     let free_len = path.len() + 1;
     let ret: i64 = checked { @syscall(_sys_mkdirat(), _at_fdcwd(), addr, _dir_mode()) };
     checked { @free(cbuf, free_len, 1); };
     ret
+}
+
+// EINVAL as a raw errno, for the one rejection `_mkdirat_raw` makes itself
+// rather than reading back from the kernel. 22 on Linux and macOS alike, and
+// both tables map it to `FileError.InvalidInput`, so a NUL-bearing path reaches
+// `create_dir`/`create_dir_all` as the same error the other entry points return
+// directly.
+fn _errno_einval() -> i64 {
+    22
 }
 
 // EEXIST as a raw errno. Unlike EAGAIN this one AGREES across Linux and macOS
@@ -1082,6 +1136,13 @@ fn _create_dir_idempotent(borrow path: strbuf.StrBuf) -> result.Result((), FileE
 // in place, matching `mkdir -p` and Rust's `fs::create_dir_all`.
 pub fn create_dir_all(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
     let R = result.Result((), FileError);
+    // Checked here as well as in `_mkdirat_raw`, and for the reason this
+    // function is not atomic: a NUL in a LATER component would otherwise be
+    // caught only after the earlier parents had already been created, leaving
+    // directories behind for a request that was never representable.
+    if _path_has_nul(borrow path) {
+        return R.Err(FileError.InvalidInput);
+    }
     let n = path.len();
     if n == 0 {
         return R.Err(FileError.NotFound);
@@ -1133,6 +1194,9 @@ pub fn create_dir_all(borrow path: strbuf.StrBuf) -> result.Result((), FileError
 // non-empty directory is `Err` (ENOTEMPTY -> `Other`, or the normalized case).
 pub fn remove_dir(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
     let R = result.Result((), FileError);
+    if _path_has_nul(borrow path) {
+        return R.Err(FileError.InvalidInput);
+    }
     let cbuf = _path_to_cbuf(borrow path);
     let addr: u64 = checked { @ptr_to_int(cbuf) };
     let free_len = path.len() + 1;

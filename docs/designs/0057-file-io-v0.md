@@ -109,6 +109,16 @@ touches `StrBuf`'s private buffer. There is **no `Path`/`PathBuf` abstraction in
 v0** — a byte string is the path. A typed path layer can arrive later without
 changing the syscall boundary.
 
+**A path containing a NUL byte is `Err(FileError.InvalidInput)`** (RUE-1711).
+Carrying its own length, a `StrBuf` can hold a NUL that the NUL-terminated copy
+cannot express: the kernel would read `"a\0b"` as `"a"` and operate on a path
+the caller never named — silently, and with `Ok`. Every path-taking entry point
+therefore rejects such a path before marshalling it, which is what Rust's
+`CString`-based `std::fs` does for the same reason. Rejecting up front rather
+than at the copy also keeps the rejection free of side effects: `create_dir_all`
+is deliberately non-atomic on failure, so a NUL in a later component would
+otherwise leave the earlier parents created.
+
 ### 3. Error model: a normalized `FileError`, never a raw errno
 
 Every fallible operation returns `Result(T, FileError)` (the ADR-0038 library
@@ -265,6 +275,9 @@ Implemented under RUE-712 on 2026-07-16:
   read-back round-trip, append semantics, drop-close + reopen, consuming-close +
   double-close safety (all run on every target); open-missing → `NotFound` and
   write-to-read-only → `InvalidInput` (gated `only_on` Linux per §3a).
+- NUL-bearing paths (RUE-1711, same file): the wrong-file removal itself, and
+  the rejection at every path-taking entry point including both `rename`
+  operands and `create_dir_all`'s no-parents-created guarantee.
 
 ## Consequences
 
