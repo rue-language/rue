@@ -13,6 +13,26 @@ name = "Foreign-Boundary Semantics"
 description = "Rules governing the target-C foreign boundary: foreign redeclaration agreement and the reserved entry-point symbol."
 
 # =============================================================================
+# ABI legality (9.3:1b)
+# =============================================================================
+
+[[case]]
+name = "foreign_unsupported_abi_is_rejected"
+spec = ["9.3:1b"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "A foreign declaration with an ABI string other than C is rejected"
+source = """
+extern "Rust" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["unsupported extern ABI", "\"C\""]
+
+# =============================================================================
 # Foreign redeclaration (9.3:5, RUE-1218)
 # =============================================================================
 
@@ -46,7 +66,7 @@ error_contains = [
 
 [[case]]
 name = "foreign_redeclaration_that_agrees_is_accepted"
-spec = ["9.3:5"]
+spec = ["9.3:1a", "9.3:5"]
 preview = "c_ffi"
 preview_should_pass = true
 description = "An identical redeclaration of one C symbol is legal, as in C; parameter names are not part of the signature"
@@ -119,7 +139,7 @@ error_contains = [
 
 [[case]]
 name = "c_export_named_main_rejected"
-spec = ["9.3:6"]
+spec = ["9.3:1a", "9.3:6"]
 preview = "c_ffi"
 preview_should_pass = true
 description = "The export direction of the same rule: a `pub extern \"C\" fn` named `main` is rejected (E1106)"
