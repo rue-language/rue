@@ -50,3 +50,26 @@ delete = true
 [[case.watch.edits]]
 path = "helper.rue"
 source = "pub fn answer() -> i32 { 2 }\n"
+
+[[case]]
+name = "retargeted_import_symlink_rebuilds_and_publishes_new_output"
+only_on = [
+    "x86-64-linux",
+    "aarch64-linux",
+    "x86-64-macos",
+    "aarch64-macos",
+]
+files = [
+    { path = "main.rue", source = "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n" },
+    { path = "target_a.rue", source = "pub fn answer() -> i32 { 1 }\n" },
+    { path = "target_b.rue", source = "pub fn answer() -> i32 { 2 }\n" },
+]
+symlinks = [{ link = "helper.rue", target = "target_a.rue" }]
+
+[case.watch]
+kind = "symlink_retarget"
+expected_exit_codes = [1, 2]
+
+[[case.watch.edits]]
+path = "helper.rue"
+symlink_target = "target_b.rue"

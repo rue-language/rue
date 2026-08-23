@@ -440,25 +440,24 @@ fn cached_source_for_module(
 
 fn accepted_source_from_read(
     entry: &rue_compiler::AcceptedReadManifestEntry,
+    canonical_path: &Path,
     read: StableRead,
-    cached_source: Arc<String>,
+    cached_source: Option<Arc<String>>,
 ) -> Result<AcceptedImportSource, SourceLoadError> {
     let observed = AcceptedImportSource::new(
         Arc::from(entry.requested_path()),
-        Arc::from(entry.canonical_path()),
+        Arc::from(canonical_path.to_string_lossy().into_owned()),
         read.identity,
         read.fingerprint,
         Arc::new(read.source),
     )
     .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
-    let source = if observed.content_fingerprint() == entry.content_fingerprint() {
-        cached_source
-    } else {
-        observed.source().clone()
-    };
+    let source = cached_source
+        .filter(|_| observed.content_fingerprint() == entry.content_fingerprint())
+        .unwrap_or_else(|| observed.source().clone());
     AcceptedImportSource::new(
         Arc::from(entry.requested_path()),
-        Arc::from(entry.canonical_path()),
+        Arc::from(canonical_path.to_string_lossy().into_owned()),
         read.identity,
         read.fingerprint,
         source,
@@ -481,37 +480,55 @@ fn reobserve_accepted_reads(
                     entry.module()
                 ))
             })?;
-        let path = Path::new(entry.canonical_path());
-        if source_manifest.is_some_and(|policy| {
-            !policy.declares_path_without_probe(Path::new(entry.requested_path()))
-                || !policy.allows_canonical(path)
-        }) {
+        let requested_path = Path::new(entry.requested_path());
+        if source_manifest.is_some_and(|policy| !policy.declares_path_without_probe(requested_path))
+        {
             continue;
         }
-        let metadata = match fs::metadata(path) {
+        // The requested spelling is the watchable authority. Re-resolve it on
+        // every retained observation so replacing an imported/root symlink
+        // cannot keep feeding the old canonical file into the next graph.
+        let canonical_path = match fs::canonicalize(requested_path) {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
+        if source_manifest.is_some_and(|policy| !policy.allows_canonical(&canonical_path)) {
+            continue;
+        }
+        if !canonical_path.is_file() {
+            continue;
+        }
+        let canonical_unchanged = canonical_path == Path::new(entry.canonical_path());
+        let metadata = match fs::metadata(&canonical_path) {
             Ok(metadata) => metadata,
             Err(_) => continue,
         };
-        let accepted = if metadata_requires_content_hash(
-            entry.metadata_identity(),
-            entry.metadata_fingerprint(),
-            &metadata,
-            now,
-        ) {
-            let read = match stable_read_to_string(path) {
-                Ok(read) => read,
-                Err(_) => continue,
-            };
-            accepted_source_from_read(entry, read, cached_source)?
-        } else {
+        let accepted = if canonical_unchanged
+            && !metadata_requires_content_hash(
+                entry.metadata_identity(),
+                entry.metadata_fingerprint(),
+                &metadata,
+                now,
+            ) {
             AcceptedImportSource::new(
                 Arc::from(entry.requested_path()),
-                Arc::from(entry.canonical_path()),
+                Arc::from(canonical_path.to_string_lossy().into_owned()),
                 entry.metadata_identity(),
                 entry.metadata_fingerprint(),
                 cached_source,
             )
             .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?
+        } else {
+            let read = match stable_read_to_string(&canonical_path) {
+                Ok(read) => read,
+                Err(_) => continue,
+            };
+            accepted_source_from_read(
+                entry,
+                &canonical_path,
+                read,
+                canonical_unchanged.then_some(cached_source.clone()),
+            )?
         };
         observed.insert(entry.requested_path().to_owned(), accepted);
     }
@@ -3009,6 +3026,197 @@ mod tests {
             }
             Err(other) => panic!("policy change escaped typed diagnostics: {other:?}"),
             Ok(()) => panic!("policy change reused a now-denied read"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_import_symlink_retarget_adopts_new_canonical_source() {
+        let dir = TestDir::new("retained-import-symlink");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("alias.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let first = dir.write("first.rue", "pub fn value() -> i32 { 1 }");
+        let second = dir.write("second.rue", "pub fn value() -> i32 { 2 }");
+        let alias = dir.path.join("alias.rue");
+        std::os::unix::fs::symlink(&first, &alias).unwrap();
+
+        let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        let first_canonical = fs::canonicalize(&first).unwrap();
+        assert!(result.read_manifest.iter().any(|entry| {
+            entry.requested_path() == alias.to_string_lossy()
+                && entry.canonical_path() == first_canonical.to_string_lossy()
+        }));
+
+        fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&second, &alias).unwrap();
+        reload_from_filesystem(&mut result).unwrap();
+
+        let second_canonical = fs::canonicalize(&second).unwrap();
+        let leaf = result
+            .source_snapshot
+            .files()
+            .find(|source| source.source.contains("value() -> i32 { 2 }"))
+            .expect("the retargeted module bytes are published");
+        assert_eq!(
+            result
+                .source_snapshot
+                .module_id(leaf.file_id)
+                .expect("retargeted module keeps its logical identity")
+                .as_str(),
+            "alias.rue"
+        );
+        assert!(result.read_manifest.iter().any(|entry| {
+            entry.requested_path() == alias.to_string_lossy()
+                && entry.canonical_path() == second_canonical.to_string_lossy()
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_unchanged_import_symlink_preserves_source_identity() {
+        let dir = TestDir::new("retained-unchanged-import-symlink");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("alias.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let target = dir.write("target.rue", "pub fn value() -> i32 { 1 }");
+        let alias = dir.path.join("alias.rue");
+        std::os::unix::fs::symlink(&target, &alias).unwrap();
+
+        let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        let source_id = module_source_id(&result, "alias.rue");
+        let canonical = fs::canonicalize(&target).unwrap();
+
+        reload_from_filesystem(&mut result).unwrap();
+
+        assert_eq!(module_source_id(&result, "alias.rue"), source_id);
+        assert!(
+            result
+                .source_snapshot
+                .files()
+                .any(|source| { source.source.contains("pub fn value() -> i32 { 1 }") })
+        );
+        assert!(result.read_manifest.iter().any(|entry| {
+            entry.requested_path() == alias.to_string_lossy()
+                && entry.canonical_path() == canonical.to_string_lossy()
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_root_symlink_retarget_adopts_new_canonical_source() {
+        let dir = TestDir::new("retained-root-symlink");
+        let first = dir.write("first.rue", "fn main() -> i32 { 1 }");
+        let second = dir.write("second.rue", "fn main() -> i32 { 2 }");
+        let alias = dir.path.join("main.rue");
+        std::os::unix::fs::symlink(&first, &alias).unwrap();
+
+        let mut result = discover_and_load_imports(alias.to_str().unwrap(), None, None).unwrap();
+        fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&second, &alias).unwrap();
+        reload_from_filesystem(&mut result).unwrap();
+
+        let second_canonical = fs::canonicalize(&second).unwrap();
+        assert!(
+            result
+                .source_snapshot
+                .files()
+                .any(|source| { source.source.contains("fn main() -> i32 { 2 }") })
+        );
+        assert!(result.read_manifest.iter().any(|entry| {
+            entry.requested_path() == alias.to_string_lossy()
+                && entry.canonical_path() == second_canonical.to_string_lossy()
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_broken_import_symlink_fails_closed_then_recovers() {
+        let dir = TestDir::new("retained-broken-symlink");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("alias.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let target = dir.write("target.rue", "pub fn value() -> i32 { 1 }");
+        let replacement = dir.write("replacement.rue", "pub fn value() -> i32 { 2 }");
+        let alias = dir.path.join("alias.rue");
+        std::os::unix::fs::symlink(&target, &alias).unwrap();
+        let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+
+        // Leave the requested alias in place but make its target disappear:
+        // retained observation must not silently reuse the old canonical read.
+        fs::remove_file(&target).unwrap();
+        reload_from_filesystem(&mut result).unwrap();
+        assert_eq!(
+            result.revision.status(),
+            ImportDiscoveryStatus::ClosedAttempted
+        );
+        assert!(
+            result
+                .revision
+                .diagnostics()
+                .to_string()
+                .contains("alias.rue")
+        );
+
+        fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&replacement, &alias).unwrap();
+        reload_from_filesystem(&mut result).unwrap();
+        assert!(
+            result
+                .source_snapshot
+                .files()
+                .any(|source| { source.source.contains("value() -> i32 { 2 }") })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_import_symlink_retarget_respects_manifest_revocation() {
+        let dir = TestDir::new("retained-manifest-symlink-revocation");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("alias.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let first = dir.write("first.rue", "pub fn value() -> i32 { 1 }");
+        let second = dir.write("second.rue", "pub fn value() -> i32 { 2 }");
+        let alias = dir.path.join("alias.rue");
+        std::os::unix::fs::symlink(&first, &alias).unwrap();
+        let manifest_path = dir.write(
+            "sources.manifest",
+            "main.rue\nalias.rue\nfirst.rue\nsecond.rue\n",
+        );
+        let manifest = SourceManifest::load(manifest_path.to_str().unwrap()).unwrap();
+        let mut result =
+            discover_and_load_imports(main.to_str().unwrap(), Some(manifest), None).unwrap();
+
+        // The alias remains the requested spelling, but the next manifest
+        // revision no longer grants that spelling. This must take the normal
+        // typed lexical-denial path instead of reusing the accepted first read.
+        fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&second, &alias).unwrap();
+        fs::write(&manifest_path, "main.rue\nfirst.rue\nsecond.rue\n").unwrap();
+
+        match reload_from_filesystem(&mut result) {
+            Err(SourceLoadError::Compiler {
+                snapshot: Some(snapshot),
+                errors,
+            }) => {
+                let diagnostics = errors.to_string();
+                assert!(diagnostics.contains("source manifest"), "{diagnostics}");
+                assert!(diagnostics.contains("alias.rue"), "{diagnostics}");
+                assert!(
+                    snapshot
+                        .source_revision()
+                        .modules()
+                        .iter()
+                        .all(|module| module.module.as_str() != "alias.rue")
+                );
+            }
+            Err(other) => panic!("manifest revocation escaped typed diagnostics: {other:?}"),
+            Ok(()) => panic!("manifest revocation reused a now-denied read"),
         }
     }
 
