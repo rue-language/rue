@@ -753,36 +753,6 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
-    /// Like [`Self::resolve_infer_array_length`], but a comptime *value*
-    /// parameter captured at the call site (`values`, e.g. `N=3` for
-    /// `make_array(3)`) resolves a named length before the file-level
-    /// `const_values` table is consulted. Without this, a generic function
-    /// whose return/param type is `[i32; N]` sized by a comptime value param
-    /// couldn't resolve `N`, so the type fell back to the `COMPTIME_TYPE`
-    /// placeholder and the call was misinferred as returning `type`
-    /// (RUE-252).
-    #[cfg(test)]
-    fn resolve_infer_array_length_with_values(
-        &self,
-        len: &ArrayLen,
-        values: &AHashMap<Spur, i128>,
-        file_id: FileId,
-    ) -> Option<u64> {
-        match len {
-            ArrayLen::Literal(n) => Some(*n),
-            ArrayLen::Named(name) => {
-                let sym = self.interner.get(name)?;
-                // A comptime value parameter captured at the call site takes
-                // precedence over a file-level `const` of the same name (RUE-252).
-                let value = values
-                    .get(&sym)
-                    .copied()
-                    .or_else(|| self.scoped_const_value(sym, file_id))?;
-                u64::try_from(value).ok()
-            }
-        }
-    }
-
     /// Resolve a bare integer-const name in array-length position against the
     /// referencing file's scope. A bare name denotes the same-module `const`
     /// (`const_values` is keyed by declaring file); a constant in another
@@ -5380,50 +5350,6 @@ mod tests {
         assert_eq!(
             cgen.resolve_infer_array_length(&ArrayLen::Named("N".to_string()), file_b),
             Some(99)
-        );
-    }
-
-    /// A comptime value parameter captured at the call site takes precedence
-    /// over a file-level `const` of the same name (RUE-252). Preserving this
-    /// ordering is required by the maintainer ruling.
-    #[test]
-    fn array_length_comptime_value_param_precedes_file_const() {
-        let (rir, interner, type_pool) = cgen_fixture();
-        let functions = AHashMap::new();
-        let structs = AHashMap::new();
-        let enums = AHashMap::new();
-        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
-        let file_a = FileId::new(0);
-        let n = interner.get_or_intern("N");
-        let mut const_values: AHashMap<(FileId, Spur), i128> = AHashMap::new();
-        const_values.insert((file_a, n), 9);
-
-        let cgen = ConstraintGenerator::new(
-            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
-        )
-        .with_const_values(&const_values);
-
-        // With a comptime value binding N=5, the value parameter wins over the
-        // file-level const N=9.
-        let mut values: AHashMap<Spur, i128> = AHashMap::new();
-        values.insert(n, 5);
-        assert_eq!(
-            cgen.resolve_infer_array_length_with_values(
-                &ArrayLen::Named("N".to_string()),
-                &values,
-                file_a
-            ),
-            Some(5)
-        );
-        // With no value binding, the same-file const supplies the length.
-        let empty: AHashMap<Spur, i128> = AHashMap::new();
-        assert_eq!(
-            cgen.resolve_infer_array_length_with_values(
-                &ArrayLen::Named("N".to_string()),
-                &empty,
-                file_a
-            ),
-            Some(9)
         );
     }
 

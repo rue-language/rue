@@ -60,7 +60,10 @@ stdout = "42\n"
 
 [[case]]
 name = "comptime_param_function_arg"
+description = "A comptime value parameter takes precedence over a same-named file const in an array type length."
 files = [{ path = "main.rue", source = """
+const N: i32 = 9;
+
 fn first(comptime N: i32, arr: [i32; N]) -> i32 {
     arr[0]
 }
