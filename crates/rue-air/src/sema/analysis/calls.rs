@@ -1080,7 +1080,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             false,
             ctx,
         )?;
-        self.record_body_method_dependency(method_key);
+        self.record_body_method_dependency(method_key)?;
 
         // Clone data needed before mutable borrow
         let return_type = method_info.return_type;
@@ -1294,7 +1294,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // the type name spans files (RUE-571) — must match the definition
         // side, which builds its name through the same helper.
         let call_name = self.method_symbol(struct_id, &method_name_str, true);
-        let call_name_sym = self.body_interner().get_or_intern(&call_name);
+        let call_name_sym = self.intern_body_symbol(&call_name)?;
 
         let call = self.emit_call_result(
             air,
@@ -1608,7 +1608,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             true,
             ctx,
         )?;
-        self.record_body_method_dependency(method_key);
+        self.record_body_method_dependency(method_key)?;
 
         // Clone data needed before mutable borrow
         let return_type = method_info.return_type;
@@ -1638,7 +1638,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // file-qualified name when the type name spans files (RUE-571),
         // matching the definition side.
         let call_name = self.method_symbol(struct_id, &function_name_str, false);
-        let call_name_sym = self.body_interner().get_or_intern(&call_name);
+        let call_name_sym = self.intern_body_symbol(&call_name)?;
 
         let result = self.emit_call_result(
             air,

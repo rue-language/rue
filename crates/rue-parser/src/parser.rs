@@ -20,6 +20,7 @@ pub struct Parser {
     syms: PrimitiveTypeSpurs,
     file_id: FileId,
     errors: diagnostics::ParserDiagnostics,
+    interner_error: Option<lasso::LassoErrorKind>,
 }
 struct PrimitiveTypeSpurs {
     i8: Spur,
@@ -44,27 +45,64 @@ struct PrimitiveTypeSpurs {
 }
 
 impl PrimitiveTypeSpurs {
-    fn new(interner: &mut ThreadedRodeo) -> Self {
+    fn new(
+        interner: &mut ThreadedRodeo,
+        _max_entries: Option<usize>,
+    ) -> Result<Self, lasso::LassoErrorKind> {
+        let intern = |text: &str| {
+            #[cfg(test)]
+            if _max_entries
+                .is_some_and(|limit| interner.len() >= limit && interner.get(text).is_none())
+            {
+                return Err(lasso::LassoErrorKind::KeySpaceExhaustion);
+            }
+            rue_lexer::try_intern(interner, text)
+        };
+        Ok(Self {
+            i8: intern("i8")?,
+            i16: intern("i16")?,
+            i32: intern("i32")?,
+            i64: intern("i64")?,
+            u8: intern("u8")?,
+            u16: intern("u16")?,
+            u32: intern("u32")?,
+            u64: intern("u64")?,
+            bool: intern("bool")?,
+            self_type: intern("Self")?,
+            self_value: intern("self")?,
+            type_kw: intern("type")?,
+            as_kw: intern("as")?,
+            drop_kw: intern("drop")?,
+            drop_marker: intern("__drop")?,
+            allow_directive: intern("allow")?,
+            copy_directive: intern("copy")?,
+            repr_directive: intern("repr")?,
+            underscore: intern("_")?,
+        })
+    }
+
+    fn fallback() -> Self {
+        let symbol = Spur::default();
         Self {
-            i8: interner.get_or_intern("i8"),
-            i16: interner.get_or_intern("i16"),
-            i32: interner.get_or_intern("i32"),
-            i64: interner.get_or_intern("i64"),
-            u8: interner.get_or_intern("u8"),
-            u16: interner.get_or_intern("u16"),
-            u32: interner.get_or_intern("u32"),
-            u64: interner.get_or_intern("u64"),
-            bool: interner.get_or_intern("bool"),
-            self_type: interner.get_or_intern("Self"),
-            self_value: interner.get_or_intern("self"),
-            type_kw: interner.get_or_intern("type"),
-            as_kw: interner.get_or_intern("as"),
-            drop_kw: interner.get_or_intern("drop"),
-            drop_marker: interner.get_or_intern("__drop"),
-            allow_directive: interner.get_or_intern("allow"),
-            copy_directive: interner.get_or_intern("copy"),
-            repr_directive: interner.get_or_intern("repr"),
-            underscore: interner.get_or_intern("_"),
+            i8: symbol,
+            i16: symbol,
+            i32: symbol,
+            i64: symbol,
+            u8: symbol,
+            u16: symbol,
+            u32: symbol,
+            u64: symbol,
+            bool: symbol,
+            self_type: symbol,
+            self_value: symbol,
+            type_kw: symbol,
+            as_kw: symbol,
+            drop_kw: symbol,
+            drop_marker: symbol,
+            allow_directive: symbol,
+            copy_directive: symbol,
+            repr_directive: symbol,
+            underscore: symbol,
         }
     }
 }
@@ -73,9 +111,12 @@ impl Parser {
     /// Create a parser from lexer tokens and their shared symbol interner.
     pub fn new(tokens: Vec<Token>, mut interner: ThreadedRodeo) -> Self {
         let file_id = tokens.first().map(|t| t.span.file_id).unwrap_or_default();
-        let syms = {
+        let (syms, interner_error) = {
             let _span = info_span!("parser_state_setup").entered();
-            PrimitiveTypeSpurs::new(&mut interner)
+            match PrimitiveTypeSpurs::new(&mut interner, None) {
+                Ok(syms) => (syms, None),
+                Err(kind) => (PrimitiveTypeSpurs::fallback(), Some(kind)),
+            }
         };
         Self {
             tokens,
@@ -84,6 +125,30 @@ impl Parser {
             syms,
             file_id,
             errors: diagnostics::ParserDiagnostics::default(),
+            interner_error,
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_interner_limit_for_test(
+        tokens: Vec<Token>,
+        mut interner: ThreadedRodeo,
+        max_entries: usize,
+    ) -> Self {
+        let file_id = tokens.first().map(|t| t.span.file_id).unwrap_or_default();
+        let (syms, interner_error) = match PrimitiveTypeSpurs::new(&mut interner, Some(max_entries))
+        {
+            Ok(syms) => (syms, None),
+            Err(kind) => (PrimitiveTypeSpurs::fallback(), Some(kind)),
+        };
+        Self {
+            tokens,
+            cursor: 0,
+            interner,
+            syms,
+            file_id,
+            errors: diagnostics::ParserDiagnostics::default(),
+            interner_error,
         }
     }
 
@@ -97,6 +162,15 @@ impl Parser {
     pub fn parse_preserving_interner(
         mut self,
     ) -> Result<(Ast, ThreadedRodeo), (CompileErrors, ThreadedRodeo)> {
+        if let Some(kind) = self.interner_error {
+            return Err((
+                CompileErrors::from(CompileError::without_span(rue_lexer::interner_error_kind(
+                    kind,
+                    "the parser could not intern a required primitive spelling",
+                ))),
+                self.interner,
+            ));
+        }
         let input_token_count = self.tokens.len();
         let parser_token_count = self
             .tokens
@@ -204,6 +278,18 @@ mod tests {
     fn parse_source(source: &str) -> Result<(Ast, ThreadedRodeo), CompileErrors> {
         let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
         Parser::new(tokens, interner).parse()
+    }
+
+    #[test]
+    fn primitive_symbol_key_limit_is_reported_as_a_resource_limit() {
+        let interner = ThreadedRodeo::with_memory_limits(lasso::MemoryLimits::for_memory_usage(1));
+        let errors = Parser::new_with_interner_limit_for_test(Vec::new(), interner, 0)
+            .parse()
+            .unwrap_err();
+        assert!(matches!(
+            errors.first().map(|error| &error.kind),
+            Some(ErrorKind::CompilerResourceLimit(_))
+        ));
     }
 
     #[test]

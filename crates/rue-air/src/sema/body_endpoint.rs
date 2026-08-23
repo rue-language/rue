@@ -382,7 +382,7 @@ where
         owner: &str,
         method: &str,
         info: MethodInfo,
-    ) -> bool {
+    ) -> Result<bool, lasso::LassoErrorKind> {
         self.identity
             .register_anonymous_method(file, owner, method, info)
     }
@@ -487,13 +487,13 @@ where
         file: u32,
         name: &str,
         kind: StableDefinitionKind,
-    ) -> SemanticDefinitionToken {
-        let symbol = self.identity.pool().intern_name(name);
+    ) -> Option<SemanticDefinitionToken> {
+        let symbol = self.identity.pool().intern_name(name).ok()?;
         let mut overlay = self.overlay.borrow_mut();
         if let Some(token) = overlay.definition_tokens.get(&key) {
             let token = *token;
             overlay.by_file_name.insert((file, symbol), key);
-            return token;
+            return Some(token);
         }
         let slot = overlay.next_slot;
         overlay.next_slot += 1;
@@ -509,15 +509,20 @@ where
         );
         overlay.by_file_name.insert((file, symbol), key.clone());
         overlay.definition_tokens.insert(key, token);
-        token
+        Some(token)
     }
 
     /// Register one free-function endpoint in the body-local token and callable
     /// overlays. The exact durable key supplies signature truth while the local
     /// RIR supplies the declaration/body handles when the endpoint is
     /// consulted.
-    pub fn register_function(&self, key: K, file: FileId, name: &str) -> SemanticDefinitionToken {
-        let symbol = self.identity.pool().intern_name(name);
+    pub fn register_function(
+        &self,
+        key: K,
+        file: FileId,
+        name: &str,
+    ) -> Option<SemanticDefinitionToken> {
+        let symbol = self.identity.pool().intern_name(name).ok()?;
         let mut overlay = self.overlay.borrow_mut();
         if let Some(token) = overlay.definition_tokens.get(&key) {
             let token = *token;
@@ -525,7 +530,7 @@ where
                 .functions_by_file_name
                 .insert((file.index(), symbol), (symbol, key.clone()));
             overlay.function_keys.insert(symbol, key);
-            return token;
+            return Some(token);
         }
         let slot = overlay.next_slot;
         overlay.next_slot += 1;
@@ -544,7 +549,7 @@ where
             .insert((file.index(), symbol), (symbol, key.clone()));
         overlay.function_keys.insert(symbol, key.clone());
         overlay.definition_tokens.insert(key, token);
-        token
+        Some(token)
     }
 
     /// Mint an endpoint token for the exact body owner. Unlike
@@ -557,13 +562,13 @@ where
         name: &str,
         kind: StableDefinitionKind,
         owner: Option<&str>,
-    ) -> SemanticDefinitionToken {
+    ) -> Option<SemanticDefinitionToken> {
         if kind == StableDefinitionKind::Function && owner.is_none() {
             return self.register_function(key, file, name);
         }
         let mut overlay = self.overlay.borrow_mut();
         if let Some(token) = overlay.definition_tokens.get(&key) {
-            return *token;
+            return Some(*token);
         }
         let slot = overlay.next_slot;
         overlay.next_slot += 1;
@@ -578,7 +583,7 @@ where
             },
         );
         overlay.definition_tokens.insert(key, token);
-        token
+        Some(token)
     }
 
     /// Mint (or return) the body-local module token and compact module id for a
@@ -648,7 +653,7 @@ where
     where
         M: Clone,
     {
-        let symbol = self.identity.pool().intern_name(name);
+        let symbol = self.identity.pool().intern_name(name).ok()?;
         let id = self
             .identity
             .pool_mut()?
@@ -669,11 +674,12 @@ where
     /// name in the same generated-nominal overlay used by slice views.
     pub fn register_generated_fixed_string(&self, capacity: u64) -> Option<StructId> {
         let name = format!("Str({capacity})");
-        let symbol = self.identity.pool().intern_name(&name);
+        let symbol = self.identity.pool().intern_name(&name).ok()?;
         let id = self
             .identity
             .pool_mut()?
             .get_or_create_str_fixed(capacity)
+            .ok()?
             .as_struct()?;
         self.overlay
             .borrow_mut()
@@ -871,7 +877,7 @@ where
     M: Clone + Eq + Hash,
 {
     fn endpoint_name_symbol(&self, name: &str) -> Option<Spur> {
-        Some(self.identity.pool().intern_name(name))
+        self.identity.pool().intern_name(name).ok()
     }
 
     fn endpoint_definition_endpoint(

@@ -50,13 +50,13 @@ pub enum LexError {
         escape: char,
     },
     UnterminatedString,
-    /// The string interner ran out of keys. A `Spur` is a non-zero `u32`, so a
-    /// compilation can hold at most [`MAX_INTERNED_STRINGS`] distinct
-    /// identifiers and string literals (spec Appendix C.5:1). `lasso` would
+    /// The string interner failed. A `Spur` is a non-zero `u32`, so one symbol
+    /// domain can hold at most [`MAX_INTERNED_STRINGS`] distinct spellings
+    /// (spec Appendix C.5:1). `lasso` would
     /// abort on the next intern; spec C.1:2 requires a diagnostic naming the
     /// limit instead, so exhaustion is reported through the ordinary lexical
     /// error channel as `E1401`.
-    InternerExhausted,
+    InternerExhausted(lasso::LassoErrorKind),
     /// An uppercase base prefix (`0X`/`0B`/`0O`). Base prefixes are lowercase
     /// (`0x`/`0b`/`0o`, spec 2.1); rejecting the whole literal with a targeted
     /// error is friendlier than Rust's behavior of lexing `0XFF` as `0` plus
@@ -210,7 +210,7 @@ fn process_string_from_quote(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Resu
     let spur = lex
         .extras
         .try_get_or_intern(&result)
-        .map_err(|_| LexError::InternerExhausted)?;
+        .map_err(|error| LexError::InternerExhausted(error.kind()))?;
     Ok(spur)
 }
 
@@ -312,11 +312,11 @@ fn intern_float_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<Sp
         let digits: String = slice.chars().filter(|c| *c != '_').collect();
         lex.extras
             .try_get_or_intern(&digits)
-            .map_err(|_| LexError::InternerExhausted)
+            .map_err(|error| LexError::InternerExhausted(error.kind()))
     } else {
         lex.extras
             .try_get_or_intern(slice)
-            .map_err(|_| LexError::InternerExhausted)
+            .map_err(|error| LexError::InternerExhausted(error.kind()))
     }
 }
 
@@ -628,7 +628,7 @@ pub enum LogosTokenKind {
         |lex| lex
             .extras
             .try_get_or_intern(lex.slice())
-            .map_err(|_| LexError::InternerExhausted),
+            .map_err(|error| LexError::InternerExhausted(error.kind())),
         priority = 1
     )]
     Ident(Spur),
@@ -946,12 +946,19 @@ impl<'a> LogosLexer<'a> {
                                         span_offset(span.end),
                                     ),
                                 ),
-                                LexError::InternerExhausted => (
-                                    ErrorKind::CompilerResourceLimit(format!(
-                                        "this compilation exceeded the maximum of \
-                                         {MAX_INTERNED_STRINGS} distinct interned identifiers \
-                                         and string literals"
-                                    )),
+                                LexError::InternerExhausted(kind) => (
+                                    crate::interner_error_kind(
+                                        kind,
+                                        match kind {
+                                            lasso::LassoErrorKind::FailedAllocation => {
+                                                "lexer symbol-domain allocation failed while interning a spelling".to_owned()
+                                            }
+                                            _ => format!(
+                                                "this symbol domain exceeded its maximum of \
+                                             {MAX_INTERNED_STRINGS} distinct interned spellings"
+                                            ),
+                                        },
+                                    ),
                                     Span::with_file(
                                         self.file_id,
                                         span_offset(span.start),
@@ -2209,6 +2216,24 @@ mod tests {
         assert!(matches!(tokens[0].kind, TokenKind::Int(0x1e9)));
         assert!(matches!(tokens[1].kind, TokenKind::Int(0b101)));
         assert!(matches!(tokens[2].kind, TokenKind::Int(0o17)));
+    }
+
+    #[test]
+    fn lexer_interner_failure_classification_preserves_allocator_failures() {
+        assert!(matches!(
+            crate::interner_error_kind(
+                lasso::LassoErrorKind::KeySpaceExhaustion,
+                "lexer symbol space"
+            ),
+            ErrorKind::CompilerResourceLimit(_)
+        ));
+        assert!(matches!(
+            crate::interner_error_kind(
+                lasso::LassoErrorKind::FailedAllocation,
+                "lexer symbol space"
+            ),
+            ErrorKind::CompilerResourceExhaustion(_)
+        ));
     }
 
     #[test]

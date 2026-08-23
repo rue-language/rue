@@ -12,7 +12,7 @@ This appendix documents two different kinds of limit. A **language limit** is pa
 
 {{ rule(id="C.1:2", cat="normative") }}
 
-Exceeding an implementation limit is a diagnosable compile-time failure. An implementation **MUST** reject a translation unit that exceeds one of its implementation limits by reporting a diagnostic that names the exceeded limit, and **MUST NOT** instead wrap or truncate an index, silently discard part of the program, exhaust an internal index space, or terminate abnormally. This is the general policy; the concrete checks listed in this appendix are instances of it.
+Exceeding an implementation limit is a diagnosable compile-time failure. An implementation **MUST** reject a translation unit that exceeds one of its implementation limits by reporting a diagnostic that names the exceeded limit, and **MUST NOT** instead wrap or truncate an index, silently discard part of the program, exhaust an internal index space, or terminate abnormally. If an insertion fails because the allocator cannot provide memory, the implementation **MUST** report allocation exhaustion (E1402); that diagnostic does not claim that a published limit was reached. This is the general policy; the concrete checks listed in this appendix are instances of it.
 
 {{ rule(id="C.1:3") }}
 
@@ -75,9 +75,33 @@ Exceeding it is rejected with diagnostic E0907.
 
 {{ rule(id="C.5:1") }}
 
-There is no separate cap on the length of one identifier: an identifier is a token, so its length is bounded by the source-file limit of C.3:1. The number of *distinct* identifiers and string literals in one compilation is bounded by the string interner, whose handles are non-zero 32-bit keys: at most 4,294,967,295 distinct interned strings.
+There is no separate cap on the length of one identifier: an identifier is a
+token, so its length is bounded by the source-file limit of C.3:1. Each
+compilation-owned symbol domain uses a string interner whose handles are
+non-zero 32-bit keys, so one such domain admits at most 4,294,967,295 distinct
+spellings.
 
-Identifiers and string literals are the only unbounded, source-driven producers of interned strings, and both are interned by the lexer. The lexer interns fallibly: a token whose string cannot be given a key is reported through the ordinary lexical error channel as a resource-limit diagnostic (E1401) naming the limit, so the key space is never exhausted by an abort. Every other interned string is a name the compiler synthesizes for an entity it has already admitted (mangled symbols, anonymous-type names, specialization names), and those entities are themselves bounded by the capacity limits of C.6:1.
+The lexer and parser share one per-file staging interner: the parser consumes
+the interner produced by lexing. Canonical lowering remaps each module's
+vocabulary, parser primitives, and generated RIR spellings into its canonical
+destination. Later semantic analysis uses a separate revision-shared equality
+domain for AIR symbols, including generated member, specialization, and
+anonymous-nominal names. Body-local AIR import and CFG projection may use
+additional request-owned domains. These are distinct index spaces: their counts
+are not added together, and a `Spur` must never cross domains without
+translation. Every reachable insertion in these canonical compilation domains
+is fallible; compatibility-only body fixtures retain a private, unbounded
+interner and are not part of the canonical query path. Key-space exhaustion is
+classified as E1401, while an allocator failure is classified as E1402. The
+per-domain ceilings are published in the C.6 table; E1402 does not claim that a
+ceiling was reached.
+
+The later body-local AIR import and CFG projection tables are also distinct,
+request-owned domains. They are populated only from already admitted canonical
+facts and their insertions are checked at the materialization/projection
+boundary; an interner failure there follows the same E1401/E1402 policy. These
+domains do not extend the revision-shared equality table, and a body-local
+`Spur` is never used as a canonical or revision-shared key.
 
 ## Implementation Capacity Limits
 
@@ -89,7 +113,10 @@ The compiler stores syntax, untyped IR, and typed IR in compact index-based form
 |-----------|-------|------------|--------------|
 | Source bytes in one file | 4,294,967,295 | `u32` span offsets | E1401, before lexing |
 | Source files in one compilation | 4,294,967,295 | `u32` file identifier, `FileId(0)` reserved | E1401, at snapshot assembly |
-| Distinct identifiers and string literals | 4,294,967,295 | non-zero `u32` interner keys | E1401, when a token is interned |
+| Distinct spellings in one per-file lexer/parser staging domain | 4,294,967,295 | non-zero `u32` interner keys | E1401/E1402, during staging |
+| Distinct spellings in one canonical semantic symbol domain | 4,294,967,295 | non-zero `u32` interner keys | E1401/E1402, during canonical remapping |
+| Distinct symbols in one revision-shared AIR equality domain | 4,294,967,295 | non-zero `u32` interner keys | E1401/E1402, at semantic analysis |
+| Distinct symbols in one body-local AIR import or CFG domain | 4,294,967,295 | non-zero `u32` interner keys | E1401/E1402, at materialization/projection |
 | IR instructions in one program | 4,294,967,295 | `u32` instruction reference, `u32::MAX` reserved as the null payload | E1401, at RIR publication |
 | IR payload words in one program | 4,294,967,295 words (16 GiB) | `u32` payload `start`/`extent` into one word store | E1401, at RIR/CFG payload staging |
 | Typed-IR instructions in one function body | 4,294,967,295 | `u32` instruction reference into that body's own array | E1401, at the semantic AIR boundary |

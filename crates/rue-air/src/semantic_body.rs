@@ -1179,7 +1179,7 @@ pub struct SemanticBodyCandidateInstallWork {
     pub strings_installed: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SemanticBodyImportFailure {
     Semantic(super::SemanticImportFailure),
     StableResolution(SemanticStableResolutionFailure),

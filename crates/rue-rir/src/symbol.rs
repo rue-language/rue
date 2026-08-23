@@ -60,7 +60,7 @@
 use ahash::AHashMap;
 use lasso::{Key, Spur, ThreadedRodeo};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 /// An equality-only handle into one body's symbol interner.
 ///
@@ -114,6 +114,9 @@ pub struct SharedSymbolSpace {
     generation: u64,
     live: Arc<AtomicBool>,
     spellings: Arc<Spellings>,
+    intern_lock: Arc<Mutex<()>>,
+    interner_failure: Arc<Mutex<Option<lasso::LassoErrorKind>>>,
+    max_entries: usize,
 }
 
 /// How many shards a spelling memo is split across.
@@ -225,6 +228,29 @@ impl SharedSymbolSpace {
             generation: 1,
             live: Arc::new(AtomicBool::new(true)),
             spellings: Arc::new(Spellings::default()),
+            intern_lock: Arc::new(Mutex::new(())),
+            interner_failure: Arc::new(Mutex::new(None)),
+            max_entries: u32::MAX as usize,
+        }
+    }
+
+    /// Construct a space with an explicit symbol bound. Production uses the
+    /// published `u32` key-space ceiling; tests inject a small bound through
+    /// the session-owned space rather than mutating process/thread state.
+    #[doc(hidden)]
+    pub fn with_owner_bound(max_entries: usize) -> Self {
+        Self::with_generation_and_max(1, max_entries)
+    }
+
+    fn with_generation_and_max(generation: u64, max_entries: usize) -> Self {
+        Self {
+            interner: Arc::new(ThreadedRodeo::new()),
+            generation,
+            live: Arc::new(AtomicBool::new(true)),
+            spellings: Arc::new(Spellings::default()),
+            intern_lock: Arc::new(Mutex::new(())),
+            interner_failure: Arc::new(Mutex::new(None)),
+            max_entries,
         }
     }
 
@@ -233,6 +259,56 @@ impl SharedSymbolSpace {
     #[must_use]
     pub fn interner(&self) -> &Arc<ThreadedRodeo> {
         &self.interner
+    }
+
+    /// Fallibly insert a spelling into this generation's shared equality
+    /// space. The lock covers the get/check/insert sequence so the bound is
+    /// deterministic under concurrent provider workers.
+    pub fn try_intern(&self, text: impl AsRef<str>) -> Result<Spur, lasso::LassoErrorKind> {
+        let text = text.as_ref();
+        if let Some(symbol) = self.interner.get(text) {
+            return Ok(symbol);
+        }
+        let _guard = self
+            .intern_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(symbol) = self.interner.get(text) {
+            return Ok(symbol);
+        }
+        if self.interner.len() >= self.max_entries {
+            let kind = lasso::LassoErrorKind::KeySpaceExhaustion;
+            let mut failure = self
+                .interner_failure
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if failure.is_none() {
+                *failure = Some(kind);
+            }
+            return Err(kind);
+        }
+        match self.interner.try_get_or_intern(text) {
+            Ok(symbol) => Ok(symbol),
+            Err(error) => {
+                let kind = error.kind();
+                let mut failure = self
+                    .interner_failure
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if failure.is_none() {
+                    *failure = Some(kind);
+                }
+                Err(kind)
+            }
+        }
+    }
+
+    /// The first interner failure observed by this generation, if any.
+    pub fn interner_failure(&self) -> Option<lasso::LassoErrorKind> {
+        *self
+            .interner_failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The handle for a spelling joined from two spellings this space already
@@ -256,6 +332,7 @@ impl SharedSymbolSpace {
     /// unchanged: it is append-only for the generation's life, it never
     /// outlives it, and a body carrying a retired generation is refused at the
     /// authority check rather than reading a stale association.
+    #[cfg(test)]
     pub fn derived_symbol(
         &self,
         left: Spur,
@@ -263,6 +340,20 @@ impl SharedSymbolSpace {
         variant: u8,
         render: impl FnOnce() -> String,
     ) -> Spur {
+        self.try_derived_symbol(left, right, variant, render)
+            .unwrap_or_default()
+    }
+
+    /// Fallible form of [`Self::derived_symbol`] used by compiler-owned
+    /// materialization. The memo is only published after the interner accepts
+    /// the spelling, so an exhaustion cannot masquerade as a valid handle.
+    pub fn try_derived_symbol(
+        &self,
+        left: Spur,
+        right: Spur,
+        variant: u8,
+        render: impl FnOnce() -> String,
+    ) -> Result<Spur, lasso::LassoErrorKind> {
         let key = DerivedKey {
             left,
             right,
@@ -275,9 +366,20 @@ impl SharedSymbolSpace {
         // taken.
         let shard =
             (left.into_usize() ^ (right.into_usize() << 2)).wrapping_add(usize::from(variant));
-        self.spellings
-            .derived
-            .memoize(shard, key, || self.interner.get_or_intern(render()))
+        if let Some(value) = self.spellings.derived.shards[shard % SPELLING_SHARDS]
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+            .copied()
+        {
+            return Ok(value);
+        }
+        let value = self.try_intern(render())?;
+        self.spellings.derived.shards[shard % SPELLING_SHARDS]
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key, value);
+        Ok(value)
     }
 
     /// The spelling for a name that is a total function of a 128-bit identity
@@ -295,21 +397,42 @@ impl SharedSymbolSpace {
     /// stable across the generation's bodies. Everything the memo promises
     /// about interning and retirement is [`Self::derived_symbol`]'s promise,
     /// for the same reasons.
+    #[cfg(test)]
     pub fn keyed_symbol_spelling(
         &self,
         digest: u128,
         variant: u8,
         render: impl FnOnce() -> String,
     ) -> (Arc<str>, Spur) {
-        self.spellings.keyed_symbols.memoize(
-            keyed_shard(digest, variant),
-            (digest, variant),
-            || {
-                let name: Arc<str> = Arc::from(render().as_str());
-                let symbol = self.interner.get_or_intern(&name);
-                (name, symbol)
-            },
-        )
+        self.try_keyed_symbol_spelling(digest, variant, render)
+            .unwrap_or_else(|_| (Arc::from("<interner-exhausted>"), Spur::default()))
+    }
+
+    /// Fallible form of [`Self::keyed_symbol_spelling`].
+    pub fn try_keyed_symbol_spelling(
+        &self,
+        digest: u128,
+        variant: u8,
+        render: impl FnOnce() -> String,
+    ) -> Result<(Arc<str>, Spur), lasso::LassoErrorKind> {
+        let key = (digest, variant);
+        let shard =
+            &self.spellings.keyed_symbols.shards[keyed_shard(digest, variant) % SPELLING_SHARDS];
+        if let Some(value) = shard
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+            .cloned()
+        {
+            return Ok(value);
+        }
+        let name: Arc<str> = Arc::from(render().as_str());
+        let symbol = self.try_intern(&name)?;
+        shard
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key, (name.clone(), symbol));
+        Ok((name, symbol))
     }
 
     /// The spelling for a digest-derived name the caller does not intern.
@@ -373,12 +496,18 @@ impl SymbolSpaceGenerations {
     /// Mint a fresh append-only interner as the next generation.
     #[must_use]
     pub fn next_generation(&self) -> SharedSymbolSpace {
-        SharedSymbolSpace {
-            interner: Arc::new(ThreadedRodeo::new()),
-            generation: self.minted.fetch_add(1, Ordering::AcqRel).wrapping_add(1),
-            live: Arc::new(AtomicBool::new(true)),
-            spellings: Arc::new(Spellings::default()),
-        }
+        self.next_generation_with_owner_bound(u32::MAX as usize)
+    }
+
+    /// Mint a fresh generation with an owner-injected bound. The bound is
+    /// normally the published key-space ceiling; tests use this constructor
+    /// through the compiler session so the production path has no mutable
+    /// process or thread state.
+    #[must_use]
+    #[doc(hidden)]
+    pub fn next_generation_with_owner_bound(&self, max_entries: usize) -> SharedSymbolSpace {
+        let generation = self.minted.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        SharedSymbolSpace::with_generation_and_max(generation, max_entries)
     }
 }
 
@@ -432,6 +561,26 @@ mod tests {
                 .get_or_intern("__anon_struct_00.member"),
         );
         assert_eq!(space.interner().len(), 1);
+    }
+
+    #[test]
+    fn interner_failure_latch_preserves_the_first_failure_kind() {
+        let space = SharedSymbolSpace::with_owner_bound(0);
+        *space
+            .interner_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(lasso::LassoErrorKind::FailedAllocation);
+
+        assert_eq!(
+            space.try_intern("later-key"),
+            Err(lasso::LassoErrorKind::KeySpaceExhaustion)
+        );
+        assert_eq!(
+            space.interner_failure(),
+            Some(lasso::LassoErrorKind::FailedAllocation),
+            "a later key-space failure must not replace the allocator failure"
+        );
     }
 
     /// Retiring a generation retires every outstanding holder of it at once

@@ -666,6 +666,13 @@ impl CompilerSessionUpdate {
 #[derive(Debug, Default)]
 pub struct CompilerSession {
     identity: Arc<()>,
+    /// Test-only injection for the canonical compilation-owned symbol bound.
+    /// Production leaves this unset and uses the published u32 ceiling.
+    #[cfg(test)]
+    interner_limit: Option<usize>,
+    /// Test-only bound for the request-local CFG symbol universe.
+    #[cfg(test)]
+    cfg_interner_limit: Option<usize>,
     /// Test-only differential-oracle perturbation requested through the
     /// unstable test bridge. It corrupts a canonical projection at the next
     /// observation point without reviving a retired selected-result store.
@@ -1473,6 +1480,28 @@ impl CompilerSession {
             crate::revisioned_query_database::RevisionedQueryDatabase::with_query_concurrency(
                 workers,
             );
+        session
+    }
+
+    /// Construct a canonical session with a bounded shared symbol space for
+    /// deterministic resource-limit regression tests. The bound is owned by
+    /// the query database and therefore reaches the worker threads that run
+    /// canonical materialization.
+    #[cfg(test)]
+    pub(crate) fn with_interner_limit(max_entries: usize) -> Self {
+        let mut session = Self::default();
+        session.interner_limit = Some(max_entries);
+        session.queries.revisioned =
+            crate::revisioned_query_database::RevisionedQueryDatabase::with_interner_limit(
+                max_entries,
+            );
+        session
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_cfg_interner_limit(max_entries: usize) -> Self {
+        let mut session = Self::default();
+        session.cfg_interner_limit = Some(max_entries);
         session
     }
 
@@ -4542,7 +4571,17 @@ impl CompilerSession {
                     Ok(modules) => {
                         let projected = {
                             let _span = tracing::info_span!("rir_projection").entered();
-                            project_candidate_module_rirs_with_work(merged, &modules, query_work)
+                            project_candidate_module_rirs_with_work(merged, &modules, query_work, {
+                                #[cfg(test)]
+                                {
+                                    self.interner_limit
+                                        .unwrap_or(rue_lexer::MAX_INTERNED_STRINGS)
+                                }
+                                #[cfg(not(test))]
+                                {
+                                    rue_lexer::MAX_INTERNED_STRINGS
+                                }
+                            })
                         };
                         match projected {
                             Ok(rir) => {
@@ -5188,6 +5227,8 @@ impl CompilerSession {
                         function: closure_body.key.instance.clone(),
                         canonical: body.clone(),
                         body_span,
+                        #[cfg(test)]
+                        interner_limit: self.cfg_interner_limit,
                     }),
                     materialization: Arc::new(materialization),
                 },
@@ -10099,6 +10140,185 @@ mod tests {
         session
             .rooted_cfg(&CompileOptions::default())
             .expect("many shallow specializations must compile");
+    }
+
+    #[test]
+    fn revision_shared_semantic_and_cfg_interning_exhaustion_is_typed() {
+        // Search the owner-controlled bound, rather than relying on a public
+        // thread-local override. The first successful canonical projection
+        // followed by a failing rooted-CFG query proves that the exhaustion
+        // occurs in post-lexer semantic/CFG work.
+        let valid = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn id(comptime T: type, value: T) -> T { value } fn main() -> i32 { id(i32, 42) }",
+            )],
+            1,
+        );
+        let mut observed = None;
+        for limit in 20..256 {
+            let mut session = CompilerSession::with_interner_limit(limit);
+            session.update(&valid).into_result().unwrap();
+            if session.canonical_rir().is_err() {
+                continue;
+            }
+            if let Err(errors) = session.rooted_cfg(&CompileOptions::default()) {
+                let resource_errors = errors
+                    .iter()
+                    .filter(|error| {
+                        error.kind.code() == rue_error::ErrorCode::COMPILER_RESOURCE_LIMIT
+                            || error.kind.code()
+                                == rue_error::ErrorCode::COMPILER_RESOURCE_EXHAUSTION
+                    })
+                    .collect::<Vec<_>>();
+                if resource_errors.len() == 1
+                    && errors.len() == 1
+                    && !errors
+                        .iter()
+                        .any(|error| matches!(error.kind, ErrorKind::InternalError(_)))
+                    && format!("{:?}", resource_errors[0].kind)
+                        .to_ascii_lowercase()
+                        .contains("provider")
+                {
+                    observed = Some(limit);
+                    break;
+                }
+            }
+        }
+        assert!(
+            observed.is_some(),
+            "a successful canonical projection must expose a typed revision-shared semantic/CFG exhaustion"
+        );
+    }
+
+    #[test]
+    fn two_lazy_named_nominals_after_bound_report_one_typed_error() {
+        let valid = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "struct First { second: Second } struct Second { value: i32 } fn main() -> i32 { 0 }",
+            )],
+            1,
+        );
+        let mut observed = false;
+        for limit in 20..256 {
+            let mut session = CompilerSession::with_interner_limit(limit);
+            session.update(&valid).into_result().unwrap();
+            if session.canonical_rir().is_err() {
+                continue;
+            }
+            let Err(errors) = session.rooted_cfg(&CompileOptions::default()) else {
+                continue;
+            };
+            if errors.len() == 1
+                && errors.iter().all(|error| {
+                    matches!(
+                        error.kind,
+                        ErrorKind::CompilerResourceLimit(_)
+                            | ErrorKind::CompilerResourceExhaustion(_)
+                    )
+                })
+                && !errors
+                    .iter()
+                    .any(|error| matches!(error.kind, ErrorKind::InternalError(_)))
+            {
+                observed = true;
+                break;
+            }
+        }
+        assert!(
+            observed,
+            "lazy named nominal materialization must fail once with a typed resource diagnostic"
+        );
+    }
+
+    #[test]
+    fn bounded_request_local_cfg_projection_reports_typed_exhaustion() {
+        let valid = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn main() -> i32 { let value = 42; value }",
+            )],
+            1,
+        );
+        let mut observed = false;
+        for limit in 0..64 {
+            let mut session = CompilerSession::with_cfg_interner_limit(limit);
+            session.update(&valid).into_result().unwrap();
+            if session.canonical_rir().is_err() {
+                continue;
+            }
+            let Err(errors) = session.rooted_cfg(&CompileOptions::default()) else {
+                continue;
+            };
+            if errors.len() == 1
+                && errors.iter().any(|error| {
+                    matches!(error.kind, ErrorKind::CompilerResourceLimit(_))
+                        && format!("{:?}", error.kind).contains("request-local CFG")
+                })
+                && !errors
+                    .iter()
+                    .any(|error| matches!(error.kind, ErrorKind::InternalError(_)))
+            {
+                observed = true;
+                break;
+            }
+        }
+        assert!(
+            observed,
+            "the production CFG query must classify request-local symbol exhaustion"
+        );
+    }
+
+    #[test]
+    fn specialization_symbol_exhaustion_is_typed_at_the_session_boundary() {
+        let mut main = String::from("fn choose(comptime n: i32) -> i32 { n } fn main() -> i32 {\n");
+        for value in 0..32 {
+            main.push_str(&format!("    choose({value}) +\n"));
+        }
+        main.push_str("    0\n}\n");
+        let specialization_call = main.find("choose(0)").expect("generated call") as u32;
+        let specialization_span = rue_span::Span::with_file(
+            FileId::new(1),
+            specialization_call,
+            specialization_call + "choose(0)".len() as u32,
+        );
+        let valid = snapshot(&[(1, "/p/main.rue", "main.rue", main.as_str())], 1);
+        let mut observed = None;
+        for limit in 20..256 {
+            let mut session = CompilerSession::with_interner_limit(limit);
+            session.update(&valid).into_result().unwrap();
+            if session.canonical_rir().is_err() {
+                continue;
+            }
+            let Err(errors) = session.rooted_cfg(&CompileOptions::default()) else {
+                continue;
+            };
+            if errors.len() == 1
+                && !errors
+                    .iter()
+                    .any(|error| matches!(error.kind, ErrorKind::InternalError(_)))
+                && errors.iter().any(|error| {
+                    error.kind.code() == rue_error::ErrorCode::COMPILER_RESOURCE_LIMIT
+                        && format!("{:?}", error.kind)
+                            .contains("specialization symbol interning failed")
+                        && error.span() == Some(specialization_span)
+                })
+            {
+                observed = Some(limit);
+                break;
+            }
+        }
+        assert!(
+            observed.is_some(),
+            "specialization materialization must report the owning symbol-space exhaustion"
+        );
     }
 
     #[test]

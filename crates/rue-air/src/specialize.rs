@@ -112,10 +112,11 @@ pub const MAX_COMPTIME_CALL_DEPTH: usize = 48;
 fn collect_specializations(
     air: &Air,
     interner: &ThreadedRodeo,
+    intern: impl Fn(&str) -> Result<Spur, lasso::LassoErrorKind>,
     specializations: &mut AHashMap<SpecializationKey, SpecializationInfo>,
     pending: &mut Vec<SpecializationKey>,
     work: &mut crate::BodyAnalysisWork,
-) -> bool {
+) -> CompileResult<bool> {
     let mut has_call_generic = false;
     for inst in air.instructions() {
         work.specialization_air_instructions_scanned += 1;
@@ -146,7 +147,15 @@ fn collect_specializations(
                     &entry.key().type_args,
                     &entry.key().value_args,
                 );
-                let mangled_sym = interner.get_or_intern(&mangled);
+                let mangled_sym = intern(&mangled).map_err(|kind| {
+                    CompileError::new(
+                        rue_error::interner_error_kind(
+                            kind,
+                            format!("specialization symbol interning failed: {kind}"),
+                        ),
+                        inst.span,
+                    )
+                })?;
                 pending.push(entry.key().clone());
                 entry.insert(SpecializationInfo {
                     mangled_name: mangled_sym,
@@ -157,7 +166,7 @@ fn collect_specializations(
             }
         }
     }
-    has_call_generic
+    Ok(has_call_generic)
 }
 
 fn rewrite_call_generic(
@@ -265,10 +274,11 @@ where
     if collect_specializations(
         &function.air,
         host.body_interner(),
+        |text| host.try_intern_body_symbol(text),
         &mut specializations,
         &mut pending,
         &mut work,
-    ) {
+    )? {
         let mut editor = function.air.into_editor();
         rewrite_call_generic(&mut editor, &specializations, &mut work);
         function.air = editor.finish(crate::AirValidationContext::SemanticWithSymbols(

@@ -59,11 +59,22 @@ pub(crate) struct CfgBodyInput {
     pub(crate) function: crate::FunctionInstanceKey,
     pub(crate) canonical: Arc<crate::body_query::CanonicalBody>,
     pub(crate) body_span: Span,
+    #[cfg(test)]
+    pub(crate) interner_limit: Option<usize>,
 }
 
 impl PartialEq for CfgBodyInput {
     fn eq(&self, other: &Self) -> bool {
-        self.function == other.function && self.canonical == other.canonical
+        self.function == other.function && self.canonical == other.canonical && {
+            #[cfg(test)]
+            {
+                self.interner_limit == other.interner_limit
+            }
+            #[cfg(not(test))]
+            {
+                true
+            }
+        }
     }
 }
 
@@ -1021,11 +1032,20 @@ fn internal_failure(message: impl Into<String>, body_span: Span) -> CfgValue {
 
 fn interner_copy_capacity_failure(kind: lasso::LassoErrorKind, body_span: Span) -> CfgValue {
     let message = format!("CFG interner isolation failed: {kind}");
-    let kind = if kind.is_failed_alloc() {
-        rue_error::ErrorKind::CompilerResourceExhaustion(message)
-    } else {
-        rue_error::ErrorKind::CompilerResourceLimit(message)
-    };
+    let kind = rue_lexer::interner_error_kind(kind, message);
+    CfgValue::Failure {
+        errors: crate::CompileError::new(kind, body_span).into(),
+        body_span,
+    }
+}
+
+fn interner_resource_failure(
+    kind: lasso::LassoErrorKind,
+    context: impl std::fmt::Display,
+    body_span: Span,
+) -> CfgValue {
+    let message = format!("{context}: {kind}");
+    let kind = rue_lexer::interner_error_kind(kind, message);
     CfgValue::Failure {
         errors: crate::CompileError::new(kind, body_span).into(),
         body_span,
@@ -1180,12 +1200,32 @@ fn materialize_and_build_cfg(
     context.record_work(rue_query::WorkItem::new("cfg.materialize.attempts", 1));
     let input_preparation_ns = elapsed_ns(input_preparation_started);
     let materialization_started = std::time::Instant::now();
+    #[cfg(test)]
+    let local_interner_limit = match &key.semantic_input {
+        CfgSemanticInput::Body { input, .. } => input.interner_limit,
+        CfgSemanticInput::DropGlue { .. } => None,
+    };
+    // The local semantic epoch owns the actual insertion path. Tests inject
+    // their request-local ceiling into that owner so a regression to an
+    // infallible insertion cannot pass by merely checking the final length.
+    let materialization_symbol_space = {
+        #[cfg(test)]
+        {
+            local_interner_limit
+                .map(rue_rir::SharedSymbolSpace::with_owner_bound)
+                .unwrap_or_else(rue_rir::SharedSymbolSpace::private)
+        }
+        #[cfg(not(test))]
+        {
+            rue_rir::SharedSymbolSpace::private()
+        }
+    };
     // Both CFG inputs use the exact fact-side indexes prepared during
     // selection, keeping canonical-body and drop-glue materialization on one
     // indexed path.
     let materialized = match &key.semantic_input {
         CfgSemanticInput::Body { input, .. } => {
-            crate::local_semantic_materialization::materialize_canonical_body_with_indexes(
+            crate::local_semantic_materialization::materialize_canonical_body_with_indexes_in_space(
                 &input.canonical,
                 body_span,
                 &facts.declarations,
@@ -1196,10 +1236,11 @@ fn materialize_and_build_cfg(
                 &builtin_facts,
                 &facts.required_types,
                 &facts.indexes,
+                materialization_symbol_space,
             )
         }
         CfgSemanticInput::DropGlue { owner, .. } => {
-            crate::local_semantic_materialization::materialize_semantic_body_with_indexes(
+            crate::local_semantic_materialization::materialize_semantic_body_with_indexes_in_space(
                 crate::FunctionInstanceKey::DropGlue(Node::new(owner.clone())),
                 body,
                 body_span,
@@ -1211,6 +1252,7 @@ fn materialize_and_build_cfg(
                 &builtin_facts,
                 &facts.required_types,
                 &facts.indexes,
+                materialization_symbol_space,
             )
         }
     };
@@ -1220,6 +1262,28 @@ fn materialize_and_build_cfg(
         Ok(value) => value,
         Err(error) => {
             context.record_work(rue_query::WorkItem::new("cfg.materialize.failures", 1));
+            if let crate::local_semantic_materialization::LocalMaterializationFailure::Import(
+                rue_air::SemanticImportFailure::Interner(kind),
+            ) = &error
+            {
+                return Ok(interner_resource_failure(
+                    *kind,
+                    "request-local CFG symbol domain",
+                    body_span,
+                ));
+            }
+            if let crate::local_semantic_materialization::LocalMaterializationFailure::Body(
+                rue_air::SemanticBodyImportFailure::Semantic(
+                    rue_air::SemanticImportFailure::Interner(kind),
+                ),
+            ) = &error
+            {
+                return Ok(interner_resource_failure(
+                    *kind,
+                    "request-local CFG symbol domain",
+                    body_span,
+                ));
+            }
             return Ok(internal_failure(
                 format!("canonical CFG materialization failed: {error:?}"),
                 body_span,
@@ -1266,6 +1330,13 @@ fn materialize_and_build_cfg(
         }) {
             Ok(value) => value,
             Err(error) => {
+                if let crate::durable_cfg::CfgDomainFailure::Interner(kind) = error {
+                    return Ok(interner_resource_failure(
+                        kind,
+                        "canonical CFG domain interner",
+                        body_span,
+                    ));
+                }
                 return Ok(internal_failure(
                     format!("canonical CFG domain projection failed: {error:?}"),
                     body_span,
@@ -1408,7 +1479,10 @@ fn build_cfg(
         materialized.air.instructions().len() as u64,
     ));
     let builder_started = std::time::Instant::now();
-    let output = rue_cfg::CfgBuilder::build(
+    // Canonical AIR already owns every source symbol. CFG projection must
+    // resolve that body-local domain without extending it; compiler-generated
+    // spellings are admitted by the semantic provider before this boundary.
+    let output = rue_cfg::CfgBuilder::build_with_symbol_resolver(
         &materialized.air,
         materialized.num_locals,
         materialized.num_param_slots,
@@ -1418,6 +1492,7 @@ fn build_cfg(
         &materialized.interner,
         materialized.allow_unreachable_code,
         materialized.callable_kind,
+        |name| materialized.interner.get(name),
     );
     let cfg_builder_ns = elapsed_ns(builder_started);
     let publication_started = std::time::Instant::now();

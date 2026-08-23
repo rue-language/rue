@@ -664,8 +664,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // compiler never depends on StrBuf's internal field layout (RUE-1066).
         // Both accessors are `borrow self`, so one materialized borrow of the
         // owner backs both calls.
-        let ptr_method = self.body_interner().get_or_intern("as_ptr");
-        let len_method = self.body_interner().get_or_intern("len");
+        let ptr_method = self.intern_body_symbol("as_ptr")?;
+        let len_method = self.intern_body_symbol("len")?;
         let Some(ptr_ty) = self
             .call_facts()
             .call_method_info(struct_id, ptr_method)
@@ -693,16 +693,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx.referenced_methods.insert((struct_id, ptr_method));
         ctx.referenced_methods.insert((struct_id, len_method));
         {
-            self.record_body_method_dependency((struct_id, ptr_method));
-            self.record_body_method_dependency((struct_id, len_method));
+            self.record_body_method_dependency((struct_id, ptr_method))?;
+            self.record_body_method_dependency((struct_id, len_method))?;
         }
         let (receiver, prefix) = self.materialize_borrow_argument(air, value, ty, span, ctx)?;
-        let ptr_call_name = self
-            .body_interner()
-            .get_or_intern(&self.method_symbol(struct_id, "as_ptr", true));
-        let len_call_name = self
-            .body_interner()
-            .get_or_intern(&self.method_symbol(struct_id, "len", true));
+        let ptr_call_name =
+            self.intern_body_symbol(&self.method_symbol(struct_id, "as_ptr", true))?;
+        let len_call_name = self.intern_body_symbol(&self.method_symbol(struct_id, "len", true))?;
         let ptr_ref = air.add_call(
             None,
             ptr_call_name,
@@ -1110,9 +1107,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         // it (RUE-279); negative/dynamic indices leave it None.
                         let const_index = self.try_get_const_index(*index);
                         let index_segment = match const_index {
-                            Some(k) if k >= 0 => {
-                                Some(super::index_path_segment(self.body_interner(), k as u64))
-                            }
+                            Some(k) if k >= 0 => Some(self.intern_index_path_segment(k as u64)?),
                             _ => None,
                         };
                         trace.projections.push(ProjectionInfo {
@@ -1230,7 +1225,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .expect("accessor expansion follows a successful method lookup");
         let method_name_str = self.body_interner().resolve(&method).to_string();
         let call_name = self.method_symbol(struct_id, &method_name_str, true);
-        let call_name = self.body_interner().get_or_intern(&call_name);
+        let call_name = self.intern_body_symbol(&call_name)?;
         if self.function_identity(call_name).is_ok_and(|identity| {
             ctx.canonical_function_identity == crate::FunctionInstanceKey::Definition(identity)
         }) {
@@ -1369,7 +1364,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         ctx.accessor_call_insts.insert(inst_ref, (method, root));
         ctx.referenced_methods.insert((struct_id, method));
-        self.record_body_method_dependency((struct_id, method));
+        self.record_body_method_dependency((struct_id, method))?;
         let receiver_place = Self::build_place_ref(air, &receiver_trace)?;
         let receiver_value = air.add_inst(AirInst {
             data: AirInstData::PlaceRead {
@@ -2422,7 +2417,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // a linear value would drop the caller's live value implicitly.
                 // An `inout` binding can never be proven moved-out, so this is
                 // always ill-formed (E0494).
-                let discharged = self.place_linear_discharged(param_ty, name, &[], ctx);
+                let discharged = self.place_linear_discharged(param_ty, name, &[], ctx)?;
                 self.check_linear_overwrite(param_ty, discharged, true, span)?;
 
                 // Assignment to a parameter resets its move state
@@ -2489,7 +2484,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // would drop it implicitly. Legal only when the whole variable was
         // proven moved-out on every path (reinit-after-move idiom) — evaluated
         // on the post-RHS move state so `x = f(x)` counts as a discharge.
-        let discharged = self.place_linear_discharged(local_ty, name, &[], ctx);
+        let discharged = self.place_linear_discharged(local_ty, name, &[], ctx)?;
         self.check_linear_overwrite(local_ty, discharged, false, span)?;
         // Two-types model (ADR-0043, RUE-386): reassigning a first-class `str`
         // local must store a first-class `str`, not a buffer or a borrowed view;
@@ -3697,7 +3692,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         };
-        let method = self.body_interner().get_or_intern("byte_at_borrowed");
+        let method = self.intern_body_symbol("byte_at_borrowed")?;
         if self
             .call_facts()
             .call_method_info(struct_id, method)
@@ -3712,14 +3707,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
         ctx.referenced_methods.insert((struct_id, method));
-        self.record_body_method_dependency((struct_id, method));
+        self.record_body_method_dependency((struct_id, method))?;
         let (receiver, temp_scope) =
             self.materialize_borrow_argument(air, base_result.air_ref, base_result.ty, span, ctx)?;
-        let call_name = self.body_interner().get_or_intern(&self.method_symbol(
-            struct_id,
-            "byte_at_borrowed",
-            false,
-        ));
+        let call_name =
+            self.intern_body_symbol(&self.method_symbol(struct_id, "byte_at_borrowed", false))?;
         let receiver_mode = AirArgMode::Borrow;
         let call_ref = air.add_call(
             None,
@@ -3800,9 +3792,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // value is passed by value; codegen decomposes it into pointer/length
         // argument registers.
         let runtime = crate::RuntimeCallKind::StrByteAt;
-        let call_name = self
-            .body_interner()
-            .get_or_intern(runtime.helper().symbol());
+        let call_name = self.intern_body_symbol(runtime.helper().symbol())?;
         let call_ref = air.add_call(
             Some(runtime),
             call_name,
@@ -4278,7 +4268,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     trace.root_var,
                     &trace.field_path(),
                     ctx,
-                );
+                )?;
             self.check_linear_overwrite(field_type, discharged, false, span)?;
 
             // The write reinitializes its destination: the assigned path
@@ -4344,7 +4334,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // element read from the same root array.  The RHS is analyzed first,
         // so its element move is present when the target-side partial-array
         // guard runs; remember that this exact path was new before the RHS.
-        let rhs_element = self.direct_constant_array_element_path(value);
+        let rhs_element = self.direct_constant_array_element_path(value)?;
         let rhs_element_was_unmoved = rhs_element.as_ref().is_some_and(|(root, path)| {
             ctx.moved_vars
                 .get(root)
@@ -4473,7 +4463,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // its element path segment so field_path nests through it (RUE-279).
             let const_index = self.try_get_const_index(index);
             let index_segment = match const_index {
-                Some(k) if k >= 0 => Some(index_path_segment(self.body_interner(), k as u64)),
+                Some(k) if k >= 0 => Some(self.intern_index_path_segment(k as u64)?),
                 _ => None,
             };
             trace.projections.push(ProjectionInfo {
@@ -4517,7 +4507,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     trace.root_var,
                     &trace.field_path(),
                     ctx,
-                );
+                )?;
             self.check_linear_overwrite(elem_type, discharged, false, span)?;
 
             // The write reinitializes its destination element: the assigned
@@ -4538,7 +4528,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ] = trace.projections.as_slice()
             {
                 if *k >= 0 {
-                    let elem_path = vec![index_path_segment(self.body_interner(), *k as u64)];
+                    let elem_path = vec![self.intern_index_path_segment(*k as u64)?];
                     if let Some(state) = ctx.moved_vars.get_mut(&trace.root_var) {
                         state.mark_path_reinitialized(&elem_path);
                         if state.is_empty() {
@@ -4700,7 +4690,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // element-wise consumption of a root linear array (RUE-186, spec
         // 3.8:71) and of an array field consumed through per-element field
         // moves.
-        let Some(residue) = self.residual_linear_place(local.ty, state, &mut Vec::new()) else {
+        let Some(residue) = self.residual_linear_place(local.ty, state, &mut Vec::new())? else {
             return Ok(());
         };
 
@@ -4757,7 +4747,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // and per-element field consumption of an array anywhere in the
         // parameter's place tree — satisfies the obligation like a whole
         // move.
-        let Some(residue) = self.residual_linear_place(param.ty, state, &mut Vec::new()) else {
+        let Some(residue) = self.residual_linear_place(param.ty, state, &mut Vec::new())? else {
             return Ok(());
         };
         // A root array PARTIALLY consumed element-wise gets the more precise
@@ -4907,32 +4897,32 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ty: Type,
         state: Option<&VariableMoveState>,
         path: &mut Vec<Spur>,
-    ) -> Option<Vec<Spur>> {
+    ) -> CompileResult<Option<Vec<Spur>>> {
         if state.is_some_and(|s| Self::place_moved_on_all_paths(s, path)) {
-            return None;
+            return Ok(None);
         }
         if let TypeKind::Array(array_id) = ty.kind() {
             return self.residual_linear_array_place(array_id, state, path);
         }
         let Some(struct_id) = ty.as_struct() else {
-            return self.type_requires_consumption(ty).then(|| path.clone());
+            return Ok(self.type_requires_consumption(ty).then(|| path.clone()));
         };
         if self.struct_declared_linear(struct_id) {
-            return Some(path.clone());
+            return Ok(Some(path.clone()));
         }
         let def = self.body_type_pool().struct_def(struct_id);
         for field in def.fields.iter() {
             if !self.type_carries_linear(field.ty) {
                 continue;
             }
-            path.push(self.body_interner().get_or_intern(&field.name));
-            let found = self.residual_linear_place(field.ty, state, path);
+            path.push(self.intern_body_symbol(&field.name)?);
+            let found = self.residual_linear_place(field.ty, state, path)?;
             path.pop();
             if found.is_some() {
-                return found;
+                return Ok(found);
             }
         }
-        None
+        Ok(None)
     }
 
     /// The array clause of [`Self::residual_linear_place`] (RUE-1606): the
@@ -4959,10 +4949,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         array_id: crate::types::ArrayTypeId,
         state: Option<&VariableMoveState>,
         path: &mut Vec<Spur>,
-    ) -> Option<Vec<Spur>> {
+    ) -> CompileResult<Option<Vec<Spur>>> {
         let (elem_ty, len) = self.body_type_pool().array_def(array_id);
         if len == 0 || !self.type_requires_consumption(elem_ty) {
-            return None;
+            return Ok(None);
         }
         let touched_below = state.is_some_and(|s| {
             s.partial_moves
@@ -4970,17 +4960,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .any(|(p, _)| p.len() > path.len() && p[..path.len()] == path[..])
         });
         if !touched_below {
-            return Some(path.clone());
+            return Ok(Some(path.clone()));
         }
         for k in 0..len {
-            path.push(index_path_segment(self.body_interner(), k));
-            let found = self.residual_linear_place(elem_ty, state, path);
+            path.push(self.intern_index_path_segment(k)?);
+            let found = self.residual_linear_place(elem_ty, state, path)?;
             path.pop();
             if found.is_some() {
-                return found;
+                return Ok(found);
             }
         }
-        None
+        Ok(None)
     }
 
     /// The span at which the residual linear place was consumed on SOME path,
@@ -5086,13 +5076,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok(ElementwiseConsumption::NotElementwise);
         };
         let (elem_ty, len) = self.body_type_pool().array_def(array_id);
-        let elem_path = |k: u64| vec![index_path_segment(self.body_interner(), k)];
-        let unconsumed: Vec<u64> = (0..len)
-            .filter(|k| {
-                self.residual_linear_place(elem_ty, Some(s), &mut elem_path(*k))
-                    .is_some()
-            })
-            .collect();
+        let mut unconsumed = Vec::new();
+        for k in 0..len {
+            let mut elem_path = vec![self.intern_index_path_segment(k)?];
+            if self
+                .residual_linear_place(elem_ty, Some(s), &mut elem_path)?
+                .is_some()
+            {
+                unconsumed.push(k);
+            }
+        }
         if unconsumed.is_empty() {
             return Ok(ElementwiseConsumption::Complete);
         }
@@ -5107,13 +5100,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // An unconsumed element that WAS moved (whole, or below the element)
         // on some path selects the more precise "not consumed on all paths"
         // diagnostic (E0443 over E0406).
-        let some_path_span = unconsumed.iter().find_map(|k| {
-            let target = elem_path(*k);
-            s.partial_moves
+        let mut some_path_span = None;
+        for k in &unconsumed {
+            let target = vec![self.intern_index_path_segment(*k)?];
+            if let Some((_, span)) = s
+                .partial_moves
                 .iter()
                 .find(|(p, _)| p.first() == Some(&target[0]))
-                .map(|(_, span)| *span)
-        });
+            {
+                some_path_span = Some(*span);
+                break;
+            }
+        }
         let list = unconsumed
             .iter()
             .map(|k| format!("[{k}]"))
@@ -5190,21 +5188,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         root_var: Spur,
         assigned_path: &[Spur],
         ctx: &AnalysisContext,
-    ) -> bool {
+    ) -> CompileResult<bool> {
         let Some(state) = ctx.moved_vars.get(&root_var) else {
-            return false;
+            return Ok(false);
         };
         // The exact destination place was moved out on every path.
         if assigned_path.is_empty() {
             if state.full_move_on_all_paths {
-                return true;
+                return Ok(true);
             }
         } else if state.partial_moves_on_all_paths.contains(assigned_path) {
-            return true;
+            return Ok(true);
         }
         // A whole linear array consumed element-wise on every path holds no
         // live element to drop.
-        assigned_path.is_empty() && self.array_fully_moved_elementwise(dest_ty, state)
+        if assigned_path.is_empty() {
+            self.array_fully_moved_elementwise(dest_ty, state)
+        } else {
+            Ok(false)
+        }
     }
 
     /// Whether every element of an array was WHOLLY moved out on every path
@@ -5217,16 +5219,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// `sink(a[0].p)` element 0 is a live husk that the assignment would
     /// still overwrite, so it does not license reassignment — exactly as a
     /// struct husk does not (`c = ...` stays rejected after `sink(c.l)`).
-    fn array_fully_moved_elementwise(&self, ty: Type, state: &VariableMoveState) -> bool {
+    fn array_fully_moved_elementwise(
+        &self,
+        ty: Type,
+        state: &VariableMoveState,
+    ) -> CompileResult<bool> {
         let TypeKind::Array(array_id) = ty.kind() else {
-            return false;
+            return Ok(false);
         };
         let (_elem, len) = self.body_type_pool().array_def(array_id);
-        (0..len).all(|k| {
-            state
-                .partial_moves_on_all_paths
-                .contains(&vec![index_path_segment(self.body_interner(), k)])
-        })
+        for k in 0..len {
+            let segment = self.intern_index_path_segment(k)?;
+            if !state.partial_moves_on_all_paths.contains(&vec![segment]) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Reject a discarded expression value that carries a linear value
@@ -5315,7 +5323,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Moving an element out of a borrow/inout parameter would leave the
         // CALLER's array holed, exactly like a whole or field move.
         self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
-        let elem_path = vec![index_path_segment(self.body_interner(), k as u64)];
+        let elem_path = vec![self.intern_index_path_segment(k as u64)?];
         if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
             // Whole-element move: reject if the element itself, an ancestor, or
             // any descendant subfield was already moved (`arr[0]` can't be
@@ -5428,7 +5436,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         match first.const_index {
             Some(k) if k >= 0 => {
-                let elem_path = vec![index_path_segment(self.body_interner(), k as u64)];
+                let elem_path = vec![self.intern_index_path_segment(k as u64)?];
                 if let Some(moved_span) = state.is_path_moved(&elem_path) {
                     return Err(use_after_move_path_error(
                         self.body_interner(),
@@ -5512,22 +5520,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     fn direct_constant_array_element_path(
         &mut self,
         inst_ref: InstRef,
-    ) -> Option<(Spur, FieldPath)> {
+    ) -> CompileResult<Option<(Spur, FieldPath)>> {
         let (base, index) = match &self.body_rir_ref().get(inst_ref).data {
             InstData::IndexGet { base, index } => (*base, *index),
-            _ => return None,
+            _ => return Ok(None),
         };
         let root = match &self.body_rir_ref().get(base).data {
             InstData::VarRef { name, .. } => *name,
-            _ => return None,
+            _ => return Ok(None),
         };
-        let index = self.try_get_const_index(index)?;
-        (index >= 0).then(|| {
-            (
-                root,
-                vec![index_path_segment(self.body_interner(), index as u64)],
-            )
-        })
+        let Some(index) = self.try_get_const_index(index) else {
+            return Ok(None);
+        };
+        (index >= 0)
+            .then(|| {
+                self.intern_index_path_segment(index as u64)
+                    .map(|segment| (root, vec![segment]))
+            })
+            .transpose()
     }
 
     /// Extract the root variable symbol from an expression, if it refers to a variable.

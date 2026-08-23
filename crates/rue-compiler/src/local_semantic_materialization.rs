@@ -882,6 +882,7 @@ fn mangle_canonical_value(value: &crate::CanonicalArgumentValue) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub(crate) fn materialize_canonical_body_with_indexes(
     canonical: &crate::body_query::CanonicalBody,
     body_span: rue_span::Span,
@@ -893,6 +894,35 @@ pub(crate) fn materialize_canonical_body_with_indexes(
     builtin_facts: &[LocalBuiltinNominalFact],
     materialization_types: &[crate::durable_semantics::DurableType],
     indexes: &LocalMaterializationIndexes,
+) -> Result<LocalSemanticMaterialization, LocalMaterializationFailure> {
+    materialize_canonical_body_with_indexes_in_space(
+        canonical,
+        body_span,
+        declarations,
+        anonymous_nominals,
+        callable_facts,
+        nominal_metadata,
+        modules,
+        builtin_facts,
+        materialization_types,
+        indexes,
+        rue_rir::SharedSymbolSpace::private(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn materialize_canonical_body_with_indexes_in_space(
+    canonical: &crate::body_query::CanonicalBody,
+    body_span: rue_span::Span,
+    declarations: &[DurableDeclarationSemantic],
+    anonymous_nominals: &[DurableAnonymousNominal],
+    callable_facts: &[LocalCallableFact],
+    nominal_metadata: &[LocalNominalMetadataFact],
+    modules: &[ModuleId],
+    builtin_facts: &[LocalBuiltinNominalFact],
+    materialization_types: &[crate::durable_semantics::DurableType],
+    indexes: &LocalMaterializationIndexes,
+    symbol_space: rue_rir::SharedSymbolSpace,
 ) -> Result<LocalSemanticMaterialization, LocalMaterializationFailure> {
     let (identity, body) = match canonical {
         crate::body_query::CanonicalBody::Ordinary { owner, body } => {
@@ -907,7 +937,7 @@ pub(crate) fn materialize_canonical_body_with_indexes(
             body,
         ),
     };
-    materialize_semantic_body_with_indexes(
+    materialize_semantic_body_with_indexes_in_space(
         identity,
         body,
         body_span,
@@ -919,10 +949,12 @@ pub(crate) fn materialize_canonical_body_with_indexes(
         builtin_facts,
         materialization_types,
         indexes,
+        symbol_space,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub(crate) fn materialize_semantic_body_with_indexes(
     identity: FunctionInstanceKey,
     body: &rue_air::SemanticBody<StableDefinitionKey, ModuleId>,
@@ -935,6 +967,37 @@ pub(crate) fn materialize_semantic_body_with_indexes(
     builtin_facts: &[LocalBuiltinNominalFact],
     materialization_types: &[crate::durable_semantics::DurableType],
     indexes: &LocalMaterializationIndexes,
+) -> Result<LocalSemanticMaterialization, LocalMaterializationFailure> {
+    materialize_semantic_body_with_indexes_in_space(
+        identity,
+        body,
+        body_span,
+        declarations,
+        anonymous_nominals,
+        callable_facts,
+        _nominal_metadata,
+        modules,
+        builtin_facts,
+        materialization_types,
+        indexes,
+        rue_rir::SharedSymbolSpace::private(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn materialize_semantic_body_with_indexes_in_space(
+    identity: FunctionInstanceKey,
+    body: &rue_air::SemanticBody<StableDefinitionKey, ModuleId>,
+    body_span: rue_span::Span,
+    declarations: &[DurableDeclarationSemantic],
+    anonymous_nominals: &[DurableAnonymousNominal],
+    callable_facts: &[LocalCallableFact],
+    _nominal_metadata: &[LocalNominalMetadataFact],
+    modules: &[ModuleId],
+    builtin_facts: &[LocalBuiltinNominalFact],
+    materialization_types: &[crate::durable_semantics::DurableType],
+    indexes: &LocalMaterializationIndexes,
+    symbol_space: rue_rir::SharedSymbolSpace,
 ) -> Result<LocalSemanticMaterialization, LocalMaterializationFailure> {
     let callable_kind = if body.is_accessor {
         rue_air::AnalyzedCallableKind::Accessor
@@ -1146,7 +1209,12 @@ pub(crate) fn materialize_semantic_body_with_indexes(
             symbol: fact.symbol.clone(),
         })
         .collect();
-    let epoch = rue_air::SemanticImportEpoch::new_local(nominals, callables, modules.to_vec())?;
+    let epoch = rue_air::SemanticImportEpoch::new_local_in_space(
+        nominals,
+        callables,
+        modules.to_vec(),
+        symbol_space,
+    )?;
     Ok(epoch.materialize_local_body_with_types(
         identity,
         callable_kind,
@@ -1905,6 +1973,59 @@ mod tests {
         owner: Option<(StableDefinitionKind, Arc<str>)>,
     ) -> StableDefinitionKey {
         StableDefinitionKey::for_test(module, kind.namespace(), kind, name, owner)
+    }
+
+    #[test]
+    fn bounded_space_observes_actual_materialization_failure_and_keeps_bound() {
+        let module = ModuleId::from_validated_canonical("main.rue");
+        let function = definition(
+            module.clone(),
+            StableDefinitionKind::Function,
+            "probe",
+            None,
+        );
+        let canonical = crate::body_query::CanonicalBody::Ordinary {
+            owner: function.clone(),
+            body: body(),
+        };
+        let declarations = [];
+        let nominal_metadata = [];
+        let indexes = LocalMaterializationIndexes::new(&declarations, &nominal_metadata);
+        let bounded = rue_rir::SharedSymbolSpace::with_owner_bound(0);
+        let witness = bounded.clone();
+
+        let error = materialize_canonical_body_with_indexes_in_space(
+            &canonical,
+            rue_span::Span::with_file(rue_span::FileId::new(3), 100, 200),
+            &declarations,
+            &[],
+            &[LocalCallableFact {
+                identity: FunctionInstanceKey::Definition(function),
+                symbol: Arc::from("probe"),
+            }],
+            &nominal_metadata,
+            std::slice::from_ref(&module),
+            &[],
+            &[],
+            &indexes,
+            bounded,
+        )
+        .err()
+        .unwrap_or_else(|| {
+            panic!("a zero-entry space must reject the first materialization symbol")
+        });
+
+        assert!(matches!(
+            error,
+            LocalMaterializationFailure::Import(rue_air::SemanticImportFailure::Interner(
+                lasso::LassoErrorKind::KeySpaceExhaustion
+            ))
+        ));
+        assert_eq!(
+            witness.interner_failure(),
+            Some(lasso::LassoErrorKind::KeySpaceExhaustion)
+        );
+        assert_eq!(witness.interner().len(), 0);
     }
 
     #[test]

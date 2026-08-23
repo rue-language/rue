@@ -24,14 +24,46 @@ pub const LEXER_DIAGNOSTIC_BUDGET: usize = 100;
 /// is formed, per the graceful-failure policy in spec C.1:2.
 pub const MAX_SOURCE_BYTES: usize = u32::MAX as usize;
 
-/// Maximum number of distinct strings one compilation can intern.
+/// Maximum number of distinct strings in any one compilation-owned symbol
+/// domain.
 ///
 /// Interner handles are `lasso::Spur`, a non-zero `u32`, so the usable keys are
-/// `1..=u32::MAX` (spec Appendix C.5:1, C.6:1). Identifiers and string literals
-/// are the only unbounded, source-driven producers of new interned strings, and
-/// the lexer refuses a file that could carry the shared interner past this
-/// ceiling rather than letting the interner abort (spec C.1:2).
+/// `1..=u32::MAX` (spec Appendix C.5:1, C.6:1). Identifiers, literals, parser
+/// primitives, and compiler-generated spellings ultimately belong to
+/// compilation-owned symbol domains. Lexer/parser staging, canonical semantic
+/// lowering, and revision-shared AIR destinations are separate domains; each
+/// has this per-domain key-space ceiling. Every post-lexer producer must route
+/// new spellings through its owning fallible insertion boundary rather than
+/// letting the interner abort (spec C.1:2).
 pub const MAX_INTERNED_STRINGS: usize = u32::MAX as usize;
+
+/// The one fallible entry point for the compilation-owned symbol interner.
+/// Existing spellings remain readable when the boundary is reached; only a
+/// new spelling consumes capacity.
+pub fn try_intern(
+    interner: &lasso::ThreadedRodeo,
+    text: impl AsRef<str>,
+) -> Result<Spur, lasso::LassoErrorKind> {
+    interner
+        .try_get_or_intern(text)
+        .map_err(|error| error.kind())
+}
+
+/// Preserve Lasso's distinction between a published key-space limit and a
+/// failed allocation when exposing the compiler diagnostic.
+pub fn interner_error_kind(
+    kind: lasso::LassoErrorKind,
+    message: impl Into<String>,
+) -> rue_error::ErrorKind {
+    rue_error::interner_error_kind(kind, message)
+}
+
+/// Stable diagnostic for exhaustion of the compilation-owned symbol interner.
+pub fn interner_exhausted_error() -> rue_error::CompileError {
+    rue_error::CompileError::without_span(rue_error::ErrorKind::CompilerResourceLimit(format!(
+        "this symbol domain exceeded its maximum of {MAX_INTERNED_STRINGS} distinct interned spellings"
+    )))
+}
 
 /// Token kinds in the Rue language.
 ///

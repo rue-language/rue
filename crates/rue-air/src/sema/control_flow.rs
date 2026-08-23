@@ -2276,7 +2276,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         operand: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<()> {
-        let self_sym = self.body_interner().get_or_intern("self");
+        let self_sym = self.intern_body_symbol("self")?;
         let mut current = operand;
         loop {
             let inst = self.body_rir_ref().get(current);

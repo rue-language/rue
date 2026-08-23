@@ -248,7 +248,10 @@ fn accessor_yield_root(
     interner: &lasso::ThreadedRodeo,
     operand: InstRef,
 ) -> Option<(AccessorYieldRootForm, Span)> {
-    let self_sym = interner.get_or_intern("self");
+    // Parser primitive setup interns `self` before semantic declaration
+    // validation. This boundary is lookup-only and therefore cannot extend a
+    // compilation-owned symbol domain.
+    let self_sym = interner.get("self").unwrap_or_default();
     let mut current = operand;
     loop {
         let inst = rir.get(current);

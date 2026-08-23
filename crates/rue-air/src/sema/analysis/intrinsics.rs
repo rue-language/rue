@@ -556,7 +556,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
             _ => None,
         };
-        let self_symbol = self.body_interner().get_or_intern("self");
+        let self_symbol = self.intern_body_symbol("self")?;
         let mut root = ptr_offset_base;
         let receiver_rooted = loop {
             let Some(current) = root else {
@@ -690,12 +690,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // String byte view: the bound is the byte length `s.len()`.
         if self.is_strbuf(coll_type) {
-            let source_method = coll_type.as_struct().and_then(|struct_id| {
-                let method = self.body_interner().get_or_intern("len");
+            let source_method = if let Some(struct_id) = coll_type.as_struct() {
+                let method = self.intern_body_symbol("len")?;
                 (self.body_type_pool().struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
                     && self.method_info((struct_id, method)).is_some())
                 .then_some((struct_id, method))
-            });
+            } else {
+                None
+            };
             let Some((struct_id, method)) = source_method else {
                 return Err(CompileError::new(
                     ErrorKind::InternalError(
@@ -705,7 +707,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ));
             };
             ctx.referenced_methods.insert((struct_id, method));
-            self.record_body_method_dependency((struct_id, method));
+            self.record_body_method_dependency((struct_id, method))?;
             let (receiver, temp_scope) = self.materialize_borrow_argument(
                 air,
                 coll_result.air_ref,
@@ -713,9 +715,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
                 ctx,
             )?;
-            let call_name = self
-                .body_interner()
-                .get_or_intern(&self.method_symbol(struct_id, "len", true));
+            let call_name = self.intern_body_symbol(&self.method_symbol(struct_id, "len", true))?;
             let call_ref = air.add_call(
                 None,
                 call_name,
@@ -794,9 +794,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             (false, false) => (crate::RuntimeCallKind::StrCharScalar, Type::U32),
             (false, true) => (crate::RuntimeCallKind::StrCharScalarLossy, Type::U32),
         };
-        let call_name = self
-            .body_interner()
-            .get_or_intern(runtime.helper().symbol());
+        let call_name = self.intern_body_symbol(runtime.helper().symbol())?;
         let (ptr, len, temp_scope) =
             self.project_strbuf_text_fields(air, coll_result.air_ref, coll_result.ty, span, ctx)?;
         let call_ref = air.add_call(
@@ -1655,7 +1653,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .runtime_helper()
             .expect("to_string builtin must map to a runtime helper");
         debug_assert_eq!(runtime_helper.parameters.len(), 2);
-        let call_name = self.body_interner().get_or_intern(runtime_helper.symbol);
+        let call_name = self.intern_body_symbol(runtime_helper.symbol)?;
 
         let air_ref = air.add_call(
             Some(if unsigned {

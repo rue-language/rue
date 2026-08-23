@@ -25,7 +25,10 @@
 //! }
 //! ```
 
-use lasso::{Spur, ThreadedRodeo};
+use lasso::Spur;
+#[cfg(test)]
+use lasso::ThreadedRodeo;
+use rue_rir::SharedSymbolSpace;
 
 /// Pre-interned symbols for known strings.
 ///
@@ -183,70 +186,89 @@ impl KnownSymbols {
     /// Create a new `KnownSymbols` by interning all known strings.
     ///
     /// This should be called once during semantic-analysis setup.
+    #[cfg(test)]
     pub fn new(interner: &ThreadedRodeo) -> Self {
-        Self {
+        Self::with_intern(|text| {
+            Ok(interner
+                .try_get_or_intern_static(text)
+                .expect("test known-symbol fixture must fit its private interner"))
+        })
+        .expect("test known-symbol fixture must fit its private interner")
+    }
+
+    /// Build the known-symbol table through the revision-owned interner
+    /// policy. Exhaustion is latched by the shared space and reported at the
+    /// provider query boundary; no normal-build mutable override is involved.
+    pub fn new_in_space(space: &SharedSymbolSpace) -> Result<Self, lasso::LassoErrorKind> {
+        Self::with_intern(|text| space.try_intern(text))
+    }
+
+    fn with_intern(
+        mut intern: impl FnMut(&'static str) -> Result<Spur, lasso::LassoErrorKind>,
+    ) -> Result<Self, lasso::LassoErrorKind> {
+        Ok(Self {
             // Intrinsic names
-            dbg: interner.get_or_intern_static("dbg"),
-            drop: interner.get_or_intern_static("drop"),
-            int_cast: interner.get_or_intern_static("intCast"),
-            bit_cast: interner.get_or_intern_static("bitCast"),
-            cast: interner.get_or_intern_static("cast"),
-            panic: interner.get_or_intern_static("panic"),
-            assert: interner.get_or_intern_static("assert"),
-            read_line: interner.get_or_intern_static("read_line"),
-            to_string: interner.get_or_intern_static("to_string"),
-            print: interner.get_or_intern_static("print"),
-            println: interner.get_or_intern_static("println"),
-            parse_i32: interner.get_or_intern_static("parse_i32"),
-            parse_i64: interner.get_or_intern_static("parse_i64"),
-            parse_u32: interner.get_or_intern_static("parse_u32"),
-            parse_u64: interner.get_or_intern_static("parse_u64"),
-            test_preview_gate: interner.get_or_intern_static("test_preview_gate"),
-            import: interner.get_or_intern_static("import"),
-            random_u32: interner.get_or_intern_static("random_u32"),
-            random_u64: interner.get_or_intern_static("random_u64"),
-            arg_count: interner.get_or_intern_static("arg_count"),
-            arg_ptr: interner.get_or_intern_static("arg_ptr"),
-            arg_len: interner.get_or_intern_static("arg_len"),
-            env_count: interner.get_or_intern_static("env_count"),
-            env_ptr: interner.get_or_intern_static("env_ptr"),
-            env_len: interner.get_or_intern_static("env_len"),
-            wrapping_add: interner.get_or_intern_static("wrapping_add"),
-            wrapping_sub: interner.get_or_intern_static("wrapping_sub"),
-            wrapping_mul: interner.get_or_intern_static("wrapping_mul"),
+            dbg: intern("dbg")?,
+            drop: intern("drop")?,
+            int_cast: intern("intCast")?,
+            bit_cast: intern("bitCast")?,
+            cast: intern("cast")?,
+            panic: intern("panic")?,
+            assert: intern("assert")?,
+            read_line: intern("read_line")?,
+            to_string: intern("to_string")?,
+            print: intern("print")?,
+            println: intern("println")?,
+            parse_i32: intern("parse_i32")?,
+            parse_i64: intern("parse_i64")?,
+            parse_u32: intern("parse_u32")?,
+            parse_u64: intern("parse_u64")?,
+            test_preview_gate: intern("test_preview_gate")?,
+            import: intern("import")?,
+            random_u32: intern("random_u32")?,
+            random_u64: intern("random_u64")?,
+            arg_count: intern("arg_count")?,
+            arg_ptr: intern("arg_ptr")?,
+            arg_len: intern("arg_len")?,
+            env_count: intern("env_count")?,
+            env_ptr: intern("env_ptr")?,
+            env_len: intern("env_len")?,
+            wrapping_add: intern("wrapping_add")?,
+            wrapping_sub: intern("wrapping_sub")?,
+            wrapping_mul: intern("wrapping_mul")?,
 
             // Type intrinsics
 
             // Pointer intrinsics
-            ptr_read: interner.get_or_intern_static("ptr_read"),
-            ptr_write: interner.get_or_intern_static("ptr_write"),
-            ptr_read_unaligned: interner.get_or_intern_static("ptr_read_unaligned"),
-            ptr_write_unaligned: interner.get_or_intern_static("ptr_write_unaligned"),
-            ptr_offset: interner.get_or_intern_static("ptr_offset"),
-            ptr_to_int: interner.get_or_intern_static("ptr_to_int"),
-            int_to_ptr: interner.get_or_intern_static("int_to_ptr"),
-            raw: interner.get_or_intern_static("raw"),
-            raw_mut: interner.get_or_intern_static("raw_mut"),
-            field_ptr: interner.get_or_intern_static("field_ptr"),
-            place: interner.get_or_intern_static("place"),
-            syscall: interner.get_or_intern_static("syscall"),
-            alloc: interner.get_or_intern_static("alloc"),
-            free: interner.get_or_intern_static("free"),
-            realloc: interner.get_or_intern_static("realloc"),
-            alloc_zeroed: interner.get_or_intern_static("alloc_zeroed"),
-            resize: interner.get_or_intern_static("resize"),
-            byte_copy: interner.get_or_intern_static("byte_copy"),
-            byte_move: interner.get_or_intern_static("byte_move"),
-            byte_set: interner.get_or_intern_static("byte_set"),
+            ptr_read: intern("ptr_read")?,
+            ptr_write: intern("ptr_write")?,
+            ptr_read_unaligned: intern("ptr_read_unaligned")?,
+            ptr_write_unaligned: intern("ptr_write_unaligned")?,
+            ptr_offset: intern("ptr_offset")?,
+            ptr_to_int: intern("ptr_to_int")?,
+            int_to_ptr: intern("int_to_ptr")?,
+            raw: intern("raw")?,
+            raw_mut: intern("raw_mut")?,
+            field_ptr: intern("field_ptr")?,
+            place: intern("place")?,
+            syscall: intern("syscall")?,
+            alloc: intern("alloc")?,
+            free: intern("free")?,
+            realloc: intern("realloc")?,
+            alloc_zeroed: intern("alloc_zeroed")?,
+            resize: intern("resize")?,
+            byte_copy: intern("byte_copy")?,
+            byte_move: intern("byte_move")?,
+            byte_set: intern("byte_set")?,
 
             // Target platform intrinsics
-            target_arch: interner.get_or_intern_static("target_arch"),
-            target_os: interner.get_or_intern_static("target_os"),
-            target_data_model: interner.get_or_intern_static("target_data_model"),
+            target_arch: intern("target_arch")?,
+            target_os: intern("target_os")?,
+            target_data_model: intern("target_data_model")?,
             // Builtin type names
 
             // Special function names
-        }
+        })
     }
 
     /// Check if a symbol matches any of the parse intrinsics.

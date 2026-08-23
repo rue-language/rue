@@ -61,20 +61,34 @@ pub struct SemanticSymbolUniverse {
     unique_semantic_strings: AtomicUsize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SemanticSymbolInternerExhausted(pub(crate) lasso::LassoErrorKind);
+
 impl SemanticSymbolUniverse {
     /// Start a destination universe for one canonical program traversal.
     #[cfg(test)]
     pub(crate) fn new(program: &ParsedProgram) -> Self {
-        let universe = Self::from_modules(program.modules());
+        let universe = Self::from_modules(program.modules())
+            .expect("test semantic universe must fit the published interner bound");
         if let Some(symbols) = program.shared_symbol_strings() {
             for symbol in symbols {
-                universe.interner.get_or_intern(symbol);
+                rue_lexer::try_intern(&universe.interner, symbol)
+                    .expect("test semantic universe must fit the published interner bound");
             }
         }
         universe
     }
 
-    pub(crate) fn from_modules(modules: &[Arc<crate::parsed_modules::ParsedModule>]) -> Self {
+    pub(crate) fn from_modules(
+        modules: &[Arc<crate::parsed_modules::ParsedModule>],
+    ) -> Result<Self, SemanticSymbolInternerExhausted> {
+        Self::from_modules_with_limit(modules, rue_lexer::MAX_INTERNED_STRINGS)
+    }
+
+    pub(crate) fn from_modules_with_limit(
+        modules: &[Arc<crate::parsed_modules::ParsedModule>],
+        max_entries: usize,
+    ) -> Result<Self, SemanticSymbolInternerExhausted> {
         let universe = Self {
             admitted_modules: modules.to_vec().into(),
             interner: Arc::new(ThreadedRodeo::new()),
@@ -93,10 +107,17 @@ impl SemanticSymbolUniverse {
                 .all(|module| module.shares_resolver_with(first))
         {
             for symbol in first.resolver_strings() {
-                universe.interner.get_or_intern(symbol);
+                if universe.interner.get(symbol).is_none() && universe.interner.len() >= max_entries
+                {
+                    return Err(SemanticSymbolInternerExhausted(
+                        lasso::LassoErrorKind::KeySpaceExhaustion,
+                    ));
+                }
+                rue_lexer::try_intern(&universe.interner, symbol)
+                    .map_err(SemanticSymbolInternerExhausted)?;
             }
         }
-        universe
+        Ok(universe)
     }
 
     /// Translate a provenanced local symbol through its owning module view.
@@ -138,7 +159,8 @@ impl SemanticSymbolUniverse {
             self.unique_semantic_strings.fetch_add(1, Ordering::Relaxed);
         }
         Ok(SemanticSymbol {
-            spur: self.interner.get_or_intern(text),
+            spur: rue_lexer::try_intern(&self.interner, text)
+                .expect("test semantic universe must fit the published interner bound"),
             provenance: self.provenance.clone(),
         })
     }

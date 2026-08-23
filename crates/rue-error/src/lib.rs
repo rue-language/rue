@@ -33,6 +33,18 @@ use std::collections::HashSet;
 use std::fmt;
 use thiserror::Error;
 
+/// Classify a Lasso interner failure at the compiler diagnostic boundary.
+/// Key-space and configured-memory limits are E1401; an allocator failure is
+/// E1402. Keeping this mapping here prevents phase crates from losing the
+/// allocator's original error kind or duplicating an inverted classifier.
+pub fn interner_error_kind(kind: lasso::LassoErrorKind, message: impl Into<String>) -> ErrorKind {
+    if kind.is_failed_alloc() {
+        ErrorKind::CompilerResourceExhaustion(message.into())
+    } else {
+        ErrorKind::CompilerResourceLimit(message.into())
+    }
+}
+
 // ============================================================================
 // Error Codes
 // ============================================================================
