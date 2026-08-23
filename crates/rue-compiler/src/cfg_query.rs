@@ -7,7 +7,7 @@
 
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use lasso::Key as _;
 use rue_query::{QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutcome, QueryOutput};
@@ -111,7 +111,9 @@ pub(crate) struct CfgQueryKey {
     pub(crate) configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
     pub(crate) semantic_input: CfgSemanticInput,
     memo_hash: u64,
-    display_identity: Arc<str>,
+    /// Formatted only when something asks what this node is called
+    /// (ADR-0074); ordinary compilation never reads it.
+    display_identity: OnceLock<Arc<str>>,
 }
 
 impl CfgQueryKey {
@@ -123,7 +125,7 @@ impl CfgQueryKey {
         #[cfg(test)]
         CFG_QUERY_KEY_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
 
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut hasher = rue_query::StableHasher::new();
         // The family index needs a well-distributed in-process partition, not a
         // durable fingerprint of the whole semantic payload. Function and
         // configuration distribute independent CFGs across shards; the small
@@ -135,18 +137,21 @@ impl CfgQueryKey {
         function.hash(&mut hasher);
         configuration.hash(&mut hasher);
         let memo_hash = hasher.finish();
-        let display_identity: Arc<str> = format!(
-            "{function:?};target={:?};preview={:?}",
-            configuration.target, configuration.preview_features
-        )
-        .into();
         Self {
             function,
             configuration,
             semantic_input,
             memo_hash,
-            display_identity,
+            display_identity: OnceLock::new(),
         }
+    }
+
+    fn format_identity(&self) -> String {
+        let function = &self.function;
+        format!(
+            "{function:?};target={:?};preview={:?}",
+            self.configuration.target, self.configuration.preview_features
+        )
     }
 }
 
@@ -168,11 +173,13 @@ impl Hash for CfgQueryKey {
 
 impl QueryKey for CfgQueryKey {
     fn stable_identity(&self) -> String {
-        self.display_identity.to_string()
+        self.format_identity()
     }
 
     fn shared_stable_identity(&self) -> Arc<str> {
-        self.display_identity.clone()
+        self.display_identity
+            .get_or_init(|| self.format_identity().into())
+            .clone()
     }
 
     /// Function and configuration, which is exactly what `memo_hash` and the
@@ -436,7 +443,10 @@ pub(crate) struct OptimizedCfgQueryKey {
     pub(crate) cfg: CfgQueryKey,
     pub(crate) opt_level: rue_cfg::OptLevel,
     pub(crate) accessor_dependencies: Arc<[CfgQueryKey]>,
-    display_identity: Arc<str>,
+    /// Lazy for the same reason as [`CfgQueryKey`]: building it forced the
+    /// inner CFG key's identity too, so every optimized-CFG key formatted a
+    /// recursive function identity that normal compilation never reads.
+    display_identity: OnceLock<Arc<str>>,
 }
 
 impl OptimizedCfgQueryKey {
@@ -445,18 +455,21 @@ impl OptimizedCfgQueryKey {
         opt_level: rue_cfg::OptLevel,
         accessor_dependencies: Arc<[CfgQueryKey]>,
     ) -> Self {
-        let cfg_identity = cfg.shared_stable_identity();
-        let display_identity: Arc<str> = format!(
-            "{cfg_identity};opt={opt_level:?};accessors={}",
-            accessor_dependencies.len()
-        )
-        .into();
         Self {
             cfg,
             opt_level,
             accessor_dependencies,
-            display_identity,
+            display_identity: OnceLock::new(),
         }
+    }
+
+    fn format_identity(&self) -> String {
+        let cfg_identity = self.cfg.shared_stable_identity();
+        let opt_level = self.opt_level;
+        format!(
+            "{cfg_identity};opt={opt_level:?};accessors={}",
+            self.accessor_dependencies.len()
+        )
     }
 }
 
@@ -480,11 +493,13 @@ impl std::hash::Hash for OptimizedCfgQueryKey {
 
 impl QueryKey for OptimizedCfgQueryKey {
     fn stable_identity(&self) -> String {
-        self.display_identity.to_string()
+        self.format_identity()
     }
 
     fn shared_stable_identity(&self) -> Arc<str> {
-        self.display_identity.clone()
+        self.display_identity
+            .get_or_init(|| self.format_identity().into())
+            .clone()
     }
 
     fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
