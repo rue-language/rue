@@ -2067,7 +2067,15 @@ pub(crate) fn apply_general_inlining(
             .collect::<std::collections::BTreeSet<_>>();
         let mut implicit_destructor_dependencies_complete =
             record.implicit_destructor_dependencies_complete;
-        let mut current = record.cfg.clone();
+        // Splices run against a plain `Cfg` and the batch is verified once,
+        // below. `ValidatedCfg` can only be minted by verifying, so threading
+        // it through this loop re-proved the whole caller after every splice,
+        // over a caller each splice had just made bigger: 2,112 verifications
+        // for 760 spliced functions, 150,324,778 instructions on a fresh
+        // Lattice compile. Nothing read those proofs -- `optimize` below
+        // demands a `ValidatedCfg` and mints its own, so the graph that
+        // reaches a consumer is verified exactly as strictly as before.
+        let mut current: rue_cfg::Cfg = (*record.cfg).clone();
         let mut spliced = false;
         let mut failed = None;
         for (call, callee_function) in selected {
@@ -2143,7 +2151,7 @@ pub(crate) fn apply_general_inlining(
                     break;
                 }
             };
-            current = match rue_cfg::inline_call_in_block(
+            current = match rue_cfg::splice_call_in_block(
                 &current,
                 call,
                 call_block,
@@ -2166,6 +2174,17 @@ pub(crate) fn apply_general_inlining(
         if !spliced {
             continue;
         }
+        // The whole batch is proved here, once.
+        let current = match current.finish_after_optimization(&record.type_pool) {
+            Ok(cfg) => cfg,
+            Err(error) => {
+                output[index] = internal_failure(
+                    format!("general inline batch failed verification: {error}"),
+                    record.body_span,
+                );
+                continue;
+            }
+        };
         let current = match rue_cfg::opt::optimize(current, key.opt_level, &record.type_pool) {
             Ok(cfg) => cfg,
             Err(error) => {
