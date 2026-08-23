@@ -283,23 +283,34 @@ impl Parser {
     /// kind the lexer uses for the leading-dot form, because both diagnose one
     /// spelling rule; only the phase that can decide it differs.
     fn reject_trailing_dot_float(&mut self, base: &Expr) -> PResult<()> {
-        let literal_text = match base {
-            Expr::Int(literal) => literal.value.to_string(),
-            Expr::Float(literal) => self.interner.resolve(&literal.value).to_string(),
-            _ => return Ok(()),
-        };
+        if !matches!(base, Expr::Int(_) | Expr::Float(_)) {
+            return Ok(());
+        }
         let dot_span = self.tokens[self.cursor].span;
         let adjacent = base.span().end == dot_span.start;
         let member_follows = matches!(self.nth(1), TokenKind::Ident(_));
         if !adjacent || member_follows {
             return Ok(());
         }
-        let span = base.span().extend_to(dot_span.end);
-        self.record_error(CompileError::new(
-            ErrorKind::MalformedFloatLiteral(format!(
+        let literal_text = match base {
+            Expr::Int(literal) => literal.value.to_string(),
+            Expr::Float(literal) => self.interner.resolve(&literal.value).to_string(),
+            _ => unreachable!("literal kind was checked above"),
+        };
+        let message = match base {
+            Expr::Int(_) => format!(
                 "floating-point literal cannot end with `.`: write `{literal_text}.0` instead \
                  of `{literal_text}.`"
-            )),
+            ),
+            Expr::Float(_) => format!(
+                "floating-point literal cannot end with `.`: write `{literal_text}` instead \
+                 of `{literal_text}.`"
+            ),
+            _ => unreachable!("literal kind was checked above"),
+        };
+        let span = base.span().extend_to(dot_span.end);
+        self.record_error(CompileError::new(
+            ErrorKind::MalformedFloatLiteral(message),
             span,
         ));
         Err(())
@@ -844,10 +855,31 @@ mod tests {
     }
 
     #[test]
+    fn trailing_dot_float_uses_the_float_without_its_final_dot() {
+        for (source, expected) in [
+            (
+                "fn f() { let x = 5.5.; }",
+                "floating-point literal cannot end with `.`: write `5.5` instead of `5.5.`",
+            ),
+            (
+                "fn f() { let x = 1e9.; }",
+                "floating-point literal cannot end with `.`: write `1e9` instead of `1e9.`",
+            ),
+        ] {
+            assert_eq!(
+                parse_errors(source),
+                vec![expected],
+                "unexpected diagnostics for {source}"
+            );
+        }
+    }
+
+    #[test]
     fn trailing_dot_rejection_does_not_disturb_member_access() {
         // A member name after the dot is an ordinary access/method call, on an
         // integer literal as much as on anything else.
         assert!(parses("fn f() { 42.to_string() }"));
+        assert!(parses("fn f() { 5.5.to_string() }"));
         assert!(parses("fn f(p: P) { p.x }"));
         // A space before the dot is not the trailing-dot spelling; it stays an
         // ordinary "expected identifier" diagnostic.
@@ -867,6 +899,12 @@ mod tests {
         assert_eq!(
             errors,
             vec!["floating-point literal cannot end with `.`: write `5.0` instead of `5.`"]
+        );
+
+        let errors = parse_errors("fn f() -> i32 { let x = 5.5.; 1 } fn g() -> i32 { 2 }");
+        assert_eq!(
+            errors,
+            vec!["floating-point literal cannot end with `.`: write `5.5` instead of `5.5.`"]
         );
     }
 }

@@ -197,12 +197,32 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "-o", "prog"]
+args = ["--error-format", "json", "--preview", "floats", "main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = [
     "E0011",
     "floating-point literal cannot end with `.`: write `5.0` instead of `5.`",
 ]
+json_diagnostics = true
+json_diagnostic_order = ["error E0011 main.rue:2:13"]
+
+[[case]]
+name = "trailing_dot_on_float_is_rejected_with_a_valid_replacement"
+description = "A float base drops only its trailing dot, including exponent spelling; JSON order pins that this is one E0011."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x = 1e9.;
+    0
+}
+""" }]
+args = ["--error-format", "json", "--preview", "floats", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E0011",
+    "floating-point literal cannot end with `.`: write `1e9` instead of `1e9.`",
+]
+json_diagnostics = true
+json_diagnostic_order = ["error E0011 main.rue:2:13"]
 
 [[case]]
 name = "empty_exponent_is_rejected"
