@@ -496,6 +496,10 @@ needs a maintainer ruling before it means anything. ADR-0067 Amendment 1 is its
 companion and rules on the versioning and on the records already published;
 this one rules only on what the evidence must contain.
 
+(Figures throughout are the 2026-08-16 corpus the analysis was performed on.
+Re-measured 2026-08-23 at rebase: 1,619 records, 3,470.7 MiB, growth
+unchanged at ~284 MiB/day — the supporting note carries the details.)
+
 **This amendment cannot be adopted on its own.** Changing what a record contains
 changes how it is written down, and readers today accept exactly one encoding:
 `validate_run` refuses any `schema_version` but the current constant, with no

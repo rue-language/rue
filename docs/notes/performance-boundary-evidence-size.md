@@ -29,6 +29,28 @@ Everything labelled *measured* was computed from
 `upstream/performance-data-v1` at `53f23a9aa` (2026-08-16), from the Actions
 API, or from the repository source at `dd4e3ce30`. Projections are labelled.
 
+## Re-measured at rebase (2026-08-23)
+
+The 2026-08-16 corpus above remains the analyzed corpus; this section only
+records that its trajectory held for the following week, measured at
+`44b5d5164` (552 commits):
+
+| Path | Records | Bytes |
+| --- | ---: | ---: |
+| `runs/` | 1,619 | 3,470.7 MiB |
+| `runtime/` | 437 | 4.6 MiB |
+| `index.json` | 1 | 0.5 MiB |
+
+That is +1,989.5 MiB across +431 records in seven days — **284 MiB/day**,
+matching the measured 288.6 MiB/day within 2%. Nothing on trunk changed what
+is collected (RUE-1590 made the stall gate ignore *empty* records; it does
+not alter evidence retention), and all nine declared baselines still resolve
+(`rue-bench check-baselines`: 9/9, exit 0, against the live `index.json`).
+The compacted-size projections below scale roughly linearly with record
+count; the *shares* (evidence at 98.6–99.3% of a record, the per-entry
+breakdown, the cross-process identity finding) are properties of the
+encoding, not the corpus size.
+
 ## What is on the branch
 
 Measured, from `git ls-tree -r -l`:
