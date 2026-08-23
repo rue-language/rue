@@ -1,0 +1,90 @@
+# Well-formedness errors raised inside a `-> type` constructor body must survive
+# the reduction and be reported as themselves (RUE-1734).
+#
+# The durable type-syntax provider used to report an out-of-range array length
+# as an opaque *resolution* failure ("this provider could not resolve the syntax
+# yet"). The comptime-call reduction is entitled to treat a resolution failure
+# as "not reduced", so `Buf(-1)` silently degraded into an unreduced call and
+# the caller reported whatever it made of that -- for `let B = Buf(-1)`, an
+# E1200 about storing a type value in a runtime variable, which never mentions
+# the negative length that actually broke the program. A length that is already
+# fully substituted is a hard well-formedness error, so the provider now raises
+# the same E0481 the ordinary (in-body) type resolver raises, anchored on the
+# instantiation site.
+
+[section]
+id = "diagnostics.comptime_ctor_wellformedness"
+name = "Type-constructor body well-formedness"
+description = "A hard error inside a `-> type` body is reported as itself at the instantiation site."
+
+[[case]]
+name = "negative_array_length_in_ctor_body"
+source = """
+fn Buf(comptime n: i64) -> type { struct { data: [i64; n] } }
+fn main() -> i32 {
+    let B = Buf(0 - 1);
+    let _ = B;
+    0
+}
+"""
+compile_fail = true
+# The real error, with the real length, anchored on `Buf(0 - 1)` at 3:13 --
+# the instantiation site that chose the bad length. Not the E1200 about
+# storing a type value at runtime that this used to report.
+error_contains = [
+  "E0481",
+  "invalid array length",
+  "array length 'n' is negative (-1)",
+  "3:13",
+]
+
+[[case]]
+name = "negative_array_length_through_nested_ctor"
+description = "The error survives one `-> type` body delegating to another, still anchored on the outermost application."
+source = """
+fn Buf(comptime n: i64) -> type { struct { data: [i64; n] } }
+fn Wrap(comptime n: i64) -> type { struct { inner: Buf(n) } }
+fn main() -> i32 {
+    let B = Wrap(0 - 2);
+    let _ = B;
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+  "E0481",
+  "array length 'n' is negative (-2)",
+  "4:13",
+]
+
+[[case]]
+name = "negative_array_length_in_const_position"
+description = "The same body reduced by the durable evaluator in a const initializer reports the same E0481."
+source = """
+fn Buf(comptime n: i64) -> type { struct { data: [i64; n] } }
+const N: i64 = 0 - 3;
+fn main() -> i32 {
+    let B = Buf(N);
+    let _ = B;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0481", "array length 'n' is negative (-3)"]
+
+# Control: a well-formed length is unaffected. Reclassifying the failure must
+# not turn a legitimately deferred resolution into an error, so the constructor
+# still reduces, the produced type is still usable, and the program still runs.
+[[case]]
+name = "valid_array_length_in_ctor_body_still_reduces"
+source = """
+fn Buf(comptime n: i64) -> type { struct { data: [i64; n] } }
+fn main() -> i32 {
+    let B = Buf(3);
+    let b: B = B { data: [1, 2, 3] };
+    let x: i64 = b.data[1];
+    if x != 2 { return 1; }
+    42
+}
+"""
+exit_code = 42

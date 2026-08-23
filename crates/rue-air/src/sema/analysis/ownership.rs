@@ -2725,32 +2725,49 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .field_name
                 .map(|s| self.body_interner().resolve(&s).to_string())
                 .unwrap_or_default();
-            let mut err = CompileError::new(
-                ErrorKind::MoveFieldOutOfDestructorType {
-                    struct_name: struct_def.name.to_string(),
-                    field_name: field_name.clone(),
-                },
-                span,
-            )
-            .with_label(format!("field `{field_name}` is moved out here"), span)
-            .with_note(format!(
-                "the destructor for '{}' runs on the whole value when it is dropped: it \
-                 would observe the moved-out field, and the automatic field cleanup after \
-                 the destructor would drop `{field_name}` a second time",
-                struct_def.name
-            ))
-            .with_help(format!(
-                "borrow the field instead (`borrow value.{field_name}`), or move the whole value"
-            ));
-            if let Some(drop_span) = self.destructor_span(struct_id).as_ref() {
-                err = err.with_label(
-                    format!("destructor for '{}' is defined here", struct_def.name),
-                    *drop_span,
-                );
-            }
-            return Err(err);
+            return Err(self.field_move_out_of_destructor_type_error(struct_id, field_name, span));
         }
         Ok(())
+    }
+
+    /// Build the E0456 diagnostic for moving `field_name` out of `struct_id`.
+    ///
+    /// Shared by the named-place walk above and the computed-base fallback in
+    /// `analyze_field_get`, which spills to a temporary and has no
+    /// `PlaceTrace` to walk (RUE-1697). Takes the field name already owned:
+    /// both callers reach this only on the diagnostic path, so the name is
+    /// never allocated for a successful field lookup.
+    fn field_move_out_of_destructor_type_error(
+        &self,
+        struct_id: StructId,
+        field_name: String,
+        span: Span,
+    ) -> CompileError {
+        let struct_def = self.body_type_pool().struct_def(struct_id);
+        let mut err = CompileError::new(
+            ErrorKind::MoveFieldOutOfDestructorType {
+                struct_name: struct_def.name.to_string(),
+                field_name: field_name.clone(),
+            },
+            span,
+        )
+        .with_label(format!("field `{field_name}` is moved out here"), span)
+        .with_note(format!(
+            "the destructor for '{}' runs on the whole value when it is dropped: it \
+             would observe the moved-out field, and the automatic field cleanup after \
+             the destructor would drop `{field_name}` a second time",
+            struct_def.name
+        ))
+        .with_help(format!(
+            "borrow the field instead (`borrow value.{field_name}`), or move the whole value"
+        ));
+        if let Some(drop_span) = self.destructor_span(struct_id).as_ref() {
+            err = err.with_label(
+                format!("destructor for '{}' is defined here", struct_def.name),
+                *drop_span,
+            );
+        }
+        err
     }
 
     /// Analyze a field access.
@@ -3164,6 +3181,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
 
         let field_type = struct_field.ty;
+
+        // Moving a non-Copy field out of a destructor-typed value is E0456 no
+        // matter how the value was produced. The named-place path above
+        // rejects it via `reject_field_move_out_of_destructor_type`; a
+        // computed base reaches here instead, and the spilled temporary is
+        // dropped whole at scope exit, so its destructor would observe exactly
+        // the moved-out hole that rule exists to prevent (RUE-1697). The
+        // temporary's type is `base_type`, so the check is the same one, just
+        // without a `PlaceTrace` to walk. Copy fields are read, not moved, and
+        // stay legal.
+        if !self.is_type_copy(field_type) && struct_def.destructor.is_some() {
+            let field_name = field_name.to_string();
+            return Err(self.field_move_out_of_destructor_type_error(struct_id, field_name, span));
+        }
 
         // Allocate a temporary slot for the computed struct value
         let num_slots = self.require_layout_slots(base_type, span)?;
@@ -6039,6 +6070,71 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     .map(|root| (root, kind))
             })
             .collect();
+        // A NESTED `inout` loan of a root that an ENCLOSING call already holds
+        // a SHARED (`borrow`) loan of is the nested spelling of
+        // `f(borrow x, inout x)`, which `check_exclusive_access_in` already
+        // rejects as E0430 (law of exclusivity, spec 6.1:36). It is also
+        // unsound rather than merely irregular: a `borrow str`/slice argument
+        // is snapshotted into a `{ptr, len}` view at argument-evaluation time
+        // (`coerce_borrow_str_operand_to_view`), and the shared loan spans the
+        // whole outer call, so a nested `inout` that reallocates the root
+        // leaves the outer argument's view pointing at freed memory — a
+        // use-after-free in safe code (RUE-1696).
+        //
+        // Deliberately limited to shared-outer/exclusive-nested:
+        //
+        // * A nested `borrow` finishes before the outer call is entered, so it
+        //   cannot outlive anything.
+        // * An `inout` outer loan of an ADDRESS-PASSED parameter passes the
+        //   root's address rather than a snapshot, so a nested `inout` writing
+        //   through the same address observes ordinary sequenced mutation. The
+        //   accumulator idiom `add(mul(x, y, inout flags), z, inout flags)`
+        //   depends on it.
+        //
+        //   This exclusion does NOT generalize to every `inout`: a view
+        //   materialized parameter snapshots whatever its loan mode. `inout
+        //   str` is passed as a two-word `{ptr, len}` value (4.10:4), so a
+        //   nested `inout` that frees or reallocates the root dangles it
+        //   exactly as the shared case above — still accepted here, tracked as
+        //   RUE-1766. The property that actually governs is view
+        //   materialization, not shared-vs-exclusive; this rule is keyed on the
+        //   latter and so covers only half the hole.
+        //
+        // Caught in either argument order, because the enclosing frame covers
+        // the whole outer argument list before any of it is analyzed.
+        // `ctx.call_loaned_roots` holds only genuinely enclosing calls here:
+        // this call's own frame is pushed below.
+        for arg in args.clone() {
+            if !arg.is_inout() {
+                continue;
+            }
+            let Some(root) = root_variable_of(self.body_rir_ref(), arg.value)
+                .or_else(|| self.place_root_with_accessors(arg.value, ctx))
+            else {
+                continue;
+            };
+            let shared_outer_loan = ctx
+                .call_loaned_roots
+                .iter()
+                .flatten()
+                .any(|(loaned, kind)| *loaned == root && *kind == CallLoanKind::Borrow);
+            if shared_outer_loan {
+                let variable = self.body_interner().resolve(&root).to_string();
+                return Err(CompileError::new(
+                    ErrorKind::BorrowInoutConflict {
+                        variable: variable.clone(),
+                    },
+                    self.body_rir_ref().get(arg.value).span,
+                )
+                .with_help(format!(
+                    "the enclosing call already passes `{variable}` as `borrow`, and that \
+                     shared loan spans the whole call — a `borrow str`/slice argument is \
+                     snapshotted before the call runs, so mutating `{variable}` here would \
+                     leave it dangling; evaluate the nested call into its own binding before \
+                     the call"
+                )));
+            }
+        }
         // An `inout` loan on a root an accessor result borrows in the same
         // full expression violates exclusivity (ADR-0062, E0259). Checked
         // three times: here at frame construction (loans taken earlier in the

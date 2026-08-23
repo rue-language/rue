@@ -41,3 +41,7 @@ website/static/performance-data.json
 # under `static/`, because `static/` is inside the recorded fixture identity and
 # a derived file there would move the identity on every build.
 website/source-excerpts.json
+
+# Isolated worktrees created by Claude Code workflow runs (fix cycles, audits).
+# Transient build trees, multi-GB each, and registered as git worktrees.
+.claude/worktrees/

@@ -81,6 +81,27 @@ struct SpecializationInfo {
 /// sema work queue.
 pub const MAX_SPECIALIZATION_ROUNDS: usize = 64;
 
+/// Maximum nesting depth of a *comptime call* — one `comptime`-evaluated
+/// application of a function to compile-time arguments, as opposed to a round
+/// of the specialization worklist above.
+///
+/// This is the single budget both comptime evaluators spend: the in-body engine
+/// (`sema::comptime_eval`) and the durable/declaration-time evaluator
+/// (`rue_compiler`'s `SEMANTIC_COMPTIME_MAX_DEPTH`). Sharing it is the point —
+/// a comptime call must be accepted in both positions or rejected in both, and
+/// while the two paths had separate budgets `let x: i64 = count(40)` compiled
+/// while `const X: i64 = count(40)` was rejected as too deep (RUE-1733).
+///
+/// The value is bounded from *above* by the compiler's own stack, not by taste.
+/// Each level of durable comptime recursion costs roughly 150 KiB of stack
+/// (query frames plus the evaluator's), so on the established 8 MiB stack floor
+/// (`rue_query`'s batch-worker stack size) the durable evaluator exhausts the
+/// stack somewhere past depth 53. A budget above that is decorative: the
+/// process dies before the guard can report anything. 48 keeps a margin while
+/// staying far above any plausible hand-written recursion. Raising it requires
+/// first cutting that per-level stack cost.
+pub const MAX_COMPTIME_CALL_DEPTH: usize = 48;
+
 fn collect_specializations(
     air: &Air,
     interner: &ThreadedRodeo,

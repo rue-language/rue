@@ -1101,6 +1101,60 @@ fn main() -> i32 {
 exit_code = 0
 expected_stdout = "7\n800\n7\n"
 
+[[case]]
+name = "field_move_out_of_computed_destructor_type_rejected"
+spec = ["3.9:34"]
+description = "The rule is about the VALUE, not the place: a field move out of a computed destructor-having value (`make().f`) is rejected too — the temporary it spills into is dropped whole (RUE-1697)"
+source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) {
+    @dbg(self.v);
+}
+
+struct Outer { f: Inner, tag: i32 }
+
+drop fn Outer(self) {
+    @dbg(self.tag);
+}
+
+fn make() -> Outer {
+    Outer { f: Inner { v: 7 }, tag: 9 }
+}
+
+fn main() -> i32 {
+    let y = make().f;
+    y.v
+}
+"""
+compile_fail = true
+error_contains = "cannot move field `f` out of a value of type 'Outer'"
+
+[[case]]
+name = "copy_field_of_computed_destructor_type_stays_legal"
+spec = ["3.9:34"]
+description = "Reading a Copy field of a computed destructor-having value is not a move and stays legal; the temporary still drops exactly once, as a whole value"
+source = """
+struct Inner { v: i32 }
+
+struct Outer { f: Inner, tag: i32 }
+
+drop fn Outer(self) {
+    @dbg(self.tag);
+}
+
+fn make() -> Outer {
+    Outer { f: Inner { v: 7 }, tag: 9 }
+}
+
+fn main() -> i32 {
+    @dbg(make().tag);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "9\n9\n"
+
 # =============================================================================
 # The `@drop` intrinsic (RUE-187, ADR-0039)
 # =============================================================================
