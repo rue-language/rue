@@ -164,6 +164,45 @@ compile_fail = true
 error_contains = "escapes the project root"
 
 [[case]]
+name = "empty_import_path_is_rejected"
+spec = ["4.13:133", "10.2:8"]
+description = "An empty import path names no candidate and is E0714, not an escape diagnostic about a derived '/_.rue'"
+source = """
+fn main() -> i32 {
+    let nothing = @import("");
+    0
+}
+"""
+compile_fail = true
+error_contains = "requires a relative path"
+
+[[case]]
+name = "absolute_import_path_is_rejected"
+spec = ["4.13:133", "10.2:8"]
+description = "An absolute import path is anchored to a machine rather than to the importing file, and is E0714"
+source = """
+fn main() -> i32 {
+    let h = @import("/etc/hostname.rue");
+    0
+}
+"""
+compile_fail = true
+error_contains = "is absolute"
+
+[[case]]
+name = "relative_import_path_with_leading_dot_still_resolves"
+spec = ["10.2:2", "10.2:8"]
+description = "Rejecting absolute paths does not touch relative ones: an explicit './' prefix resolves against the importing file's directory"
+source = """
+fn main() -> i32 {
+    let m = @import("./foo.rue");
+    m.a()
+}
+"""
+aux_files = { "foo.rue" = "pub fn a() -> i32 { 7 }" }
+exit_code = 7
+
+[[case]]
 name = "const_module_reexport_member_chain"
 spec = ["4.13:81", "10.4:3"]
 description = "A pub const holding a module (ADR-0026 re-export idiom) is accessible as a member; chained access reaches the inner module's functions (RUE-136)"
