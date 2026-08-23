@@ -98,6 +98,14 @@ sh_binary(
     visibility = ["PUBLIC"],
 )
 
+python_bootstrap_binary(
+    name = "corpus-timeout-runner",
+    main = "scripts/corpus-timeout.py",
+    # This is a declared input of every cacheable corpus action.  Do not
+    # replace it with a timeout binary discovered from the host PATH.
+    visibility = ["PUBLIC"],
+)
+
 sh_binary(
     name = "corpus-stamp-check",
     main = "scripts/corpus-stamp-check",
@@ -1608,6 +1616,7 @@ filegroup(
     name = "corpus-script-inputs",
     srcs = [
         "scripts/corpus-action",
+        "scripts/corpus-timeout.py",
         "scripts/corpus-stamp-check",
     ],
 )
