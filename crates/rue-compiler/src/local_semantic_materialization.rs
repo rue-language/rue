@@ -1188,7 +1188,7 @@ pub(crate) fn select_materialization_facts(
     identity: &FunctionInstanceKey,
     body: &rue_air::SemanticBody<StableDefinitionKey, ModuleId>,
     index: &LocalFactSelectionIndex<'_>,
-    callable_symbols: &std::collections::BTreeMap<FunctionInstanceKey, Arc<str>>,
+    callable_symbols: &ahash::AHashMap<FunctionInstanceKey, Arc<str>>,
     interner: &mut LocalMaterializationFactInterner,
 ) -> Result<LocalMaterializationFacts, LocalFactSelectionFailure> {
     use rue_air::SemanticBodyInstDependency as Dependency;
@@ -1200,7 +1200,9 @@ pub(crate) fn select_materialization_facts(
         selected_anonymous:
             std::collections::BTreeMap<crate::AnonymousNominalKey, DurableAnonymousNominal>,
         pending_nominals: Vec<crate::NominalInstanceKey>,
-        seen_nominals: std::collections::BTreeSet<crate::NominalInstanceKey>,
+        // Pure dedup: `pending_nominals` owns the worklist order and
+        // `opaque_nominals` is the only one of the two that is iterated.
+        seen_nominals: AHashSet<crate::NominalInstanceKey>,
         opaque_nominals: std::collections::BTreeSet<crate::NominalInstanceKey>,
         callables: std::collections::BTreeSet<FunctionInstanceKey>,
         modules: std::collections::BTreeSet<ModuleId>,
@@ -1251,9 +1253,14 @@ pub(crate) fn select_materialization_facts(
         }
 
         fn semantic_type(&mut self, ty: &crate::durable_semantics::DurableType) {
-            if !self.seen_semantic_types.insert(ty.clone()) {
+            // Probe before cloning. A `DurableType` is a recursive enum whose
+            // every indirection allocates, and the overwhelmingly common
+            // outcome here is a repeat, so cloning to build the probe key
+            // allocates a whole tree only to drop it again.
+            if self.seen_semantic_types.contains(ty) {
                 return;
             }
+            self.seen_semantic_types.insert(ty.clone());
             use rue_air::SemanticImportType as T;
             match ty {
                 T::Nominal(key) => self.nominal(&crate::NominalInstanceKey::Named(key.clone())),
@@ -1285,9 +1292,10 @@ pub(crate) fn select_materialization_facts(
         }
 
         fn opaque_semantic_type(&mut self, ty: &crate::durable_semantics::DurableType) {
-            if !self.seen_opaque_types.insert(ty.clone()) {
+            if self.seen_opaque_types.contains(ty) {
                 return;
             }
+            self.seen_opaque_types.insert(ty.clone());
             use rue_air::SemanticImportType as T;
             match ty {
                 T::Nominal(key) => {
@@ -1570,7 +1578,7 @@ pub(crate) fn select_materialization_facts(
         selected_declarations: std::collections::BTreeMap::new(),
         selected_anonymous: std::collections::BTreeMap::new(),
         pending_nominals: Vec::new(),
-        seen_nominals: std::collections::BTreeSet::new(),
+        seen_nominals: AHashSet::new(),
         opaque_nominals: std::collections::BTreeSet::new(),
         callables: std::collections::BTreeSet::new(),
         modules: std::collections::BTreeSet::new(),
@@ -1584,9 +1592,11 @@ pub(crate) fn select_materialization_facts(
     );
     let mut seen_required_types = AHashSet::new();
     let mut require_type = |ty: &crate::durable_semantics::DurableType| {
-        if seen_required_types.insert(ty.clone()) {
-            required_types.push(ty.clone());
+        if seen_required_types.contains(ty) {
+            return;
         }
+        seen_required_types.insert(ty.clone());
+        required_types.push(ty.clone());
     };
     require_type(&body.return_type);
     if !body.strings.is_empty() {
@@ -1698,7 +1708,7 @@ pub(crate) fn select_drop_glue_materialization_facts(
     owner: &crate::TypeInstanceKey,
     facts: &crate::type_queries::DropGlueFacts,
     index: &LocalFactSelectionIndex<'_>,
-    callable_symbols: &std::collections::BTreeMap<FunctionInstanceKey, Arc<str>>,
+    callable_symbols: &ahash::AHashMap<FunctionInstanceKey, Arc<str>>,
     interner: &mut LocalMaterializationFactInterner,
 ) -> Result<LocalMaterializationFacts, LocalFactSelectionFailure> {
     let identity = FunctionInstanceKey::DropGlue(Box::new(owner.clone()));
@@ -2068,7 +2078,7 @@ mod tests {
             &FunctionInstanceKey::Definition(function.clone()),
             &selection_body,
             &index,
-            &std::collections::BTreeMap::from([(
+            &AHashMap::from([(
                 FunctionInstanceKey::Definition(function.clone()),
                 Arc::from("probe"),
             )]),
@@ -2134,7 +2144,7 @@ mod tests {
         );
         let shared = SharedDeclarationFactIndex::new(&[]);
         let (index, _) = LocalFactSelectionIndex::new(&shared, &[], std::slice::from_ref(&nominal));
-        let symbols = std::collections::BTreeMap::from([(
+        let symbols = AHashMap::from([(
             FunctionInstanceKey::Definition(function.clone()),
             Arc::from("probe"),
         )]);

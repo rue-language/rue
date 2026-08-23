@@ -92,7 +92,7 @@ pub(crate) fn semantic_type_from_instance(
 pub(crate) fn synthesize_canonical_drop_glue(
     owner: &crate::TypeInstanceKey,
     facts: &crate::type_queries::DropGlueFacts,
-    abi_slots: &std::collections::BTreeMap<crate::TypeInstanceKey, u32>,
+    abi_slots: &ahash::AHashMap<crate::TypeInstanceKey, u32>,
 ) -> Result<rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>, Arc<str>> {
     use rue_air::{SemanticBodyAnchor, SemanticBodyInst, SemanticBodyInstData};
     type Body = rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>;
@@ -745,7 +745,7 @@ mod tests {
             machine_symbol: None,
             destructor_symbol: None,
         };
-        let slots = std::collections::BTreeMap::from([(element, 2), (owner.clone(), 6)]);
+        let slots = ahash::AHashMap::from([(element, 2), (owner.clone(), 6)]);
         let body = synthesize_canonical_drop_glue(&owner, &facts, &slots).unwrap();
         assert_eq!(body.num_param_slots, 6);
         assert_eq!(body.param_by_ref.as_ref(), &[false; 6]);

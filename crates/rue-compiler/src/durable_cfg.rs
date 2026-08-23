@@ -785,12 +785,9 @@ impl CfgDomainProjection {
         source_name: &str,
         type_pool: &rue_air::FrozenTypeInternPool,
         interner: &lasso::ThreadedRodeo,
-        call_abis: &std::collections::BTreeMap<
-            crate::FunctionInstanceKey,
-            crate::type_queries::CallAbiFacts,
-        >,
-        drop_glue_symbols: &std::collections::BTreeMap<crate::TypeInstanceKey, Arc<str>>,
-        destructor_symbols: &std::collections::BTreeMap<crate::TypeInstanceKey, Arc<str>>,
+        call_abis: &ahash::AHashMap<crate::FunctionInstanceKey, crate::type_queries::CallAbiFacts>,
+        drop_glue_symbols: &ahash::AHashMap<crate::TypeInstanceKey, Arc<str>>,
+        destructor_symbols: &ahash::AHashMap<crate::TypeInstanceKey, Arc<str>>,
     ) -> Result<crate::cfg_query::CfgCodegenDomain, CfgDomainFailure> {
         let defined_symbol: Arc<str> = if source_name == "main" {
             Arc::from("main")
@@ -807,7 +804,11 @@ impl CfgDomainProjection {
             let source = interner.resolve(live).to_owned();
             let (machine, foreign) = match stable {
                 StableCfgSymbol::Callable(callable) => {
-                    let foreign = call_abis.get(callable).is_some_and(|facts| {
+                    // One probe answers both questions. The convention and the
+                    // native symbol come from the same facts, and this map is
+                    // keyed by a recursive callable identity.
+                    let abi = call_abis.get(callable);
+                    let foreign = abi.is_some_and(|facts| {
                         matches!(
                             facts.convention,
                             crate::type_queries::CallAbiConvention::TargetC(_)
@@ -818,9 +819,7 @@ impl CfgDomainProjection {
                     } else if source == "main" {
                         source.clone()
                     } else {
-                        call_abis
-                            .get(callable)
-                            .and_then(|facts| facts.native_symbol.as_ref())
+                        abi.and_then(|facts| facts.native_symbol.as_ref())
                             .map(ToString::to_string)
                             .unwrap_or_else(|| {
                                 crate::StableSymbolEncoder::encode(
@@ -836,7 +835,8 @@ impl CfgDomainProjection {
                     let callable =
                         crate::semantic_identity::function_instance_from_specialization(identity)
                             .ok_or(CfgDomainFailure::Shape)?;
-                    let foreign = call_abis.get(&callable).is_some_and(|facts| {
+                    let abi = call_abis.get(&callable);
+                    let foreign = abi.is_some_and(|facts| {
                         matches!(
                             facts.convention,
                             crate::type_queries::CallAbiConvention::TargetC(_)
@@ -847,9 +847,7 @@ impl CfgDomainProjection {
                     } else if source == "main" {
                         source.clone()
                     } else {
-                        call_abis
-                            .get(&callable)
-                            .and_then(|facts| facts.native_symbol.as_ref())
+                        abi.and_then(|facts| facts.native_symbol.as_ref())
                             .map(ToString::to_string)
                             .unwrap_or_else(|| {
                                 crate::StableSymbolEncoder::encode(
