@@ -234,9 +234,8 @@ static QUERY_CONCURRENCY: std::sync::atomic::AtomicUsize = std::sync::atomic::At
 
 /// Configure the compiler's shared structured-query concurrency budget.
 ///
-/// Per-function CFG and backend work is deliberately serialized until it is
-/// represented as registered query batches, leaving one canonical concurrency
-/// authority for compiler work.
+/// Registered batch schedulers consume this one shared budget, keeping
+/// structured-query concurrency under a single authority.
 pub fn configure_thread_pool(jobs: usize) -> usize {
     let jobs = if jobs == 0 {
         std::thread::available_parallelism()
