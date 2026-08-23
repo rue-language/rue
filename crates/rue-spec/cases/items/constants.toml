@@ -299,6 +299,38 @@ compile_fail = true
 error_contains = ["E1200", "remainder by zero"]
 
 [[case]]
+name = "const_signed_min_division_neg_one_is_compile_error"
+spec = ["6.5:12"]
+description = "A signed minimum divided by -1 overflows like the corresponding runtime operation."
+source = """
+const DIV: i8 = @int_min(i8) / -1;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1200", "integer overflow"]
+
+[[case]]
+name = "const_signed_min_remainder_neg_one_is_compile_error"
+spec = ["6.5:12"]
+description = "A signed minimum remainder by -1 overflows like the corresponding runtime operation."
+source = """
+const REM: i8 = @int_min(i8) % -1;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1200", "integer overflow"]
+
+[[case]]
+name = "const_signed_min_plus_one_remainder_neg_one_is_valid"
+spec = ["6.5:12"]
+description = "Only the exact signed minimum remainder by -1 overflows; the adjacent value remains valid."
+source = """
+const REM: i8 = (@int_min(i8) + 1) % -1;
+fn main() -> i32 { @intCast(REM) }
+"""
+exit_code = 0
+
+[[case]]
 name = "const_aggregate_initializer_rejected"
 spec = ["6.5:2"]
 description = "A struct literal is not compile-time evaluable, so an aggregate value const is rejected (E0434) (RUE-299)"

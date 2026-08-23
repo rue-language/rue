@@ -181,12 +181,7 @@ impl IntegerType {
 
     pub fn checked_neg_report_i128(self, value: i128) -> CheckedIntegerResult {
         let value = self.canonicalize_i128(value);
-        if self.is_unsigned() {
-            let raw = (value == 0).then_some(0);
-            CheckedIntegerResult::from_raw(raw)
-        } else {
-            self.report_raw(value.checked_neg())
-        }
+        self.report_raw(value.checked_neg())
     }
 
     /// Negate an integer literal's mathematical magnitude.  Literal syntax
@@ -198,7 +193,7 @@ impl IntegerType {
     }
 
     pub fn checked_neg_literal_report_i128(self, magnitude: i128) -> CheckedIntegerResult {
-        if self.is_unsigned() || magnitude < 0 {
+        if magnitude < 0 {
             return CheckedIntegerResult::from_raw(None);
         }
         self.report_raw(magnitude.checked_neg())
@@ -418,6 +413,13 @@ mod tests {
         let i8 = IntegerType::new(8, true).unwrap();
         assert_eq!(u8.checked_neg_i128(256), Some(0));
         assert_eq!(i8.checked_neg_i128(128), None);
+
+        let unsigned = u8.checked_neg_report_i128(5);
+        assert_eq!(unsigned.raw(), Some(-5));
+        assert_eq!(unsigned.checked(), None);
+        let unsigned_literal = u8.checked_neg_literal_report_i128(5);
+        assert_eq!(unsigned_literal.raw(), Some(-5));
+        assert_eq!(unsigned_literal.checked(), None);
     }
 
     #[test]

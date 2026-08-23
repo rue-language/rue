@@ -2828,6 +2828,83 @@ fn rue_1191_anonymous_digest_collision_authority_is_body_closure_owned() {
 }
 
 #[test]
+fn durable_const_integer_semantics_use_the_shared_kernel() {
+    let source = include_str!("revisioned_query_database.rs");
+    let fits = source
+        .split("fn durable_const_fits_type(")
+        .nth(1)
+        .and_then(|source| source.split("fn durable_int_width(").next())
+        .expect("durable integer fit adapter");
+    let evaluator = source
+        .split("impl SemanticConstEvaluator<'_, '_> {")
+        .nth(1)
+        .and_then(|source| source.split("impl SemanticNucleusTypeProvider<'_>").next())
+        .expect("durable evaluator source");
+    let arithmetic = evaluator
+        .split("fn eval_binary(")
+        .nth(1)
+        .and_then(|source| source.split("fn eval_block(").next())
+        .expect("durable arithmetic evaluator");
+    let unary = evaluator
+        .split("E::Neg { operand } | E::BitNot { operand }")
+        .nth(1)
+        .and_then(|source| source.split("E::Block { instructions }").next())
+        .expect("durable unary evaluator");
+    let arithmetic_policy = format!("{arithmetic}{unary}");
+
+    assert!(fits.contains("integer.fits_i128"));
+    for duplicated_fit in [
+        "i8::try_from",
+        "i16::try_from",
+        "i32::try_from",
+        "i64::try_from",
+        "u8::try_from",
+        "u16::try_from",
+        "u32::try_from",
+        "u64::try_from",
+    ] {
+        assert!(
+            !fits.contains(duplicated_fit),
+            "durable const fit checks regained local integer policy: {duplicated_fit}"
+        );
+    }
+
+    for required in [
+        "durable_int_width",
+        "checked_add_report_i128",
+        "checked_sub_report_i128",
+        "checked_mul_report_i128",
+        "checked_div_report_i128",
+        "checked_rem_report_i128",
+        "checked_neg_report_i128",
+        "checked_neg_literal_report_i128",
+        "compare_i128",
+    ] {
+        assert!(
+            evaluator.contains(required),
+            "durable evaluator missing {required}"
+        );
+    }
+    for forbidden in [
+        ".checked_add(",
+        ".checked_sub(",
+        ".checked_mul(",
+        ".checked_div(",
+        ".checked_rem(",
+        ".checked_neg(",
+        "left < right",
+        "left > right",
+        "left <= right",
+        "left >= right",
+    ] {
+        assert!(
+            !arithmetic_policy.contains(forbidden),
+            "durable evaluator regained local integer policy: {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn import_resolution_remains_discovery_owned() {
     let production = PRODUCTION_MODULES
         .iter()
