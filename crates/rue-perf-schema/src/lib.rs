@@ -44,6 +44,7 @@
 
 mod boundary;
 mod canonical;
+mod encoding;
 mod incremental;
 mod manifest;
 mod run;
@@ -63,6 +64,12 @@ pub use boundary::{
     OptimizationLevel, OutputKind, RunnerBoundaryEvidence, RunnerClockBoundary, WorkerSetting,
 };
 pub use canonical::{CanonicalError, canonical_json, content_address};
+pub use encoding::{
+    CompilerRunInvariant, CompilerWorkloadInvariant, EncodeError, EvidenceSource,
+    FULL_EVIDENCE_SCHEMA_VERSION, IDENTITY_DIGEST_TAG, RunBoundary, RunnerRunInvariant,
+    RunnerWorkloadInvariant, WORK_DIGEST_TAG, WorkloadBoundary, encode_v2, identity_digest,
+    reassemble_witness, work_digest,
+};
 pub use incremental::{
     DisplayIdentityWorkSummary, EDIT_REPORT_SCHEMA_VERSION, EditEndpoints, EditManifest,
     EditManifestError, EditOutcome, EditReport, EditReportIdentity, EditReportRegime, EditRow,
@@ -135,9 +142,13 @@ pub struct DisplayIdentityWork {
     pub abort_fallback_bytes: u64,
 }
 
-/// The schema version of [`RunObject`] as defined by this crate.
+/// The schema version the producer writes (ADR-0067 Amendment 1).
 ///
-/// A run object records the version it was written under. Readers refuse
-/// versions they do not implement rather than guessing: there is no
-/// compatibility path, by design.
-pub const RUN_SCHEMA_VERSION: u32 = 1;
+/// A run object records the version it was written under. Readers implement
+/// every schema version that can still be in the store —
+/// [`FULL_EVIDENCE_SCHEMA_VERSION`] and this one — and refuse only versions
+/// ahead of them. Encoding shape dispatches on the record's
+/// `schema_version`; what must be proven dispatches on the suite's
+/// `protocol_version`. Support for a version may be dropped only once no
+/// record carrying it is reachable by any consumer.
+pub const RUN_SCHEMA_VERSION: u32 = 2;

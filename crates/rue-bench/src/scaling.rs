@@ -1103,6 +1103,8 @@ mod tests {
                 compiler_root_ns: 100,
             },
             boundary_evidence: Vec::new(),
+            boundary_processes: Vec::new(),
+            boundary_work_processes: Vec::new(),
         };
         ScalingReport {
             schema_version: SCALING_REPORT_SCHEMA_VERSION,

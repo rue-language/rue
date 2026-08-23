@@ -27,6 +27,7 @@ mod fixture;
 mod incremental;
 mod measure;
 mod pins;
+mod reencode;
 mod runtime;
 mod scaling;
 mod staleness_inputs;
@@ -37,9 +38,9 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rue_perf_schema::{
-    Completeness, FailureRecord, Invocation, Manifest, ProcessElapsedRegression,
-    RUN_SCHEMA_VERSION, ResolvedPins, RunIdentity, RunObject, Sample, ValidationOutcome,
-    WorkloadObservation, process_elapsed_regressions, validate_run,
+    Completeness, FULL_EVIDENCE_SCHEMA_VERSION, FailureRecord, Invocation, Manifest,
+    ProcessElapsedRegression, ResolvedPins, RunIdentity, RunObject, Sample, ValidationOutcome,
+    WorkloadObservation, encode_v2, process_elapsed_regressions, validate_run,
 };
 
 use crate::measure::{SampleOutcome, SampleRequest, measure_sample};
@@ -118,6 +119,14 @@ Subcommands:
                        manifest and index.json. Covers retired epochs, which
                        `staleness-inputs` deliberately keeps out of the derived
                        data. Exits 3 when one does not resolve.
+
+  reencode --data-root <dir> --manifest <path> [--apply]
+                       rewrite every full-evidence (schema v1) record in
+                       <dir>/runs into the v2 witness-plus-digests encoding
+                       under new content addresses, moving index.json and the
+                       manifest pins with them (ADR-0067 Amendment 1). Dry run
+                       by default; --apply writes, then requires every declared
+                       baseline to resolve, exiting 3 when one does not.
 
   check-pins --manifest <path> --compiler <path> [--repo-root <path>]
                        answer whether this tree still matches every collection
@@ -216,6 +225,15 @@ fn main() -> ExitCode {
             Ok(status) => ExitCode::from(status),
             Err(message) => {
                 eprintln!("rue-bench check-baselines: {message}");
+                ExitCode::from(exit::USAGE)
+            }
+        };
+    }
+    if std::env::args().nth(1).as_deref() == Some("reencode") {
+        return match reencode::run() {
+            Ok(status) => ExitCode::from(status),
+            Err(message) => {
+                eprintln!("rue-bench reencode: {message}");
                 ExitCode::from(exit::USAGE)
             }
         };
@@ -604,6 +622,7 @@ fn run(options: &Options) -> Result<u8, String> {
         if !samples.is_empty() {
             observations.push(WorkloadObservation {
                 workload: workload.id.clone(),
+                boundary: None,
                 samples,
             });
         }
@@ -613,8 +632,11 @@ fn run(options: &Options) -> Result<u8, String> {
     // would hash differently from the identical measurement written correctly.
     observations.sort_by(|left, right| left.workload.cmp(&right.workload));
 
+    // Assembled in the full-evidence encoding: every per-process proof is
+    // present for validation's deep checks and for the retained artifact.
+    // Only what reaches the store is written in the digest encoding below.
     let run = RunObject {
-        schema_version: RUN_SCHEMA_VERSION,
+        schema_version: FULL_EVIDENCE_SCHEMA_VERSION,
         identity: RunIdentity {
             suite_revision: epoch.suite_revision,
             epoch: epoch.id,
@@ -633,6 +655,7 @@ fn run(options: &Options) -> Result<u8, String> {
             },
             environment: environment::fingerprint(),
         },
+        boundary: None,
         workloads: observations,
         failures,
     };
@@ -640,10 +663,28 @@ fn run(options: &Options) -> Result<u8, String> {
     let outcome = validate_run(&manifest, &run);
     let regressions = process_elapsed_regressions(&manifest, &run, &outcome);
 
-    // The run object is written whatever the verdict. Evidence of a broken
-    // collection is worth more than a missing file.
-    let serialized = rue_perf_schema::canonical_json(&run)
+    // The stored form replaces per-process evidence with one witness per
+    // workload plus per-process digests (ADR-0071 Amendment 1). Validation ran
+    // over the full form above; the encoded form is validated again so an
+    // encoding defect fails the collection rather than reaching the store.
+    let encoded = encode_v2(&run)
+        .map_err(|error| format!("could not encode the run object for storage: {error}"))?;
+    let encoded_outcome = validate_run(&manifest, &encoded);
+    if encoded_outcome.errors != outcome.errors {
+        return Err(format!(
+            "the encoded run object validates differently from the full one: {:?}",
+            encoded_outcome.errors
+        ));
+    }
+
+    // Both forms are written whatever the verdict. Evidence of a broken
+    // collection is worth more than a missing file. The full-evidence form is
+    // the collection workflow's retained artifact: complete per-process depth
+    // for the artifact retention window, at zero cost to the store.
+    let serialized = rue_perf_schema::canonical_json(&encoded)
         .map_err(|error| format!("could not serialize the run object: {error}"))?;
+    let full_serialized = rue_perf_schema::canonical_json(&run)
+        .map_err(|error| format!("could not serialize the full-evidence form: {error}"))?;
     if let Some(parent) = options
         .output
         .parent()
@@ -654,8 +695,11 @@ fn run(options: &Options) -> Result<u8, String> {
     }
     std::fs::write(&options.output, &serialized)
         .map_err(|error| format!("could not write {}: {error}", options.output.display()))?;
+    let full_evidence_path = options.output.with_extension("full-evidence.json");
+    std::fs::write(&full_evidence_path, &full_serialized)
+        .map_err(|error| format!("could not write {}: {error}", full_evidence_path.display()))?;
 
-    report(&run, &outcome, &regressions, &options.output);
+    report(&encoded, &outcome, &regressions, &options.output);
 
     Ok(collection_exit(&outcome, &regressions))
 }
@@ -828,7 +872,7 @@ window = 10
         phases.phase_ns.insert(Phase::SemanticAnalysis, 10);
 
         RunObject {
-            schema_version: RUN_SCHEMA_VERSION,
+            schema_version: rue_perf_schema::RUN_SCHEMA_VERSION,
             identity: RunIdentity {
                 suite_revision: 1,
                 epoch: 1,
@@ -860,8 +904,10 @@ window = 10
                     architecture: "x86_64".to_string(),
                 },
             },
+            boundary: None,
             workloads: vec![WorkloadObservation {
                 workload: "startup".to_string(),
+                boundary: None,
                 samples: vec![Sample {
                     batch_size: 1,
                     process_elapsed_ns: 20,
@@ -869,6 +915,8 @@ window = 10
                     output_binary_bytes: 1,
                     phases,
                     boundary_evidence: Vec::new(),
+                    boundary_processes: Vec::new(),
+                    boundary_work_processes: Vec::new(),
                 }],
             }],
             failures: Vec::new(),

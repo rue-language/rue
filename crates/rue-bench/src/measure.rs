@@ -193,6 +193,8 @@ pub fn measure_sample(request: &SampleRequest<'_>) -> SampleOutcome {
         output_binary_bytes: output_binary_bytes.unwrap_or(0),
         phases,
         boundary_evidence,
+        boundary_processes: Vec::new(),
+        boundary_work_processes: Vec::new(),
     }))
 }
 
@@ -214,6 +216,8 @@ pub fn measure_fresh_compile(request: &SampleRequest<'_>) -> Result<FreshCompile
             output_binary_bytes: completed.output_binary_bytes,
             phases: completed.accounting,
             boundary_evidence: completed.boundary_evidence.into_iter().collect(),
+            boundary_processes: Vec::new(),
+            boundary_work_processes: Vec::new(),
         },
         shape: completed.shape,
         target: completed.target,

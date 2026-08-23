@@ -145,12 +145,12 @@ fn report(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     // The shape `derive`'s own tests use, so the fixture cannot drift from
     // what the manifest parser actually requires.
-    const BASE: &str = r#"
+    pub(crate) const BASE: &str = r#"
 [[suite]]
 revision = 1
 timing_schema_version = 1

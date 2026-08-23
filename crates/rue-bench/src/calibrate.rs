@@ -1587,6 +1587,8 @@ mod tests {
                 compiler_root_ns: latency_ns * u64::from(batch),
             },
             boundary_evidence: Vec::new(),
+            boundary_processes: Vec::new(),
+            boundary_work_processes: Vec::new(),
         }
     }
 
@@ -1621,8 +1623,10 @@ mod tests {
                     architecture: "aarch64".to_string(),
                 },
             },
+            boundary: None,
             workloads: vec![WorkloadObservation {
                 workload: "startup".to_string(),
+                boundary: None,
                 samples: latencies.iter().map(|ns| sample(*ns, batch)).collect(),
             }],
             failures: Vec::new(),

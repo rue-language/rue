@@ -176,8 +176,10 @@ mod tests {
                     architecture: "x86_64".to_string(),
                 },
             },
+            boundary: None,
             workloads: vec![WorkloadObservation {
                 workload: "startup".to_string(),
+                boundary: None,
                 samples: vec![Sample {
                     batch_size: 1,
                     process_elapsed_ns: 2_000_000,
@@ -190,6 +192,8 @@ mod tests {
                         compiler_root_ns: 1_000_000,
                     },
                     boundary_evidence: Vec::new(),
+                    boundary_processes: Vec::new(),
+                    boundary_work_processes: Vec::new(),
                 }],
             }],
             failures: Vec::new(),
