@@ -50,7 +50,8 @@
 //! is valid and reports every one as a generator-contract failure.
 //!
 //! - **All other CFG intrinsics.** The `Intrinsic` arm models `@dbg`, `@panic`,
-//!   and `@assert`; every other intrinsic that is allowed to survive to the CFG
+//!   `@assert`, and compiler-inserted slice bounds checks; every other intrinsic
+//!   that is allowed to survive to the CFG
 //!   is a typed model gap: the
 //!   non-deterministic `@read_line`, `@random_u32`/`@random_u64`, `@syscall`;
 //!   the heap intrinsics `@alloc`/`@free`/`@realloc`; the raw-pointer intrinsics
@@ -1740,6 +1741,47 @@ impl<'a> Interp<'a> {
         }
     }
 
+    /// Validate and execute the compiler-inserted bounds check carried by the
+    /// existing `assert` intrinsic shape. Its typed runtime identity is what
+    /// distinguishes a slice check from source-level `@assert` when the oracle
+    /// assigns a trap category.
+    fn eval_bounds_check_intrinsic(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        name: &str,
+        args: &[CfgValue],
+        result_ty: Type,
+    ) -> Step<Value> {
+        if name != "assert" || result_ty != Type::UNIT || args.len() != 1 {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
+                "compiler bounds-check intrinsic signature",
+            ));
+        }
+        if cfg.get_inst(args[0]).ty != Type::BOOL {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
+                "compiler bounds-check intrinsic condition",
+            ));
+        }
+        let values = self.eval_all(cfg, frame, args)?;
+        let [Value::Bool(condition)] = values.as_slice() else {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
+                "compiler bounds-check intrinsic runtime condition",
+            ));
+        };
+        if *condition {
+            Ok(Value::Unit)
+        } else {
+            self.abort_with_stderr(
+                TrapKind::IndexOutOfBounds,
+                &[b"error: index out of bounds\n"],
+            )
+        }
+    }
+
     fn write_dbg(&mut self, val: &Value, ty: Type) -> Step<()> {
         let remaining = self.stdout_cap.saturating_sub(self.stdout_bytes);
 
@@ -2814,10 +2856,14 @@ impl<'a> Interp<'a> {
                 }
             }
 
-            CfgInstData::Intrinsic { name, .. } => {
+            CfgInstData::Intrinsic { runtime, name, .. } => {
                 let iname = self.interner().resolve(name).to_string();
                 let args = cfg.get_intrinsic_args(&inst.data).to_vec();
-                if let Some(intrinsic) = self.preflight_abort_intrinsic(cfg, &iname, &args, ty)? {
+                if *runtime == Some(RuntimeCallKind::BoundsCheck) {
+                    self.eval_bounds_check_intrinsic(cfg, frame, &iname, &args, ty)?
+                } else if let Some(intrinsic) =
+                    self.preflight_abort_intrinsic(cfg, &iname, &args, ty)?
+                {
                     self.eval_abort_intrinsic(cfg, frame, intrinsic, &args)?
                 } else if iname == "bitCast" {
                     // `@bitCast` is fully modeled, not a gap: a same-width

@@ -745,6 +745,37 @@ fn array_out_of_bounds_traps() {
 }
 
 #[test]
+fn slice_bounds_check_uses_index_trap_category_without_changing_assertions() {
+    let slice_oob = r#"
+        fn get(borrow s: [i64], i: u64) -> i32 { @intCast(s[i]) }
+        fn main() -> i32 {
+            let a: [i64; 3] = [10, 20, 30];
+            get(borrow a, 5)
+        }
+    "#;
+    let out = run(slice_oob);
+    assert_eq!(out.exit_code, 101);
+    assert_eq!(out.stderr, "error: index out of bounds\n");
+    assert_eq!(out.panic, Some(TrapKind::IndexOutOfBounds));
+
+    let slice_negative = r#"
+        fn get(borrow s: [i64], i: i32) -> i32 { @intCast(s[i]) }
+        fn main() -> i32 {
+            let a: [i64; 3] = [10, 20, 30];
+            get(borrow a, -1)
+        }
+    "#;
+    let out = run(slice_negative);
+    assert_eq!(out.exit_code, 101);
+    assert_eq!(out.stderr, "error: index out of bounds\n");
+    assert_eq!(out.panic, Some(TrapKind::IndexOutOfBounds));
+
+    let assertion = run("fn main() -> i32 { @assert(false); 0 }");
+    assert_eq!(assertion.stderr, "assertion failed\n");
+    assert_eq!(assertion.panic, Some(TrapKind::AssertionFailure));
+}
+
+#[test]
 fn struct_field_mutation() {
     let src = "struct P { x: i32, y: i32 }
     fn main() -> i32 {

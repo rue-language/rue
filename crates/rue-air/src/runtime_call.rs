@@ -124,6 +124,10 @@ pub enum RuntimeCallKind {
     PanicNoMessage,
     AssertFailed,
     AssertWithMessage,
+    /// Typed identity for compiler-inserted slice bounds traps. This shares
+    /// the `assert` intrinsic's conditional shape while selecting the
+    /// dedicated `__rue_bounds_check` runtime helper in codegen.
+    BoundsCheck,
     ReadLine,
     ParseI32,
     ParseI64,
@@ -287,7 +291,7 @@ const BYTE_SET: &[RuntimeOperandOrigin] = &[
 ];
 
 impl RuntimeCallKind {
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 41] = [
         Self::StrByteAt,
         Self::StrCharScalar,
         Self::StrCharNext,
@@ -307,6 +311,7 @@ impl RuntimeCallKind {
         Self::PanicNoMessage,
         Self::AssertFailed,
         Self::AssertWithMessage,
+        Self::BoundsCheck,
         Self::ReadLine,
         Self::ParseI32,
         Self::ParseI64,
@@ -349,6 +354,7 @@ impl RuntimeCallKind {
             Self::PanicNoMessage => RuntimeHelperId::PanicNoMessage,
             Self::AssertFailed => RuntimeHelperId::AssertFailed,
             Self::AssertWithMessage => RuntimeHelperId::Panic,
+            Self::BoundsCheck => RuntimeHelperId::BoundsCheck,
             Self::ReadLine => RuntimeHelperId::ReadLine,
             Self::ParseI32 => RuntimeHelperId::ParseI32,
             Self::ParseI64 => RuntimeHelperId::ParseI64,
@@ -395,6 +401,7 @@ impl RuntimeCallKind {
             Self::DebugBool => BOOL_SCALAR,
             Self::PanicNoMessage
             | Self::AssertFailed
+            | Self::BoundsCheck
             | Self::RandomU32
             | Self::RandomU64
             | Self::ArgCount
@@ -412,7 +419,7 @@ impl RuntimeCallKind {
 
     pub const fn activation(self) -> RuntimeCallActivation {
         match self {
-            Self::AssertFailed | Self::AssertWithMessage => {
+            Self::AssertFailed | Self::AssertWithMessage | Self::BoundsCheck => {
                 RuntimeCallActivation::WhenArgumentIsFalse(0)
             }
             _ => RuntimeCallActivation::Always,
@@ -662,6 +669,14 @@ mod tests {
         assert_eq!(
             RuntimeCallKind::Panic.activation(),
             RuntimeCallActivation::Always
+        );
+        assert_eq!(
+            RuntimeCallKind::BoundsCheck.helper(),
+            RuntimeHelperId::BoundsCheck
+        );
+        assert_eq!(
+            RuntimeCallKind::BoundsCheck.activation(),
+            RuntimeCallActivation::WhenArgumentIsFalse(0)
         );
     }
 

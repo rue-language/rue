@@ -11,7 +11,7 @@
 //! architecture cannot quietly invent a different scalar/aggregate policy.
 
 use lasso::Spur;
-use rue_air::{EnumId, StructId, TypeKind};
+use rue_air::{EnumId, RuntimeCallKind, StructId, TypeKind};
 use rue_cfg::{CfgInstData, CfgValue, Place, PlaceBase, Projection, Type};
 use rue_runtime_abi::RuntimeHelperId;
 
@@ -1623,9 +1623,18 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     primary: arg.primary,
                     slots: arg.slots.clone(),
                 });
+                let call = if *runtime == Some(RuntimeCallKind::BoundsCheck) {
+                    // Slice indexing carries a typed compiler trap identity on
+                    // the existing conditional `assert` shape. Preserve that
+                    // identity through CFG lowering so it reaches the shared
+                    // bounds helper used by fixed-array projections.
+                    crate::runtime_call_plan::RuntimeCallPlan::no_args(RuntimeHelperId::BoundsCheck)
+                } else {
+                    trap_runtime_call(message.as_ref())
+                };
                 let result = adapter.emit_trap(TrapPlan::Assert {
                     condition: values[0].primary,
-                    call: trap_runtime_call(message.as_ref()),
+                    call,
                 });
                 cache_result(adapter, value, result);
                 Some(ValueKind::Intrinsic)
@@ -2372,7 +2381,9 @@ mod tests {
         comparison_integer_width, integer_range, type_bits, type_range,
     };
     use lasso::ThreadedRodeo;
-    use rue_air::{EnumDef, LangItem, ParamSlotModes, StructDef, StructField, TypeInternPool};
+    use rue_air::{
+        EnumDef, LangItem, ParamSlotModes, RuntimeCallKind, StructDef, StructField, TypeInternPool,
+    };
     use rue_cfg::{Cfg, CfgInst, CfgInstData, CfgValue, Place, Type};
     use rue_runtime_abi::RuntimeHelperId;
     use rue_span::{FileId, Span};
@@ -3279,6 +3290,43 @@ mod tests {
             RuntimeHelperId::Panic
         );
         assert_eq!(super::trap_runtime_call(Some(&message)).args().len(), 2);
+    }
+
+    #[test]
+    fn compiler_bounds_trap_uses_shared_helper_on_both_targets() {
+        let interner = ThreadedRodeo::new();
+        let assert_name = interner.get_or_intern("assert");
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "slice_bounds_trap".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let condition = cfg.append_inst(entry, inst(CfgInstData::BoolConst(false), Type::BOOL));
+        cfg.append_intrinsic(
+            entry,
+            Some(RuntimeCallKind::BoundsCheck),
+            assert_name,
+            [condition],
+            Type::UNIT,
+            Span::new(0, 0),
+        )
+        .expect("bounds trap intrinsic should append");
+        cfg.set_return(entry, None);
+
+        let pool = TypeInternPool::new().freeze();
+        let x86 = X86CfgLower::new_unchecked(&cfg, &pool, &interner)
+            .lower()
+            .expect("x86 compiler bounds trap should lower");
+        assert!(x86.instructions().iter().any(|instruction| {
+            matches!(instruction, X86Inst::CallRel { symbol_id, .. }
+                if x86.get_symbol(*symbol_id) == "__rue_bounds_check")
+        }));
+
+        let arm = Aarch64CfgLower::new_unchecked(&cfg, &pool, &interner, Target::Aarch64Linux)
+            .lower()
+            .expect("AArch64 compiler bounds trap should lower");
+        assert!(arm.instructions().iter().any(|instruction| {
+            matches!(instruction, Aarch64Inst::Bl { symbol_id, .. }
+                if arm.get_symbol(*symbol_id) == "__rue_bounds_check")
+        }));
     }
 
     #[test]
