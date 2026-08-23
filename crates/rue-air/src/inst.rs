@@ -1674,6 +1674,67 @@ impl Air {
                 Ok(current)
             };
 
+            // AIR is fully typed, and every producer states the same operator
+            // invariant: an operator's operands agree with each other, and an
+            // arithmetic/bitwise/unary result agrees with its operands (see
+            // `sema::analysis::builtin_ops::analyze_binary_arith`). Enforcing
+            // it here fails fast at the AIR boundary instead of letting a
+            // mixed-width `add %a:i64, %b:i32` reach CFG construction — where
+            // only a downstream return-value width mismatch catches it, late
+            // and as an E9000 naming the wrong instruction — or reach codegen
+            // unnoticed and appear to work by accident of the 8-byte slot
+            // model (RUE-1654).
+            //
+            // `!` and `<error>` are the only escapes: a diverging operand
+            // never produces a value, and an erroneous one has already been
+            // reported, so neither carries a width the operator must respect.
+            // That is exactly what `Type::can_coerce_to` already means, so
+            // reuse it rather than restating the exemption.
+            let agree = |a: Type, b: Type| a.can_coerce_to(&b) || b.can_coerce_to(&a);
+            // Only valid for a reference that `check_ref` has already
+            // accepted: it proves the index is inside the instruction store.
+            let operand_ty = |value: AirRef| self.instructions[value.as_u32() as usize].ty;
+            let operands_agree = |a: AirRef, b: AirRef| -> Result<(), AirValidationError> {
+                let (a_ty, b_ty) = (operand_ty(a), operand_ty(b));
+                if agree(a_ty, b_ty) {
+                    Ok(())
+                } else {
+                    Err(fail(
+                        Some(index),
+                        format!(
+                            "operands {a} and {b} have mismatched types {} and {}",
+                            a_ty.name(),
+                            b_ty.name()
+                        ),
+                    ))
+                }
+            };
+            let result_agrees = |a: AirRef| -> Result<(), AirValidationError> {
+                let a_ty = operand_ty(a);
+                if agree(a_ty, inst.ty) {
+                    Ok(())
+                } else {
+                    Err(fail(
+                        Some(index),
+                        format!(
+                            "result type {} does not match operand {a} of type {}",
+                            inst.ty.name(),
+                            a_ty.name()
+                        ),
+                    ))
+                }
+            };
+            let result_is_bool = || -> Result<(), AirValidationError> {
+                if agree(inst.ty, Type::BOOL) {
+                    Ok(())
+                } else {
+                    Err(fail(
+                        Some(index),
+                        format!("comparison result type {} is not bool", inst.ty.name()),
+                    ))
+                }
+            };
+
             match &inst.data {
                 AirInstData::TypeConst(ty) => validate_type(*ty).map_err(|reason| {
                     fail(Some(index), format!("invalid type constant: {reason}"))
@@ -1686,12 +1747,6 @@ impl Air {
                 | AirInstData::WrappingMul(a, b)
                 | AirInstData::Div(a, b)
                 | AirInstData::Mod(a, b)
-                | AirInstData::Eq(a, b)
-                | AirInstData::Ne(a, b)
-                | AirInstData::Lt(a, b)
-                | AirInstData::Gt(a, b)
-                | AirInstData::Le(a, b)
-                | AirInstData::Ge(a, b)
                 | AirInstData::And(a, b)
                 | AirInstData::Or(a, b)
                 | AirInstData::BitAnd(a, b)
@@ -1701,11 +1756,51 @@ impl Air {
                 | AirInstData::Shr(a, b) => {
                     check_ref(*a)?;
                     check_ref(*b)?;
+                    operands_agree(*a, *b)?;
+                    result_agrees(*a)?;
+                    result_agrees(*b)?;
                 }
-                AirInstData::Neg(value)
-                | AirInstData::Not(value)
-                | AirInstData::BitNot(value)
-                | AirInstData::Drop { value } => check_ref(*value)?,
+                // Comparisons are the one binary family whose result type is
+                // unrelated to its operands: the result is always `bool`.
+                //
+                // Operand agreement is enforced here only when the operands
+                // are not both integers. Two producers still emit mixed-width
+                // integer comparisons, and both sit outside this change:
+                //
+                //   * the slice bounds check lowers `s[i]` to
+                //     `Lt(index, len)`, keeping the source index's own
+                //     integer type on the left and the fat pointer's `u64`
+                //     length on the right;
+                //   * an integer literal compared against a struct field
+                //     whose base type is still an inference variable (the
+                //     value came from an `if`/`match` join) defaults to `i32`
+                //     while the field read is the field's declared type —
+                //     the documented `known_field_type` fallback in
+                //     `inference::generate`.
+                //
+                // Both are only accidentally correct: codegen picks a
+                // comparison's width from its LEFT operand, so a narrow left
+                // operand silently truncates the right one. Tighten this to
+                // plain `operands_agree` once those two producers agree with
+                // the invariant (RUE-1654).
+                AirInstData::Eq(a, b)
+                | AirInstData::Ne(a, b)
+                | AirInstData::Lt(a, b)
+                | AirInstData::Gt(a, b)
+                | AirInstData::Le(a, b)
+                | AirInstData::Ge(a, b) => {
+                    check_ref(*a)?;
+                    check_ref(*b)?;
+                    if !(operand_ty(*a).is_integer() && operand_ty(*b).is_integer()) {
+                        operands_agree(*a, *b)?;
+                    }
+                    result_is_bool()?;
+                }
+                AirInstData::Neg(value) | AirInstData::Not(value) | AirInstData::BitNot(value) => {
+                    check_ref(*value)?;
+                    result_agrees(*value)?;
+                }
+                AirInstData::Drop { value } => check_ref(*value)?,
                 AirInstData::Branch {
                     cond,
                     then_value,
@@ -1734,8 +1829,19 @@ impl Air {
                     check_place(*place)?;
                 }
                 AirInstData::PlaceWrite { place, value } => {
-                    check_place(*place)?;
+                    let place_ty = check_place(*place)?;
                     check_ref(*value)?;
+                    let value_ty = operand_ty(*value);
+                    if !agree(place_ty, value_ty) {
+                        return Err(fail(
+                            Some(index),
+                            format!(
+                                "store writes {} into a place of type {}",
+                                value_ty.name(),
+                                place_ty.name()
+                            ),
+                        ));
+                    }
                 }
                 AirInstData::EnumPayloadGet {
                     base,
@@ -4474,6 +4580,119 @@ mod tests {
             assert_eq!(air.checkpoint().instructions, before_errors.instructions);
             assert_eq!(air.checkpoint().extra, before_errors.extra);
         }
+    }
+
+    /// RUE-1654: AIR is fully typed, so an operator's operands must agree.
+    /// The `!`/`<error>` escapes are the only mismatches admitted, and a
+    /// comparison keeps its own `bool` result independent of its operands.
+    #[test]
+    fn validation_rejects_disagreeing_operator_operands() {
+        let pool = TypeInternPool::new().freeze();
+        let two_operands =
+            |lhs: Type, rhs: Type, make: fn(AirRef, AirRef) -> AirInstData, result: Type| {
+                let mut air = Air::new(Type::I64);
+                air.push_inst(AirInst {
+                    data: AirInstData::Const(1),
+                    ty: lhs,
+                    span: Span::new(0, 0),
+                });
+                air.push_inst(AirInst {
+                    data: AirInstData::Const(1),
+                    ty: rhs,
+                    span: Span::new(0, 0),
+                });
+                air.push_inst(AirInst {
+                    data: make(AirRef::from_raw(0), AirRef::from_raw(1)),
+                    ty: result,
+                    span: Span::new(0, 0),
+                });
+                air.finish(AirValidationContext::Canonical(&pool))
+            };
+
+        // The exact shape RUE-1636 used to produce: one inference class that
+        // settled on two widths, reaching AIR as `add %0:i64, %1:i32`.
+        let error = two_operands(Type::I64, Type::I32, AirInstData::Add, Type::I64).unwrap_err();
+        assert!(
+            error.reason.contains("mismatched types i64 and i32"),
+            "unexpected reason: {}",
+            error.reason
+        );
+
+        // A result that disagrees with operands that agree with each other.
+        let error = two_operands(Type::I64, Type::I64, AirInstData::Add, Type::I32).unwrap_err();
+        assert!(
+            error.reason.contains("result type i32"),
+            "unexpected reason: {}",
+            error.reason
+        );
+
+        // `!` is exempt: a diverging operand never produces a value, so it
+        // carries no width for the operator to respect.
+        assert!(two_operands(Type::I64, Type::NEVER, AirInstData::Add, Type::I64).is_ok());
+
+        // `<error>` is the other exemption. It only exists before the type
+        // pool is frozen, so it is checked against the semantic context (the
+        // canonical one rejects an incomplete type outright).
+        let semantic_pool = TypeInternPool::new();
+        let mut errored = Air::new(Type::I64);
+        errored.push_inst(AirInst {
+            data: AirInstData::Const(1),
+            ty: Type::I64,
+            span: Span::new(0, 0),
+        });
+        errored.push_inst(AirInst {
+            data: AirInstData::Const(1),
+            ty: Type::ERROR,
+            span: Span::new(0, 0),
+        });
+        errored.push_inst(AirInst {
+            data: AirInstData::Add(AirRef::from_raw(0), AirRef::from_raw(1)),
+            ty: Type::I64,
+            span: Span::new(0, 0),
+        });
+        assert!(
+            errored
+                .finish(AirValidationContext::Semantic(&semantic_pool))
+                .is_ok()
+        );
+
+        // A comparison's operands are unrelated to its result, which is bool.
+        assert!(two_operands(Type::I64, Type::I64, AirInstData::Lt, Type::BOOL).is_ok());
+        let error = two_operands(Type::I64, Type::I64, AirInstData::Lt, Type::I64).unwrap_err();
+        assert!(
+            error.reason.contains("is not bool"),
+            "unexpected reason: {}",
+            error.reason
+        );
+        // Operands of different KINDS are rejected even for a comparison; only
+        // the integer/integer pair is deferred (see the exemption in `finish`).
+        let error = two_operands(Type::BOOL, Type::I64, AirInstData::Eq, Type::BOOL).unwrap_err();
+        assert!(
+            error.reason.contains("mismatched types bool and i64"),
+            "unexpected reason: {}",
+            error.reason
+        );
+
+        // A unary operator's result follows its operand.
+        let mut air = Air::new(Type::I64);
+        air.push_inst(AirInst {
+            data: AirInstData::Const(1),
+            ty: Type::I64,
+            span: Span::new(0, 0),
+        });
+        air.push_inst(AirInst {
+            data: AirInstData::Neg(AirRef::from_raw(0)),
+            ty: Type::I32,
+            span: Span::new(0, 0),
+        });
+        let error = air
+            .finish(AirValidationContext::Canonical(&pool))
+            .unwrap_err();
+        assert!(
+            error.reason.contains("result type i32"),
+            "unexpected reason: {}",
+            error.reason
+        );
     }
 
     #[test]

@@ -359,6 +359,17 @@ const ENTRIES: &[Entry] = &[
         runtime_call(UnsupportedRuntimeCallKind::Println),
         &[],
     ),
+    // The RUE-1636 cross-mechanism case builds a `StrBuf` and scans it byte by
+    // byte, so the oracle model stops at the byte-copy intrinsic like every
+    // other StrBuf-backed case here. The rest of the `cli.integer_class_width`
+    // section is plain integer arithmetic the oracle models directly, which is
+    // why this is the section's only entry.
+    Entry::new(
+        "cli.integer_class_width",
+        "std_byte_scan_against_bare_literal_compares_at_byte_width",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
     // RUE-954: the literal-threading regression cases invoke a real dup(2)
     // syscall, which the oracle does not model.
     Entry::new(
@@ -523,6 +534,40 @@ const ENTRIES: &[Entry] = &[
         "cli.slices",
         "struct_element_slice_empty_view",
         intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
+        &[],
+    ),
+    // std.c C-string export contract (RUE-1710): every case builds a StrBuf and
+    // exports it through `@alloc` + raw pointer writes, so the oracle model
+    // stops at the byte-copy intrinsic. The FFI-free round-trip case reaches
+    // `println` first instead, which is the runtime-call gap.
+    Entry::new(
+        "cli.std_c_strings",
+        "c_free_c_string_returns_block_to_its_own_size_class",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_c_strings",
+        "c_has_interior_nul_positions",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_c_strings",
+        "c_owned_c_string_panics_on_interior_nul",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_c_strings",
+        "c_owned_c_string_panics_on_trailing_nul",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_c_strings",
+        "c_owned_c_string_roundtrip_without_ffi",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
         &[],
     ),
     // IntMap key extremes (RUE-1709). These cases assert on stdout rather than

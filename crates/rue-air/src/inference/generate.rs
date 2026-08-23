@@ -636,6 +636,37 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
+    /// The element type of an indexable operand whose type is *already*
+    /// concrete at constraint-generation time: an interned fixed array
+    /// `[T; N]`, or the synthetic slice struct `[T]` whose first field is the
+    /// `*const T` half of the fat pointer (ADR-0043, RUE-322). An
+    /// `InferType::Array` base is handled structurally by the caller; this
+    /// covers the interned forms — a slice parameter, an annotated binding, a
+    /// call result — that reach the generator as `Concrete`.
+    ///
+    /// Without it, indexing a concrete slice degraded to a fresh variable, so
+    /// an integer literal sharing an operator with the element (`e.i.a * 10`)
+    /// had nothing to take its width from and defaulted to i32, while sema
+    /// typed the operator from the element's real width. That is exactly the
+    /// mixed-width AIR the operator-agreement check in `inst.rs` rejects
+    /// (RUE-1636 family; the check found this producer).
+    fn concrete_element_type(&self, ty: &InferType) -> Option<Type> {
+        let ty = ty.as_concrete()?;
+        if let Some(array_id) = ty.as_array() {
+            return Some(self.type_pool.array_def(array_id).0);
+        }
+        let id = ty.as_struct()?;
+        // `str`/`Str(N)` share the view representation but index as bytes;
+        // `is_string_indexable_type` answers those before this is consulted.
+        if !crate::types::is_slice_struct_name(&self.type_pool.struct_def(id).name) {
+            return None;
+        }
+        match self.type_pool.struct_def(id).fields.first()?.ty.kind() {
+            TypeKind::PtrConst(ptr_id) => Some(self.type_pool.ptr_const_def(ptr_id)),
+            _ => None,
+        }
+    }
+
     /// Provide file-level constant types (name -> declared type) for `VarRef`
     /// resolution. See the `const_types` field for details (RUE-142).
     pub fn with_const_types(mut self, const_types: &'a AHashMap<(FileId, Spur), Type>) -> Self {
@@ -2905,12 +2936,19 @@ impl<'a> ConstraintGenerator<'a> {
                 } else {
                     match &base_info.ty {
                         InferType::Array { element, .. } => (**element).clone(),
-                        _ => {
-                            // Base might be a type variable that will resolve to an array.
-                            // Use a fresh variable for the element type.
-                            let result_var = self.fresh_var();
-                            InferType::Var(result_var)
-                        }
+                        // An interned array or slice type carries its element
+                        // type too; publish it rather than letting a literal
+                        // beside the element default to i32 (see
+                        // `concrete_element_type`).
+                        _ => match self.concrete_element_type(&base_info.ty) {
+                            Some(element_type) => self.type_to_infer(element_type),
+                            None => {
+                                // Base might be a type variable that will resolve to an array.
+                                // Use a fresh variable for the element type.
+                                let result_var = self.fresh_var();
+                                InferType::Var(result_var)
+                            }
+                        },
                     }
                 }
             }
@@ -3856,7 +3894,26 @@ impl<'a> ConstraintGenerator<'a> {
                 let var = self.fresh_var();
                 InferType::Var(var)
             }
-            rue_rir::RirPatternView::Int { .. } => InferType::IntLiteral,
+            // An integer pattern is an integer literal, and is typed exactly
+            // like one: a fresh variable marked in `int_literal_vars`, never
+            // the bare `InferType::IntLiteral` terminal (RUE-1636).
+            //
+            // The terminal is absorbing. `Unifier::bind` stores it into the
+            // scrutinee's substitution slot, so every variable already chained
+            // to the scrutinee path-compresses onto `IntLiteral` and the
+            // union-find class stops having a single representative. A later
+            // concrete type then upgrades only the variable that happens to be
+            // queried (`rebind_int_literal_to_concrete`); its siblings stay
+            // `IntLiteral` and default to i32. `let a = 1; let b = 2; let c = a
+            // + b; match c { 3 => {}, _ => {} } a` with an `i64` return typed
+            // `a` as i64 while `b` stayed i32 — one class, two widths, and
+            // mixed-width AIR downstream.
+            //
+            // A marked variable keeps the class intact: binding the scrutinee
+            // to it extends the chain instead of terminating it, so the
+            // representative is upgraded once for the whole class and every
+            // member resolves to the same width.
+            rue_rir::RirPatternView::Int { .. } => InferType::Var(self.fresh_int_literal_var()),
             rue_rir::RirPatternView::Bool(_, _) => InferType::Concrete(Type::BOOL),
             rue_rir::RirPatternView::Path {
                 module,
