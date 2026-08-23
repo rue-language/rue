@@ -632,7 +632,7 @@ workloads[i].boundary.critical_path_source = { sample_index: 0, process_index: 0
 
 Three things make that the right choice rather than an arbitrary one. It is
 already the project's convention: every existing consumer takes
-`boundary_evidence.first()`, in six places in `scaling.rs`. The ordering it
+`boundary_evidence.first()`, in eight places in `scaling.rs`. The ordering it
 selects on is deterministic — `measure_sample` runs a batch serially and pushes
 each process's evidence in spawn order (`measure.rs:139-164`), so index 0 names
 the same process on every platform and every rerun. And carrying

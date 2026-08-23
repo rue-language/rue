@@ -705,7 +705,7 @@ Two failure modes are worth naming because they differ sharply:
 
   Restoring them is the wrong repair. Selecting every epoch that declares a
   baseline means reading epochs 2, 5 and 6 — on 2026-08-18, 1,437 of 1,440
-  records against the 321 the gate reads now, which is the cost RUE-1542 was
+  records against the 321 the gate read then, which is the cost RUE-1542 was
   merged to remove.
 
   The check that catches this failure needs no derived data at all. Every
