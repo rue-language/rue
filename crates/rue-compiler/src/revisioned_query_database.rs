@@ -4278,14 +4278,9 @@ fn durable_const_fits_type(
 ) -> bool {
     use crate::durable_semantics::{DurableConstValue as V, DurableType as T};
     match (ty, value) {
-        (T::I8, V::Integer(value)) => i8::try_from(*value).is_ok(),
-        (T::I16, V::Integer(value)) => i16::try_from(*value).is_ok(),
-        (T::I32, V::Integer(value)) => i32::try_from(*value).is_ok(),
-        (T::I64, V::Integer(value)) => i64::try_from(*value).is_ok(),
-        (T::U8, V::Integer(value)) => u8::try_from(*value).is_ok(),
-        (T::U16, V::Integer(value)) => u16::try_from(*value).is_ok(),
-        (T::U32, V::Integer(value)) => u32::try_from(*value).is_ok(),
-        (T::U64, V::Integer(value)) => u64::try_from(*value).is_ok(),
+        (_, V::Integer(value)) => {
+            durable_int_width(ty).is_some_and(|integer| integer.fits_i128(*value))
+        }
         (T::Bool, V::Bool(_)) | (T::Unit, V::Unit) => true,
         (T::ComptimeType, V::Type(_)) => true,
         _ => false,
@@ -7295,6 +7290,28 @@ impl SemanticConstEvaluator<'_, '_> {
         }
     }
 
+    fn checked_integer_result(
+        ty: &crate::durable_semantics::DurableType,
+        result: rue_air::integer_semantics::CheckedIntegerResult,
+        operation: &str,
+    ) -> Result<i128, EvaluateSemanticConstError> {
+        let Some(value) = result.checked() else {
+            let type_name = durable_type_diagnostic_name(ty);
+            let detail = result.raw().map_or_else(
+                || format!("the result does not fit in {type_name}"),
+                |value| {
+                    format!(
+                        "value {value} is out of range for type {type_name}; {value} does not fit in {type_name}"
+                    )
+                },
+            );
+            return Err(Self::comptime_failure_value(format!(
+                "integer overflow evaluating {operation} at type {type_name}: {detail} (this operation would panic at runtime)",
+            )));
+        };
+        Ok(value)
+    }
+
     fn eval_binary(
         &mut self,
         op: SemanticBinaryOp,
@@ -7359,16 +7376,25 @@ impl SemanticConstEvaluator<'_, '_> {
         let operand_ty = self.integer_type(left_ty, right_ty)?;
         Self::require_integer_fits(&operand_ty, left)?;
         Self::require_integer_fits(&operand_ty, right)?;
+        let Some(integer) = durable_int_width(&operand_ty) else {
+            return Self::failure("comptime arithmetic operand is not an integer");
+        };
         let value = match op {
-            O::Add => V::Integer(left.checked_add(right).ok_or_else(|| {
-                Self::comptime_failure_value("integer overflow evaluating addition")
-            })?),
-            O::Sub => V::Integer(left.checked_sub(right).ok_or_else(|| {
-                Self::comptime_failure_value("integer overflow evaluating subtraction")
-            })?),
-            O::Mul => V::Integer(left.checked_mul(right).ok_or_else(|| {
-                Self::comptime_failure_value("integer overflow evaluating multiplication")
-            })?),
+            O::Add => V::Integer(Self::checked_integer_result(
+                &operand_ty,
+                integer.checked_add_report_i128(left, right),
+                "addition",
+            )?),
+            O::Sub => V::Integer(Self::checked_integer_result(
+                &operand_ty,
+                integer.checked_sub_report_i128(left, right),
+                "subtraction",
+            )?),
+            O::Mul => V::Integer(Self::checked_integer_result(
+                &operand_ty,
+                integer.checked_mul_report_i128(left, right),
+                "multiplication",
+            )?),
             O::Div if right == 0 => {
                 return Err(Self::comptime_failure_value(
                     "division by zero (this operation would panic at runtime)",
@@ -7379,18 +7405,22 @@ impl SemanticConstEvaluator<'_, '_> {
                     "remainder by zero (this operation would panic at runtime)",
                 ));
             }
-            O::Div => V::Integer(left.checked_div(right).ok_or_else(|| {
-                Self::comptime_failure_value("integer overflow evaluating division")
-            })?),
-            O::Mod => V::Integer(left.checked_rem(right).ok_or_else(|| {
-                Self::comptime_failure_value("integer overflow evaluating remainder")
-            })?),
-            O::Eq => V::Bool(left == right),
-            O::Ne => V::Bool(left != right),
-            O::Lt => V::Bool(left < right),
-            O::Gt => V::Bool(left > right),
-            O::Le => V::Bool(left <= right),
-            O::Ge => V::Bool(left >= right),
+            O::Div => V::Integer(Self::checked_integer_result(
+                &operand_ty,
+                integer.checked_div_report_i128(left, right),
+                "division",
+            )?),
+            O::Mod => V::Integer(Self::checked_integer_result(
+                &operand_ty,
+                integer.checked_rem_report_i128(left, right),
+                "remainder",
+            )?),
+            O::Eq => V::Bool(integer.compare_i128(left, right) == std::cmp::Ordering::Equal),
+            O::Ne => V::Bool(integer.compare_i128(left, right) != std::cmp::Ordering::Equal),
+            O::Lt => V::Bool(integer.compare_i128(left, right) == std::cmp::Ordering::Less),
+            O::Gt => V::Bool(integer.compare_i128(left, right) == std::cmp::Ordering::Greater),
+            O::Le => V::Bool(integer.compare_i128(left, right) != std::cmp::Ordering::Greater),
+            O::Ge => V::Bool(integer.compare_i128(left, right) != std::cmp::Ordering::Less),
             O::BitAnd => V::Integer(left & right),
             O::BitOr => V::Integer(left | right),
             O::BitXor => V::Integer(left ^ right),
@@ -7405,10 +7435,7 @@ impl SemanticConstEvaluator<'_, '_> {
                 // A non-integer operand type should be unreachable here, but a
                 // diagnosable failure beats an ICE if the type ever resolves to
                 // something unexpected.
-                let Some(width) = durable_int_width(&operand_ty) else {
-                    return Self::failure("comptime shift operand is not an integer");
-                };
-                V::Integer(width.shift_i128(left, right, op == O::Shl))
+                V::Integer(integer.shift_i128(left, right, op == O::Shl))
             }
             O::And | O::Or => unreachable!(),
         };
@@ -7418,9 +7445,6 @@ impl SemanticConstEvaluator<'_, '_> {
             let V::Integer(result) = value else {
                 unreachable!()
             };
-            // Only the trapping arms can land outside the operand type here:
-            // a truncated shift result fits its width by construction.
-            Self::require_integer_fits(&operand_ty, result)?;
             return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
                 V::Integer(result),
                 operand_ty,
@@ -8273,11 +8297,15 @@ impl SemanticConstEvaluator<'_, '_> {
                 let (operand_value, ty) = self.int_value(*operand)?;
                 let ty = self.integer_type(ty, None)?;
                 let result = if matches!(&instruction.data, E::Neg { .. }) {
-                    // Negation can overflow (`-@int_min(i8)`), and the runtime
-                    // panics there, so it stays range-checked below.
-                    operand_value.checked_neg().ok_or_else(|| {
-                        Self::comptime_failure_value("integer overflow evaluating negation")
-                    })?
+                    let Some(integer) = durable_int_width(&ty) else {
+                        return Self::failure("comptime negation operand is not an integer");
+                    };
+                    let report = if matches!(&self.rir.get(*operand).data, E::IntConst(_)) {
+                        integer.checked_neg_literal_report_i128(operand_value)
+                    } else {
+                        integer.checked_neg_report_i128(operand_value)
+                    };
+                    Self::checked_integer_result(&ty, report, "negation")?
                 } else {
                     // `~` is closed over the operand width and cannot trap:
                     // `~0u8` is 255, not the i128 -1 this used to compute and
@@ -8290,7 +8318,6 @@ impl SemanticConstEvaluator<'_, '_> {
                         ty,
                     )));
                 };
-                Self::require_integer_fits(&ty, result)?;
                 Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
                     V::Integer(result),
                     ty,

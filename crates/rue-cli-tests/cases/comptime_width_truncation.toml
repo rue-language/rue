@@ -560,6 +560,35 @@ compile_fail = true
 error_contains = ["E1200", "remainder by zero", "would panic at runtime"]
 
 [[case]]
+name = "control_min_division_neg_one_still_rejected"
+description = "Division of a signed minimum by -1 overflows at runtime and must remain an E1200 in const position."
+files = [{ path = "main.rue", source = """
+const X: i8 = @int_min(i8) / -1;
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "integer overflow", "i8"]
+
+[[case]]
+name = "control_min_remainder_neg_one_still_rejected"
+description = "Remainder of a signed minimum by -1 overflows at runtime and must remain an E1200 in const position."
+files = [{ path = "main.rue", source = """
+const X: i8 = @int_min(i8) % -1;
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "integer overflow", "i8"]
+
+[[case]]
+name = "control_min_plus_one_remainder_neg_one_evaluates"
+description = "The signed minimum plus one is a valid dividend case, guarding against over-broad MIN/-1 rejection."
+files = [{ path = "main.rue", source = """
+const X: i8 = (@int_min(i8) + 1) % -1;
+fn main() -> i32 { @intCast(X) }
+""" }]
+exit_code = 0
+
+[[case]]
 name = "control_negate_minimum_still_rejected"
 description = "Negation is not a truncating operation: negating a type's minimum still overflows and is still E1200."
 files = [{ path = "main.rue", source = """
