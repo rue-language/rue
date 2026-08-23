@@ -1,0 +1,228 @@
+# std.c StrBuf <-> char* export/import, and the interior-NUL contract (RUE-1710).
+#
+# `owned_c_string(source)` allocates `source.len() + 1` bytes; `free_c_string`
+# recovers the size by scanning to the first `0`. Those two agree only while the
+# buffer holds exactly one `0`. An interior NUL broke the agreement silently:
+# a 4003-byte source was allocated as 4004 bytes and released as 3, and the
+# module's own doc comment asserted the opposite — that "the full len + 1 bytes
+# are still what free_c_string reclaims via its own scan, so interior NULs are a
+# caller concern, not a leak".
+#
+# WHY THE MISMATCH IS NOT MERELY A LEAK. `@free` classifies a block by the size
+# it is handed and pushes it onto that class's free list (the exact-(size,align)
+# contract std/rawbuf.rue documents). A 4 KiB block released as 3 bytes joins the
+# 8-byte free list and is handed straight back out as an 8-byte allocation; a
+# block over 16 KiB has its own mapping and, released as a small size, is pushed
+# onto a small free list and never unmapped. Nothing asserts, nothing traps —
+# hence these cases, which are the only thing that can see it.
+#
+# The fix makes `owned_c_string` FAIL-FAST on an interior NUL rather than export
+# a C string whose C-visible length differs from its source's, so the scan in
+# `free_c_string` is exact by construction. `has_interior_nul` is the public
+# guard a caller with untrusted bytes uses to keep the decision.
+#
+# These run on every target: std.c's string helpers are plain Rue over `@alloc`,
+# `@free`, and raw pointer reads/writes with no per-target data, and the
+# allocator behind them is the same crate everywhere. The archive-linked FFI
+# half of this surface (a real C `strlen` measuring the exported pointer) lives
+# in cases/c_ffi.toml.
+
+[section]
+id = "cli.std_c_strings"
+name = "std.c C-string export contract"
+description = "owned_c_string/free_c_string round-trips, and the interior-NUL rejection that keeps the free size equal to the allocated size (RUE-1710)."
+
+# The repro, in the form it can still be observed in: an interior NUL now aborts
+# at the export instead of producing a buffer that will be freed under the wrong
+# size. Before the fix this program ran to completion and printed "exported",
+# having quietly filed a 4 KiB block on the 8-byte free list.
+[[case]]
+name = "c_owned_c_string_panics_on_interior_nul"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let mut s = std.strbuf.StrBuf.new();
+    s.push(65);
+    s.push(66);
+    s.push(0);
+    let mut i: u64 = 0;
+    while i < 4000 {
+        s.push(67);
+        i += 1;
+    }
+    let p = std.c.owned_c_string(borrow s);
+    println("exported");
+    std.c.free_c_string(p);
+    0
+}
+""" }]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["panic: owned_c_string: source contains an interior NUL byte"]
+
+# A NUL at the very end is rejected on the same terms: the export would be
+# indistinguishable from the NUL-free source, but the allocation would be one
+# byte longer than the scan recovers, which is the same class of disagreement.
+[[case]]
+name = "c_owned_c_string_panics_on_trailing_nul"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let mut s = std.strbuf.StrBuf.new();
+    s.push_str("trailing");
+    s.push(0);
+    let p = std.c.owned_c_string(borrow s);
+    println("exported");
+    std.c.free_c_string(p);
+    0
+}
+""" }]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["panic: owned_c_string: source contains an interior NUL byte"]
+
+# The public guard. A caller holding bytes it does not control tests them and
+# decides, instead of taking the panic. Checks the first byte, an interior byte,
+# the last byte, and a NUL-free source, so a predicate with an off-by-one bound
+# fails here rather than in the wild.
+[[case]]
+name = "c_has_interior_nul_positions"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn report(name: std.strbuf.StrBuf, flagged: bool) {
+    if flagged {
+        println(name + ": true");
+    } else {
+        println(name + ": false");
+    }
+}
+
+fn main() -> i32 {
+    let mut clean = std.strbuf.StrBuf.new();
+    clean.push_str("abcd");
+
+    let mut empty = std.strbuf.StrBuf.new();
+
+    let mut first = std.strbuf.StrBuf.new();
+    first.push(0);
+    first.push_str("abcd");
+
+    let mut middle = std.strbuf.StrBuf.new();
+    middle.push_str("ab");
+    middle.push(0);
+    middle.push_str("cd");
+
+    let mut last = std.strbuf.StrBuf.new();
+    last.push_str("abcd");
+    last.push(0);
+
+    report("clean", std.c.has_interior_nul(borrow clean));
+    report("empty", std.c.has_interior_nul(borrow empty));
+    report("first", std.c.has_interior_nul(borrow first));
+    report("middle", std.c.has_interior_nul(borrow middle));
+    report("last", std.c.has_interior_nul(borrow last));
+    0
+}
+""" }]
+stdout = """
+clean: false
+empty: false
+first: true
+middle: true
+last: true
+"""
+exit_code = 0
+
+# The property the rejection buys, observed through the allocator. A NUL-free
+# 4005-byte C string is exported and released; the block must go back to the
+# class it came from. Requesting the SAME size returns the very block just freed
+# (the free lists are LIFO), and requesting 8 bytes does NOT — which is exactly
+# what an interior-NUL export used to make happen. Both probes are taken before
+# anything is printed, so no intervening StrBuf allocation can disturb them.
+[[case]]
+name = "c_free_c_string_returns_block_to_its_own_size_class"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let mut s = std.strbuf.StrBuf.new();
+    s.push_str("hello");
+    let mut i: u64 = 0;
+    while i < 4000 {
+        s.push(67);
+        i += 1;
+    }
+
+    let p = std.c.owned_c_string(borrow s);
+    let scanned = std.c.c_strlen(p);
+    let pa: u64 = checked { @ptr_to_int(p) };
+    std.c.free_c_string(p);
+
+    let q: ptr mut u8 = checked { @alloc(4006, 1) };
+    let qa: u64 = checked { @ptr_to_int(q) };
+    let r: ptr mut u8 = checked { @alloc(8, 1) };
+    let ra: u64 = checked { @ptr_to_int(r) };
+    checked { @free(q, 4006, 1); };
+    checked { @free(r, 8, 1); };
+
+    println("scanned len: " + @to_string(scanned));
+    if pa == qa {
+        println("same size class: true");
+    } else {
+        println("same size class: false");
+    }
+    if pa == ra {
+        println("small class polluted: true");
+    } else {
+        println("small class polluted: false");
+    }
+    0
+}
+""" }]
+stdout = """
+scanned len: 4005
+same size class: true
+small class polluted: false
+"""
+exit_code = 0
+
+# The ordinary round trip, with no FFI archive involved: export a StrBuf to an
+# owned C string, measure it with the module's own scan, import it back, and
+# compare. The guard must not cost the NUL-free path anything.
+[[case]]
+name = "c_owned_c_string_roundtrip_without_ffi"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let text = "hello world";
+    let sb = std.strbuf.StrBuf.from_str(borrow text);
+
+    let cstr = std.c.owned_c_string(borrow sb);
+    println("strlen: " + @to_string(std.c.c_strlen(cstr)));
+
+    let back = std.c.strbuf_from_c_string(cstr);
+    if std.strbuf.StrBuf.equals_borrowed(borrow sb, borrow back) {
+        println("roundtrip equal: true");
+    } else {
+        println("roundtrip equal: false");
+    }
+    println("reimported len: " + @to_string(back.len()));
+    std.c.free_c_string(cstr);
+    0
+}
+""" }]
+stdout = """
+strlen: 11
+roundtrip equal: true
+reimported len: 11
+"""
+exit_code = 0

@@ -1,0 +1,393 @@
+# Integer inference classes keep ONE width, and AIR is checked for it.
+#
+# Two related defects, driven end-to-end through the real CLI:
+#
+#   RUE-1636 an integer match pattern was typed as the absorbing
+#            `InferType::IntLiteral` terminal. Unification stored that terminal
+#            into the scrutinee variable's substitution slot, so every variable
+#            already chained to the scrutinee path-compressed onto it and the
+#            union-find class lost its single representative. A later concrete
+#            type then upgraded only the queried variable; its siblings stayed
+#            literal and defaulted to i32. One inference class, two widths.
+#
+#   RUE-1654 AIR validation did not check operand-type agreement, so the
+#            mixed-width AIR RUE-1636 produced (`add %8:i64, %9:i32`) sailed
+#            past `ValidatedAir` and CFG construction. Only the return-value
+#            width mismatch was caught, late, as an E9000 naming an unrelated
+#            instruction — and the shapes that did not reach a return were not
+#            caught at all.
+#
+# Every case pins an exact VALUE that does not fit in i32, not just an exit
+# code: the broken widths only show up as a truncated or rejected 64-bit value,
+# and two of the three original reproductions were silent at the exit-code
+# level. `@dbg` output is the assertion.
+
+[section]
+id = "cli.integer_class_width"
+name = "Integer inference class width"
+description = "An integer's inference class settles on ONE width even when a match intervenes (RUE-1636), and AIR operands must agree (RUE-1654)."
+
+# ---------------------------------------------------------------------------
+# RUE-1636: the three reported reproductions.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "match_then_sibling_binding_returned_at_i64"
+description = "RUE-1636 repro 1: rejected with a bogus E0800 'literal value 4294967296 is out of range for i32' — `a` was upgraded to i64 by the return type while its sibling `b` stayed behind at the i32 default."
+files = [{ path = "main.rue", source = """
+fn f() -> i64 {
+    let a = 1;
+    let b = 4294967296;
+    let c = a + b;
+    match c {
+        3 => {},
+        _ => {},
+    }
+    a
+}
+
+fn main() -> i32 {
+    @dbg(f());
+    0
+}
+""" }]
+stdout = "1\n"
+
+[[case]]
+name = "match_then_whole_class_used_in_tail_expression"
+description = "RUE-1636 repro 2: ICEd with E9000 'CFG verification failed: return value has type I32 expected I64' — the tail expression mixed class members that had settled on different widths."
+files = [{ path = "main.rue", source = """
+fn f() -> i64 {
+    let a = 1;
+    let b = 0 - 5;
+    let c = a + b;
+    match c {
+        3 => {},
+        _ => {},
+    }
+    a + b + c
+}
+
+fn main() -> i32 {
+    @dbg(f());
+    0
+}
+""" }]
+stdout = "-8\n"
+
+[[case]]
+name = "match_then_scrutinee_returned_keeps_64_bit_value"
+description = "RUE-1636 repro 3: compiled silently into type-inconsistent AIR (`add %8:i64, %9:i32`) that only worked by accident of the 8-byte slot model. The pinned value fails if either operand truncates."
+files = [{ path = "main.rue", source = """
+fn f() -> i64 {
+    let a = 1;
+    let b = 4294967296;
+    let c = a + b;
+    match c {
+        3 => {},
+        _ => {},
+    }
+    c
+}
+
+fn main() -> i32 {
+    @dbg(f());
+    0
+}
+""" }]
+stdout = "4294967297\n"
+
+# ---------------------------------------------------------------------------
+# The settling context can arrive in several shapes, all after the match.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "match_then_annotation_settles_the_class"
+description = "A later `let d: i64 = c` settles the class the match ran over, and every member follows."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a = 1;
+    let b = 4294967296;
+    let c = a + b;
+    match c {
+        3 => {},
+        _ => {},
+    }
+    let d: i64 = c;
+    @dbg(d);
+    @dbg(b);
+    0
+}
+""" }]
+stdout = "4294967297\n4294967296\n"
+
+[[case]]
+name = "match_then_call_argument_settles_the_class"
+description = "A later call whose parameter is u64 settles the class; the unsigned width is taken by the whole class, not just the argument."
+files = [{ path = "main.rue", source = """
+fn take(v: u64) -> u64 { v }
+
+fn main() -> i32 {
+    let a = 1;
+    let b = 4294967296;
+    let c = a + b;
+    match c {
+        3 => {},
+        _ => {},
+    }
+    @dbg(take(c));
+    @dbg(b);
+    0
+}
+""" }]
+stdout = "4294967297\n4294967296\n"
+
+[[case]]
+name = "match_many_int_patterns_chain_onto_one_class"
+description = "Several integer patterns chain onto the same scrutinee; the arm that runs is pinned along with the class's settled width."
+files = [{ path = "main.rue", source = """
+fn f() -> i64 {
+    let a = 1;
+    let b = 4294967296;
+    let c = a + b;
+    match c {
+        1 => { @dbg(1); },
+        2 => { @dbg(2); },
+        4294967297 => { @dbg(3); },
+        _ => { @dbg(0); },
+    }
+    a + b
+}
+
+fn main() -> i32 {
+    @dbg(f());
+    0
+}
+""" }]
+stdout = "3\n4294967297\n"
+
+[[case]]
+name = "match_on_unsigned_class_settled_after_the_match"
+description = "The same shape on an unsigned class: the pattern must not force the i32 default onto a u64 value."
+files = [{ path = "main.rue", source = """
+fn f() -> u64 {
+    let a = 1;
+    let b = 18446744073709551615 - 1;
+    let c = a + b;
+    match c {
+        0 => { @dbg(1); },
+        _ => { @dbg(0); },
+    }
+    c
+}
+
+fn main() -> i32 {
+    @dbg(f());
+    0
+}
+""" }]
+stdout = "0\n18446744073709551615\n"
+
+[[case]]
+name = "nested_match_shares_the_enclosing_class"
+description = "A match inside a match arm still leaves the class free for the width the return type settles."
+files = [{ path = "main.rue", source = """
+fn f() -> i64 {
+    let a = 1;
+    let b = 4294967296;
+    let c = a + b;
+    match c {
+        3 => { @dbg(3); },
+        _ => {
+            match a {
+                1 => { @dbg(1); },
+                _ => { @dbg(0); },
+            }
+        },
+    }
+    c
+}
+
+fn main() -> i32 {
+    @dbg(f());
+    0
+}
+""" }]
+stdout = "1\n4294967297\n"
+
+# ---------------------------------------------------------------------------
+# The fix must not weaken the diagnostics an integer pattern still owes.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "int_pattern_on_bool_scrutinee_still_rejected"
+description = "A marked literal VARIABLE rejects a non-integer binding exactly as the terminal did — the scrutinee's bool type is still reported at the pattern."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let b = true;
+    match b {
+        1 => 1,
+        _ => 0,
+    }
+}
+""" }]
+compile_fail = true
+error_contains = ["bool"]
+
+[[case]]
+name = "int_pattern_out_of_range_for_settled_type_still_rejected"
+description = "Once the scrutinee's type is known, a pattern that cannot be represented in it is still an error (spec 4.7:23)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u8 = 1;
+    match a {
+        300 => 1,
+        _ => 0,
+    }
+}
+""" }]
+compile_fail = true
+error_contains = ["out of range"]
+
+[[case]]
+name = "unmatched_int_pattern_class_still_defaults_to_i32"
+description = "With no settling context anywhere, the class still takes the i32 default (spec 4.1:3) — the fix restores the class, it does not remove the default."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a = 1;
+    let b = 2;
+    let c = a + b;
+    match c {
+        3 => { @dbg(3); },
+        _ => { @dbg(0); },
+    }
+    c
+}
+""" }]
+stdout = "3\n"
+exit_code = 3
+
+# ---------------------------------------------------------------------------
+# RUE-1654's operand-agreement check found a second producer of mixed-width
+# AIR: indexing a CONCRETE slice or array type degraded to a fresh inference
+# variable, so a literal sharing an operator with the element had nothing to
+# take its width from. `@intCast(...)` is what makes it visible — it absorbs
+# the surrounding context that would otherwise have settled the operator's
+# type from the outside.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "slice_element_settles_a_literal_beside_it"
+description = "A literal multiplied with a slice element takes the element's 64-bit width. `@dbg` accepts any integer width, so it supplies no context of its own — before, the class had nothing to settle on, defaulted to i32, and the program was rejected with a bogus E0800."
+files = [{ path = "main.rue", source = """
+struct Cell { v: i64 }
+
+fn scale(borrow s: [Cell]) -> i32 {
+    let e = s[0];
+    @dbg(e.v * 4294967296);
+    0
+}
+
+fn main() -> i32 {
+    let a: [Cell; 2] = [Cell { v: 3 }, Cell { v: 5 }];
+    scale(borrow a)
+}
+""" }]
+stdout = "12884901888\n"
+
+[[case]]
+name = "slice_element_literal_inside_intcast"
+description = "`@intCast` supplies its own result type, so it cannot settle its argument — the element's width has to reach the literal directly (the `add %21:i64, %22:i32` shape the AIR check rejects)."
+files = [{ path = "main.rue", source = """
+struct Inner { a: i64 }
+struct Outer { i: Inner, b: i64 }
+
+fn pick(borrow s: [Outer]) -> i32 {
+    let e = s[1];
+    @intCast(e.i.a * 10 + e.b + @intCast(s.len()))
+}
+
+fn main() -> i32 {
+    let a: [Outer; 2] = [
+        Outer { i: Inner { a: 1 }, b: 2 },
+        Outer { i: Inner { a: 4 }, b: 0 },
+    ];
+    @dbg(pick(borrow a));
+    0
+}
+""" }]
+stdout = "42\n"
+
+[[case]]
+name = "slice_of_scalars_element_settles_a_literal"
+description = "The same for a slice of a bare scalar: `s[0]`'s element type is known from the slice's own type, with no struct field in between."
+files = [{ path = "main.rue", source = """
+fn head_scaled(borrow s: [i64]) -> i32 {
+    @dbg(s[0] * 4294967296);
+    @intCast(s[1] * 10)
+}
+
+fn main() -> i32 {
+    let a: [i64; 3] = [7, 8, 9];
+    @dbg(head_scaled(borrow a));
+    0
+}
+""" }]
+stdout = "30064771072\n80\n"
+
+# Cross-mechanism case, added at integration time (RUE-1636 x RUE-1711).
+#
+# Neither worker's own suite could see this seam. RUE-1636 taught a slice/array
+# element to publish the element type its base already carries; RUE-1711 added
+# byte scans over a `StrBuf` to `std.fs` and `std.c` to reject interior NULs.
+# Those scans compare a byte against the literal `0`, which is exactly the
+# shape RUE-1636 fixed -- so the std guard's correctness now depends on the
+# inference fix.
+#
+# Both std scans were written defensively as `let nul: u8 = 0;` and compared
+# against that binding, which sidesteps the question. This case pins the BARE
+# literal spelling: `byte_at_borrowed(..) == 0` must compare at u8. If the
+# literal ever defaults to i32 again, the comparison silently widens and a
+# NUL-bearing path could scan clean -- and the AIR guard added with RUE-1654
+# would NOT catch it, because it exempts integer/integer comparison operands
+# pending the FieldGet fallback. So the behaviour is asserted here directly.
+[[case]]
+name = "std_byte_scan_against_bare_literal_compares_at_byte_width"
+description = "A StrBuf byte compared against an unannotated `0` settles the literal at u8, so an interior NUL is found and a clean buffer is not."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn scan(borrow s: std.strbuf.StrBuf) -> bool {
+    let n = s.len();
+    let mut i: u64 = 0;
+    while i < n {
+        if std.strbuf.StrBuf.byte_at_borrowed(borrow s, i) == 0 {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn main() -> i32 {
+    let mut p = std.strbuf.StrBuf.new();
+    p.push(97);
+    p.push(0);
+    p.push(98);
+    if scan(borrow p) { @dbg(1); } else { @dbg(0); }
+
+    let mut q = std.strbuf.StrBuf.new();
+    q.push(99);
+    q.push(98);
+    if scan(borrow q) { @dbg(1); } else { @dbg(0); }
+
+    // A byte that is merely LARGE must not be mistaken for the terminator by a
+    // comparison that widened: 255 stays 255 at u8.
+    let mut r = std.strbuf.StrBuf.new();
+    r.push(255);
+    if scan(borrow r) { @dbg(1); } else { @dbg(0); }
+    0
+}
+""" }]
+stdout = "1\n0\n0\n"

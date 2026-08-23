@@ -1349,3 +1349,133 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Integer patterns adopt the scrutinee's type; they do not fix it (RUE-1636)
+# =============================================================================
+#
+# 4.7:13 says a pattern's type is the scrutinee's type, and 4.1:3 says an
+# integer literal takes its type from context rather than pinning one. An
+# integer PATTERN is an integer literal in pattern position, so it must behave
+# the same way: matching on a value whose width is only settled later must not
+# freeze that value — or any value inferred together with it — at the i32
+# default.
+#
+# The unifier used to type an integer pattern as the absorbing `IntLiteral`
+# terminal, which collapsed the scrutinee's inference class: a later concrete
+# type upgraded only the variable that happened to be queried, and its
+# siblings silently defaulted to i32. Each case below settles the width
+# AFTER the match and pins a value that does not fit in i32, so a class member
+# left behind at i32 is a visible failure rather than an accident of layout.
+
+[[case]]
+name = "match_int_pattern_scrutinee_width_fixed_by_return_type"
+spec = ["4.7:13", "4.1:3"]
+description = "RUE-1636: matching on `c` does not pin `c`'s inference class to i32; the i64 return type reaches the class through `a`, and the sibling `b` keeps its 64-bit value instead of being rejected as out of range for i32."
+source = """
+fn f() -> i64 {
+    let a = 1;
+    let b = 4294967296;
+    let c = a + b;
+    match c {
+        3 => {},
+        _ => {},
+    }
+    @dbg(b);
+    a
+}
+
+fn main() -> i32 {
+    @dbg(f());
+    0
+}
+"""
+expected_stdout = "4294967296\n1\n"
+exit_code = 0
+
+[[case]]
+name = "match_int_pattern_class_stays_consistent_in_a_tail_expression"
+spec = ["4.7:13", "4.1:3"]
+description = "RUE-1636: every member of the matched value's class has the same width, so a tail expression combining all of them is well typed (it used to reach CFG verification with an i32 value in an i64 return slot)."
+source = """
+fn f() -> i64 {
+    let a = 1;
+    let b = 0 - 5;
+    let c = a + b;
+    match c {
+        3 => {},
+        _ => {},
+    }
+    a + b + c
+}
+
+fn main() -> i32 {
+    @dbg(f());
+    0
+}
+"""
+expected_stdout = "-8\n"
+exit_code = 0
+
+[[case]]
+name = "match_int_pattern_width_fixed_by_later_annotation"
+spec = ["4.7:13", "4.1:3"]
+description = "RUE-1636: the settling context may come after the match as a plain annotation on one class member; the width it fixes belongs to the whole class."
+source = """
+fn main() -> i32 {
+    let a = 1;
+    let b = 4294967296;
+    let c = a + b;
+    match c {
+        3 => {},
+        _ => {},
+    }
+    let d: i64 = a;
+    @dbg(d);
+    @dbg(b);
+    0
+}
+"""
+expected_stdout = "1\n4294967296\n"
+exit_code = 0
+
+[[case]]
+name = "match_int_pattern_multiple_arms_share_one_class"
+spec = ["4.7:13", "4.1:3"]
+description = "RUE-1636: several integer patterns chain onto the same scrutinee class; the width settled later applies to every member."
+source = """
+fn f() -> i64 {
+    let a = 1;
+    let b = 4294967296;
+    let c = a + b;
+    match c {
+        1 => { @dbg(1); },
+        2 => { @dbg(2); },
+        _ => { @dbg(0); },
+    }
+    a + b
+}
+
+fn main() -> i32 {
+    @dbg(f());
+    0
+}
+"""
+expected_stdout = "0\n4294967297\n"
+exit_code = 0
+
+[[case]]
+name = "match_int_pattern_out_of_range_for_settled_scrutinee_type"
+spec = ["4.7:23", "4.7:13"]
+description = "The pattern still has to fit the type the scrutinee settles on: typing patterns as literal variables did not weaken 4.7:23."
+source = """
+fn main() -> i32 {
+    let a: u8 = 1;
+    match a {
+        300 => 1,
+        _ => 0,
+    }
+}
+"""
+compile_fail = true
+error_contains = "out of range"

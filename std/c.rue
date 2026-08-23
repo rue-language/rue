@@ -153,6 +153,26 @@ pub const c_bool = bool;
 // unchecked-context work (ADR-0064 ruling 3): a pointer received from or handed
 // to C carries no Rue lifetime, aliasing, or validity guarantee, and the caller
 // is responsible for keeping it live and for freeing what it owns.
+//
+// INTERIOR NUL BYTES (RUE-1710). A StrBuf may hold a `0` byte; a C string may
+// not — the terminator IS the length, so the two representations disagree about
+// what such a buffer means. `owned_c_string` refuses to build a C string from
+// one instead of exporting a value whose C-visible length differs from its
+// source's. That refusal is what makes `free_c_string`'s scan sound: with no
+// interior `0`, the scan recovers EXACTLY the length that was allocated, so the
+// `(size, align)` pair handed to `@free` is the one `@alloc` was given.
+// That exactness is a hard allocator requirement, not bookkeeping: `@free`
+// picks the size class from the size it is passed and pushes the block onto
+// that class's free list (see `std/rawbuf.rue`'s exact-layout contract), so a
+// 4 KiB block released as 3 bytes joins the 8-byte free list and is handed back
+// out as an 8-byte allocation, and an over-16 KiB block — its own mapping —
+// released as a small size is never unmapped at all. Nothing traps on the
+// mismatch; it is silently wrong, which is why the invariant is enforced at the
+// only place that can still see the source bytes.
+//
+// Callers holding bytes that MIGHT contain a `0` test them with
+// [`has_interior_nul`] first and decide what to do (reject, escape, truncate)
+// with the context to choose correctly.
 
 /// Scan a NUL-terminated C string and return its length in bytes, EXCLUDING the
 /// terminator — the `strlen(3)` shape.
@@ -170,6 +190,27 @@ pub fn c_strlen(cstr: ptr mut u8) -> u64 {
     len
 }
 
+/// True when `source` holds a `0` byte anywhere, i.e. cannot be exported as a C
+/// string.
+///
+/// This is the guard for [`owned_c_string`], which fail-fasts on such a source.
+/// It is public because only the caller knows what to do about bytes it does
+/// not control — reject the input, escape it, or truncate it deliberately —
+/// and testing first is how a caller keeps that decision instead of taking a
+/// panic. `source` is only read.
+pub fn has_interior_nul(borrow source: strbuf.StrBuf) -> bool {
+    let len = source.len();
+    let nul: u8 = 0;
+    let mut i: u64 = 0;
+    while i < len {
+        if strbuf.StrBuf.byte_at_borrowed(borrow source, i) == nul {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Copy `source`'s bytes into a freshly allocated, NUL-terminated C string and
 /// return a pointer the CALLER OWNS.
 ///
@@ -178,13 +219,21 @@ pub fn c_strlen(cstr: ptr mut u8) -> u64 {
 /// (or `const char*`) parameter. It is an INDEPENDENT allocation: `source`
 /// is borrowed, remains valid, and is not consumed. Ownership transfers to the
 /// caller, who MUST release the buffer with [`free_c_string`] (never a StrBuf
-/// free — this buffer is not a StrBuf and carries no capacity header). If
-/// `source` itself contains an interior `0` byte, the C string is effectively
-/// truncated at that byte from a C consumer's point of view; the full
-/// `len + 1` bytes are still what `free_c_string` reclaims via its own scan, so
-/// interior NULs are a caller concern, not a leak. Allocation failure is
-/// fail-fast, matching StrBuf's allocator convention.
+/// free — this buffer is not a StrBuf and carries no capacity header).
+///
+/// An INTERIOR `0` BYTE in `source` is a caller error and is FAIL-FAST
+/// (RUE-1710): such bytes have no C string that represents them — a C consumer
+/// sees only the prefix — and exporting the truncation anyway would also
+/// desynchronize [`free_c_string`], whose scan would then release the
+/// allocation under a smaller size than `@alloc` was given (the section comment
+/// above spells out why that silently corrupts the allocator's free lists).
+/// Test with [`has_interior_nul`] when the bytes are not already known to be
+/// NUL-free. Allocation failure is fail-fast too, matching StrBuf's allocator
+/// convention.
 pub fn owned_c_string(borrow source: strbuf.StrBuf) -> ptr mut u8 {
+    if has_interior_nul(borrow source) {
+        @panic("owned_c_string: source contains an interior NUL byte");
+    }
     let len = source.len();
     let buf: ptr mut u8 = checked { @alloc(len + 1, 1) };
     if checked { @ptr_to_int(buf) } == 0 {
@@ -221,11 +270,16 @@ pub fn strbuf_from_c_string(cstr: ptr mut u8) -> strbuf.StrBuf {
 
 /// Release a buffer returned by [`owned_c_string`].
 ///
-/// `cstr` must be a pointer `owned_c_string` returned and not yet freed. The
-/// length is recovered by scanning to the terminator (the buffer was allocated
-/// as `strlen + 1` bytes at alignment one), so the caller does not track the
-/// size. Passing any other pointer — a StrBuf's backing buffer, a C-owned
-/// string, or an already-freed pointer — is a contract violation.
+/// `cstr` must be a pointer [`owned_c_string`] returned and not yet freed. The
+/// length is recovered by scanning to the terminator, so the caller does not
+/// track the size. That scan is EXACT rather than a guess, and only because
+/// `owned_c_string` guarantees the buffer holds no interior `0`: its allocation
+/// was `strlen + 1` bytes at alignment one, and with a single `0` in the buffer
+/// the scan finds that same `strlen`. `@free` selects the size class from the
+/// size it is given, so a scan that stopped short would release the block into
+/// the wrong class — silently, with no diagnostic. Passing any other pointer —
+/// a StrBuf's backing buffer, a C-owned string, one built with a different
+/// length, or an already-freed pointer — is a contract violation.
 pub fn free_c_string(cstr: ptr mut u8) {
     let mut len: u64 = 0;
     let nul: u8 = 0;
