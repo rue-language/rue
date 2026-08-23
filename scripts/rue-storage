@@ -14,10 +14,10 @@ usage: scripts/rue-storage status
        scripts/rue-storage reset RUE_ROOT [RUE_ROOT ...]
 
 status inventories every registered Rue worktree and its buck-out size. plan
-asks Buck what stale or untracked output it would remove. clean performs that
-coordinated stale cleanup (default age: 1w) and, below 20% host free space,
-adaptively removes the oldest eligible output while preserving a 12-hour
-minimum TTL. guard is the build preflight: when free space is at or below 10%
+asks Buck what tracked stale output it would remove. clean performs that
+coordinated tracked stale cleanup (default age: 1w) and, below 20% host free
+space, adaptively removes the oldest eligible tracked output while preserving a
+12-hour minimum TTL. guard is the build preflight: when free space is at or below 10%
 of the device AND below the cleanup floor (16 GiB), it runs that cleanup
 across every worktree before allowing more disk-heavy work; a build is
 refused only when free space also sits at or below the hard floor (4 GiB),
@@ -133,6 +133,7 @@ stale_all() {
     local mode="$1" age="$2" root roots failed=0
     local args=(
         clean --stale "$age"
+        --tracked-only
         --adaptive-low-disk-threshold "$adaptive_target_percent"
         --adaptive-min-ttl "$adaptive_min_ttl"
     )
