@@ -416,9 +416,12 @@ element owned — and therefore droppable — again (3.8:72).
 {{ rule(id="7.1:47", cat="normative") }}
 
 An array whose element type carries a must-consume (linear) value satisfies its
-consumption obligation when every element has been moved out on every non-diverging
-path. Moving out only some elements, or moving an element on only some paths, is a
-compile-time error naming the elements that remain unconsumed (3.8:71).
+consumption obligation when every element has been consumed on every non-diverging
+path — moved out as a whole, or (for a carrier-struct element) by consuming each of
+the element's linear sub-places, which is the only element-wise route for an array
+reached through a field projection (3.8:71). Consuming only some elements, or an
+element on only some paths, is a compile-time error naming what remains unconsumed
+(3.8:71).
 
 {{ rule(id="7.1:48", cat="dynamic-semantics") }}
 

@@ -2228,6 +2228,185 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "linear_array_elementwise_via_subplaces"
+spec = ["3.8:71", "3.8:60"]
+description = "Consuming every element's linear sub-place discharges a root array of carrier structs"
+source = """
+linear struct MustUse { value: i32 }
+struct Carrier { m: MustUse }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let xs = [Carrier { m: MustUse { value: 40 } }, Carrier { m: MustUse { value: 2 } }];
+    consume(xs[0].m) + consume(xs[1].m)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "linear_array_partial_subplace_rejected"
+spec = ["3.8:71", "3.8:60"]
+description = "Discharging only one element's sub-place names the elements still unconsumed"
+source = """
+linear struct MustUse { value: i32 }
+struct Carrier { m: MustUse }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let xs = [Carrier { m: MustUse { value: 1 } }, Carrier { m: MustUse { value: 2 } }];
+    consume(xs[0].m)
+}
+"""
+compile_fail = true
+error_contains = ["must be consumed", "element(s) [1]"]
+
+[[case]]
+name = "nested_array_field_subplace_consumption"
+spec = ["3.8:71", "3.8:60"]
+description = "Per-element sub-place consumption discharges an array reached through a field projection"
+source = """
+linear struct MustUse { value: i32 }
+struct Carrier { m: MustUse }
+struct Holder { arr: [Carrier; 2] }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let h = Holder { arr: [Carrier { m: MustUse { value: 40 } }, Carrier { m: MustUse { value: 2 } }] };
+    consume(h.arr[0].m) + consume(h.arr[1].m)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "nested_array_field_partial_subplace_rejected"
+spec = ["3.8:71", "3.8:60"]
+description = "A partially discharged array field names the sub-place still holding a linear value"
+source = """
+linear struct MustUse { value: i32 }
+struct Carrier { m: MustUse }
+struct Holder { arr: [Carrier; 2] }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let h = Holder { arr: [Carrier { m: MustUse { value: 1 } }, Carrier { m: MustUse { value: 2 } }] };
+    consume(h.arr[0].m)
+}
+"""
+compile_fail = true
+error_contains = ["must be consumed", "'h.arr[1].m' still holds a linear value"]
+
+[[case]]
+name = "nested_array_field_one_branch_rejected"
+spec = ["3.8:71", "3.8:60"]
+description = "An array field's elements consumed on only some paths do not satisfy the obligation"
+source = """
+linear struct MustUse { value: i32 }
+struct Carrier { m: MustUse }
+struct Holder { arr: [Carrier; 2] }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let h = Holder { arr: [Carrier { m: MustUse { value: 1 } }, Carrier { m: MustUse { value: 2 } }] };
+    let a = consume(h.arr[0].m);
+    if a == 1 {
+        a + consume(h.arr[1].m)
+    } else {
+        a
+    }
+}
+"""
+compile_fail = true
+error_contains = ["not consumed on all paths", "'h.arr[1].m' still holds a linear value"]
+
+[[case]]
+name = "nested_array_field_param_subplace_consumption"
+spec = ["3.8:71", "3.8:62"]
+description = "A by-value parameter's array field can be discharged per element through sub-place moves"
+source = """
+linear struct MustUse { value: i32 }
+struct Carrier { m: MustUse }
+struct Holder { arr: [Carrier; 2] }
+
+fn consume(m: MustUse) -> i32 { m.value }
+fn consume_all(h: Holder) -> i32 { consume(h.arr[0].m) + consume(h.arr[1].m) }
+
+fn main() -> i32 {
+    consume_all(Holder { arr: [Carrier { m: MustUse { value: 40 } }, Carrier { m: MustUse { value: 2 } }] })
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "nested_array_field_subplace_consumption_before_return"
+spec = ["3.8:71", "3.8:60"]
+description = "Sub-place discharge of an array field is honored at an early-exit edge"
+source = """
+linear struct MustUse { value: i32 }
+struct Carrier { m: MustUse }
+struct Holder { arr: [Carrier; 2] }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn pick(h: Holder, flag: bool) -> i32 {
+    if flag {
+        return consume(h.arr[0].m) + consume(h.arr[1].m);
+    }
+    consume(h.arr[1].m) - consume(h.arr[0].m)
+}
+
+fn main() -> i32 {
+    pick(Holder { arr: [Carrier { m: MustUse { value: 40 } }, Carrier { m: MustUse { value: 2 } }] }, true)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "doubly_nested_array_field_subplace_consumption"
+spec = ["3.8:71", "3.8:60"]
+description = "Sub-place discharge recurses through nested array shapes reached through a field"
+source = """
+linear struct MustUse { value: i32 }
+struct Carrier { m: MustUse }
+struct Grid { g: [[Carrier; 2]; 2] }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let x = Grid { g: [
+        [Carrier { m: MustUse { value: 20 } }, Carrier { m: MustUse { value: 20 } }],
+        [Carrier { m: MustUse { value: 1 } }, Carrier { m: MustUse { value: 1 } }],
+    ] };
+    consume(x.g[0][0].m) + consume(x.g[0][1].m) + consume(x.g[1][0].m) + consume(x.g[1][1].m)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "linear_array_subplace_discharge_no_reassign"
+spec = ["3.8:77", "3.8:71"]
+description = "Sub-place discharge leaves live element husks, so whole-array reassignment stays rejected"
+source = """
+linear struct MustUse { value: i32 }
+struct Carrier { m: MustUse }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let mut xs = [Carrier { m: MustUse { value: 1 } }, Carrier { m: MustUse { value: 2 } }];
+    let a = consume(xs[0].m) + consume(xs[1].m);
+    xs = [Carrier { m: MustUse { value: 3 } }, Carrier { m: MustUse { value: 4 } }];
+    a
+}
+"""
+compile_fail = true
+error_contains = "assignment would overwrite a live linear value"
+
+[[case]]
 name = "zero_length_linear_array_vacuously_consumed"
 spec = ["3.8:74"]
 description = "A zero-length array of a linear type holds no linear values; dropping it is fine"

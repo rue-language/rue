@@ -547,7 +547,7 @@ While one or more elements of an array are moved out, it is a compile-time error
 
 {{ rule(id="3.8:71", cat="normative") }}
 
-An array whose elements carry linear values may be consumed element-wise: its must-consume obligation is satisfied when every element has been moved out on every non-diverging path. Moving out only some elements, or moving an element on only some paths, is a compile-time error naming the elements that are not consumed.
+An array whose elements carry linear values may be consumed element-wise: its must-consume obligation is satisfied when every element has been consumed on every non-diverging path — moved out as a whole (a constant-index move, 3.8:68), or, for an element whose type is a carrier struct linear only by infection (3.8:58), by consuming each of the element's linear sub-places (3.8:60). The sub-place route applies to an array anywhere in a place tree: the elements of an array reached through a field projection cannot be moved out as wholes (3.8:68), but consuming their linear sub-places (for example `h.arr[0].p` and `h.arr[1].p`) still discharges the array field's obligation. Consuming only some elements, or an element on only some paths, is a compile-time error naming the elements — or the sub-place — left unconsumed.
 
 {{ rule(id="3.8:72", cat="legality-rule") }}
 

@@ -137,6 +137,51 @@ stdout = """99
 """
 
 [[case]]
+name = "array_field_elementwise_subplace_discharge_runs_residue_destructors"
+description = "Consuming each element's linear field discharges an array FIELD's obligation (RUE-1606); every element's residue destructor still runs exactly once, in ascending index order."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+struct C { l: L, d: D }
+struct H { arr: [C; 2] }
+fn sink(l: L) -> i32 { l.v }
+fn main() -> i32 {
+    let h = H { arr: [C { l: L { v: 1 }, d: D { v: 41 } }, C { l: L { v: 2 }, d: D { v: 42 } }] };
+    let r = sink(h.arr[0].l) + sink(h.arr[1].l);
+    @dbg(99);
+    r
+}
+""" }]
+exit_code = 3
+stdout = """99
+41
+42
+"""
+
+[[case]]
+name = "root_array_elementwise_subplace_discharge_runs_residue_destructors"
+description = "A root array of carriers discharged through per-element sub-place moves (RUE-1606) drops each element's residue exactly once at scope exit."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+struct C { l: L, d: D }
+fn sink(l: L) -> i32 { l.v }
+fn main() -> i32 {
+    let xs = [C { l: L { v: 1 }, d: D { v: 41 } }, C { l: L { v: 2 }, d: D { v: 42 } }];
+    let r = sink(xs[0].l) + sink(xs[1].l);
+    @dbg(99);
+    r
+}
+""" }]
+exit_code = 3
+stdout = """99
+41
+42
+"""
+
+[[case]]
 name = "carrier_residue_destructor_order_is_declaration_order"
 description = "Residue destructors run in field declaration order after the linear field is consumed (RUE-1591, spec 3.9:2)."
 files = [{ path = "main.rue", source = """
