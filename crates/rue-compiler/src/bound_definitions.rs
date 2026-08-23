@@ -41,7 +41,7 @@ struct StableDefinitionIdentity {
     kind: StableDefinitionKind,
     name: Arc<str>,
     owner: Option<StableNamedTypeKey>,
-    hash_accelerator: [u8; 16],
+    hash_accelerator: u128,
 }
 
 /// Immutable durable identity for one bound definition.
@@ -56,24 +56,29 @@ struct StableDefinitionIdentity {
 #[derive(Clone)]
 pub struct StableDefinitionKey(Arc<StableDefinitionIdentity>);
 
-/// Bucket-selector digest for one issued definition identity.
+/// Bucket-selector and ordering digest for one issued definition identity.
 ///
-/// This is a hash-table accelerator, never a durable or serialized value:
-/// [`StableDefinitionKey`]'s `PartialEq` and `Ord` remain authoritative over
-/// the complete fields, so a collision here costs one extra field comparison
-/// in a bucket and can never conflate distinct keys. That makes a
+/// This is a lookup accelerator, never a durable or serialized value.
+/// [`StableDefinitionKey`]'s `PartialEq` stays authoritative over the complete
+/// fields and its `Ord` falls back to them, so a collision here costs one extra
+/// field comparison and can never conflate distinct keys. That makes a
 /// cryptographic digest unnecessary — issuance previously ran SHA-256 over
 /// every module, name, and owner string, which measured 1.9% of a fresh
 /// Lattice compile purely to select buckets. `StableHasher` is the
 /// repository's fixed-key, byte-order-independent mixer, so the accelerator
 /// stays deterministic across processes at a fraction of the cost.
+///
+/// It selects the total order as well as the bucket, which is why it is a
+/// `u128` rather than a byte array: ordering is then two integer comparisons
+/// instead of a `memcmp` call, and only a genuine 128-bit collision reaches the
+/// structural comparison. See [`StableDefinitionKey`]'s `Ord`.
 fn definition_hash_accelerator(
     module: &ModuleId,
     namespace: StableDefinitionNamespace,
     kind: StableDefinitionKind,
     name: &Arc<str>,
     owner: &Option<StableNamedTypeKey>,
-) -> [u8; 16] {
+) -> u128 {
     let mut hasher = rue_query::StableHasher::new();
     hasher.write(b"rue.stable-definition-key\0v2\0stable-hasher\0");
     module.hash(&mut hasher);
@@ -81,7 +86,7 @@ fn definition_hash_accelerator(
     kind.hash(&mut hasher);
     name.hash(&mut hasher);
     owner.hash(&mut hasher);
-    hasher.finish128().to_u128().to_le_bytes()
+    hasher.finish128().to_u128()
 }
 
 impl StableDefinitionKey {
@@ -173,12 +178,34 @@ impl PartialOrd for StableDefinitionKey {
 }
 
 impl Ord for StableDefinitionKey {
+    /// Order by the deterministic accelerator, breaking ties on the complete
+    /// fields.
+    ///
+    /// This is ADR-0074's shape — a stable digest with a cold structural
+    /// tiebreak — applied to definition identity. It is a total order and it is
+    /// consistent with `Eq`: equal fields imply an equal digest, so a digest
+    /// difference always implies a field difference, and a digest tie is
+    /// decided by the fields below exactly as it always was. `StableHasher` is
+    /// fixed-key, so the order is the same in every process.
+    ///
+    /// What it is not is the lexicographic order of module path and definition
+    /// name. That order cost a string walk per level of every ordered probe,
+    /// and nothing downstream reads it: the emitted artifact is byte-identical
+    /// either way. What it does decide is the iteration order of the ordered
+    /// maps keyed by definition identity -- and since RUE-1752 that no longer
+    /// reaches a reader, because the CLI sorts a diagnostic batch into source
+    /// order at the render boundary. Publication order survives only as the
+    /// stable-sort tiebreak between diagnostics at one identical location.
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Stable keys propagate by cloning this immutable identity. Ordered
         // maps commonly compare a lookup key with that exact clone, so match
-        // equality's constant-time path before walking the shared strings.
+        // equality's constant-time path first.
         if Arc::ptr_eq(&self.0, &other.0) {
             return std::cmp::Ordering::Equal;
+        }
+        match self.0.hash_accelerator.cmp(&other.0.hash_accelerator) {
+            std::cmp::Ordering::Equal => {}
+            ordering => return ordering,
         }
         (
             &self.0.module,
@@ -199,7 +226,7 @@ impl Ord for StableDefinitionKey {
 
 impl Hash for StableDefinitionKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write(&self.0.hash_accelerator);
+        state.write(&self.0.hash_accelerator.to_le_bytes());
     }
 }
 
