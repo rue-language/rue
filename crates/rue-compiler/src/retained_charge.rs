@@ -1359,6 +1359,7 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::DuplicateFunctionDefinition {
                 function_name: value,
             }
+            | E::DuplicateMixedKindDefinition { name: value }
             | E::LinearValueDiscarded { type_name: value }
             | E::LinearValueOverwritten { type_name: value }
             | E::LinearValueOverwrittenThroughInout { type_name: value }

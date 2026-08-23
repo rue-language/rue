@@ -1333,6 +1333,9 @@ pub enum ErrorKind {
     /// Duplicate function definition
     #[error("duplicate function definition: `{function_name}` is already defined")]
     DuplicateFunctionDefinition { function_name: String },
+    /// Definitions with the same name but different kinds cannot coexist.
+    #[error("duplicate definition: `{name}` conflicts with an existing item of a different kind")]
+    DuplicateMixedKindDefinition { name: String },
     /// Linear value was not consumed before going out of scope
     #[error("linear value '{0}' must be consumed but was dropped")]
     LinearValueNotConsumed(String),
@@ -2113,7 +2116,8 @@ impl ErrorKind {
             ErrorKind::ReservedTypeName { .. } => ErrorCode::RESERVED_TYPE_NAME,
             ErrorKind::ReservedFunctionName { .. } => ErrorCode::RESERVED_FUNCTION_NAME,
             ErrorKind::DuplicateTypeDefinition { .. } => ErrorCode::DUPLICATE_TYPE_DEFINITION,
-            ErrorKind::DuplicateFunctionDefinition { .. } => {
+            ErrorKind::DuplicateFunctionDefinition { .. }
+            | ErrorKind::DuplicateMixedKindDefinition { .. } => {
                 ErrorCode::DUPLICATE_FUNCTION_DEFINITION
             }
             ErrorKind::LinearValueNotConsumed(_) => ErrorCode::LINEAR_VALUE_NOT_CONSUMED,
@@ -2604,10 +2608,11 @@ mod tests {
         );
     }
 
-    /// `ErrorKind::code()` must be injective: no two ErrorKind variants may
-    /// map to the same ErrorCode constant, and every constant must be used by
-    /// exactly one variant (a constant nobody maps to is dead, and usually a
-    /// sign that a variant was repointed at someone else's code).
+    /// `ErrorKind::code()` must cover the declared ErrorCode constants without
+    /// accidental aliases. Intentional aliases (such as the two E0436
+    /// duplicate-definition variants) share one match arm, and every constant
+    /// must be used (a constant nobody maps to is dead, and usually a sign that
+    /// a variant was repointed at someone else's code).
     ///
     /// `test_error_codes_are_unique` (above) guards constant *values*; this
     /// test guards the variant -> constant *mapping*. It scans the body of
