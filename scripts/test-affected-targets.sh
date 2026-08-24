@@ -284,7 +284,10 @@ scope_root="$(mktemp -d)"
 mkdir -p "$scope_root/bin"
 cat >"$scope_root/bin/fake-buck" <<'FAKEBUCK'
 #!/usr/bin/env bash
-# Answers the three queries build_scope() makes, and nothing else.
+# Answers the graph queries build_scope() makes, and nothing else.
+if [ -n "${RUE_AFFECTED_QUERY_LOG:-}" ]; then
+  printf '%s\n' "$2" >>"$RUE_AFFECTED_QUERY_LOG"
+fi
 case "$2" in
   "kind('_corpus_action', //crates/...)")
     printf '%s\n' \
@@ -297,6 +300,18 @@ case "$2" in
     printf '%s\n' \
       root//crates/rue-oracle-diff:oracle-diff-test \
       root//crates/rue-oracle-diff:oracle-diff-spec-test ;;
+  rdeps\(*)
+    # The configured reverse-dependency result models a multi-hop
+    # aggregate -> wrapper -> action path and direct aggregate roots in
+    # addition to the wrappers themselves.
+    printf '%s\n' \
+      root//crates/rue-oracle-diff:oracle-diff-test-action\ \(cfg\) \
+      root//crates/rue-oracle-diff:oracle-diff-test\ \(cfg\) \
+      root//crates/rue-oracle-diff:oracle-diff-test-aggregate\ \(cfg\) \
+      root//crates/rue-oracle-diff:oracle-diff-test-direct-aggregate\ \(cfg\) \
+      root//crates/rue-oracle-diff:oracle-diff-spec-test-action\ \(cfg\) \
+      root//crates/rue-oracle-diff:oracle-diff-spec-test\ \(cfg\) \
+      root//crates/rue-oracle-diff:oracle-diff-spec-test-aggregate\ \(cfg\) ;;
   //crates/...*)
     printf '%s\n' \
       root//crates/rue-compiler:rue-compiler \
@@ -305,6 +320,14 @@ case "$2" in
 esac
 FAKEBUCK
 chmod +x "$scope_root/bin/fake-buck"
+cat >"$scope_root/bin/fail-cquery" <<FAILEDCQUERY
+#!/usr/bin/env bash
+if [ "\$1" = cquery ]; then
+  exit 1
+fi
+exec "$scope_root/bin/fake-buck" "\$@"
+FAILEDCQUERY
+chmod +x "$scope_root/bin/fail-cquery"
 SCOPED=("${AFFECTED[@]}")
 
 # `build-scope` is what keeps a pattern lane's narrowing a SUBSET of what the
@@ -332,32 +355,46 @@ printf '%s\n' \
   //crates/rue-codegen:rue-codegen-test \
   //:spec-tests-action \
   //:cli-tests-shard-2-action \
+  //crates/rue-oracle-diff:oracle-diff-test \
+  //crates/rue-oracle-diff:oracle-diff-spec-test \
+  //crates/rue-oracle-diff:oracle-diff-test-aggregate \
+  //crates/rue-oracle-diff:oracle-diff-test-direct-aggregate \
+  //crates/rue-oracle-diff:oracle-diff-spec-test-aggregate \
   //crates/rue-oracle-diff:oracle-diff-test-action \
   >"$narrow_root/mixed"
 TESTS=$((TESTS + 1))
-if [ "$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope "$narrow_root/mixed" | tr '\n' ' ')" \
+scope_query_log="$scope_root/query.log"
+if [ "$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" RUE_AFFECTED_QUERY_LOG="$scope_query_log" "${AFFECTED[@]}" build-scope "$narrow_root/mixed" | tr '\n' ' ')" \
      = "//crates/rue-compiler:rue-compiler //crates/rue-codegen:rue-codegen-test " ]; then
-  pass "narrow: build-scope keeps the crate scope and drops every corpus action"
+  pass "narrow: build-scope removes actions, wrappers, and aggregate roots"
 else
   fail "narrow: build-scope did not restore the //crates/... scope"
 fi
+TESTS=$((TESTS + 1))
+if grep -Fq "rdeps(//crates/..., set(//crates/rue-oracle-diff:oracle-diff-test-action" "$scope_query_log" \
+    && grep -Fq "//crates/rue-oracle-diff:oracle-diff-spec-test-action)" "$scope_query_log"; then
+  pass "narrow: build-scope computes the complete corpus reverse-dependency closure"
+else
+  fail "narrow: build-scope did not compute corpus reverse-dependency closure"
+fi
 
-# RUE-1511: `build-scope` asks the live graph which targets are corpus actions,
-# so these cases stub Buck exactly as the end-to-end decision case below does.
+# RUE-1788: `build-scope` asks the live graph for the complete reverse
+# dependency closure of eligible corpus actions, so these cases stub Buck
+# exactly as the end-to-end decision case below does.
 # A real `./buck2` here would be a RECURSIVE Buck invocation — this suite runs
 # as an sh_test under buck2, which refuses the nested query with rc=3 — and the
 # suite's contract is that it needs neither network nor Buck.
 
 # The unnarrowed spelling loses independently of the narrowed one, and it is the
 # common case — a compiler change impacts more than NARROW_LIMIT targets, so it
-# is never narrowed. Both must drop the same actions, or fixing one leaves
-# premerge building the corpora exactly as before.
+# is never narrowed. Both must drop the same complete reverse-dependency
+# closure, or fixing one leaves premerge building the corpora exactly as before.
 TESTS=$((TESTS + 1))
-unnarrowed="$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope 2>/dev/null)"
-if [ -n "$unnarrowed" ] && ! grep -q -- '-action$' <<<"$unnarrowed"; then
-  pass "narrow: build-scope with no list expands the pattern without any corpus action"
+unnarrowed="$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" RUE_AFFECTED_QUERY_LOG="$scope_query_log" "${AFFECTED[@]}" build-scope 2>/dev/null | tr '\n' ' ')"
+if [ "$unnarrowed" = "//crates/rue-compiler:rue-compiler //crates/rue-span:rue-span-test " ]; then
+  pass "narrow: build-scope with no list excludes the complete corpus closure"
 else
-  fail "narrow: build-scope with no list kept a corpus action or produced nothing"
+  fail "narrow: build-scope with no list kept a corpus closure or produced nothing"
 fi
 
 # FAIL CLOSED is the property the whole change rests on: an action whose test
@@ -385,6 +422,17 @@ if [ "$degraded" = "//crates/rue-oracle-diff:oracle-diff-test-action //crates/ru
   pass "narrow: an unanswerable Buck query falls open to the unfiltered scope"
 else
   fail "narrow: a failed query did not fall open (got '$degraded')"
+fi
+
+# A successful action/ownership query followed by a failed configured closure
+# query must also over-build. Otherwise a new graph-query failure would turn
+# an owned corpus into an accidental omission.
+TESTS=$((TESTS + 1))
+degraded_cquery="$(RUE_AFFECTED_BUCK2="$scope_root/bin/fail-cquery" "${AFFECTED[@]}" build-scope "$narrow_root/unowned" 2>/dev/null | tr '\n' ' ')"
+if [ "$degraded_cquery" = "//crates/rue-oracle-diff:oracle-diff-test-action //crates/rue-newthing:newthing-test-action //crates/rue-span:rue-span-test " ]; then
+  pass "narrow: a failed closure query falls open to the unfiltered scope"
+else
+  fail "narrow: a failed closure query did not fall open (got '$degraded_cquery')"
 fi
 
 # An impacted closure naming only corpora is legitimate — corpus data can change

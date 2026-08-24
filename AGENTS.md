@@ -74,7 +74,7 @@ scripts/rue build                    # build the compiler and print its path
 scripts/rue exec prog.rue            # compile and run a quick program
 RUE="$(scripts/rue-bin)"; "$RUE" main.rue -o out
 scripts/rue quick                    # fast unit suite
-scripts/rue premerge                 # canonical required-CI tier
+scripts/rue premerge                 # canonical premerge tier (not all required CI)
 scripts/rue slow                     # canonical scheduled slow tier
 scripts/rue stress                   # canonical opt-in stress tier
 scripts/rue all                      # canonical union of all tiers

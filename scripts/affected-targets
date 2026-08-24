@@ -45,7 +45,7 @@
 #   build-scope        Print the targets a `//crates/...` lane may build, with
 #                      or without an impacted list. Narrowing must stay inside
 #                      the lane's own scope, and neither spelling of that scope
-#                      may name a corpus action (RUE-1511).
+#                      may reach a deferred corpus action (RUE-1788).
 #
 # Deliberately NOT `set -e`: a full run is the safe fallback, so failures are
 # handled explicitly and converted into "full", never into a hard error that
@@ -285,7 +285,14 @@ normalize_cell() {
     sed 's|^root//|//|'
 }
 
-# The crate-scoped corpus actions a build-verification step must not name.
+# `cquery` prints configured labels with a configuration suffix. Keep the
+# unconfigured label before doing exact set subtraction against BTD's list.
+normalize_configured_cell() {
+    sed -E 's/[[:space:]].*$//' | normalize_cell
+}
+
+# The crate-scoped corpus action closures a build-verification step must not
+# reach.
 #
 # `cached_corpus_suite` splits a corpus in two (see corpus.bzl): a
 # `_corpus_action` genrule that RUNS the harness, and a thin `sh_test` that
@@ -316,9 +323,9 @@ normalize_cell() {
 # deliberate reduction, not an oversight: `buck2 build //crates/...` never
 # reached the root-level `//:cli-tests-*`/`//:spec-tests` actions either, so
 # those corpora have had no premerge backstop since RUE-1119, and this makes
-# oracle-diff consistent with them rather than uniquely privileged. The narrowed
-# spelling keeps a stronger guarantee, because `buck.deps` puts the action in
-# its own `sh_test`'s closure: an impacted action drags its test in with it.
+# oracle-diff consistent with them rather than uniquely privileged. Both scope
+# spellings now subtract the complete reverse dependency closure, so an
+# aggregate target cannot reintroduce an eligible action through its wrapper.
 #
 # `SELECTABLE_CORPUS` now has a second consumer with the opposite failure
 # direction from its first. For selection, an unknown entry fails safe toward
@@ -336,13 +343,15 @@ normalize_cell() {
 # platform-corpus inventory above gives a lane of its own. Anything else stays
 # in the build, loudly: over-building costs wall time, and a corpus nothing runs
 # is the RUE-924 false green. `cached_corpus_suite` names the action
-# `NAME-action` for the test `NAME`, so that mapping is the rule's own
-# construction rather than an inference about the graph.
+# `NAME-action` for the test `NAME`, so that mapping identifies which test is
+# covered by a required lane. The reverse-dependency query below then computes
+# the complete crate-scope closure that can reach every eligible action,
+# including aggregate build roots above the thin wrapper.
 #
 # Fails non-zero when Buck cannot answer, and the caller then builds the corpus
 # actions exactly as it did before.
-deferred_corpus_actions() {
-    local buck2 actions covered action test_target query
+deferred_corpus_scope_targets() {
+    local buck2 actions covered action test_target query owned joined scope
     buck2="$(buck2_bin)"
 
     # Buck's own error reaches stderr rather than being discarded. The whole
@@ -380,25 +389,35 @@ deferred_corpus_actions() {
         "$(printf '%s\n' "${SELECTABLE_CORPUS[@]}")" | grep . || true)"
     [[ -n "$actions" ]] || return 0
 
+    owned=""
     while IFS= read -r action; do
         [[ -n "$action" ]] || continue
-        test_target="${action%-action}"
+        test_target="$(printf '%s' "$action" | sed 's/-action$//')"
         if grep -Fxq "$test_target" <<<"$covered"; then
-            printf '%s\n' "$action"
+            owned="$owned $action"
         else
             echo "affected-targets: ${action} runs a corpus no required lane owns;" \
                  "keeping it in the build scope" >&2
         fi
     done <<<"$actions"
+    [[ -n "$owned" ]] || return 0
+    joined="$(printf '%s' "$owned" | sed 's/^ //')"
+    query="rdeps(//crates/..., set($joined))"
+    if ! scope="$("$buck2" cquery "$query")"; then
+        echo "affected-targets: could not query crate-scope corpus dependency closures" >&2
+        return 1
+    fi
+    scope="$(normalize_configured_cell <<<"$scope" | grep . || true)"
+    [[ -n "$scope" ]] && printf '%s\n' "$scope"
     return 0
 }
 
 # The targets a *pattern* lane may build, for lanes whose scope is
 # `//crates/...` rather than a fixed list. With an impacted list it is the
 # narrowed subset; without one it is the whole pattern. Both are the same scope
-# minus the same corpus actions, because both lose independently: fixing only
-# the narrowed spelling leaves the common case — a compiler change, which
-# impacts more than NARROW_LIMIT targets and so is never narrowed — building
+# minus the same corpus dependency closures, because both lose independently:
+# fixing only the narrowed spelling leaves the common case — a compiler change,
+# which impacts more than NARROW_LIMIT targets and so is never narrowed — building
 # the corpora exactly as before.
 #
 # RUE-1130 handed the raw impacted closure to `buck2 build` in linux-premerge.
@@ -411,16 +430,15 @@ deferred_corpus_actions() {
 build_scope() {
     local file="${1:-}"
     local deferred kept buck2 expr scope
-    deferred="$(deferred_corpus_actions)" || deferred=""
+    deferred="$(deferred_corpus_scope_targets)" || deferred=""
 
     if [[ -z "$file" ]]; then
         # The unnarrowed scope. `buck2 build` accepts patterns and target
         # lists but has no kind or label exclusion, so the subtraction has to
         # happen before the pattern reaches it — which means expanding it.
-        # There are 167 targets under `//crates/...` and nothing in that tree
-        # is `compatible_with`-restricted, so the explicit list configures
-        # exactly as the pattern does — verified by `uquery` and `cquery`
-        # returning the same 167.
+        # Nothing under `//crates/...` is `compatible_with`-restricted, so the
+        # explicit list configures exactly as the pattern does — verified by
+        # `uquery` and `cquery` returning the same live target count.
         #
         # The two spellings differ on FAILURE, not on today's result: `buck2
         # build //crates/...` SKIPS an incompatible target, while naming one

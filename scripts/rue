@@ -8,8 +8,8 @@
 #   scripts/rue exec prog.rue      Compile prog.rue to a temp file AND run it
 #   scripts/rue test [pattern]     Full suite (./test.sh), optional filter
 #   scripts/rue quick              Unit tests only (./quick-test.sh)
-#   scripts/rue premerge           Canonical required tier (incl. the per-crate
-#                                  fmt and clippy gates, RUE-1153)
+#   scripts/rue premerge           Canonical premerge tier (incl. the per-crate
+#                                  fmt and clippy gates; not all required CI)
 #   scripts/rue slow               Canonical scheduled slow tier
 #   scripts/rue stress             Canonical opt-in stress tier
 #   scripts/rue all                Canonical union of every tier

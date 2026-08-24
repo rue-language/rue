@@ -19,7 +19,7 @@ scripts/rue build                    # build the compiler
 scripts/rue exec program.rue         # compile and run a program
 scripts/rue quick                    # Rust unit tests
 scripts/rue test [pattern]           # full suite, optionally filtered
-scripts/rue premerge                 # required-CI tier: clippy gate + tests
+scripts/rue premerge                 # canonical premerge tier: clippy gate + tests (not all required CI)
 scripts/rue slow                     # scheduled exhaustive tests
 scripts/rue stress                   # opt-in resource stress tests
 scripts/rue all                      # union of every test tier
