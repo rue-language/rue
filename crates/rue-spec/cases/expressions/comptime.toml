@@ -1665,6 +1665,95 @@ fn main() -> i32 { 0 }
 compile_fail = true
 error_contains = "integer overflow"
 
+# 4.14:2 binds a comptime function's *recursive self call* exactly as it binds
+# any other call: the value reached through `f(n - 1)` is the value the same
+# body produces when reduced directly. The self call used to opt out of the
+# typed canonical reduction and fall back to an evaluator with no resolved
+# types, so the callee body's arithmetic ran under an untyped-i64 fallback even
+# though the callee's parameter and return types are declared (RUE-1700). That
+# broke 4.14:2 in one direction (a correct value became an error) and 4.14:4 in
+# the other (a would-panic operation stopped being an error at all).
+
+[[case]]
+name = "comptime_self_call_matches_direct_reduction"
+spec = ["4.14:2"]
+description = "`~0` at u8 is 255 whether the base case is reached directly or through a recursive self call; `f(1)` used to be E1200 'value -1 is out of range for type u8'"
+source = """
+fn f(comptime n: u8) -> u8 {
+    comptime { if n == 0 { ~0 } else { f(n - 1) } }
+}
+fn main() -> i32 {
+    let direct: u8 = f(0);
+    let hop: u8 = f(1);
+    let deep: u8 = f(5);
+    if direct == 255 && hop == direct && deep == direct { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_self_call_shift_matches_direct_reduction"
+spec = ["4.14:2"]
+description = "A truncating `<<` in the base case gives the same value through the self call as it does directly: 200 << 3 at u8 is 64"
+source = """
+fn f(comptime n: u8, comptime a: u8) -> u8 {
+    comptime { if n == 0 { a << 3 } else { f(n - 1, a) } }
+}
+fn main() -> i32 {
+    let direct: u8 = f(0, 200);
+    let hop: u8 = f(3, 200);
+    if direct == 64 && hop == direct { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_self_call_overflow_still_rejected"
+spec = ["4.14:4"]
+description = "An operation that would panic at runtime is still a compile error when the body is reached through a recursive self call, not only when it is reduced directly"
+source = """
+fn f(comptime n: u8) -> u8 {
+    comptime { if n == 200 { (n + 100) - 100 } else { f(n + 1) } }
+}
+fn main() -> i32 {
+    let v: u8 = f(199);
+    if v == 200 { 42 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = "integer overflow"
+
+[[case]]
+name = "comptime_self_call_division_by_zero_still_rejected"
+spec = ["4.14:4"]
+description = "Division by zero one self-call hop deep is still rejected: reduction through recursion must not make comptime evaluation total"
+source = """
+fn f(comptime n: u32, comptime a: u8, comptime b: u8) -> u8 {
+    comptime { if n == 0 { a / b } else { f(n - 1, a, b) } }
+}
+fn main() -> i32 {
+    let v: u8 = f(1, 10, 0);
+    if v == 0 { 42 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = "division by zero"
+
+[[case]]
+name = "comptime_self_call_terminating_recursion_computes"
+spec = ["4.14:2"]
+description = "Typing the self-call reduction must not over-reject: a comptime recursion with a real base case still folds to the right value"
+source = """
+fn fact(comptime n: u64) -> u64 {
+    comptime { if n == 0 { 1 } else { n * fact(n - 1) } }
+}
+fn main() -> i32 {
+    let v: u64 = fact(20);
+    if v == 2432902008176640000 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
 [[case]]
 name = "comptime_u64_max_literal"
 spec = ["4.14:2"]
