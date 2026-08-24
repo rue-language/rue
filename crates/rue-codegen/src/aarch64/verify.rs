@@ -316,6 +316,49 @@ mod tests {
     }
 
     #[test]
+    fn test_backward_jump_with_inconsistent_depth_fails_at_jump() {
+        let mut mir = Aarch64Mir::new();
+        let label = mir.alloc_label();
+        mir.push(Aarch64Inst::Label { id: label });
+        mir.push(Aarch64Inst::SubImm {
+            dst: Operand::Physical(Reg::Sp),
+            src: Operand::Physical(Reg::Sp),
+            imm: 8,
+        });
+        mir.push(Aarch64Inst::B { label });
+
+        let err = verify_stack_alignment(&mir).unwrap_err().to_string();
+        assert!(err.contains("control flow join has inconsistent stack depth: expected 0, got 8"));
+        assert!(err.contains("instruction 2"));
+        assert!(err.contains("b .L"));
+        assert!(err.contains("depth: 8 bytes"));
+    }
+
+    #[test]
+    fn test_repeated_forward_jump_with_inconsistent_depth_fails_at_jump() {
+        let mut mir = Aarch64Mir::new();
+        let label = mir.alloc_label();
+        mir.push(Aarch64Inst::BCond {
+            cond: Cond::Eq,
+            label,
+        });
+        mir.push(Aarch64Inst::SubImm {
+            dst: Operand::Physical(Reg::Sp),
+            src: Operand::Physical(Reg::Sp),
+            imm: 8,
+        });
+        mir.push(Aarch64Inst::B { label });
+        mir.push(Aarch64Inst::Label { id: label });
+        mir.push(Aarch64Inst::Ret);
+
+        let err = verify_stack_alignment(&mir).unwrap_err().to_string();
+        assert!(err.contains("control flow join has inconsistent stack depth: expected 0, got 8"));
+        assert!(err.contains("instruction 2"));
+        assert!(err.contains("b .L"));
+        assert!(err.contains("depth: 8 bytes"));
+    }
+
+    #[test]
     fn test_multiple_calls_aligned() {
         let mut mir = Aarch64Mir::new();
         let sym1 = mir.intern_symbol("func1");

@@ -279,6 +279,42 @@ mod tests {
     }
 
     #[test]
+    fn test_backward_jump_with_inconsistent_depth_fails_at_jump() {
+        let mut mir = X86Mir::new();
+        let label = mir.alloc_label();
+        mir.push(X86Inst::Label { id: label });
+        mir.push(X86Inst::Push {
+            src: Operand::Physical(Reg::Rax),
+        });
+        mir.push(X86Inst::Jmp { label });
+
+        let err = verify_stack_alignment(&mir).unwrap_err().to_string();
+        assert!(err.contains("control flow join has inconsistent stack depth: expected 0, got 8"));
+        assert!(err.contains("instruction_index: 2"));
+        assert!(err.contains("jmp .L"));
+        assert!(err.contains("stack_depth_bytes: 8"));
+    }
+
+    #[test]
+    fn test_repeated_forward_jump_with_inconsistent_depth_fails_at_jump() {
+        let mut mir = X86Mir::new();
+        let label = mir.alloc_label();
+        mir.push(X86Inst::Jz { label });
+        mir.push(X86Inst::Push {
+            src: Operand::Physical(Reg::Rax),
+        });
+        mir.push(X86Inst::Jmp { label });
+        mir.push(X86Inst::Label { id: label });
+        mir.push(X86Inst::Ret);
+
+        let err = verify_stack_alignment(&mir).unwrap_err().to_string();
+        assert!(err.contains("control flow join has inconsistent stack depth: expected 0, got 8"));
+        assert!(err.contains("instruction_index: 2"));
+        assert!(err.contains("jmp .L"));
+        assert!(err.contains("stack_depth_bytes: 8"));
+    }
+
+    #[test]
     fn test_multiple_calls_aligned() {
         let mut mir = X86Mir::new();
         let sym1 = mir.intern_symbol("func1");
