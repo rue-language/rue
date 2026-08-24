@@ -2342,7 +2342,7 @@ fn declaration_body_plan_artifacts_equal(
         (
             DeclarationBodyPlanArtifactsValue::Available(left),
             DeclarationBodyPlanArtifactsValue::Available(right),
-        ) => left.plan.structurally_eq(&right.plan),
+        ) => left.candidate == right.candidate && left.plan.structurally_eq(&right.plan),
         (
             DeclarationBodyPlanArtifactsValue::Failure(left),
             DeclarationBodyPlanArtifactsValue::Failure(right),
@@ -4538,7 +4538,7 @@ fn publish_body_plan_materialization_attribution(
     );
 }
 
-fn declaration_candidate_for_stable_key(
+pub(crate) fn declaration_candidate_for_stable_key(
     key: &StableDefinitionKey,
 ) -> Option<crate::declaration_candidate::DeclarationCandidateKey> {
     stable_syntax_candidate_set(key)?[0].clone()
@@ -7014,15 +7014,15 @@ enum SemanticBinaryOp {
     Shr,
 }
 
-fn semantic_candidate_import_occurrences(
+pub(crate) fn semantic_candidate_import_occurrences(
     rir: &rue_rir::ValidatedRir,
     symbols: &[&str],
-    context: &QueryContext,
+    mut checkpoint: impl FnMut() -> Result<(), QueryAbort>,
 ) -> Result<BTreeMap<rue_rir::InstRef, (u32, Arc<str>)>, QueryAbort> {
     let mut sites = Vec::new();
     for (instruction_ref, instruction) in rir.iter() {
         if instruction_ref.as_u32() % 64 == 0 {
-            context.check_canceled()?;
+            checkpoint()?;
         }
         let rue_rir::InstData::Intrinsic { name, args } = &instruction.data else {
             continue;
@@ -13734,7 +13734,7 @@ impl RevisionedQueryDatabase {
                                                 semantic_candidate_import_occurrences(
                                                     &rir,
                                                     &symbols,
-                                                    context,
+                                                    || context.check_canceled(),
                                                 )?;
                                             let result = {
                                                 let mut evaluator = SemanticConstEvaluator {
@@ -14246,7 +14246,7 @@ impl RevisionedQueryDatabase {
                                                 semantic_candidate_import_occurrences(
                                                     &rir,
                                                     &symbols,
-                                                    context,
+                                                    || context.check_canceled(),
                                                 )?;
                                             let result = {
                                                 let mut evaluator = SemanticConstEvaluator {
@@ -17635,6 +17635,10 @@ impl BodyTransactionEvaluator {
             module_source_bases: self.module_source_bases.clone(),
             lookup_names: self.lookup_names.clone(),
             lookup_imports: self.lookup_imports.clone(),
+            declaration_body_plan_artifacts: self
+                .body_input
+                .declaration_body_plan_artifacts
+                .clone(),
             semantic_nucleus: self.semantic_nucleus.clone(),
             body_produced_anonymous: self.body_produced_anonymous.clone(),
             body_toolchain_demands: self.body_toolchain_demands.clone(),
@@ -21564,6 +21568,8 @@ pub(crate) struct CompilerBodyProviderQueries<'a> {
     module_source_bases: QueryFamily<ModuleQueryKey, Option<rue_air::DurableBodySourceLocator>>,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
     lookup_imports: QueryFamily<LookupImportKey, LookupImportValue>,
+    declaration_body_plan_artifacts:
+        QueryFamily<DeclarationBodyPlanQueryKey, DeclarationBodyPlanArtifactsValue>,
     semantic_nucleus: QueryFamily<
         crate::semantic_query_nucleus::SemanticNucleusKey,
         crate::semantic_query_nucleus::SemanticNucleusValue,
@@ -23601,6 +23607,115 @@ impl<'a> CompilerBodyFactProvider<'a> {
             .query_registered(&self.queries.semantic_nucleus, key)
     }
 
+    /// Probe the already-published comptime-call fact without demanding the
+    /// semantic nucleus. A true miss admits the canonical body plan into an
+    /// owned foreign-program payload; an in-progress semantic handoff remains
+    /// NotReady and never competes with the active evaluator.
+    #[allow(dead_code)]
+    fn probe_comptime_call(
+        &self,
+        producer: &crate::StableDefinitionKey,
+        type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
+        value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
+    ) -> Result<crate::body_query::ForeignComptimeCallLookup, QueryAbort> {
+        let Some(declaration) = declaration_candidate_for_stable_key(producer) else {
+            return Ok(
+                crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
+                    crate::body_query::ForeignComptimeProgramProjectionFailure::InvalidProducer(
+                        producer.clone(),
+                    ),
+                ),
+            );
+        };
+        let key = crate::semantic_query_nucleus::ComptimeCallQueryKey {
+            declaration: self.declaration_query_key(&declaration),
+            type_arguments: type_arguments.to_vec().into(),
+            value_arguments: value_arguments.to_vec().into(),
+        };
+        let foreign_plan = crate::body_query::ForeignComptimeProgramPlan {
+            key: crate::body_query::ForeignComptimeProgramKey {
+                producer: producer.clone(),
+                configuration: self.queries.configuration.clone(),
+            },
+            candidate: declaration,
+        };
+        match self.queries.context.probe_registered_ready(
+            &self.queries.semantic_nucleus,
+            crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(key.clone()),
+        )? {
+            rue_query::ReadyQueryProbe::Ready(terminal) => match terminal.outcome() {
+                rue_query::QueryOutcome::Success(
+                    crate::semantic_query_nucleus::SemanticNucleusValue::ComptimeCall(value),
+                ) => Ok(crate::body_query::ForeignComptimeCallLookup::Ready(
+                    value.clone(),
+                )),
+                rue_query::QueryOutcome::Success(
+                    crate::semantic_query_nucleus::SemanticNucleusValue::Failure(failure),
+                ) => Ok(crate::body_query::ForeignComptimeCallLookup::ReadyFailure(
+                    failure.clone(),
+                )),
+                rue_query::QueryOutcome::Failure(failure) => Ok(
+                    crate::body_query::ForeignComptimeCallLookup::ReadyQueryFailure(
+                        failure.clone(),
+                    ),
+                ),
+                _ => Ok(crate::body_query::ForeignComptimeCallLookup::UnexpectedReadyProjection),
+            },
+            rue_query::ReadyQueryProbe::Miss => {
+                let artifacts = self.queries.context.query_registered(
+                    &self.queries.declaration_body_plan_artifacts,
+                    DeclarationBodyPlanQueryKey(foreign_plan.candidate.clone()),
+                )?;
+                let artifacts = match artifacts.outcome() {
+                    rue_query::QueryOutcome::Success(
+                        DeclarationBodyPlanArtifactsValue::Available(artifacts),
+                    ) => artifacts,
+                    rue_query::QueryOutcome::Success(
+                        DeclarationBodyPlanArtifactsValue::Failure(failure),
+                    ) => {
+                        return Ok(crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
+                            crate::body_query::ForeignComptimeProgramProjectionFailure::Artifact(
+                                failure.clone(),
+                            ),
+                        ));
+                    }
+                    rue_query::QueryOutcome::Failure(failure) => {
+                        return Ok(crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
+                            crate::body_query::ForeignComptimeProgramProjectionFailure::ArtifactQueryFailure(
+                                failure.clone(),
+                            ),
+                        ));
+                    }
+                };
+                let seed = crate::body_query::ForeignComptimeCallSeed {
+                    type_arguments: type_arguments.to_vec().into(),
+                    value_arguments: value_arguments.to_vec().into(),
+                };
+                match crate::body_query::OwnedForeignComptimeProgram::from_body_plan(
+                    foreign_plan,
+                    artifacts,
+                    seed,
+                    || self.queries.context.check_canceled(),
+                ) {
+                    Ok(program) => Ok(crate::body_query::ForeignComptimeCallLookup::Admitted(
+                        program,
+                    )),
+                    Err(
+                        crate::body_query::ForeignComptimeProgramProjectionFailure::Materialization(
+                            crate::canonical_lower::BodyPlanMaterializationFailure::Query(abort),
+                        ),
+                    ) => Err(abort),
+                    Err(error) => {
+                        Ok(crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(error))
+                    }
+                }
+            }
+            rue_query::ReadyQueryProbe::NotReady => {
+                Ok(crate::body_query::ForeignComptimeCallLookup::NotReady)
+            }
+        }
+    }
+
     fn nucleus(
         &self,
         key: crate::semantic_query_nucleus::SemanticNucleusKey,
@@ -25093,6 +25208,7 @@ impl RevisionedQueryDatabase {
             module_source_bases: self.module_source_bases.clone(),
             lookup_names: self.lookup_names.clone(),
             lookup_imports: self.lookup_imports.clone(),
+            declaration_body_plan_artifacts: self.declaration_body_plan_artifacts.clone(),
             semantic_nucleus: self.semantic_nucleus.clone(),
             body_produced_anonymous: self.body_produced_anonymous.clone(),
             body_toolchain_demands: self.body_toolchain_demands.clone(),
@@ -28124,6 +28240,194 @@ fn main() -> i32 {
             materialized_option,
             "Option(i64) must materialize a real Some(i64)/None nominal: {:?}",
             projection.anonymous_nominals
+        );
+    }
+
+    #[test]
+    fn cold_foreign_comptime_probe_admits_owned_program_without_value_evaluation() {
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn target() -> i32 { @import(\"dep\"); 1 }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let producer = StableDefinitionKey::from_stable_parts(
+            module,
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            "target",
+            None,
+        );
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let astgen_before = database
+            .declaration_body_plan_astgen_evaluations
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let probe = database
+            .probe_ready_body_facts(
+                revision,
+                semantic_configuration(),
+                "cold-foreign-comptime-probe",
+                |provider| provider.probe_comptime_call(&producer, &[], &[]),
+            )
+            .result
+            .unwrap();
+        let crate::body_query::ForeignComptimeCallLookup::Admitted(program) = probe else {
+            panic!("cold foreign comptime lookup should admit its owned body plan");
+        };
+        assert_eq!(program.plan.key.producer, producer);
+        assert_eq!(program.callable.context.as_str(), "main.rue");
+        assert_eq!(program.import_occurrences.len(), 1);
+        assert_eq!(
+            database
+                .declaration_body_plan_astgen_evaluations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            astgen_before + 1
+        );
+        let candidate = declaration_candidate_for_stable_key(&producer).unwrap();
+        let comptime_key = crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(
+            crate::semantic_query_nucleus::ComptimeCallQueryKey {
+                declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration: candidate,
+                    configuration: semantic_configuration(),
+                },
+                type_arguments: Arc::from([]),
+                value_arguments: Arc::from([]),
+            },
+        );
+        assert!(
+            !database
+                .semantic_nucleus
+                .contains_retained_key(&comptime_key),
+            "a cold ready-only probe must not demand or evaluate its comptime value"
+        );
+    }
+
+    #[test]
+    fn ready_foreign_comptime_probe_reuses_full_projection_without_body_materialization() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            ComptimeCallQueryKey, ComptimeCallResultProjection, SemanticNucleusKey,
+            SemanticNucleusValue,
+        };
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn selected(comptime seed: i32) -> i32 { seed + 64 }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let producer = StableDefinitionKey::from_stable_parts(
+            module.clone(),
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            "selected",
+            None,
+        );
+        let declaration =
+            declaration_candidate(&database, revision, &module, Category::Function, "selected");
+        let key = SemanticNucleusKey::ComptimeCall(ComptimeCallQueryKey {
+            declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration,
+                configuration: semantic_configuration(),
+            },
+            type_arguments: Arc::from([]),
+            value_arguments: Arc::from([(
+                Arc::from("seed"),
+                crate::durable_semantics::DurableConstValue::Integer(0),
+            )]),
+        });
+        let value = request_semantic_nucleus(&database, revision, key.clone());
+        let SemanticNucleusValue::ComptimeCall(projection) = value else {
+            panic!("the setup comptime call must publish a projection");
+        };
+        assert!(matches!(
+            &projection.result,
+            ComptimeCallResultProjection::Value(
+                crate::durable_semantics::DurableConstValue::Integer(64)
+            )
+        ));
+        let astgen_after_setup = database
+            .declaration_body_plan_astgen_evaluations
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let probe = database.probe_ready_body_facts(
+            revision,
+            semantic_configuration(),
+            "ready-foreign-comptime-probe",
+            |provider| {
+                provider.probe_comptime_call(
+                    &producer,
+                    &[],
+                    &[(
+                        Arc::from("seed"),
+                        crate::durable_semantics::DurableConstValue::Integer(0),
+                    )],
+                )
+            },
+        );
+        let outcome = probe.result.unwrap();
+        let crate::body_query::ForeignComptimeCallLookup::Ready(observed) = outcome else {
+            panic!("the ready probe must retain the published projection");
+        };
+        assert_eq!(observed, projection);
+        assert!(
+            probe
+                .dependencies
+                .iter()
+                .any(|dependency| dependency.family() == "compiler.semantic-nucleus")
+        );
+        assert!(
+            database
+                .declaration_body_plan_astgen_evaluations
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == astgen_after_setup,
+            "a ready hit must not materialize the body-plan artifact"
+        );
+        assert!(
+            database.semantic_nucleus.contains_retained_key(&key),
+            "the exact semantic nucleus key remains the observed dependency"
+        );
+    }
+
+    #[test]
+    fn not_ready_foreign_probe_arm_is_unit_and_non_admitting() {
+        assert!(matches!(
+            crate::body_query::ForeignComptimeCallLookup::NotReady,
+            crate::body_query::ForeignComptimeCallLookup::NotReady
+        ));
+        let source = include_str!("revisioned_query_database.rs");
+        let not_ready = source
+            .find("ReadyQueryProbe::NotReady =>")
+            .expect("the canonical provider must handle NotReady");
+        let arm_end = source[not_ready..]
+            .find("\n            }")
+            .map(|offset| not_ready + offset)
+            .expect("the NotReady arm must have a bounded match body");
+        let arm = &source[not_ready..arm_end];
+        assert!(
+            arm.contains("ForeignComptimeCallLookup::NotReady"),
+            "NotReady must return its non-admissible unit variant"
+        );
+        assert!(
+            !arm.contains("declaration_body_plan_artifacts")
+                && !arm.contains("materialize_semantic_candidate_rir"),
+            "the NotReady arm must not query or materialize a body plan"
         );
     }
 
