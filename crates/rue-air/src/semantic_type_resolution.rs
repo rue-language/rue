@@ -649,13 +649,227 @@ enum ResolvedComptimeArgument<T, V> {
     Value(V),
 }
 
+/// Owned state for one comptime constructor call.  Admission is completed
+/// before the first argument is resolved, and argument bindings are appended
+/// strictly in parameter order.  Keeping this state separate from the
+/// resolver closure makes it safe to suspend later without redoing path,
+/// visibility, eligibility, or already-observed arguments.
+struct SemanticComptimeCallState<K, N, A, T, V> {
+    constructor: Arc<str>,
+    expectation: SemanticComptimeCallExpectation,
+    head: SemanticTypeConstructorHead<K, N, A>,
+    type_arguments: Vec<(N, T)>,
+    value_arguments: Vec<(N, V)>,
+    next_parameter: usize,
+}
+
+impl<K, N, A, T, V> SemanticComptimeCallState<K, N, A, T, V>
+where
+    A: Clone,
+    N: Clone,
+{
+    fn admit<S, M, P>(
+        provider: &mut P,
+        root_scope: &S,
+        call_segments: &[&str],
+        argument_count: usize,
+        expectation: SemanticComptimeCallExpectation,
+        call_display: impl FnOnce() -> Arc<str>,
+    ) -> Result<Self, SemanticTypeSyntaxError<P::Abort, P::Failure, A, N>>
+    where
+        M: Clone,
+        P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
+    {
+        use SemanticResolutionError as E;
+        use SemanticTypeSyntaxFailure as F;
+
+        let accessing = provider.accessing_domain(root_scope);
+        if call_segments.is_empty()
+            || call_segments.iter().any(|segment| segment.is_empty())
+            || (call_segments.len() > 1
+                && !provider.allows_qualified_comptime_call_head(root_scope, expectation))
+        {
+            return Err(E::Semantic(F::UnknownType {
+                syntax: call_display(),
+            }));
+        }
+        let constructor = Arc::<str>::from(call_segments.join("."));
+        let name = *call_segments.last().expect("type call always has a name");
+        let head = if call_segments.len() == 1 {
+            lift_provider(provider.root_constructor(root_scope, name))?
+        } else {
+            let resolved = resolve_semantic_module_path(
+                provider,
+                root_scope,
+                &call_segments[..call_segments.len() - 1],
+            )
+            .map_err(|error| error.map_semantic(F::Path))?;
+            lift_provider(provider.module_constructor(&resolved.module, name))?
+        }
+        .ok_or_else(|| {
+            E::Semantic(F::UnknownConstructor {
+                constructor: constructor.clone(),
+                expectation,
+            })
+        })?;
+        if !head
+            .defining_domain
+            .is_visible_from(&accessing, head.is_public)
+        {
+            return Err(E::Semantic(F::PrivateItem {
+                kind: SemanticTypeFactKind::Function,
+                name: Arc::from(name),
+                site: head.site,
+                defining_file: head.defining_file,
+            }));
+        }
+        if expectation == SemanticComptimeCallExpectation::Type && !head.returns_type {
+            return Err(E::Semantic(F::NotTypeConstructor {
+                constructor,
+                site: head.site,
+            }));
+        }
+        if expectation == SemanticComptimeCallExpectation::Value && head.returns_type {
+            return Err(E::Semantic(F::TypeWhereValueExpected {
+                constructor,
+                site: head.site,
+            }));
+        }
+        if head.parameters.len() != argument_count {
+            return Err(E::Semantic(F::InvalidConstructorArity {
+                constructor,
+                site: head.site,
+                expected: head.parameters.len(),
+                found: argument_count,
+                expectation,
+            }));
+        }
+        let eligible = head
+            .parameters
+            .iter()
+            .all(|parameter| parameter.is_comptime)
+            && (head.returns_type || !head.parameters.is_empty());
+        if !eligible {
+            return Err(E::Semantic(F::RuntimeConstructorParameter {
+                constructor,
+                site: head.site,
+                expected: head.parameters.len(),
+                found: argument_count,
+                expectation,
+            }));
+        }
+        Ok(Self {
+            constructor,
+            expectation,
+            head,
+            type_arguments: Vec::new(),
+            value_arguments: Vec::new(),
+            next_parameter: 0,
+        })
+    }
+
+    fn accept<E, F>(
+        &mut self,
+        argument_display: impl FnOnce() -> Arc<str>,
+        resolved: Result<ResolvedComptimeArgument<T, V>, SemanticTypeSyntaxError<E, F, A, N>>,
+    ) -> Result<(), SemanticTypeSyntaxError<E, F, A, N>> {
+        use SemanticResolutionError as E2;
+        use SemanticTypeSyntaxFailure as F2;
+        let parameter_index = self.next_parameter;
+        assert!(
+            parameter_index < self.head.parameters.len(),
+            "cannot accept an argument after a comptime call is complete"
+        );
+        let parameter = &self.head.parameters[parameter_index];
+        match resolved {
+            Ok(ResolvedComptimeArgument::Type(value)) if parameter.is_type => {
+                self.type_arguments.push((parameter.name.clone(), value));
+                self.next_parameter += 1;
+                Ok(())
+            }
+            Ok(ResolvedComptimeArgument::Value(value)) if !parameter.is_type => {
+                self.value_arguments.push((parameter.name.clone(), value));
+                self.next_parameter += 1;
+                Ok(())
+            }
+            Ok(ResolvedComptimeArgument::Value(_)) => {
+                Err(E2::Semantic(F2::ValueWhereTypeExpected {
+                    constructor: self.constructor.clone(),
+                    site: self.head.site.clone(),
+                    argument: argument_display(),
+                    parameter: parameter.name.clone(),
+                }))
+            }
+            Ok(ResolvedComptimeArgument::Type(_)) => {
+                Err(E2::Semantic(F2::TypeWhereValueExpected {
+                    constructor: self.constructor.clone(),
+                    site: self.head.site.clone(),
+                }))
+            }
+            Err(error) if parameter.is_type => Err(E2::ComptimeCallTypeArgument {
+                constructor: self.constructor.clone(),
+                argument_index: parameter_index,
+                argument: argument_display(),
+                error: Box::new(error),
+            }),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn finish<S, M, P>(
+        self,
+        provider: &mut P,
+    ) -> Result<
+        SemanticResolvedComptimeCall<K, N, A, T, V>,
+        SemanticTypeSyntaxError<P::Abort, P::Failure, A, N>,
+    >
+    where
+        M: Clone,
+        P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
+    {
+        use SemanticResolutionError as E;
+        use SemanticTypeSyntaxFailure as F;
+        assert_eq!(
+            self.next_parameter,
+            self.head.parameters.len(),
+            "cannot finish an incomplete comptime call"
+        );
+        let constructor_site = self.head.site.clone();
+        let result = lift_provider(provider.reduce_comptime_call(
+            &self.head,
+            &self.type_arguments,
+            &self.value_arguments,
+        ))?
+        .ok_or_else(|| {
+            E::Semantic(F::ConstructorDidNotReduce {
+                constructor: self.constructor.clone(),
+                site: constructor_site.clone(),
+            })
+        })?;
+        if self.expectation == SemanticComptimeCallExpectation::Type
+            && !matches!(result, SemanticComptimeCallResult::Type(_))
+        {
+            return Err(E::Semantic(F::ConstructorDidNotReduce {
+                constructor: self.constructor,
+                site: self.head.site,
+            }));
+        }
+        Ok(SemanticResolvedComptimeCall {
+            head: self.head,
+            type_arguments: self.type_arguments,
+            value_arguments: self.value_arguments,
+            result,
+        })
+    }
+}
+
 fn resolve_semantic_comptime_call_core<S, M, A, K, N, T, V, P>(
     provider: &mut P,
     root_scope: &S,
     call_segments: &[&str],
     argument_count: usize,
     expectation: SemanticComptimeCallExpectation,
-    mut call_display: impl FnMut() -> Arc<str>,
+    call_display: impl FnMut() -> Arc<str>,
     mut argument_display: impl FnMut(usize) -> Arc<str>,
     mut argument_is_literal_value: impl FnMut(usize) -> bool,
     mut resolve_argument: impl FnMut(
@@ -679,158 +893,38 @@ where
     N: Clone,
     P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
 {
-    use SemanticResolutionError as E;
-    use SemanticTypeSyntaxFailure as F;
-
-    let accessing = provider.accessing_domain(root_scope);
-    if call_segments.is_empty()
-        || call_segments.iter().any(|segment| segment.is_empty())
-        || (call_segments.len() > 1
-            && !provider.allows_qualified_comptime_call_head(root_scope, expectation))
-    {
-        return Err(E::Semantic(F::UnknownType {
-            syntax: call_display(),
-        }));
-    }
-    let name = *call_segments.last().expect("type call always has a name");
-    let head = if call_segments.len() == 1 {
-        lift_provider(provider.root_constructor(root_scope, name))?
-    } else {
-        let resolved = resolve_semantic_module_path(
-            provider,
-            root_scope,
-            &call_segments[..call_segments.len() - 1],
-        )
-        .map_err(|error| error.map_semantic(F::Path))?;
-        lift_provider(provider.module_constructor(&resolved.module, name))?
-    }
-    .ok_or_else(|| {
-        E::Semantic(F::UnknownConstructor {
-            constructor: Arc::from(call_segments.join(".")),
-            expectation,
-        })
-    })?;
-    if !head
-        .defining_domain
-        .is_visible_from(&accessing, head.is_public)
-    {
-        return Err(E::Semantic(F::PrivateItem {
-            kind: SemanticTypeFactKind::Function,
-            name: Arc::from(name),
-            site: head.site,
-            defining_file: head.defining_file,
-        }));
-    }
-    if expectation == SemanticComptimeCallExpectation::Type && !head.returns_type {
-        return Err(E::Semantic(F::NotTypeConstructor {
-            constructor: Arc::from(call_segments.join(".")),
-            site: head.site,
-        }));
-    }
-    if expectation == SemanticComptimeCallExpectation::Value && head.returns_type {
-        return Err(E::Semantic(F::TypeWhereValueExpected {
-            constructor: Arc::from(call_segments.join(".")),
-            site: head.site,
-        }));
-    }
-    if head.parameters.len() != argument_count {
-        return Err(E::Semantic(F::InvalidConstructorArity {
-            constructor: Arc::from(call_segments.join(".")),
-            site: head.site,
-            expected: head.parameters.len(),
-            found: argument_count,
-            expectation,
-        }));
-    }
-    let eligible = head
-        .parameters
-        .iter()
-        .all(|parameter| parameter.is_comptime)
-        && (head.returns_type || !head.parameters.is_empty());
-    if !eligible {
-        return Err(E::Semantic(F::RuntimeConstructorParameter {
-            constructor: Arc::from(call_segments.join(".")),
-            site: head.site,
-            expected: head.parameters.len(),
-            found: argument_count,
-            expectation,
-        }));
-    }
-
-    let constructor_site = head.site.clone();
-    let mut type_arguments = Vec::new();
-    let mut value_arguments = Vec::new();
-    for parameter_index in 0..argument_count {
-        let parameter = &head.parameters[parameter_index];
+    let mut state = SemanticComptimeCallState::admit(
+        provider,
+        root_scope,
+        call_segments,
+        argument_count,
+        expectation,
+        call_display,
+    )?;
+    while state.next_parameter < argument_count {
+        let parameter_index = state.next_parameter;
+        let parameter = &state.head.parameters[parameter_index];
         if parameter.is_type && argument_is_literal_value(parameter_index) {
-            return Err(E::Semantic(F::ValueWhereTypeExpected {
-                constructor: Arc::from(call_segments.join(".")),
-                site: constructor_site.clone(),
-                argument: argument_display(parameter_index),
-                parameter: parameter.name.clone(),
-            }));
+            return Err(SemanticResolutionError::Semantic(
+                SemanticTypeSyntaxFailure::ValueWhereTypeExpected {
+                    constructor: state.constructor.clone(),
+                    site: state.head.site.clone(),
+                    argument: argument_display(parameter_index),
+                    parameter: parameter.name.clone(),
+                },
+            ));
         }
-        match resolve_argument(
+        let resolved = resolve_argument(
             provider,
             parameter_index,
             parameter.is_type,
-            &head,
-            &type_arguments,
-            &value_arguments,
-        ) {
-            Ok(ResolvedComptimeArgument::Type(value)) if parameter.is_type => {
-                type_arguments.push((parameter.name.clone(), value));
-            }
-            Ok(ResolvedComptimeArgument::Value(value)) if !parameter.is_type => {
-                value_arguments.push((parameter.name.clone(), value));
-            }
-            Ok(ResolvedComptimeArgument::Value(_)) => {
-                return Err(E::Semantic(F::ValueWhereTypeExpected {
-                    constructor: Arc::from(call_segments.join(".")),
-                    site: constructor_site.clone(),
-                    argument: argument_display(parameter_index),
-                    parameter: parameter.name.clone(),
-                }));
-            }
-            Ok(ResolvedComptimeArgument::Type(_)) => {
-                return Err(E::Semantic(F::TypeWhereValueExpected {
-                    constructor: Arc::from(call_segments.join(".")),
-                    site: constructor_site.clone(),
-                }));
-            }
-            Err(error) if parameter.is_type => {
-                return Err(E::ComptimeCallTypeArgument {
-                    constructor: Arc::from(call_segments.join(".")),
-                    argument_index: parameter_index,
-                    argument: argument_display(parameter_index),
-                    error: Box::new(error),
-                });
-            }
-            Err(error) => return Err(error),
-        }
+            &state.head,
+            &state.type_arguments,
+            &state.value_arguments,
+        );
+        state.accept(|| argument_display(parameter_index), resolved)?;
     }
-    let result =
-        lift_provider(provider.reduce_comptime_call(&head, &type_arguments, &value_arguments))?
-            .ok_or_else(|| {
-                E::Semantic(F::ConstructorDidNotReduce {
-                    constructor: Arc::from(call_segments.join(".")),
-                    site: constructor_site,
-                })
-            })?;
-    if expectation == SemanticComptimeCallExpectation::Type
-        && !matches!(result, SemanticComptimeCallResult::Type(_))
-    {
-        return Err(E::Semantic(F::ConstructorDidNotReduce {
-            constructor: Arc::from(call_segments.join(".")),
-            site: head.site,
-        }));
-    }
-    Ok(SemanticResolvedComptimeCall {
-        head,
-        type_arguments,
-        value_arguments,
-        result,
-    })
+    state.finish(provider)
 }
 
 fn structured_path<'a, Sym>(
@@ -1194,6 +1288,7 @@ mod tests {
     #[derive(Default)]
     struct Fixture {
         calls: Vec<String>,
+        reduced_arguments: Vec<String>,
         bindings: BTreeMap<(&'static str, &'static str), Binding>,
         root_structs: BTreeMap<(&'static str, &'static str), Fact>,
         root_enums: BTreeMap<(&'static str, &'static str), Fact>,
@@ -1453,10 +1548,20 @@ mod tests {
         fn reduce_comptime_call(
             &mut self,
             head: &Head,
-            _type_arguments: &[(&'static str, &'static str)],
-            _value_arguments: &[(&'static str, i64)],
+            type_arguments: &[(&'static str, &'static str)],
+            value_arguments: &[(&'static str, i64)],
         ) -> FixtureResult<Option<SemanticComptimeCallResult<&'static str, i64>>> {
             self.calls.push(format!("reduce:{}", head.key));
+            self.reduced_arguments.extend(
+                type_arguments
+                    .iter()
+                    .map(|(name, value)| format!("type:{name}={value}")),
+            );
+            self.reduced_arguments.extend(
+                value_arguments
+                    .iter()
+                    .map(|(name, value)| format!("value:{name}={value}")),
+            );
             Ok(Some(if head.returns_type {
                 SemanticComptimeCallResult::Type("constructed")
             } else {
@@ -1688,6 +1793,98 @@ mod tests {
             );
             resolve_type(&mut fixture, syntax).unwrap();
             assert_eq!(fixture.calls, expected, "unexpected trace for '{syntax}'");
+        }
+    }
+
+    #[test]
+    fn call_state_preserves_argument_order_and_lazy_diagnostics() {
+        let mut fixture = Fixture::default();
+        fixture.constructors.insert(
+            ("app/main.rue", "Build"),
+            head(
+                "build-site",
+                true,
+                true,
+                vec![type_parameter(true), value_parameter(true)],
+            ),
+        );
+        let mut state = SemanticComptimeCallState::admit(
+            &mut fixture,
+            &&"app/main.rue",
+            &["Build"],
+            2,
+            SemanticComptimeCallExpectation::Type,
+            || Arc::from("Build(...)"),
+        )
+        .unwrap();
+        let mut rendered = false;
+        state
+            .accept::<&'static str, &'static str>(
+                || {
+                    rendered = true;
+                    Arc::from("T")
+                },
+                Ok(ResolvedComptimeArgument::Type("i32")),
+            )
+            .unwrap();
+        assert!(
+            !rendered,
+            "successful arguments must not render diagnostics"
+        );
+        state
+            .accept::<&'static str, &'static str>(
+                || Arc::from("7"),
+                Ok(ResolvedComptimeArgument::Value(7)),
+            )
+            .unwrap();
+        let resolved = state
+            .finish::<&'static str, &'static str, _>(&mut fixture)
+            .unwrap();
+        assert_eq!(resolved.type_arguments, [("T", "i32")]);
+        assert_eq!(resolved.value_arguments, [("N", 7)]);
+        assert_eq!(fixture.reduced_arguments, ["type:T=i32", "value:N=7"]);
+    }
+
+    #[test]
+    fn call_state_wraps_type_argument_errors_with_constructor_metadata() {
+        let mut fixture = Fixture::default();
+        fixture.constructors.insert(
+            ("app/main.rue", "Build"),
+            head("build-site", true, true, vec![type_parameter(true)]),
+        );
+        let mut state = SemanticComptimeCallState::admit(
+            &mut fixture,
+            &&"app/main.rue",
+            &["Build"],
+            1,
+            SemanticComptimeCallExpectation::Type,
+            || Arc::from("Build(...)"),
+        )
+        .unwrap();
+        let nested = SemanticResolutionError::Semantic(SemanticTypeSyntaxFailure::UnknownType {
+            syntax: Arc::from("Missing"),
+        });
+        let error = state
+            .accept::<&'static str, &'static str>(|| Arc::from("Missing"), Err(nested))
+            .unwrap_err();
+        match error {
+            SemanticResolutionError::ComptimeCallTypeArgument {
+                constructor,
+                argument_index,
+                argument,
+                error,
+            } => {
+                assert_eq!(constructor.as_ref(), "Build");
+                assert_eq!(argument_index, 0);
+                assert_eq!(argument.as_ref(), "Missing");
+                assert!(matches!(
+                    *error,
+                    SemanticResolutionError::Semantic(
+                        SemanticTypeSyntaxFailure::UnknownType { .. }
+                    )
+                ));
+            }
+            other => panic!("unexpected wrapped error: {other:?}"),
         }
     }
 
