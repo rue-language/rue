@@ -126,6 +126,19 @@ where
     }
 }
 
+impl<'a, V, T, N, F, I> Default for ComptimeEnv<'a, V, T, N, F, I>
+where
+    V: ComptimeValue<Type = T>,
+    T: ComptimeType,
+    N: ComptimeName,
+    F: ComptimeFile,
+    I: ComptimeIdentity,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod value_domain_tests {
     use super::*;
@@ -178,16 +191,22 @@ mod value_domain_tests {
     }
 
     #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-    struct FakeName(u32);
+    struct FakeName {
+        ordinal: u32,
+    }
 
     #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-    struct FakeFile(u32);
+    struct FakeFile {
+        index: u32,
+    }
 
     impl ComptimeName for FakeName {}
     impl ComptimeFile for FakeFile {}
 
     #[derive(Clone, Debug, PartialEq, Eq)]
-    struct FakeIdentity(u32);
+    struct FakeIdentity {
+        token: u32,
+    }
 
     impl ComptimeIdentity for FakeIdentity {}
 
@@ -216,13 +235,17 @@ mod value_domain_tests {
             &self.rir
         }
         fn name_from_symbol(&self, symbol: SymbolHandle) -> Self::Name {
-            FakeName(symbol.issuing_interner_ordinal() as u32)
+            FakeName {
+                ordinal: symbol.issuing_interner_ordinal() as u32,
+            }
         }
         fn display_name(&self, name: &Self::Name) -> String {
-            format!("fake-name-{}", name.0)
+            format!("fake-name-{}", name.ordinal)
         }
         fn file_from_span(&self, span: &Span) -> Self::File {
-            FakeFile(span.file_id.index())
+            FakeFile {
+                index: span.file_id.index(),
+            }
         }
         fn value_const(
             &self,
@@ -627,7 +650,9 @@ mod value_domain_tests {
         let mut editor = rue_rir::RirEditor::new();
         let interner = lasso::ThreadedRodeo::new();
         let name_symbol = SymbolHandle::new(interner.get_or_intern("n"));
-        let name = FakeName(name_symbol.issuing_interner_ordinal() as u32);
+        let name = FakeName {
+            ordinal: name_symbol.issuing_interner_ordinal() as u32,
+        };
         let reference = editor.add_inst(rue_rir::Inst {
             data: InstData::VarRef {
                 name: name_symbol.spur(),
@@ -639,7 +664,7 @@ mod value_domain_tests {
             rir: editor.finish(),
             type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
             constant: Some((
-                FakeFile(0),
+                FakeFile { index: 0 },
                 name.clone(),
                 ComptimeConstInfo {
                     is_pub: true,
@@ -662,7 +687,9 @@ mod value_domain_tests {
         let mut editor = rue_rir::RirEditor::new();
         let interner = lasso::ThreadedRodeo::new();
         let name_symbol = SymbolHandle::new(interner.get_or_intern("answer"));
-        let name = FakeName(name_symbol.issuing_interner_ordinal() as u32);
+        let name = FakeName {
+            ordinal: name_symbol.issuing_interner_ordinal() as u32,
+        };
         let reference = editor.add_inst(rue_rir::Inst {
             data: InstData::VarRef {
                 name: name_symbol.spur(),
@@ -674,7 +701,7 @@ mod value_domain_tests {
             rir: editor.finish(),
             type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
             constant: Some((
-                FakeFile(3),
+                FakeFile { index: 3 },
                 name,
                 ComptimeConstInfo {
                     is_pub: true,
@@ -689,7 +716,10 @@ mod value_domain_tests {
             .evaluate(reference, &mut env)
             .unwrap();
         assert_eq!(value, Some(FakeValue::Integer(42)));
-        assert_eq!(host.dependencies, vec![(FakeFile(9), FakeName(0))]);
+        assert_eq!(
+            host.dependencies,
+            vec![(FakeFile { index: 9 }, FakeName { ordinal: 0 })]
+        );
     }
 
     #[test]
@@ -697,7 +727,9 @@ mod value_domain_tests {
         let mut editor = rue_rir::RirEditor::new();
         let interner = lasso::ThreadedRodeo::new();
         let name_symbol = SymbolHandle::new(interner.get_or_intern("n"));
-        let name = FakeName(name_symbol.issuing_interner_ordinal() as u32);
+        let name = FakeName {
+            ordinal: name_symbol.issuing_interner_ordinal() as u32,
+        };
         let reference = editor.add_inst(rue_rir::Inst {
             data: InstData::VarRef {
                 name: name_symbol.spur(),
@@ -1287,8 +1319,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             InstData::Neg { operand } => {
                 let ty = self.host.const_expr_type(env, inst_ref);
                 if let Some(ref ty) = ty {
-                    if self.host.type_is_unsigned(&ty) {
-                        return Err(self.host.cannot_negate(&ty, span));
+                    if self.host.type_is_unsigned(ty) {
+                        return Err(self.host.cannot_negate(ty, span));
                     }
                 }
                 if let InstData::IntConst(magnitude) = &self.host.program_rir().get(*operand).data {
@@ -2002,7 +2034,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 //    `fn make_type() -> type { Point }`)
                 let resolved = self.host.resolve_named_type_value(name, span)?;
                 if let Some(ref ty) = resolved {
-                    self.host.record_named_type_dependency(&ty);
+                    self.host.record_named_type_dependency(ty);
                 }
                 Ok(resolved.map(H::Value::type_value))
             }
