@@ -667,6 +667,25 @@ pub fn answer() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "vendored_std_invalid_physical_type_precedes_sdk"
+description = "RUE-1703: a vendored std facade that is not a regular source file must not silently fall back to the toolchain std."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    std.answer()
+}
+""" },
+    { path = "std/_std.rue/child.rue", source = """
+pub fn answer() -> i32 { 42 }
+""" },
+]
+compile_fail = true
+error_contains = ["std/_std.rue", "not a regular source file"]
+
+[[case]]
 name = "import_std_ignores_unrelated_loaded_std_facade_name"
 description = "@import(\"std\") must not bind to an unrelated loaded helper/_std.rue just because its filename is _std.rue (RUE-493)."
 files = [

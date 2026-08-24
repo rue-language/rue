@@ -306,12 +306,18 @@ impl FileMetadataFingerprint {
 }
 
 impl ImportObservationStatus {
-    #[cfg(test)]
-    fn is_present(&self) -> bool {
-        matches!(self, Self::PresentReadable { .. })
-    }
     pub fn is_failure(&self) -> bool {
         !matches!(self, Self::Absent | Self::PresentReadable { .. })
+    }
+
+    /// Whether this observation proves that the candidate exists but cannot be
+    /// used. Unlike a manifest denial, this must not let a later candidate in
+    /// the same precedence chain replace it.
+    pub(crate) fn is_conclusive_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::PresentUnreadable(_) | Self::InvalidPhysicalType { .. } | Self::UnstableRead(_)
+        )
     }
 }
 
@@ -982,32 +988,20 @@ impl ImportDiscoveryPlan {
         let mut pending = Vec::new();
         for groups in by_site.values() {
             for group in groups {
-                let observations = group
-                    .iter()
-                    .map(|request| ledger.get(request))
-                    .collect::<Vec<_>>();
-                if observations
-                    .iter()
-                    .any(|observation| observation.is_some_and(|o| o.status.is_failure()))
-                {
-                    break;
-                }
-                let missing = group
-                    .iter()
-                    .zip(&observations)
-                    .filter_map(|(request, observation)| {
-                        observation.is_none().then_some(request.clone())
-                    })
-                    .collect::<Vec<_>>();
-                if !missing.is_empty() {
-                    pending.extend(missing);
-                    break;
-                }
-                if observations
-                    .iter()
-                    .any(|observation| observation.is_some_and(|o| o.status.is_present()))
-                {
-                    break;
+                match exact_import_group_state(group, ledger) {
+                    ExactImportGroupState::ConclusiveFailure(_)
+                    | ExactImportGroupState::Cancelled(_)
+                    | ExactImportGroupState::Resolved(_) => break,
+                    ExactImportGroupState::Pending => {
+                        pending.extend(
+                            group
+                                .iter()
+                                .filter(|request| ledger.get(request).is_none())
+                                .cloned(),
+                        );
+                        break;
+                    }
+                    ExactImportGroupState::Skippable => {}
                 }
             }
         }
@@ -1343,30 +1337,101 @@ fn accepted_sources_for<'a>(
     canonicalize_accepted(accepted)
 }
 
-/// One occurrence's winner: the first candidate group, in precedence order, that
-/// observed a present read. A candidate that could not be read is skipped
-/// (ADR-0078) rather than ending the walk; a later group is never consulted
-/// once an earlier one won.
+/// The precedence state of one candidate group.
+pub(crate) enum ExactImportGroupState<'ledger> {
+    Pending,
+    Skippable,
+    ConclusiveFailure(&'ledger ImportObservation),
+    Cancelled(&'ledger ImportObservation),
+    Resolved(&'ledger AcceptedImportSource),
+}
+
+/// Derive one candidate group's state from the ledger. The same state machine
+/// drives the wave, revisioned queries, accepted-source reduction, winner
+/// selection, and diagnostics so a conclusive vendored failure cannot be
+/// bypassed by a later toolchain observation.
+pub(crate) fn exact_import_group_state<'ledger>(
+    group: &Arc<[ImportDiscoveryRequest]>,
+    ledger: &'ledger ImportObservationLedger,
+) -> ExactImportGroupState<'ledger> {
+    if let Some(failure) = group
+        .iter()
+        .filter_map(|request| ledger.get(request))
+        .find(|observation| observation.status().is_conclusive_failure())
+    {
+        return ExactImportGroupState::ConclusiveFailure(failure);
+    }
+    if let Some(cancelled) = group
+        .iter()
+        .filter_map(|request| ledger.get(request))
+        .find(|observation| matches!(observation.status(), ImportObservationStatus::Cancelled))
+    {
+        return ExactImportGroupState::Cancelled(cancelled);
+    }
+    if let Some(source) = group
+        .iter()
+        .filter_map(|request| ledger.get(request))
+        .filter_map(ImportObservation::accepted_source)
+        .next()
+    {
+        return ExactImportGroupState::Resolved(source);
+    }
+    if group.iter().any(|request| ledger.get(request).is_none()) {
+        ExactImportGroupState::Pending
+    } else {
+        // Absent, DeniedLexical, and DeniedCanonical advance the precedence
+        // walk. Denials are intentionally no-probe outcomes. Cancellation is
+        // handled above as a terminal non-closing state.
+        ExactImportGroupState::Skippable
+    }
+}
+
+/// Select the failure diagnostic for one occurrence while respecting the
+/// precedence walk. A skipped failure is retained only if the walk eventually
+/// has no resolution; a conclusive failure or cancellation is reported
+/// immediately and cannot be hidden by a later accepted observation.
+fn exact_import_failure_for_site<'groups, 'ledger>(
+    groups: impl IntoIterator<Item = &'groups Arc<[ImportDiscoveryRequest]>>,
+    ledger: &'ledger ImportObservationLedger,
+) -> Option<&'ledger ImportObservation> {
+    let mut skipped_failure = None;
+    for group in groups {
+        match exact_import_group_state(group, ledger) {
+            ExactImportGroupState::ConclusiveFailure(failure) => return Some(failure),
+            ExactImportGroupState::Cancelled(failure) => return Some(failure),
+            ExactImportGroupState::Resolved(_) => return None,
+            ExactImportGroupState::Pending => return skipped_failure,
+            ExactImportGroupState::Skippable => {
+                if skipped_failure.is_none() {
+                    skipped_failure = group
+                        .iter()
+                        .filter_map(|request| ledger.get(request))
+                        .find(|observation| observation.status().is_failure());
+                }
+            }
+        }
+    }
+    skipped_failure
+}
+
+/// One occurrence's winner: the first candidate group, in precedence order,
+/// that resolved. A conclusive failure or cancellation ends the walk before a
+/// later candidate can win; skippable denials and absence continue it.
 fn extend_accepted_from_site<'a>(
     accepted: &mut Vec<&'a AcceptedImportSource>,
     groups: impl Iterator<Item = &'a Arc<[ImportDiscoveryRequest]>>,
     ledger: &'a ImportObservationLedger,
 ) {
     for group in groups {
-        if group
-            .iter()
-            .any(|request| ledger.get(request).is_some_and(|o| o.status.is_failure()))
-        {
-            continue;
-        }
-        let present = group
-            .iter()
-            .filter_map(|request| ledger.get(request))
-            .filter_map(ImportObservation::accepted_source)
-            .collect::<Vec<_>>();
-        if !present.is_empty() {
-            accepted.extend(present);
-            break;
+        match exact_import_group_state(group, ledger) {
+            ExactImportGroupState::ConclusiveFailure(_)
+            | ExactImportGroupState::Cancelled(_)
+            | ExactImportGroupState::Pending => break,
+            ExactImportGroupState::Skippable => {}
+            ExactImportGroupState::Resolved(source) => {
+                accepted.push(source);
+                break;
+            }
         }
     }
 }
@@ -1582,67 +1647,45 @@ pub(crate) fn exact_import_pending_requests(
     let mut pending = Vec::new();
     for groups in by_site.values() {
         for group in groups {
-            let observations = group
-                .iter()
-                .map(|request| ledger.get(request))
-                .collect::<Vec<_>>();
-            if observations
-                .iter()
-                .any(|observation| observation.is_some_and(|value| value.status().is_failure()))
-            {
-                // ADR-0078: a candidate that could not be read is not a
-                // resolution, so the precedence walk continues to the next
-                // candidate rather than concluding. Under a source manifest an
-                // undeclared candidate is denied lexically WITHOUT a probe, so
-                // the compiler cannot distinguish "absent" from "present but
-                // undeclared"; treating the denial as conclusive would break
-                // every hermetic build whose program does not vendor the
-                // candidate it denies. The failure is still reported if no
-                // later candidate resolves (`exact_import_has_failures`).
-                continue;
-            }
-            let missing = group
-                .iter()
-                .zip(&observations)
-                .filter_map(|(request, observation)| {
-                    observation.is_none().then_some(request.clone())
-                })
-                .collect::<Vec<_>>();
-            if !missing.is_empty() {
-                pending.extend(missing);
-                break;
-            }
-            if observations.iter().any(|observation| {
-                observation.is_some_and(|value| value.accepted_source().is_some())
-            }) {
-                break;
+            match exact_import_group_state(group, ledger) {
+                ExactImportGroupState::ConclusiveFailure(_)
+                | ExactImportGroupState::Cancelled(_)
+                | ExactImportGroupState::Resolved(_) => break,
+                ExactImportGroupState::Pending => {
+                    pending.extend(
+                        group
+                            .iter()
+                            .filter(|request| ledger.get(request).is_none())
+                            .cloned(),
+                    );
+                    break;
+                }
+                ExactImportGroupState::Skippable => {}
             }
         }
     }
     pending
 }
 
-/// Whether any occurrence failed *conclusively*: it owns a failed observation
-/// and no candidate of its precedence chain resolved. A failure behind a
-/// resolved candidate is a skipped candidate, not a build failure (ADR-0078).
+/// Whether any occurrence has a failure after its precedence walk terminates
+/// without a resolution. Conclusive failures and cancellation stop the walk
+/// immediately; skippable failures are reported only when no later candidate
+/// resolves.
 pub(crate) fn exact_import_has_failures(
     groups: &[Arc<[ImportDiscoveryRequest]>],
     ledger: &ImportObservationLedger,
 ) -> bool {
-    let mut by_site: BTreeMap<&ImportOccurrenceKey, (bool, bool)> = BTreeMap::new();
-    for request in groups.iter().flat_map(|group| group.iter()) {
-        let Some(observation) = ledger.get(request) else {
-            continue;
-        };
-        let entry = by_site
-            .entry(request.occurrence())
-            .or_insert((false, false));
-        entry.0 |= observation.status().is_failure();
-        entry.1 |= observation.accepted_source().is_some();
+    let mut by_site: BTreeMap<&ImportOccurrenceKey, Vec<&Arc<[ImportDiscoveryRequest]>>> =
+        BTreeMap::new();
+    for group in groups {
+        by_site
+            .entry(group[0].occurrence())
+            .or_default()
+            .push(group);
     }
     by_site
         .values()
-        .any(|(failed, resolved)| *failed && !*resolved)
+        .any(|groups| exact_import_failure_for_site(groups.iter().copied(), ledger).is_some())
 }
 
 /// E0713 diagnostics for occurrences whose single candidate escapes its
@@ -1709,21 +1752,7 @@ pub(crate) fn exact_import_diagnostics(
             .expect("indexed importer belongs to parsed program")
             .file_id();
         let span = rue_span::Span::with_file(file_id, site.source_offset(), site.source_end());
-        // A failure behind a resolved candidate is a skipped candidate, not a
-        // build failure (ADR-0078): report failures only when the occurrence's
-        // whole precedence chain produced no accepted source.
-        let resolved = groups
-            .iter()
-            .flat_map(|group| group.iter())
-            .filter_map(|request| ledger.get(request))
-            .any(|observation| observation.accepted_source().is_some());
-        if let Some(failure) = groups
-            .iter()
-            .flat_map(|group| group.iter())
-            .filter_map(|request| ledger.get(request))
-            .find(|observation| observation.status().is_failure())
-            .filter(|_| !resolved)
-        {
+        if let Some(failure) = exact_import_failure_for_site(groups.iter().copied(), ledger) {
             let candidate = failure.request().requested_path();
             let message = match failure.status() {
                 ImportObservationStatus::PresentUnreadable(reason) => {
@@ -1898,22 +1927,18 @@ pub(crate) fn exact_import_winner<'ledger, 'groups>(
     groups: impl IntoIterator<Item = &'groups Arc<[ImportDiscoveryRequest]>>,
     ledger: &'ledger ImportObservationLedger,
 ) -> ExactImportWinner<'ledger> {
-    let winning = groups.into_iter().find_map(|group| {
-        let present = group
-            .iter()
-            .filter_map(|request| ledger.get(request))
-            .filter_map(ImportObservation::accepted_source)
-            .collect::<Vec<_>>();
-        (!present.is_empty()).then_some(present)
-    });
-    match winning.as_deref() {
-        Some([source]) => ExactImportWinner::Resolved(source),
-        // Policy v2 derives exactly one candidate per group, so a group can
-        // never accept two sources.
-        Some([_, _, ..]) => unreachable!("candidate groups hold one candidate"),
-        Some([]) => unreachable!(),
-        None => ExactImportWinner::Missing,
+    for group in groups {
+        match exact_import_group_state(group, ledger) {
+            ExactImportGroupState::Resolved(source) => return ExactImportWinner::Resolved(source),
+            ExactImportGroupState::ConclusiveFailure(_)
+            | ExactImportGroupState::Cancelled(_)
+            | ExactImportGroupState::Pending => {
+                return ExactImportWinner::Missing;
+            }
+            ExactImportGroupState::Skippable => {}
+        }
     }
+    ExactImportWinner::Missing
 }
 
 /// Obtain the canonical resolution by visiting exactly the accepted sources
@@ -3749,6 +3774,150 @@ mod tests {
     }
 
     #[test]
+    fn conclusive_vendored_std_failures_block_a_later_toolchain_source() {
+        let context = context(8);
+        let occurrence = project_occurrence("main.rue", "std");
+        let groups =
+            discovery_groups_for_occurrence(&context, &occurrence, "/project/main.rue").unwrap();
+        assert_eq!(groups.len(), 2, "vendored std precedes toolchain std");
+
+        for (index, status) in [
+            ImportObservationStatus::PresentUnreadable(Arc::from("permission denied")),
+            ImportObservationStatus::InvalidPhysicalType {
+                canonical_path: Arc::from("/project/std/_std.rue"),
+            },
+            ImportObservationStatus::UnstableRead(Arc::from("metadata changed")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut ledger = ImportObservationLedger::default();
+            ledger
+                .record(ImportObservation::failure(groups[0][0].clone(), status).unwrap())
+                .unwrap();
+            let toolchain = AcceptedImportSource::new(
+                groups[1][0].requested_path(),
+                groups[1][0].requested_path(),
+                PhysicalFileIdentity::new(2, index as u64 + 1),
+                metadata_fingerprint(),
+                Arc::new("pub fn answer() -> i32 { 42 }".into()),
+            )
+            .unwrap();
+            ledger
+                .record(ImportObservation::accepted(groups[1][0].clone(), toolchain).unwrap())
+                .unwrap();
+
+            assert!(exact_import_pending_requests(&groups, &ledger).is_empty());
+            assert!(exact_import_has_failures(&groups, &ledger));
+            assert!(exact_import_failure_for_site(groups.iter(), &ledger).is_some());
+            assert!(matches!(
+                exact_import_winner(groups.iter(), &ledger),
+                ExactImportWinner::Missing
+            ));
+            assert!(accepted_sources_for(groups.iter(), &ledger).is_empty());
+        }
+    }
+
+    #[test]
+    fn cancelled_vendored_std_read_blocks_a_stale_toolchain_source() {
+        let context = context(10);
+        let occurrence = project_occurrence("main.rue", "std");
+        let groups =
+            discovery_groups_for_occurrence(&context, &occurrence, "/project/main.rue").unwrap();
+        assert_eq!(groups.len(), 2, "vendored std precedes toolchain std");
+
+        let mut ledger = ImportObservationLedger::default();
+        ledger
+            .record(
+                ImportObservation::failure(
+                    groups[0][0].clone(),
+                    ImportObservationStatus::Cancelled,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let stale_toolchain = AcceptedImportSource::new(
+            groups[1][0].requested_path(),
+            groups[1][0].requested_path(),
+            PhysicalFileIdentity::new(5, 1),
+            metadata_fingerprint(),
+            Arc::new("pub fn answer() -> i32 { 7 }".into()),
+        )
+        .unwrap();
+        ledger
+            .record(ImportObservation::accepted(groups[1][0].clone(), stale_toolchain).unwrap())
+            .unwrap();
+
+        assert!(exact_import_pending_requests(&groups, &ledger).is_empty());
+        assert!(exact_import_has_failures(&groups, &ledger));
+        assert!(matches!(
+            exact_import_failure_for_site(groups.iter(), &ledger)
+                .expect("cancellation must remain diagnostic")
+                .status(),
+            ImportObservationStatus::Cancelled
+        ));
+        assert!(matches!(
+            exact_import_winner(groups.iter(), &ledger),
+            ExactImportWinner::Missing
+        ));
+        assert!(accepted_sources_for(groups.iter(), &ledger).is_empty());
+    }
+
+    #[test]
+    fn std_manifest_denial_and_absence_advance_to_toolchain_std() {
+        let context = context(9);
+        let occurrence = project_occurrence("main.rue", "std");
+        let groups =
+            discovery_groups_for_occurrence(&context, &occurrence, "/project/main.rue").unwrap();
+        let mut ledger = ImportObservationLedger::default();
+        ledger
+            .record(
+                ImportObservation::failure(
+                    groups[0][0].clone(),
+                    ImportObservationStatus::DeniedLexical,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            exact_import_pending_requests(&groups, &ledger),
+            vec![groups[1][0].clone()]
+        );
+
+        let mut absent = ledger.clone();
+        absent
+            .record(ImportObservation::absent(groups[1][0].clone()))
+            .unwrap();
+        assert!(exact_import_pending_requests(&groups, &absent).is_empty());
+        assert!(exact_import_has_failures(&groups, &absent));
+
+        let mut fallback = ImportObservationLedger::default();
+        fallback
+            .record(ImportObservation::absent(groups[0][0].clone()))
+            .unwrap();
+        assert_eq!(
+            exact_import_pending_requests(&groups, &fallback),
+            vec![groups[1][0].clone()]
+        );
+        let source = AcceptedImportSource::new(
+            groups[1][0].requested_path(),
+            groups[1][0].requested_path(),
+            PhysicalFileIdentity::new(3, 1),
+            metadata_fingerprint(),
+            Arc::new("pub fn answer() -> i32 { 7 }".into()),
+        )
+        .unwrap();
+        fallback
+            .record(ImportObservation::accepted(groups[1][0].clone(), source).unwrap())
+            .unwrap();
+        assert!(exact_import_failure_for_site(groups.iter(), &fallback).is_none());
+        assert!(matches!(
+            exact_import_winner(groups.iter(), &fallback),
+            ExactImportWinner::Resolved(_)
+        ));
+    }
+
+    #[test]
     fn discovery_state_preserves_last_good_and_distinguishes_attempted_from_nonclosure() {
         let valid = snapshot(
             &[(1, "/project/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
@@ -4347,6 +4516,7 @@ mod tests {
                 ledger.record(observation).unwrap();
             }
             assert!(plan.pending_requests(&ledger).is_empty());
+            assert!(exact_import_has_failures(plan.groups(), &ledger));
             session.close_import_discovery(ledger).unwrap_err();
             let attempt = session.discovery_attempt().unwrap();
             assert_eq!(
