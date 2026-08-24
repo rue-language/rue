@@ -60,9 +60,10 @@ pub use binding_manifest::{
     SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
 };
 pub use comptime::{
-    ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeConstInfo,
-    ComptimeEngine, ComptimeEnv, ComptimeField, ComptimeFile, ComptimeHost, ComptimeIdentity,
-    ComptimeName, ComptimeType, ComptimeValue, PreparedComptimeCall,
+    ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallPreparation,
+    ComptimeConstInfo, ComptimeEngine, ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame,
+    ComptimeHost, ComptimeIdentity, ComptimeName, ComptimeOutcome, ComptimeTrap, ComptimeType,
+    ComptimeValue, MAX_COMPTIME_CALL_DEPTH,
 };
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;

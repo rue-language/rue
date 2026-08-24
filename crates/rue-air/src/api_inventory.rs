@@ -41,16 +41,19 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "ComptimeArgMode",
         "ComptimeCallAdmission",
         "ComptimeConstInfo",
+        "ComptimeCallPreparation",
         "ComptimeEngine",
         "ComptimeEnv",
         "ComptimeField",
         "ComptimeFile",
+        "ComptimeFrame",
         "ComptimeHost",
         "ComptimeIdentity",
         "ComptimeName",
+        "ComptimeOutcome",
+        "ComptimeTrap",
         "ComptimeType",
         "ComptimeValue",
-        "PreparedComptimeCall",
     ] {
         assert!(
             facade.contains(export),
@@ -92,6 +95,9 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "ErrorKind",
         "comptime_panic_err",
         "ProducerFailure",
+        "PreparedComptimeCall",
+        "current_program",
+        "call_depth",
     ];
     for forbidden in production_forbidden {
         assert!(
@@ -122,6 +128,51 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     assert!(contract.contains("Self::File,"));
     assert!(!production.contains("eval_const_expr"));
     assert!(!production.contains("ComptimeEngine::new"));
+    assert!(!production.contains("reduce_external_comptime_call"));
+    assert_eq!(production.matches("struct PreparedComptimeCall").count(), 0);
+
+    let host_start = production
+        .find("pub trait ComptimeHost")
+        .expect("canonical host contract");
+    let host_contract = &production[host_start..engine_start];
+    assert!(host_contract.contains("fn program_rir(&self, program:"));
+    assert!(!host_contract.contains("ComptimeEngine::new"));
+    let preparation_start = host_contract
+        .find("fn prepare_comptime_call")
+        .expect("canonical call preparation hook");
+    assert_eq!(
+        host_contract.matches("fn prepare_comptime_call").count(),
+        1,
+        "call preparation must have one host authority"
+    );
+    let finish_start = host_contract[preparation_start..]
+        .find("fn finish_comptime_call")
+        .map(|offset| preparation_start + offset)
+        .expect("call finish hook");
+    let preparation = &host_contract[preparation_start..finish_start];
+    assert!(!preparation.contains("RirCallArg"));
+    assert!(!preparation.contains("InstRef"));
+    assert_eq!(
+        production.matches("fn eval(").count(),
+        1,
+        "canonical comptime module must have one recursive dispatcher"
+    );
+    assert!(production.contains("self.frames.push(frame)"));
+    assert!(production.contains("self.frames.pop()"));
+    assert!(production.contains("ComptimeCallPreparation::Memoized(outcome)"));
+    let run_frame = production
+        .find("fn run_frame(")
+        .map(|start| &production[start..])
+        .expect("frame lifecycle");
+    assert!(run_frame.find("entered_depth").is_some());
+    assert!(run_frame.find("canonical_function_producer").is_some());
+    assert!(run_frame.find("self.frames.push(frame)").is_some());
+    assert!(run_frame.find("self.frames.pop()").is_some());
+    assert!(
+        run_frame.find("self.frames.push(frame)").unwrap()
+            < run_frame.find("self.frames.pop()").unwrap(),
+        "frame cleanup must follow entry"
+    );
 
     let env_source = include_str!("sema/comptime.rs");
     let env_start = env_source
