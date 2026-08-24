@@ -22,12 +22,15 @@
 //! `@assert`, and the defined panics (overflow, divide/remainder-by-zero,
 //! int-cast overflow);
 //! aggregates (structs/arrays) with nested place projections and bounds traps;
-//! `inout`/`borrow` parameters (copy-in / copy-out, observably identical to
-//! by-reference under the law of exclusivity); and drop/destructors, executed in
-//! spec-3.9 order (user destructor, then fields in declaration order / elements
-//! ascending) so the oracle validates drop *order* and drop-exactly-once, not
-//! just final values; and text values — source-defined `StrBuf` algorithms,
-//! `@to_string`, core `str` byte indexing, and strict/lossy scalar iteration.
+//! `inout`/`borrow` parameters (copy-in / copy-out, with the copy-in taken at
+//! the moment the callee receives the argument rather than at the argument's
+//! position in the list, so an alias mutated later in the same argument list is
+//! observed — see [`Interp::reread_by_ref_operand`]); and drop/destructors,
+//! executed in spec-3.9 order (user destructor, then fields in declaration
+//! order / elements ascending) so the oracle validates drop *order* and
+//! drop-exactly-once, not just final values; and text values — source-defined
+//! `StrBuf` algorithms, `@to_string`, core `str` byte indexing, and
+//! strict/lossy scalar iteration.
 //! Text content is modeled as raw bytes, matching the runtime's packed view:
 //! strict `.chars()` traps on invalid UTF-8, while `.chars_lossy()` substitutes
 //! U+FFFD.
@@ -2776,7 +2779,12 @@ impl<'a> Interp<'a> {
                 let mut writebacks: Vec<(usize, WritebackPlace<'a>)> = Vec::new();
                 let mut base = 0usize;
                 for (index, a) in call_args.iter().enumerate() {
-                    let v = self.eval(cfg, frame, a.value)?;
+                    let v = match a.mode {
+                        CfgArgMode::Borrow | CfgArgMode::Inout => {
+                            self.reread_by_ref_operand(cfg, frame, a.value)?
+                        }
+                        CfgArgMode::Normal => self.eval(cfg, frame, a.value)?,
+                    };
                     // Derive both callee packing and copy-back bases from the
                     // same static type + physical passing-mode contract.
                     let w = self.call_arg_slot_width(arg_types[index], a.mode);
@@ -3361,6 +3369,59 @@ impl<'a> Interp<'a> {
         }
         *cur = val;
         Ok(())
+    }
+
+    /// Copy in a by-reference argument by reading its place *now*, at the point
+    /// the callee receives it, rather than reusing the value the operand
+    /// instruction produced at its own position in the block.
+    ///
+    /// `docs/formal/01-core-calculus.md` §6.2 admits only a by-VALUE argument as
+    /// a redex; a by-reference argument is a place and is not reduced (§6.9), so
+    /// nothing about it is observed until the callee reads through it. The
+    /// interpreter still hands the callee a value, but taking that value at the
+    /// operand's own evaluation point makes it a snapshot — and a later argument
+    /// in the same list that mutates the same root then goes unobserved. That is
+    /// RUE-1789: `a.bump(grow(inout a))` computed 0 where the compiler, which
+    /// passes `a`'s address, computes 1.
+    ///
+    /// Only a re-readable *place* operand is re-read. Anything else keeps its
+    /// original value, which is not a fallback but the matching behavior: an
+    /// operand the compiler materializes into a value at argument-evaluation
+    /// time (a `borrow str` view over a `StrBuf`, say) really is snapshotted
+    /// there, and a program that could observe the difference is rejected by the
+    /// call-loan rule (spec 6.1:30) before it ever reaches the oracle.
+    fn reread_by_ref_operand(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        v: CfgValue,
+    ) -> Step<Value> {
+        if !Self::is_rereadable_place_operand(cfg, v) {
+            return self.eval(cfg, frame, v);
+        }
+        // Drop only this instruction's memo. Its operands (a dynamic index, say)
+        // keep the values they took at their own evaluation points, so the place
+        // being read is still the one argument evaluation selected; only its
+        // contents are re-read. The memo is then restored, so an unrelated
+        // consumer of the same SSA value still sees its own snapshot — the
+        // property `Frame::cache` documents for dominated blocks.
+        let saved = frame.cache.remove(&v.as_u32());
+        let fresh = self.eval(cfg, frame, v);
+        match saved {
+            Some(prev) => frame.cache.insert(v.as_u32(), prev),
+            None => frame.cache.remove(&v.as_u32()),
+        };
+        fresh
+    }
+
+    /// Whether re-evaluating this operand is a pure re-read of storage: a local
+    /// slot, a parameter slot, or a place projection. Every other instruction
+    /// may compute or allocate, so re-running it is not a read.
+    fn is_rereadable_place_operand(cfg: &Cfg, v: CfgValue) -> bool {
+        matches!(
+            cfg.get_inst(v).data,
+            CfgInstData::Load { .. } | CfgInstData::Param { .. } | CfgInstData::PlaceRead { .. }
+        )
     }
 
     /// Recover the caller place an `inout` argument was loaded from, so its
