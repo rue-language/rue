@@ -189,7 +189,6 @@ impl<'a>
     /// analyzed: comptime parameters in scope plus HM-resolved types.
     pub(crate) fn for_analysis(ctx: &'a AnalysisContext) -> Self {
         Self {
-            producer: Some(ctx.producer),
             canonical_identity: Some(ctx.canonical_producer.clone()),
             type_subst: ctx.comptime_type_vars.clone(),
             value_subst: ctx.comptime_value_vars.clone(),
@@ -300,7 +299,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         value_subst: &AHashMap<Spur, ConstValue>,
     ) -> Option<ConstValue> {
         let mut env = ComptimeEnv::with_subst(type_subst, value_subst);
-        env.producer = Some(inst_ref);
         env.canonical_identity = self.active_anonymous_producer().cloned();
         // A module-qualified comptime call in the evaluated expression resolves
         // its receiver against the expression's own file's imports (RUE-511).
@@ -1389,7 +1387,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // evaluation of the initializer handles `let P = Q;`,
         // `let P = struct { .. };`, and `let P = Pair(i32);` alike (RUE-251).
         let mut env = ComptimeEnv::with_subst(eval_types, eval_values);
-        env.producer = Some(init);
         env.canonical_identity = self.active_anonymous_producer().cloned();
         env.runtime_local_names = runtime_bindings.clone();
         env.defining_file = Some(self.body_rir_ref().get(init).span.file_id);

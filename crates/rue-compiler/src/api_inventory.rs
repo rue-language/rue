@@ -6,6 +6,125 @@
 //! stability, category, and approved consumers so intentional API changes are
 //! reviewed as semantic one-line diffs.
 
+#[cfg(test)]
+mod comptime_public_contract_tests {
+    use rue_air::{
+        ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeConstInfo,
+        ComptimeEngine, ComptimeEnv, ComptimeField, ComptimeFile, ComptimeHost, ComptimeIdentity,
+        ComptimeName, ComptimeType, ComptimeValue, PreparedComptimeCall,
+    };
+    use rue_rir::InstRef;
+    use rue_span::Span;
+    use std::hash::{Hash, Hasher};
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct FakeType;
+    impl ComptimeType for FakeType {}
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum FakeValue {
+        Integer(i128),
+        Boolean(bool),
+        Unit,
+        Type(FakeType),
+    }
+    impl ComptimeValue for FakeValue {
+        type Type = FakeType;
+        fn integer(value: i128) -> Self {
+            Self::Integer(value)
+        }
+        fn boolean(value: bool) -> Self {
+            Self::Boolean(value)
+        }
+        fn unit() -> Self {
+            Self::Unit
+        }
+        fn type_value(value: <Self as ComptimeValue>::Type) -> Self {
+            Self::Type(value)
+        }
+        fn as_integer(&self) -> Option<i128> {
+            match self {
+                Self::Integer(value) => Some(*value),
+                _ => None,
+            }
+        }
+        fn as_boolean(&self) -> Option<bool> {
+            match self {
+                Self::Boolean(value) => Some(*value),
+                _ => None,
+            }
+        }
+        fn as_type(&self) -> Option<<Self as ComptimeValue>::Type> {
+            match self {
+                Self::Type(value) => Some(value.clone()),
+                _ => None,
+            }
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct FakeName;
+    impl Hash for FakeName {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            0_u8.hash(state);
+        }
+    }
+    impl ComptimeName for FakeName {}
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct FakeFile;
+    impl Hash for FakeFile {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            0_u8.hash(state);
+        }
+    }
+    impl ComptimeFile for FakeFile {}
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct FakeIdentity;
+    impl ComptimeIdentity for FakeIdentity {}
+
+    #[allow(dead_code)]
+    fn generic_engine_entry<H: ComptimeHost>(
+        host: &mut H,
+        root: InstRef,
+    ) -> Result<Option<H::Value>, H::Failure> {
+        let mut env =
+            ComptimeEnv::<H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>::new();
+        ComptimeEngine::new(host).evaluate(root, &mut env)
+    }
+
+    #[test]
+    fn public_domain_and_engine_contract_is_instantiable() {
+        let _env: ComptimeEnv<'static, FakeValue, FakeType, FakeName, FakeFile, FakeIdentity> =
+            ComptimeEnv::new();
+        let _plan = PreparedComptimeCall {
+            name: FakeName,
+            body: InstRef::from_raw(0),
+            file: FakeFile,
+            span: Span::new(0, 0),
+            function_span: Span::new(0, 0),
+            callee_types: ahash::AHashMap::<FakeName, FakeType>::new(),
+            callee_values: ahash::AHashMap::<FakeName, FakeValue>::new(),
+        };
+        let _field = ComptimeField {
+            name: FakeName,
+            ty: FakeType,
+        };
+        let _const_info = ComptimeConstInfo {
+            is_pub: false,
+            span: Span::new(0, 0),
+            value: Some(FakeValue::Unit),
+        };
+        let _admission = ComptimeCallAdmission {
+            name: FakeName,
+            payload: (),
+        };
+        let _arg_mode: ComptimeArgMode = (rue_rir::RirArgMode::Normal, Span::new(0, 0));
+        let _anonymous_kind = ComptimeAnonymousKind::Struct;
+    }
+}
+
 const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("artifact_views", include_str!("artifact_views.rs")),
     ("backend", include_str!("backend.rs")),
