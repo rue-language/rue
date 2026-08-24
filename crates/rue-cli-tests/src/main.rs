@@ -3218,6 +3218,58 @@ fn compile_fail_has_exit_code(case: &Case) -> bool {
     case.compile_fail && case.exit_code.is_some()
 }
 
+/// Return produced-program fields that are meaningless when `compile_only`
+/// stops the case before the program runs. Keep this list aligned with the
+/// assertions and inputs consumed exclusively by `run_case_program`.
+fn compile_only_runtime_fields(case: &Case) -> Vec<&'static str> {
+    if !case.compile_only {
+        return Vec::new();
+    }
+    [
+        ("program_args", !case.program_args.is_empty()),
+        ("program_env", !case.program_env.is_empty()),
+        ("stdin", case.stdin.is_some()),
+        ("stdout", case.stdout.is_some()),
+        ("stdout_contains", !case.stdout_contains.is_empty()),
+        (
+            "runtime_error_contains",
+            !case.runtime_error_contains.is_empty(),
+        ),
+        ("exit_code", case.exit_code.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(field, present)| present.then_some(field))
+    .collect()
+}
+
+/// Return every empty substring assertion. Empty arrays remain valid; an empty
+/// element would match every output and therefore pins nothing.
+fn empty_contains_fields(case: &Case) -> Vec<String> {
+    [
+        ("error_contains", &case.error_contains),
+        ("compile_stdout_contains", &case.compile_stdout_contains),
+        (
+            "compile_stdout_not_contains",
+            &case.compile_stdout_not_contains,
+        ),
+        ("compile_stderr_contains", &case.compile_stderr_contains),
+        (
+            "compile_stderr_not_contains",
+            &case.compile_stderr_not_contains,
+        ),
+        ("stdout_contains", &case.stdout_contains),
+        ("runtime_error_contains", &case.runtime_error_contains),
+        ("symbols_contain", &case.symbols_contain),
+    ]
+    .into_iter()
+    .flat_map(|(field, values)| {
+        values.iter().enumerate().filter_map(move |(index, value)| {
+            value.is_empty().then_some(format!("`{field}[{index}]`"))
+        })
+    })
+    .collect()
+}
+
 fn invalid_execute_if_native(case: &Case) -> bool {
     case.execute_if_native && (case.compile_only || case.executable_target.is_none())
 }
@@ -3310,6 +3362,30 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
                 // load time so the doc comment's promise is enforced, not merely
                 // documented (RUE-132).
                 for case in &tf.cases {
+                    let compile_only_fields = compile_only_runtime_fields(case);
+                    if !compile_only_fields.is_empty() {
+                        eprintln!(
+                            "error: {}: case '{}' is `compile_only` but declares produced-program field(s) {} — remove those fields",
+                            path.display(),
+                            case.name,
+                            compile_only_fields
+                                .iter()
+                                .map(|field| format!("`{field}`"))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        );
+                        std::process::exit(1);
+                    }
+                    let empty_fields = empty_contains_fields(case);
+                    if !empty_fields.is_empty() {
+                        eprintln!(
+                            "error: {}: case '{}' declares empty substring assertion(s) {} — empty contains assertions match every output; remove or replace them",
+                            path.display(),
+                            case.name,
+                            empty_fields.join(", "),
+                        );
+                        std::process::exit(1);
+                    }
                     if let Some(marker) = case.known_bug.as_deref()
                         && !is_canonical_known_bug_marker(marker)
                     {
@@ -5083,6 +5159,90 @@ mod tests {
         };
 
         assert!(compile_fail_has_exit_code(&case));
+    }
+
+    #[test]
+    fn compile_only_rejects_each_produced_program_field() {
+        let mut cases = Vec::new();
+        for field in [
+            "program_args",
+            "program_env",
+            "stdin",
+            "stdout",
+            "stdout_contains",
+            "runtime_error_contains",
+            "exit_code",
+        ] {
+            let mut case = Case {
+                name: field.to_string(),
+                compile_only: true,
+                ..Default::default()
+            };
+            match field {
+                "program_args" => case.program_args = vec!["arg".to_string()],
+                "program_env" => {
+                    case.program_env
+                        .insert("KEY".to_string(), "value".to_string());
+                }
+                "stdin" => case.stdin = Some("input".to_string()),
+                "stdout" => case.stdout = Some("output".to_string()),
+                "stdout_contains" => case.stdout_contains = vec!["output".to_string()],
+                "runtime_error_contains" => case.runtime_error_contains = vec!["panic".to_string()],
+                "exit_code" => case.exit_code = Some(0),
+                _ => unreachable!(),
+            }
+            cases.push((field, case));
+        }
+        for (field, case) in cases {
+            assert_eq!(compile_only_runtime_fields(&case), vec![field]);
+        }
+
+        // Compile-phase assertions and executable inspection remain valid.
+        let valid = Case {
+            compile_only: true,
+            compile_stdout_contains: vec!["Compiled".to_string()],
+            executable_target: Some("x86-64-linux".to_string()),
+            symbols_contain: vec!["main".to_string()],
+            ..Default::default()
+        };
+        assert!(compile_only_runtime_fields(&valid).is_empty());
+    }
+
+    #[test]
+    fn empty_contains_entries_are_rejected_but_empty_arrays_are_valid() {
+        for field in [
+            "error_contains",
+            "compile_stdout_contains",
+            "compile_stdout_not_contains",
+            "compile_stderr_contains",
+            "compile_stderr_not_contains",
+            "stdout_contains",
+            "runtime_error_contains",
+            "symbols_contain",
+        ] {
+            let mut case = Case {
+                name: field.to_string(),
+                ..Default::default()
+            };
+            match field {
+                "error_contains" => case.error_contains = vec!["".to_string()],
+                "compile_stdout_contains" => case.compile_stdout_contains = vec!["".to_string()],
+                "compile_stdout_not_contains" => {
+                    case.compile_stdout_not_contains = vec!["".to_string()]
+                }
+                "compile_stderr_contains" => case.compile_stderr_contains = vec!["".to_string()],
+                "compile_stderr_not_contains" => {
+                    case.compile_stderr_not_contains = vec!["".to_string()]
+                }
+                "stdout_contains" => case.stdout_contains = vec!["".to_string()],
+                "runtime_error_contains" => case.runtime_error_contains = vec!["".to_string()],
+                "symbols_contain" => case.symbols_contain = vec!["".to_string()],
+                _ => unreachable!(),
+            }
+            assert_eq!(empty_contains_fields(&case), vec![format!("`{field}[0]`")]);
+        }
+
+        assert!(empty_contains_fields(&Case::default()).is_empty());
     }
 
     #[test]

@@ -182,6 +182,8 @@ pub struct ParamSet {
     /// All parameter values as a flat map.
     /// Special keys: `exit_code`, `compile_fail`, `skip`, `spec_extra`, etc.
     /// Other keys are used for `{key}` substitution in templates.
+    /// String values may reference other parameters; dependencies are resolved
+    /// deterministically before any case field is expanded.
     #[serde(flatten)]
     pub values: HashMap<String, toml::Value>,
 }
@@ -866,13 +868,193 @@ fn toml_value_to_string(value: &toml::Value) -> String {
 
 /// Substitute `{key}` placeholders in a string with values from the param set.
 fn substitute_placeholders(template: &str, params: &HashMap<String, toml::Value>) -> String {
-    let mut result = template.to_string();
-    for (key, value) in params {
-        let placeholder = format!("{{{}}}", key);
-        let replacement = toml_value_to_string(value);
-        result = result.replace(&placeholder, &replacement);
+    let mut keys = params.keys().collect::<Vec<_>>();
+    keys.sort_unstable();
+    let mut result = String::with_capacity(template.len());
+    let mut cursor = 0;
+    while cursor < template.len() {
+        let Some((start, key, placeholder_len)) = find_next_placeholder(template, cursor, &keys)
+        else {
+            result.push_str(&template[cursor..]);
+            break;
+        };
+        result.push_str(&template[cursor..start]);
+        result.push_str(&toml_value_to_string(&params[key]));
+        cursor = start + placeholder_len;
     }
     result
+}
+
+/// Find the earliest exact known `{key}` token after `cursor`. Sorting the
+/// candidate keys makes equal-position matches deterministic, while searching
+/// for complete tokens avoids interpreting ordinary surrounding braces as
+/// placeholders.
+fn find_next_placeholder<'a>(
+    template: &str,
+    cursor: usize,
+    keys: &[&'a String],
+) -> Option<(usize, &'a str, usize)> {
+    keys.iter()
+        .filter_map(|key| {
+            let placeholder = format!("{{{key}}}");
+            template[cursor..]
+                .find(&placeholder)
+                .map(|offset| (cursor + offset, key.as_str(), placeholder.len()))
+        })
+        .min_by_key(|(start, _, _)| *start)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParamPlaceholderError {
+    Unknown { key: String, referenced_by: String },
+    Cycle { path: Vec<String> },
+}
+
+impl std::fmt::Display for ParamPlaceholderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unknown { key, referenced_by } => write!(
+                f,
+                "parameter '{referenced_by}' references unknown placeholder '{{{key}}}'"
+            ),
+            Self::Cycle { path } => write!(
+                f,
+                "parameter placeholder cycle: {}",
+                path.iter()
+                    .map(|key| format!("{{{key}}}"))
+                    .collect::<Vec<_>>()
+                    .join(" -> ")
+            ),
+        }
+    }
+}
+
+fn is_placeholder_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    chars.next().is_some_and(|first| {
+        (first == '_' || first.is_ascii_alphabetic())
+            && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+    })
+}
+
+fn resolve_template(
+    template: &str,
+    referenced_by: &str,
+    params: &HashMap<String, toml::Value>,
+    resolved: &mut HashMap<String, toml::Value>,
+    active: &mut Vec<String>,
+) -> Result<String, ParamPlaceholderError> {
+    let mut scan = 0;
+    while let Some(start_offset) = template[scan..].find('{') {
+        let start = scan + start_offset;
+        let Some(end_offset) = template[start + 1..].find(['{', '}']) else {
+            break;
+        };
+        if template.as_bytes()[start + 1 + end_offset] != b'}' {
+            scan = start + 1;
+            continue;
+        }
+        let reference = &template[start + 1..start + 1 + end_offset];
+        if is_placeholder_key(reference) && !params.contains_key(reference) {
+            return Err(ParamPlaceholderError::Unknown {
+                key: reference.to_string(),
+                referenced_by: referenced_by.to_string(),
+            });
+        }
+        scan = start + 2 + end_offset;
+    }
+
+    let mut keys = params.keys().collect::<Vec<_>>();
+    keys.sort_unstable();
+    let mut output = String::with_capacity(template.len());
+    let mut cursor = 0;
+    while cursor < template.len() {
+        let Some((start, reference, placeholder_len)) =
+            find_next_placeholder(template, cursor, &keys)
+        else {
+            output.push_str(&template[cursor..]);
+            break;
+        };
+        output.push_str(&template[cursor..start]);
+        let reference_value = resolve_param_value(reference, params, resolved, active)?;
+        output.push_str(&toml_value_to_string(&reference_value));
+        cursor = start + placeholder_len;
+    }
+    Ok(output)
+}
+
+fn resolve_nested_value(
+    value: toml::Value,
+    params: &HashMap<String, toml::Value>,
+    resolved: &mut HashMap<String, toml::Value>,
+    active: &mut Vec<String>,
+) -> Result<toml::Value, ParamPlaceholderError> {
+    match value {
+        toml::Value::String(template) => Ok(toml::Value::String(resolve_template(
+            &template,
+            "nested parameter value",
+            params,
+            resolved,
+            active,
+        )?)),
+        toml::Value::Array(values) => Ok(toml::Value::Array(
+            values
+                .into_iter()
+                .map(|value| resolve_nested_value(value, params, resolved, active))
+                .collect::<Result<_, _>>()?,
+        )),
+        toml::Value::Table(values) => Ok(toml::Value::Table(
+            values
+                .into_iter()
+                .map(|(name, value)| {
+                    Ok((name, resolve_nested_value(value, params, resolved, active)?))
+                })
+                .collect::<Result<_, ParamPlaceholderError>>()?,
+        )),
+        other => Ok(other),
+    }
+}
+
+fn resolve_param_value(
+    key: &str,
+    params: &HashMap<String, toml::Value>,
+    resolved: &mut HashMap<String, toml::Value>,
+    active: &mut Vec<String>,
+) -> Result<toml::Value, ParamPlaceholderError> {
+    if let Some(value) = resolved.get(key) {
+        return Ok(value.clone());
+    }
+    if let Some(position) = active.iter().position(|active_key| active_key == key) {
+        let mut path = active[position..].to_vec();
+        path.push(key.to_string());
+        return Err(ParamPlaceholderError::Cycle { path });
+    }
+    let value = params
+        .get(key)
+        .expect("resolving a parameter that was already checked")
+        .clone();
+    active.push(key.to_string());
+    let value = match value {
+        toml::Value::String(template) => {
+            toml::Value::String(resolve_template(&template, key, params, resolved, active)?)
+        }
+        other => resolve_nested_value(other, params, resolved, active)?,
+    };
+    active.pop();
+    resolved.insert(key.to_string(), value.clone());
+    Ok(value)
+}
+
+fn resolve_param_values(
+    params: &HashMap<String, toml::Value>,
+) -> Result<HashMap<String, toml::Value>, ParamPlaceholderError> {
+    let mut resolved = HashMap::new();
+    let mut keys = params.keys().collect::<Vec<_>>();
+    keys.sort_unstable();
+    for key in keys {
+        resolve_param_value(key, params, &mut resolved, &mut Vec::new())?;
+    }
+    Ok(resolved)
 }
 
 fn substitute_optional_string(
@@ -1250,40 +1432,45 @@ pub fn expand_case(case: Case) -> Vec<Case> {
     case.params
         .iter()
         .map(|param_set| {
-            let params = &param_set.values;
+            let params = resolve_param_values(&param_set.values).unwrap_or_else(|error| {
+                panic!(
+                    "test '{}' has invalid parameter placeholders: {error}",
+                    case.name
+                )
+            });
             let mut expanded = Case {
                 // Substitute placeholders in string fields
-                name: substitute_placeholders(&case.name, params),
-                description: substitute_optional_string(&case.description, params),
-                source: substitute_placeholders(&case.source, params),
+                name: substitute_placeholders(&case.name, &params),
+                description: substitute_optional_string(&case.description, &params),
+                source: substitute_placeholders(&case.source, &params),
                 error_contains: ErrorContains(
                     case.error_contains
                         .iter()
-                        .map(|s| substitute_placeholders(s, params))
+                        .map(|s| substitute_placeholders(s, &params))
                         .collect(),
                 ),
-                expected_error: substitute_optional_string(&case.expected_error, params),
-                expected_tokens: substitute_optional_string(&case.expected_tokens, params),
-                expected_ast: substitute_optional_string(&case.expected_ast, params),
-                expected_rir: substitute_optional_string(&case.expected_rir, params),
-                expected_air: substitute_optional_string(&case.expected_air, params),
-                expected_mir: substitute_optional_string(&case.expected_mir, params),
-                expected_lowering: substitute_optional_string(&case.expected_lowering, params),
-                expected_liveness: substitute_optional_string(&case.expected_liveness, params),
-                expected_regalloc: substitute_optional_string(&case.expected_regalloc, params),
-                expected_asm: substitute_optional_string(&case.expected_asm, params),
-                expected_stackframe: substitute_optional_string(&case.expected_stackframe, params),
-                expected_cfg: substitute_optional_string(&case.expected_cfg, params),
-                runtime_error: substitute_optional_string(&case.runtime_error, params),
-                warning_contains: substitute_optional_string_vec(&case.warning_contains, params),
-                spec: substitute_string_vec(&case.spec, params),
-                expected_stdout: substitute_optional_string(&case.expected_stdout, params),
-                preview: substitute_optional_string(&case.preview, params),
-                target: substitute_optional_string(&case.target, params),
-                stdin: substitute_optional_string(&case.stdin, params),
-                stderr_contains: substitute_optional_string(&case.stderr_contains, params),
-                aux_files: substitute_string_map(&case.aux_files, params),
-                only_on: substitute_string_vec(&case.only_on, params),
+                expected_error: substitute_optional_string(&case.expected_error, &params),
+                expected_tokens: substitute_optional_string(&case.expected_tokens, &params),
+                expected_ast: substitute_optional_string(&case.expected_ast, &params),
+                expected_rir: substitute_optional_string(&case.expected_rir, &params),
+                expected_air: substitute_optional_string(&case.expected_air, &params),
+                expected_mir: substitute_optional_string(&case.expected_mir, &params),
+                expected_lowering: substitute_optional_string(&case.expected_lowering, &params),
+                expected_liveness: substitute_optional_string(&case.expected_liveness, &params),
+                expected_regalloc: substitute_optional_string(&case.expected_regalloc, &params),
+                expected_asm: substitute_optional_string(&case.expected_asm, &params),
+                expected_stackframe: substitute_optional_string(&case.expected_stackframe, &params),
+                expected_cfg: substitute_optional_string(&case.expected_cfg, &params),
+                runtime_error: substitute_optional_string(&case.runtime_error, &params),
+                warning_contains: substitute_optional_string_vec(&case.warning_contains, &params),
+                spec: substitute_string_vec(&case.spec, &params),
+                expected_stdout: substitute_optional_string(&case.expected_stdout, &params),
+                preview: substitute_optional_string(&case.preview, &params),
+                target: substitute_optional_string(&case.target, &params),
+                stdin: substitute_optional_string(&case.stdin, &params),
+                stderr_contains: substitute_optional_string(&case.stderr_contains, &params),
+                aux_files: substitute_string_map(&case.aux_files, &params),
+                only_on: substitute_string_vec(&case.only_on, &params),
 
                 // Copy non-template fields with potential overrides
                 exit_code: case.exit_code,
@@ -1368,13 +1555,13 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                 match value {
                     toml::Value::String(s) => {
                         expanded.error_contains =
-                            ErrorContains(vec![substitute_placeholders(s, params)]);
+                            ErrorContains(vec![substitute_placeholders(s, &params)]);
                     }
                     toml::Value::Array(arr) => {
                         expanded.error_contains = ErrorContains(
                             arr.iter()
                                 .map(|v| v.as_str().expect("validated string array override"))
-                                .map(|s| substitute_placeholders(s, params))
+                                .map(|s| substitute_placeholders(s, &params))
                                 .collect(),
                         );
                     }
@@ -1383,74 +1570,74 @@ pub fn expand_case(case: Case) -> Vec<Case> {
             }
             if let Some(value) = params.get("expected_error") {
                 if let Some(s) = value.as_str() {
-                    expanded.expected_error = Some(substitute_placeholders(s, params));
+                    expanded.expected_error = Some(substitute_placeholders(s, &params));
                 }
             }
             if let Some(value) = params.get("expected_tokens") {
                 if let Some(s) = value.as_str() {
-                    expanded.expected_tokens = Some(substitute_placeholders(s, params));
+                    expanded.expected_tokens = Some(substitute_placeholders(s, &params));
                 }
             }
             if let Some(value) = params.get("expected_ast") {
                 if let Some(s) = value.as_str() {
-                    expanded.expected_ast = Some(substitute_placeholders(s, params));
+                    expanded.expected_ast = Some(substitute_placeholders(s, &params));
                 }
             }
             if let Some(value) = params.get("expected_rir") {
                 if let Some(s) = value.as_str() {
-                    expanded.expected_rir = Some(substitute_placeholders(s, params));
+                    expanded.expected_rir = Some(substitute_placeholders(s, &params));
                 }
             }
             if let Some(value) = params.get("expected_air") {
                 if let Some(s) = value.as_str() {
-                    expanded.expected_air = Some(substitute_placeholders(s, params));
+                    expanded.expected_air = Some(substitute_placeholders(s, &params));
                 }
             }
             if let Some(value) = params.get("expected_cfg") {
                 if let Some(s) = value.as_str() {
-                    expanded.expected_cfg = Some(substitute_placeholders(s, params));
+                    expanded.expected_cfg = Some(substitute_placeholders(s, &params));
                 }
             }
             if let Some(value) = params.get("expected_mir") {
                 if let Some(s) = value.as_str() {
-                    expanded.expected_mir = Some(substitute_placeholders(s, params));
+                    expanded.expected_mir = Some(substitute_placeholders(s, &params));
                 }
             }
             if let Some(value) = params.get("expected_lowering") {
                 if let Some(s) = value.as_str() {
-                    expanded.expected_lowering = Some(substitute_placeholders(s, params));
+                    expanded.expected_lowering = Some(substitute_placeholders(s, &params));
                 }
             }
             if let Some(value) = params.get("expected_liveness") {
                 if let Some(s) = value.as_str() {
-                    expanded.expected_liveness = Some(substitute_placeholders(s, params));
+                    expanded.expected_liveness = Some(substitute_placeholders(s, &params));
                 }
             }
             if let Some(value) = params.get("expected_regalloc") {
                 if let Some(s) = value.as_str() {
-                    expanded.expected_regalloc = Some(substitute_placeholders(s, params));
+                    expanded.expected_regalloc = Some(substitute_placeholders(s, &params));
                 }
             }
             if let Some(value) = params.get("expected_asm") {
                 if let Some(s) = value.as_str() {
-                    expanded.expected_asm = Some(substitute_placeholders(s, params));
+                    expanded.expected_asm = Some(substitute_placeholders(s, &params));
                 }
             }
             if let Some(value) = params.get("expected_stackframe") {
                 if let Some(s) = value.as_str() {
-                    expanded.expected_stackframe = Some(substitute_placeholders(s, params));
+                    expanded.expected_stackframe = Some(substitute_placeholders(s, &params));
                 }
             }
             if let Some(value) = params.get("warning_contains") {
                 match value {
                     toml::Value::String(s) => {
-                        expanded.warning_contains = Some(vec![substitute_placeholders(s, params)]);
+                        expanded.warning_contains = Some(vec![substitute_placeholders(s, &params)]);
                     }
                     toml::Value::Array(arr) => {
                         expanded.warning_contains = Some(
                             arr.iter()
                                 .map(|v| v.as_str().expect("validated string array override"))
-                                .map(|s| substitute_placeholders(s, params))
+                                .map(|s| substitute_placeholders(s, &params))
                                 .collect(),
                         );
                     }
@@ -1468,7 +1655,7 @@ pub fn expand_case(case: Case) -> Vec<Case> {
             if let Some(value) = params.get("spec_extra") {
                 for item in value.as_array().expect("validated array override") {
                     let item = item.as_str().expect("validated string array override");
-                    expanded.spec.push(substitute_placeholders(item, params));
+                    expanded.spec.push(substitute_placeholders(item, &params));
                 }
             }
 
@@ -1803,6 +1990,115 @@ pub fn validate_compile_fail_exit_codes(test_file: &TestFile) -> Vec<CompileFail
         .collect()
 }
 
+/// An error indicating that a compile-only case carries assertions or input
+/// that are consumed only by the produced-program phase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompileOnlyRuntimeAssertionError {
+    pub test_name: String,
+    pub section_id: String,
+    pub fields: String,
+}
+
+impl std::fmt::Display for CompileOnlyRuntimeAssertionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "test '{}::{}' is `compile_only` but declares produced-program field(s) {} — \
+             compile-only cases cannot use runtime assertions or input; remove those fields",
+            self.section_id, self.test_name, self.fields
+        )
+    }
+}
+
+impl std::error::Error for CompileOnlyRuntimeAssertionError {}
+
+/// Validate that `compile_only` cases do not carry produced-program-only
+/// assertions or input. The field order is part of the stable diagnostic.
+pub fn validate_compile_only_runtime_assertions(
+    test_file: &TestFile,
+) -> Vec<CompileOnlyRuntimeAssertionError> {
+    const RUNTIME_FIELDS: [(&str, fn(&Case) -> bool); 6] = [
+        ("exit_code", |case| case.exit_code.is_some()),
+        ("expected_stdout", |case| case.expected_stdout.is_some()),
+        ("runtime_error", |case| case.runtime_error.is_some()),
+        ("runtime_exit_code", |case| case.runtime_exit_code.is_some()),
+        ("stdin", |case| case.stdin.is_some()),
+        ("stderr_contains", |case| case.stderr_contains.is_some()),
+    ];
+    test_file
+        .case
+        .iter()
+        .filter(|case| case.compile_only)
+        .filter_map(|case| {
+            let fields = RUNTIME_FIELDS
+                .iter()
+                .filter_map(|(field, present)| present(case).then_some(format!("`{field}`")))
+                .collect::<Vec<_>>();
+            (!fields.is_empty()).then_some(CompileOnlyRuntimeAssertionError {
+                test_name: case.name.clone(),
+                section_id: test_file.section.id.clone(),
+                fields: fields.join(", "),
+            })
+        })
+        .collect()
+}
+
+/// An error indicating a substring assertion whose empty value would match
+/// every output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmptyContainsAssertionError {
+    pub test_name: String,
+    pub section_id: String,
+    pub fields: String,
+}
+
+impl std::fmt::Display for EmptyContainsAssertionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "test '{}::{}' declares empty substring assertion(s) {} — empty \
+             contains assertions match every output; use a non-empty substring or remove the field",
+            self.section_id, self.test_name, self.fields
+        )
+    }
+}
+
+impl std::error::Error for EmptyContainsAssertionError {}
+
+/// Validate every shared-harness substring assertion, retaining empty arrays
+/// as valid but rejecting empty string entries. Field order is deterministic.
+pub fn validate_empty_contains_assertions(
+    test_file: &TestFile,
+) -> Vec<EmptyContainsAssertionError> {
+    test_file
+        .case
+        .iter()
+        .filter_map(|case| {
+            let mut fields = Vec::new();
+            for (index, value) in case.error_contains.iter().enumerate() {
+                if value.is_empty() {
+                    fields.push(format!("`error_contains[{index}]`"));
+                }
+            }
+            if let Some(values) = &case.warning_contains {
+                for (index, value) in values.iter().enumerate() {
+                    if value.is_empty() {
+                        fields.push(format!("`warning_contains[{index}]`"));
+                    }
+                }
+            }
+            if case.stderr_contains.as_deref() == Some("") {
+                fields.push("`stderr_contains`".to_string());
+            }
+            (!fields.is_empty()).then_some(EmptyContainsAssertionError {
+                test_name: case.name.clone(),
+                section_id: test_file.section.id.clone(),
+                fields: fields.join(", "),
+            })
+        })
+        .collect()
+}
+
 /// Validate that an explicitly configured case corpus contains at least one
 /// case before command-line filtering is applied.
 ///
@@ -1917,6 +2213,8 @@ pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, Stri
     let mut stray_error_assertions: Vec<StrayErrorAssertionError> = Vec::new();
     let mut bare_compile_fail: Vec<BareCompileFailError> = Vec::new();
     let mut compile_fail_exit_codes: Vec<CompileFailExitCodeError> = Vec::new();
+    let mut compile_only_runtime_assertions: Vec<CompileOnlyRuntimeAssertionError> = Vec::new();
+    let mut empty_contains_assertions: Vec<EmptyContainsAssertionError> = Vec::new();
     let mut platform_responsibility: Vec<PlatformResponsibilityError> = Vec::new();
 
     let toml_files = discover_files(cases_dir, "toml").map_err(|error| {
@@ -1957,6 +2255,10 @@ pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, Stri
                 // Reject runtime exit-code assertions on cases that never
                 // produce or execute a program.
                 compile_fail_exit_codes.extend(validate_compile_fail_exit_codes(&spec));
+
+                compile_only_runtime_assertions
+                    .extend(validate_compile_only_runtime_assertions(&spec));
+                empty_contains_assertions.extend(validate_empty_contains_assertions(&spec));
 
                 // Reject cases whose platform responsibility is ambiguous: an
                 // architecture-specific expectation with no declared target, or
@@ -2069,6 +2371,30 @@ pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, Stri
             "{} `compile_fail` case(s) declare an ignored `exit_code`:\n  - {}",
             compile_fail_exit_codes.len(),
             compile_fail_exit_codes
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n  - ")
+        ));
+    }
+
+    if !compile_only_runtime_assertions.is_empty() {
+        return Err(format!(
+            "{} `compile_only` case(s) declare produced-program fields:\n  - {}",
+            compile_only_runtime_assertions.len(),
+            compile_only_runtime_assertions
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n  - ")
+        ));
+    }
+
+    if !empty_contains_assertions.is_empty() {
+        return Err(format!(
+            "{} case(s) declare empty substring assertions:\n  - {}",
+            empty_contains_assertions.len(),
+            empty_contains_assertions
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
@@ -3278,6 +3604,73 @@ params = [
     }
 
     #[test]
+    fn test_parameter_placeholders_resolve_chains_independent_of_insertion_order() {
+        let mut first = HashMap::new();
+        first.insert(
+            "name".to_string(),
+            toml::Value::String("{type}".to_string()),
+        );
+        first.insert("type".to_string(), toml::Value::String("i32".to_string()));
+        let mut second = HashMap::new();
+        second.insert("type".to_string(), toml::Value::String("i32".to_string()));
+        second.insert(
+            "name".to_string(),
+            toml::Value::String("{type}".to_string()),
+        );
+
+        let first_resolved = resolve_param_values(&first).unwrap();
+        let second_resolved = resolve_param_values(&second).unwrap();
+        assert_eq!(first_resolved, second_resolved);
+        assert_eq!(
+            substitute_placeholders("case_{name}", &first_resolved),
+            "case_i32"
+        );
+
+        let expanded = expand_case(Case {
+            name: "case_{name}".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            params: vec![ParamSet { values: first }, ParamSet { values: second }],
+            ..Default::default()
+        });
+        assert_eq!(
+            expanded
+                .iter()
+                .map(|case| (case.name.as_str(), case.source.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("case_i32", "fn main() -> i32 { 0 }"),
+                ("case_i32", "fn main() -> i32 { 0 }"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parameter_placeholders_reject_unknown_references_and_cycles() {
+        let unknown = HashMap::from([(
+            "name".to_string(),
+            toml::Value::String("{missing}".to_string()),
+        )]);
+        assert_eq!(
+            resolve_param_values(&unknown),
+            Err(ParamPlaceholderError::Unknown {
+                key: "missing".to_string(),
+                referenced_by: "name".to_string(),
+            })
+        );
+
+        let cycle = HashMap::from([
+            ("a".to_string(), toml::Value::String("{b}".to_string())),
+            ("b".to_string(), toml::Value::String("{a}".to_string())),
+        ]);
+        assert_eq!(
+            resolve_param_values(&cycle),
+            Err(ParamPlaceholderError::Cycle {
+                path: vec!["a".to_string(), "b".to_string(), "a".to_string()]
+            })
+        );
+    }
+
+    #[test]
     fn test_expand_case_no_params() {
         let case = Case {
             name: "test".to_string(),
@@ -4439,6 +4832,82 @@ chmod +x "$output"
         let case = make_test_case("plain", None);
         let tf = make_test_file("sec", vec![case]);
         assert!(validate_error_assertions(&tf).is_empty());
+    }
+
+    #[test]
+    fn test_compile_only_rejects_each_runtime_field() {
+        for field in [
+            "exit_code",
+            "expected_stdout",
+            "runtime_error",
+            "runtime_exit_code",
+            "stdin",
+            "stderr_contains",
+        ] {
+            let mut case = make_test_case(field, None);
+            case.compile_only = true;
+            case.exit_code = None;
+            match field {
+                "exit_code" => case.exit_code = Some(0),
+                "expected_stdout" => case.expected_stdout = Some("output".to_string()),
+                "runtime_error" => case.runtime_error = Some("panic".to_string()),
+                "runtime_exit_code" => case.runtime_exit_code = Some(RUNTIME_ERROR_EXIT_CODE),
+                "stdin" => case.stdin = Some("input".to_string()),
+                "stderr_contains" => case.stderr_contains = Some("stderr".to_string()),
+                _ => unreachable!(),
+            }
+            let errors =
+                validate_compile_only_runtime_assertions(&make_test_file("runtime", vec![case]));
+            assert_eq!(errors.len(), 1);
+            assert_eq!(errors[0].fields, format!("`{field}`"));
+        }
+        let mut valid = make_test_case("valid", None);
+        valid.compile_only = true;
+        valid.exit_code = None;
+        assert!(
+            validate_compile_only_runtime_assertions(&make_test_file("runtime", vec![valid]))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_empty_contains_assertions_reject_empty_entries_and_allow_empty_arrays() {
+        let mut error = make_test_case("empty", None);
+        error.error_contains = ErrorContains(vec!["".to_string(), "error".to_string()]);
+        error.warning_contains = Some(vec!["".to_string()]);
+        error.stderr_contains = Some(String::new());
+        let errors = validate_empty_contains_assertions(&make_test_file("runtime", vec![error]));
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].fields,
+            "`error_contains[0]`, `warning_contains[0]`, `stderr_contains`"
+        );
+
+        let valid = Case {
+            warning_contains: Some(vec![]),
+            ..make_test_case("valid", None)
+        };
+        assert!(
+            validate_empty_contains_assertions(&make_test_file("runtime", vec![valid])).is_empty()
+        );
+    }
+
+    #[test]
+    fn test_empty_error_contains_from_param_override_is_rejected_after_expansion() {
+        let toml = r#"
+[section]
+id = "runtime"
+name = "Runtime"
+
+[[case]]
+name = "param_override"
+source = "fn main() -> i32 { 0 }"
+params = [{ compile_fail = true, error_contains = "" }]
+"#;
+        let expanded = expand_test_file(toml::from_str::<TestFile>(toml).unwrap());
+        let errors = validate_empty_contains_assertions(&expanded);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].fields, "`error_contains[0]`");
     }
 
     #[test]
