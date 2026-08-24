@@ -43,7 +43,7 @@ whole-program CFG key, or a second frontend.
 
 The Phase 1 reference is the exact `fresh_source_to_native_v1`, release-ThinLTO,
 Rue `-O3`, x86_64 Linux run
-`9b7d4bdb4bf398301fa5bd90b6a57e75f4764a982aacf2723c485b59b5398394`.
+`04d68164f7181a56474f5376cb4d8a7f3acc67a5c808dbe3812c3b049e8c69d5`.
 Lattice's median process time was 2,887.26 ms and compiler-root time was
 2,716.88 ms. The fixed scaling run used the same compiler commit and boundary.
 

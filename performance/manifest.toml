@@ -609,7 +609,7 @@ window = 3
 # measured this same revision validly, so epoch 2 shares a baseline commit.
 [epoch.baseline]
 commit = "31ff07f6bac131723f60c2a18af5505a8b442320"
-run = "4ae3eb4cf1e47277c30ae6c3002b6c84c651e35634424e874e2cca8219b25973"
+run = "55b091c121b5e91d402536b99991b36e64256ad3202f043ffcfd2320f86cad12"
 
 [[epoch]]
 id = 2
@@ -638,7 +638,7 @@ window = 3
 # The first complete, valid run at this epoch's declared revision (see above).
 [epoch.baseline]
 commit = "31ff07f6bac131723f60c2a18af5505a8b442320"
-run = "b0bbb8dd1bbf4b617da6c9c642218ce8435e1f250fea060e5baf307555e8b9ad"
+run = "4ebbe1129e36d20329e08443dffc9e15ef93aee51a1b31c98a8a5a97bbc7df9a"
 
 [[epoch]]
 id = 2
@@ -670,7 +670,7 @@ window = 10
 # The first complete, valid run at this epoch's declared revision (see above).
 [epoch.baseline]
 commit = "31ff07f6bac131723f60c2a18af5505a8b442320"
-run = "ff0a3ab928b8e2e601604912404b9ed4b8140a27a2204300d5917143f533574b"
+run = "d50adec30be84750bfb26a8820af5af4e4b8a38ff9ed04389f65ab8f3cb0adb5"
 
 # ---------------------------------------------------------------------------
 # Suite revision 2 collection epochs (ADR-0071 Phase 1, RUE-1478).
@@ -842,7 +842,7 @@ reference = "ADR-0071"
 baseline_process_elapsed_ns = 2887259763
 baseline_mad_ns = 8281274
 process_elapsed_limit_ns = 3022383520
-reference_run = "9b7d4bdb4bf398301fa5bd90b6a57e75f4764a982aacf2723c485b59b5398394"
+reference_run = "04d68164f7181a56474f5376cb4d8a7f3acc67a5c808dbe3812c3b049e8c69d5"
 
 [epoch.flagging]
 k = 6.0
@@ -850,7 +850,7 @@ window = 5
 
 [epoch.baseline]
 commit = "72d2155a57046f6a2ca05b357e8f8d4d5c32b7a4"
-run = "9b7d4bdb4bf398301fa5bd90b6a57e75f4764a982aacf2723c485b59b5398394"
+run = "04d68164f7181a56474f5376cb4d8a7f3acc67a5c808dbe3812c3b049e8c69d5"
 
 [[epoch]]
 id = 5
@@ -896,7 +896,7 @@ window = 3
 
 [epoch.baseline]
 commit = "72d2155a57046f6a2ca05b357e8f8d4d5c32b7a4"
-run = "08deff0a5bd6beb187063db4ed31d70634067cf9aa9d5c453a78be828fa953e0"
+run = "90ce3c28ec00960aec3964029b61a2b4895e38207e7426172bbf47ef6a6e3245"
 
 [[epoch]]
 id = 5
@@ -942,7 +942,7 @@ window = 5
 
 [epoch.baseline]
 commit = "72d2155a57046f6a2ca05b357e8f8d4d5c32b7a4"
-run = "1404128c40051b386dd7b545c9eb555333004f0774ec99689df1fce296042f18"
+run = "56fa775ba66ea1fd3ec446f6090e2fd67802d1212b24aee655c01e867b308f69"
 
 # ---------------------------------------------------------------------------
 # Suite revision 4 collection epochs (RUE-1264).
@@ -1066,7 +1066,7 @@ window = 5
 # The first complete, valid run under this epoch.
 [epoch.baseline]
 commit = "170c10148f1f74ae62330d93cadc9c567e4c93f0"
-run = "e0aecf7e5a506ad4b0044090ab3a4c45d037fc4143b845bcafd69d7424866e07"
+run = "5ae9319cd100bc1686189942b55e9a2a5379247881f59a104fdc708341b0d670"
 
 [[epoch]]
 id = 6
@@ -1142,7 +1142,7 @@ window = 3
 # The first complete, valid run under this epoch.
 [epoch.baseline]
 commit = "170c10148f1f74ae62330d93cadc9c567e4c93f0"
-run = "fd71cab1b4128891e060deec4e8e4bc312a7bcea4666fde43dd5588d1e01a424"
+run = "a3e89eacd9c55a3a51de37d0fddc717fe3e082c1c26c470484dbb9506c27fc59"
 
 [[epoch]]
 id = 6
@@ -1223,4 +1223,4 @@ window = 5
 # The first complete, valid run under this epoch.
 [epoch.baseline]
 commit = "170c10148f1f74ae62330d93cadc9c567e4c93f0"
-run = "a4850f73079a73193257fa1418182116f0d4e6453f3b2851284b0f90680ab7d9"
+run = "b13f22ccb8213c8277c6ae4025ac6ec28fb774c3bf222ee5327422aec2d382ff"
