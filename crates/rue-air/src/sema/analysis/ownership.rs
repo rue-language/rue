@@ -5659,6 +5659,82 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.reject_accessor_loan_conflict(root, "by value (move)", span, ctx)
     }
 
+    /// Reject an exclusive (`inout`) use of `root` while an enclosing call's
+    /// argument list holds a loan of it that the use would invalidate
+    /// (RUE-1786, sibling of RUE-1696/RUE-1766).
+    ///
+    /// The nested-call form — `f(borrow b, nuke(inout b))` — is caught at
+    /// frame construction, which walks this call's own `inout` ARGUMENTS. That
+    /// walk sees the argument's place, so it only fires when the mutation *is*
+    /// the argument. An argument that merely *contains* a mutation reaches the
+    /// callee by a different route and was never checked:
+    ///
+    /// ```text
+    /// f(borrow b, { b.free(); 0 })          // block
+    /// f(borrow b, if c { b.free(); 0 } ..)  // if
+    /// f(borrow b, match k { _ => { b.free(); 0 } })
+    /// ```
+    ///
+    /// All three compiled and read freed memory, in both loan modes, and so
+    /// did a reallocating `b.push(..)` rather than a free. The argument form
+    /// is incidental: what matters is that the root is exclusively accessed
+    /// while an enclosing frame holds a loan of it. So this is checked where
+    /// the exclusive access is recorded — the `inout` receiver — rather than
+    /// by enumerating argument shapes, which is what let the earlier fixes
+    /// miss these.
+    ///
+    /// The conflict is keyed on VIEW MATERIALIZATION alone, not on loan mode.
+    /// Only a snapshot can dangle: a `borrow`/`inout` argument at a `str` or
+    /// slice parameter is narrowed to a `{ptr, len}` value before the call
+    /// runs, so mutating the root invalidates it. Everything else here is
+    /// address-passed and observes ordinary sequenced mutation -- including a
+    /// `borrow self` / `inout self` RECEIVER, which frame construction records
+    /// with `view_materialized = false` precisely because autoref hands over
+    /// the receiver's address rather than a copy of it.
+    ///
+    /// That distinction is load-bearing, not theoretical. Keying on loan mode
+    /// instead -- treating any enclosing `borrow` as a conflict, the way frame
+    /// construction's argument walk does -- rejects `examples/gazette`:
+    ///
+    /// ```text
+    /// summary.push_str(arena.scalar(arena.map_get_literal(front.root, "title")))
+    /// ```
+    ///
+    /// The outer `arena.scalar(..)` holds a `borrow self` loan of `arena` and
+    /// the inner call takes it `inout`, which is sound because that outer loan
+    /// is an address, not a snapshot. The argument walk gets away with the
+    /// coarser rule only because it runs over `inout` ARGUMENTS -- a far
+    /// narrower set than every exclusive access in the program.
+    pub(crate) fn reject_exclusive_use_of_call_loaned_root(
+        &self,
+        root: Spur,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<()> {
+        let conflicting = ctx
+            .call_loaned_roots
+            .iter()
+            .flatten()
+            .find(|(loaned, _kind, view_materialized)| *loaned == root && *view_materialized);
+        let Some((_, kind, _)) = conflicting else {
+            return Ok(());
+        };
+        let variable = self.body_interner().resolve(&root).to_string();
+        let loan_kind = kind.keyword();
+        Err(CompileError::new(
+            ErrorKind::BorrowInoutConflict {
+                variable: variable.clone(),
+            },
+            span,
+        )
+        .with_help(format!(
+            "the enclosing call passes `{variable}` as `{loan_kind}` to a `str`/slice \
+             parameter, which snapshots a view of it before this argument runs; mutating \
+             `{variable}` here would leave that view dangling; evaluate this argument into \
+             its own binding before the call"
+        )))
+    }
+
     /// Reject an exclusive use — `inout`, mutation, or move — of a root with
     /// an active accessor-result loan in the same full expression (ADR-0062,
     /// E0259). Shared and exclusive accessor loans both exclude another
