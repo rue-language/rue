@@ -1207,6 +1207,71 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
+name = "nested_inout_under_borrow_self_receiver_rejected"
+spec = ["6.1:30"]
+description = "The receiver spelling of the nested conflict: an autoref `borrow self` receiver is a shared loan spanning the call, so an `inout` loan of the same root taken inside an argument overlaps it and is rejected (RUE-1762)"
+source = """
+struct Arena {
+    n: i32,
+
+    fn scalar(borrow self, x: i32) -> i32 { self.n + x }
+}
+fn grow(inout a: Arena) -> i32 {
+    a.n = 1;
+    0
+}
+fn main() -> i32 {
+    let mut a = Arena { n: 0 };
+    a.scalar(grow(inout a))
+}
+"""
+compile_fail = true
+error_contains = "cannot borrow 'a'"
+
+[[case]]
+name = "nested_inout_under_address_passed_inout_self_receiver_ok"
+spec = ["6.1:30"]
+description = "The receiver counterpart that stays legal: an `inout self` receiver is passed as an address, not a view, so the nested write is ordinary sequenced mutation and the callee reads the mutated value (RUE-1762)"
+source = """
+struct Arena {
+    n: i32,
+
+    fn bump(inout self, x: i32) -> i32 { self.n + x }
+}
+fn grow(inout a: Arena) -> i32 {
+    a.n = 1;
+    0
+}
+fn main() -> i32 {
+    let mut a = Arena { n: 0 };
+    if a.bump(grow(inout a)) == 1 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "nested_inout_inside_block_argument_rejected"
+spec = ["6.1:30"]
+description = "The conflict is a property of where the exclusive access happens, not of the syntax carrying it: an `inout` loan inside a block-expression argument overlaps the enclosing view loan just as a bare nested call does (RUE-1762)"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(borrow s: str, x: i32) -> u8 { s[0] }
+fn grow(inout s: StrBuf) -> i32 {
+    s.append_str(borrow "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+    0
+}
+fn main() -> i32 {
+    let mut b = StrBuf.from_str(borrow "hello");
+    let byte = read_first(borrow b, { grow(inout b) });
+    if byte == 104 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = "cannot borrow 'b'"
+
+[[case]]
 name = "nested_inout_under_forwarded_inout_str_ok"
 spec = ["6.1:30"]
 description = "A forwarded `inout str` parameter is address-passed, so same-root nested `inout` remains legal"
