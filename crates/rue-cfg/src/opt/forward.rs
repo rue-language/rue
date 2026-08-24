@@ -50,10 +50,10 @@
 //!
 //! - a later `Store`/`Alloc` to the slot replaces the entry;
 //! - a `PlaceWrite` whose base is that local (a partial write) kills it;
-//! - any `Call` with a by-ref argument rooted at that local kills it (the
-//!   callee may write through the pointer). A by-ref argument rooted at a shape
-//!   this pass cannot identify as a specific local or parameter clears the whole
-//!   table conservatively.
+//! - any call (including an `AccessorCall`) with a by-ref argument rooted at
+//!   that local kills it (the callee may write through the pointer). A by-ref
+//!   argument rooted at a shape this pass cannot identify as a specific local
+//!   or parameter clears the whole table conservatively.
 //!
 //! The table resets at each block boundary. Address-taken slots are excluded
 //! from it entirely: a raw pointer may alias them and store between a tracked
@@ -126,7 +126,9 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     let mut byref_arg_values: AHashSet<CfgValue> = AHashSet::new();
     for block in cfg.blocks() {
         for &value in &block.insts {
-            if let CfgInstData::Call { args, .. } = &cfg.get_inst(value).data {
+            if let CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } =
+                &cfg.get_inst(value).data
+            {
                 for arg in cfg.call_args(args) {
                     if arg.is_by_ref() {
                         byref_arg_values.insert(arg.value);
@@ -262,7 +264,9 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                         }
                     }
                 }
-                CfgInstData::Call { args, .. } => {
+                // Both call forms can pass a place to code that writes through
+                // it, so a by-ref argument invalidates the tracked value.
+                CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
                     let mut clear_all = false;
                     for arg in cfg.call_args(&args).to_vec() {
                         if !arg.is_by_ref() {
@@ -492,6 +496,144 @@ mod tests {
             cfg.get_block(cfg.entry).terminator,
             Terminator::Return { value: Some(v) } if v == read
         ));
+    }
+
+    #[test]
+    fn test_byref_accessor_call_keeps_argument_load_as_place() {
+        // AccessorCall has the same by-ref escape semantics as Call: its
+        // argument load must remain a place, and the load after the accessor
+        // cannot use the value stored before it.
+        let mut cfg = make_cfg(1);
+        let c = push(&mut cfg, CfgInstData::Const(1), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc { slot: 0, init: c },
+            Type::UNIT,
+        );
+        let arg_load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        let args = cfg
+            .push_call_args([CfgCallArg {
+                value: arg_load,
+                mode: CfgArgMode::Inout,
+            }])
+            .unwrap();
+        let accessor = push(
+            &mut cfg,
+            CfgInstData::AccessorCall {
+                name: Spur::try_from_usize(0).unwrap(),
+                args,
+            },
+            Type::UNIT,
+        );
+        let read = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(read) });
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.loads_forwarded_single_write, 0);
+        assert_eq!(stats.loads_forwarded_block_local, 0);
+        assert!(matches!(
+            cfg.get_inst(arg_load).data,
+            CfgInstData::Load { slot: 0 }
+        ));
+        assert!(matches!(
+            cfg.get_block(cfg.entry).terminator,
+            Terminator::Return { value: Some(v) } if v == read
+        ));
+        assert!(matches!(
+            cfg.get_inst(accessor).data,
+            CfgInstData::AccessorCall { .. }
+        ));
+    }
+
+    #[test]
+    fn test_byref_accessor_call_kills_last_store() {
+        // With multiple writes, the accessor must clear Rule 2's last-store
+        // entry just like an ordinary call does.
+        let mut cfg = make_cfg(1);
+        let c1 = push(&mut cfg, CfgInstData::Const(1), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc { slot: 0, init: c1 },
+            Type::UNIT,
+        );
+        let c2 = push(&mut cfg, CfgInstData::Const(2), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Store { slot: 0, value: c2 },
+            Type::UNIT,
+        );
+        let arg_load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        let args = cfg
+            .push_call_args([CfgCallArg {
+                value: arg_load,
+                mode: CfgArgMode::Borrow,
+            }])
+            .unwrap();
+        push(
+            &mut cfg,
+            CfgInstData::AccessorCall {
+                name: Spur::try_from_usize(0).unwrap(),
+                args,
+            },
+            Type::UNIT,
+        );
+        let read = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(read) });
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.loads_forwarded_single_write, 0);
+        assert_eq!(stats.loads_forwarded_block_local, 0);
+        assert!(matches!(
+            cfg.get_inst(arg_load).data,
+            CfgInstData::Load { slot: 0 }
+        ));
+        assert!(matches!(
+            cfg.get_block(cfg.entry).terminator,
+            Terminator::Return { value: Some(v) } if v == read
+        ));
+    }
+
+    #[test]
+    fn test_normal_accessor_call_arg_still_forwards() {
+        // A normal accessor argument only reads the slot, so its load retains
+        // the existing single-write forwarding optimization.
+        let mut cfg = make_cfg(1);
+        let c = push(&mut cfg, CfgInstData::Const(5), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc { slot: 0, init: c },
+            Type::UNIT,
+        );
+        let arg_load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        let args = cfg
+            .push_call_args([CfgCallArg {
+                value: arg_load,
+                mode: CfgArgMode::Normal,
+            }])
+            .unwrap();
+        let accessor = push(
+            &mut cfg,
+            CfgInstData::AccessorCall {
+                name: Spur::try_from_usize(0).unwrap(),
+                args,
+            },
+            Type::I32,
+        );
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Return {
+                value: Some(accessor),
+            },
+        );
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.loads_forwarded_single_write, 1);
+        assert_eq!(stats.loads_forwarded_block_local, 0);
+        let accessor_arg = match &cfg.get_inst(accessor).data {
+            CfgInstData::AccessorCall { args, .. } => cfg.call_args(args)[0].value,
+            other => panic!("expected accessor call, got {other:?}"),
+        };
+        assert_eq!(accessor_arg, c);
     }
 
     #[test]
