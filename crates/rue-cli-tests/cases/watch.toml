@@ -88,9 +88,9 @@ symlink_target = "target_b.rue"
 # inside it every run: without the fix this case times out after 30s with
 # `timed out waiting for watch event "change-detected"`, exactly as CI reported.
 #
-# `compile_delay_ms` is deliberately 0 here -- this case is about the boundary
-# window, not the in-flight one, and leaving the compile fast keeps the edit
-# from being caught by the monitor instead.
+# A bounded in-flight delay makes the second edit land after compile-started
+# but before publication, independently of host load. The first edit still
+# exercises the widened post-monitor boundary above.
 [[case]]
 name = "change_after_monitor_stops_is_still_announced"
 files = [{ path = "main.rue", source = "fn main() -> i32 { 1 }\n" }]
@@ -98,6 +98,7 @@ files = [{ path = "main.rue", source = "fn main() -> i32 { 1 }\n" }]
 [case.watch]
 kind = "cancel"
 boundary_delay_ms = 400
+compile_delay_ms = 100
 expected_exit_codes = [1, 3]
 
 [[case.watch.edits]]

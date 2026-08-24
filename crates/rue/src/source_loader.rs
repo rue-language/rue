@@ -314,6 +314,22 @@ fn capture_std_root(std_root: &Path) -> PathBuf {
     fs::canonicalize(std_root).unwrap_or_else(|_| normalize_lexical_path(std_root))
 }
 
+fn reject_project_root_inside_std(
+    root_canonical: &Path,
+    std_root: Option<&Path>,
+) -> Result<(), SourceLoadError> {
+    let Some(project_root) = root_canonical.parent() else {
+        return Ok(());
+    };
+    if std_root.is_some_and(|std_root| project_root.starts_with(std_root)) {
+        return Err(SourceLoadError::Message(format!(
+            "Error: project root {:?} is inside the configured standard-library root",
+            project_root
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 enum StableReadError {
     Io(std::io::Error),
@@ -1416,7 +1432,30 @@ pub(crate) fn discover_and_load_imports(
         .parent()
         .unwrap_or_else(|| Path::new("/"))
         .to_path_buf();
-    let std_root = std_root.map(capture_std_root);
+    // The CLI's empty RUE_STD_PATH spelling means that no toolchain std is
+    // configured. Preserve that established contract before canonicalization:
+    // canonicalizing `""` would otherwise turn it into the current project
+    // directory and make the physical overlap guard reject ordinary projects.
+    let std_root = std_root
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(capture_std_root);
+    let canonicalize_root = || {
+        fs::canonicalize(&root_path).map_err(|error| {
+            SourceLoadError::Message(format!("Error reading {}: {error}", root_path.display()))
+        })
+    };
+    // The compiler context retains the lexical project spelling for durable
+    // caller identities, but the trust boundary is physical. When a toolchain
+    // root is configured, validate that boundary before discovery can classify
+    // any source. Keep the no-std path's established context-before-root-read
+    // order so watch cycles do not change their fast publication timing.
+    let root_canonical = if std_root.is_some() {
+        let root_canonical = canonicalize_root()?;
+        reject_project_root_inside_std(&root_canonical, std_root.as_deref())?;
+        Some(root_canonical)
+    } else {
+        None
+    };
     let policy_revision = source_manifest
         .as_ref()
         .map(SourceManifest::policy_revision)
@@ -1431,9 +1470,10 @@ pub(crate) fn discover_and_load_imports(
         policy_revision,
     )
     .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
-    let root_canonical = fs::canonicalize(&root_path).map_err(|error| {
-        SourceLoadError::Message(format!("Error reading {}: {error}", root_path.display()))
-    })?;
+    let root_canonical = match root_canonical {
+        Some(root_canonical) => root_canonical,
+        None => canonicalize_root()?,
+    };
     if source_manifest
         .as_ref()
         .is_some_and(|manifest| !manifest.allows_canonical(&root_canonical))
@@ -1548,6 +1588,13 @@ pub(crate) fn reload_from_filesystem(
             root_entry.requested_path()
         ))
     })?;
+    // The retained root may have been retargeted since the previous close. Run
+    // the same physical containment guard after reobservation, before the new
+    // assembler can classify or publish the retargeted source.
+    reject_project_root_inside_std(
+        Path::new(root.canonical_path()),
+        context.std_root().map(Path::new),
+    )?;
     let mut assembler = DiscoverySourceAssembler::new_with_symlink_route(
         context.clone(),
         root.requested_path(),
@@ -2907,6 +2954,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn empty_std_root_remains_unconfigured_across_reload() {
+        let dir = TestDir::new("empty-std-root");
+        let main = dir.write("main.rue", "fn main() -> i32 { 0 }");
+        let mut result =
+            discover_and_load_imports(main.to_str().unwrap(), None, Some(Path::new("")))
+                .expect("an empty std path means no configured toolchain");
+
+        assert!(result.std_root.is_none());
+        reload_from_filesystem(&mut result).expect("reload preserves the empty-path contract");
+        assert!(result.std_root.is_none());
+    }
+
     /// ADR-0075 stamp atomicity: a wave publishes one revision covering reads
     /// taken across its whole closure, so a source rewritten after it was read
     /// and before the wave publishes must be caught as a batch, fail-closed.
@@ -3250,6 +3310,37 @@ mod tests {
             entry.requested_path() == alias.to_string_lossy()
                 && entry.canonical_path() == second_canonical.to_string_lossy()
         }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_project_symlink_retarget_into_std_fails_closed() {
+        let dir = TestDir::new("retained-project-symlink-std-boundary");
+        let std_dir = dir.path.join("std");
+        fs::create_dir(&std_dir).unwrap();
+        let project_dir = dir.path.join("project");
+        fs::create_dir(&project_dir).unwrap();
+        let first = project_dir.join("main.rue");
+        fs::write(&first, "fn main() -> i32 { 1 }").unwrap();
+        fs::write(std_dir.join("main.rue"), "fn main() -> i32 { 2 }").unwrap();
+        let alias = dir.path.join("project-alias");
+        std::os::unix::fs::symlink(&project_dir, &alias).unwrap();
+        let std_root = fs::canonicalize(&std_dir).unwrap();
+        let root = alias.join("main.rue");
+
+        let mut result = discover_and_load_imports(root.to_str().unwrap(), None, Some(&std_root))
+            .expect("the initial root is outside std");
+        fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&std_dir, &alias).unwrap();
+
+        let error = reload_from_filesystem(&mut result)
+            .expect_err("a retained project retarget into std must fail closed");
+        assert!(matches!(
+            error,
+            SourceLoadError::Message(message)
+                if message.contains("project root")
+                    && message.contains("inside the configured standard-library root")
+        ));
     }
 
     #[cfg(unix)]
