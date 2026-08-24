@@ -153,12 +153,10 @@ pub fn uses(inst: &X86Inst) -> VRegList {
         X86Inst::MovRR { src, .. } => {
             add_if_virtual(src, &mut result);
         }
-        X86Inst::MovRM { .. } | X86Inst::Movzx8RM { .. } | X86Inst::NarrowLoadRM { .. } => {
+        X86Inst::MovRM { .. } | X86Inst::NarrowLoadRM { .. } => {
             // Reads from memory (base is physical), defines dst
         }
-        X86Inst::MovMR { src, .. }
-        | X86Inst::MovMR8 { src, .. }
-        | X86Inst::NarrowStoreMR { src, .. } => {
+        X86Inst::MovMR { src, .. } | X86Inst::NarrowStoreMR { src, .. } => {
             add_if_virtual(src, &mut result);
         }
         X86Inst::AddRR { dst, src }
@@ -337,12 +335,10 @@ pub fn defs(inst: &X86Inst) -> VRegList {
         X86Inst::MovRR { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
-        X86Inst::MovRM { dst, .. }
-        | X86Inst::Movzx8RM { dst, .. }
-        | X86Inst::NarrowLoadRM { dst, .. } => {
+        X86Inst::MovRM { dst, .. } | X86Inst::NarrowLoadRM { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
-        X86Inst::MovMR { .. } | X86Inst::MovMR8 { .. } | X86Inst::NarrowStoreMR { .. } => {
+        X86Inst::MovMR { .. } | X86Inst::NarrowStoreMR { .. } => {
             // Writes to memory, not to a register
         }
         X86Inst::AddRR { dst, .. }

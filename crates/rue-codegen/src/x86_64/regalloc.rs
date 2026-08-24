@@ -282,30 +282,6 @@ impl RegAlloc {
                 });
             }
 
-            X86Inst::Movzx8RM { dst, base, offset } => {
-                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
-                    emit |dst_op| {
-                        mir.push(X86Inst::Movzx8RM { dst: dst_op, base, offset });
-                    },
-                    store |spill_offset| {
-                        mir.push_after(X86Inst::MovMR {
-                            base: Reg::Rbp,
-                            offset: spill_offset,
-                            src: Operand::Physical(SCRATCH_VALUE),
-                        });
-                    },
-                );
-            }
-
-            X86Inst::MovMR8 { base, offset, src } => {
-                let src_op = Self::load_operand(context, mir, src, SCRATCH_ADDR_BASE)?;
-                mir.push(X86Inst::MovMR8 {
-                    base,
-                    offset,
-                    src: src_op,
-                });
-            }
-
             X86Inst::AddRR { dst, src } => {
                 Self::emit_binop(context, mir, dst, src, |d, s| X86Inst::AddRR {
                     dst: d,

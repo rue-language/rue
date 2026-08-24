@@ -93,7 +93,6 @@ fn get_latency(inst: &X86Inst) -> u32 {
         X86Inst::MovRM { .. }
         | X86Inst::MovRMIndexed { .. }
         | X86Inst::MovRMSib { .. }
-        | X86Inst::Movzx8RM { .. }
         | X86Inst::NarrowLoadRM { .. }
         | X86Inst::NarrowLoadIndexed { .. } => 4,
 
@@ -101,7 +100,6 @@ fn get_latency(inst: &X86Inst) -> u32 {
         X86Inst::MovMR { .. }
         | X86Inst::MovMRIndexed { .. }
         | X86Inst::MovMRSib { .. }
-        | X86Inst::MovMR8 { .. }
         | X86Inst::NarrowStoreMR { .. }
         | X86Inst::NarrowStoreIndexed { .. } => 1,
 
@@ -254,8 +252,6 @@ fn accesses_memory(inst: &X86Inst) -> bool {
             | X86Inst::MovMRIndexed { .. }
             | X86Inst::MovRMSib { .. }
             | X86Inst::MovMRSib { .. }
-            | X86Inst::Movzx8RM { .. }
-            | X86Inst::MovMR8 { .. }
             | X86Inst::NarrowLoadRM { .. }
             | X86Inst::NarrowStoreMR { .. }
             | X86Inst::NarrowLoadIndexed { .. }
@@ -278,12 +274,8 @@ pub(super) fn regs_read(inst: &X86Inst) -> RegList<Reg> {
     match inst {
         X86Inst::MovRI32 { .. } | X86Inst::MovRI64 { .. } => {}
         X86Inst::MovRR { src, .. } => add_if_phys(src, &mut result),
-        X86Inst::MovRM { base, .. }
-        | X86Inst::Movzx8RM { base, .. }
-        | X86Inst::NarrowLoadRM { base, .. } => result.push(*base),
-        X86Inst::MovMR { base, src, .. }
-        | X86Inst::MovMR8 { base, src, .. }
-        | X86Inst::NarrowStoreMR { base, src, .. } => {
+        X86Inst::MovRM { base, .. } | X86Inst::NarrowLoadRM { base, .. } => result.push(*base),
+        X86Inst::MovMR { base, src, .. } | X86Inst::NarrowStoreMR { base, src, .. } => {
             result.push(*base);
             add_if_phys(src, &mut result);
         }
@@ -444,11 +436,10 @@ pub(super) fn regs_written(inst: &X86Inst) -> RegList<Reg> {
         | X86Inst::MovRI64 { dst, .. }
         | X86Inst::MovRR { dst, .. }
         | X86Inst::MovRM { dst, .. }
-        | X86Inst::Movzx8RM { dst, .. }
         | X86Inst::NarrowLoadRM { dst, .. } => {
             add_if_phys(dst, &mut result);
         }
-        X86Inst::MovMR { .. } | X86Inst::MovMR8 { .. } | X86Inst::NarrowStoreMR { .. } => {}
+        X86Inst::MovMR { .. } | X86Inst::NarrowStoreMR { .. } => {}
         X86Inst::AddRR { dst, .. }
         | X86Inst::AddRR64 { dst, .. }
         | X86Inst::AddRI { dst, .. }

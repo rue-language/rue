@@ -672,7 +672,7 @@ impl<'a> Emitter<'a> {
         }
 
         for inst in self.mir.iter() {
-            self.emit_inst(inst);
+            self.emit_inst(inst)?;
         }
 
         if self.frameless_frame_reference {
@@ -821,7 +821,7 @@ impl<'a> Emitter<'a> {
     }
 
     /// Emit a single instruction.
-    fn emit_inst(&mut self, inst: &Aarch64Inst) {
+    fn emit_inst(&mut self, inst: &Aarch64Inst) -> CompileResult<()> {
         match inst {
             Aarch64Inst::MovImm { dst, imm } => {
                 let rd = dst.as_physical();
@@ -1513,11 +1513,18 @@ impl<'a> Emitter<'a> {
                 let rd = dst.as_physical();
                 let string_id = *string_id as usize;
 
-                let len = if string_id < self.strings.len() {
-                    self.strings[string_id].len() as i64
-                } else {
-                    // Invalid string_id - emit 0
-                    0
+                let len = match self.strings.get(string_id) {
+                    Some(string) => string.len() as i64,
+                    None => {
+                        return Err(ice_error!(
+                            "invalid string constant id",
+                            phase: "codegen/emit",
+                            details: {
+                                "string_id" => string_id.to_string(),
+                                "string_table_len" => self.strings.len().to_string()
+                            }
+                        ));
+                    }
                 };
 
                 // Emit the length as an immediate
@@ -1535,6 +1542,7 @@ impl<'a> Emitter<'a> {
                 end_inst!(self, "mov {}, #0", rd);
             }
         }
+        Ok(())
     }
 
     /// Emit function epilogue (restore SP from FP, restore callee-saved, LDP FP/LR).
@@ -2670,6 +2678,24 @@ mod tests {
             .emit()
             .unwrap()
             .0
+    }
+
+    #[test]
+    fn test_string_const_len_invalid_id_is_ice() {
+        let mut mir = Aarch64Mir::new();
+        mir.push(Aarch64Inst::StringConstLen {
+            dst: Operand::Physical(Reg::X0),
+            string_id: 1,
+        });
+
+        let error = Emitter::new(&mir, 0, 0, 0, &[], &["hello".to_string()])
+            .without_frame()
+            .emit()
+            .expect_err("invalid string IDs must not silently encode zero");
+        let message = error.to_string();
+        assert!(message.contains("internal compiler error: invalid string constant id"));
+        assert!(message.contains("string_id: 1"));
+        assert!(message.contains("string_table_len: 1"));
     }
 
     // --- Move instructions ---

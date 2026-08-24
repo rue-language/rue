@@ -292,20 +292,6 @@ pub enum X86Inst {
         src: Operand,
     },
 
-    /// `movzx dst, byte [base + offset]` - Load one physical byte.
-    Movzx8RM {
-        dst: Operand,
-        base: Reg,
-        offset: i32,
-    },
-
-    /// `mov byte [base + offset], src` - Store one physical byte.
-    MovMR8 {
-        base: Reg,
-        offset: i32,
-        src: Operand,
-    },
-
     // Arithmetic instructions
     /// `add dst, src` - Add src to dst (dst = dst + src).
     AddRR { dst: Operand, src: Operand },
@@ -787,12 +773,6 @@ impl fmt::Display for X86Inst {
                 } else {
                     write!(f, "mov [{}-{}], {}", base, -offset, src)
                 }
-            }
-            X86Inst::Movzx8RM { dst, base, offset } => {
-                write!(f, "movzx {}, byte [{}+{}]", dst, base, offset)
-            }
-            X86Inst::MovMR8 { base, offset, src } => {
-                write!(f, "mov byte [{}+{}], {}", base, offset, src)
             }
             X86Inst::AddRR { dst, src } => write!(f, "add {}, {}", dst, src),
             X86Inst::AddRR64 { dst, src } => write!(f, "addq {}, {}", dst, src),
