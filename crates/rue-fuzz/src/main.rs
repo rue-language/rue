@@ -12,6 +12,10 @@
 //! # Generate a seed corpus from test files
 //! ./buck2 run //crates/rue-fuzz:rue-fuzz -- --init-corpus output_dir/
 //!
+//! # Sanitize a restored nightly corpus and merge fresh seeds
+//! ./buck2 run //crates/rue-fuzz:rue-fuzz -- --prepare-corpus=restored \
+//!     --fresh-corpus=spec-seeds --output-corpus=nightly-corpus/lexer
+//!
 //! # List available targets
 //! ./buck2 run //crates/rue-fuzz:rue-fuzz -- --list
 //! ```
@@ -95,6 +99,10 @@ pub struct FuzzConfig {
     /// fresh sequence); the chosen seed is printed so any run can be replayed
     /// with `--seed=`.
     pub seed: Option<u64>,
+    /// Optional per-target directory where successful mutated inputs are
+    /// retained for the next nightly run. Crash inputs are intentionally not
+    /// written here; [`CrashReporter`] owns crash artifacts and redaction.
+    pub evolve_corpus: Option<PathBuf>,
 }
 
 impl Default for FuzzConfig {
@@ -107,6 +115,7 @@ impl Default for FuzzConfig {
             print_interval: 1000,
             per_input_timeout: DEFAULT_PER_INPUT_TIMEOUT,
             seed: None,
+            evolve_corpus: None,
         }
     }
 }
@@ -139,6 +148,11 @@ pub fn run_fuzzer<T: FuzzTarget + ?Sized>(
     // saved once, so a single flooding bug (e.g. the RUE-42 stack overflow)
     // can't bury the crashes dir under thousands of identical files.
     let mut reporter = CrashReporter::new(config.crash_dir.clone());
+    let mut evolved = config
+        .evolve_corpus
+        .as_deref()
+        .map(corpus::EvolvedCorpus::open)
+        .transpose()?;
 
     // A fixed default seed would make every nightly run explore a byte-identical
     // input sequence (a regression re-run, not fuzzing). Default to a per-run
@@ -189,6 +203,15 @@ pub fn run_fuzzer<T: FuzzTarget + ?Sized>(
                 RunOutcome::Ok => unreachable!(),
             }
             reporter.report(target.name(), &input, &outcome);
+        } else if config.mutate {
+            if let Some(evolved) = evolved.as_mut() {
+                if let Err(error) = evolved.record(&input) {
+                    // Persistence is an optimization for the next campaign;
+                    // it must not hide the target result or turn a crash into
+                    // a corpus entry.
+                    eprintln!("Warning: failed to save evolved corpus input: {error}");
+                }
+            }
         }
 
         runs += 1;
@@ -261,6 +284,12 @@ fn main() {
     let mut corpus_dir: Option<PathBuf> = None;
     let mut config = FuzzConfig::default();
     let mut init_corpus = false;
+    let mut prepare_corpus: Option<PathBuf> = None;
+    let mut fresh_corpus: Option<PathBuf> = None;
+    let mut output_corpus: Option<PathBuf> = None;
+    let mut input_corpus: Option<PathBuf> = None;
+    let mut publish_corpus: Option<PathBuf> = None;
+    let mut cache_corpus: Option<PathBuf> = None;
     let mut list_targets = false;
 
     let mut i = 1;
@@ -278,6 +307,48 @@ fn main() {
             if i < args.len() {
                 corpus_dir = Some(PathBuf::from(&args[i]));
             }
+        } else if let Some(val) = arg.strip_prefix("--prepare-corpus=") {
+            if val.is_empty() {
+                eprintln!("Error: --prepare-corpus requires a directory");
+                print_usage(&prog);
+                std::process::exit(1);
+            }
+            prepare_corpus = Some(PathBuf::from(val));
+        } else if let Some(val) = arg.strip_prefix("--fresh-corpus=") {
+            if val.is_empty() {
+                eprintln!("Error: --fresh-corpus requires a directory");
+                print_usage(&prog);
+                std::process::exit(1);
+            }
+            fresh_corpus = Some(PathBuf::from(val));
+        } else if let Some(val) = arg.strip_prefix("--output-corpus=") {
+            if val.is_empty() {
+                eprintln!("Error: --output-corpus requires a directory");
+                print_usage(&prog);
+                std::process::exit(1);
+            }
+            output_corpus = Some(PathBuf::from(val));
+        } else if let Some(val) = arg.strip_prefix("--input-corpus=") {
+            if val.is_empty() {
+                eprintln!("Error: --input-corpus requires a directory");
+                print_usage(&prog);
+                std::process::exit(1);
+            }
+            input_corpus = Some(PathBuf::from(val));
+        } else if let Some(val) = arg.strip_prefix("--publish-corpus=") {
+            if val.is_empty() {
+                eprintln!("Error: --publish-corpus requires a directory");
+                print_usage(&prog);
+                std::process::exit(1);
+            }
+            publish_corpus = Some(PathBuf::from(val));
+        } else if let Some(val) = arg.strip_prefix("--cache-corpus=") {
+            if val.is_empty() {
+                eprintln!("Error: --cache-corpus requires a directory");
+                print_usage(&prog);
+                std::process::exit(1);
+            }
+            cache_corpus = Some(PathBuf::from(val));
         } else if arg == "--mutate" {
             config.mutate = true;
         } else if let Some(val) = arg.strip_prefix("--max-time=") {
@@ -298,6 +369,13 @@ fn main() {
             // seed (which would break the requested replay). Zero is a valid
             // seed, so this does not require positive.
             config.seed = Some(numeric_or_exit(&prog, "--seed", val, false));
+        } else if let Some(val) = arg.strip_prefix("--evolve-corpus=") {
+            if val.is_empty() {
+                eprintln!("Error: --evolve-corpus requires a directory");
+                print_usage(&prog);
+                std::process::exit(1);
+            }
+            config.evolve_corpus = Some(PathBuf::from(val));
         } else if !arg.starts_with('-') {
             if target_name.is_none() {
                 target_name = Some(arg.clone());
@@ -338,6 +416,61 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("Error creating corpus: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    if let Some(restored_dir) = prepare_corpus {
+        let fresh_dir = fresh_corpus.unwrap_or_else(|| {
+            eprintln!("Error: --prepare-corpus requires --fresh-corpus=<directory>");
+            print_usage(&prog);
+            std::process::exit(1);
+        });
+        let output_dir = output_corpus.unwrap_or_else(|| {
+            eprintln!("Error: --prepare-corpus requires --output-corpus=<directory>");
+            print_usage(&prog);
+            std::process::exit(1);
+        });
+        let input_dir = input_corpus.unwrap_or_else(|| {
+            eprintln!("Error: --prepare-corpus requires --input-corpus=<directory>");
+            print_usage(&prog);
+            std::process::exit(1);
+        });
+        match corpus::sanitize_corpus(&restored_dir, &fresh_dir, &input_dir, &output_dir) {
+            Ok(summary) => {
+                eprintln!(
+                    "Prepared corpus in {}: {} fresh seed(s), {} restored input(s), {} retained, {} ignored, {} bytes",
+                    output_dir.display(),
+                    summary.fresh_seeds,
+                    summary.restored_inputs,
+                    summary.retained_inputs,
+                    summary.ignored_inputs,
+                    summary.bytes,
+                );
+            }
+            Err(error) => {
+                eprintln!("Error preparing corpus: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    if let Some(source_dir) = publish_corpus {
+        let cache_dir = cache_corpus.unwrap_or_else(|| {
+            eprintln!("Error: --publish-corpus requires --cache-corpus=<directory>");
+            print_usage(&prog);
+            std::process::exit(1);
+        });
+        match corpus::publish_corpus(&source_dir, &cache_dir) {
+            Ok(count) => eprintln!(
+                "Published {count} clean corpus file(s) to {}",
+                cache_dir.display()
+            ),
+            Err(error) => {
+                eprintln!("Error publishing corpus: {error}");
                 std::process::exit(1);
             }
         }
@@ -401,6 +534,11 @@ fn print_usage(program: &str) {
         program
     );
     eprintln!(
+        "  {} --prepare-corpus=<dir> --fresh-corpus=<dir> --input-corpus=<dir> --output-corpus=<dir>",
+        program
+    );
+    eprintln!("  {} --publish-corpus=<dir> --cache-corpus=<dir>", program);
+    eprintln!(
         "  {} --list                       List available targets",
         program
     );
@@ -420,6 +558,7 @@ fn print_usage(program: &str) {
     eprintln!("  --print-interval=<n>       Print progress every N runs");
     eprintln!("  --per-input-timeout=<secs> Kill+report inputs running longer (default 5)");
     eprintln!("  --seed=<n>                 Mutation RNG seed (default: per-run, printed)");
+    eprintln!("  --evolve-corpus=<dir>      Save bounded successful mutations for reuse");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  {} --init-corpus corpus/", program);
@@ -446,6 +585,38 @@ fn find_spec_cases_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::parse_numeric_option;
+    use super::{FuzzConfig, FuzzTarget, run_fuzzer};
+    use std::time::Duration;
+
+    struct SuccessfulTarget;
+
+    impl FuzzTarget for SuccessfulTarget {
+        fn name(&self) -> &'static str {
+            "successful"
+        }
+
+        fn fuzz(&self, _input: &[u8]) {}
+    }
+
+    struct PanickingTarget;
+
+    impl FuzzTarget for PanickingTarget {
+        fn name(&self) -> &'static str {
+            "panicking"
+        }
+
+        fn fuzz(&self, _input: &[u8]) {
+            panic!("test crash");
+        }
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("rue-fuzz-runner-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn valid_positive_values_parse() {
@@ -486,5 +657,39 @@ mod tests {
         assert!(zero.contains("positive"), "{zero}");
         let bad = parse_numeric_option("--max-runs", "x", true).unwrap_err();
         assert!(bad.contains("integer"), "{bad}");
+    }
+
+    #[test]
+    fn successful_mutations_are_retained_but_crashes_are_not() {
+        let root = scratch("evolution");
+        let input = root.join("inputs");
+        let evolved = root.join("evolved");
+        std::fs::create_dir_all(&input).unwrap();
+        std::fs::write(input.join("seed"), b"fn main() -> i32 { 0 }").unwrap();
+
+        let config = FuzzConfig {
+            max_runs: Some(1),
+            mutate: true,
+            seed: Some(7),
+            evolve_corpus: Some(evolved.clone()),
+            per_input_timeout: Duration::from_secs(1),
+            ..FuzzConfig::default()
+        };
+        let successful = run_fuzzer(&SuccessfulTarget, &input, &config).unwrap();
+        assert_eq!(successful.crashes, 0);
+        assert!(std::fs::read_dir(&evolved).unwrap().next().is_some());
+
+        let crash_evolved = root.join("crash-evolved");
+        let crash_config = FuzzConfig {
+            evolve_corpus: Some(crash_evolved.clone()),
+            ..config
+        };
+        let crashed = run_fuzzer(&PanickingTarget, &input, &crash_config).unwrap();
+        assert_eq!(crashed.crashes, 1);
+        assert!(
+            std::fs::read_dir(&crash_evolved).unwrap().next().is_none(),
+            "crash inputs must remain in crash reporting only"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }

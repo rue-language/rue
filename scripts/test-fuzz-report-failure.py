@@ -575,6 +575,99 @@ class WorkflowContractTests(unittest.TestCase):
     def test_reporting_runs_even_when_the_crash_upload_is_all_that_survived(self):
         self.assertIn("if: failure()", self.workflow)
 
+    def test_evolved_corpus_uses_immutable_restore_and_save_keys(self):
+        """Nightly persistence must survive failures without caching code."""
+        self.assertIn("actions/cache/restore@v5", self.workflow)
+        self.assertIn("actions/cache/save@v5", self.workflow)
+        self.assertIn("if: always()", self.workflow)
+        self.assertIn("group: fuzz-corpus-mutation", self.workflow)
+        self.assertIn("cancel-in-progress: false", self.workflow)
+        self.assertIn("rue-fuzz-corpus-v3-", self.workflow)
+        self.assertNotIn("hashFiles('crates/rue-fuzz/src/**'", self.workflow)
+
+    def test_each_registered_mutation_step_has_private_input_and_output(self):
+        # Keep this inventory explicit: deriving it only from output paths
+        # would let a newly registered target silently skip restore or save.
+        targets = (
+            "lexer",
+            "parser",
+            "sema",
+            "compiler",
+            "compiler_aarch64",
+            "compiler_x86_64_o1",
+            "payload_schemas",
+            "emitter",
+            "emitter_aarch64",
+            "emitter_sequence",
+            "emitter_sequence_aarch64",
+        )
+        for target in targets:
+            self.assertIn(
+                f"path: crates/rue-fuzz/nightly-restored/{target}", self.workflow
+            )
+            self.assertIn(
+                f"restore-keys: rue-fuzz-corpus-v3-{target}-", self.workflow
+            )
+            self.assertIn(
+                f"key: rue-fuzz-corpus-v3-{target}-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}",
+                self.workflow,
+            )
+            self.assertIn(
+                f"--evolve-corpus=crates/rue-fuzz/nightly-corpus/{target} {target} crates/rue-fuzz/nightly-input/{target}",
+                self.workflow,
+            )
+            self.assertIn(
+                f"--input-corpus=\"crates/rue-fuzz/nightly-input/$target\"",
+                self.workflow,
+            )
+            self.assertIn(
+                f"--output-corpus=\"crates/rue-fuzz/nightly-corpus/$target\"",
+                self.workflow,
+            )
+            self.assertIn(
+                f"path: crates/rue-fuzz/nightly-restored/{target}", self.workflow
+            )
+        self.assertEqual(self.workflow.count("actions/cache/restore@v5"), len(targets))
+        self.assertEqual(self.workflow.count("actions/cache/save@v5"), len(targets))
+        self.assertEqual(set(re.findall(r"--max-time=(\d+)", self.workflow)), {"300"})
+        mutation_steps = re.findall(r"^\s+run: .*--max-time=300", self.workflow, re.MULTILINE)
+        self.assertEqual(len(mutation_steps), len(targets))
+        self.assertEqual(
+            self.workflow.count(
+                "if: always() && steps.publish_clean_corpus.outcome == 'success'"
+            ),
+            len(targets),
+        )
+
+    def test_prepare_operation_is_the_only_corpus_assembly_path(self):
+        self.assertIn("--prepare-corpus=", self.workflow)
+        self.assertIn("--fresh-corpus=crates/rue-fuzz/spec-seeds", self.workflow)
+        self.assertIn("--output-corpus=", self.workflow)
+        self.assertIn("--publish-corpus=", self.workflow)
+        self.assertIn("--cache-corpus=", self.workflow)
+        self.assertIn(
+            "if: always() && steps.publish_clean_corpus.outcome == 'success'",
+            self.workflow,
+        )
+
+    def test_live_target_guard_checks_cache_wiring(self):
+        guard = self.workflow.split("- name: Verify every registered fuzz target is scheduled", 1)[1]
+        self.assertIn(
+            'grep -qF -- "path: crates/rue-fuzz/nightly-restored/${t}"', guard
+        )
+        self.assertIn(
+            'grep -cF -- "path: crates/rue-fuzz/nightly-restored/${t}"', guard
+        )
+        self.assertIn(
+            'key: rue-fuzz-corpus-v3-${t}-${{ github.run_id }}-${{ github.run_attempt }}',
+            guard,
+        )
+        self.assertIn(
+            'restore-keys: rue-fuzz-corpus-v3-${t}-',
+            guard,
+        )
+        self.assertNotRegex(self.workflow, r"\b(?:find|cp)\s+.*nightly-(?:restored|corpus)")
+
     def test_every_aggregated_target_is_also_named_to_the_reporter(self):
         """A target the reporter does not name degrades to `(job-level failure)`.
 
@@ -590,10 +683,10 @@ class WorkflowContractTests(unittest.TestCase):
             "- name: Fail if any fuzz step found crashes"
         )
         pattern = re.compile(r"steps\.([\w-]+)\.outcome")
-        self.assertEqual(
-            set(pattern.findall(aggregation)),
-            set(pattern.findall(reporting)),
-        )
+        aggregated = set(pattern.findall(aggregation))
+        reported = set(pattern.findall(reporting))
+        reported.discard("publish_clean_corpus")
+        self.assertEqual(aggregated, reported)
 
 
 if __name__ == "__main__":

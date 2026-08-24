@@ -5,6 +5,12 @@ on:
     - cron: '0 0 * * *'  # Daily at midnight UTC
   workflow_dispatch:  # Allow manual triggering
 
+concurrency:
+  # A campaign mutates the per-target cache lineage. Schedule and manual runs
+  # must serialize so two immutable generations cannot fork from one restore.
+  group: fuzz-corpus-mutation
+  cancel-in-progress: false
+
 # Crashes are filed in Linear (RUE-802); GitHub Issues is the fallback used when
 # the LINEAR_API_KEY secret is missing. The default GITHUB_TOKEN is read-only,
 # and without issues:write that fallback fails with "Resource not accessible by
@@ -40,7 +46,99 @@ jobs:
             dotslash-linux-x64-
 
       - name: Create seed corpus
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --init-corpus crates/rue-fuzz/corpus
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --init-corpus crates/rue-fuzz/spec-seeds
+
+      # Evolved bytes are untrusted. Each target has a separate staging path,
+      # immutable generation key, and stable schema+target fallback. The
+      # prepare command validates content-addressed regular files and writes a
+      # clean tree; only that clean tree is ever used or saved.
+      - name: Restore lexer corpus
+        uses: actions/cache/restore@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/lexer
+          key: rue-fuzz-corpus-v3-lexer-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: rue-fuzz-corpus-v3-lexer-
+      - name: Restore parser corpus
+        uses: actions/cache/restore@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/parser
+          key: rue-fuzz-corpus-v3-parser-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: rue-fuzz-corpus-v3-parser-
+      - name: Restore sema corpus
+        uses: actions/cache/restore@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/sema
+          key: rue-fuzz-corpus-v3-sema-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: rue-fuzz-corpus-v3-sema-
+      - name: Restore compiler corpus
+        uses: actions/cache/restore@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/compiler
+          key: rue-fuzz-corpus-v3-compiler-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: rue-fuzz-corpus-v3-compiler-
+      - name: Restore compiler AArch64 corpus
+        uses: actions/cache/restore@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/compiler_aarch64
+          key: rue-fuzz-corpus-v3-compiler_aarch64-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: rue-fuzz-corpus-v3-compiler_aarch64-
+      - name: Restore compiler O1 corpus
+        uses: actions/cache/restore@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/compiler_x86_64_o1
+          key: rue-fuzz-corpus-v3-compiler_x86_64_o1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: rue-fuzz-corpus-v3-compiler_x86_64_o1-
+      - name: Restore payload schemas corpus
+        uses: actions/cache/restore@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/payload_schemas
+          key: rue-fuzz-corpus-v3-payload_schemas-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: rue-fuzz-corpus-v3-payload_schemas-
+      - name: Restore emitter corpus
+        uses: actions/cache/restore@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/emitter
+          key: rue-fuzz-corpus-v3-emitter-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: rue-fuzz-corpus-v3-emitter-
+      - name: Restore AArch64 emitter corpus
+        uses: actions/cache/restore@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/emitter_aarch64
+          key: rue-fuzz-corpus-v3-emitter_aarch64-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: rue-fuzz-corpus-v3-emitter_aarch64-
+      - name: Restore emitter sequence corpus
+        uses: actions/cache/restore@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/emitter_sequence
+          key: rue-fuzz-corpus-v3-emitter_sequence-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: rue-fuzz-corpus-v3-emitter_sequence-
+      - name: Restore AArch64 emitter sequence corpus
+        uses: actions/cache/restore@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/emitter_sequence_aarch64
+          key: rue-fuzz-corpus-v3-emitter_sequence_aarch64-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: rue-fuzz-corpus-v3-emitter_sequence_aarch64-
+
+      - name: Prepare isolated target corpora
+        run: |
+          set -eu
+          list_out="$(./buck2 run //crates/rue-fuzz:rue-fuzz -- --list 2>&1)"
+          targets=()
+          while IFS= read -r target; do
+            [ -n "$target" ] && targets[${#targets[@]}]="$target"
+          done < <(printf '%s\n' "$list_out" \
+            | awk '/^Available fuzz targets:/{f=1;next} f && /^  [a-z][a-z0-9_]*$/{print $1}')
+          if [ "${#targets[@]}" -eq 0 ]; then
+            echo "::error::could not enumerate fuzz targets for corpus assembly"
+            exit 1
+          fi
+          for target in "${targets[@]}"; do
+            ./buck2 run //crates/rue-fuzz:rue-fuzz -- \
+              --prepare-corpus="crates/rue-fuzz/nightly-restored/$target" \
+              --fresh-corpus=crates/rue-fuzz/spec-seeds \
+              --input-corpus="crates/rue-fuzz/nightly-input/$target" \
+              --output-corpus="crates/rue-fuzz/nightly-corpus/$target"
+          done
 
       # Guard against RUE-515 recurring: `emitter_aarch64` was registered in the
       # fuzzer but never invoked here, so aarch64 codegen got no nightly
@@ -51,7 +149,10 @@ jobs:
         run: |
           NIGHTLY_EXEMPT=""   # none currently exempt
           list_out="$(./buck2 run //crates/rue-fuzz:rue-fuzz -- --list 2>&1 || true)"
-          mapfile -t targets < <(printf '%s\n' "$list_out" \
+          targets=()
+          while IFS= read -r target; do
+            [ -n "$target" ] && targets[${#targets[@]}]="$target"
+          done < <(printf '%s\n' "$list_out" \
             | awk '/^Available fuzz targets:/{f=1;next} f && /^  [a-z][a-z0-9_]*$/{print $1}')
           if [ "${#targets[@]}" -eq 0 ]; then
             echo "::error::could not enumerate fuzz targets from --list"; exit 1
@@ -59,11 +160,16 @@ jobs:
           missing=()
           for t in "${targets[@]}"; do
             case " $NIGHTLY_EXEMPT " in *" $t "*) continue ;; esac
-            grep -qE -- "--max-time=[0-9]+ ${t} " .github/workflows/fuzz.yml || missing+=("$t")
+            grep -qF -- "--mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/${t} ${t} crates/rue-fuzz/nightly-input/${t}" .github/workflows/fuzz.yml || missing+=("$t")
+            grep -qF -- "path: crates/rue-fuzz/nightly-restored/${t}" .github/workflows/fuzz.yml || missing+=("${t}:restore-path")
+            restored_paths="$(grep -cF -- "path: crates/rue-fuzz/nightly-restored/${t}" .github/workflows/fuzz.yml || true)"
+            [ "$restored_paths" -ge 2 ] || missing+=("${t}:save-path")
+            grep -qF -- "key: rue-fuzz-corpus-v3-${t}-${{ github.run_id }}-${{ github.run_attempt }}" .github/workflows/fuzz.yml || missing+=("${t}:generation-key")
+            grep -qF -- "restore-keys: rue-fuzz-corpus-v3-${t}-" .github/workflows/fuzz.yml || missing+=("${t}:restore-prefix")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::registered fuzz target(s) not scheduled in fuzz.yml: ${missing[*]}"
-            echo "Add a '--max-time' fuzz step (plus the aggregation and notify entries), or add the target to NIGHTLY_EXEMPT."
+            echo "::error::registered fuzz target(s) not scheduled with an isolated five-minute corpus step: ${missing[*]}"
+            echo "Add the exact '--max-time=300' step (plus aggregation, reporting, and cache save entries), or add the target to NIGHTLY_EXEMPT."
             exit 1
           fi
           echo "All ${#targets[@]} registered fuzz targets are scheduled: ${targets[*]}"
@@ -76,25 +182,25 @@ jobs:
         id: fuzz-lexer
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 lexer crates/rue-fuzz/corpus
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/lexer lexer crates/rue-fuzz/nightly-input/lexer
 
       - name: Fuzz parser (5 minutes)
         id: fuzz-parser
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 parser crates/rue-fuzz/corpus
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/parser parser crates/rue-fuzz/nightly-input/parser
 
       - name: Fuzz sema (5 minutes)
         id: fuzz-sema
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 sema crates/rue-fuzz/corpus
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/sema sema crates/rue-fuzz/nightly-input/sema
 
       - name: Fuzz compiler (5 minutes)
         id: fuzz-compiler
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 compiler crates/rue-fuzz/corpus
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/compiler compiler crates/rue-fuzz/nightly-input/compiler
 
       # These source-level variants stay on the x86-64 runner: they compile
       # deterministic source inputs to finished images but never execute the
@@ -105,43 +211,43 @@ jobs:
         id: fuzz-compiler-aarch64
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 compiler_aarch64 crates/rue-fuzz/corpus
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/compiler_aarch64 compiler_aarch64 crates/rue-fuzz/nightly-input/compiler_aarch64
 
       - name: Fuzz compiler (x86-64 Linux O1, 5 minutes)
         id: fuzz-compiler-x86-64-o1
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 compiler_x86_64_o1 crates/rue-fuzz/corpus
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/compiler_x86_64_o1 compiler_x86_64_o1 crates/rue-fuzz/nightly-input/compiler_x86_64_o1
 
       - name: Fuzz payload schemas (5 minutes)
         id: fuzz-payload-schemas
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 payload_schemas crates/rue-fuzz/corpus
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/payload_schemas payload_schemas crates/rue-fuzz/nightly-input/payload_schemas
 
       - name: Fuzz x86-64 emitter (5 minutes)
         id: fuzz-emitter
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 emitter crates/rue-fuzz/corpus
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/emitter emitter crates/rue-fuzz/nightly-input/emitter
 
       - name: Fuzz aarch64 emitter (5 minutes)
         id: fuzz-emitter-aarch64
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 emitter_aarch64 crates/rue-fuzz/corpus
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/emitter_aarch64 emitter_aarch64 crates/rue-fuzz/nightly-input/emitter_aarch64
 
       - name: Fuzz x86-64 emitter sequences (5 minutes)
         id: fuzz-emitter-sequence
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 emitter_sequence crates/rue-fuzz/corpus
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/emitter_sequence emitter_sequence crates/rue-fuzz/nightly-input/emitter_sequence
 
       - name: Fuzz aarch64 emitter sequences (5 minutes)
         id: fuzz-emitter-sequence-aarch64
         continue-on-error: true
         timeout-minutes: 10
-        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 emitter_sequence_aarch64 crates/rue-fuzz/corpus
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/emitter_sequence_aarch64 emitter_sequence_aarch64 crates/rue-fuzz/nightly-input/emitter_sequence_aarch64
 
       # Differential fuzzing: generate valid programs and cross-check the
       # rue-oracle reference interpreter against the compiled native binary
@@ -231,3 +337,104 @@ jobs:
             --crash-dir crates/rue-fuzz/crashes \
             --failed-targets "$failed" \
             --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      # Cache restores and saves must use the same workspace path. Publish the
+      # clean output over each staging tree through the bounded Rust copier;
+      # no shell command handles restored filenames. This step is unconditional
+      # so a reporting failure cannot prevent successful evolution from being
+      # persisted.
+      - name: Publish clean fuzz corpora to cache staging
+        id: publish_clean_corpus
+        if: always()
+        run: |
+          set -eu
+          list_out="$(./buck2 run //crates/rue-fuzz:rue-fuzz -- --list 2>&1)"
+          while IFS= read -r target; do
+            [ -n "$target" ] || continue
+            ./buck2 run //crates/rue-fuzz:rue-fuzz -- \
+              --publish-corpus="crates/rue-fuzz/nightly-corpus/$target" \
+              --cache-corpus="crates/rue-fuzz/nightly-restored/$target"
+          done < <(printf '%s\n' "$list_out" \
+            | awk '/^Available fuzz targets:/{f=1;next} f && /^  [a-z][a-z0-9_]*$/{print $1}')
+
+      # Cache entries are immutable. Save a fresh generation for every target
+      # even when fuzzing/reporting failed; cache-service errors stay
+      # non-blocking and cannot mask the aggregate result. Only clean bounded
+      # per-target byte corpora are saved.
+      - name: Save lexer corpus
+        if: always() && steps.publish_clean_corpus.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/lexer
+          key: rue-fuzz-corpus-v3-lexer-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save parser corpus
+        if: always() && steps.publish_clean_corpus.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/parser
+          key: rue-fuzz-corpus-v3-parser-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save sema corpus
+        if: always() && steps.publish_clean_corpus.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/sema
+          key: rue-fuzz-corpus-v3-sema-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save compiler corpus
+        if: always() && steps.publish_clean_corpus.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/compiler
+          key: rue-fuzz-corpus-v3-compiler-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save compiler AArch64 corpus
+        if: always() && steps.publish_clean_corpus.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/compiler_aarch64
+          key: rue-fuzz-corpus-v3-compiler_aarch64-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save compiler O1 corpus
+        if: always() && steps.publish_clean_corpus.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/compiler_x86_64_o1
+          key: rue-fuzz-corpus-v3-compiler_x86_64_o1-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save payload schemas corpus
+        if: always() && steps.publish_clean_corpus.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/payload_schemas
+          key: rue-fuzz-corpus-v3-payload_schemas-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save emitter corpus
+        if: always() && steps.publish_clean_corpus.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/emitter
+          key: rue-fuzz-corpus-v3-emitter-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save AArch64 emitter corpus
+        if: always() && steps.publish_clean_corpus.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/emitter_aarch64
+          key: rue-fuzz-corpus-v3-emitter_aarch64-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save emitter sequence corpus
+        if: always() && steps.publish_clean_corpus.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/emitter_sequence
+          key: rue-fuzz-corpus-v3-emitter_sequence-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save AArch64 emitter sequence corpus
+        if: always() && steps.publish_clean_corpus.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/emitter_sequence_aarch64
+          key: rue-fuzz-corpus-v3-emitter_sequence_aarch64-${{ github.run_id }}-${{ github.run_attempt }}
