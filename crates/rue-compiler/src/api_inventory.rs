@@ -215,6 +215,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ),
     ("drop_glue", include_str!("drop_glue.rs")),
     ("durable_cfg", include_str!("durable_cfg.rs")),
+    ("durable_comptime", include_str!("durable_comptime.rs")),
     ("durable_semantics", include_str!("durable_semantics.rs")),
     ("import_discovery", include_str!("import_discovery.rs")),
     ("import_graph", include_str!("import_graph.rs")),
