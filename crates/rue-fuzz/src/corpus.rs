@@ -1,35 +1,510 @@
 //! Corpus loading and management.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rue_test_runner::load_test_files;
+
+/// Corpus files come from an Actions cache and are therefore inputs, not
+/// trusted repository files. Keep one malformed cache entry from consuming a
+/// runner's memory or disk budget before the target gets a chance to reject it.
+pub const MAX_CORPUS_FILES: usize = 8_192;
+pub const MAX_CORPUS_FILE_BYTES: u64 = 4 * 1024 * 1024;
+pub const MAX_CORPUS_BYTES: u64 = 128 * 1024 * 1024;
+pub const MAX_EVOLVED_FILES: usize = 4_096;
+pub const MAX_EVOLVED_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Load all files from a corpus directory.
 pub fn load_corpus(dir: &Path) -> anyhow::Result<Vec<Vec<u8>>> {
     let mut corpus = Vec::new();
+    let mut total_bytes: u64 = 0;
 
     if !dir.exists() {
         anyhow::bail!("corpus directory does not exist: {}", dir.display());
     }
 
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
+    let (mut entries, truncated) = read_entries_limited(dir, MAX_CORPUS_FILES)?;
+    if truncated {
+        eprintln!(
+            "Warning: corpus directory has more than {} entries; ignoring the rest",
+            MAX_CORPUS_FILES
+        );
+    }
+    // Stable ordering makes a fixed --seed replay independent of directory
+    // enumeration order. The bytes are still selected by the seeded RNG.
+    entries.sort_by_key(|entry| entry.file_name());
 
-        if path.is_file() {
-            match std::fs::read(&path) {
-                Ok(data) => corpus.push(data),
-                Err(e) => {
-                    eprintln!("Warning: failed to read {}: {}", path.display(), e);
-                }
+    for entry in entries {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                eprintln!("Warning: failed to inspect corpus entry: {error}");
+                continue;
+            }
+        };
+        // Do not follow cache-provided symlinks. A cache must never turn the
+        // fuzzer into a reader for arbitrary files on the runner.
+        if file_type.is_symlink() || !file_type.is_file() {
+            continue;
+        }
+        let size = match entry.metadata() {
+            Ok(metadata) => metadata.len(),
+            Err(error) => {
+                eprintln!("Warning: failed to inspect corpus file: {error}");
+                continue;
+            }
+        };
+        if size > MAX_CORPUS_FILE_BYTES {
+            eprintln!(
+                "Warning: ignoring oversized corpus file ({} bytes; limit {})",
+                size, MAX_CORPUS_FILE_BYTES
+            );
+            continue;
+        }
+        if total_bytes.saturating_add(size) > MAX_CORPUS_BYTES {
+            eprintln!(
+                "Warning: ignoring corpus files after the {}-byte limit",
+                MAX_CORPUS_BYTES
+            );
+            break;
+        }
+        match std::fs::read(&path) {
+            Ok(data) => {
+                total_bytes += data.len() as u64;
+                corpus.push(data);
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to read corpus file: {e}");
             }
         }
     }
 
     Ok(corpus)
+}
+
+/// Bounded, content-addressed output for successful mutated inputs.
+///
+/// The writer is deliberately independent from the input directory: a nightly
+/// run can restore old evolved inputs, merge fresh spec seeds, and write only
+/// successful mutations to the target's private cache directory. Crash inputs
+/// are handled by [`crate::harness::CrashReporter`] and never reach this type.
+pub struct EvolvedCorpus {
+    dir: PathBuf,
+    files: BTreeMap<String, u64>,
+    bytes: u64,
+    max_files: usize,
+    max_bytes: u64,
+}
+
+impl EvolvedCorpus {
+    pub fn open(dir: &Path) -> anyhow::Result<Self> {
+        Self::open_with_limits(dir, MAX_EVOLVED_FILES, MAX_EVOLVED_BYTES)
+    }
+
+    fn open_with_limits(dir: &Path, max_files: usize, max_bytes: u64) -> anyhow::Result<Self> {
+        match std::fs::symlink_metadata(dir) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                anyhow::bail!("corpus path is not a regular directory: {}", dir.display())
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir_all(dir)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        let mut files = BTreeMap::new();
+        let mut bytes: u64 = 0;
+        let mut loaded_bytes: u64 = 0;
+        let (mut entries, _) = read_entries_limited(dir, max_files.saturating_add(1))?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            if file_type.is_symlink() || !file_type.is_file() {
+                continue;
+            }
+            let size = match entry.metadata() {
+                Ok(metadata) => metadata.len(),
+                Err(_) => continue,
+            };
+            if size > MAX_CORPUS_FILE_BYTES {
+                continue;
+            }
+            if loaded_bytes.saturating_add(size) > MAX_CORPUS_BYTES {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some((expected_hash, expected_len)) = parse_evolved_name(&name) else {
+                continue;
+            };
+            if expected_len != size {
+                continue;
+            }
+            // A cache entry is not trusted merely because its filename looks
+            // right. Verify the content address before allowing it to consume
+            // the bounded retained set.
+            let content = match std::fs::read(entry.path()) {
+                Ok(content) => content,
+                Err(_) => continue,
+            };
+            loaded_bytes = loaded_bytes.saturating_add(size);
+            if fnv1a_64(&content) != expected_hash {
+                continue;
+            }
+            files.insert(name, size);
+            bytes += size;
+        }
+        let mut corpus = Self {
+            dir: dir.to_path_buf(),
+            files,
+            bytes,
+            max_files,
+            max_bytes,
+        };
+        corpus.trim_to_limits()?;
+        Ok(corpus)
+    }
+
+    /// Save an input if it is new and the bounded cache still has room.
+    /// Returns whether a new file was written.
+    pub fn record(&mut self, input: &[u8]) -> std::io::Result<bool> {
+        if input.len() as u64 > MAX_CORPUS_FILE_BYTES {
+            return Ok(false);
+        }
+        let name = evolved_name(input);
+        if self.files.contains_key(&name) {
+            return Ok(false);
+        }
+        if !self.would_retain(&name, input.len() as u64) {
+            return Ok(false);
+        }
+        let path = self.dir.join(&name);
+        // `create_new` preserves content-addressed idempotence even if two
+        // target processes happen to share a cache directory.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                if let Err(error) = file.write_all(input) {
+                    let _ = std::fs::remove_file(&path);
+                    self.files.remove(&name);
+                    return Err(error);
+                }
+                self.bytes += input.len() as u64;
+                self.files.insert(name.clone(), input.len() as u64);
+                self.trim_to_limits()?;
+                Ok(self.files.contains_key(&name))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn would_retain(&self, name: &str, size: u64) -> bool {
+        if self.max_files == 0 || size > self.max_bytes {
+            return false;
+        }
+        if self.files.len() < self.max_files && self.bytes.saturating_add(size) <= self.max_bytes {
+            return true;
+        }
+        let mut candidates = self.files.clone();
+        candidates.insert(name.to_owned(), size);
+        let mut bytes = self.bytes.saturating_add(size);
+        while candidates.len() > self.max_files || bytes > self.max_bytes {
+            let Some(evicted) = candidates.keys().next_back().cloned() else {
+                break;
+            };
+            let size = candidates.remove(&evicted).unwrap_or(0);
+            bytes = bytes.saturating_sub(size);
+        }
+        candidates.contains_key(name)
+    }
+
+    fn trim_to_limits(&mut self) -> std::io::Result<()> {
+        while self.files.len() > self.max_files || self.bytes > self.max_bytes {
+            let Some(name) = self.files.keys().next_back().cloned() else {
+                break;
+            };
+            let path = self.dir.join(&name);
+            let size = self.files.get(&name).copied().unwrap_or(0);
+            let _ = std::fs::remove_file(path);
+            self.files.remove(&name);
+            self.bytes = self.bytes.saturating_sub(size);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn file_count(&self) -> usize {
+        self.files.len()
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SanitizedCorpusSummary {
+    pub fresh_seeds: usize,
+    pub restored_inputs: usize,
+    pub retained_inputs: usize,
+    pub ignored_inputs: usize,
+    pub bytes: u64,
+}
+
+/// Build a clean target corpus from an untrusted restored cache and fresh
+/// specification seeds. The restored tree is never used as the fuzzer input
+/// or as the cache-save path; only validated, bounded regular files are copied
+/// into `output_dir`. Seed and evolved namespaces cannot overwrite each other.
+pub fn sanitize_corpus(
+    restored_dir: &Path,
+    fresh_seed_dir: &Path,
+    input_dir: &Path,
+    output_dir: &Path,
+) -> anyhow::Result<SanitizedCorpusSummary> {
+    validate_non_overlapping_paths(&[
+        ("restored corpus", restored_dir),
+        ("fresh corpus", fresh_seed_dir),
+        ("input corpus", input_dir),
+        ("output corpus", output_dir),
+    ])?;
+    ensure_directory_or_absent(restored_dir)?;
+    ensure_directory(fresh_seed_dir)?;
+    ensure_absent(input_dir)?;
+    ensure_absent(output_dir)?;
+    std::fs::create_dir_all(input_dir)?;
+    std::fs::create_dir_all(output_dir)?;
+
+    let fresh = load_corpus(fresh_seed_dir)?;
+    let mut summary = SanitizedCorpusSummary::default();
+    let mut total_bytes = 0u64;
+    let mut total_files = 0usize;
+    for seed in fresh {
+        if total_files >= MAX_CORPUS_FILES
+            || total_bytes.saturating_add(seed.len() as u64) > MAX_CORPUS_BYTES
+        {
+            summary.ignored_inputs += 1;
+            continue;
+        }
+        let name = format!("seed-{:016x}-{:08x}.rue", fnv1a_64(&seed), seed.len());
+        let path = input_dir.join(name);
+        if path.exists() {
+            // A same-name/different-content collision is never overwritten.
+            if std::fs::read(&path)? != seed {
+                summary.ignored_inputs += 1;
+                continue;
+            }
+        } else {
+            std::fs::write(path, &seed)?;
+            total_files += 1;
+            total_bytes += seed.len() as u64;
+        }
+        summary.fresh_seeds += 1;
+    }
+
+    let restored = if restored_dir.exists() {
+        EvolvedCorpus::open_with_limits(restored_dir, MAX_EVOLVED_FILES, MAX_EVOLVED_BYTES)?
+    } else {
+        EvolvedCorpus::open_with_limits(restored_dir, 0, 0)?
+    };
+    let mut clean =
+        EvolvedCorpus::open_with_limits(output_dir, MAX_EVOLVED_FILES, MAX_EVOLVED_BYTES)?;
+    for name in restored.files.keys() {
+        let input = match std::fs::read(restored_dir.join(name)) {
+            Ok(input) => input,
+            Err(_) => {
+                summary.ignored_inputs += 1;
+                continue;
+            }
+        };
+        summary.restored_inputs += 1;
+        if clean.record(&input)? {
+            summary.retained_inputs += 1;
+        } else {
+            summary.ignored_inputs += 1;
+        }
+    }
+    for name in clean.files.keys() {
+        let input = std::fs::read(output_dir.join(name))?;
+        if total_files >= MAX_CORPUS_FILES
+            || total_bytes.saturating_add(input.len() as u64) > MAX_CORPUS_BYTES
+        {
+            break;
+        }
+        std::fs::write(input_dir.join(name), &input)?;
+        total_files += 1;
+        total_bytes += input.len() as u64;
+    }
+    summary.bytes = total_bytes;
+    Ok(summary)
+}
+
+/// Publish a clean fuzz input tree into the cache path. GitHub Actions cache
+/// restores and saves a path as the same workspace-relative archive root, so
+/// this explicit, Rust-owned copy keeps the untrusted restore staging tree
+/// separate during fuzzing while ensuring the next cache generation contains
+/// only the sanitized, bounded tree.
+pub fn publish_corpus(source_dir: &Path, cache_dir: &Path) -> anyhow::Result<usize> {
+    validate_non_overlapping_paths(&[("clean corpus", source_dir), ("cache corpus", cache_dir)])?;
+    ensure_directory(source_dir)?;
+    ensure_directory_or_absent(cache_dir)?;
+    let source = read_strict_evolved_entries(source_dir, MAX_EVOLVED_BYTES)?;
+    let cache = if cache_dir.exists() {
+        read_strict_evolved_entries(cache_dir, MAX_EVOLVED_BYTES)?
+    } else {
+        Vec::new()
+    };
+
+    // Both trees have been fully preflighted before any mutation. Replace only
+    // immediate regular files; a nested directory or symlink is rejected above
+    // rather than recursively deleted.
+    for (name, _) in cache {
+        std::fs::remove_file(cache_dir.join(name))?;
+    }
+    if !cache_dir.exists() {
+        std::fs::create_dir_all(cache_dir)?;
+    }
+    for (name, content) in &source {
+        std::fs::write(cache_dir.join(name), content)?;
+    }
+    Ok(source.len())
+}
+
+fn read_strict_evolved_entries(
+    dir: &Path,
+    byte_limit: u64,
+) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+    let (mut entries, truncated) = read_entries_limited(dir, MAX_EVOLVED_FILES)?;
+    if truncated {
+        anyhow::bail!("corpus exceeds {} files", MAX_EVOLVED_FILES);
+    }
+    entries.sort_by_key(|entry| entry.file_name());
+    let mut total_bytes = 0u64;
+    let mut result = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() || !file_type.is_file() {
+            anyhow::bail!("corpus contains a non-regular immediate entry");
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some((hash, length)) = parse_evolved_name(&name) else {
+            anyhow::bail!("corpus contains a nonconforming evolved identity");
+        };
+        let content = std::fs::read(entry.path())?;
+        let size = content.len() as u64;
+        if size != length || fnv1a_64(&content) != hash {
+            anyhow::bail!("corpus contains a spoofed evolved identity");
+        }
+        if size > MAX_CORPUS_FILE_BYTES || total_bytes.saturating_add(size) > byte_limit {
+            anyhow::bail!("corpus exceeds its byte bound");
+        }
+        total_bytes += size;
+        result.push((name, content));
+    }
+    Ok(result)
+}
+
+fn ensure_directory(path: &Path) -> anyhow::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        anyhow::bail!("corpus path is not a regular directory: {}", path.display());
+    }
+    Ok(())
+}
+
+fn ensure_directory_or_absent(path: &Path) -> anyhow::Result<()> {
+    if path.exists() || std::fs::symlink_metadata(path).is_ok() {
+        ensure_directory(path)?;
+    }
+    Ok(())
+}
+
+fn ensure_absent(path: &Path) -> anyhow::Result<()> {
+    if std::fs::symlink_metadata(path).is_ok() {
+        anyhow::bail!("corpus output must not already exist: {}", path.display());
+    }
+    Ok(())
+}
+
+fn validate_non_overlapping_paths(paths: &[(&str, &Path)]) -> anyhow::Result<()> {
+    let current = lexical_absolute(Path::new("."))?;
+    let mut absolute = Vec::with_capacity(paths.len());
+    for (label, path) in paths {
+        let normalized = lexical_absolute(path)?;
+        if normalized == current || normalized.parent().is_none() {
+            anyhow::bail!("{label} path is too broad: {}", path.display());
+        }
+        absolute.push((*label, normalized));
+    }
+    for (index, (left_label, left)) in absolute.iter().enumerate() {
+        for (right_label, right) in absolute.iter().skip(index + 1) {
+            if left == right || left.starts_with(right) || right.starts_with(left) {
+                anyhow::bail!(
+                    "{left_label} and {right_label} paths overlap: {} and {}",
+                    left.display(),
+                    right.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn lexical_absolute(path: &Path) -> anyhow::Result<std::path::PathBuf> {
+    if path.as_os_str().is_empty() {
+        anyhow::bail!("corpus path is empty");
+    }
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut normalized = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            component => normalized.push(component.as_os_str()),
+        }
+    }
+    Ok(normalized)
+}
+
+fn read_entries_limited(
+    dir: &Path,
+    limit: usize,
+) -> std::io::Result<(Vec<std::fs::DirEntry>, bool)> {
+    let mut entries = Vec::new();
+    let mut iter = std::fs::read_dir(dir)?;
+    while entries.len() < limit {
+        let Some(entry) = iter.next() else {
+            return Ok((entries, false));
+        };
+        entries.push(entry?);
+    }
+    Ok((entries, iter.next().is_some()))
+}
+
+fn evolved_name(input: &[u8]) -> String {
+    format!("input-{:016x}-{:08x}.bin", fnv1a_64(input), input.len())
+}
+
+fn parse_evolved_name(name: &str) -> Option<(u64, u64)> {
+    let body = name.strip_prefix("input-")?.strip_suffix(".bin")?;
+    let (hash, len) = body.split_once('-')?;
+    if hash.len() != 16 || len.len() != 8 {
+        return None;
+    }
+    Some((
+        u64::from_str_radix(hash, 16).ok()?,
+        u64::from_str_radix(len, 16).ok()?,
+    ))
 }
 
 /// Summary of a seed-corpus build.
@@ -422,5 +897,206 @@ aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
             result.is_err(),
             "an unreadable test file must fail the build"
         );
+    }
+
+    #[test]
+    fn load_corpus_ignores_symlinks_and_oversized_files() {
+        let dir = scratch("untrusted-inputs");
+        write(&dir, "valid", "not executable, just bytes");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/etc/passwd", dir.join("outside")).unwrap();
+        write(
+            &dir,
+            "oversized",
+            &"x".repeat((MAX_CORPUS_FILE_BYTES + 1) as usize),
+        );
+
+        let corpus = load_corpus(&dir).unwrap();
+        assert_eq!(corpus, vec![b"not executable, just bytes".to_vec()]);
+    }
+
+    #[test]
+    fn evolved_corpus_is_content_addressed_bounded_and_idempotent() {
+        let dir = scratch("evolved");
+        let mut evolved = EvolvedCorpus::open(&dir).unwrap();
+        assert!(evolved.record(b"one").unwrap());
+        assert!(!evolved.record(b"one").unwrap());
+        assert!(!evolved.record(b"one").unwrap());
+        assert_eq!(evolved.file_count(), 1);
+
+        let entries: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0]
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("input-")
+        );
+    }
+
+    #[test]
+    fn evolved_corpus_does_not_save_oversized_inputs() {
+        let dir = scratch("evolved-limit");
+        let mut evolved = EvolvedCorpus::open(&dir).unwrap();
+        assert!(
+            !evolved
+                .record(&vec![0u8; (MAX_CORPUS_FILE_BYTES + 1) as usize])
+                .unwrap()
+        );
+        assert_eq!(evolved.file_count(), 0);
+    }
+
+    #[test]
+    fn evolved_corpus_rejects_spoofed_content_addresses() {
+        let dir = scratch("evolved-spoof");
+        std::fs::write(dir.join("input-0000000000000000-00000003.bin"), b"bad").unwrap();
+        std::fs::write(dir.join("input-not-a-hash-00000003.bin"), b"bad").unwrap();
+        let evolved = EvolvedCorpus::open(&dir).unwrap();
+        assert_eq!(evolved.file_count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn evolved_corpus_rejects_root_symlink() {
+        let parent = scratch("evolved-root-symlink");
+        let actual = parent.join("actual");
+        let link = parent.join("link");
+        std::fs::create_dir_all(&actual).unwrap();
+        std::os::unix::fs::symlink(&actual, &link).unwrap();
+        assert!(EvolvedCorpus::open(&link).is_err());
+    }
+
+    #[test]
+    fn evolved_corpus_replaces_largest_identity_at_file_cap() {
+        let dir = scratch("evolved-rotation");
+        let inputs: [&[u8]; 4] = [b"first", b"second", b"third", b"fourth"];
+        let mut names: Vec<_> = inputs.iter().map(|input| evolved_name(input)).collect();
+        names.sort();
+
+        let mut evolved = EvolvedCorpus::open_with_limits(&dir, 2, MAX_EVOLVED_BYTES).unwrap();
+        for input in inputs {
+            evolved.record(input).unwrap();
+        }
+
+        let retained: Vec<_> = evolved.files.keys().cloned().collect();
+        assert_eq!(retained, names.into_iter().take(2).collect::<Vec<_>>());
+        assert_eq!(evolved.file_count(), 2);
+    }
+
+    #[test]
+    fn evolved_corpus_enforces_byte_cap_during_replacement() {
+        let dir = scratch("evolved-byte-rotation");
+        let mut evolved = EvolvedCorpus::open_with_limits(&dir, 8, 5).unwrap();
+        evolved.record(b"four").unwrap();
+        evolved.record(b"five!").unwrap();
+        evolved.record(b"sixsix").unwrap();
+
+        assert!(evolved.bytes <= 5);
+        assert!(evolved.files.values().copied().sum::<u64>() <= 5);
+    }
+
+    #[test]
+    fn sanitize_corpus_keeps_fresh_seed_namespace_and_rejects_untrusted_entries() {
+        let parent = scratch("sanitize");
+        let restored = parent.join("restored");
+        let fresh = parent.join("fresh");
+        let input = parent.join("input");
+        let output = parent.join("output");
+        std::fs::create_dir_all(&restored).unwrap();
+        std::fs::create_dir_all(&fresh).unwrap();
+        let evolved = b"restored input";
+        std::fs::write(restored.join(evolved_name(evolved)), evolved).unwrap();
+        write(&restored, "spoof.bin", "not content addressed");
+        write(&fresh, "spec-seed", "fresh source");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/etc/passwd", restored.join("outside")).unwrap();
+
+        let summary = sanitize_corpus(&restored, &fresh, &input, &output).unwrap();
+        assert_eq!(summary.fresh_seeds, 1);
+        assert_eq!(summary.restored_inputs, 1);
+        assert_eq!(summary.retained_inputs, 1);
+        assert!(input.join(evolved_name(evolved)).is_file());
+        assert!(output.join(evolved_name(evolved)).is_file());
+        assert_eq!(
+            std::fs::read_dir(&input).unwrap().count(),
+            2,
+            "fresh and evolved inputs must be available to the target"
+        );
+        assert_eq!(
+            std::fs::read_dir(&output).unwrap().count(),
+            1,
+            "evolved output must exclude fresh seeds"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sanitize_corpus_rejects_root_symlink() {
+        let parent = scratch("sanitize-symlink");
+        let actual = parent.join("actual");
+        let restored = parent.join("restored");
+        let fresh = parent.join("fresh");
+        let output = parent.join("output");
+        let input = parent.join("input");
+        std::fs::create_dir_all(&actual).unwrap();
+        std::fs::create_dir_all(&fresh).unwrap();
+        std::os::unix::fs::symlink(&actual, &restored).unwrap();
+
+        assert!(sanitize_corpus(&restored, &fresh, &input, &output).is_err());
+    }
+
+    #[test]
+    fn sanitize_corpus_rejects_current_and_overlapping_paths_before_mutation() {
+        let root = scratch("sanitize-paths");
+        let fresh = root.join("fresh");
+        let input = root.join("input");
+        let output = root.join("output");
+        std::fs::create_dir_all(&fresh).unwrap();
+        assert!(sanitize_corpus(Path::new("."), &fresh, &input, &output).is_err());
+        assert!(sanitize_corpus(Path::new("/"), &fresh, &input, &output).is_err());
+        assert!(!input.exists());
+        assert!(!output.exists());
+
+        let parent = scratch("sanitize-paths-overlap");
+        let restored = parent.join("restored");
+        let fresh = parent.join("fresh");
+        let input = parent.join("input");
+        let output = input.join("nested-output");
+        std::fs::create_dir_all(&restored).unwrap();
+        std::fs::create_dir_all(&fresh).unwrap();
+        assert!(sanitize_corpus(&restored, &fresh, &input, &output).is_err());
+        assert!(!input.exists());
+    }
+
+    #[test]
+    fn publish_corpus_replaces_staging_with_only_clean_content() {
+        let clean = scratch("publish-clean");
+        let cache = scratch("publish-cache");
+        let input = b"clean evolved input";
+        std::fs::write(clean.join(evolved_name(input)), input).unwrap();
+        let old = b"old evolved input";
+        std::fs::write(cache.join(evolved_name(old)), old).unwrap();
+
+        assert_eq!(publish_corpus(&clean, &cache).unwrap(), 1);
+        assert!(!cache.join(evolved_name(old)).exists());
+        assert!(cache.join(evolved_name(input)).is_file());
+        assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn publish_corpus_rejects_nested_cache_without_partial_deletion() {
+        let clean = scratch("publish-nested-clean");
+        let cache = scratch("publish-nested-cache");
+        let input = b"clean evolved input";
+        let old = b"old evolved input";
+        std::fs::write(clean.join(evolved_name(input)), input).unwrap();
+        std::fs::write(cache.join(evolved_name(old)), old).unwrap();
+        std::fs::create_dir(cache.join("nested")).unwrap();
+
+        assert!(publish_corpus(&clean, &cache).is_err());
+        assert!(cache.join(evolved_name(old)).is_file());
+        assert!(cache.join("nested").is_dir());
     }
 }

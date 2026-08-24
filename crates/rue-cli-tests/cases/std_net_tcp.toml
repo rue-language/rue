@@ -271,11 +271,15 @@ fn main() -> i32 {
 """ }]
 stdout = "1\n2\n3\n4\n5\n6\n"
 
-# Connecting to a just-released ephemeral port is refused, exercising errno
-# normalization (ECONNREFUSED -> ConnectionRefused) through a real syscall.
+# Keep an un-listened socket bound to the kernel-selected loopback port while
+# connecting to it. A closed listener leaves a port-0 reuse window: another
+# thread/process can claim the port before connect(2), turning this into a
+# flaky success. A bound, never-listened socket reserves the exact 4-tuple and
+# makes Linux return ECONNREFUSED deterministically. The raw syscall setup is
+# test-local and leaves std.net's production/runtime behavior untouched.
 [[case]]
 name = "tcp_connection_refused"
-description = "connect() to a closed loopback port normalizes to ConnectionRefused."
+description = "connect() to a bound but never-listened loopback port normalizes to ConnectionRefused."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
 only_on = ["x86-64-linux", "aarch64-linux"]
@@ -288,35 +292,110 @@ fn fail(code: i32) -> i32 {
 }
 
 fn main() -> i32 {
-    let RL = std.result.Result(std.net.TcpListener, std.net.NetworkError);
     let RS = std.result.Result(std.net.TcpStream, std.net.NetworkError);
-    let RA = std.result.Result(std.net.SockAddr, std.net.NetworkError);
-    let RUnit = std.result.Result((), std.net.NetworkError);
+    // Linux syscall numbers are stable on the two supported architectures.
+    // This socket is intentionally bound but never passed to listen(2).
+    let socket_nr: u64 = match @target_arch() {
+        Arch.X86_64 => 41,
+        Arch.Aarch64 => 198,
+    };
+    let bind_nr: u64 = match @target_arch() {
+        Arch.X86_64 => 49,
+        Arch.Aarch64 => 200,
+    };
+    let getsockname_nr: u64 = match @target_arch() {
+        Arch.X86_64 => 51,
+        Arch.Aarch64 => 204,
+    };
+    let close_nr: u64 = match @target_arch() {
+        Arch.X86_64 => 3,
+        Arch.Aarch64 => 57,
+    };
 
-    // Learn an ephemeral port, then free it so nothing listens there.
-    let bind_addr = std.net.SockAddr.v4(std.net.Ipv4Addr.localhost(), 0);
-    let mut listener = match std.net.TcpListener.bind(bind_addr) {
-        RL.Ok(l) => l,
-        RL.Err(e) => { return fail(101); },
+    // Linux sockaddr_in: AF_INET (native endian), port (network endian),
+    // 127.0.0.1, and zero padding. The port starts at zero for bind(0).
+    let addr: ptr mut u8 = checked { @alloc(16, 1) };
+    if checked { @ptr_to_int(addr) } == 0 { return fail(101); }
+    checked {
+        @ptr_write(@ptr_offset(addr, 0), 2);
+        @ptr_write(@ptr_offset(addr, 1), 0);
+        @ptr_write(@ptr_offset(addr, 2), 0);
+        @ptr_write(@ptr_offset(addr, 3), 0);
+        @ptr_write(@ptr_offset(addr, 4), 127);
+        @ptr_write(@ptr_offset(addr, 5), 0);
+        @ptr_write(@ptr_offset(addr, 6), 0);
+        @ptr_write(@ptr_offset(addr, 7), 1);
+        @ptr_write(@ptr_offset(addr, 8), 0);
+        @ptr_write(@ptr_offset(addr, 9), 0);
+        @ptr_write(@ptr_offset(addr, 10), 0);
+        @ptr_write(@ptr_offset(addr, 11), 0);
+        @ptr_write(@ptr_offset(addr, 12), 0);
+        @ptr_write(@ptr_offset(addr, 13), 0);
+        @ptr_write(@ptr_offset(addr, 14), 0);
+        @ptr_write(@ptr_offset(addr, 15), 0);
     };
-    let port: u16 = match listener.local_addr() {
-        RA.Ok(a) => a.port,
-        RA.Err(e) => { return fail(102); },
+    let fd_result: i64 = checked { @syscall(socket_nr, 2, 1, 0) };
+    if fd_result < 0 {
+        checked { @free(addr, 16, 1); };
+        return fail(102);
+    }
+    let fd: u64 = @intCast(fd_result);
+    let addr_num: u64 = checked { @ptr_to_int(addr) };
+    let bind_result: i64 = checked { @syscall(bind_nr, fd, addr_num, 16) };
+    if bind_result < 0 {
+        checked { @syscall(close_nr, fd); };
+        checked { @free(addr, 16, 1); };
+        return fail(103);
+    }
+    let length: ptr mut u8 = checked { @alloc(4, 1) };
+    if checked { @ptr_to_int(length) } == 0 {
+        checked { @syscall(close_nr, fd); };
+        checked { @free(addr, 16, 1); };
+        return fail(104);
+    }
+    checked {
+        @ptr_write(@ptr_offset(length, 0), 16);
+        @ptr_write(@ptr_offset(length, 1), 0);
+        @ptr_write(@ptr_offset(length, 2), 0);
+        @ptr_write(@ptr_offset(length, 3), 0);
     };
-    match listener.close() { RUnit.Ok(u) => {}, RUnit.Err(e) => { return fail(103); } }
+    let length_num: u64 = checked { @ptr_to_int(length) };
+    let name_result: i64 = checked { @syscall(getsockname_nr, fd, addr_num, length_num) };
+    if name_result < 0 {
+        checked { @syscall(close_nr, fd); };
+        checked { @free(length, 4, 1); };
+        checked { @free(addr, 16, 1); };
+        return fail(105);
+    }
+    let port_hi: u64 = @intCast(checked { @ptr_read(@ptr_offset(addr, 2)) });
+    let port_lo: u64 = @intCast(checked { @ptr_read(@ptr_offset(addr, 3)) });
+    let port: u16 = @intCast(port_hi * 256 + port_lo);
+    if port == 0 {
+        checked { @syscall(close_nr, fd); };
+        checked { @free(length, 4, 1); };
+        checked { @free(addr, 16, 1); };
+        return fail(106);
+    }
+    checked { @free(length, 4, 1); };
+    checked { @free(addr, 16, 1); };
 
     match std.net.TcpStream.connect(std.net.SockAddr.v4(std.net.Ipv4Addr.localhost(), port)) {
         RS.Ok(s) => {
             let ignored = s.close();
-            return fail(104);
+            checked { @syscall(close_nr, fd); };
+            return fail(107);
         },
         RS.Err(e) => {
             match e {
                 std.net.NetworkError.ConnectionRefused => { @dbg(1); },
-                _ => { return fail(105); },
+                _ => {
+                    checked { @syscall(close_nr, fd); };
+                    return fail(108);
+                },
             }
         },
     }
+    checked { @syscall(close_nr, fd); };
     0
 }
 """ }]

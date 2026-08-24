@@ -43,6 +43,9 @@ Fuzz testing infrastructure for the Rue compiler. This crate helps find edge cas
 | `--print-interval=<n>` | Print progress every N runs |
 | `--per-input-timeout=<secs>` | Kill and report inputs running longer than this (default 5) |
 | `--seed=<n>` | Mutation RNG seed; defaults to a per-run value, printed at start for replay |
+| `--evolve-corpus=<dir>` | Save bounded, content-addressed successful mutations for a later run |
+| `--prepare-corpus=<dir> --fresh-corpus=<dir> --input-corpus=<dir> --output-corpus=<dir>` | Validate restored cache bytes and build separate fresh-input and evolved-output trees |
+| `--publish-corpus=<dir> --cache-corpus=<dir>` | Copy the clean bounded tree into the same-path cache generation |
 
 ## Corpus
 
@@ -53,6 +56,14 @@ The fuzzer uses a corpus of source files as seeds. A seed corpus can be automati
 ```
 
 This extracts source code from all `.toml` test files in `crates/rue-spec/cases/`.
+
+Nightly CI restores evolved bytes into a private directory for each target and
+merges fresh spec seeds before every five-minute campaign. Only successful
+mutations are retained, with a bounded content-addressed file set; crashes are
+written only to the redacted crash-artifact path. Cache-restored files are
+treated as untrusted bytes: they are never executed as scripts, followed as
+symlinks, or printed as input contents. The fuzzer prints its randomly chosen
+campaign seed, so a run can be replayed with `--seed=<n>`.
 
 ## Mutation Strategies
 
