@@ -3149,6 +3149,47 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
     }
 }
 
+/// Return the immediate form usable for a full-width enum-tag comparison.
+/// x86-64 sign-extends the compare immediate, so only non-negative i32 values
+/// preserve the zero-extended u32 tag representation.
+fn marshal_tag_cmp_imm(discriminant: u64) -> Option<i32> {
+    i32::try_from(discriminant).ok()
+}
+
+fn compact_tag_discriminant(discriminant: u64) -> u32 {
+    u32::try_from(discriminant)
+        .expect("enum discriminant exceeds the compact u32 tag representation")
+}
+
+/// Emit the compare and skip branch used by every heterogeneous enum image
+/// dispatch. Keeping this sequence in one helper lets the MIR boundary tests
+/// exercise the same path as [`SlotBackend::emit_marshal_branch_if_tag_ne`].
+fn emit_marshal_tag_ne(mir: &mut X86Mir, tag: VReg, discriminant: u32, label: LabelId) {
+    // Compact enum tags are zero-extended u8/u16/u32 values in their
+    // slot-shaped vregs. Keep the compare 64-bit so a tag above i32::MAX
+    // cannot be changed by an unchecked u64-to-i32 cast. The immediate
+    // form is sign-extended by x86, so it is valid only for values that fit
+    // i32; larger (still representable u32) tags use the existing full-
+    // width constant materialization and register compare.
+    if let Some(imm) = marshal_tag_cmp_imm(u64::from(discriminant)) {
+        mir.push(X86Inst::Cmp64RI {
+            src: Operand::Virtual(tag),
+            imm,
+        });
+    } else {
+        let constant = mir.alloc_vreg();
+        mir.push(X86Inst::MovRI64 {
+            dst: Operand::Virtual(constant),
+            imm: i64::from(discriminant),
+        });
+        mir.push(X86Inst::Cmp64RR {
+            src1: Operand::Virtual(tag),
+            src2: Operand::Virtual(constant),
+        });
+    }
+    mir.push(X86Inst::Jnz { label });
+}
+
 impl crate::agg_slots::SlotBackend for CfgLower<'_> {
     fn ctx(&self) -> &crate::cfg_lower::CfgLowerContext<'_> {
         &self.ctx
@@ -3249,11 +3290,8 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
         self.new_label()
     }
     fn emit_marshal_branch_if_tag_ne(&mut self, tag: VReg, discriminant: u64, label: LabelId) {
-        self.mir.push(X86Inst::CmpRI {
-            src: Operand::Virtual(tag),
-            imm: discriminant as i32,
-        });
-        self.mir.push(X86Inst::Jnz { label });
+        let discriminant = compact_tag_discriminant(discriminant);
+        emit_marshal_tag_ne(&mut self.mir, tag, discriminant, label);
     }
     fn emit_marshal_jump(&mut self, label: LabelId) {
         self.mir.push(X86Inst::Jmp { label });
@@ -3552,6 +3590,83 @@ mod tests {
     };
     use rue_cfg::{CfgArgMode, CfgCallArg, CfgInst, CfgInstData, PlaceBase, Projection};
     use rue_span::{FileId, Span};
+
+    #[test]
+    fn marshal_tag_cmp_imm_covers_i32_boundary() {
+        assert_eq!(marshal_tag_cmp_imm(4095), Some(4095));
+        assert_eq!(marshal_tag_cmp_imm(4096), Some(4096));
+        assert_eq!(marshal_tag_cmp_imm(i32::MAX as u64), Some(i32::MAX));
+        assert_eq!(marshal_tag_cmp_imm(i32::MAX as u64 + 1), None);
+        assert_eq!(marshal_tag_cmp_imm(u32::MAX as u64), None);
+    }
+
+    #[test]
+    fn marshal_tag_emits_immediate_and_full_width_fallback_mir_sequences() {
+        for (discriminant, expected) in [(4095, 4095), (4096, 4096), (i32::MAX as u32, i32::MAX)] {
+            let mut mir = X86Mir::new();
+            let tag = mir.alloc_vreg();
+            let label = LabelId::new(19);
+            emit_marshal_tag_ne(&mut mir, tag, discriminant, label);
+            assert_eq!(mir.vreg_count(), 1, "immediate compare must not allocate");
+            assert!(matches!(
+                mir.instructions(),
+                [
+                    X86Inst::Cmp64RI {
+                        src: Operand::Virtual(src),
+                        imm,
+                    },
+                    X86Inst::Jnz { label: branch_label },
+                ] if *src == tag && *imm == expected && *branch_label == label
+            ));
+        }
+
+        for discriminant in [i32::MAX as u64 + 1, u32::MAX as u64] {
+            let mut mir = X86Mir::new();
+            let tag = mir.alloc_vreg();
+            let label = LabelId::new(19);
+            emit_marshal_tag_ne(
+                &mut mir,
+                tag,
+                u32::try_from(discriminant).expect("test discriminant must fit the compact tag"),
+                label,
+            );
+            assert_eq!(
+                mir.vreg_count(),
+                2,
+                "fallback compare must allocate its constant"
+            );
+            let constant = match mir.instructions() {
+                [
+                    X86Inst::MovRI64 {
+                        dst: Operand::Virtual(constant),
+                        imm,
+                    },
+                    ..,
+                ] => {
+                    assert_eq!(*imm, i64::try_from(discriminant).unwrap());
+                    *constant
+                }
+                _ => panic!("fallback compare must materialize its constant first"),
+            };
+            assert!(matches!(
+                mir.instructions(),
+                [
+                    X86Inst::MovRI64 { .. },
+                    X86Inst::Cmp64RR {
+                        src1: Operand::Virtual(src1),
+                        src2: Operand::Virtual(src2),
+                    },
+                    X86Inst::Jnz { label: branch_label },
+                ] if *src1 == tag && *src2 == constant && *branch_label == label
+            ));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "compact u32 tag representation")]
+    fn marshal_tag_rejects_unrepresentable_discriminant() {
+        let _ = compact_tag_discriminant(u32::MAX as u64 + 1);
+    }
 
     #[test]
     fn physical_return_register_roster_matches_the_abi_kernel_budget() {
@@ -4407,7 +4522,7 @@ mod tests {
         assert!(
             mir.instructions()
                 .iter()
-                .any(|inst| matches!(inst, X86Inst::CmpRI { .. })),
+                .any(|inst| matches!(inst, X86Inst::Cmp64RI { .. })),
             "the nested heterogeneous enum store must dispatch on the embedded tag"
         );
     }
@@ -4517,7 +4632,7 @@ mod tests {
         assert!(
             mir.instructions()
                 .iter()
-                .any(|inst| matches!(inst, X86Inst::CmpRI { .. })),
+                .any(|inst| matches!(inst, X86Inst::Cmp64RI { .. })),
             "the heterogeneous store must compare the tag to dispatch on the variant"
         );
         assert!(
@@ -4893,7 +5008,7 @@ mod tests {
         assert!(
             mir.instructions()
                 .iter()
-                .any(|inst| matches!(inst, X86Inst::CmpRI { .. })),
+                .any(|inst| matches!(inst, X86Inst::Cmp64RI { .. })),
             "the heterogeneous enum store must dispatch on the tag"
         );
     }
