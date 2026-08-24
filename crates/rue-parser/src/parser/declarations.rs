@@ -39,9 +39,9 @@ impl Parser {
             TokenKind::Linear | TokenKind::Struct => self
                 .struct_decl(start, directives, visibility)
                 .map(Item::Struct),
-            TokenKind::Enum if directives.is_empty() => {
-                self.enum_decl(start, visibility).map(Item::Enum)
-            }
+            TokenKind::Enum => self
+                .enum_decl(start, directives, visibility)
+                .map(Item::Enum),
             TokenKind::Drop if directives.is_empty() && visibility == Visibility::Private => {
                 self.drop_fn(start).map(Item::DropFn)
             }
@@ -308,11 +308,17 @@ impl Parser {
         })
     }
 
-    fn enum_decl(&mut self, start: u32, visibility: Visibility) -> PResult<EnumDecl> {
+    fn enum_decl(
+        &mut self,
+        start: u32,
+        directives: Directives,
+        visibility: Visibility,
+    ) -> PResult<EnumDecl> {
         self.expect(TokenKind::Enum)?;
         let name = self.ident()?;
         let variants = self.enum_variants()?;
         Ok(EnumDecl {
+            directives,
             visibility,
             name,
             variants,

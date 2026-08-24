@@ -701,6 +701,8 @@ pub enum PreviewFeature {
     /// so an enabled float literal still stops at
     /// [`ErrorKind::FloatNotYetImplemented`].
     Floats,
+    /// Public enums may promise that importing matches include a wildcard.
+    NonExhaustiveEnums,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -723,6 +725,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::CFfi => "c_ffi",
             PreviewFeature::Floats => "floats",
+            PreviewFeature::NonExhaustiveEnums => "non_exhaustive_enums",
         }
     }
 
@@ -733,6 +736,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::CFfi => "ADR-0064",
             PreviewFeature::Floats => "ADR-0065",
+            PreviewFeature::NonExhaustiveEnums => "ADR-0005",
         }
     }
 
@@ -742,6 +746,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra,
             PreviewFeature::CFfi,
             PreviewFeature::Floats,
+            PreviewFeature::NonExhaustiveEnums,
         ]
     }
 
@@ -767,6 +772,7 @@ impl std::str::FromStr for PreviewFeature {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "c_ffi" => Ok(PreviewFeature::CFfi),
             "floats" => Ok(PreviewFeature::Floats),
+            "non_exhaustive_enums" => Ok(PreviewFeature::NonExhaustiveEnums),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -3149,7 +3155,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, c_ffi, floats");
+        assert_eq!(names, "test_infra, c_ffi, floats, non_exhaustive_enums");
     }
 
     #[test]

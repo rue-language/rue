@@ -115,6 +115,7 @@ pub enum DurableNominalBody<K, M> {
         /// Canonically shared variants in declaration order: source name and
         /// durable payload types.
         variants: Arc<[(Arc<str>, Arc<[SemanticImportType<K, M>]>)]>,
+        is_non_exhaustive: bool,
     },
 }
 
@@ -963,6 +964,7 @@ where
                     variants: builtin.variants.iter().map(|v| Arc::from(*v)).collect(),
                     variant_payloads: Vec::new(),
                     is_pub: true,
+                    is_non_exhaustive: false,
                     file_id: FileId::DEFAULT,
                 },
             );
@@ -1475,7 +1477,10 @@ where
                 );
                 Ok(Type::new_struct(id))
             }
-            DurableNominalBody::Enum { variants } => {
+            DurableNominalBody::Enum {
+                variants,
+                is_non_exhaustive,
+            } => {
                 let variant_names = variants
                     .iter()
                     .map(|(name, _)| Arc::from(name.as_ref()))
@@ -1487,6 +1492,7 @@ where
                         variants: variant_names.clone(),
                         variant_payloads: Vec::new(),
                         is_pub: is_public,
+                        is_non_exhaustive,
                         file_id,
                     },
                 );
@@ -1512,6 +1518,7 @@ where
                         variants: variant_names,
                         variant_payloads,
                         is_pub: is_public,
+                        is_non_exhaustive,
                         file_id,
                     },
                 );
@@ -1632,7 +1639,10 @@ where
                 );
                 Ok(Type::new_struct(id))
             }
-            DurableNominalBody::Enum { variants } => {
+            DurableNominalBody::Enum {
+                variants,
+                is_non_exhaustive,
+            } => {
                 let variant_names: Arc<[Arc<str>]> = variants
                     .iter()
                     .map(|(name, _)| Arc::from(name.as_ref()))
@@ -1644,6 +1654,7 @@ where
                         variants: variant_names.clone(),
                         variant_payloads: Vec::new(),
                         is_pub: is_public,
+                        is_non_exhaustive,
                         file_id,
                     },
                 );
@@ -1670,6 +1681,7 @@ where
                         variants: variant_names,
                         variant_payloads,
                         is_pub: is_public,
+                        is_non_exhaustive,
                         file_id,
                     },
                 );
@@ -2194,6 +2206,7 @@ where
                 variants: variant_names,
                 variant_payloads,
                 is_pub: false,
+                is_non_exhaustive: false,
                 file_id: FileId::DEFAULT,
             },
         );
@@ -3898,6 +3911,7 @@ mod tests {
                 .into_iter()
                 .map(|(name, payload)| (Arc::from(name), payload.into()))
                 .collect(),
+            is_non_exhaustive: false,
         }
     }
 
@@ -4070,6 +4084,7 @@ mod tests {
                 variants: variant_names.clone(),
                 variant_payloads: Vec::new(),
                 is_pub,
+                is_non_exhaustive: false,
                 file_id: TWIN_FILE,
             },
         );
@@ -4080,6 +4095,7 @@ mod tests {
                 variants: variant_names,
                 variant_payloads: variants.into_iter().map(|(_, p)| p).collect(),
                 is_pub,
+                is_non_exhaustive: false,
                 file_id: TWIN_FILE,
             },
         );

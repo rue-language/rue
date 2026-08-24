@@ -1574,6 +1574,7 @@ impl RirEditor {
     pub fn add_enum_decl(
         &mut self,
         is_pub: bool,
+        is_non_exhaustive: bool,
         name: Spur,
         variants: &[Spur],
         payloads: &[Vec<RirTypeSyntaxRef>],
@@ -1591,6 +1592,7 @@ impl RirEditor {
             Ok(rir.add_inst(Inst {
                 data: InstData::EnumDecl {
                     is_pub,
+                    is_non_exhaustive,
                     name,
                     variants,
                     payloads,
@@ -2418,6 +2420,7 @@ impl RirEditor {
                     }
                     InstData::EnumDecl {
                         is_pub,
+                        is_non_exhaustive,
                         name,
                         variants: variant_range,
                         payloads,
@@ -2431,7 +2434,14 @@ impl RirEditor {
                             .enum_payloads(payloads, variant_range)
                             .map(|payload| payload.values().map(remap_type).collect())
                             .collect::<Vec<Vec<_>>>();
-                        self.add_enum_decl(*is_pub, symbol(*name), &variants, &payloads, span)?
+                        self.add_enum_decl(
+                            *is_pub,
+                            *is_non_exhaustive,
+                            symbol(*name),
+                            &variants,
+                            &payloads,
+                            span,
+                        )?
                     }
                     InstData::EnumVariant {
                         module,
@@ -5626,6 +5636,8 @@ pub enum InstData {
     EnumDecl {
         /// Whether this enum is public (requires --preview modules)
         is_pub: bool,
+        /// Whether importing modules must include a wildcard when matching.
+        is_non_exhaustive: bool,
         /// Enum name
         name: Spur,
         /// Index into extra data where variants start
@@ -6499,11 +6511,17 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 // Enums
                 InstData::EnumDecl {
                     is_pub,
+                    is_non_exhaustive,
                     name,
                     variants,
                     payloads,
                 } => {
                     let pub_str = if *is_pub { "pub " } else { "" };
+                    let marker = if *is_non_exhaustive {
+                        "@non_exhaustive "
+                    } else {
+                        ""
+                    };
                     let name_str = self.interner.resolve(&*name);
                     let payload_arities: Vec<usize> = self
                         .rir
@@ -6524,7 +6542,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         .collect();
                     writeln!(
                         out,
-                        "{}enum {} {{ {} }}",
+                        "{}{}enum {} {{ {} }}",
+                        marker,
                         pub_str,
                         name_str,
                         variants_str.join(", ")
@@ -7027,7 +7046,7 @@ mod typed_payload_tests {
             )
             .unwrap();
         editor
-            .add_enum_decl(true, a, &[a, b], &[vec![type_b], vec![]], span())
+            .add_enum_decl(true, false, a, &[a, b], &[vec![type_b], vec![]], span())
             .unwrap();
         editor.add_array_init(&[value, block], span()).unwrap();
         editor
@@ -8350,6 +8369,7 @@ mod typed_payload_tests {
         cardinality.add_inst(Inst {
             data: InstData::EnumDecl {
                 is_pub: false,
+                is_non_exhaustive: false,
                 name: Spur::default(),
                 variants,
                 payloads,
@@ -8551,6 +8571,7 @@ mod typed_payload_tests {
         bad_symbol_word.rir.add_inst(Inst {
             data: InstData::EnumDecl {
                 is_pub: false,
+                is_non_exhaustive: false,
                 name: symbol,
                 variants: RirEnumVariantsRange::from_parts(0, 1),
                 payloads: RirEnumPayloadsRange::payload_fallback(),
@@ -8791,6 +8812,7 @@ mod typed_payload_tests {
             |rir: &mut Rir| rir.add_enum_variants(&[a]).unwrap(),
             |variants| InstData::EnumDecl {
                 is_pub: false,
+                is_non_exhaustive: false,
                 name: a,
                 variants,
                 payloads: RirEnumPayloadsRange::payload_fallback(),

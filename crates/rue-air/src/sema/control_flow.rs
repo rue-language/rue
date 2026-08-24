@@ -1193,8 +1193,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         let fully_covered = if scrutinee_type == Type::BOOL {
                             bool_true_span.is_some() && bool_false_span.is_some()
                         } else if let Some(enum_id) = pattern_enum_id {
-                            covered_variants.len()
-                                == self.body_type_pool().enum_def(enum_id).variant_count()
+                            let def = self.body_type_pool().enum_def(enum_id);
+                            let external_non_exhaustive =
+                                def.is_non_exhaustive && def.file_id != ctx.current_file_id;
+                            !external_non_exhaustive
+                                && covered_variants.len() == def.variant_count()
                         } else {
                             false
                         };
@@ -1562,7 +1565,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             has_wildcard || (bool_true_covered && bool_false_covered)
         } else if let Some(enum_id) = pattern_enum_id {
             let enum_def = self.body_type_pool().enum_def(enum_id);
-            has_wildcard || covered_variants.len() == enum_def.variant_count()
+            let external_non_exhaustive =
+                enum_def.is_non_exhaustive && enum_def.file_id != ctx.current_file_id;
+            has_wildcard
+                || (!external_non_exhaustive && covered_variants.len() == enum_def.variant_count())
         } else {
             // For integers, must have wildcard
             has_wildcard

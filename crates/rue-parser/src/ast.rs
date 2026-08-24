@@ -168,6 +168,8 @@ pub struct FieldDecl {
 /// An enum declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumDecl {
+    /// Directives applied to this enum (currently `@non_exhaustive`).
+    pub directives: Directives,
     /// Visibility of this enum
     pub visibility: Visibility,
     /// Enum name
@@ -1540,6 +1542,7 @@ fn rebind_item(item: &mut Item, file_id: FileId) {
             rebind_span(&mut structure.span, file_id);
         }
         Item::Enum(enumeration) => {
+            rebind_directives(&mut enumeration.directives, file_id);
             rebind_ident(&mut enumeration.name, file_id);
             for variant in &mut enumeration.variants {
                 rebind_enum_variant(variant, file_id);
@@ -1993,6 +1996,9 @@ fn fmt_struct(f: &mut fmt::Formatter<'_>, s: &StructDecl, level: usize) -> fmt::
 
 fn fmt_enum(f: &mut fmt::Formatter<'_>, e: &EnumDecl, level: usize) -> fmt::Result {
     indent(f, level)?;
+    for directive in &e.directives {
+        write!(f, "@sym:{} ", directive.name.name.into_usize())?;
+    }
     writeln!(f, "Enum sym:{}", e.name.name.into_usize())?;
     for variant in &e.variants {
         indent(f, level + 1)?;

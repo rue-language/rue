@@ -171,6 +171,64 @@ compile_fail = true
 error_contains = "exhaustive"
 
 [[case]]
+name = "non_exhaustive_enum_requires_preview"
+spec = ["6.3:21"]
+source = """
+@non_exhaustive pub enum Color { Red, Green }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1100", "non_exhaustive_enums"]
+
+[[case]]
+name = "non_exhaustive_enum_private_rejected"
+spec = ["6.3:21"]
+preview = "non_exhaustive_enums"
+preview_should_pass = true
+source = """
+@non_exhaustive enum Color { Red, Green }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "public enums"
+
+[[case]]
+name = "non_exhaustive_enum_internal_match_remains_exhaustive"
+spec = ["6.3:21"]
+preview = "non_exhaustive_enums"
+preview_should_pass = true
+source = """
+@non_exhaustive pub enum Color { Red, Green }
+fn classify(c: Color) -> i32 {
+    match c { Color.Red => 1, Color.Green => 2 }
+}
+fn main() -> i32 { classify(Color.Red) }
+"""
+exit_code = 1
+
+[[case]]
+name = "non_exhaustive_enum_external_match_keeps_wildcard_reachable"
+spec = ["6.3:21", "6.3:22"]
+preview = "non_exhaustive_enums"
+preview_should_pass = true
+source = """
+const colors = @import("colors.rue");
+fn main() -> i32 {
+    match colors.pick() {
+        colors.Color.Red => 1,
+        colors.Color.Green => 2,
+        _ => 3,
+    }
+}
+"""
+aux_files = { "colors.rue" = """
+@non_exhaustive pub enum Color { Red, Green }
+pub fn pick() -> Color { Color.Green }
+""" }
+exit_code = 2
+no_warnings = true
+
+[[case]]
 name = "match_enum_first_variant"
 spec = ["4.7:7", "4.7:10", "6.3:7"]
 source = """

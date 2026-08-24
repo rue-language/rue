@@ -7,7 +7,7 @@ feature-flag: preview-features
 created: 2025-01-01
 accepted: 2025-01-01
 implemented: 2025-12-27
-spec-sections: []
+spec-sections: ["6.3:21", "6.3:22"]
 superseded-by:
 ---
 
@@ -183,6 +183,15 @@ The following preview features completed this process and are now stable (their
 
 `test_infra` remains permanently unstable (it exists only to exercise the gating
 mechanism), so the `PreviewFeature` enum is not empty.
+
+### Active preview features
+
+- `non_exhaustive_enums` — `@non_exhaustive` public enums (RUE-1104). The
+  directive is an opt-in source/API compatibility promise: matches from an
+  importing module must include a wildcard, while matches in the defining
+  module remain exhaustively checked against the variants known there. Adding
+  variants can still change layout, ABI, or runtime behavior, so the promise
+  does not provide a binary compatibility guarantee.
 
 ## Implementation Phases
 

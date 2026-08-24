@@ -683,6 +683,9 @@ impl<'a> AstGen<'a> {
         self.rir
             .add_enum_decl(
                 enum_decl.visibility == Visibility::Public,
+                enum_decl.directives.iter().any(|directive| {
+                    self.interner.resolve(&directive.name.name) == "non_exhaustive"
+                }),
                 name,
                 &variants,
                 &payload_types,

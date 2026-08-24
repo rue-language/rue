@@ -43,6 +43,10 @@ const SYNTAX_PROBES: &[(&str, &str)] = &[
         "enum Maybe { None, Some(u64) } fn f(value: Maybe) -> u64 { match value { Maybe.Some(_) => 1, Maybe.None => 0 } }",
     ),
     (
+        "enum-directives.rue",
+        "@non_exhaustive pub enum Color { Red, Green }",
+    ),
+    (
         "qualified-type-arguments.rue",
         "fn f(value: outer.Result(inner.Value, inner.Error)) { match value { outer.Result(inner.Value, inner.Error).Ok(v) => {} } }",
     ),
@@ -921,8 +925,8 @@ impl Shapes<'_> {
             Item::Enum(v) => node(
                 "enum",
                 &format!(" flags={}", u8::from(v.visibility == Visibility::Public)),
+                self.directives(&v.directives),
                 self.variants(&v.variants),
-                "_".into(),
                 "_".into(),
                 "_".into(),
             ),
@@ -1447,6 +1451,19 @@ mod tests {
         ] {
             assert!(shape.contains(needle), "missing {needle} in {shape}");
         }
+    }
+
+    #[test]
+    fn normalization_retains_enum_directives() {
+        let shape = rust_shape("@non_exhaustive pub enum Color { Red, Green }").unwrap();
+        assert!(
+            shape.contains("(enum flags=1"),
+            "enum shape missing: {shape}"
+        );
+        assert!(
+            shape.contains("(directive"),
+            "enum directive missing from normalized shape: {shape}"
+        );
     }
 
     #[test]

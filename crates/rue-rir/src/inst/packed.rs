@@ -1583,12 +1583,14 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
             }
             InstData::EnumDecl {
                 is_pub,
+                is_non_exhaustive,
                 name,
                 variants,
                 payloads,
             } => {
                 self.byte(50)?;
                 self.boolean(*is_pub)?;
+                self.boolean(*is_non_exhaustive)?;
                 self.symbol(*name)?;
                 self.enum_payload(
                     rir.enum_variants(variants),
@@ -3009,10 +3011,17 @@ impl<
             }
             50 => {
                 let is_pub = reader.boolean("enum visibility")?;
+                let is_non_exhaustive = reader.boolean("enum non-exhaustive marker")?;
                 let name = self.symbol(reader)?;
                 let (variants, payloads) = self.enum_payload(reader)?;
-                self.destination
-                    .add_enum_decl(is_pub, name, &variants, &payloads, span)?
+                self.destination.add_enum_decl(
+                    is_pub,
+                    is_non_exhaustive,
+                    name,
+                    &variants,
+                    &payloads,
+                    span,
+                )?
             }
             51 => {
                 let module = self.optional_ref(reader)?;
@@ -4319,7 +4328,7 @@ mod tests {
         });
         refs.push(
             editor
-                .add_enum_decl(true, a, &[a, b], &[vec![type_a], vec![]], span)
+                .add_enum_decl(true, false, a, &[a, b], &[vec![type_a], vec![]], span)
                 .unwrap(),
         );
         add!(InstData::EnumVariant {
@@ -4817,6 +4826,7 @@ mod tests {
         let enumeration_payload = named_type(&mut enumeration, b);
         let enum_root = enumeration
             .add_enum_decl(
+                false,
                 false,
                 a,
                 &[a],

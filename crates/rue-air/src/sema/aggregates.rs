@@ -1353,7 +1353,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
 
         match &inst.data {
-            InstData::EnumDecl { .. } => {
+            InstData::EnumDecl {
+                is_pub,
+                is_non_exhaustive,
+                ..
+            } => {
+                if *is_non_exhaustive {
+                    self.require_preview(
+                        rue_error::PreviewFeature::NonExhaustiveEnums,
+                        "@non_exhaustive enums",
+                        inst.span,
+                    )?;
+                    if !*is_pub {
+                        return Err(CompileError::new(
+                            ErrorKind::ParseError(
+                                "@non_exhaustive can only be applied to public enums".to_string(),
+                            ),
+                            inst.span,
+                        ));
+                    }
+                }
                 // Enum declarations are processed during collection phase
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::UnitConst,

@@ -88,6 +88,11 @@ pub(crate) enum ParsedSemanticSignature {
         syntax: rue_rir::RirTypeSyntaxArena<Arc<str>>,
         variants: Arc<[ParsedSemanticVariant]>,
         payloads: Arc<[rue_rir::RirTypeSyntaxRef]>,
+        is_non_exhaustive: bool,
+        is_public: bool,
+        /// Directive range relative to the declaration span, retained so
+        /// declaration diagnostics can point at `@non_exhaustive` itself.
+        non_exhaustive_range: Option<(u32, u32)>,
     },
     Destructor,
 }
@@ -551,6 +556,21 @@ pub(crate) fn project_semantic_signature(
                 syntax: syntax.finish(),
                 variants: variants.into(),
                 payloads: payloads.into(),
+                is_non_exhaustive: value
+                    .directives
+                    .iter()
+                    .any(|directive| resolve(directive.name.name) == "non_exhaustive"),
+                is_public: value.visibility == rue_parser::ast::Visibility::Public,
+                non_exhaustive_range: value
+                    .directives
+                    .iter()
+                    .find(|directive| resolve(directive.name.name) == "non_exhaustive")
+                    .and_then(|directive| {
+                        Some((
+                            directive.span.start.checked_sub(value.span.start)?,
+                            directive.span.end.checked_sub(value.span.start)?,
+                        ))
+                    }),
             })
         }
         ParsedDeclarationAstRef::Destructor(_) => Ok(ParsedSemanticSignature::Destructor),
@@ -852,6 +872,7 @@ pub(crate) enum DeclarationSignatureProjection {
     },
     Enum {
         variants: Arc<[(Arc<str>, Arc<[DurableType]>)]>,
+        is_non_exhaustive: bool,
     },
     Destructor,
 }
@@ -1001,7 +1022,7 @@ impl RetainedCharge for DeclarationSignatureProjection {
                 .retained_charge()
                 .saturating_add(result.retained_charge()),
             Self::Struct { fields, .. } => fields.retained_charge(),
-            Self::Enum { variants } => variants.retained_charge(),
+            Self::Enum { variants, .. } => variants.retained_charge(),
             Self::Destructor => 0,
         }
     }
@@ -1121,9 +1142,13 @@ impl DeclarationSemanticValue {
                 is_copy,
                 is_linear,
             },
-            DeclarationSignatureProjection::Enum { variants } => {
-                DurableDeclarationPayload::Enum { variants }
-            }
+            DeclarationSignatureProjection::Enum {
+                variants,
+                is_non_exhaustive,
+            } => DurableDeclarationPayload::Enum {
+                variants,
+                is_non_exhaustive,
+            },
             DeclarationSignatureProjection::Destructor => DurableDeclarationPayload::Destructor,
         };
         Self { identity, payload }

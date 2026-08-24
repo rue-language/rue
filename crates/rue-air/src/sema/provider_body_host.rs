@@ -2441,7 +2441,7 @@ where
                             self.install_anonymous_dependencies(field, visited_named)?;
                         }
                     }
-                    crate::DurableNominalBody::Enum { variants } => {
+                    crate::DurableNominalBody::Enum { variants, .. } => {
                         for (_, payload) in variants.iter() {
                             for field in payload.iter() {
                                 self.install_anonymous_dependencies(field, visited_named)?;
@@ -2542,7 +2542,7 @@ where
                                 self.register_import_nominal_identities_inner(field)?;
                             }
                         }
-                        crate::DurableNominalBody::Enum { variants } => {
+                        crate::DurableNominalBody::Enum { variants, .. } => {
                             for (_, payload) in variants.iter() {
                                 for field in payload.iter() {
                                     self.provider_body_work

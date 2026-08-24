@@ -410,6 +410,24 @@ warning_contains = ["unreachable pattern", "'_'", "already cover every possible 
 expected_warning_count = 1
 
 [[case]]
+name = "wildcard_after_full_internal_non_exhaustive_enum_coverage"
+description = "The non-exhaustive contract affects importing modules only; a defining-module wildcard remains unreachable."
+preview = "non_exhaustive_enums"
+source = """
+@non_exhaustive pub enum Color { Red, Green }
+fn main() -> i32 {
+    match Color.Red {
+        Color.Red => 1,
+        Color.Green => 2,
+        _ => 3,
+    }
+}
+"""
+exit_code = 1
+warning_contains = ["unreachable pattern", "'_'", "already cover every possible value"]
+expected_warning_count = 1
+
+[[case]]
 name = "wildcard_after_full_bool_coverage"
 source = """
 fn main() -> i32 {

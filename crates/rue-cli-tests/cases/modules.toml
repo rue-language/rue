@@ -1018,6 +1018,50 @@ args = ["main.rue", "-o", "prog"]
 exit_code = 2
 
 [[case]]
+name = "non_exhaustive_enum_import_requires_wildcard"
+description = "A public @non_exhaustive enum requires a wildcard in a match from an importing module, even when all current variants are named."
+files = [
+    { path = "main.rue", source = """
+const colors = @import("colors.rue");
+fn main() -> i32 {
+    match colors.pick() {
+        colors.Color.Red => 1,
+        colors.Color.Green => 2,
+    }
+}
+""" },
+    { path = "colors.rue", source = """
+@non_exhaustive pub enum Color { Red, Green }
+pub fn pick() -> Color { Color.Green }
+""" },
+]
+args = ["main.rue", "-o", "prog", "--preview", "non_exhaustive_enums"]
+compile_fail = true
+error_contains = ["E0600", "not exhaustive"]
+
+[[case]]
+name = "non_exhaustive_enum_import_wildcard_executes"
+files = [
+    { path = "main.rue", source = """
+const colors = @import("colors.rue");
+fn main() -> i32 {
+    match colors.pick() {
+        colors.Color.Red => 1,
+        colors.Color.Green => 2,
+        _ => 3,
+    }
+}
+""" },
+    { path = "colors.rue", source = """
+@non_exhaustive pub enum Color { Red, Green }
+pub fn pick() -> Color { Color.Green }
+""" },
+]
+args = ["main.rue", "-o", "prog", "--preview", "non_exhaustive_enums"]
+exit_code = 2
+compile_stderr_not_contains = ["unreachable"]
+
+[[case]]
 name = "same_named_structs_in_sibling_modules"
 description = "RUE-454: module-local type identity allows sibling modules to export same-named structs."
 files = [

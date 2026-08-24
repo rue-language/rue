@@ -571,6 +571,7 @@ impl ProviderFixture {
                         .into_iter()
                         .map(|(variant, payloads)| (Arc::from(variant), payloads.into()))
                         .collect(),
+                    is_non_exhaustive: false,
                 },
             },
         );
