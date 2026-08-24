@@ -2374,7 +2374,8 @@ impl<'a> Emitter<'a> {
         // destination is XZR), so an immediate that fits neither the plain nor
         // the shifted 12-bit form must be materialized by the caller. Guard
         // against silent truncation (was a bare `imm & 0xFFF`, the RUE-45
-        // class); every current caller passes < 4096.
+        // class). Callers prevalidate the plain/shifted forms; a value that
+        // fits neither form must be materialized before reaching this encoder.
         let inst = if imm <= 0xFFF {
             OPCODE_CMP_IMM_X | ((imm & 0xFFF) << 10)
         } else if imm & 0xFFF == 0 && (imm >> 12) <= 0xFFF {
@@ -3261,6 +3262,20 @@ mod tests {
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
         assert_eq!(inst & 0xFF000000, 0xF1000000, "Should be SUBS immediate");
         // Rd should be XZR (31)
+        assert_eq!(inst & 0x1F, 31, "Rd should be XZR");
+    }
+
+    #[test]
+    fn test_cmp_imm_shifted_12_bit_form() {
+        let code = emit_single(Aarch64Inst::CmpImm {
+            src: Operand::Physical(Reg::X0),
+            imm: 4096,
+        });
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(code.len(), 4);
+        assert_eq!((inst >> 22) & 1, 1, "CMP should select the shifted form");
+        assert_eq!((inst >> 10) & 0xFFF, 1, "CMP should encode 4096 as 1 << 12");
+        assert_eq!((inst >> 5) & 0x1F, 0, "Rn should be X0");
         assert_eq!(inst & 0x1F, 31, "Rd should be XZR");
     }
 

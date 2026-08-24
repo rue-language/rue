@@ -3382,6 +3382,52 @@ fn aarch64_narrow_offset_encodable(byte_offset: i32, width: u8) -> bool {
     byte_offset >= 0 && byte_offset % width == 0 && byte_offset / width <= 0xFFF
 }
 
+/// Return the direct CMP-immediate form for a tag, if AArch64 can encode it.
+/// The compact layout's tag is an unsigned u8/u16/u32 at offset zero, so this
+/// test is shared by all tag-dispatch lowering and never truncates a u64 value.
+fn marshal_tag_cmp_imm(discriminant: u64) -> Option<i32> {
+    let encodable =
+        discriminant <= 0xFFF || (discriminant & 0xFFF == 0 && discriminant >> 12 <= 0xFFF);
+    encodable.then(|| {
+        i32::try_from(discriminant).expect("encodable enum discriminant must fit the MIR immediate")
+    })
+}
+
+fn compact_tag_discriminant(discriminant: u64) -> u32 {
+    u32::try_from(discriminant)
+        .expect("enum discriminant exceeds the compact u32 tag representation")
+}
+
+/// Emit the compare and skip branch used by every heterogeneous enum image
+/// dispatch. Keeping this sequence in one helper lets the MIR boundary tests
+/// exercise the same path as [`SlotBackend::emit_marshal_branch_if_tag_ne`].
+fn emit_marshal_tag_ne(mir: &mut Aarch64Mir, tag: VReg, discriminant: u32, label: LabelId) {
+    // Compact enum tags are zero-extended u8/u16/u32 values in their
+    // slot-shaped vregs. CMP's immediate encoding has only a plain or
+    // <<12 12-bit form; retain either fast path and materialize every
+    // other representable tag before the 64-bit register compare.
+    if let Some(imm) = marshal_tag_cmp_imm(u64::from(discriminant)) {
+        mir.push(Aarch64Inst::CmpImm {
+            src: Operand::Virtual(tag),
+            imm,
+        });
+    } else {
+        let constant = mir.alloc_vreg();
+        mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(constant),
+            imm: i64::from(discriminant),
+        });
+        mir.push(Aarch64Inst::Cmp64RR {
+            src1: Operand::Virtual(tag),
+            src2: Operand::Virtual(constant),
+        });
+    }
+    mir.push(Aarch64Inst::BCond {
+        cond: Cond::Ne,
+        label,
+    });
+}
+
 impl crate::agg_slots::SlotBackend for CfgLower<'_> {
     fn ctx(&self) -> &crate::cfg_lower::CfgLowerContext<'_> {
         &self.ctx
@@ -3504,14 +3550,8 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
         self.mir.alloc_label()
     }
     fn emit_marshal_branch_if_tag_ne(&mut self, tag: VReg, discriminant: u64, label: LabelId) {
-        self.mir.push(Aarch64Inst::CmpImm {
-            src: Operand::Virtual(tag),
-            imm: discriminant as i32,
-        });
-        self.mir.push(Aarch64Inst::BCond {
-            cond: Cond::Ne,
-            label,
-        });
+        let discriminant = compact_tag_discriminant(discriminant);
+        emit_marshal_tag_ne(&mut self.mir, tag, discriminant, label);
     }
     fn emit_marshal_jump(&mut self, label: LabelId) {
         self.mir.push(Aarch64Inst::B { label });
@@ -3769,6 +3809,87 @@ mod tests {
     };
     use rue_cfg::{CfgArgMode, CfgCallArg, CfgInst, CfgInstData, PlaceBase, Projection};
     use rue_span::{FileId, Span};
+
+    #[test]
+    fn marshal_tag_cmp_imm_covers_aarch64_boundaries() {
+        assert_eq!(marshal_tag_cmp_imm(4095), Some(4095));
+        assert_eq!(marshal_tag_cmp_imm(4096), Some(4096));
+        assert_eq!(marshal_tag_cmp_imm(4097), None);
+        assert_eq!(marshal_tag_cmp_imm(0xFFF000), Some(0xFFF000));
+        assert_eq!(marshal_tag_cmp_imm(0xFFF001), None);
+        assert_eq!(marshal_tag_cmp_imm(i32::MAX as u64), None);
+        assert_eq!(marshal_tag_cmp_imm(i32::MAX as u64 + 1), None);
+        assert_eq!(marshal_tag_cmp_imm(u32::MAX as u64), None);
+    }
+
+    #[test]
+    fn marshal_tag_emits_immediate_and_fallback_mir_sequences() {
+        for (discriminant, expected) in [(4095, 4095), (4096, 4096)] {
+            let mut mir = Aarch64Mir::new();
+            let tag = mir.alloc_vreg();
+            let label = LabelId::new(17);
+            emit_marshal_tag_ne(&mut mir, tag, discriminant, label);
+            assert_eq!(mir.vreg_count(), 1, "immediate compare must not allocate");
+            assert!(matches!(
+                mir.instructions(),
+                [
+                    Aarch64Inst::CmpImm {
+                        src: Operand::Virtual(src),
+                        imm,
+                    },
+                    Aarch64Inst::BCond {
+                        cond: Cond::Ne,
+                        label: branch_label,
+                    },
+                ] if *src == tag && *imm == expected && *branch_label == label
+            ));
+        }
+
+        for discriminant in [4097, u32::MAX] {
+            let mut mir = Aarch64Mir::new();
+            let tag = mir.alloc_vreg();
+            let label = LabelId::new(18);
+            emit_marshal_tag_ne(&mut mir, tag, discriminant, label);
+            assert_eq!(
+                mir.vreg_count(),
+                2,
+                "fallback compare must allocate its constant"
+            );
+            let constant = match mir.instructions() {
+                [
+                    Aarch64Inst::MovImm {
+                        dst: Operand::Virtual(constant),
+                        imm,
+                    },
+                    ..,
+                ] => {
+                    assert_eq!(*imm, i64::from(discriminant));
+                    *constant
+                }
+                _ => panic!("fallback compare must materialize its constant first"),
+            };
+            assert!(matches!(
+                mir.instructions(),
+                [
+                    Aarch64Inst::MovImm { .. },
+                    Aarch64Inst::Cmp64RR {
+                        src1: Operand::Virtual(src1),
+                        src2: Operand::Virtual(src2),
+                    },
+                    Aarch64Inst::BCond {
+                        cond: Cond::Ne,
+                        label: branch_label,
+                    },
+                ] if *src1 == tag && *src2 == constant && *branch_label == label
+            ));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "compact u32 tag representation")]
+    fn marshal_tag_rejects_unrepresentable_discriminant() {
+        let _ = compact_tag_discriminant(u32::MAX as u64 + 1);
+    }
 
     #[test]
     fn physical_return_register_roster_matches_the_abi_kernel_budget() {
