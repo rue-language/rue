@@ -210,11 +210,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         ctx.exit_full_expression(boundary);
                         let result = result?;
                         ctx.pop_scope();
-                        // The selected branch IS this `if`'s value, so an
-                        // accessor result it yields keeps its loan for the
+                        // With an `else`, the selected branch is this `if`'s
+                        // value, so loans surviving its tail belong to the
                         // enclosing full expression (RUE-1678), exactly as on
                         // the ordinary two-armed path below.
-                        self.readmit_arm_accessor_loans(ctx, block, loans);
+                        self.readmit_arm_accessor_loans(
+                            ctx,
+                            loans,
+                            else_block.is_some() && result.continues,
+                        )?;
                         // An `if` without `else` is unit-typed, so its (taken)
                         // then-branch must still be unit (spec 4.6:5).
                         if else_block.is_none()
@@ -263,10 +267,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Save move state before entering branches.
             let saved_moves = ctx.moved_vars.clone();
 
-            // Analyze then branch with its own scope. An arm's accessor loan
-            // is harvested before the arm's boundary closes: if the arm's
-            // value is the `if`'s value, that loan belongs to the enclosing
-            // full expression and is readmitted once both arms are analyzed
+            // Analyze then branch with its own scope. Loans surviving the
+            // arm's tail are harvested before its boundary closes and belong
+            // to the enclosing full expression once both arms are analyzed
             // (ADR-0062 6.6:10, RUE-1678).
             ctx.push_scope();
             let boundary = ctx.enter_full_expression();
@@ -297,12 +300,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let else_span = self.body_rir_ref().get(else_b).span;
             ctx.pop_scope();
 
-            // Both arms are analyzed, so an arm's accessor loan can no longer
-            // be mistaken for a conflicting sibling of the other arm's
-            // accessor call. Readmit the loans of whichever arms yield the
-            // `if`'s value as an accessor result (RUE-1678).
-            self.readmit_arm_accessor_loans(ctx, then_block, then_loans);
-            self.readmit_arm_accessor_loans(ctx, else_b, else_loans);
+            // Both arms are analyzed, so one arm's loan cannot be mistaken for
+            // a conflicting sibling of the other arm's accessor call. Readmit
+            // the loans that survived each arm's tail (RUE-1678).
+            self.readmit_arm_accessor_loans(
+                ctx,
+                then_loans,
+                cond_result.continues && then_continues,
+            )?;
+            self.readmit_arm_accessor_loans(
+                ctx,
+                else_loans,
+                cond_result.continues && else_continues,
+            )?;
 
             // Capture else-branch's move state
             let else_moves = ctx.moved_vars.clone();
@@ -1031,10 +1041,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         ctx.exit_full_expression(boundary);
                         let result = result?;
                         ctx.pop_scope();
-                        // The selected arm IS this `match`'s value, so an
-                        // accessor result it yields keeps its loan for the
-                        // enclosing full expression (RUE-1678).
-                        self.readmit_arm_accessor_loans(ctx, body, loans);
+                        // The selected arm is this `match`'s value, so loans
+                        // surviving its tail belong to the enclosing full
+                        // expression (RUE-1678).
+                        self.readmit_arm_accessor_loans(ctx, loans, result.continues)?;
                         return Ok(result);
                     }
                 }
@@ -1408,10 +1418,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Analyze arm body
             let boundary = ctx.enter_full_expression();
             let body_result = self.analyze_inst(air, *body, ctx);
-            arm_accessor_loans.push((*body, ctx.nested_expression_loans(&boundary)));
+            let body_loans = ctx.nested_expression_loans(&boundary);
             ctx.exit_full_expression(boundary);
             let body_result = body_result?;
             let body_type = body_result.ty;
+            arm_accessor_loans.push((*body, body_loans, body_result.continues));
 
             // Payload bindings are ordinary locals living in the ARM scope,
             // not in the body's own block scope, so the block-exit
@@ -1523,12 +1534,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             air_arms.push((air_pattern, arm_body_ref));
         }
 
-        // Every arm is analyzed, so an arm's accessor loan can no longer be
-        // mistaken for a conflicting sibling of a later arm's accessor call.
-        // Readmit the loans of whichever arms yield the `match`'s value as an
-        // accessor result (ADR-0062 6.6:10, RUE-1678).
-        for (body, loans) in arm_accessor_loans {
-            self.readmit_arm_accessor_loans(ctx, body, loans);
+        // Every arm is analyzed, so one arm's loan cannot be mistaken for a
+        // conflicting sibling of a later arm's accessor call. Readmit the
+        // loans that survived each arm's tail (ADR-0062 6.6:10, RUE-1678).
+        for (_, loans, body_continues) in arm_accessor_loans {
+            self.readmit_arm_accessor_loans(
+                ctx,
+                loans,
+                scrutinee_result.continues && body_continues,
+            )?;
         }
 
         // Join the arms' move states (union of non-diverging arms;

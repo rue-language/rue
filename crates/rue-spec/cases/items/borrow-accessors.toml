@@ -1896,3 +1896,340 @@ fn main() -> i32 {
 """
 expected_stdout = "12\n"
 exit_code = 0
+
+[[case]]
+name = "derived_joined_accessor_result_conflicts_with_inout"
+spec = ["6.6:10"]
+description = "An accessor result consumed by a copy-read in an if arm still conflicts with a sibling exclusive use (E0259)."
+source = """
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 {
+        yield self.cells[i];
+    }
+}
+fn using(a: i64, b: i64) -> i64 { a + b }
+fn bump(inout g: Grid) -> i64 {
+    g.cells[0] = 9;
+    0
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3, 4] };
+    using(if true { g.at(0) + 1 } else { 0 }, bump(inout g));
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "while an accessor result borrows it"]
+
+[[case]]
+name = "derived_joined_accessor_result_conflicts_with_prior_inout"
+spec = ["6.6:10"]
+description = "A completed exclusive sibling use is checked when a derived accessor loan is readmitted from a later if arm (E0259)."
+source = """
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 {
+        yield self.cells[i];
+    }
+}
+fn using(a: i64, b: i64) -> i64 { a + b }
+fn bump(inout g: Grid) -> i64 {
+    g.cells[0] = 9;
+    0
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3, 4] };
+    using(bump(inout g), if true { g.at(0) + 1 } else { 0 });
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "after an exclusive use"]
+
+[[case]]
+name = "derived_joined_accessor_result_diverging_if_arm_is_not_readmitted"
+spec = ["6.6:10"]
+description = "A diverging if arm has no continuing accessor-loan path, so a later sibling inout remains legal."
+source = """
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 { yield self.cells[i]; }
+}
+fn using(a: i64, b: i64) -> i64 { a + b }
+fn bump(inout g: Grid) -> i64 { g.cells[0] = 9; 0 }
+fn stop() -> ! { loop {} }
+fn choose(c: bool, inout g: Grid) -> i64 {
+    using(if c { g.at(0) + stop() } else { 0 }, bump(inout g))
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3, 4] };
+    choose(false, inout g);
+    0
+}
+"""
+compile_only = true
+
+[[case]]
+name = "derived_joined_accessor_result_diverging_if_condition_is_not_readmitted"
+spec = ["6.6:10"]
+description = "A diverging if condition has no continuing accessor-loan path, so later sibling analysis stays isolated."
+source = """
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 { yield self.cells[i]; }
+}
+fn using(a: i64, b: i64) -> i64 { a + b }
+fn bump(inout g: Grid) -> i64 { g.cells[0] = 9; 0 }
+fn stop() -> ! { loop {} }
+fn choose(inout g: Grid) -> i64 {
+    using(if stop() { g.at(0) + 1 } else { 0 }, bump(inout g))
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3, 4] };
+    choose(inout g);
+    0
+}
+"""
+compile_only = true
+
+[[case]]
+name = "derived_joined_accessor_result_diverging_match_arm_is_not_readmitted"
+spec = ["6.6:10"]
+description = "A diverging match arm has no continuing accessor-loan path, so a later sibling inout remains legal."
+source = """
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 { yield self.cells[i]; }
+}
+fn using(a: i64, b: i64) -> i64 { a + b }
+fn bump(inout g: Grid) -> i64 { g.cells[0] = 9; 0 }
+fn stop() -> ! { loop {} }
+fn choose(n: i32, inout g: Grid) -> i64 {
+    using(match n { 0 => g.at(0) + stop(), _ => 0 }, bump(inout g))
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3, 4] };
+    choose(1, inout g);
+    0
+}
+"""
+compile_only = true
+
+[[case]]
+name = "derived_joined_accessor_result_comptime_if_without_else_is_unit"
+spec = ["4.14:17", "6.6:10"]
+description = "A comptime-selected if without else remains unit-valued and does not carry its body loan into a sibling."
+source = """
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 { yield self.cells[i]; }
+}
+fn consume(v: i64) -> () {}
+fn using(a: (), b: i64) -> i64 { b }
+fn bump(inout g: Grid) -> i64 { g.cells[0] = 9; 0 }
+fn choose(comptime c: bool, inout g: Grid) -> i64 {
+    using(if c { consume(g.at(0) + 1) }, bump(inout g))
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3, 4] };
+    choose(true, inout g);
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "derived_joined_accessor_result_comptime_if_divergence_is_not_readmitted"
+spec = ["4.14:17", "6.6:10"]
+description = "A diverging comptime-selected if arm has no continuing accessor-loan path, so a later sibling inout remains legal."
+source = """
+struct Grid {
+    cells: [i64; 4],
+    fn at(borrow self, i: u64) -> borrow i64 { yield self.cells[i]; }
+}
+fn using(a: i64, b: i64) -> i64 { a + b }
+fn bump(inout g: Grid) -> i64 { g.cells[0] = 9; 0 }
+fn stop() -> ! { loop {} }
+fn choose(comptime c: bool, inout g: Grid) -> i64 {
+    using(if c { g.at(0) + stop() } else { 0 }, bump(inout g))
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3, 4] };
+    choose(true, inout g);
+    0
+}
+"""
+compile_only = true
+
+[[case]]
+name = "derived_joined_accessor_result_comptime_match_divergence_is_not_readmitted"
+spec = ["4.14:19", "6.6:10"]
+description = "A diverging comptime-selected match arm has no continuing accessor-loan path, so a later sibling inout remains legal."
+source = """
+struct Grid {
+    cells: [i64; 4],
+    fn at(borrow self, i: u64) -> borrow i64 { yield self.cells[i]; }
+}
+fn using(a: i64, b: i64) -> i64 { a + b }
+fn bump(inout g: Grid) -> i64 { g.cells[0] = 9; 0 }
+fn stop() -> ! { loop {} }
+fn choose(comptime n: i32, inout g: Grid) -> i64 {
+    using(match n { 0 => g.at(0) + stop(), _ => 0 }, bump(inout g))
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3, 4] };
+    choose(0, inout g);
+    0
+}
+"""
+compile_only = true
+
+[[case]]
+name = "derived_joined_accessor_result_diverging_match_scrutinee_is_not_readmitted"
+spec = ["6.6:10"]
+description = "A diverging match scrutinee has no continuing accessor-loan path, so its arm loans do not reach a later sibling inout."
+source = """
+struct Grid {
+    cells: [i64; 4],
+    fn at(borrow self, i: u64) -> borrow i64 { yield self.cells[i]; }
+}
+fn using(a: i64, b: i64) -> i64 { a + b }
+fn bump(inout g: Grid) -> i64 { g.cells[0] = 9; 0 }
+fn choose(inout g: Grid) -> i64 {
+    using(
+        match if @panic(\"stop\") { 0 } else { 1 } {
+            0 => g.at(0) + 1,
+            _ => 0,
+        },
+        bump(inout g),
+    )
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3, 4] };
+    choose(inout g);
+    0
+}
+"""
+compile_only = true
+
+[[case]]
+name = "derived_joined_accessor_result_conflicts_through_match_arm"
+spec = ["6.6:10"]
+description = "A match arm that consumes an accessor result by copy-read carries its loan to the enclosing full expression (E0259)."
+source = """
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 {
+        yield self.cells[i];
+    }
+}
+fn using(a: i64, b: i64) -> i64 { a + b }
+fn bump(inout g: Grid) -> i64 {
+    g.cells[0] = 9;
+    0
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3, 4] };
+    let n = 0;
+    using(match n { 0 => g.at(0) + 1, _ => 0 }, bump(inout g));
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "while an accessor result borrows it"]
+
+[[case]]
+name = "derived_joined_accessor_result_alternative_arms_are_legal"
+spec = ["6.6:8", "6.6:10"]
+description = "Accessor loans from alternative if arms do not conflict with one another when each is consumed by a copy-read."
+source = """
+struct P {
+    x: i64,
+    y: i64,
+
+    fn xr(borrow self) -> borrow i64 { yield self.x; }
+    fn yr(borrow self) -> borrow i64 { yield self.y; }
+}
+fn main() -> i32 {
+    let p = P { x: 7, y: 3 };
+    let value = if true { p.xr() + 1 } else { p.yr() + 1 };
+    if value == 8 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "derived_joined_accessor_result_child_statement_does_not_escape"
+spec = ["6.6:8", "6.6:10"]
+description = "An accessor result in a discarded nested-block statement remains isolated from the enclosing sibling inout."
+source = """
+struct P {
+    value: i64,
+
+    fn f(borrow self) -> borrow i64 { yield self.value; }
+}
+fn g(inout p: P) -> i64 { p.value = p.value + 1; 0 }
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut p = P { value: 2 };
+    use_two({ p.f() == 2; 0 }, g(inout p));
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "derived_joined_accessor_result_comptime_if_conflicts"
+spec = ["4.14:17", "6.6:10"]
+description = "A comptime-selected if arm carries a derived accessor loan to the enclosing full expression (E0259)."
+source = """
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 { yield self.cells[i]; }
+}
+fn using(a: i64, b: i64) -> i64 { a + b }
+fn bump(inout g: Grid) -> i64 { g.cells[0] = 9; 0 }
+fn choose(comptime c: bool, inout g: Grid) -> i64 {
+    using(bump(inout g), if c { g.at(0) + 1 } else { 0 })
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3, 4] };
+    choose(true, inout g);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "after an exclusive use"]
+
+[[case]]
+name = "derived_joined_accessor_result_comptime_match_conflicts"
+spec = ["4.14:19", "6.6:10"]
+description = "A comptime-selected match arm carries a derived accessor loan to the enclosing full expression (E0259)."
+source = """
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 { yield self.cells[i]; }
+}
+fn using(a: i64, b: i64) -> i64 { a + b }
+fn bump(inout g: Grid) -> i64 { g.cells[0] = 9; 0 }
+fn choose(comptime n: i32, inout g: Grid) -> i64 {
+    using(bump(inout g), match n { 0 => g.at(0) + 1, _ => 0 })
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3, 4] };
+    choose(0, inout g);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "after an exclusive use"]
