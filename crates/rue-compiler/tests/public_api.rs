@@ -1,5 +1,9 @@
 use std::sync::Arc;
 
+use rue_air::{
+    ComptimeStructuredTypeAuthority, ComptimeStructuredTypeJob, ComptimeStructuredTypePoll,
+    ComptimeStructuredTypeSuspension,
+};
 use rue_compiler::unstable::{MetricsSnapshot, PresentationRequest, PresentationStage, rooted_cfg};
 use rue_compiler::{
     CompileErrors, CompileOptions, CompileOutput, CompilerSession, CompilerSessionUpdate,
@@ -8,6 +12,27 @@ use rue_compiler::{
     SourceRevision, SourceSnapshot, SourceView, SyntaxNodeView, compile_snapshot,
 };
 use rue_error::ErrorKind;
+
+type PublicStructuredJob =
+    ComptimeStructuredTypeJob<u8, u16, u32, u64, u128, u128, Arc<str>, Arc<str>, Arc<[Arc<str>]>>;
+type PublicStructuredAuthority =
+    ComptimeStructuredTypeAuthority<u8, u16, Arc<str>, Arc<[Arc<str>]>>;
+type PublicStructuredPoll =
+    ComptimeStructuredTypePoll<u8, u16, u32, u64, u128, u128, Arc<str>, Arc<str>, Arc<[Arc<str>]>>;
+
+fn assert_structured_type_api_composes(
+    _authority: Option<PublicStructuredAuthority>,
+    _job: Option<PublicStructuredJob>,
+    _poll: Option<PublicStructuredPoll>,
+) {
+    fn requires_canonical_suspension<S: ComptimeStructuredTypeSuspension>() {}
+    requires_canonical_suspension::<PublicStructuredJob>();
+}
+
+#[test]
+fn structured_type_api_composes_for_external_consumers() {
+    assert_structured_type_api_composes(None, None, None);
+}
 
 #[test]
 fn curated_facade_compiles_for_an_external_consumer() {

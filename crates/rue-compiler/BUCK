@@ -103,6 +103,7 @@ rue_rust_test(
     crate_root = "tests/public_api.rs",
     deps = [
         ":rue-compiler",
+        "//crates/rue-air:rue-air",
         "//crates/rue-error:rue-error",
     ],
 )

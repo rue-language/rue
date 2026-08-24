@@ -57,8 +57,8 @@ use rue_span::{FileId, Span};
 use super::comptime::{
     ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallPreparation,
     ComptimeConstInfo, ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile,
-    ComptimeFrame, ComptimeHost, ComptimeIdentity, ComptimeName, ComptimeOutcome, ComptimeTrap,
-    ComptimeType,
+    ComptimeFrame, ComptimeHost, ComptimeIdentity, ComptimeName, ComptimeOutcome,
+    ComptimeStructuredTypeResolution, ComptimeTrap, ComptimeType,
 };
 use super::context::{AnalysisContext, ConstValue};
 use super::info::FunctionCallInfo;
@@ -1741,6 +1741,46 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     type CallAdmission = super::info::FunctionCallInfo;
     type AnonymousStructId = crate::types::StructId;
     type AnonMethodSigs = Vec<super::AnonMethodSig>;
+    type StructuredTypeSuspension = crate::semantic_type_resolution::ComptimeStructuredTypeJob<
+        (),
+        (),
+        (),
+        Spur,
+        (),
+        Type,
+        ConstValue,
+        Spur,
+        std::sync::Arc<[std::sync::Arc<str>]>,
+    >;
+    fn prepare_structured_type_call(
+        &mut self,
+        _suspension: &Self::StructuredTypeSuspension,
+    ) -> ComptimeOutcome<
+        Option<
+            ComptimeCallPreparation<
+                Self::Value,
+                Self::Type,
+                Self::Name,
+                Self::File,
+                Self::ProgramKey,
+                Self::CanonicalIdentity,
+                Self::Failure,
+            >,
+        >,
+        Self::Failure,
+    > {
+        unreachable!("ordinary comptime type resolution is synchronous")
+    }
+    fn resume_structured_type_call(
+        &mut self,
+        _suspension: Self::StructuredTypeSuspension,
+        _result: ComptimeOutcome<Self::Value, Self::Failure>,
+    ) -> ComptimeOutcome<
+        ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
+        Self::Failure,
+    > {
+        unreachable!("ordinary comptime type resolution is synchronous")
+    }
     fn program_rir(&self, _program: &Self::ProgramKey) -> &rue_rir::Rir {
         OrdinaryBodyEngine::body_rir_ref(self)
     }

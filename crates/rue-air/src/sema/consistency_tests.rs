@@ -1039,7 +1039,6 @@ mod tests {
             "enum StructuredTypePoll<",
             "struct StructuredTypeSuspension<",
             "struct SemanticComptimeCallRequestView<",
-            "fn resume<",
         ] {
             let line = SEMANTIC_TYPE_RESOLUTION_SOURCE
                 .lines()
@@ -1069,6 +1068,55 @@ mod tests {
         assert!(
             !SEMANTIC_TYPE_RESOLUTION_SOURCE.contains("Clone for StructuredTypeSuspension"),
             "the paired suspension must be consumed exactly once"
+        );
+        let keyed_resume = item(SEMANTIC_TYPE_RESOLUTION_SOURCE, "pub fn resume<M, Q>(");
+        let keyed_signature = keyed_resume
+            .split_once("{")
+            .map_or(keyed_resume, |(signature, _)| signature);
+        for forbidden in ["root_scope", "arena", "resolve_symbol", "request"] {
+            assert!(
+                !keyed_signature.contains(forbidden),
+                "keyed suspension resume must retain its owned authority: {forbidden}"
+            );
+        }
+        assert_eq!(
+            COMPTIME_ENGINE_SOURCE
+                .matches("fn drive_structured_type(")
+                .count(),
+            1,
+            "the engine must have one private structured continuation driver"
+        );
+        assert_eq!(
+            COMPTIME_ENGINE_SOURCE
+                .matches("pub fn drive_structured_type(")
+                .count(),
+            0,
+            "structured continuation driving must remain engine-private"
+        );
+        assert_eq!(
+            COMPTIME_ENGINE_SOURCE
+                .matches("impl<P, S, C, N, A, T, V, Sym, R> ComptimeStructuredTypeSuspension")
+                .count(),
+            1,
+            "production exposes one canonical suspension implementation"
+        );
+        assert_eq!(
+            SEMANTIC_TYPE_RESOLUTION_SOURCE
+                .matches("struct ComptimeStructuredTypeJob")
+                .count(),
+            1,
+            "the keyed resolver job has one declaration"
+        );
+        assert!(
+            !SEMANTIC_TYPE_RESOLUTION_SOURCE.contains("Clone for ComptimeStructuredTypeJob"),
+            "the keyed resolver job must remain consuming"
+        );
+        assert_eq!(
+            COMPTIME_ENGINE_SOURCE
+                .matches("self.evaluate_comptime_type_syntax(")
+                .count(),
+            5,
+            "all five type-bearing RIR arms must use the engine helper"
         );
         for forbidden in [
             "pub fn resolve_semantic_type_syntax",
