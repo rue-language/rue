@@ -102,3 +102,12 @@ fn main() -> i32 {
 """
 exit_code = 42
 no_warnings = true
+
+[[case]]
+name = "non_exhaustive_enum_preview_gate"
+source = """
+@non_exhaustive pub enum Color { Red, Blue }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["requires preview feature", "non_exhaustive_enums", "1:1"]

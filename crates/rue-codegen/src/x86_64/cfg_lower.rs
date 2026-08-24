@@ -3730,6 +3730,7 @@ mod tests {
                     .map(|(_, payload)| payload.clone())
                     .collect(),
                 is_pub: false,
+                is_non_exhaustive: false,
                 file_id: FileId::DEFAULT,
             },
         );

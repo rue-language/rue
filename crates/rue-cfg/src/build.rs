@@ -3871,6 +3871,7 @@ mod tests {
                         .iter()
                         .map(|(variant, payload)| (Arc::from(*variant), Arc::from(*payload)))
                         .collect(),
+                    is_non_exhaustive: false,
                 },
             });
         }

@@ -79,7 +79,7 @@ method         = directives "fn" IDENT
                  [ result ] "{" block "}" ;
 
 (* Enums *)
-enum_def       = [ "pub" ] "enum" IDENT "{" [ enum_variants ] "}" ;
+enum_def       = directives [ "pub" ] "enum" IDENT "{" [ enum_variants ] "}" ;
 enum_variants  = enum_variant { "," enum_variant } [ "," ] ;
 enum_variant   = IDENT [ "(" type { "," type } [ "," ] ")" ] ;  (* optional tuple payload; at least one type inside the parens *)
 

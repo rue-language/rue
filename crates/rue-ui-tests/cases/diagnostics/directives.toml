@@ -3,7 +3,7 @@
 # Unknown @-directives in item/statement position used to be silently
 # accepted and ignored, so a typo like `@alllow(...)` was a no-op. They are
 # now a compile error naming the directive. The known set lives in
-# rue-parser's `validate::KNOWN_DIRECTIVES` (allow, copy, repr); the cases
+# rue-parser's `validate::KNOWN_DIRECTIVES` (allow, copy, repr, non_exhaustive); the cases
 # below pin both the rejection and that every known directive still works.
 # (Expression-position intrinsics like @dbg/@intCast and the fused @import
 # token are separate mechanisms and unaffected.)
@@ -23,7 +23,37 @@ source = """
 fn main() -> i32 { 42 }
 """
 compile_fail = true
-error_contains = ["unknown directive '@important'", "@allow, @copy, and @repr"]
+error_contains = ["unknown directive '@important'", "@allow, @copy, @repr, and @non_exhaustive"]
+
+[[case]]
+name = "non_exhaustive_directive_private_enum_rejected"
+preview = "non_exhaustive_enums"
+source = """
+@non_exhaustive enum E { A }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["@non_exhaustive can only be applied to public enums", "1:1"]
+
+[[case]]
+name = "non_exhaustive_directive_function_rejected"
+preview = "non_exhaustive_enums"
+source = """
+@non_exhaustive
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["@non_exhaustive can only be applied to enums"]
+
+[[case]]
+name = "non_exhaustive_directive_arguments_rejected"
+preview = "non_exhaustive_enums"
+source = """
+@non_exhaustive(foo) pub enum E { A }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["@non_exhaustive takes no arguments"]
 
 [[case]]
 name = "unknown_directive_typo_of_allow"
@@ -187,7 +217,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["unknown directive '@handle'", "@allow, @copy, and @repr"]
+error_contains = ["unknown directive '@handle'", "@allow, @copy, @repr, and @non_exhaustive"]
 
 [[case]]
 name = "ordinary_handle_method_still_works"

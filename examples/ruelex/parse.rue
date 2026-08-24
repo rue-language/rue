@@ -801,7 +801,7 @@ pub struct Parser {
         self.add(ast.ANON_ENUM_TYPE, 0, start, close.end, variants, 0, 0)
     }
 
-    fn parse_enum(inout self, flags: u64) -> u64 {
+    fn parse_enum(inout self, directives: u64, flags: u64) -> u64 {
         let start = self.expect(token.ENUM).start;
         let name = self.expect(token.IDENT);
         let _ = self.expect(token.LBRACE);
@@ -820,7 +820,7 @@ pub struct Parser {
             if !self.eat(token.COMMA) { break; }
         }
         let close = self.expect(token.RBRACE);
-        self.add_meta(ast.ENUM_DEF, name.value, flags, start, close.end, variants, 0, 0, 0)
+        self.add_meta(ast.ENUM_DEF, name.value, flags, start, close.end, directives, variants, 0, 0)
     }
 
     fn parse_const(inout self, directives: u64, flags: u64) -> u64 {
@@ -852,7 +852,7 @@ pub struct Parser {
         if self.eat(token.LINEAR) { flags += 4; }
         if self.at(token.FN) { self.parse_function(directives, flags, false) }
         else if self.at(token.STRUCT) { self.parse_struct(directives, flags) }
-        else if self.at(token.ENUM) { self.parse_enum(flags) }
+        else if self.at(token.ENUM) { self.parse_enum(directives, flags) }
         else if self.at(token.DROP) { self.parse_drop(false) }
         else if self.at(token.CONST) { self.parse_const(directives, flags) }
         else {

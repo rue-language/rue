@@ -228,7 +228,8 @@ fn item_charge(item: &ast::Item) -> u64 {
                 type_charge(&field.ty)
             }))
             .saturating_add(owned_slice_charge(&value.methods, method_charge)),
-        ast::Item::Enum(value) => owned_slice_charge(&value.variants, enum_variant_charge),
+        ast::Item::Enum(value) => directives_charge(&value.directives)
+            .saturating_add(owned_slice_charge(&value.variants, enum_variant_charge)),
         ast::Item::DropFn(value) => expr_charge(&value.body),
         ast::Item::Extern(value) => value
             .abi
@@ -1042,6 +1043,7 @@ impl RetainedCharge for crate::semantic_query_nucleus::ParsedSemanticSignature {
                 syntax,
                 variants,
                 payloads,
+                ..
             } => type_syntax_arena_charge(syntax)
                 .saturating_add(variants.retained_charge())
                 .saturating_add(payloads.retained_charge()),

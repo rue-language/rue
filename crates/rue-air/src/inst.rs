@@ -4786,6 +4786,7 @@ mod tests {
                 variants: Arc::from(["Only".into()]),
                 variant_payloads: Vec::new(),
                 is_pub: false,
+                is_non_exhaustive: false,
                 file_id: rue_span::FileId::DEFAULT,
             },
         );
@@ -4830,6 +4831,7 @@ mod tests {
                 variants: Arc::from(["Only".into()]),
                 variant_payloads: Vec::new(),
                 is_pub: false,
+                is_non_exhaustive: false,
                 file_id: rue_span::FileId::DEFAULT,
             },
         );

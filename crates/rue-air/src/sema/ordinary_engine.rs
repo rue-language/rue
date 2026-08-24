@@ -1073,6 +1073,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             variants: names.iter().map(|n| Arc::from(n.as_str())).collect(),
             variant_payloads: payloads.to_vec(),
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: FileId::new(0),
         };
         let (id, _) = self.storage.body_type_pool().register_enum(name_spur, def);

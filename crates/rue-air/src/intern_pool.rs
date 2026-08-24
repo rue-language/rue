@@ -486,6 +486,7 @@ pub(crate) struct EnumDeclarationMetadata {
     pub name: Arc<str>,
     pub variants: Arc<[Arc<str>]>,
     pub is_pub: bool,
+    pub is_non_exhaustive: bool,
     pub file_id: FileId,
 }
 
@@ -747,6 +748,7 @@ static ALIASED_ENUM_DEF: LazyLock<EnumDefEntry> = LazyLock::new(|| {
         variants: Arc::from([] as [Arc<str>; 0]),
         variant_payloads: Vec::new(),
         is_pub: false,
+        is_non_exhaustive: false,
         file_id: FileId::DEFAULT,
     })
 });
@@ -1719,6 +1721,7 @@ impl TypeInternPoolInner {
                 name: data.def.name.clone(),
                 variants: data.def.variants.clone(),
                 is_pub: data.def.is_pub,
+                is_non_exhaustive: data.def.is_non_exhaustive,
                 file_id: data.def.file_id,
             }),
             _ => None,
@@ -1731,6 +1734,7 @@ impl TypeInternPoolInner {
                 name: data.def.name.clone(),
                 variants: data.def.variants.clone(),
                 is_pub: data.def.is_pub,
+                is_non_exhaustive: data.def.is_non_exhaustive,
                 file_id: data.def.file_id,
             }),
             _ => None,
@@ -4223,6 +4227,7 @@ mod tests {
             variants: Arc::from([]),
             variant_payloads: vec![],
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: FileId::DEFAULT,
         }
     }
@@ -4999,6 +5004,7 @@ mod tests {
             variants: Arc::from(["Some".into(), "None".into()]),
             variant_payloads: vec![vec![one_array], vec![pointer]],
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: FileId::DEFAULT,
         };
         let (choice, _) = pool.register_enum(declarations.get_or_intern("Choice"), choice);
@@ -5120,6 +5126,7 @@ mod tests {
             variants: Arc::from(["Many".into(), "One".into()]),
             variant_payloads: vec![vec![pairs, Type::I8], vec![pointer]],
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: FileId::DEFAULT,
         };
         let (choice, _) = pool.register_enum(declarations.get_or_intern("Choice"), choice);
@@ -5310,6 +5317,7 @@ mod tests {
             variants: Arc::from(["Red".into(), "Green".into(), "Blue".into()]),
             variant_payloads: Vec::new(),
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: rue_span::FileId::DEFAULT,
         };
 
@@ -5396,6 +5404,7 @@ mod tests {
             variants: Arc::from(["Active".into(), "Inactive".into()]),
             variant_payloads: Vec::new(),
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: rue_span::FileId::DEFAULT,
         };
 
@@ -5484,6 +5493,7 @@ mod tests {
             variants: Arc::from(["Red".into()]),
             variant_payloads: Vec::new(),
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: rue_span::FileId::DEFAULT,
         };
         let (enum_id, _) = pool.register_enum(enum_name, enum_def);
@@ -5558,6 +5568,7 @@ mod tests {
             variants: Arc::from(["A".into(), "B".into()]),
             variant_payloads: Vec::new(),
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: rue_span::FileId::DEFAULT,
         };
         let (enum_id, _) = pool.register_enum(name, def.clone());
@@ -5652,6 +5663,7 @@ mod tests {
                 variants: Arc::from([]),
                 variant_payloads: Vec::new(),
                 is_pub: false,
+                is_non_exhaustive: false,
                 file_id: rue_span::FileId::DEFAULT,
             },
         );
@@ -5906,6 +5918,7 @@ mod tests {
             variants: Arc::from(["A".into()]),
             variant_payloads: vec![vec![]],
             is_pub: true,
+            is_non_exhaustive: false,
             file_id: rue_span::FileId::new(file),
         };
         let source_enum_sym = interner.get_or_intern("__anon_enum_5");
@@ -6000,6 +6013,7 @@ mod tests {
             variants: Arc::from(["Value".into()]),
             variant_payloads: vec![vec![]],
             is_pub: true,
+            is_non_exhaustive: false,
             file_id,
         };
         let (left_enum, _) = pool.register_enum(choice, enum_def(left_id));
@@ -6293,6 +6307,7 @@ mod tests {
             variants: Arc::from(["A".into(), "B".into()]),
             variant_payloads: vec![vec![Type::U8, Type::I32], vec![]],
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: FileId::DEFAULT,
         };
         let (id, _) = pool.register_enum(interner.get_or_intern("Wide"), def);
@@ -6365,6 +6380,7 @@ mod tests {
             variants: Arc::from(["Pair".into(), "One".into()]),
             variant_payloads: vec![vec![Type::I32, Type::I64], vec![Type::I32]],
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: FileId::DEFAULT,
         };
         let (id, _) = pool.register_enum(interner.get_or_intern("Shape"), def);

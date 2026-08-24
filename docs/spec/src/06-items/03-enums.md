@@ -13,7 +13,7 @@ An enum is defined using the `enum` keyword.
 {{ rule(id="6.3:2", cat="normative") }}
 
 ```ebnf
-enum_def = "enum" IDENT "{" [ enum_variants ] "}" ;
+enum_def = directives [ "pub" ] "enum" IDENT "{" [ enum_variants ] "}" ;
 enum_variants = enum_variant { "," enum_variant } [ "," ] ;
 enum_variant = IDENT [ "(" type { "," type } [ "," ] ")" ] ;
 ```
@@ -56,6 +56,25 @@ fn main() -> i32 {
 ```
 
 ## Match on Enums
+
+{{ rule(id="6.3:21", cat="normative") }}
+
+`@non_exhaustive` is an opt-in preview-gated declaration directive. It **MUST**
+appear only on a `pub enum`; applying it to a private enum is a compile-time
+error. The directive promises source/API compatibility: a match written in a
+module other than the enum's defining module **MUST** contain a wildcard arm,
+even when it names every variant currently known to the compiler. The defining
+module keeps ordinary exhaustive checking and ordinary unreachable-pattern
+diagnostics. A wildcard in an importing module remains reachable under this
+rule because a future enum variant may select it.
+
+{{ rule(id="6.3:22", cat="normative") }}
+
+Adding a variant to a `@non_exhaustive` enum does not promise stable layout,
+ABI, or runtime behavior. Such an addition may change enum representation,
+size, alignment, generated code, or other target-level behavior; the promise
+is limited to source compatibility of importing matches that include a
+wildcard.
 
 {{ rule(id="6.3:7", cat="normative") }}
 

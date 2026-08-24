@@ -198,6 +198,7 @@ pub enum DurableDeclarationPayload {
     },
     Enum {
         variants: Arc<[(Arc<str>, Arc<[DurableType]>)]>,
+        is_non_exhaustive: bool,
     },
     Const {
         ty: DurableType,
@@ -234,7 +235,7 @@ impl RetainedCharge for DurableAnonymousNominalShape {
             Self::Struct { fields, methods } => fields
                 .retained_charge()
                 .saturating_add(methods.retained_charge()),
-            Self::Enum { variants } => variants.retained_charge(),
+            Self::Enum { variants, .. } => variants.retained_charge(),
         }
     }
 }
@@ -280,7 +281,7 @@ impl RetainedCharge for DurableDeclarationPayload {
                 .retained_charge()
                 .saturating_add(result.retained_charge()),
             Self::Struct { fields, .. } => fields.retained_charge(),
-            Self::Enum { variants } => variants.retained_charge(),
+            Self::Enum { variants, .. } => variants.retained_charge(),
             Self::Const { ty, value } => {
                 ty.retained_charge().saturating_add(value.retained_charge())
             }

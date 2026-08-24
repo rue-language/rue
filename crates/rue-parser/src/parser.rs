@@ -303,6 +303,17 @@ mod tests {
     }
 
     #[test]
+    fn enum_display_retains_declaration_directives() {
+        let (ast, _) = parse_source("@non_exhaustive pub enum Color { Red, Green }").unwrap();
+        let rendered = ast.to_string();
+        let enum_start = rendered.find("Enum sym:").expect("enum is rendered");
+        assert!(
+            rendered[..enum_start].contains("@sym:"),
+            "enum directives must remain visible before the declaration: {rendered}"
+        );
+    }
+
+    #[test]
     fn representative_language_surface_parses() {
         for source in [
             "fn main(a: i32, borrow xs: [i32]) -> i32 { let mut x: i32 = a + 2 * 3; x = x - 1; if x > 0 { x } else { 0 } }",

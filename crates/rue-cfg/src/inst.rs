@@ -3686,6 +3686,7 @@ mod tests {
                 variants: Arc::from(["None".into(), "Some".into()]),
                 variant_payloads: vec![vec![], vec![Type::I32]],
                 is_pub: false,
+                is_non_exhaustive: false,
                 file_id: FileId::DEFAULT,
             },
         );

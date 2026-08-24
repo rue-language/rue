@@ -711,11 +711,13 @@ fn syntax_item_record(
             )
         }
         rue_parser::Item::Enum(enumeration) => {
-            let mut children = vec![modifier_record(
+            let mut children =
+                directive_records(owner, &enumeration.directives).collect::<Vec<_>>();
+            children.push(modifier_record(
                 enumeration.span,
                 "visibility",
                 visibility_name(enumeration.visibility),
-            )];
+            ));
             children.extend(enumeration.variants.iter().map(|variant| {
                 syntax_record(
                     "enum_variant",

@@ -4732,7 +4732,7 @@ fn evaluate_type_shape(
                                 .collect::<Vec<_>>()
                                 .into(),
                         }),
-                        S::Enum { variants } => TypeShapeValue::Available(TypeShape::Enum {
+                        S::Enum { variants, .. } => TypeShapeValue::Available(TypeShape::Enum {
                             variants: variants
                                 .iter()
                                 .map(|(name, fields)| {
@@ -4781,7 +4781,7 @@ fn evaluate_type_shape(
                         .collect::<Vec<_>>()
                         .into(),
                 },
-                S::Enum { variants } => TypeShape::Enum {
+                S::Enum { variants, .. } => TypeShape::Enum {
                     variants: variants
                         .iter()
                         .map(|(name, fields)| {
@@ -6928,7 +6928,7 @@ fn collect_durable_anonymous_nominal_dependencies(
                 }
             }
         }
-        S::Enum { variants } => {
+        S::Enum { variants, .. } => {
             for (_, fields) in variants.iter() {
                 for ty in fields.iter() {
                     collect_anonymous_nominal_type_dependencies(ty, output);
@@ -9193,7 +9193,7 @@ impl SemanticNucleusTypeProvider<'_> {
                         }
                         carries
                     }
-                    P::Enum { variants } => {
+                    P::Enum { variants, .. } => {
                         let mut carries = LinearOwnershipFact::DoesNotCarry;
                         for (_, payload) in variants.iter() {
                             for field in payload.iter() {
@@ -9228,7 +9228,7 @@ impl SemanticNucleusTypeProvider<'_> {
                         }
                         Ok(carries)
                     }
-                    S::Enum { variants } => {
+                    S::Enum { variants, .. } => {
                         let mut carries = LinearOwnershipFact::DoesNotCarry;
                         for (_, payload) in variants.iter() {
                             for field in payload.iter() {
@@ -9376,7 +9376,7 @@ impl SemanticNucleusTypeProvider<'_> {
                         }
                         has_glue
                     }
-                    P::Enum { variants } => {
+                    P::Enum { variants, .. } => {
                         let mut has_glue = false;
                         for (_, payload) in variants.iter() {
                             for field in payload.iter() {
@@ -9404,7 +9404,7 @@ impl SemanticNucleusTypeProvider<'_> {
                             }
                         }
                     }
-                    S::Enum { variants } => {
+                    S::Enum { variants, .. } => {
                         for (_, payload) in variants.iter() {
                             for field in payload.iter() {
                                 if self.type_has_drop_glue_inner(field, walk)? {
@@ -9545,7 +9545,7 @@ impl SemanticNucleusTypeProvider<'_> {
                 );
                 let is_copy = match resolved.signature {
                     P::Struct { is_copy, .. } => is_copy,
-                    P::Enum { variants } => {
+                    P::Enum { variants, .. } => {
                         let mut is_copy = true;
                         for (_, payload) in variants.iter() {
                             for field in payload.iter() {
@@ -9579,7 +9579,7 @@ impl SemanticNucleusTypeProvider<'_> {
                             }
                         }
                     }
-                    S::Enum { variants } => {
+                    S::Enum { variants, .. } => {
                         for (_, payload) in variants.iter() {
                             for field in payload.iter() {
                                 if !self.type_is_copy_inner(field, walk)? {
@@ -9832,7 +9832,7 @@ impl SemanticNucleusTypeProvider<'_> {
                                 S::Struct { fields, .. } => {
                                     pending.extend(fields.iter().map(|(_, ty)| ty));
                                 }
-                                S::Enum { variants } => {
+                                S::Enum { variants, .. } => {
                                     pending.extend(
                                         variants.iter().flat_map(|(_, payload)| payload.iter()),
                                     );
@@ -9909,7 +9909,7 @@ impl SemanticNucleusTypeProvider<'_> {
                         collect_type(ty, &anonymous, &mut neighbors);
                     }
                 }
-                P::Enum { variants } => {
+                P::Enum { variants, .. } => {
                     for (_, payload) in variants.iter() {
                         for ty in payload.iter() {
                             collect_type(ty, &anonymous, &mut neighbors);
@@ -11446,8 +11446,55 @@ fn resolve_parsed_semantic_signature(
             syntax,
             variants,
             payloads,
+            is_non_exhaustive,
+            is_public,
+            non_exhaustive_range,
             ..
         } => {
+            if *is_non_exhaustive && !*is_public {
+                let kind = rue_error::ErrorKind::ParseError(
+                    "@non_exhaustive can only be applied to public enums".to_string(),
+                );
+                return Err(match non_exhaustive_range {
+                    Some((start, end)) => ResolveSemanticSignatureError::failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtProducerRange {
+                            kind,
+                            producer: declaration_candidate_for_stable_key(
+                                &provider.dependency_source,
+                            )
+                            .expect("enum signature has a declaration candidate"),
+                            start: *start,
+                            end: *end,
+                        },
+                    ),
+                    None => diagnostic(kind),
+                });
+            }
+            if *is_non_exhaustive
+                && !provider
+                    .configuration
+                    .preview_features
+                    .contains(rue_error::PreviewFeature::NonExhaustiveEnums)
+            {
+                let kind = rue_error::ErrorKind::PreviewFeatureRequired {
+                    feature: rue_error::PreviewFeature::NonExhaustiveEnums,
+                    what: "@non_exhaustive enums".to_owned(),
+                };
+                return Err(match non_exhaustive_range {
+                    Some((start, end)) => ResolveSemanticSignatureError::failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtProducerRange {
+                            kind,
+                            producer: declaration_candidate_for_stable_key(
+                                &provider.dependency_source,
+                            )
+                            .expect("enum signature has a declaration candidate"),
+                            start: *start,
+                            end: *end,
+                        },
+                    ),
+                    None => diagnostic(kind),
+                });
+            }
             if let Some(kind) = rue_air::declaration_validation::duplicate_variant(
                 provider.dependency_source.name(),
                 variants.iter().map(|variant| parsed.symbol(variant.name)),
@@ -11486,6 +11533,7 @@ fn resolve_parsed_semantic_signature(
             }
             Ok(Output::Enum {
                 variants: variants.into(),
+                is_non_exhaustive: *is_non_exhaustive,
             })
         }
         Input::Destructor => Ok(Output::Destructor),
@@ -22911,7 +22959,13 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
                 is_copy,
                 is_linear,
             },
-            Projection::Enum { variants } => rue_air::DurableNominalBody::Enum { variants },
+            Projection::Enum {
+                variants,
+                is_non_exhaustive,
+            } => rue_air::DurableNominalBody::Enum {
+                variants,
+                is_non_exhaustive,
+            },
             _ => return None,
         };
         let nominal = rue_air::DurableNominal {
@@ -25667,7 +25721,11 @@ pub(crate) mod test_support {
                     is_copy: *is_copy,
                     is_linear: *is_linear,
                 },
-                Payload::Enum { variants } => rue_air::DurableNominalBody::Enum {
+                Payload::Enum {
+                    variants,
+                    is_non_exhaustive,
+                } => rue_air::DurableNominalBody::Enum {
+                    is_non_exhaustive: *is_non_exhaustive,
                     variants: variants
                         .iter()
                         .map(|(n, payload)| (n.clone(), payload.clone().into()))
@@ -28015,7 +28073,7 @@ fn main() -> i32 {
                     assert!(!is_linear && !is_repr_c);
                 }
                 (crate::StableDefinitionKind::Enum, "E") => {
-                    let Sig::Enum { variants } = signature else {
+                    let Sig::Enum { variants, .. } = signature else {
                         panic!("E must project an enum signature: {signature:?}")
                     };
                     let rendered = variants
@@ -33834,6 +33892,7 @@ fn main() -> i32 {
                         vec![Type::U32, Type::U16, Type::U64],
                     ],
                     is_pub: false,
+                    is_non_exhaustive: false,
                     file_id: rue_span::FileId::DEFAULT,
                 },
             )
@@ -34398,6 +34457,7 @@ fn main() -> i32 {
                     variants: Arc::from(["A".into(), "B".into()]),
                     variant_payloads: vec![vec![], vec![]],
                     is_pub: false,
+                    is_non_exhaustive: false,
                     file_id: rue_span::FileId::DEFAULT,
                 },
             )
@@ -34414,6 +34474,7 @@ fn main() -> i32 {
                         vec![Type::U32, Type::U16, Type::U64],
                     ],
                     is_pub: false,
+                    is_non_exhaustive: false,
                     file_id: rue_span::FileId::DEFAULT,
                 },
             )

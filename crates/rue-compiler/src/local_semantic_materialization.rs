@@ -84,7 +84,7 @@ impl SharedDeclarationFactIndex {
                         collect_slice_sources(ty, &mut slice_sources, &mut work);
                     }
                 }
-                DurableDeclarationPayload::Enum { variants } => {
+                DurableDeclarationPayload::Enum { variants, .. } => {
                     for (_, fields) in variants.iter() {
                         for ty in fields.iter() {
                             collect_slice_sources(ty, &mut slice_sources, &mut work);
@@ -1034,10 +1034,14 @@ pub(crate) fn materialize_semantic_body_with_indexes_in_space(
                     destructor: destructor_for(&declaration.key),
                 },
             ),
-            DurableDeclarationPayload::Enum { variants } => (
+            DurableDeclarationPayload::Enum {
+                variants,
+                is_non_exhaustive,
+            } => (
                 rue_air::SemanticImportNominalKind::Enum,
                 rue_air::SemanticLocalNominalShape::Enum {
                     variants: variants.clone(),
+                    is_non_exhaustive: *is_non_exhaustive,
                 },
             ),
             _ => continue,
@@ -1090,10 +1094,11 @@ pub(crate) fn materialize_semantic_body_with_indexes_in_space(
                     },
                 )
             }
-            DurableAnonymousNominalShape::Enum { variants } => (
+            DurableAnonymousNominalShape::Enum { variants, .. } => (
                 rue_air::SemanticImportNominalKind::Enum,
                 rue_air::SemanticLocalNominalShape::Enum {
                     variants: variants.clone(),
+                    is_non_exhaustive: false,
                 },
             ),
         };
@@ -1158,6 +1163,7 @@ pub(crate) fn materialize_semantic_body_with_indexes_in_space(
                         })
                         .collect::<Vec<_>>()
                         .into(),
+                    is_non_exhaustive: false,
                 },
             ),
             (
@@ -1521,7 +1527,7 @@ pub(crate) fn select_materialization_facts(
                                     ));
                                 }
                             }
-                            DurableDeclarationPayload::Enum { variants } => {
+                            DurableDeclarationPayload::Enum { variants, .. } => {
                                 for (_, fields) in variants.iter() {
                                     for ty in fields.iter() {
                                         self.semantic_type(ty);
@@ -1605,6 +1611,7 @@ pub(crate) fn select_materialization_facts(
                             DurableDeclarationPayload::Enum { .. } => {
                                 DurableDeclarationPayload::Enum {
                                     variants: Arc::new([]),
+                                    is_non_exhaustive: false,
                                 }
                             }
                             _ => continue,

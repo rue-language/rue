@@ -7338,6 +7338,38 @@ mod tests {
     }
 
     #[test]
+    fn syntax_artifact_retains_enum_directive_child() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "@non_exhaustive pub enum Color { Red, Green }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        let syntax = session.update(&source).into_result().unwrap();
+        let item = syntax
+            .modules()
+            .next()
+            .expect("the syntax view has one module")
+            .nodes()
+            .next()
+            .expect("the module has one item");
+        assert_eq!(item.kind(), "enum");
+        let children = item.children().collect::<Vec<_>>();
+        assert_eq!(
+            children.first().map(|child| child.kind()),
+            Some("directive")
+        );
+        assert_eq!(
+            children.first().and_then(|child| child.name()),
+            Some("non_exhaustive")
+        );
+    }
+
+    #[test]
     fn o3_publishes_unrolled_work_for_canonical_slot_loop() {
         let source = snapshot(
             &[(
@@ -12872,6 +12904,99 @@ fn main() -> i32 {
         let terminal = fresh_result.expect("fresh duplicate publishes a typed body failure");
         assert!(matches!(
             terminal.outcome(),
+            rue_query::QueryOutcome::Success(
+                crate::body_query::BodyTransaction::DeterministicFailure { .. }
+            )
+        ));
+    }
+
+    #[test]
+    fn non_exhaustive_directive_invalidates_external_match_body() {
+        let root = r#"const colors = @import("colors.rue");
+fn main() -> i32 {
+    match colors.pick() {
+        colors.Color.Red => 1,
+        colors.Color.Green => 2,
+    }
+}"#;
+        let closed = snapshot(
+            &[
+                (1, "/p/main.rue", "main.rue", root),
+                (
+                    2,
+                    "/p/colors.rue",
+                    "colors.rue",
+                    "pub enum Color { Red, Green }\n\
+                     pub fn pick() -> Color { Color.Green }",
+                ),
+            ],
+            1,
+        );
+        let open = snapshot(
+            &[
+                (1, "/p/main.rue", "main.rue", root),
+                (
+                    2,
+                    "/p/colors.rue",
+                    "colors.rue",
+                    "@non_exhaustive pub enum Color { Red, Green }\n\
+                     pub fn pick() -> Color { Color.Green }",
+                ),
+            ],
+            1,
+        );
+        let options = CompileOptions {
+            preview_features: PreviewFeatures::from([PreviewFeature::NonExhaustiveEnums]),
+            ..CompileOptions::default()
+        };
+        let mut session = CompilerSession::new();
+        publish_with_test_imports(&mut session, &closed);
+        session
+            .rooted_cfg(&options)
+            .expect("a closed imported enum remains exhaustive");
+        let key = body_query_key(&mut session, &options, "main");
+        let revision = session
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .expect("the closed match publishes a semantic revision");
+        let first = session
+            .queries
+            .revisioned
+            .body_transaction(revision, key.clone(), rue_query::CancellationToken::new())
+            .expect("the closed match publishes a body terminal");
+        assert!(matches!(
+            first.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success { .. })
+        ));
+
+        publish_with_test_imports(&mut session, &open);
+        let errors = session
+            .rooted_cfg(&options)
+            .expect_err("an external match must require a wildcard after the directive is added");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error.kind, ErrorKind::NonExhaustiveMatch)),
+            "unexpected diagnostics: {errors:?}"
+        );
+        let revision = session
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .expect("the failed match publishes a semantic revision");
+        let second = session
+            .queries
+            .revisioned
+            .body_transaction(revision, key, rue_query::CancellationToken::new())
+            .expect("the non-exhaustive match publishes a deterministic body failure");
+        assert_ne!(
+            second.stamp(),
+            first.stamp(),
+            "changing @non_exhaustive must invalidate the external match body terminal"
+        );
+        assert!(matches!(
+            second.outcome(),
             rue_query::QueryOutcome::Success(
                 crate::body_query::BodyTransaction::DeterministicFailure { .. }
             )

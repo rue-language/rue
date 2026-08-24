@@ -27,7 +27,9 @@ use rue_error::{CompileError, ErrorKind};
 /// - `copy`   — marks a struct as a copy type (see `has_copy_directive`)
 /// - `repr`   — the C representation guarantee marker `@repr(c)` on a struct
 ///   (ADR-0064 Amendment 1; see `has_repr_c_directive` in rue-air)
-pub const KNOWN_DIRECTIVES: &[&str] = &["allow", "copy", "repr"];
+/// - `non_exhaustive` — opts a public enum into the source/API compatibility
+///   contract for matches in importing modules.
+pub const KNOWN_DIRECTIVES: &[&str] = &["allow", "copy", "repr", "non_exhaustive"];
 
 /// Representation arguments accepted by `@repr(...)`.
 ///
@@ -67,6 +69,7 @@ struct Validator<'a> {
 enum DirectiveSite {
     Function,
     Struct,
+    Enum,
     Method,
     Const,
     Let,
@@ -77,6 +80,7 @@ impl DirectiveSite {
         match self {
             DirectiveSite::Function => "functions",
             DirectiveSite::Struct => "structs",
+            DirectiveSite::Enum => "enums",
             DirectiveSite::Method => "methods",
             DirectiveSite::Const => "const declarations",
             DirectiveSite::Let => "let statements",
@@ -91,7 +95,7 @@ impl Validator<'_> {
             if !KNOWN_DIRECTIVES.contains(&name) {
                 self.errors.push(CompileError::new(
                     ErrorKind::ParseError(format!(
-                        "unknown directive '@{}'; known directives are @allow, @copy, and @repr",
+                        "unknown directive '@{}'; known directives are @allow, @copy, @repr, and @non_exhaustive",
                         name
                     )),
                     directive.span,
@@ -100,6 +104,22 @@ impl Validator<'_> {
             }
 
             match name {
+                "non_exhaustive" => {
+                    if !matches!(site, DirectiveSite::Enum) {
+                        self.errors.push(CompileError::new(
+                            ErrorKind::ParseError(format!(
+                                "@non_exhaustive can only be applied to enums, not {}",
+                                site.description()
+                            )),
+                            directive.span,
+                        ));
+                    } else if !directive.args.is_empty() {
+                        self.errors.push(CompileError::new(
+                            ErrorKind::ParseError("@non_exhaustive takes no arguments".to_string()),
+                            directive.span,
+                        ));
+                    }
+                }
                 "copy" => {
                     if !matches!(site, DirectiveSite::Struct) {
                         self.errors.push(CompileError::new(
@@ -201,7 +221,21 @@ impl Validator<'_> {
                     self.check_method(method);
                 }
             }
-            Item::Enum(_) => {}
+            Item::Enum(e) => {
+                self.check_directives(&e.directives, DirectiveSite::Enum);
+                if e.visibility != crate::ast::Visibility::Public
+                    && let Some(directive) = e.directives.iter().find(|directive| {
+                        self.interner.resolve(&directive.name.name) == "non_exhaustive"
+                    })
+                {
+                    self.errors.push(CompileError::new(
+                        ErrorKind::ParseError(
+                            "@non_exhaustive can only be applied to public enums".to_string(),
+                        ),
+                        directive.span,
+                    ));
+                }
+            }
             Item::DropFn(d) => self.check_expr(&d.body),
             Item::Extern(_) => {}
             Item::Const(c) => {

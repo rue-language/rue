@@ -37,6 +37,7 @@ pub struct SemanticImportNominal<K> {
     pub name: Arc<str>,
     pub kind: SemanticImportNominalKind,
     pub is_public: bool,
+    pub is_non_exhaustive: bool,
     pub lang_item: Option<crate::LangItem>,
 }
 
@@ -420,6 +421,7 @@ pub enum SemanticLocalNominalShape<K, M> {
     },
     Enum {
         variants: Arc<[(Arc<str>, Arc<[SemanticImportType<K, M>]>)]>,
+        is_non_exhaustive: bool,
     },
 }
 
@@ -1226,6 +1228,7 @@ where
                     variants: builtin.variants.iter().map(|v| Arc::from(*v)).collect(),
                     variant_payloads: Vec::new(),
                     is_pub: true,
+                    is_non_exhaustive: false,
                     file_id: FileId::DEFAULT,
                 },
             );
@@ -1323,6 +1326,7 @@ where
                             variants: Arc::from([]),
                             variant_payloads: vec![],
                             is_pub: nominal.is_public,
+                            is_non_exhaustive: nominal.is_non_exhaustive,
                             file_id,
                         },
                     );
@@ -1538,6 +1542,12 @@ where
                             variants: Arc::from([]),
                             variant_payloads: Vec::new(),
                             is_pub: nominal.is_public,
+                            is_non_exhaustive: match &nominal.shape {
+                                SemanticLocalNominalShape::Enum {
+                                    is_non_exhaustive, ..
+                                } => *is_non_exhaustive,
+                                SemanticLocalNominalShape::Struct { .. } => false,
+                            },
                             file_id,
                         },
                     );
@@ -2264,6 +2274,7 @@ where
                 variants: variants.iter().map(|(name, _)| name.clone()).collect(),
                 variant_payloads,
                 is_pub: metadata.is_pub,
+                is_non_exhaustive: metadata.is_non_exhaustive,
                 file_id: metadata.file_id,
             },
         );
@@ -2314,7 +2325,7 @@ where
                             );
                         }
                     }
-                    SemanticLocalNominalShape::Enum { variants } => {
+                    SemanticLocalNominalShape::Enum { variants, .. } => {
                         self.complete_nominal_enum_in_pool(type_pool, &nominal.key, variants)?;
                     }
                 }
@@ -2353,6 +2364,7 @@ mod tests {
             name: Arc::from(name),
             kind,
             is_public: true,
+            is_non_exhaustive: false,
             lang_item: None,
         }
     }
@@ -2680,6 +2692,18 @@ mod tests {
             epoch.complete_enum(&"choice", &variants),
             Err(SemanticImportFailure::NominalAlreadyComplete)
         );
+    }
+
+    #[test]
+    fn imported_enum_shell_preserves_non_exhaustive_metadata() {
+        let mut imported = nominal("colors", "Color", SemanticImportNominalKind::Enum);
+        imported.is_non_exhaustive = true;
+        let epoch = Epoch::new(vec![imported], vec![], vec![]).unwrap();
+        let LocalNominal::Enum(id) = epoch.nominals[&NominalInstanceKey::Named("colors")] else {
+            panic!("colors must be an enum")
+        };
+        epoch.complete_enum(&"colors", &[]).unwrap();
+        assert!(epoch.type_pool().enum_def(id).is_non_exhaustive);
     }
 
     #[test]
@@ -3460,6 +3484,7 @@ mod tests {
                 lang_item: None,
                 shape: SemanticLocalNominalShape::Enum {
                     variants: Arc::new([]),
+                    is_non_exhaustive: false,
                 },
             }],
             vec![],
@@ -3790,6 +3815,7 @@ mod tests {
                 lang_item: None,
                 shape: SemanticLocalNominalShape::Enum {
                     variants: Arc::new([]),
+                    is_non_exhaustive: false,
                 },
             },
         ];

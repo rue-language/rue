@@ -917,6 +917,7 @@ mod tests {
                     variants,
                     variant_payloads: payloads,
                     is_pub: false,
+                    is_non_exhaustive: false,
                     file_id: rue_span::FileId::DEFAULT,
                 },
             )
@@ -1162,6 +1163,7 @@ mod tests {
             variants: Arc::from(["Only".into()]),
             variant_payloads: vec![vec![]],
             is_pub: false,
+            is_non_exhaustive: false,
             file_id,
         };
         let (left, _) = type_pool.register_enum(symbol, make_enum(rue_span::FileId::new(1)));

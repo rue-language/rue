@@ -43,6 +43,7 @@ fn empty_enum(name: &str) -> EnumDef {
         variants: Arc::from(["Only".into()]),
         variant_payloads: vec![vec![]],
         is_pub: false,
+        is_non_exhaustive: false,
         file_id: FileId::DEFAULT,
     }
 }

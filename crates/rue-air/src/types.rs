@@ -465,6 +465,8 @@ pub struct EnumDef {
     pub variant_payloads: Vec<Vec<Type>>,
     /// Whether this enum is public (visible outside its directory)
     pub is_pub: bool,
+    /// Whether matches in importing modules must include a wildcard arm.
+    pub is_non_exhaustive: bool,
     /// File ID this enum was declared in (for visibility checking)
     pub file_id: rue_span::FileId,
 }
@@ -1645,6 +1647,7 @@ mod tests {
             variants: Arc::from([]),
             variant_payloads: Vec::new(),
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: rue_span::FileId::DEFAULT,
         };
         assert_eq!(empty.variant_count(), 0);
@@ -1654,6 +1657,7 @@ mod tests {
             variants: Arc::from(["Red".into(), "Green".into(), "Blue".into()]),
             variant_payloads: Vec::new(),
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: rue_span::FileId::DEFAULT,
         };
         assert_eq!(color.variant_count(), 3);
@@ -1666,6 +1670,7 @@ mod tests {
             variants: Arc::from(["Red".into(), "Green".into(), "Blue".into()]),
             variant_payloads: Vec::new(),
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: rue_span::FileId::DEFAULT,
         };
 
@@ -1683,6 +1688,7 @@ mod tests {
             variants: Arc::from([]),
             variant_payloads: Vec::new(),
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: rue_span::FileId::DEFAULT,
         };
         assert_eq!(empty.discriminant_type(), Type::NEVER);
@@ -1696,6 +1702,7 @@ mod tests {
             variants: Arc::from(["A".into()]),
             variant_payloads: Vec::new(),
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: rue_span::FileId::DEFAULT,
         };
         assert_eq!(small.discriminant_type(), Type::U8);
@@ -1707,6 +1714,7 @@ mod tests {
                 .collect(),
             variant_payloads: Vec::new(),
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: rue_span::FileId::DEFAULT,
         };
         assert_eq!(max_u8.discriminant_type(), Type::U8);
@@ -1722,6 +1730,7 @@ mod tests {
                 .collect(),
             variant_payloads: Vec::new(),
             is_pub: false,
+            is_non_exhaustive: false,
             file_id: rue_span::FileId::DEFAULT,
         };
         assert_eq!(medium.discriminant_type(), Type::U16);
