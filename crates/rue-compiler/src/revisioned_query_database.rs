@@ -39935,6 +39935,8 @@ fn main() -> i32 {
                         body_span,
                         #[cfg(test)]
                         interner_limit: None,
+                        #[cfg(test)]
+                        force_failure: false,
                     }),
                     materialization: Arc::new(facts),
                 },

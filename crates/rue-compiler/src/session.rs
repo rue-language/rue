@@ -673,6 +673,10 @@ pub struct CompilerSession {
     /// Test-only bound for the request-local CFG symbol universe.
     #[cfg(test)]
     cfg_interner_limit: Option<usize>,
+    /// Test-only deterministic CFG terminal failure for accessor propagation
+    /// diagnostics. Production never sets this hook.
+    #[cfg(test)]
+    cfg_accessor_failure: bool,
     /// Test-only differential-oracle perturbation requested through the
     /// unstable test bridge. It corrupts a canonical projection at the next
     /// observation point without reviving a retired selected-result store.
@@ -1502,6 +1506,13 @@ impl CompilerSession {
     pub(crate) fn with_cfg_interner_limit(max_entries: usize) -> Self {
         let mut session = Self::default();
         session.cfg_interner_limit = Some(max_entries);
+        session
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_cfg_accessor_failure() -> Self {
+        let mut session = Self::default();
+        session.cfg_accessor_failure = true;
         session
     }
 
@@ -5257,6 +5268,8 @@ impl CompilerSession {
                         body_span,
                         #[cfg(test)]
                         interner_limit: self.cfg_interner_limit,
+                        #[cfg(test)]
+                        force_failure: self.cfg_accessor_failure && semantic_body.is_accessor,
                     }),
                     materialization: Arc::new(materialization),
                 },
@@ -5493,6 +5506,15 @@ impl CompilerSession {
                 } => {
                     return Err(PipelineRequestControl::Compile(
                         crate::cfg_query::import_errors(errors, *old_span, body_span),
+                    ));
+                }
+                crate::cfg_query::CfgValue::AccessorFailure { errors, origin, .. } => {
+                    return Err(PipelineRequestControl::Compile(
+                        crate::cfg_query::import_accessor_failure(
+                            errors,
+                            origin,
+                            &optimized_cfg_key,
+                        ),
                     ));
                 }
             };
@@ -10301,6 +10323,122 @@ mod tests {
         assert!(
             observed,
             "the production CFG query must classify request-local symbol exhaustion"
+        );
+    }
+
+    #[test]
+    fn accessor_cfg_failure_preserves_callee_source_span() {
+        let main = r#"const lib = @import("lib.rue");
+fn main() -> i32 {
+    let value = lib.Box { value: 7 };
+    if value.get() == 7 { 0 } else { 1 }
+}"#;
+        let lib = r#"pub struct Box {
+    value: i32,
+    fn get(borrow self) -> borrow i32 { yield self.value; }
+}"#;
+        let source = snapshot(
+            &[
+                (1, "/p/main.rue", "main.rue", main),
+                (2, "/p/lib.rue", "lib.rue", lib),
+            ],
+            1,
+        );
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::with_cfg_accessor_failure();
+        publish_with_test_imports(&mut session, &source);
+        let errors = session
+            .rooted_cfg(&options)
+            .expect_err("the accessor CFG hook must publish a failure");
+        assert_eq!(errors.len(), 1, "unexpected diagnostics: {errors:?}");
+        assert!(
+            matches!(
+                errors.first().map(|error| &error.kind),
+                Some(ErrorKind::InternalError(message)) if message == "test CFG accessor failure"
+            ),
+            "unexpected diagnostics: {errors:?}"
+        );
+        assert_eq!(
+            errors
+                .first()
+                .and_then(CompileError::span)
+                .map(|span| span.file_id),
+            Some(FileId::new(2)),
+            "accessor failure must remain anchored in the callee module: {errors:?}"
+        );
+
+        let first_span = errors.first().and_then(CompileError::span).unwrap();
+        let shifted_lib = format!("// shift the callee body\n{lib}");
+        let shifted = snapshot(
+            &[
+                (1, "/p/main.rue", "main.rue", main),
+                (2, "/p/lib.rue", "lib.rue", shifted_lib.as_str()),
+            ],
+            1,
+        );
+        publish_with_test_imports(&mut session, &shifted);
+        let shifted_errors = session
+            .rooted_cfg(&options)
+            .expect_err("the shifted accessor CFG must still publish a failure");
+        let shifted_span = shifted_errors
+            .first()
+            .and_then(CompileError::span)
+            .expect("the shifted failure must retain its span");
+        assert_eq!(shifted_span.file_id, FileId::new(2));
+        assert_eq!(
+            shifted_span.start,
+            first_span.start + "// shift the callee body\n".len() as u32,
+            "a reused accessor failure must be remapped to the current callee body"
+        );
+        assert_ne!(shifted_span, first_span);
+        assert!(
+            session
+                .rooted_cfg_executions()
+                .iter()
+                .any(|(function, execution)| {
+                    matches!(
+                        function,
+                        crate::FunctionInstanceKey::Definition(definition)
+                            if definition.name() == "main"
+                    ) && *execution == rue_query::RequestExecution::Reused
+                }),
+            "the shifted diagnostic must come from the retained caller optimized-CFG terminal"
+        );
+    }
+
+    #[test]
+    fn same_file_accessor_cfg_failure_reprojects_without_caller_remap() {
+        let program = r#"struct Box {
+    value: i32,
+    fn get(borrow self) -> borrow i32 { yield self.value; }
+}
+fn main() -> i32 {
+    let value = Box { value: 7 };
+    if value.get() == 7 { 0 } else { 1 }
+}"#;
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::with_cfg_accessor_failure();
+        let source = SourceSnapshot::single("main.rue", program).unwrap();
+        session.update(&source).into_result().unwrap();
+        let first = session
+            .rooted_cfg(&options)
+            .expect_err("the accessor CFG hook must publish a same-file failure");
+        let first_span = first.first().and_then(CompileError::span).unwrap();
+        assert_eq!(first_span.file_id, FileId::new(0));
+
+        let prefix = "// shift the accessor\n";
+        let shifted_source =
+            SourceSnapshot::single("main.rue", format!("{prefix}{program}").as_str()).unwrap();
+        session.update(&shifted_source).into_result().unwrap();
+        let shifted = session
+            .rooted_cfg(&options)
+            .expect_err("the shifted same-file accessor must still fail");
+        let shifted_span = shifted.first().and_then(CompileError::span).unwrap();
+        assert_eq!(shifted_span.file_id, FileId::new(0));
+        assert_eq!(
+            shifted_span.start,
+            first_span.start + prefix.len() as u32,
+            "same-file retained failures must not be remapped into the caller"
         );
     }
 

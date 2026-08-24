@@ -61,6 +61,8 @@ pub(crate) struct CfgBodyInput {
     pub(crate) body_span: Span,
     #[cfg(test)]
     pub(crate) interner_limit: Option<usize>,
+    #[cfg(test)]
+    pub(crate) force_failure: bool,
 }
 
 impl PartialEq for CfgBodyInput {
@@ -69,6 +71,7 @@ impl PartialEq for CfgBodyInput {
             #[cfg(test)]
             {
                 self.interner_limit == other.interner_limit
+                    && self.force_failure == other.force_failure
             }
             #[cfg(not(test))]
             {
@@ -585,6 +588,19 @@ pub(crate) enum CfgValue {
         errors: crate::CompileErrors,
         body_span: Span,
     },
+    /// A caller's optimized CFG observed a raw accessor failure. `origin`
+    /// keeps the callee basis needed to re-anchor retained diagnostics on
+    /// reuse; the value itself is published under the caller's optimized key.
+    AccessorFailure {
+        errors: crate::CompileErrors,
+        origin: CfgFailureOrigin,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CfgFailureOrigin {
+    pub(crate) accessor: crate::FunctionInstanceKey,
+    pub(crate) body_span: Span,
 }
 
 impl RetainedCharge for lasso::ThreadedRodeo {
@@ -821,6 +837,9 @@ impl RetainedCharge for CfgValue {
         match self {
             Self::Available(record) => record.retained_charge(),
             Self::Failure { errors, .. } => errors.retained_charge(),
+            Self::AccessorFailure { errors, origin } => errors
+                .retained_charge()
+                .saturating_add(origin.accessor.retained_charge()),
         }
     }
 }
@@ -841,6 +860,22 @@ pub(crate) fn cfg_value_equal(left: &CfgValue, right: &CfgValue) -> bool {
                 ..
             },
         ) => left_errors == right_errors,
+        (
+            CfgValue::AccessorFailure {
+                errors: left_errors,
+                origin: left_origin,
+                ..
+            },
+            CfgValue::AccessorFailure {
+                errors: right_errors,
+                origin: right_origin,
+                ..
+            },
+        ) => {
+            // Position-only edits keep this terminal reusable; consumers
+            // reproject the retained basis through `origin.accessor`.
+            left_errors == right_errors && left_origin.accessor == right_origin.accessor
+        }
         _ => false,
     }
 }
@@ -868,6 +903,23 @@ pub(crate) fn import_errors(
         .map(|error| error.map_spans(|span| map_span(span, old, new)))
         .collect::<Vec<_>>()
         .into()
+}
+
+pub(crate) fn import_accessor_failure(
+    errors: &crate::CompileErrors,
+    origin: &CfgFailureOrigin,
+    key: &OptimizedCfgQueryKey,
+) -> crate::CompileErrors {
+    let current_accessor_span = key
+        .accessor_dependencies
+        .iter()
+        .find(|dependency| dependency.function == origin.accessor)
+        .map(|dependency| match &dependency.semantic_input {
+            CfgSemanticInput::Body { input, .. } => input.body_span,
+            CfgSemanticInput::DropGlue { body_span, .. } => *body_span,
+        })
+        .expect("published accessor failure must name a dependency");
+    import_errors(errors, origin.body_span, current_accessor_span)
 }
 
 pub(crate) fn import_warnings(
@@ -1009,6 +1061,20 @@ pub(crate) fn evaluate_cfg(
     key: &CfgQueryKey,
 ) -> Result<QueryOutput<CfgValue>, QueryAbort> {
     let _span = tracing::info_span!("cfg_construction", phase = "cfg_and_optimization").entered();
+    #[cfg(test)]
+    if let CfgSemanticInput::Body { input, .. } = &key.semantic_input {
+        if input.force_failure {
+            return Ok(QueryOutput::success(CfgValue::Failure {
+                errors: crate::CompileError::new(
+                    rue_error::ErrorKind::InternalError("test CFG accessor failure".to_owned()),
+                    input.body_span,
+                )
+                .into(),
+                body_span: input.body_span,
+            })
+            .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+        }
+    }
     let value =
         materialize_and_build_cfg(context, layouts, type_facts, drop_glues, call_abis, key)?;
     let kind = if matches!(value, CfgValue::Failure { .. }) {
@@ -1678,15 +1744,31 @@ pub(crate) fn evaluate_optimized_cfg(
         let QueryOutcome::Success(value) = terminal.outcome() else {
             unreachable!("Cfg publishes typed values")
         };
-        let CfgValue::Available(callee) = value else {
-            return Ok(QueryOutput::success(value.clone())
-                .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
-        };
-        let body_span = match &dependency.semantic_input {
+        let dependency_body_span = match &dependency.semantic_input {
             CfgSemanticInput::Body { input, .. } => input.body_span,
             CfgSemanticInput::DropGlue { body_span, .. } => *body_span,
         };
-        accessor_cfgs.insert(dependency.function.clone(), (callee.clone(), body_span));
+        let CfgValue::Available(callee) = value else {
+            let CfgValue::Failure {
+                errors,
+                body_span: old_span,
+            } = value
+            else {
+                unreachable!("Cfg publishes typed values")
+            };
+            return Ok(QueryOutput::success(CfgValue::AccessorFailure {
+                errors: import_errors(errors, *old_span, dependency_body_span),
+                origin: CfgFailureOrigin {
+                    accessor: dependency.function.clone(),
+                    body_span: dependency_body_span,
+                },
+            })
+            .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+        };
+        accessor_cfgs.insert(
+            dependency.function.clone(),
+            (callee.clone(), dependency_body_span),
+        );
     }
     let interner =
         match copy_interner_preserving_ordinals(&record.interner, || context.check_canceled()) {

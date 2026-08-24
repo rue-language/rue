@@ -496,6 +496,13 @@ pub(crate) fn evaluate_codegen_unit(
     if let crate::cfg_query::CfgValue::Failure { errors, .. } = optimized {
         return Ok(codegen_failure(errors.clone()));
     }
+    if let crate::cfg_query::CfgValue::AccessorFailure { errors, origin } = optimized {
+        return Ok(codegen_failure(crate::cfg_query::import_accessor_failure(
+            &errors,
+            &origin,
+            &key.optimized_cfg,
+        )));
+    }
     let crate::cfg_query::CfgValue::Available(record) = optimized else {
         unreachable!("failure handled above")
     };
