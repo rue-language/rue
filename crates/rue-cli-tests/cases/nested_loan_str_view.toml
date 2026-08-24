@@ -1,5 +1,6 @@
 # A nested `inout` loan must not run while an outer argument of the SAME call
-# holds a shared (`borrow`) loan of the same root (RUE-1696).
+# holds either a shared (`borrow`) loan or a view-materialized loan of the same
+# root (RUE-1696, RUE-1766).
 #
 # `borrow s: str` does not pass an address: the argument is snapshotted into a
 # `{ptr, len}` view over the StrBuf's heap buffer at argument-evaluation time
@@ -15,13 +16,15 @@
 #
 # The opposite nesting (an outer `inout` loan with a nested `borrow`, and the
 # accumulator idiom `add(mul(x, y, inout flags), z, inout flags)`) stays legal:
-# an `inout` argument passes the root's address, not a snapshot, so a nested
-# access observes ordinary sequenced mutation.
+# an ordinary address-passed `inout` argument passes the root's address, not a
+# snapshot, so a nested access observes ordinary sequenced mutation. An
+# `inout str` sourced from `StrBuf` is different: it is view-materialized and
+# must reject same-root nesting.
 
 [section]
 id = "cli.nested_loan_str_view"
-name = "Nested inout under an outer shared loan"
-description = "A nested `inout` of a root the same call already borrows is rejected; the outer argument's str/slice view would dangle (RUE-1696)."
+name = "Nested inout under an outer shared or view-materialized loan"
+description = "A nested `inout` of a root the same call already borrows or snapshots is rejected; ordinary address-passed `inout` remains legal (RUE-1696, RUE-1766)."
 
 [[case]]
 name = "nested_inout_under_borrow_str_view_rejected"
@@ -66,6 +69,147 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["E0430", "cannot borrow 'b'"]
+
+[[case]]
+name = "nested_inout_under_inout_str_view_dangling_repro_rejected"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "RUE-1766 exact dangling repro: the outer `inout str` view is snapshotted before `nuke` frees and reallocates the same root, so the nested exclusive loan is rejected."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn nuke(inout b: StrBuf) -> i64 {
+    b.free();
+    let mut c = StrBuf.new();
+    c.push_str("ZZZZZ");
+    let mut d = StrBuf.new();
+    d.push_str("YYYYY");
+    @intCast(c.len() + d.len())
+}
+fn read_view(inout s: str, k: i64) -> i64 {
+    let l: i64 = @intCast(s.len());
+    @dbg(l);
+    let b0: i64 = @intCast(s[0]);
+    @dbg(b0);
+    k
+}
+fn main() -> i32 {
+    let mut b = StrBuf.new();
+    b.push_str("hello");
+    let r = read_view(inout b, nuke(inout b));
+    @intCast(r)
+}
+""" }]
+compile_fail = true
+error_contains = ["E0430", "cannot borrow 'b'", "dangling"]
+
+[[case]]
+name = "nested_inout_under_inout_str_view_rejected_reversed_order"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "The `inout str` snapshot conflict is independent of argument evaluation order."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(x: i32, inout s: str) -> u8 { s[0] }
+fn grow(inout s: StrBuf) -> i32 {
+    s.append_str(borrow "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+    0
+}
+fn main() -> i32 {
+    let mut b = StrBuf.from_str(borrow "hello");
+    let byte = read_first(grow(inout b), inout b);
+    @dbg(byte);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0430", "cannot borrow 'b'", "dangling"]
+
+[[case]]
+name = "nested_inout_under_inout_str_view_different_root_stays_legal"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "An `inout str` view and nested `inout` of distinct roots remain legal."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(inout s: str, x: i32) -> u8 { s[0] }
+fn grow(inout s: StrBuf) -> i32 {
+    s.append_str(borrow "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+    0
+}
+fn main() -> i32 {
+    let mut b = StrBuf.from_str(borrow "hello");
+    let mut c = StrBuf.from_str(borrow "world");
+    let byte = read_first(inout b, grow(inout c));
+    @dbg(byte);
+    @dbg(c.len());
+    0
+}
+""" }]
+stdout = "104\n69\n"
+exit_code = 0
+
+[[case]]
+name = "nested_inout_under_address_passed_inout_stays_legal"
+description = "An ordinary address-passed `inout` parameter remains legal for sequenced nested accumulator updates."
+files = [{ path = "main.rue", source = """
+fn mul(a: i32, b: i32, inout flags: i32) -> i32 {
+    flags = flags + 1;
+    a * b
+}
+fn add(a: i32, b: i32, inout flags: i32) -> i32 {
+    flags = flags + 10;
+    a + b
+}
+fn main() -> i32 {
+    let mut flags = 0;
+    let total = add(mul(3, 4, inout flags), 5, inout flags);
+    @dbg(total);
+    @dbg(flags);
+    0
+}
+""" }]
+stdout = "17\n11\n"
+exit_code = 0
+
+[[case]]
+name = "nested_inout_under_forwarded_inout_str_stays_legal"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "A forwarded `inout str` parameter is address-passed, so same-root nested `inout` remains legal."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn leaf(inout s: str) -> i32 { @intCast(s.len()) }
+fn read_view(inout s: str, x: i32) -> i32 {
+    @intCast(s.len()) + x
+}
+fn outer(inout s: str) -> i32 {
+    read_view(inout s, leaf(inout s))
+}
+fn main() -> i32 {
+    let mut b = StrBuf.from_str(borrow "hello");
+    @dbg(outer(inout b));
+    0
+}
+""" }]
+stdout = "10\n"
+exit_code = 0
+
+[[case]]
+name = "nested_inout_under_direct_str_n_stays_legal"
+description = "A direct `Str(N)` operand is address-passed, so same-root nested `inout` remains legal."
+files = [{ path = "main.rue", source = """
+fn leaf(inout s: Str(8)) -> i32 { @intCast(s.len()) }
+fn read_view(inout s: str, x: i32) -> i32 {
+    @intCast(s.len()) + x
+}
+fn main() -> i32 {
+    let mut b: Str(8) = "hello";
+    @dbg(read_view(inout b, leaf(inout b)));
+    0
+}
+""" }]
+stdout = "10\n"
+exit_code = 0
 
 [[case]]
 name = "nested_inout_under_borrow_struct_rejected"
