@@ -375,6 +375,100 @@ error_contains = ["E0714", "the specifier is empty"]
 compile_stderr_not_contains = ["E0713", "/_.rue"]
 
 [[case]]
+name = "hard_link_import_alias_is_e0715"
+description = "RUE-1705: distinct logical imports backed by one hard-linked file produce a coded import-site diagnostic; hard-link creation failure is reported explicitly by the harness."
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+fn main() -> i32 { 0 }
+""" },
+    { path = "real.rue", source = "pub fn value() -> i32 { 1 }" },
+]
+hard_links = [
+    { link = "a.rue", target = "real.rue" },
+    { link = "b.rue", target = "real.rue" },
+]
+compile_fail = true
+error_contains = ["E0715", "a.rue", "b.rue", "same physical file", "under one name"]
+
+[[case]]
+name = "hard_link_import_alias_is_e0715_json"
+description = "RUE-1705: the hard-link alias diagnostic keeps its import-site span and stable code in JSON presentation."
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+fn main() -> i32 { 0 }
+""" },
+    { path = "real.rue", source = "pub fn value() -> i32 { 1 }" },
+]
+hard_links = [
+    { link = "a.rue", target = "real.rue" },
+    { link = "b.rue", target = "real.rue" },
+]
+args = ["--error-format", "json", "main.rue"]
+compile_fail = true
+json_diagnostics = true
+error_contains = ["E0715"]
+json_diagnostic_order = ["error E0715 main.rue:2:11"]
+
+[[case]]
+name = "hard_link_import_to_root_is_e0715"
+description = "RUE-1705 control path: an imported hard link to the root is rejected at its import site while the root remains the assembled representative."
+files = [
+    { path = "main.rue", source = """
+const alias = @import("alias.rue");
+fn main() -> i32 { 0 }
+""" },
+]
+hard_links = [{ link = "alias.rue", target = "main.rue" }]
+compile_fail = true
+error_contains = ["E0715", "main.rue", "alias.rue", "same physical file"]
+
+[[case]]
+name = "symlink_import_alias_remains_deduplicated"
+description = "RUE-1705 control: a symlink alias canonicalizes to the same path and remains a valid repeated import."
+files = [
+    { path = "main.rue", source = """
+const real = @import("real.rue");
+const alias = @import("alias.rue");
+fn main() -> i32 { 0 }
+""" },
+    { path = "real.rue", source = "pub fn value() -> i32 { 1 }" },
+]
+symlinks = [{ link = "alias.rue", target = "real.rue" }]
+compile_only = true
+
+[[case]]
+name = "repeated_logical_import_remains_valid"
+description = "RUE-1705 control: repeated imports under one logical identity remain valid."
+files = [
+    { path = "main.rue", source = """
+const first = @import("real.rue");
+const second = @import("real.rue");
+fn main() -> i32 { 0 }
+""" },
+    { path = "real.rue", source = "pub fn value() -> i32 { 1 }" },
+]
+compile_only = true
+
+[[case]]
+name = "case_alias_import_is_e0715_on_case_insensitive_fs"
+description = "RUE-1705: distinct non-symlink case spellings of one file produce a coded import-site diagnostic; the harness explicitly ignores this case on case-sensitive filesystems."
+files = [
+    { path = "main.rue", source = """
+const lower = @import("real.rue");
+const upper = @import("REAL.rue");
+fn main() -> i32 { 0 }
+""" },
+    { path = "real.rue", source = "pub fn value() -> i32 { 1 }" },
+]
+requires_case_insensitive_fs = true
+compile_fail = true
+error_contains = ["E0715", "real.rue", "REAL.rue", "same physical file"]
+
+[[case]]
 name = "emit_deps_malformed_import_has_no_envelope"
 description = "RUE-810: malformed import shape has no canonical unresolved topology and emits diagnostics without JSON."
 files = [

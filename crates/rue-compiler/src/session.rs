@@ -1808,13 +1808,28 @@ impl CompilerSession {
         plan: &crate::ImportDiscoveryPlan,
         frontier: &crate::ImportDemandFrontier,
     ) -> crate::CompileResult<crate::ImportDiscoveryWave> {
+        self.begin_import_wave_with_accepted_reads(revision, plan, frontier, None)
+    }
+
+    pub(crate) fn begin_import_wave_with_accepted_reads(
+        &mut self,
+        revision: crate::ImportInputRevision,
+        plan: &crate::ImportDiscoveryPlan,
+        frontier: &crate::ImportDemandFrontier,
+        accepted_reads: Option<&crate::AcceptedReadManifest>,
+    ) -> crate::CompileResult<crate::ImportDiscoveryWave> {
         if frontier.revision() != revision {
             return Err(CompileError::without_span(ErrorKind::InvalidCompilerInput(
                 "discovery wave frontier belongs to a stale immutable revision".into(),
             )));
         }
         let ledger = self.queries.revisioned.import_ledger(revision)?;
-        crate::ImportDiscoveryWave::begin(plan, frontier, ledger)
+        crate::ImportDiscoveryWave::begin_with_accepted_reads(
+            plan,
+            frontier,
+            ledger,
+            accepted_reads,
+        )
     }
 
     /// Record one wave hop's answers and derive the next hop's operations.
@@ -1836,7 +1851,19 @@ impl CompilerSession {
         snapshot: &SourceSnapshot,
         accepted_reads: crate::AcceptedReadManifest,
     ) -> crate::CompileResult<(crate::ImportInputRevision, crate::ImportDemandFrontier)> {
-        let staged_parses = wave.take_staged_parses();
+        // A wave may have parsed a source whose physical identity was already
+        // assembled under another logical module (for example an import hard
+        // link to the root). The assembler retains one representative, so do
+        // not stage a tree for a module absent from the published snapshot.
+        let staged_parses = wave
+            .take_staged_parses()
+            .into_iter()
+            .filter(|staged| {
+                snapshot
+                    .files()
+                    .any(|source| snapshot.module_id(source.file_id) == Some(staged.module()))
+            })
+            .collect();
         let (frontier, observations) = wave.into_batch();
         let revision = self.queries.revisioned.publish_import_batch(
             &frontier,
@@ -2914,6 +2941,7 @@ impl CompilerSession {
             plan.context(),
             &exact_groups,
             check_ledger,
+            &open.accepted_reads,
         );
         if crate::import_discovery::exact_import_has_failures(&exact_groups, check_ledger) {
             self.publish_failed_import_attempt(
