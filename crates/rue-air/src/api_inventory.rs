@@ -59,6 +59,11 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "FileId",
         "ThreadedRodeo",
         "body_interner",
+        "anon_structs",
+        "AnonymousNominalKey",
+        "AnonymousNominalKind",
+        "ArrayLen",
+        "SemanticBodyExportFailure",
     ];
     for forbidden in production_forbidden {
         assert!(
@@ -78,11 +83,12 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     }
     assert!(contract.contains("type CallAdmission;"));
     assert!(contract.contains("type Type: ComptimeType;"));
-    assert!(contract.contains("ComptimeEnv<'_, Self::Value, Self::Type, Self::Name, Self::File>"));
+    assert!(contract.contains("Self::CanonicalIdentity"));
+    assert!(contract.contains("Self::File,"));
 
     let env_source = include_str!("sema/comptime.rs");
     let env_start = env_source
-        .find("pub(crate) struct ComptimeEnv")
+        .find("pub struct ComptimeEnv")
         .expect("generic comptime environment declaration");
     let env_end = env_source[env_start..]
         .find("#[cfg(test)]")

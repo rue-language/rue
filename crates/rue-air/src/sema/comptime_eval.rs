@@ -55,9 +55,9 @@ use rue_rir::{InstData, InstRef};
 use rue_span::{FileId, Span};
 
 use super::comptime::{
-    ComptimeArgMode, ComptimeCallAdmission, ComptimeConstInfo, ComptimeEngine,
-    ComptimeEnv as GenericComptimeEnv, ComptimeFile, ComptimeHost, ComptimeName, ComptimeType,
-    PreparedComptimeCall,
+    ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeConstInfo,
+    ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile, ComptimeHost,
+    ComptimeIdentity, ComptimeName, ComptimeType, PreparedComptimeCall,
 };
 use super::context::{AnalysisContext, ConstValue};
 use super::info::FunctionCallInfo;
@@ -65,8 +65,17 @@ use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 
 impl ComptimeName for Spur {}
 impl ComptimeFile for FileId {}
+impl ComptimeIdentity for super::anon_structs::IssuedStableProducerId {}
+impl ComptimeIdentity for super::anon_structs::IssuedAnonymousNominalKey {}
 
-pub(crate) type ComptimeEnv<'a> = GenericComptimeEnv<'a, ConstValue, Type, Spur, FileId>;
+pub(crate) type ComptimeEnv<'a> = GenericComptimeEnv<
+    'a,
+    ConstValue,
+    Type,
+    Spur,
+    FileId,
+    super::anon_structs::IssuedStableProducerId,
+>;
 
 impl super::comptime::ComptimeValue for ConstValue {
     type Type = Type;
@@ -166,7 +175,16 @@ fn elapsed_ns(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
-impl<'a> GenericComptimeEnv<'a, ConstValue, Type, Spur, FileId> {
+impl<'a>
+    GenericComptimeEnv<
+        'a,
+        ConstValue,
+        Type,
+        Spur,
+        FileId,
+        super::anon_structs::IssuedStableProducerId,
+    >
+{
     /// The environment for expressions inside the function currently being
     /// analyzed: comptime parameters in scope plus HM-resolved types.
     pub(crate) fn for_analysis(ctx: &'a AnalysisContext) -> Self {
@@ -1700,6 +1718,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     type Value = ConstValue;
     type Name = Spur;
     type File = FileId;
+    type CanonicalIdentity = super::anon_structs::IssuedStableProducerId;
+    type AnonymousIdentity = super::anon_structs::IssuedAnonymousNominalKey;
+    type ProducerFailure = crate::SemanticBodyExportFailure;
     type CallAdmission = super::info::FunctionCallInfo;
     type AnonymousStructId = crate::types::StructId;
     type AnonMethodSigs = Vec<super::AnonMethodSig>;
@@ -1767,13 +1788,14 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     ) -> Option<CompileResult<Option<ConstValue>>> {
         OrdinaryBodyEngine::reduce_external_comptime_call(self, name, types, values, span)
     }
-    fn resolve_array_length(
+    fn resolve_named_array_length(
         &mut self,
-        length: &ArrayLen,
+        name: &Spur,
         span: Span,
         values: Option<&AHashMap<Spur, ConstValue>>,
     ) -> CompileResult<u64> {
-        OrdinaryBodyEngine::resolve_array_length(self, length, span, values)
+        let name = self.body_interner().resolve(name).to_owned();
+        OrdinaryBodyEngine::resolve_array_length(self, &ArrayLen::Named(name), span, values)
     }
     fn rir_type_named_symbol(&self, syntax: rue_rir::RirTypeSyntaxRef) -> Option<Spur> {
         OrdinaryBodyEngine::rir_type_named_symbol(self, syntax)
@@ -1799,7 +1821,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn find_or_create_anon_struct(
         &mut self,
-        identity: super::anon_structs::IssuedAnonymousNominalKey,
+        identity: Self::AnonymousIdentity,
         fields: &[super::comptime::ComptimeField<Spur, Type>],
         sigs: &Vec<super::AnonMethodSig>,
         captured: &AHashMap<Spur, ConstValue>,
@@ -1815,7 +1837,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn find_or_create_anon_enum(
         &mut self,
-        identity: super::anon_structs::IssuedAnonymousNominalKey,
+        identity: Self::AnonymousIdentity,
         names: &[String],
         payloads: &[Vec<Type>],
     ) -> CompileResult<Type> {
@@ -1958,8 +1980,23 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         name: Spur,
         types: &AHashMap<Spur, Type>,
         values: &AHashMap<Spur, ConstValue>,
-    ) -> Result<super::anon_structs::IssuedStableProducerId, crate::SemanticBodyExportFailure> {
+    ) -> Result<Self::CanonicalIdentity, Self::ProducerFailure> {
         OrdinaryBodyEngine::canonical_function_producer(self, name, types, values)
+    }
+    fn issue_anonymous_identity(
+        &self,
+        kind: ComptimeAnonymousKind,
+        producer: &Self::CanonicalIdentity,
+        anchor: &rue_rir::RirStructuralAnchor,
+    ) -> Self::AnonymousIdentity {
+        crate::AnonymousNominalKey {
+            kind: match kind {
+                ComptimeAnonymousKind::Struct => crate::AnonymousNominalKind::Struct,
+                ComptimeAnonymousKind::Enum => crate::AnonymousNominalKind::Enum,
+            },
+            producer: producer.clone(),
+            anchor: anchor.clone(),
+        }
     }
     fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
         &mut self,

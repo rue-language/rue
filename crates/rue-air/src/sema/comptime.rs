@@ -13,14 +13,12 @@ use std::hash::Hash;
 use super::comptime_eval::comptime_panic_err;
 use crate::integer_semantics::{CheckedIntegerResult, IntegerType};
 use crate::specialize::MAX_COMPTIME_CALL_DEPTH;
-use crate::types::ArrayLen;
-
-pub(crate) trait ComptimeType: Clone {}
+pub trait ComptimeType: Clone {}
 
 /// Value algebra consumed by the canonical dispatcher.  The surrounding
 /// semantic type system remains local in this migration checkpoint; hosts may
 /// provide any value representation that can carry these four comptime forms.
-pub(crate) trait ComptimeValue: Clone {
+pub trait ComptimeValue: Clone {
     type Type: ComptimeType;
     fn integer(value: i128) -> Self;
     fn boolean(value: bool) -> Self;
@@ -32,7 +30,7 @@ pub(crate) trait ComptimeValue: Clone {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ComptimeField<N, T> {
+pub struct ComptimeField<N, T> {
     pub(crate) name: N,
     pub(crate) ty: T,
 }
@@ -41,28 +39,37 @@ pub(crate) struct ComptimeField<N, T> {
 /// adapter supplies only the metadata needed for dependency/privacy handling
 /// and a value when that declaration is representable by the current domain.
 #[derive(Debug, Clone)]
-pub(crate) struct ComptimeConstInfo<V> {
+pub struct ComptimeConstInfo<V> {
     pub(crate) is_pub: bool,
     pub(crate) span: Span,
     pub(crate) value: Option<V>,
 }
 
-pub(crate) trait ComptimeName: Clone + Eq + Hash {}
+pub trait ComptimeName: Clone + Eq + Hash {}
 
-pub(crate) trait ComptimeFile: Clone + Eq + Hash {}
+pub trait ComptimeFile: Clone + Eq + Hash {}
+
+pub trait ComptimeIdentity: Clone {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeAnonymousKind {
+    Struct,
+    Enum,
+}
 
 /// Lexical and substitution state shared by the canonical comptime engine.
 /// Name and file identities are supplied by the host; the evaluator does not
 /// depend on the local interner or file-id representation.
-pub(crate) struct ComptimeEnv<'a, V, T, N, F>
+pub struct ComptimeEnv<'a, V, T, N, F, I>
 where
     V: ComptimeValue<Type = T>,
     T: ComptimeType,
     N: ComptimeName,
     F: ComptimeFile,
+    I: ComptimeIdentity,
 {
     pub(crate) producer: Option<InstRef>,
-    pub(crate) canonical_identity: Option<super::anon_structs::IssuedStableProducerId>,
+    pub(crate) canonical_identity: Option<I>,
     pub(crate) type_subst: AHashMap<N, T>,
     pub(crate) value_subst: AHashMap<N, V>,
     pub(crate) resolved_types: Option<&'a AHashMap<InstRef, T>>,
@@ -73,12 +80,13 @@ where
     pub(crate) defining_file: Option<F>,
 }
 
-impl<'a, V, T, N, F> ComptimeEnv<'a, V, T, N, F>
+impl<'a, V, T, N, F, I> ComptimeEnv<'a, V, T, N, F, I>
 where
     V: ComptimeValue<Type = T>,
     T: ComptimeType,
     N: ComptimeName,
     F: ComptimeFile,
+    I: ComptimeIdentity,
 {
     pub(crate) fn substs_with_locals(&self) -> (AHashMap<N, T>, AHashMap<N, V>) {
         let mut type_subst = self.type_subst.clone();
@@ -127,7 +135,6 @@ where
 #[cfg(test)]
 mod value_domain_tests {
     use super::*;
-    use crate::sema::anon_structs;
 
     #[derive(Clone, Debug, PartialEq)]
     enum FakeValue {
@@ -185,6 +192,11 @@ mod value_domain_tests {
     impl ComptimeName for FakeName {}
     impl ComptimeFile for FakeFile {}
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct FakeIdentity(u32);
+
+    impl ComptimeIdentity for FakeIdentity {}
+
     struct FakeHost {
         rir: Rir,
         type_symbol: SymbolHandle,
@@ -197,6 +209,9 @@ mod value_domain_tests {
         type Value = FakeValue;
         type Name = FakeName;
         type File = FakeFile;
+        type CanonicalIdentity = FakeIdentity;
+        type AnonymousIdentity = FakeIdentity;
+        type ProducerFailure = crate::SemanticBodyExportFailure;
         type CallAdmission = ();
         type AnonymousStructId = u32;
         type AnonMethodSigs = ();
@@ -248,9 +263,9 @@ mod value_domain_tests {
         ) -> Option<CompileResult<Option<Self::Value>>> {
             None
         }
-        fn resolve_array_length(
+        fn resolve_named_array_length(
             &mut self,
-            _length: &ArrayLen,
+            _name: &Self::Name,
             _span: Span,
             _values: Option<&AHashMap<Self::Name, Self::Value>>,
         ) -> CompileResult<u64> {
@@ -278,7 +293,7 @@ mod value_domain_tests {
         }
         fn find_or_create_anon_struct(
             &mut self,
-            _identity: anon_structs::IssuedAnonymousNominalKey,
+            _identity: Self::AnonymousIdentity,
             _fields: &[ComptimeField<Self::Name, Self::Type>],
             _sigs: &Self::AnonMethodSigs,
             _captured: &AHashMap<Self::Name, Self::Value>,
@@ -287,7 +302,7 @@ mod value_domain_tests {
         }
         fn find_or_create_anon_enum(
             &mut self,
-            _identity: anon_structs::IssuedAnonymousNominalKey,
+            _identity: Self::AnonymousIdentity,
             _names: &[String],
             _payloads: &[Vec<Self::Type>],
         ) -> CompileResult<Self::Type> {
@@ -317,7 +332,7 @@ mod value_domain_tests {
         }
         fn const_expr_type(
             &self,
-            _env: &ComptimeEnv<'_, Self::Value, Self::Type, Self::Name, Self::File>,
+            _env: &ComptimeEnv<'_, Self::Value, Self::Type, Self::Name, Self::File, FakeIdentity>,
             _inst_ref: InstRef,
         ) -> Option<Self::Type> {
             None
@@ -370,7 +385,14 @@ mod value_domain_tests {
             _name: Self::Name,
             _arg_count: usize,
             _arg_modes: &[ComptimeArgMode],
-            _env: &mut ComptimeEnv<'_, Self::Value, Self::Type, Self::Name, Self::File>,
+            _env: &mut ComptimeEnv<
+                '_,
+                Self::Value,
+                Self::Type,
+                Self::Name,
+                Self::File,
+                FakeIdentity,
+            >,
             _name_is_resolved_key: bool,
         ) -> CompileResult<Option<ComptimeCallAdmission<Self::CallAdmission, Self::Name>>> {
             Ok(None)
@@ -414,9 +436,16 @@ mod value_domain_tests {
             _name: Self::Name,
             _types: &AHashMap<Self::Name, Self::Type>,
             _values: &AHashMap<Self::Name, Self::Value>,
-        ) -> Result<anon_structs::IssuedStableProducerId, crate::SemanticBodyExportFailure>
-        {
+        ) -> Result<Self::CanonicalIdentity, Self::ProducerFailure> {
             panic!("fake host does not issue producers")
+        }
+        fn issue_anonymous_identity(
+            &self,
+            _kind: ComptimeAnonymousKind,
+            producer: &Self::CanonicalIdentity,
+            _anchor: &rue_rir::RirStructuralAnchor,
+        ) -> Self::AnonymousIdentity {
+            producer.clone()
         }
         fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
             &mut self,
@@ -466,7 +495,7 @@ mod value_domain_tests {
             constant: None,
             dependencies: Vec::new(),
         };
-        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile>::new();
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(add, &mut env)
             .unwrap()
@@ -503,7 +532,7 @@ mod value_domain_tests {
             constant: None,
             dependencies: Vec::new(),
         };
-        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile>::new();
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(branch, &mut env)
             .unwrap()
@@ -528,7 +557,7 @@ mod value_domain_tests {
             constant: None,
             dependencies: Vec::new(),
         };
-        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile>::new();
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(type_const, &mut env)
             .unwrap()
@@ -563,7 +592,7 @@ mod value_domain_tests {
             )),
             dependencies: Vec::new(),
         };
-        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile>::new();
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         env.runtime_binding_names.insert(name);
         let value = ComptimeEngine::new(&mut host)
             .evaluate(reference, &mut env)
@@ -598,7 +627,7 @@ mod value_domain_tests {
             )),
             dependencies: Vec::new(),
         };
-        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile>::new();
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(reference, &mut env)
             .unwrap();
@@ -625,7 +654,7 @@ mod value_domain_tests {
             constant: None,
             dependencies: Vec::new(),
         };
-        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile>::new();
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         env.type_subst.insert(name.clone(), FakeType(1));
         env.value_subst.insert(name.clone(), FakeValue::Integer(2));
         env.runtime_local_names.insert(name);
@@ -661,6 +690,9 @@ pub(crate) trait ComptimeHost {
     type Value: ComptimeValue<Type = Self::Type>;
     type Name: ComptimeName;
     type File: ComptimeFile;
+    type CanonicalIdentity: ComptimeIdentity;
+    type AnonymousIdentity: ComptimeIdentity;
+    type ProducerFailure: std::fmt::Debug;
     type CallAdmission;
     type AnonymousStructId: Clone;
     type AnonMethodSigs;
@@ -689,9 +721,9 @@ pub(crate) trait ComptimeHost {
         callee_values: &AHashMap<Self::Name, Self::Value>,
         span: Span,
     ) -> Option<CompileResult<Option<Self::Value>>>;
-    fn resolve_array_length(
+    fn resolve_named_array_length(
         &mut self,
-        length: &ArrayLen,
+        name: &Self::Name,
         span: Span,
         values: Option<&AHashMap<Self::Name, Self::Value>>,
     ) -> CompileResult<u64>;
@@ -709,14 +741,14 @@ pub(crate) trait ComptimeHost {
     ) -> Option<(Span, String)>;
     fn find_or_create_anon_struct(
         &mut self,
-        identity: super::anon_structs::IssuedAnonymousNominalKey,
+        identity: Self::AnonymousIdentity,
         fields: &[ComptimeField<Self::Name, Self::Type>],
         sigs: &Self::AnonMethodSigs,
         captured: &AHashMap<Self::Name, Self::Value>,
     ) -> CompileResult<(Self::Type, bool)>;
     fn find_or_create_anon_enum(
         &mut self,
-        identity: super::anon_structs::IssuedAnonymousNominalKey,
+        identity: Self::AnonymousIdentity,
         names: &[String],
         payloads: &[Vec<Self::Type>],
     ) -> CompileResult<Self::Type>;
@@ -738,7 +770,14 @@ pub(crate) trait ComptimeHost {
     fn record_named_type_dependency(&mut self, ty: &Self::Type);
     fn const_expr_type(
         &self,
-        env: &ComptimeEnv<'_, Self::Value, Self::Type, Self::Name, Self::File>,
+        env: &ComptimeEnv<
+            '_,
+            Self::Value,
+            Self::Type,
+            Self::Name,
+            Self::File,
+            Self::CanonicalIdentity,
+        >,
         inst_ref: InstRef,
     ) -> Option<Self::Type>;
     fn finish_arith(
@@ -771,7 +810,14 @@ pub(crate) trait ComptimeHost {
         name: Self::Name,
         arg_count: usize,
         arg_modes: &[ComptimeArgMode],
-        env: &mut ComptimeEnv<'_, Self::Value, Self::Type, Self::Name, Self::File>,
+        env: &mut ComptimeEnv<
+            '_,
+            Self::Value,
+            Self::Type,
+            Self::Name,
+            Self::File,
+            Self::CanonicalIdentity,
+        >,
         name_is_resolved_key: bool,
     ) -> CompileResult<Option<ComptimeCallAdmission<Self::CallAdmission, Self::Name>>>;
     fn bind_comptime_call(
@@ -803,7 +849,13 @@ pub(crate) trait ComptimeHost {
         name: Self::Name,
         types: &AHashMap<Self::Name, Self::Type>,
         values: &AHashMap<Self::Name, Self::Value>,
-    ) -> Result<super::anon_structs::IssuedStableProducerId, crate::SemanticBodyExportFailure>;
+    ) -> Result<Self::CanonicalIdentity, Self::ProducerFailure>;
+    fn issue_anonymous_identity(
+        &self,
+        kind: ComptimeAnonymousKind,
+        producer: &Self::CanonicalIdentity,
+        anchor: &rue_rir::RirStructuralAnchor,
+    ) -> Self::AnonymousIdentity;
     fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
         &mut self,
         syntax: rue_rir::RirTypeSyntaxRef,
@@ -846,7 +898,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     pub(crate) fn evaluate(
         &mut self,
         inst_ref: InstRef,
-        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> CompileResult<Option<H::Value>> {
         self.eval(inst_ref, env)
     }
@@ -858,7 +910,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         &mut self,
         name: H::Name,
         args: &rue_rir::RirCallArgsRange,
-        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
         span: Span,
     ) -> CompileResult<Option<H::Value>> {
         let args = self.host.program_rir().call_args(args).to_vec();
@@ -969,7 +1021,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         receiver: InstRef,
         method: H::Name,
         args: &rue_rir::RirCallArgsRange,
-        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
         span: Span,
     ) -> CompileResult<Option<H::Value>> {
         let args = self.host.program_rir().call_args(args).to_vec();
@@ -1028,7 +1080,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     fn decode_module_path(
         &self,
         receiver: InstRef,
-        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File>,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> CompileResult<Option<(H::File, Vec<H::Name>)>> {
         let mut chain_rev = Vec::new();
         let mut cursor = receiver;
@@ -1067,7 +1119,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     fn decode_type_path(
         &self,
         inst_ref: InstRef,
-        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File>,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> CompileResult<Option<(H::File, Vec<H::Name>)>> {
         let mut chain_rev = Vec::new();
         let mut cursor = inst_ref;
@@ -1103,7 +1155,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         &mut self,
         lhs: InstRef,
         rhs: InstRef,
-        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> CompileResult<Option<(i128, i128)>> {
         let Some(l) = self.eval(lhs, env)?.and_then(|v| v.as_integer()) else {
             return Ok(None);
@@ -1119,7 +1171,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     fn eval(
         &mut self,
         inst_ref: InstRef,
-        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> CompileResult<Option<H::Value>> {
         let inst = {
             let source = self.host.program_rir().get(inst_ref);
@@ -1617,12 +1669,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let Some(producer) = env.canonical_identity.clone() else {
                     return Ok(None);
                 };
+                let identity = self.host.issue_anonymous_identity(
+                    ComptimeAnonymousKind::Struct,
+                    &producer,
+                    anchor,
+                );
                 let (struct_ty, _is_new) = self.host.find_or_create_anon_struct(
-                    crate::AnonymousNominalKey {
-                        kind: crate::AnonymousNominalKind::Struct,
-                        producer,
-                        anchor: anchor.clone(),
-                    },
+                    identity,
                     &struct_fields,
                     &method_sigs,
                     &local_value_subst,
@@ -1762,12 +1815,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let Some(producer) = env.canonical_identity.clone() else {
                     return Ok(None);
                 };
+                let identity = self.host.issue_anonymous_identity(
+                    ComptimeAnonymousKind::Enum,
+                    &producer,
+                    anchor,
+                );
                 let enum_ty = self.host.find_or_create_anon_enum(
-                    crate::AnonymousNominalKey {
-                        kind: crate::AnonymousNominalKind::Enum,
-                        producer,
-                        anchor: anchor.clone(),
-                    },
+                    identity,
                     &variant_names,
                     &variant_payloads,
                 )?;
@@ -1824,9 +1878,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let len = match count {
                     RepeatCount::Literal(n) => n,
                     RepeatCount::Named(sym) => {
-                        let name = self.host.display_name(&self.name_from_rir(sym.into()));
-                        match self.host.resolve_array_length(
-                            &ArrayLen::Named(name),
+                        let name = self.name_from_rir(sym.into());
+                        match self.host.resolve_named_array_length(
+                            &name,
                             span,
                             Some(&env.value_subst),
                         ) {
