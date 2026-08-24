@@ -621,8 +621,18 @@ pub(super) fn writes_flags(inst: &X86Inst) -> bool {
 pub(super) fn reads_flags(inst: &X86Inst) -> bool {
     matches!(
         inst,
+        // A runtime count of zero preserves FLAGS. Model variable-count
+        // shifts as read/write dependencies so scheduling keeps both the
+        // incoming FLAGS value and the shift's non-zero result ordered.
+        X86Inst::Shl { .. }
+            | X86Inst::ShlRCl { .. }
+            | X86Inst::Shl32RCl { .. }
+            | X86Inst::ShrRCl { .. }
+            | X86Inst::Shr32RCl { .. }
+            | X86Inst::SarRCl { .. }
+            | X86Inst::Sar32RCl { .. }
         // Conditional set
-        X86Inst::Sete { .. }
+            | X86Inst::Sete { .. }
             | X86Inst::Setne { .. }
             | X86Inst::Setl { .. }
             | X86Inst::Setg { .. }
@@ -883,6 +893,55 @@ mod tests {
 
         let nodes = build_dep_graph(&instructions, 0, 2);
         assert!(nodes[1].deps.contains(&0));
+    }
+
+    #[test]
+    fn test_shift_count_move_and_use_stay_ordered() {
+        let instructions = vec![
+            X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rcx),
+                src: Operand::Physical(Reg::R11),
+            },
+            X86Inst::ShlRCl {
+                dst: Operand::Physical(Reg::Rax),
+            },
+        ];
+
+        let nodes = build_dep_graph(&instructions, 0, instructions.len());
+        assert!(
+            nodes[1].deps.contains(&0),
+            "the RCX move must remain before the implicit-CL shift"
+        );
+    }
+
+    #[test]
+    fn test_runtime_shift_reads_and_writes_flags() {
+        let shift = X86Inst::ShlRCl {
+            dst: Operand::Physical(Reg::Rax),
+        };
+        let pre_regalloc_shift = X86Inst::Shl {
+            dst: Operand::Physical(Reg::Rax),
+            count: Operand::Physical(Reg::R11),
+        };
+
+        assert!(reads_flags(&shift));
+        assert!(writes_flags(&shift));
+        assert!(reads_flags(&pre_regalloc_shift));
+        assert!(writes_flags(&pre_regalloc_shift));
+
+        let instructions = vec![
+            X86Inst::CmpRR {
+                src1: Operand::Physical(Reg::Rax),
+                src2: Operand::Physical(Reg::Rbx),
+            },
+            shift,
+            X86Inst::Sete {
+                dst: Operand::Physical(Reg::Rdx),
+            },
+        ];
+        let nodes = build_dep_graph(&instructions, 0, instructions.len());
+        assert!(nodes[1].deps.contains(&0));
+        assert!(nodes[2].deps.contains(&1));
     }
 
     #[test]

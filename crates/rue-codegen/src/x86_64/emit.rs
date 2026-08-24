@@ -133,7 +133,7 @@
 
 use rue_error::{CompileResult, ice_error};
 
-use super::mir::{LabelId, Reg, SHIFT_COUNT, X86Inst, X86Mir};
+use super::mir::{LabelId, Reg, X86Inst, X86Mir};
 use crate::vreg::BLOCK_LABEL_BASE;
 use crate::{EmittedCode, EmittedInst, EmittedRelocation, format_offset};
 
@@ -484,13 +484,15 @@ impl<'a> Emitter<'a> {
 
     /// Internal implementation of emit.
     fn emit_internal(&mut self) -> CompileResult<()> {
-        // Verify no MovRMIndexed or MovMRIndexed survived into emission.
-        // These are pre-regalloc pseudos whose virtual address bases must have
-        // been lowered by regalloc into MovRM/MovMR with physical bases.
+        // Verify no pre-regalloc pseudos survived into emission. Dynamic Shl
+        // must be canonicalized to ShlRCl while its count is loaded into RCX;
+        // keeping a second emitter-side expansion would bypass scheduling's
+        // explicit RCX dependency model.
         for (i, inst) in self.mir.iter().enumerate() {
             if matches!(
                 inst,
-                X86Inst::MovRMIndexed { .. }
+                X86Inst::Shl { .. }
+                    | X86Inst::MovRMIndexed { .. }
                     | X86Inst::MovMRIndexed { .. }
                     | X86Inst::NarrowLoadIndexed { .. }
                     | X86Inst::NarrowStoreIndexed { .. }
@@ -1297,31 +1299,8 @@ impl<'a> Emitter<'a> {
                     format_offset(adjusted_disp)
                 );
             }
-            X86Inst::Shl { dst, count } => {
-                let dst_reg = dst.as_physical();
-                let cnt = count.as_physical();
-
-                // If count isn't already in the fixed count register, move it.
-                if cnt != SHIFT_COUNT {
-                    // NB: this clobbers rcx, which is exactly what we want.
-                    self.begin_inst();
-                    self.emit_mov_rr(SHIFT_COUNT, cnt);
-                    end_inst!(self, "mov {}, {}", SHIFT_COUNT, cnt);
-                }
-
-                // If dst is the count register, that's a conflict (dst would be
-                // clobbered by the move above or would shift itself by itself).
-                // `mir::RESERVED_REGS` makes that unreachable by keeping the
-                // count register out of allocation entirely (RUE-1146).
-                assert!(
-                    dst_reg != SHIFT_COUNT,
-                    "Shl dst allocated to the shift-count register, but x86 requires \
-         the count in CL; regalloc must never assign it"
-                );
-
-                self.begin_inst();
-                self.emit_shl_cl(dst_reg);
-                end_inst!(self, "shl {}, cl", dst_reg);
+            X86Inst::Shl { .. } => {
+                unreachable!("pre-regalloc Shl rejected before emission")
             }
 
             X86Inst::MovRMIndexed { .. }
@@ -3036,6 +3015,18 @@ mod tests {
             .0
     }
 
+    fn emit_sequence(instructions: &[X86Inst]) -> Vec<u8> {
+        let mut mir = X86Mir::new();
+        for inst in instructions {
+            mir.push(inst.clone());
+        }
+        Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap()
+            .0
+    }
+
     #[test]
     fn test_mov_eax_imm32() {
         let code = emit_single(X86Inst::MovRI32 {
@@ -3559,12 +3550,38 @@ mod tests {
 
     #[test]
     fn test_shl_r14_cl() {
-        let code = emit_single(X86Inst::Shl {
+        let code = emit_single(X86Inst::ShlRCl {
             dst: Operand::Physical(Reg::R14),
-            count: Operand::Physical(Reg::Rcx),
         });
         // shl r14, cl -> 49 D3 E6  (REX.W|B because r/m=r14, opcode D3, modrm E0|6)
         assert_eq!(code, vec![0x49, 0xD3, 0xE6]);
+    }
+
+    #[test]
+    fn test_shift_count_move_then_shl_r8_cl() {
+        let code = emit_sequence(&[
+            X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rcx),
+                src: Operand::Physical(Reg::R11),
+            },
+            X86Inst::ShlRCl {
+                dst: Operand::Physical(Reg::R8),
+            },
+        ]);
+        // mov rcx, r11; shl r8, cl
+        assert_eq!(code, vec![0x4C, 0x89, 0xD9, 0x49, 0xD3, 0xE0]);
+    }
+
+    #[test]
+    fn test_rejects_pre_regalloc_shl() {
+        let mut mir = X86Mir::new();
+        mir.push(X86Inst::Shl {
+            dst: Operand::Physical(Reg::R14),
+            count: Operand::Physical(Reg::Rcx),
+        });
+
+        let result = Emitter::new(&mir, 0, 0, 0, &[], &[]).without_frame().emit();
+        assert!(result.is_err(), "pre-regalloc Shl must not reach emission");
     }
 
     // =========================================================================
