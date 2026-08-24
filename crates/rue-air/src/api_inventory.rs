@@ -46,6 +46,8 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "ComptimeCallPreparation",
         "ComptimeCompletedCallMemo",
         "ComptimeEngine",
+        "ComptimeStructuredTypeResolution",
+        "ComptimeStructuredTypeSuspension",
         "ComptimeEnv",
         "ComptimeField",
         "ComptimeFile",
@@ -63,6 +65,11 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "ComptimeTrap",
         "ComptimeType",
         "ComptimeValue",
+        "ComptimeStructuredTypeJob",
+        "ComptimeStructuredTypePoll",
+        "ComptimeStructuredTypeRequest",
+        "ComptimeStructuredTypeAuthority",
+        "ComptimeStructuredTypeSymbolAuthority",
     ] {
         assert!(
             facade.contains(export),

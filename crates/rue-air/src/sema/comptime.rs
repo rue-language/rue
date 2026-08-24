@@ -95,6 +95,41 @@ where
     pub fn is_empty(&self) -> bool {
         self.programs.is_empty()
     }
+
+    /// Admit one structured-type authority from the exact registered program
+    /// snapshot. The root, arena, symbol table, and stable key are copied only
+    /// as cheap owned handles; callers cannot pair a key with another arena.
+    pub fn structured_type_authority<Scope>(
+        &self,
+        key: &ComptimeProgramKey<D, C>,
+        root_scope: Scope,
+        root: rue_rir::RirTypeSyntaxRef,
+    ) -> Option<
+        crate::semantic_type_resolution::RegisteredComptimeStructuredTypeAuthority<D, C, Scope, S>,
+    >
+    where
+        D: Clone,
+        C: Clone,
+        S: AsRef<str>,
+    {
+        let program = self.programs.get(key)?;
+        program.rir.type_syntax().node(root)?;
+        if !crate::semantic_type_resolution::registered_symbol_authority_is_valid(
+            program.rir.type_syntax(),
+            &program.symbols,
+        ) {
+            return None;
+        }
+        Some(
+            crate::semantic_type_resolution::ComptimeStructuredTypeAuthority::from_registered(
+                key.clone(),
+                root_scope,
+                program.rir.type_syntax().clone(),
+                Arc::clone(&program.symbols),
+                root,
+            ),
+        )
+    }
 }
 
 /// Stable key for a completed call fact. The argument slices preserve source
@@ -332,6 +367,7 @@ where
 #[cfg(test)]
 mod value_domain_tests {
     use super::*;
+    use lasso::Key;
     use rue_rir::{Inst, RirEditor, RirValidationContext};
     use std::cell::Cell;
 
@@ -415,9 +451,10 @@ mod value_domain_tests {
         Memoized(ComptimeOutcome<FakeValue, FakeFailure>),
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     enum FakeFinishOutcome {
         Identity,
+        Structured(Vec<FakeStructuredPreparation>),
         RuntimeDependent,
         NotReady,
         UnsupportedContext,
@@ -425,6 +462,26 @@ mod value_domain_tests {
         HostFailure,
         Abort,
     }
+
+    #[derive(Clone, Copy)]
+    enum FakeStructuredPreparation {
+        Enter,
+        Memoized,
+        RuntimeDependent,
+        NotReady,
+        UnsupportedContext,
+        Trap,
+        HostFailure,
+        Abort,
+    }
+
+    struct FakeStructuredSuspension {
+        preparations: Vec<FakeStructuredPreparation>,
+        index: usize,
+    }
+
+    impl super::structured_type_seal::Sealed for FakeStructuredSuspension {}
+    impl ComptimeStructuredTypeSuspension for FakeStructuredSuspension {}
 
     struct FakeHost {
         programs: Vec<Rir>,
@@ -451,6 +508,7 @@ mod value_domain_tests {
         type CallAdmission = ();
         type AnonymousStructId = u32;
         type AnonMethodSigs = ();
+        type StructuredTypeSuspension = FakeStructuredSuspension;
         fn program_rir(&self, program: &Self::ProgramKey) -> &Rir {
             &self.programs[*program]
         }
@@ -536,7 +594,11 @@ mod value_domain_tests {
             _program: &Self::ProgramKey,
             _syntax: rue_rir::RirTypeSyntaxRef,
         ) -> Option<Self::Name> {
-            Some(self.name_from_symbol(&0, self.type_symbol))
+            if matches!(self.finish_outcome, FakeFinishOutcome::Structured(_)) {
+                None
+            } else {
+                Some(self.name_from_symbol(&0, self.type_symbol))
+            }
         }
         fn get_or_create_array_type(&mut self, _element: Self::Type, _length: u64) -> Self::Type {
             panic!("fake host does not construct array types")
@@ -775,6 +837,7 @@ mod value_domain_tests {
             self.finished.push((frame.program, frame.expected_result));
             match self.finish_outcome {
                 FakeFinishOutcome::Identity => result,
+                FakeFinishOutcome::Structured(_) => result,
                 FakeFinishOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
                 FakeFinishOutcome::NotReady => ComptimeOutcome::NotReady,
                 FakeFinishOutcome::UnsupportedContext => ComptimeOutcome::UnsupportedContext,
@@ -835,6 +898,307 @@ mod value_domain_tests {
             _struct_id: &Self::AnonymousStructId,
             _subst: AHashMap<Self::Name, Self::Type>,
         ) {
+        }
+
+        fn begin_comptime_type_syntax(
+            &mut self,
+            _program: &Self::ProgramKey,
+            _syntax: rue_rir::RirTypeSyntaxRef,
+            _types: &AHashMap<Self::Name, Self::Type>,
+            _values: &AHashMap<Self::Name, Self::Value>,
+            _span: Span,
+        ) -> ComptimeOutcome<
+            ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
+            Self::Failure,
+        > {
+            let FakeFinishOutcome::Structured(preparations) =
+                std::mem::replace(&mut self.finish_outcome, FakeFinishOutcome::Identity)
+            else {
+                return ComptimeOutcome::RuntimeDependent;
+            };
+            ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Suspended(
+                FakeStructuredSuspension {
+                    preparations,
+                    index: 0,
+                },
+            ))
+        }
+
+        fn prepare_structured_type_call(
+            &mut self,
+            suspension: &Self::StructuredTypeSuspension,
+        ) -> ComptimeOutcome<
+            Option<
+                ComptimeCallPreparation<
+                    Self::Value,
+                    Self::Type,
+                    Self::Name,
+                    Self::File,
+                    Self::ProgramKey,
+                    Self::CanonicalIdentity,
+                    Self::Failure,
+                >,
+            >,
+            Self::Failure,
+        > {
+            match suspension.preparations[suspension.index] {
+                FakeStructuredPreparation::Enter => {
+                    ComptimeOutcome::Known(Some(ComptimeCallPreparation::Enter(ComptimeFrame {
+                        program: 1,
+                        body: InstRef::from_raw(0),
+                        name: Some(FakeName { ordinal: 1 }),
+                        context: Some(FakeFile { index: 0 }),
+                        span: Span::new(0, 0),
+                        function_span: Span::new(0, 0),
+                        type_bindings: AHashMap::new(),
+                        value_bindings: AHashMap::new(),
+                        name_bindings: AHashMap::new(),
+                        call_identity: None,
+                        expected_result: None,
+                    })))
+                }
+                FakeStructuredPreparation::Memoized => {
+                    ComptimeOutcome::Known(Some(ComptimeCallPreparation::Memoized(
+                        ComptimeOutcome::Known(FakeValue::Integer(1)),
+                    )))
+                }
+                FakeStructuredPreparation::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
+                FakeStructuredPreparation::NotReady => ComptimeOutcome::NotReady,
+                FakeStructuredPreparation::UnsupportedContext => {
+                    ComptimeOutcome::UnsupportedContext
+                }
+                FakeStructuredPreparation::Trap => ComptimeOutcome::Trap(ComptimeTrap {
+                    operation: "structured fake trap",
+                    span: Span::new(0, 0),
+                }),
+                FakeStructuredPreparation::HostFailure => ComptimeOutcome::HostFailure(FakeFailure),
+                FakeStructuredPreparation::Abort => ComptimeOutcome::Abort(FakeFailure),
+            }
+        }
+
+        fn resume_structured_type_call(
+            &mut self,
+            suspension: Self::StructuredTypeSuspension,
+            result: ComptimeOutcome<Self::Value, Self::Failure>,
+        ) -> ComptimeOutcome<
+            ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
+            Self::Failure,
+        > {
+            if !matches!(&result, ComptimeOutcome::Known(_)) {
+                // The sentinel makes the outcome-funnel test observe that
+                // every terminal reduction was handed back to the host.
+                self.finished.push((usize::MAX, None));
+            }
+            match result {
+                ComptimeOutcome::Known(_)
+                    if suspension.index + 1 < suspension.preparations.len() =>
+                {
+                    ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Suspended(
+                        FakeStructuredSuspension {
+                            preparations: suspension.preparations,
+                            index: suspension.index + 1,
+                        },
+                    ))
+                }
+                ComptimeOutcome::Known(_) => {
+                    ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Ready(FakeType(9)))
+                }
+                ComptimeOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
+                ComptimeOutcome::NotReady => ComptimeOutcome::NotReady,
+                ComptimeOutcome::UnsupportedContext => ComptimeOutcome::UnsupportedContext,
+                ComptimeOutcome::Trap(trap) => ComptimeOutcome::Trap(trap),
+                ComptimeOutcome::HostFailure(error) => ComptimeOutcome::HostFailure(error),
+                ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
+            }
+        }
+    }
+
+    #[test]
+    fn structured_type_engine_uses_one_existing_call_stack() {
+        let mut editor = rue_rir::RirEditor::new();
+        let root = editor.add_inst(rue_rir::Inst {
+            data: InstData::TypeConst {
+                type_name: rue_rir::RirTypeSyntaxRef::from_u32(0),
+            },
+            span: Span::new(0, 0),
+        });
+        let interner = lasso::ThreadedRodeo::new();
+        let mut child_editor = rue_rir::RirEditor::new();
+        child_editor.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 0),
+        });
+        let mut host = FakeHost {
+            programs: vec![editor.finish(), child_editor.finish()],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Structured(vec![FakeStructuredPreparation::Enter]),
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result =
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, root), &mut env);
+        assert!(matches!(
+            result,
+            ComptimeOutcome::Known(FakeValue::Type(FakeType(9)))
+        ));
+        assert_eq!(host.finished.len(), 1);
+        assert_eq!(host.finished[0].0, 1);
+    }
+
+    #[test]
+    fn structured_type_engine_passes_every_terminal_outcome_through_resume() {
+        for preparation in [
+            FakeStructuredPreparation::RuntimeDependent,
+            FakeStructuredPreparation::NotReady,
+            FakeStructuredPreparation::UnsupportedContext,
+            FakeStructuredPreparation::Trap,
+            FakeStructuredPreparation::HostFailure,
+            FakeStructuredPreparation::Abort,
+        ] {
+            let mut editor = rue_rir::RirEditor::new();
+            let root = editor.add_inst(rue_rir::Inst {
+                data: InstData::TypeConst {
+                    type_name: rue_rir::RirTypeSyntaxRef::from_u32(0),
+                },
+                span: Span::new(0, 0),
+            });
+            let interner = lasso::ThreadedRodeo::new();
+            let mut child_editor = rue_rir::RirEditor::new();
+            child_editor.add_inst(rue_rir::Inst {
+                data: InstData::IntConst(1),
+                span: Span::new(0, 0),
+            });
+            let mut host = FakeHost {
+                programs: vec![editor.finish(), child_editor.finish()],
+                type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+                constant: None,
+                dependencies: Vec::new(),
+                call_plans: AHashMap::new(),
+                recursive: None,
+                enter_count: 0,
+                finish_outcome: FakeFinishOutcome::Structured(vec![preparation]),
+                finished: Vec::new(),
+                float_evaluations: Cell::new(0),
+            };
+            let mut env =
+                ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+            let result = ComptimeEngine::new(&mut host)
+                .evaluate(ComptimeFrame::expression(0, root), &mut env);
+            match preparation {
+                FakeStructuredPreparation::RuntimeDependent => {
+                    assert!(matches!(result, ComptimeOutcome::RuntimeDependent));
+                }
+                FakeStructuredPreparation::NotReady => {
+                    assert!(matches!(result, ComptimeOutcome::NotReady));
+                }
+                FakeStructuredPreparation::UnsupportedContext => {
+                    assert!(matches!(result, ComptimeOutcome::UnsupportedContext));
+                }
+                FakeStructuredPreparation::Trap => {
+                    assert!(matches!(result, ComptimeOutcome::Trap(_)));
+                }
+                FakeStructuredPreparation::HostFailure => {
+                    assert!(matches!(result, ComptimeOutcome::HostFailure(_)));
+                }
+                FakeStructuredPreparation::Abort => {
+                    assert!(matches!(result, ComptimeOutcome::Abort(_)));
+                }
+                FakeStructuredPreparation::Enter | FakeStructuredPreparation::Memoized => {
+                    unreachable!()
+                }
+            }
+            assert_eq!(host.finished, vec![(usize::MAX, None)]);
+        }
+    }
+
+    #[test]
+    fn structured_type_engine_enters_then_memoizes_without_an_extra_frame() {
+        let mut editor = rue_rir::RirEditor::new();
+        let root = editor.add_inst(rue_rir::Inst {
+            data: InstData::TypeConst {
+                type_name: rue_rir::RirTypeSyntaxRef::from_u32(0),
+            },
+            span: Span::new(0, 0),
+        });
+        let interner = lasso::ThreadedRodeo::new();
+        let mut child_editor = rue_rir::RirEditor::new();
+        child_editor.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 0),
+        });
+        let mut host = FakeHost {
+            programs: vec![editor.finish(), child_editor.finish()],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Structured(vec![
+                FakeStructuredPreparation::Enter,
+                FakeStructuredPreparation::Memoized,
+            ]),
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result =
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, root), &mut env);
+        assert!(matches!(
+            result,
+            ComptimeOutcome::Known(FakeValue::Type(FakeType(9)))
+        ));
+        assert_eq!(host.finished.len(), 1);
+    }
+
+    #[test]
+    fn structured_type_entries_share_the_48_frame_boundary() {
+        for (recursive_enters, succeeds) in [
+            (MAX_COMPTIME_CALL_DEPTH - 1, true),
+            (MAX_COMPTIME_CALL_DEPTH, false),
+        ] {
+            let mut parent = rue_rir::RirEditor::new();
+            let root = parent.add_inst(rue_rir::Inst {
+                data: InstData::TypeConst {
+                    type_name: rue_rir::RirTypeSyntaxRef::from_u32(0),
+                },
+                span: Span::new(0, 0),
+            });
+            let mut child = rue_rir::RirEditor::new();
+            let symbol = lasso::ThreadedRodeo::new().get_or_intern("loop");
+            let child_call = child.add_call(symbol, &[], Span::new(0, 0)).unwrap();
+            let terminal = child.add_inst(rue_rir::Inst {
+                data: InstData::IntConst(1),
+                span: Span::new(0, 0),
+            });
+            let mut host = FakeHost {
+                programs: vec![parent.finish(), child.finish()],
+                type_symbol: SymbolHandle::new(symbol),
+                constant: None,
+                dependencies: Vec::new(),
+                call_plans: AHashMap::new(),
+                recursive: Some((recursive_enters, child_call, terminal, None)),
+                enter_count: 0,
+                finish_outcome: FakeFinishOutcome::Structured(vec![
+                    FakeStructuredPreparation::Enter,
+                ]),
+                finished: Vec::new(),
+                float_evaluations: Cell::new(0),
+            };
+            let mut env =
+                ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+            let result = ComptimeEngine::new(&mut host)
+                .evaluate(ComptimeFrame::expression(0, root), &mut env);
+            assert_eq!(
+                matches!(result, ComptimeOutcome::Known(FakeValue::Type(FakeType(9)))),
+                succeeds
+            );
         }
     }
 
@@ -1641,6 +2005,67 @@ mod value_domain_tests {
     }
 
     #[test]
+    fn registry_admits_exact_structured_arena_and_matching_symbol_authority() {
+        let interner = lasso::ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("T");
+        let mut editor = RirEditor::new();
+        let root = editor.add_named_type(symbol).expect("named type syntax");
+        let symbol_index = symbol.into_usize();
+        let symbol_count = symbol_index + 1;
+        let context = RirValidationContext {
+            symbol_count,
+            source_lengths: &[(rue_span::FileId::DEFAULT, 1)],
+        };
+        let rir = Arc::new(ValidatedRir::finish(editor, &context).expect("valid structured RIR"));
+        let mut symbols = vec![Arc::<str>::from(""); symbol_count];
+        symbols[symbol_index] = Arc::from("T");
+        let key = ComptimeProgramKey {
+            declaration: 7_u8,
+            configuration: 9_u8,
+        };
+        let mut registry = ComptimeProgramRegistry::<u8, u8, Arc<str>, ()>::new();
+        registry
+            .register(
+                key.clone(),
+                ComptimeProgram {
+                    rir: Arc::clone(&rir),
+                    symbols: Arc::from(symbols),
+                    imports: (),
+                },
+            )
+            .unwrap();
+        assert!(
+            registry
+                .structured_type_authority(&key, "scope", root)
+                .is_some()
+        );
+        let bad_key = ComptimeProgramKey {
+            declaration: 8_u8,
+            configuration: 9_u8,
+        };
+        registry
+            .register(
+                bad_key.clone(),
+                ComptimeProgram {
+                    rir,
+                    symbols: Arc::from([]),
+                    imports: (),
+                },
+            )
+            .unwrap();
+        assert!(
+            registry
+                .structured_type_authority(&bad_key, "scope", root)
+                .is_none()
+        );
+        assert!(
+            registry
+                .structured_type_authority(&key, "scope", rue_rir::RirTypeSyntaxRef::from_u32(99))
+                .is_none()
+        );
+    }
+
+    #[test]
     fn completed_memo_distinguishes_ordered_args_and_miss() {
         type Memo = ComptimeCompletedCallMemo<u8, u8, u8, u8, u8>;
         let key = |declaration, configuration, types: &[u8], values: &[u8]| ComptimeCallKey {
@@ -1811,6 +2236,10 @@ pub trait ComptimeHost {
     type CallAdmission;
     type AnonymousStructId: Clone;
     type AnonMethodSigs;
+    /// The sole continuation representation accepted by the engine for a
+    /// structured type reduction. This is sealed below to prevent a peer
+    /// resolver state machine from being hidden behind the host boundary.
+    type StructuredTypeSuspension: ComptimeStructuredTypeSuspension;
     fn program_rir(&self, program: &Self::ProgramKey) -> &Rir;
     fn name_from_symbol(&self, program: &Self::ProgramKey, symbol: SymbolHandle) -> Self::Name;
     fn display_name(&self, name: &Self::Name) -> String;
@@ -2017,6 +2446,55 @@ pub trait ComptimeHost {
         values: &AHashMap<Self::Name, Self::Value>,
         span: Span,
     ) -> Option<Self::Type>;
+
+    /// Begin a structured type reduction. The default is the staged
+    /// synchronous adapter; an admitted keyed host may return a canonical
+    /// suspension here.
+    fn begin_comptime_type_syntax(
+        &mut self,
+        program: &Self::ProgramKey,
+        syntax: rue_rir::RirTypeSyntaxRef,
+        types: &AHashMap<Self::Name, Self::Type>,
+        values: &AHashMap<Self::Name, Self::Value>,
+        span: Span,
+    ) -> ComptimeOutcome<
+        ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
+        Self::Failure,
+    > {
+        self.resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+            program, syntax, types, values, span,
+        )
+        .map_or(ComptimeOutcome::RuntimeDependent, |value| {
+            ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Ready(value))
+        })
+    }
+
+    fn prepare_structured_type_call(
+        &mut self,
+        suspension: &Self::StructuredTypeSuspension,
+    ) -> ComptimeOutcome<
+        Option<
+            ComptimeCallPreparation<
+                Self::Value,
+                Self::Type,
+                Self::Name,
+                Self::File,
+                Self::ProgramKey,
+                Self::CanonicalIdentity,
+                Self::Failure,
+            >,
+        >,
+        Self::Failure,
+    >;
+
+    fn resume_structured_type_call(
+        &mut self,
+        suspension: Self::StructuredTypeSuspension,
+        result: ComptimeOutcome<Self::Value, Self::Failure>,
+    ) -> ComptimeOutcome<
+        ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
+        Self::Failure,
+    >;
     fn register_anon_struct_methods_for_comptime_with_subst(
         &mut self,
         program: &Self::ProgramKey,
@@ -2033,6 +2511,35 @@ pub trait ComptimeHost {
     );
 }
 
+/// The typed result of one structured-type host continuation.
+///
+/// The suspension is opaque to the engine. A host may use the keyed
+/// structured-type job from `semantic_type_resolution`, but the engine never
+/// receives a program, scope, arena, or syntax reference while resuming it.
+pub enum ComptimeStructuredTypeResolution<V, S> {
+    Ready(V),
+    Suspended(S),
+}
+
+mod structured_type_seal {
+    pub(crate) trait Sealed {}
+}
+
+/// Opaque structured continuations are sealed to the canonical AIR resolver
+/// job. Test hosts may use a local witness, but production hosts cannot
+/// introduce a peer state machine behind this engine boundary.
+pub trait ComptimeStructuredTypeSuspension: structured_type_seal::Sealed {}
+
+impl<P, S, C, N, A, T, V, Sym, R> structured_type_seal::Sealed
+    for crate::semantic_type_resolution::ComptimeStructuredTypeJob<P, S, C, N, A, T, V, Sym, R>
+{
+}
+
+impl<P, S, C, N, A, T, V, Sym, R> ComptimeStructuredTypeSuspension
+    for crate::semantic_type_resolution::ComptimeStructuredTypeJob<P, S, C, N, A, T, V, Sym, R>
+{
+}
+
 pub struct ComptimeEngine<'e, H: ComptimeHost> {
     host: &'e mut H,
     frames: Vec<
@@ -2045,6 +2552,84 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         Self {
             host,
             frames: Vec::new(),
+        }
+    }
+
+    /// Drive one opaque structured-type suspension on this engine's existing
+    /// frame stack. Only this method interprets `Memoized` versus `Enter` for
+    /// structured-type reductions; hosts merely prepare and resume typed
+    /// continuations.
+    fn drive_structured_type(
+        &mut self,
+        suspension: H::StructuredTypeSuspension,
+    ) -> ComptimeOutcome<H::Type, H::Failure> {
+        let mut suspension = suspension;
+        loop {
+            let preparation = self.host.prepare_structured_type_call(&suspension);
+            let reduced = match preparation {
+                ComptimeOutcome::Known(Some(preparation)) => match preparation {
+                    ComptimeCallPreparation::Memoized(outcome) => outcome,
+                    ComptimeCallPreparation::Enter(frame) => {
+                        let span = frame.span;
+                        self.enter_call(frame, span)
+                    }
+                },
+                ComptimeOutcome::Known(None) => ComptimeOutcome::RuntimeDependent,
+                ComptimeOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
+                ComptimeOutcome::NotReady => ComptimeOutcome::NotReady,
+                ComptimeOutcome::UnsupportedContext => ComptimeOutcome::UnsupportedContext,
+                ComptimeOutcome::Trap(trap) => ComptimeOutcome::Trap(trap),
+                ComptimeOutcome::HostFailure(error) => ComptimeOutcome::HostFailure(error),
+                ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
+            };
+            match self.host.resume_structured_type_call(suspension, reduced) {
+                ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Ready(value)) => {
+                    return ComptimeOutcome::Known(value);
+                }
+                ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Suspended(next)) => {
+                    suspension = next;
+                }
+                ComptimeOutcome::RuntimeDependent => return ComptimeOutcome::RuntimeDependent,
+                ComptimeOutcome::NotReady => return ComptimeOutcome::NotReady,
+                ComptimeOutcome::UnsupportedContext => {
+                    return ComptimeOutcome::UnsupportedContext;
+                }
+                ComptimeOutcome::Trap(trap) => return ComptimeOutcome::Trap(trap),
+                ComptimeOutcome::HostFailure(error) => {
+                    return ComptimeOutcome::HostFailure(error);
+                }
+                ComptimeOutcome::Abort(error) => return ComptimeOutcome::Abort(error),
+            }
+        }
+    }
+
+    /// Route a type-bearing instruction through the same engine-owned
+    /// structured loop as every other typed reduction. A synchronous host
+    /// returns `Ready`; a keyed host may return a canonical job suspension.
+    fn evaluate_comptime_type_syntax(
+        &mut self,
+        program: &H::ProgramKey,
+        syntax: rue_rir::RirTypeSyntaxRef,
+        types: &AHashMap<H::Name, H::Type>,
+        values: &AHashMap<H::Name, H::Value>,
+        span: Span,
+    ) -> ComptimeOutcome<H::Type, H::Failure> {
+        match self
+            .host
+            .begin_comptime_type_syntax(program, syntax, types, values, span)
+        {
+            ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Ready(value)) => {
+                ComptimeOutcome::Known(value)
+            }
+            ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Suspended(suspension)) => {
+                self.drive_structured_type(suspension)
+            }
+            ComptimeOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
+            ComptimeOutcome::NotReady => ComptimeOutcome::NotReady,
+            ComptimeOutcome::UnsupportedContext => ComptimeOutcome::UnsupportedContext,
+            ComptimeOutcome::Trap(trap) => ComptimeOutcome::Trap(trap),
+            ComptimeOutcome::HostFailure(error) => ComptimeOutcome::HostFailure(error),
+            ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
         }
     }
 
@@ -2920,18 +3505,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     // (`comptime T: type`) and the value substitution
                     // (`comptime N: i32`, so an `[i32; N]` field gets a concrete
                     // length at each specialization; RUE-16).
-                    let Some(field_ty) = self
-                        .host
-                        .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-                            &self.program_key(),
-                            type_sym,
-                            &local_type_subst,
-                            &local_value_subst,
-                            span,
-                        )
-                    else {
-                        return ComptimeOutcome::RuntimeDependent;
-                    };
+                    let field_ty = outcome_value!(self.evaluate_comptime_type_syntax(
+                        &self.program_key(),
+                        type_sym,
+                        &local_type_subst,
+                        &local_value_subst,
+                        span,
+                    ));
                     struct_fields.push(ComptimeField {
                         name: field_name,
                         ty: field_ty,
@@ -3060,18 +3640,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     variant_names.push(self.host.display_name(&self.name_from_rir(vsym.into())));
                     let mut tys: Vec<H::Type> = Vec::with_capacity(symbols.len());
                     for ty_sym in symbols {
-                        let Some(ty) = self
-                            .host
-                            .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-                                &self.program_key(),
-                                ty_sym,
-                                &enum_type_subst,
-                                &enum_value_subst,
-                                span,
-                            )
-                        else {
-                            return ComptimeOutcome::RuntimeDependent;
-                        };
+                        let ty = outcome_value!(self.evaluate_comptime_type_syntax(
+                            &self.program_key(),
+                            ty_sym,
+                            &enum_type_subst,
+                            &enum_value_subst,
+                            span,
+                        ));
                         tys.push(ty);
                     }
                     variant_payloads.push(tys);
@@ -3120,16 +3695,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 // resolver under the current substitutions (an inner element /
                 // pointee naming an enclosing `comptime T` still resolves). An
                 // unresolvable spelling stays non-evaluable (`None`).
-                self.host
-                    .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-                        &self.program_key(),
-                        type_name,
-                        &env.type_subst,
-                        &env.value_subst,
-                        span,
-                    )
-                    .map(H::Value::type_value)
-                    .map_or(ComptimeOutcome::RuntimeDependent, ComptimeOutcome::Known)
+                let ty = outcome_value!(self.evaluate_comptime_type_syntax(
+                    &self.program_key(),
+                    type_name,
+                    &env.type_subst,
+                    &env.value_subst,
+                    span,
+                ));
+                ComptimeOutcome::Known(H::Value::type_value(ty))
             }
 
             // An array-repeat expression `[T; N]` used as a comptime *type* value
@@ -3306,18 +3879,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     let is_max = gate == "int_max";
                     // A still-unresolved type parameter makes the intrinsic
                     // non-evaluable here; it folds at a concrete instantiation.
-                    let Some(int_ty) = self
-                        .host
-                        .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-                            &self.program_key(),
-                            type_arg,
-                            &env.type_subst,
-                            &env.value_subst,
-                            span,
-                        )
-                    else {
-                        return ComptimeOutcome::RuntimeDependent;
-                    };
+                    let int_ty = outcome_value!(self.evaluate_comptime_type_syntax(
+                        &self.program_key(),
+                        type_arg,
+                        &env.type_subst,
+                        &env.value_subst,
+                        span,
+                    ));
                     let bound = self.host.type_integer_semantics(&int_ty).map(|integer| {
                         if is_max {
                             integer.max_i128()
@@ -3340,18 +3908,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 // substitutions (`T -> Inner` for `ArrayBuf(Inner)`); a
                 // still-unresolved type parameter makes the gate non-evaluable
                 // (it will be re-checked at a concrete instantiation).
-                let Some(elem_ty) = self
-                    .host
-                    .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-                        &self.program_key(),
-                        type_arg,
-                        &env.type_subst,
-                        &env.value_subst,
-                        span,
-                    )
-                else {
-                    return ComptimeOutcome::RuntimeDependent;
-                };
+                let elem_ty = outcome_value!(self.evaluate_comptime_type_syntax(
+                    &self.program_key(),
+                    type_arg,
+                    &env.type_subst,
+                    &env.value_subst,
+                    span,
+                ));
                 if is_trivial_gate {
                     host_value!(self.host.check_trivially_droppable(elem_ty, span));
                 } else {

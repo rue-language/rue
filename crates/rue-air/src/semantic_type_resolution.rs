@@ -8,6 +8,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use lasso::{Key, Spur};
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SemanticVisibilityDomain(Option<Arc<str>>);
 
@@ -1016,6 +1018,279 @@ struct StructuredTypeSuspension<K, N, A, T, V> {
 impl<K, N, A, T, V> StructuredTypeSuspension<K, N, A, T, V> {
     fn request(&self) -> SemanticComptimeCallRequestView<'_, K, N, A, T, V> {
         self.call.request.view()
+    }
+}
+
+/// The completed call request exposed to the comptime orchestration host.
+///
+/// The program identity is deliberately carried beside the request rather
+/// than inferred from any syntax index. Syntax references and symbol indices
+/// are local to the owned arena and are not an identity mechanism.
+#[derive(Debug, Clone, Copy)]
+pub struct ComptimeStructuredTypeRequest<'a, P, C, N, A, T, V> {
+    program: &'a P,
+    head: &'a SemanticTypeConstructorHead<C, N, A>,
+    type_arguments: &'a [(N, T)],
+    value_arguments: &'a [(N, V)],
+}
+
+/// Owned authority admitted from one registered program snapshot. The arena,
+/// symbol spelling table, root scope, and program identity travel as one
+/// value, so a continuation cannot be paired with a caller-selected arena.
+pub struct ComptimeStructuredTypeAuthority<P, S, Sym, R> {
+    program: P,
+    root_scope: S,
+    arena: rue_rir::RirTypeSyntaxArena<Sym>,
+    symbols: R,
+    root: rue_rir::RirTypeSyntaxRef,
+}
+
+pub type RegisteredComptimeStructuredTypeAuthority<D, C, Scope, S> =
+    ComptimeStructuredTypeAuthority<crate::ComptimeProgramKey<D, C>, Scope, Spur, Arc<[S]>>;
+
+pub trait ComptimeStructuredTypeSymbolAuthority<Sym> {
+    fn resolve_symbol<'a>(&'a self, symbol: &'a Sym) -> Option<&'a str>;
+}
+
+pub(crate) fn registered_symbol_authority_is_valid<S: AsRef<str>>(
+    arena: &rue_rir::RirTypeSyntaxArena<Spur>,
+    symbols: &[S],
+) -> bool {
+    arena
+        .symbols()
+        .iter()
+        .all(|symbol| symbols.get(symbol.into_usize()).is_some())
+}
+
+impl<S: AsRef<str>> ComptimeStructuredTypeSymbolAuthority<Spur> for Arc<[S]> {
+    fn resolve_symbol<'a>(&'a self, symbol: &'a Spur) -> Option<&'a str> {
+        self.get(symbol.into_usize()).map(AsRef::as_ref)
+    }
+}
+
+impl ComptimeStructuredTypeSymbolAuthority<Arc<str>> for Arc<[Arc<str>]> {
+    fn resolve_symbol<'a>(&'a self, symbol: &'a Arc<str>) -> Option<&'a str> {
+        Some(symbol.as_ref())
+    }
+}
+
+impl<P, S, Sym, R> ComptimeStructuredTypeAuthority<P, S, Sym, R> {
+    pub(crate) fn from_registered(
+        program: P,
+        root_scope: S,
+        arena: rue_rir::RirTypeSyntaxArena<Sym>,
+        symbols: R,
+        root: rue_rir::RirTypeSyntaxRef,
+    ) -> Self {
+        Self {
+            program,
+            root_scope,
+            arena,
+            symbols,
+            root,
+        }
+    }
+}
+
+impl<'a, P, C, N, A, T, V> ComptimeStructuredTypeRequest<'a, P, C, N, A, T, V> {
+    pub fn program(&self) -> &'a P {
+        self.program
+    }
+
+    pub fn head(&self) -> &'a SemanticTypeConstructorHead<C, N, A> {
+        self.head
+    }
+
+    pub fn type_arguments(&self) -> &'a [(N, T)] {
+        self.type_arguments
+    }
+
+    pub fn value_arguments(&self) -> &'a [(N, V)] {
+        self.value_arguments
+    }
+}
+
+/// One opaque, keyed structured-type job.
+///
+/// All state needed to continue a type-syntax reduction is owned here. In
+/// particular, the arena and root scope cannot be replaced by a caller when
+/// [`ComptimeStructuredTypeJob::resume`] is called. This prevents a dense
+/// `RirTypeSyntaxRef` from being interpreted against another program's local
+/// arena, even when the two programs happen to use colliding indices.
+pub struct ComptimeStructuredTypeJob<P, S, C, N, A, T, V, Sym, R> {
+    authority: ComptimeStructuredTypeAuthority<P, S, Sym, R>,
+    suspension: StructuredTypeSuspension<C, N, A, T, V>,
+}
+
+impl<P, S, C, N, A, T, V, Sym, R> ComptimeStructuredTypeJob<P, S, C, N, A, T, V, Sym, R>
+where
+    R: ComptimeStructuredTypeSymbolAuthority<Sym>,
+{
+    fn request(&self) -> ComptimeStructuredTypeRequest<'_, P, C, N, A, T, V> {
+        let SemanticComptimeCallRequestView {
+            head,
+            type_arguments,
+            value_arguments,
+        } = self.suspension.request();
+        ComptimeStructuredTypeRequest {
+            program: &self.authority.program,
+            head,
+            type_arguments,
+            value_arguments,
+        }
+    }
+
+    pub fn program(&self) -> &P {
+        &self.authority.program
+    }
+
+    pub fn request_view(&self) -> ComptimeStructuredTypeRequest<'_, P, C, N, A, T, V> {
+        self.request()
+    }
+
+    pub fn head(&self) -> &SemanticTypeConstructorHead<C, N, A> {
+        let SemanticComptimeCallRequestView { head, .. } = self.suspension.request();
+        head
+    }
+
+    pub fn type_arguments(&self) -> &[(N, T)] {
+        let SemanticComptimeCallRequestView { type_arguments, .. } = self.suspension.request();
+        type_arguments
+    }
+
+    pub fn value_arguments(&self) -> &[(N, V)] {
+        let SemanticComptimeCallRequestView {
+            value_arguments, ..
+        } = self.suspension.request();
+        value_arguments
+    }
+}
+
+/// Result of polling the canonical structured-type machine through a keyed
+/// job. The job variant is consuming: a suspended computation has exactly one
+/// continuation and is never cloneable or replayable.
+pub enum ComptimeStructuredTypePoll<P, S, C, N, A, T, V, Sym, R> {
+    Ready(T),
+    Suspended(Box<ComptimeStructuredTypeJob<P, S, C, N, A, T, V, Sym, R>>),
+}
+
+impl<P, S, C, N, A, T, V, Sym, R> ComptimeStructuredTypeJob<P, S, C, N, A, T, V, Sym, R>
+where
+    R: ComptimeStructuredTypeSymbolAuthority<Sym>,
+{
+    fn from_suspension(
+        authority: ComptimeStructuredTypeAuthority<P, S, Sym, R>,
+        suspension: StructuredTypeSuspension<C, N, A, T, V>,
+    ) -> Self {
+        Self {
+            authority,
+            suspension,
+        }
+    }
+
+    /// Start a keyed job using an arena whose symbol authority is owned by
+    /// the job. The first suspension is produced by the canonical structured
+    /// machine; there is no alternate traversal for this seam.
+    pub fn begin<M, Q>(
+        provider: &mut Q,
+        authority: ComptimeStructuredTypeAuthority<P, S, Sym, R>,
+    ) -> Result<
+        ComptimeStructuredTypePoll<P, S, C, N, A, T, V, Sym, R>,
+        SemanticTypeSyntaxError<Q::Abort, Q::Failure, A, N>,
+    >
+    where
+        M: Clone,
+        A: Clone,
+        N: Clone,
+        Q: SemanticTypeSyntaxProvider<S, M, A, C, N, T, V>,
+        R: ComptimeStructuredTypeSymbolAuthority<Sym>,
+    {
+        let ComptimeStructuredTypeAuthority {
+            program,
+            root_scope,
+            arena,
+            symbols,
+            root,
+        } = authority;
+        let poll = poll_structured_type_machine(
+            StructuredTypeMachine::<C, N, A, T, V>::new(root),
+            provider,
+            &root_scope,
+            &arena,
+            |symbol: &Sym| {
+                symbols
+                    .resolve_symbol(symbol)
+                    .expect("structured type authority was admitted with all symbols")
+            },
+        )?;
+        Ok(match poll {
+            StructuredTypePoll::Ready(value) => ComptimeStructuredTypePoll::Ready(value),
+            StructuredTypePoll::Suspended(suspension) => {
+                ComptimeStructuredTypePoll::Suspended(Box::new(Self::from_suspension(
+                    ComptimeStructuredTypeAuthority::from_registered(
+                        program, root_scope, arena, symbols, root,
+                    ),
+                    *suspension,
+                )))
+            }
+        })
+    }
+
+    /// Resume this job with the reduction selected by the host. The caller
+    /// supplies neither a program identity nor any syntax authority: both are
+    /// part of this consuming continuation.
+    pub fn resume<M, Q>(
+        self,
+        provider: &mut Q,
+        reduced: SemanticProviderResult<
+            Option<SemanticComptimeCallResult<T, V>>,
+            Q::Abort,
+            Q::Failure,
+        >,
+    ) -> Result<
+        ComptimeStructuredTypePoll<P, S, C, N, A, T, V, Sym, R>,
+        SemanticTypeSyntaxError<Q::Abort, Q::Failure, A, N>,
+    >
+    where
+        M: Clone,
+        A: Clone,
+        N: Clone,
+        Q: SemanticTypeSyntaxProvider<S, M, A, C, N, T, V>,
+        R: ComptimeStructuredTypeSymbolAuthority<Sym>,
+    {
+        let Self {
+            authority,
+            suspension,
+        } = self;
+        let ComptimeStructuredTypeAuthority {
+            program,
+            root_scope,
+            arena,
+            symbols,
+            root,
+        } = authority;
+        let poll = suspension.resume(
+            provider,
+            &root_scope,
+            &arena,
+            |symbol: &Sym| {
+                symbols
+                    .resolve_symbol(symbol)
+                    .expect("structured type authority was admitted with all symbols")
+            },
+            reduced,
+        )?;
+        Ok(match poll {
+            StructuredTypePoll::Ready(value) => ComptimeStructuredTypePoll::Ready(value),
+            StructuredTypePoll::Suspended(suspension) => {
+                ComptimeStructuredTypePoll::Suspended(Box::new(Self::from_suspension(
+                    ComptimeStructuredTypeAuthority::from_registered(
+                        program, root_scope, arena, symbols, root,
+                    ),
+                    *suspension,
+                )))
+            }
+        })
     }
 }
 
@@ -2795,6 +3070,60 @@ mod tests {
                 "array_type",
             ]
         );
+    }
+
+    #[test]
+    fn keyed_structured_job_owns_program_and_resumes_without_authority_arguments() {
+        let (arena, root) = structured_type("Outer(i32)");
+        let mut fixture = Fixture::default();
+        configure_nested_calls(&mut fixture);
+        let authority = ComptimeStructuredTypeAuthority::from_registered(
+            "program-a",
+            "app/main.rue",
+            arena.clone(),
+            Arc::from(arena.symbols()),
+            root,
+        );
+        let poll =
+            ComptimeStructuredTypeJob::begin::<&'static str, _>(&mut fixture, authority).unwrap();
+        let ComptimeStructuredTypePoll::Suspended(job) = poll else {
+            panic!("constructor call must suspend before reduction");
+        };
+        assert_eq!(job.program(), &"program-a");
+        assert_eq!(job.type_arguments(), &[("T", "primitive:i32")]);
+        let request = job.request_view();
+        assert_eq!(request.program(), &"program-a");
+        assert_eq!(request.type_arguments(), &[("T", "primitive:i32")]);
+        let reduced = fixture.reduce_comptime_call(
+            request.head(),
+            request.type_arguments(),
+            request.value_arguments(),
+        );
+        let next = job
+            .resume::<&'static str, _>(&mut fixture, reduced)
+            .unwrap();
+        assert!(matches!(
+            next,
+            ComptimeStructuredTypePoll::Ready("constructed")
+        ));
+
+        let mut fixture_b = Fixture::default();
+        configure_nested_calls(&mut fixture_b);
+        let authority_b = ComptimeStructuredTypeAuthority::from_registered(
+            "program-b",
+            "app/main.rue",
+            arena,
+            Arc::from([Arc::<str>::from("Outer"), Arc::<str>::from("i32")]),
+            root,
+        );
+        let poll_b =
+            ComptimeStructuredTypeJob::begin::<&'static str, _>(&mut fixture_b, authority_b)
+                .unwrap();
+        let ComptimeStructuredTypePoll::Suspended(job_b) = poll_b else {
+            panic!("colliding program must suspend before reduction");
+        };
+        assert_eq!(job_b.program(), &"program-b");
+        assert_eq!(job_b.request_view().program(), &"program-b");
     }
 
     #[test]
