@@ -24,12 +24,14 @@ fi
 
 execution_command=0
 explicit_preference=0
-for arg in "${args[@]}"; do
-    case "$arg" in
-        build|test|run|install) execution_command=1 ;;
-        --prefer-local|--prefer-remote|--local-only|--remote-only) explicit_preference=1 ;;
-    esac
-done
+if [[ "${#args[@]}" -gt 0 ]]; then
+    for arg in "${args[@]}"; do
+        case "$arg" in
+            build|test|run|install) execution_command=1 ;;
+            --prefer-local|--prefer-remote|--local-only|--remote-only) explicit_preference=1 ;;
+        esac
+    done
+fi
 
 # Starting another disk-heavy command while the host is near ENOSPC is unsafe.
 # The guard is normally just one portable `df` read. When free space is both at
@@ -58,4 +60,8 @@ if [[ "$uses_remote_cache" -eq 1 ]] && [[ "$execution_command" -eq 1 ]] && [[ "$
     [[ "$inserted" -eq 1 ]] || args+=(--prefer-local)
 fi
 
-exec dotslash "$repo_root/buck2-bin" "${args[@]}"
+if [[ "${#args[@]}" -gt 0 ]]; then
+    exec dotslash "$repo_root/buck2-bin" "${args[@]}"
+else
+    exec dotslash "$repo_root/buck2-bin"
+fi

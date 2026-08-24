@@ -35,7 +35,8 @@ if [ ! -e "$DIAGNOSTICS" ]; then
 fi
 
 # Strip ANSI colour codes so CI logs stay readable and grep stays reliable.
-CLEANED="$(sed -E 's/\x1b\[[0-9;]*m//g' "$DIAGNOSTICS")"
+ESCAPE="$(printf '\033')"
+CLEANED="$(sed -E "s/${ESCAPE}\\[[0-9;]*m//g" "$DIAGNOSTICS")"
 
 # Herestring, not a pipe: under `pipefail` a matching `grep -q` exits early
 # and kills the producer with EPIPE, failing the pipeline (RUE-1155).

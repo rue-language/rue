@@ -337,23 +337,29 @@ test_clippy_gate_reads_diagnostics_and_fails_closed() {
 
   # rustc prints some warnings unconditionally (e.g. -Ctarget-feature notes);
   # with deny_lints=["warnings"] every real finding is an error, so warnings
-  # must not gate.
+  # must not gate. Keep the colour escape here: it is a clean control for the
+  # same portability path as the failing diagnostic below.
   rc=0
-  printf 'warning: unstable feature note\n' >"$sb/warn.txt"
+  esc="$(printf '\033')"
+  printf '%s\n' "${esc}[33mwarning: unstable feature note${esc}[0m" >"$sb/warn.txt"
   bash "$gate" "$sb/warn.txt" >/dev/null 2>&1 || rc=$?
-  check "clippy-gate.sh: warning-only diagnostics pass" \
+  check "clippy-gate.sh: clean ANSI diagnostics pass" \
     "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
 
   # A real finding fails, and the diagnostics are surfaced — including when
   # clippy wrote them with ANSI colour codes.
   rc=0
   local out
-  printf '\x1b[31merror\x1b[0m: used `len` on a `str`\n' >"$sb/lint.txt"
+  printf '%s\n' "${esc}[31merror${esc}[0m: used \`len\` on a \`str\`" >"$sb/lint.txt"
   out="$(bash "$gate" "$sb/lint.txt" 2>&1)" || rc=$?
   check "clippy-gate.sh: an error line fails the gate" \
     "$([ "$rc" -eq 1 ] && echo 0 || echo 1)"
   check "clippy-gate.sh: the violation is surfaced in the output" \
     "$(grep -Fq 'used `len` on a `str`' <<<"$out" && echo 0 || echo 1)"
+  local colorless=0
+  [[ "$out" == *"$esc"* ]] && colorless=1
+  check "clippy-gate.sh: surfaced diagnostics are colorless" \
+    "$colorless"
 
   # A missing diagnostics file is not an empty one; refusing to certify what
   # cannot be read is the whole point of the gate (RUE-1152).
