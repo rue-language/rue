@@ -5,14 +5,202 @@
 //! child instructions or invoke another evaluator.
 
 use ahash::{AHashMap, AHashSet};
-use rue_rir::{InstData, InstRef, RepeatCount, Rir, SymbolHandle};
+use rue_rir::{InstData, InstRef, RepeatCount, Rir, SymbolHandle, ValidatedRir};
 use rue_span::Span;
 use std::hash::Hash;
+use std::sync::Arc;
 
 use crate::integer_semantics::{CheckedIntegerResult, IntegerType};
 /// Maximum number of entered named comptime frames. Expression recursion does
 /// not spend this budget.
 pub const MAX_COMPTIME_CALL_DEPTH: usize = 48;
+
+/// An owned RIR program available to one comptime evaluation.
+///
+/// `InstRef` and all payload ranges are meaningful only with the associated
+/// program key. Keeping the validated RIR behind `Arc` lets a durable host
+/// register a foreign declaration without requiring `Rir: Clone` or invoking
+/// another evaluator on a cache miss.
+#[derive(Debug, Clone)]
+pub struct ComptimeProgram<S, I> {
+    pub rir: Arc<ValidatedRir>,
+    pub symbols: Arc<[S]>,
+    pub imports: I,
+}
+
+/// Evaluation-local registry for request-local and foreign durable programs.
+/// The declaration/configuration pair is part of the key so a frame cannot
+/// accidentally resolve an `InstRef` against a different specialization.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ComptimeProgramKey<D, C> {
+    pub declaration: D,
+    pub configuration: C,
+}
+
+#[derive(Debug)]
+pub struct ComptimeProgramRegistry<D, C, S, I> {
+    programs: AHashMap<ComptimeProgramKey<D, C>, ComptimeProgram<S, I>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeProgramRegistrationError {
+    AlreadyRegistered,
+}
+
+impl<D, C, S, I> Default for ComptimeProgramRegistry<D, C, S, I>
+where
+    D: Eq + Hash,
+    C: Eq + Hash,
+{
+    fn default() -> Self {
+        Self {
+            programs: AHashMap::new(),
+        }
+    }
+}
+
+impl<D, C, S, I> ComptimeProgramRegistry<D, C, S, I>
+where
+    D: Eq + Hash,
+    C: Eq + Hash,
+{
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(
+        &mut self,
+        key: ComptimeProgramKey<D, C>,
+        program: ComptimeProgram<S, I>,
+    ) -> Result<(), ComptimeProgramRegistrationError> {
+        if self.programs.contains_key(&key) {
+            return Err(ComptimeProgramRegistrationError::AlreadyRegistered);
+        }
+        self.programs.insert(key, program);
+        Ok(())
+    }
+
+    pub fn get(&self, key: &ComptimeProgramKey<D, C>) -> Option<&ComptimeProgram<S, I>> {
+        self.programs.get(key)
+    }
+
+    pub fn contains_key(&self, key: &ComptimeProgramKey<D, C>) -> bool {
+        self.programs.contains_key(key)
+    }
+
+    pub fn len(&self) -> usize {
+        self.programs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.programs.is_empty()
+    }
+}
+
+/// Stable key for a completed call fact. The argument slices preserve source
+/// order; callers must not construct them from an unordered map iteration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ComptimeCallKey<D, C, T, V> {
+    pub declaration: D,
+    pub configuration: C,
+    pub type_arguments: Arc<[T]>,
+    pub value_arguments: Arc<[V]>,
+}
+
+#[derive(Debug)]
+pub enum ComptimeCallMemoLookup<'a, V> {
+    Memoized(&'a ComptimeMemoizedOutcome<V>),
+    Miss,
+}
+
+/// Outcomes safe to retain as completed semantic facts. Deterministic traps
+/// are included; host failures and aborts are deliberately excluded because
+/// cancellation and transient query errors must never become cache hits.
+#[derive(Debug, Clone)]
+pub enum ComptimeMemoizedOutcome<V> {
+    Known(V),
+    RuntimeDependent,
+    NotReady,
+    UnsupportedContext,
+    Trap(ComptimeTrap),
+}
+
+impl<V> ComptimeMemoizedOutcome<V> {
+    pub fn into_outcome<F>(self) -> ComptimeOutcome<V, F> {
+        match self {
+            Self::Known(value) => ComptimeOutcome::Known(value),
+            Self::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
+            Self::NotReady => ComptimeOutcome::NotReady,
+            Self::UnsupportedContext => ComptimeOutcome::UnsupportedContext,
+            Self::Trap(trap) => ComptimeOutcome::Trap(trap),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeMemoInsertError {
+    AlreadyMemoized,
+}
+
+/// Completed call facts retained only for the lifetime of one evaluation.
+/// A missing key is intentionally distinct from a memoized not-ready or
+/// runtime-dependent outcome, so callers can turn misses into `Enter` frames.
+#[derive(Debug)]
+pub struct ComptimeCompletedCallMemo<D, C, T, V, R> {
+    outcomes: AHashMap<ComptimeCallKey<D, C, T, V>, ComptimeMemoizedOutcome<R>>,
+}
+
+impl<D, C, T, V, R> Default for ComptimeCompletedCallMemo<D, C, T, V, R> {
+    fn default() -> Self {
+        Self {
+            outcomes: AHashMap::new(),
+        }
+    }
+}
+
+impl<D, C, T, V, R> ComptimeCompletedCallMemo<D, C, T, V, R>
+where
+    D: Eq + Hash,
+    C: Eq + Hash,
+    T: Eq + Hash,
+    V: Eq + Hash,
+{
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn lookup<'a>(
+        &'a self,
+        key: &ComptimeCallKey<D, C, T, V>,
+    ) -> ComptimeCallMemoLookup<'a, R> {
+        if let Some(outcome) = self.outcomes.get(key) {
+            ComptimeCallMemoLookup::Memoized(outcome)
+        } else {
+            ComptimeCallMemoLookup::Miss
+        }
+    }
+
+    pub fn insert(
+        &mut self,
+        key: ComptimeCallKey<D, C, T, V>,
+        outcome: ComptimeMemoizedOutcome<R>,
+    ) -> Result<(), ComptimeMemoInsertError> {
+        if self.outcomes.contains_key(&key) {
+            return Err(ComptimeMemoInsertError::AlreadyMemoized);
+        }
+        self.outcomes.insert(key, outcome);
+        Ok(())
+    }
+
+    pub fn len(&self) -> usize {
+        self.outcomes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.outcomes.is_empty()
+    }
+}
+
 pub trait ComptimeType: Clone {}
 
 /// Value algebra consumed by the canonical dispatcher. Hosts provide any value
@@ -144,6 +332,7 @@ where
 #[cfg(test)]
 mod value_domain_tests {
     use super::*;
+    use rue_rir::{Inst, RirEditor, RirValidationContext};
     use std::cell::Cell;
 
     #[derive(Clone, Debug, PartialEq)]
@@ -1352,6 +1541,158 @@ mod value_domain_tests {
         ));
         assert!(host.finished.is_empty());
     }
+
+    fn registry_program(value: u64) -> (Arc<ValidatedRir>, InstRef) {
+        let mut editor = RirEditor::new();
+        let root = editor.add_inst(Inst {
+            data: InstData::IntConst(value),
+            span: Span::new(0, 0),
+        });
+        let context = RirValidationContext {
+            symbol_count: 0,
+            source_lengths: &[(rue_span::FileId::DEFAULT, 1)],
+        };
+        (
+            Arc::new(ValidatedRir::finish(editor, &context).expect("valid test RIR")),
+            root,
+        )
+    }
+
+    #[test]
+    fn registry_keeps_colliding_instruction_refs_program_local() {
+        let (first_rir, first_ref) = registry_program(11);
+        let (second_rir, second_ref) = registry_program(22);
+        assert_eq!(first_ref, second_ref);
+        let mut registry = ComptimeProgramRegistry::<u8, u8, u8, u8>::new();
+        registry
+            .register(
+                ComptimeProgramKey {
+                    declaration: 1,
+                    configuration: 10,
+                },
+                ComptimeProgram {
+                    rir: first_rir,
+                    symbols: Arc::from([]),
+                    imports: 0,
+                },
+            )
+            .unwrap();
+        registry
+            .register(
+                ComptimeProgramKey {
+                    declaration: 2,
+                    configuration: 20,
+                },
+                ComptimeProgram {
+                    rir: second_rir,
+                    symbols: Arc::from([2]),
+                    imports: 22,
+                },
+            )
+            .unwrap();
+        assert_eq!(registry.len(), 2);
+        assert!(!registry.is_empty());
+        assert_eq!(
+            registry
+                .get(&ComptimeProgramKey {
+                    declaration: 1,
+                    configuration: 10,
+                })
+                .unwrap()
+                .rir
+                .get(first_ref)
+                .data,
+            InstData::IntConst(11)
+        );
+        assert_eq!(
+            registry
+                .get(&ComptimeProgramKey {
+                    declaration: 2,
+                    configuration: 20,
+                })
+                .unwrap()
+                .rir
+                .get(second_ref)
+                .data,
+            InstData::IntConst(22)
+        );
+        let second = registry
+            .get(&ComptimeProgramKey {
+                declaration: 2,
+                configuration: 20,
+            })
+            .unwrap();
+        assert_eq!(&*second.symbols, &[2]);
+        assert_eq!(second.imports, 22);
+        assert_eq!(
+            registry.register(
+                ComptimeProgramKey {
+                    declaration: 1,
+                    configuration: 10,
+                },
+                ComptimeProgram {
+                    rir: registry_program(99).0,
+                    symbols: Arc::from([]),
+                    imports: 0,
+                },
+            ),
+            Err(ComptimeProgramRegistrationError::AlreadyRegistered)
+        );
+    }
+
+    #[test]
+    fn completed_memo_distinguishes_ordered_args_and_miss() {
+        type Memo = ComptimeCompletedCallMemo<u8, u8, u8, u8, u8>;
+        let key = |declaration, configuration, types: &[u8], values: &[u8]| ComptimeCallKey {
+            declaration,
+            configuration,
+            type_arguments: Arc::from(types),
+            value_arguments: Arc::from(values),
+        };
+        let mut memo = Memo::new();
+        let base = key(7, 3, &[1, 2], &[3, 4]);
+        assert!(matches!(memo.lookup(&base), ComptimeCallMemoLookup::Miss));
+        memo.insert(base.clone(), ComptimeMemoizedOutcome::NotReady)
+            .unwrap();
+        assert!(matches!(
+            memo.lookup(&base),
+            ComptimeCallMemoLookup::Memoized(ComptimeMemoizedOutcome::NotReady)
+        ));
+        assert!(matches!(
+            memo.lookup(&key(8, 3, &[1, 2], &[3, 4])),
+            ComptimeCallMemoLookup::Miss
+        ));
+        assert!(matches!(
+            memo.lookup(&key(7, 4, &[1, 2], &[3, 4])),
+            ComptimeCallMemoLookup::Miss
+        ));
+        assert!(matches!(
+            memo.lookup(&key(7, 3, &[2, 1], &[3, 4])),
+            ComptimeCallMemoLookup::Miss
+        ));
+        assert!(matches!(
+            memo.lookup(&key(7, 3, &[1, 2], &[4, 3])),
+            ComptimeCallMemoLookup::Miss
+        ));
+        assert_eq!(memo.len(), 1);
+        assert!(!memo.is_empty());
+        assert_eq!(
+            memo.insert(base, ComptimeMemoizedOutcome::Known(9)),
+            Err(ComptimeMemoInsertError::AlreadyMemoized)
+        );
+        let trap_key = key(7, 3, &[1, 2], &[5]);
+        let trap = ComptimeTrap {
+            operation: "division by zero",
+            span: Span::new(0, 0),
+        };
+        memo.insert(trap_key.clone(), ComptimeMemoizedOutcome::Trap(trap))
+            .unwrap();
+        assert!(matches!(
+            memo.lookup(&trap_key),
+            ComptimeCallMemoLookup::Memoized(ComptimeMemoizedOutcome::Trap(value))
+                if *value == trap
+        ));
+    }
 }
 
 #[derive(Debug)]
@@ -1389,7 +1730,12 @@ impl<V, T, N, F, P, I> ComptimeFrame<V, T, N, F, P, I> {
 
 #[derive(Debug)]
 pub enum ComptimeCallPreparation<V, T, N, File, P, I, Failure> {
+    /// A completed fact from the evaluation-local memo. This includes
+    /// not-ready/runtime-dependent facts and therefore must not be confused
+    /// with a cache miss.
     Memoized(ComptimeOutcome<V, Failure>),
+    /// A cache miss represented by an owned foreign frame. The engine enters
+    /// it and evaluates it; hosts never recursively dispatch its RIR.
     Enter(ComptimeFrame<V, T, N, File, P, I>),
 }
 
