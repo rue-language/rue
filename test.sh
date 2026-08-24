@@ -79,15 +79,41 @@ fi
 
 # Always print the result sentinel, even on an early `set -e` exit, so a piped
 # or captured run is self-describing (RUE-579).
+#
+# PASSED is asserted, not inferred (RUE-1782). The sentinel used to read `$?`
+# alone, and when a script is signalled bash runs the EXIT trap with `$?` still
+# holding the last COMPLETED command's status -- so a run killed by the OOM
+# killer, a disk-full host, or a timeout printed PASSED while exiting 143. That
+# defeats the one guarantee the sentinel exists to provide, because it is read
+# precisely when the exit code is unavailable (a pipe discards it). Worker
+# agents quote this line as their green stamp, so a killed run could be handed
+# on in good faith as a clean suite.
+#
+# So PASSED now requires positive evidence that the end of the script was
+# reached, and the terminating signals are trapped to give the EXIT trap a
+# non-zero status plus a name to report. PASSED and FAILED keep their exact
+# historical spelling -- scripts/test-wrapper-scripts.sh pins both strings.
+suite_completed=0
+suite_signal=""
+
 print_test_suite_result() {
     local rc=$?
-    if [ "$rc" -eq 0 ]; then
+    if [ -n "$suite_signal" ]; then
+        echo "=== TEST SUITE: INTERRUPTED (SIG$suite_signal, exit $rc) ==="
+    elif [ "$rc" -eq 0 ] && [ "$suite_completed" -eq 1 ]; then
         echo "=== TEST SUITE: PASSED ==="
+    elif [ "$rc" -eq 0 ]; then
+        # Exited 0 without reaching the end: a future early-return path, or a
+        # signal bash reported as a clean status. Not a pass either way.
+        echo "=== TEST SUITE: INTERRUPTED (did not reach the end, exit 0) ==="
     else
         echo "=== TEST SUITE: FAILED (exit $rc) ==="
     fi
 }
 trap print_test_suite_result EXIT
+trap 'suite_signal=TERM; exit 143' TERM
+trap 'suite_signal=INT; exit 130' INT
+trap 'suite_signal=HUP; exit 129' HUP
 
 if [[ $# -eq 0 ]]; then
     # Fail closed before executing anything if a target is unowned, multiply
@@ -222,3 +248,7 @@ else
     echo "Running repository quality gates..."
     ./buck2 test //:repository-quality-gates
 fi
+
+# Reached only when every branch above ran to completion; the EXIT trap
+# requires this before it will print PASSED (RUE-1782).
+suite_completed=1

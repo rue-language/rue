@@ -453,6 +453,44 @@ EOF
   rm -rf "$sb"
 }
 
+# RUE-1782: a signalled run must never print the PASSED sentinel.
+#
+# Bash runs the EXIT trap on a signal with `$?` still holding the last COMPLETED
+# command's status, so reading `$?` alone reported PASSED on a run the OOM
+# killer, a disk-full host, or a timeout had stopped -- and that is exactly the
+# case the sentinel exists for, since a pipe discards the real exit code.
+#
+# The tally is not a substitute: Buck can return cached results, so a killed run
+# can print a complete-looking `Tests finished: ... Fail 0` line and still not
+# have finished. Only the sentinel distinguishes them.
+test_testsh_signalled_run_reports_interrupted() {
+  local sb; sb="$(make_rue_sandbox)"
+  # A buck2 that blocks, so the signal lands mid-run rather than after it.
+  cat >"$sb/buck2" <<'BUCKEOF'
+#!/usr/bin/env bash
+sleep 30
+exit 0
+BUCKEOF
+  chmod +x "$sb/buck2"
+  cp "$SRC_ROOT/test.sh" "$sb/test.sh"; chmod +x "$sb/test.sh"
+
+  local out_file="$sb/signalled.log" rc=0
+  ( cd "$sb/work" && FAKE_COMPILER="$sb/compiler" CLI_LOG="$sb/cli.log" \
+      FAKE_PROBE_DIR="$sb/probe" "$sb/test.sh" ) >"$out_file" 2>&1 &
+  local pid=$!
+  sleep 2
+  kill -TERM "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || rc=$?
+
+  check "test.sh: a signalled run does not print the passed sentinel" \
+    "$(! grep -Fxq '=== TEST SUITE: PASSED ===' "$out_file" && echo 0 || echo 1)"
+  check "test.sh: a signalled run names the signal" \
+    "$(grep -Fq '=== TEST SUITE: INTERRUPTED (SIGTERM' "$out_file" && echo 0 || echo 1)"
+  check "test.sh: a signalled run exits non-zero" \
+    "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
 # Filtered `test.sh` reaches the same CLI path after its unit/spec/UI steps. Its
 # absolute path must survive the cwd change, and its sentinel must agree with
 # the propagated harness status.
@@ -1542,6 +1580,7 @@ test_clippy_gate_reads_diagnostics_and_fails_closed
 test_rue_named_test_tiers_delegate_to_testsh
 test_rue_quick_delegates_to_quick_testsh
 test_testsh_cli_examples_survive_case_chdir
+test_testsh_signalled_run_reports_interrupted
 test_testsh_filtered_unit_selection_matches_quick_policy
 test_rue_unit_maps_crate_and_forwards_args
 test_rue_unit_zero_match_fails_loud
