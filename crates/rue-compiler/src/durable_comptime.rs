@@ -15,6 +15,7 @@ use crate::ModuleId;
 use crate::body_query::ForeignComptimeCallLookup;
 use crate::declaration_candidate::{DeclarationCandidateKey, DeclarationImportFailure};
 use crate::durable_semantics::{DurableConstValue, DurableType};
+use crate::semantic_query_nucleus::SemanticNucleusFailure;
 
 /// The exact semantic site consumed by the durable import authority.
 ///
@@ -41,6 +42,35 @@ pub(crate) enum DurableImportResolution {
 /// reference, instruction data, or callback capable of evaluating a child.
 pub(crate) trait DurableComptimeSemanticAuthority {
     fn check_canceled(&self) -> Result<(), QueryAbort>;
+
+    /// Resolve a declaration through the canonical name/shell authority.
+    /// Visibility and shell disagreement diagnostics are produced by the
+    /// authority; the facade only carries the semantic request and result.
+    fn resolve_candidate(
+        &self,
+        module: &ModuleId,
+        name: &str,
+        kind: crate::DefinitionKind,
+    ) -> Result<
+        Option<DeclarationCandidateKey>,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    >;
+
+    fn resolve_identity(
+        &self,
+        declaration: DeclarationCandidateKey,
+    ) -> Result<
+        crate::semantic_query_nucleus::DeclarationIdentityProjection,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    >;
+
+    fn resolve_const(
+        &self,
+        declaration: DeclarationCandidateKey,
+    ) -> Result<
+        crate::semantic_query_nucleus::ConstResolutionProjection,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    >;
 
     fn resolve_import(
         &self,
@@ -70,6 +100,38 @@ impl<'a, A: ?Sized> DurableComptimeServices<'a, A> {
 impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A> {
     pub(crate) fn check_canceled(&self) -> Result<(), QueryAbort> {
         self.authority.check_canceled()
+    }
+
+    pub(crate) fn resolve_candidate(
+        &self,
+        module: &ModuleId,
+        name: &str,
+        kind: crate::DefinitionKind,
+    ) -> Result<
+        Option<DeclarationCandidateKey>,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        self.authority.resolve_candidate(module, name, kind)
+    }
+
+    pub(crate) fn resolve_identity(
+        &self,
+        declaration: DeclarationCandidateKey,
+    ) -> Result<
+        crate::semantic_query_nucleus::DeclarationIdentityProjection,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        self.authority.resolve_identity(declaration)
+    }
+
+    pub(crate) fn resolve_const(
+        &self,
+        declaration: DeclarationCandidateKey,
+    ) -> Result<
+        crate::semantic_query_nucleus::ConstResolutionProjection,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        self.authority.resolve_const(declaration)
     }
 
     pub(crate) fn resolve_import(

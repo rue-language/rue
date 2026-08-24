@@ -3110,6 +3110,9 @@ fn durable_comptime_services_are_named_authority_operations() {
         "DurableImportSite",
         "DurableComptimeSemanticAuthority",
         "DurableComptimeForeignCallAuthority",
+        "resolve_candidate",
+        "resolve_identity",
+        "resolve_const",
         "probe_comptime_call",
     ] {
         assert!(
@@ -3132,6 +3135,9 @@ fn durable_comptime_services_are_named_authority_operations() {
         .expect("durable evaluator source");
     assert!(evaluator.contains("DurableComptimeServices::new(&authority)"));
     assert!(evaluator.contains(".resolve_import(&site)"));
+    assert!(evaluator.contains(".resolve_candidate("));
+    assert!(evaluator.contains(".resolve_identity("));
+    assert!(evaluator.contains(".resolve_const("));
     let provider = database
         .split("pub(crate) struct CompilerBodyFactProvider<'a>")
         .nth(1)
