@@ -1109,6 +1109,142 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
+name = "nested_inout_under_outer_inout_str_dangling_repro_rejected"
+spec = ["6.1:30"]
+description = "RUE-1766 exact dangling repro: a view-materialized outer `inout str` argument keeps the root loaned while a nested call frees and reallocates its buffer"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn nuke(inout b: StrBuf) -> i64 {
+    b.free();
+    let mut c = StrBuf.new();
+    c.push_str("ZZZZZ");
+    let mut d = StrBuf.new();
+    d.push_str("YYYYY");
+    @intCast(c.len() + d.len())
+}
+fn read_view(inout s: str, k: i64) -> i64 {
+    let l: i64 = @intCast(s.len());
+    @dbg(l);
+    let b0: i64 = @intCast(s[0]);
+    @dbg(b0);
+    k
+}
+fn main() -> i32 {
+    let mut b = StrBuf.new();
+    b.push_str("hello");
+    let r = read_view(inout b, nuke(inout b));
+    @intCast(r)
+}
+"""
+compile_fail = true
+error_contains = "cannot borrow 'b'"
+
+[[case]]
+name = "nested_inout_under_outer_inout_str_rejected_reversed_order"
+spec = ["6.1:30"]
+description = "The view-materialized `inout str` conflict is independent of argument order"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(x: i32, inout s: str) -> u8 { s[0] }
+fn grow(inout s: StrBuf) -> i32 {
+    s.append_str(borrow "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+    0
+}
+fn main() -> i32 {
+    let mut b = StrBuf.from_str(borrow "hello");
+    let byte = read_first(grow(inout b), inout b);
+    if byte == 104 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = "cannot borrow 'b'"
+
+[[case]]
+name = "nested_inout_under_outer_inout_str_other_root_ok"
+spec = ["6.1:30"]
+description = "A view-materialized outer `inout str` and a nested `inout` of another root remain legal"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(inout s: str, x: i32) -> u8 { s[0] }
+fn grow(inout s: StrBuf) -> i32 {
+    s.append_str(borrow "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+    0
+}
+fn main() -> i32 {
+    let mut b = StrBuf.from_str(borrow "hello");
+    let mut c = StrBuf.from_str(borrow "world");
+    let byte = read_first(inout b, grow(inout c));
+    if byte == 104 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "nested_inout_under_outer_address_passed_inout_ok"
+spec = ["6.1:30"]
+description = "An ordinary address-passed `inout` parameter remains legal for sequenced nested accumulator updates"
+source = """
+fn mul(a: i32, b: i32, inout flags: i32) -> i32 {
+    flags = flags + 1;
+    a * b
+}
+fn add(a: i32, b: i32, inout flags: i32) -> i32 {
+    flags = flags + 10;
+    a + b
+}
+fn main() -> i32 {
+    let mut flags = 0;
+    let total = add(mul(3, 4, inout flags), 5, inout flags);
+    if total == 17 && flags == 11 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "nested_inout_under_forwarded_inout_str_ok"
+spec = ["6.1:30"]
+description = "A forwarded `inout str` parameter is address-passed, so same-root nested `inout` remains legal"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn leaf(inout s: str) -> i32 { @intCast(s.len()) }
+fn read_view(inout s: str, x: i32) -> i32 {
+    @intCast(s.len()) + x
+}
+fn outer(inout s: str) -> i32 {
+    read_view(inout s, leaf(inout s))
+}
+fn main() -> i32 {
+    let mut b = StrBuf.from_str(borrow "hello");
+    if outer(inout b) == 10 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "nested_inout_under_direct_str_n_ok"
+spec = ["6.1:30"]
+description = "A direct `Str(N)` operand is address-passed, so same-root nested `inout` remains legal"
+source = """
+fn leaf(inout s: Str(8)) -> i32 { @intCast(s.len()) }
+fn read_view(inout s: str, x: i32) -> i32 {
+    @intCast(s.len()) + x
+}
+fn main() -> i32 {
+    let mut b: Str(8) = "hello";
+    if read_view(inout b, leaf(inout b)) == 10 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
 name = "borrow_multiple_same_var_ok"
 spec = ["6.1:28"]
 description = "Multiple borrows of the same variable is allowed"

@@ -1261,7 +1261,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // calls and must conflict.
         let frame_count = ctx.call_loaned_roots.len();
         for (frame_index, frame) in ctx.call_loaned_roots.iter().enumerate() {
-            if frame.iter().any(|(r, kind)| {
+            if frame.iter().any(|(r, kind, _view_materialized)| {
                 *r == root
                     && !(frame_index + 1 == frame_count && *kind == CallLoanKind::Inout)
                     && (*kind == CallLoanKind::Inout || accessor_loan_kind == CallLoanKind::Inout)
@@ -5636,7 +5636,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
         for frame in ctx.call_loaned_roots.iter().rev() {
-            if let Some((_, kind)) = frame.iter().find(|(r, _)| *r == root) {
+            if let Some((_, kind, _view_materialized)) = frame.iter().find(|(r, _, _)| *r == root) {
                 let variable = self.body_interner().resolve(&root).to_string();
                 let kw = kind.keyword();
                 return Err(CompileError::new(
@@ -6034,6 +6034,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 
+    /// Whether a by-reference call argument is narrowed into a view value at
+    /// this call boundary. This mirrors the corresponding lowering branches
+    /// below: `borrow str`/slice arguments are view values, while `inout str`
+    /// only narrows a `StrBuf` source. Forwarded `inout str` and direct
+    /// `Str(N)` operands remain address-passed.
+    fn call_arg_view_materialized(
+        &self,
+        arg: &RirCallArg,
+        param_type: Type,
+        source_type: Option<Type>,
+    ) -> bool {
+        (arg.is_borrow()
+            && (self.is_str_struct(param_type) || self.slice_element_type(param_type).is_some()))
+            || (arg.is_inout()
+                && self.is_str_struct(param_type)
+                && source_type.is_some_and(|ty| self.is_strbuf(ty)))
+    }
+
     /// Analyze call arguments, materializing a fat-pointer slice value for any
     /// argument whose parameter is a slice type (ADR-0043, RUE-322).
     ///
@@ -6061,9 +6079,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     {
         // Loan-frame discipline (RUE-523): a by-value move of a root this call
         // passes `inout`/`borrow` conflicts in either argument order.
-        let frame: Vec<(Spur, CallLoanKind)> = args
+        let frame: Vec<(Spur, CallLoanKind, bool)> = args
             .clone()
-            .filter_map(|arg| {
+            .enumerate()
+            .filter_map(|(index, arg)| {
                 let kind = if arg.is_inout() {
                     CallLoanKind::Inout
                 } else if arg.is_borrow() {
@@ -6071,13 +6090,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 } else {
                     return None;
                 };
+                let param_type = param_types[index];
+                let view_materialized = self.call_arg_view_materialized(
+                    &arg,
+                    param_type,
+                    ctx.resolved_type_of(arg.value),
+                );
                 root_variable_of(self.body_rir_ref(), arg.value)
                     .or_else(|| {
                         // Both shared and exclusive accessor-call place chains
                         // root their loan at the receiver (ADR-0062/RUE-1016).
                         self.place_root_with_accessors(arg.value, ctx)
                     })
-                    .map(|root| (root, kind))
+                    .map(|root| (root, kind, view_materialized))
             })
             .collect();
         // A NESTED `inout` loan of a root that an ENCLOSING call already holds
@@ -6091,7 +6116,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // leaves the outer argument's view pointing at freed memory — a
         // use-after-free in safe code (RUE-1696).
         //
-        // Deliberately limited to shared-outer/exclusive-nested:
+        // Deliberately limited to shared-or-view-materialized-outer/
+        // exclusive-nested:
         //
         // * A nested `borrow` finishes before the outer call is entered, so it
         //   cannot outlive anything.
@@ -6102,13 +6128,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         //   depends on it.
         //
         //   This exclusion does NOT generalize to every `inout`: a view
-        //   materialized parameter snapshots whatever its loan mode. `inout
-        //   str` is passed as a two-word `{ptr, len}` value (4.10:4), so a
-        //   nested `inout` that frees or reallocates the root dangles it
-        //   exactly as the shared case above — still accepted here, tracked as
-        //   RUE-1766. The property that actually governs is view
-        //   materialization, not shared-vs-exclusive; this rule is keyed on the
-        //   latter and so covers only half the hole.
+        //   materialized parameter snapshots whatever its loan mode. A
+        //   `StrBuf` passed as `inout str` is narrowed to a two-word `{ptr,
+        //   len}` view (4.10:4), so a nested `inout` that frees or reallocates
+        //   the root dangles it exactly as the shared case above. Forwarded
+        //   `inout str` and direct `Str(N)` operands remain address-passed.
         //
         // Caught in either argument order, because the enclosing frame covers
         // the whole outer argument list before any of it is analyzed.
@@ -6123,13 +6147,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             else {
                 continue;
             };
-            let shared_outer_loan = ctx
-                .call_loaned_roots
-                .iter()
-                .flatten()
-                .any(|(loaned, kind)| *loaned == root && *kind == CallLoanKind::Borrow);
-            if shared_outer_loan {
+            let conflicting_outer_loan =
+                ctx.call_loaned_roots
+                    .iter()
+                    .flatten()
+                    .find(|(loaned, kind, view_materialized)| {
+                        *loaned == root && (*kind == CallLoanKind::Borrow || *view_materialized)
+                    });
+            if let Some((_, kind, view_materialized)) = conflicting_outer_loan {
                 let variable = self.body_interner().resolve(&root).to_string();
+                let loan_kind = kind.keyword();
+                let reason = if *view_materialized {
+                    "the enclosing call materializes a view snapshot before the call runs, so mutating"
+                } else {
+                    "that shared loan spans the whole call, so mutating"
+                };
+                let consequence = if *view_materialized {
+                    "would leave its view dangling"
+                } else {
+                    "would overlap the shared loan"
+                };
                 return Err(CompileError::new(
                     ErrorKind::BorrowInoutConflict {
                         variable: variable.clone(),
@@ -6137,11 +6174,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     self.body_rir_ref().get(arg.value).span,
                 )
                 .with_help(format!(
-                    "the enclosing call already passes `{variable}` as `borrow`, and that \
-                     shared loan spans the whole call — a `borrow str`/slice argument is \
-                     snapshotted before the call runs, so mutating `{variable}` here would \
-                     leave it dangling; evaluate the nested call into its own binding before \
-                     the call"
+                    "the enclosing call already passes `{variable}` as `{loan_kind}`, and \
+                     {reason} `{variable}` here {consequence}; evaluate the nested call into \
+                     its own binding before the call"
                 )));
             }
         }
@@ -6491,7 +6526,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // reach the caller's storage, while `len` reads the correct
                 // word. Whole-view rebinding is already rejected
                 // (StrViewReassignment), so the snapshot length stays valid.
-                if self.is_strbuf(arg_result.ty) {
+                if self.call_arg_view_materialized(&arg, param_ty, Some(arg_result.ty)) {
                     let span = self.body_rir_ref().get(arg.value).span;
                     let (view, prefix) =
                         self.strbuf_text_view(air, arg_result.air_ref, arg_result.ty, span, ctx)?;

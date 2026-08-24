@@ -1232,7 +1232,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // borrows in the same full expression violates exclusivity
                 // (ADR-0062, E0259).
                 self.reject_accessor_loan_conflict(root, "as an `inout self` receiver", span, ctx)?;
-                Some(vec![(root, CallLoanKind::Inout)])
+                Some(vec![(root, CallLoanKind::Inout, false)])
             }
             (AirArgMode::Borrow, Some(root)) => {
                 self.reject_accessor_shared_loan_conflict(
@@ -1241,7 +1241,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     span,
                     ctx,
                 )?;
-                Some(vec![(root, CallLoanKind::Borrow)])
+                Some(vec![(root, CallLoanKind::Borrow, false)])
             }
             _ => None,
         };

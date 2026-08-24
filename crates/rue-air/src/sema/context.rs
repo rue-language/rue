@@ -659,8 +659,12 @@ pub(crate) struct AnalysisContext<'a> {
     /// a double free in safe code. Move-record sites consult this via the
     /// engine's `reject_move_of_call_loaned_root` (E0208, spec 6.1, RUE-523).
     /// Completed nested LOANS (`f(inout x, g(borrow x))`) do not conflict:
-    /// the inner loan ends before the outer call begins.
-    pub call_loaned_roots: Vec<Vec<(Spur, CallLoanKind)>>,
+    /// the inner loan ends before the outer call begins. The third field is
+    /// true when the enclosing by-ref argument is materialized as a view
+    /// value (for example `borrow str`, or `StrBuf` narrowed to `inout str`),
+    /// rather than passed by address; nested exclusive access must not
+    /// invalidate such a snapshot.
+    pub call_loaned_roots: Vec<Vec<(Spur, CallLoanKind, bool)>>,
     /// True while re-running a loop's condition/body to validate the loop's
     /// back edge (see [`AnalysisContext::fork_for_loop_recheck`]). The recheck
     /// pass starts from a move state that already includes every move the loop
