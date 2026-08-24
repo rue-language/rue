@@ -1020,6 +1020,8 @@ mod tests {
         for forbidden in [
             "pub fn resolve_semantic_type_syntax",
             "pub fn resolve_semantic_comptime_call",
+            "resolve_structured_semantic_comptime_call(",
+            "resolve_semantic_comptime_call_core(",
             "SemanticValueSyntax::Rendered",
             "parse_array_type_syntax(",
             "parse_pointer_type_syntax(",
