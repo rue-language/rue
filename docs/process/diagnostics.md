@@ -63,7 +63,7 @@ are serialized in alphabetical order; consumers must not depend on key order.
 | `start` | integer | Start byte offset into that file, 0-indexed. |
 | `end` | integer | End byte offset, exclusive. Never less than `start`. |
 | `line` | integer | Line of `start`, **1-indexed**. |
-| `column` | integer | Column of `start`, **1-indexed**. |
+| `column` | integer | Column of `start`, **1-indexed**, counting Unicode scalar values (not bytes or UTF-16 code units). |
 | `label` | string \| `null` | Label text for a secondary span; `null` on the primary. |
 | `primary` | boolean | Whether this is the diagnostic's primary span. |
 
