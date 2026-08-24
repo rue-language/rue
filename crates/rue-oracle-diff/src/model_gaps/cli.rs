@@ -452,6 +452,22 @@ const ENTRIES: &[Entry] = &[
     // std allocators (`@alloc` in StrBuf, `@int_to_ptr` in ArrayBuf.new()),
     // outside the oracle model.
 
+    // RUE-1786: the two over-rejection controls in this section are the only
+    // ones that RUN -- the rest assert a compile failure and are ineligible.
+    // Both build a real StrBuf, so they reach the same unmodeled bulk byte
+    // copy as every other StrBuf-backed case here.
+    Entry::new(
+        "cli.nested_loan_str_view",
+        "block_argument_mutating_an_address_passed_inout_root_stays_legal",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.nested_loan_str_view",
+        "block_argument_only_reading_the_borrowed_root_stays_legal",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
     // RUE-978: the byte-surface behavior cases allocate through @alloc,
     // which the oracle model does not model.
     Entry::new(

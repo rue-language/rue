@@ -1160,6 +1160,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // which coexists with the loop's shared borrow, so it is allowed.
                 if receiver_mode == AirArgMode::Inout {
                     self.reject_mutate_iter_borrowed(receiver_root, span, ctx)?;
+                    // An enclosing call may hold a loan of this root that the
+                    // mutation would invalidate. Frame construction only walks
+                    // the outer call's own `inout` arguments, so an argument
+                    // that merely CONTAINS this call -- a block, an `if`, a
+                    // `match` arm -- never reached that check (RUE-1786).
+                    self.reject_exclusive_use_of_call_loaned_root(receiver_root, span, ctx)?;
                 }
 
                 // `inout self` requires a mutable receiver binding (spec 6, reuses

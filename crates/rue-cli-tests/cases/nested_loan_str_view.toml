@@ -319,3 +319,148 @@ fn main() -> i32 {
 """ }]
 stdout = "17\n11\n"
 exit_code = 0
+
+# RUE-1786. The nested-CALL spelling above is caught at frame construction,
+# which walks the outer call's own `inout` ARGUMENTS. That walk sees the
+# argument's place, so it only fires when the mutation *is* the argument. An
+# argument that merely CONTAINS the mutation reached the callee by a different
+# route and was never checked at all -- so `f(borrow b, { b.free(); 0 })`
+# compiled and read freed memory even after RUE-1696 and RUE-1766 landed.
+#
+# The argument form turned out to be incidental: a block, an `if`, and a
+# `match` arm all leaked, in both loan modes, and a reallocating `push` leaked
+# as surely as a `free`. So the check now sits where the exclusive access is
+# recorded -- the `inout` receiver -- rather than enumerating argument shapes,
+# which is exactly what let the earlier two fixes miss this.
+
+[[case]]
+name = "block_argument_freeing_the_borrowed_root_rejected"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "RUE-1786 repro: a block-expression argument frees the root the sibling `borrow b` argument was already snapshotted into a view over."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(borrow s: str, k: i64) -> i64 { let l: i64 = @intCast(s.len()); @dbg(l); k }
+fn main() -> i32 {
+    let mut b = StrBuf.new();
+    b.push_str("hello");
+    let r = read_first(borrow b, { b.free(); 0 });
+    @intCast(r)
+}
+""" }]
+compile_fail = true
+compile_stderr_contains = ["E0430", "evaluate this argument into its own binding"]
+
+[[case]]
+name = "block_argument_freeing_the_inout_str_root_rejected"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "The same hole in the other loan mode: `inout str` is view-materialized too, so the snapshot dangles identically."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_view(inout s: str, k: i64) -> i64 { let l: i64 = @intCast(s.len()); @dbg(l); k }
+fn main() -> i32 {
+    let mut b = StrBuf.new();
+    b.push_str("hello");
+    let r = read_view(inout b, { b.free(); 0 });
+    @intCast(r)
+}
+""" }]
+compile_fail = true
+compile_stderr_contains = ["E0430"]
+
+# A reallocation is as fatal as a free -- `push` can move the buffer, leaving
+# the snapshot pointing at the old allocation. Pinning this separately because
+# a fix that only looked for `free` would pass the two cases above.
+[[case]]
+name = "block_argument_reallocating_the_borrowed_root_rejected"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "A mutating `push` inside the argument is rejected too, not only a free."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(borrow s: str, k: i64) -> i64 { let l: i64 = @intCast(s.len()); @dbg(l); k }
+fn main() -> i32 {
+    let mut b = StrBuf.new();
+    b.push_str("hello");
+    let r = read_first(borrow b, { b.push(65); 0 });
+    @intCast(r)
+}
+""" }]
+compile_fail = true
+compile_stderr_contains = ["E0430"]
+
+[[case]]
+name = "if_argument_freeing_the_borrowed_root_rejected"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "An `if` in argument position hides the same mutation; the check is on the receiver, not the argument shape."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(borrow s: str, k: i64) -> i64 { let l: i64 = @intCast(s.len()); @dbg(l); k }
+fn main() -> i32 {
+    let mut b = StrBuf.new();
+    b.push_str("hello");
+    let r = read_first(borrow b, if true { b.free(); 0 } else { 0 });
+    @intCast(r)
+}
+""" }]
+compile_fail = true
+compile_stderr_contains = ["E0430"]
+
+[[case]]
+name = "match_argument_freeing_the_borrowed_root_rejected"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "And a `match` arm, for the same reason."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(borrow s: str, k: i64) -> i64 { let l: i64 = @intCast(s.len()); @dbg(l); k }
+fn main() -> i32 {
+    let mut b = StrBuf.new();
+    b.push_str("hello");
+    let r = read_first(borrow b, match 1 { _ => { b.free(); 0 } });
+    @intCast(r)
+}
+""" }]
+compile_fail = true
+compile_stderr_contains = ["E0430"]
+
+# The over-rejection controls. An address-passed `inout StrBuf` hands over the
+# root's address, so a nested mutation is ordinary sequenced mutation and the
+# callee legitimately observes it -- 6, the length AFTER the push, not a stale
+# 5. If this ever starts failing, the fix has become too broad.
+[[case]]
+name = "block_argument_mutating_an_address_passed_inout_root_stays_legal"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "Address-passed `inout StrBuf` is not snapshotted, so a nested mutation inside a block argument is legal and visible to the callee."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn peek(inout s: StrBuf, k: i64) -> i64 { let l: i64 = @intCast(s.len()); @dbg(l); k }
+fn main() -> i32 {
+    let mut b = StrBuf.new();
+    b.push_str("hello");
+    let q = peek(inout b, { b.push(65); 0 });
+    @intCast(q)
+}
+""" }]
+stdout = "6\n"
+
+[[case]]
+name = "block_argument_only_reading_the_borrowed_root_stays_legal"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "A block argument that only READS the borrowed root is two shared accesses and stays legal."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn read_first(borrow s: str, k: i64) -> i64 { let l: i64 = @intCast(s.len()); @dbg(l); k }
+fn main() -> i32 {
+    let mut b = StrBuf.new();
+    b.push_str("hello");
+    let r = read_first(borrow b, { let n: i64 = @intCast(b.len()); n });
+    @intCast(r)
+}
+""" }]
+stdout = "5\n"
+exit_code = 5
