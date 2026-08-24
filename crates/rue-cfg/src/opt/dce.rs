@@ -24,8 +24,10 @@
 //!   calls, intrinsics, `Store`/`ParamStore`/`PlaceWrite`, `Alloc`, `Drop`,
 //!   `StorageLive`/`StorageDead`.
 //! - May trap (`classify::may_trap`): overflow-checked arithmetic and division
-//!   checks, `IntCast` (range check), and an indexed `PlaceRead` (bounds check)
-//!   — the mandatory runtime traps DCE must preserve (RUE-57).
+//!   checks, `IntCast` (range check), and an indirect or indexed `PlaceRead`
+//!   (pointer fault or bounds check). DCE preserves these operations even when
+//!   their result is unused; the indirect case is a conservative fault-safety
+//!   classification rather than a Rue-defined panic guarantee (RUE-57).
 
 use super::classify;
 use crate::{BlockId, Cfg, CfgInstData, CfgValue, Projection, Terminator};
@@ -147,10 +149,11 @@ fn compute_live_values(cfg: &Cfg) -> BitSet {
 /// - `classify::has_observable_side_effect` — `Call`, `Intrinsic`, `Alloc`,
 ///   `Store`, `ParamStore`, `PlaceWrite`, `Drop`, `StorageLive`/`StorageDead`.
 /// - `classify::may_trap` — overflow-checked arithmetic and division checks,
-///   `IntCast` (range check), and an indexed `PlaceRead` (bounds check). These
-///   are the mandatory runtime traps DCE must preserve even when the result is
-///   unused (RUE-57). Bitwise ops and shifts do not trap (shift counts are
-///   masked per spec), so they remain eligible for elimination.
+///   `IntCast` (range check), and an indirect or indexed `PlaceRead` (pointer
+///   fault or bounds check). DCE preserves these even when the result is unused
+///   (RUE-57); the indirect case is a conservative fault-safety classification,
+///   not a Rue-defined panic guarantee. Bitwise ops and shifts do not trap
+///   (shift counts are masked per spec), so they remain eligible for elimination.
 ///
 /// This is exactly `classify::is_speculatable`'s negation, expressed positively.
 fn has_side_effects(cfg: &Cfg, value: CfgValue) -> bool {
