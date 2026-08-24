@@ -4,13 +4,13 @@
 //! provide semantic facts and side effects through named hooks; they never walk
 //! child instructions or invoke another evaluator.
 
-use ahash::AHashMap;
-use lasso::Spur;
+use ahash::{AHashMap, AHashSet};
 use rue_error::{CompileError, CompileResult, ErrorKind};
-use rue_rir::{InstData, InstRef, RepeatCount, Rir};
-use rue_span::{FileId, Span};
+use rue_rir::{InstData, InstRef, RepeatCount, Rir, SymbolHandle};
+use rue_span::Span;
+use std::hash::Hash;
 
-use super::comptime_eval::{ComptimeEnv, comptime_panic_err};
+use super::comptime_eval::comptime_panic_err;
 use crate::integer_semantics::{CheckedIntegerResult, IntegerType};
 use crate::specialize::MAX_COMPTIME_CALL_DEPTH;
 use crate::types::ArrayLen;
@@ -32,8 +32,8 @@ pub(crate) trait ComptimeValue: Clone {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ComptimeField<T> {
-    pub(crate) name: String,
+pub(crate) struct ComptimeField<N, T> {
+    pub(crate) name: N,
     pub(crate) ty: T,
 }
 
@@ -45,6 +45,83 @@ pub(crate) struct ComptimeConstInfo<V> {
     pub(crate) is_pub: bool,
     pub(crate) span: Span,
     pub(crate) value: Option<V>,
+}
+
+pub(crate) trait ComptimeName: Clone + Eq + Hash {}
+
+pub(crate) trait ComptimeFile: Clone + Eq + Hash {}
+
+/// Lexical and substitution state shared by the canonical comptime engine.
+/// Name and file identities are supplied by the host; the evaluator does not
+/// depend on the local interner or file-id representation.
+pub(crate) struct ComptimeEnv<'a, V, T, N, F>
+where
+    V: ComptimeValue<Type = T>,
+    T: ComptimeType,
+    N: ComptimeName,
+    F: ComptimeFile,
+{
+    pub(crate) producer: Option<InstRef>,
+    pub(crate) canonical_identity: Option<super::anon_structs::IssuedStableProducerId>,
+    pub(crate) type_subst: AHashMap<N, T>,
+    pub(crate) value_subst: AHashMap<N, V>,
+    pub(crate) resolved_types: Option<&'a AHashMap<InstRef, T>>,
+    pub(crate) runtime_local_names: AHashSet<N>,
+    pub(crate) runtime_binding_names: AHashSet<N>,
+    pub(crate) locals: AHashMap<N, V>,
+    pub(crate) const_module_members: AHashMap<InstRef, V>,
+    pub(crate) defining_file: Option<F>,
+}
+
+impl<'a, V, T, N, F> ComptimeEnv<'a, V, T, N, F>
+where
+    V: ComptimeValue<Type = T>,
+    T: ComptimeType,
+    N: ComptimeName,
+    F: ComptimeFile,
+{
+    pub(crate) fn substs_with_locals(&self) -> (AHashMap<N, T>, AHashMap<N, V>) {
+        let mut type_subst = self.type_subst.clone();
+        let mut value_subst = self.value_subst.clone();
+        for (name, val) in &self.locals {
+            if let Some(t) = val.as_type() {
+                type_subst.insert(name.clone(), t);
+            } else {
+                value_subst.insert(name.clone(), val.clone());
+            }
+        }
+        (type_subst, value_subst)
+    }
+
+    pub(crate) fn new() -> Self {
+        Self {
+            producer: None,
+            canonical_identity: None,
+            type_subst: AHashMap::new(),
+            value_subst: AHashMap::new(),
+            resolved_types: None,
+            runtime_local_names: AHashSet::new(),
+            runtime_binding_names: AHashSet::new(),
+            locals: AHashMap::new(),
+            const_module_members: AHashMap::new(),
+            defining_file: None,
+        }
+    }
+
+    pub(crate) fn with_subst(type_subst: &AHashMap<N, T>, value_subst: &AHashMap<N, V>) -> Self {
+        Self {
+            producer: None,
+            canonical_identity: None,
+            type_subst: type_subst.clone(),
+            value_subst: value_subst.clone(),
+            resolved_types: None,
+            runtime_local_names: AHashSet::new(),
+            runtime_binding_names: AHashSet::new(),
+            locals: AHashMap::new(),
+            const_module_members: AHashMap::new(),
+            defining_file: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -99,30 +176,50 @@ mod value_domain_tests {
         }
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    struct FakeName(u32);
+
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    struct FakeFile(u32);
+
+    impl ComptimeName for FakeName {}
+    impl ComptimeFile for FakeFile {}
+
     struct FakeHost {
         rir: Rir,
-        interner: lasso::ThreadedRodeo,
-        type_symbol: Spur,
-        constant: Option<(Spur, ComptimeConstInfo<FakeValue>)>,
+        type_symbol: SymbolHandle,
+        constant: Option<(FakeFile, FakeName, ComptimeConstInfo<FakeValue>)>,
+        dependencies: Vec<(FakeFile, FakeName)>,
     }
 
     impl ComptimeHost for FakeHost {
         type Type = FakeType;
         type Value = FakeValue;
+        type Name = FakeName;
+        type File = FakeFile;
         type CallAdmission = ();
         type AnonymousStructId = u32;
         type AnonMethodSigs = ();
         fn program_rir(&self) -> &Rir {
             &self.rir
         }
-        fn body_interner(&self) -> &lasso::ThreadedRodeo {
-            &self.interner
+        fn name_from_symbol(&self, symbol: SymbolHandle) -> Self::Name {
+            FakeName(symbol.issuing_interner_ordinal() as u32)
         }
-        fn value_const(&self, key: &(FileId, Spur)) -> Option<ComptimeConstInfo<Self::Value>> {
+        fn display_name(&self, name: &Self::Name) -> String {
+            format!("fake-name-{}", name.0)
+        }
+        fn file_from_span(&self, span: &Span) -> Self::File {
+            FakeFile(span.file_id.index())
+        }
+        fn value_const(
+            &self,
+            key: &(Self::File, Self::Name),
+        ) -> Option<ComptimeConstInfo<Self::Value>> {
             self.constant
                 .as_ref()
-                .filter(|(name, info)| *name == key.1 && info.span.file_id == key.0)
-                .map(|(_, info)| info.clone())
+                .filter(|(file, name, _)| *file == key.0 && *name == key.1)
+                .map(|(_, _, info)| info.clone())
         }
         fn match_pattern(
             &self,
@@ -139,16 +236,14 @@ mod value_domain_tests {
         ) -> CompileResult<()> {
             Ok(())
         }
-        fn record_body_named_dependency(
-            &mut self,
-            _target: super::super::NamedConstDependencyTargetEvent,
-        ) {
+        fn record_value_const_dependency(&mut self, file: &Self::File, name: &Self::Name) {
+            self.dependencies.push((file.clone(), name.clone()));
         }
         fn reduce_external_comptime_call(
             &mut self,
-            _name: Spur,
-            _types: &AHashMap<Spur, Self::Type>,
-            _values: &AHashMap<Spur, Self::Value>,
+            _name: Self::Name,
+            _types: &AHashMap<Self::Name, Self::Type>,
+            _values: &AHashMap<Self::Name, Self::Value>,
             _span: Span,
         ) -> Option<CompileResult<Option<Self::Value>>> {
             None
@@ -157,12 +252,12 @@ mod value_domain_tests {
             &mut self,
             _length: &ArrayLen,
             _span: Span,
-            _values: Option<&AHashMap<Spur, Self::Value>>,
+            _values: Option<&AHashMap<Self::Name, Self::Value>>,
         ) -> CompileResult<u64> {
             Ok(0)
         }
-        fn rir_type_named_symbol(&self, _syntax: rue_rir::RirTypeSyntaxRef) -> Option<Spur> {
-            Some(self.type_symbol)
+        fn rir_type_named_symbol(&self, _syntax: rue_rir::RirTypeSyntaxRef) -> Option<Self::Name> {
+            Some(self.name_from_symbol(self.type_symbol))
         }
         fn get_or_create_array_type(&mut self, _element: Self::Type, _length: u64) -> Self::Type {
             panic!("fake host does not construct array types")
@@ -170,8 +265,8 @@ mod value_domain_tests {
         fn extract_anon_method_sigs(
             &mut self,
             _methods: &rue_rir::RirAnonStructMethodsRange,
-            _types: &AHashMap<Spur, Self::Type>,
-            _values: &AHashMap<Spur, Self::Value>,
+            _types: &AHashMap<Self::Name, Self::Type>,
+            _values: &AHashMap<Self::Name, Self::Value>,
         ) -> Self::AnonMethodSigs {
             panic!("fake host does not construct anonymous methods")
         }
@@ -184,9 +279,9 @@ mod value_domain_tests {
         fn find_or_create_anon_struct(
             &mut self,
             _identity: anon_structs::IssuedAnonymousNominalKey,
-            _fields: &[ComptimeField<Self::Type>],
+            _fields: &[ComptimeField<Self::Name, Self::Type>],
             _sigs: &Self::AnonMethodSigs,
-            _captured: &AHashMap<Spur, Self::Value>,
+            _captured: &AHashMap<Self::Name, Self::Value>,
         ) -> CompileResult<(Self::Type, bool)> {
             panic!("fake host does not construct anonymous structs")
         }
@@ -201,14 +296,14 @@ mod value_domain_tests {
         fn anonymous_struct_id(&self, _ty: &Self::Type) -> Option<Self::AnonymousStructId> {
             None
         }
-        fn has_method(&self, _key: &Self::AnonymousStructId, _method: Spur) -> bool {
+        fn has_method(&self, _key: &Self::AnonymousStructId, _method: Self::Name) -> bool {
             false
         }
         fn check_unqualified_visibility(
             &self,
             _item_kind: &str,
-            _name: &str,
-            _defining_file_id: FileId,
+            _name: &Self::Name,
+            _defining_file_id: Self::File,
             _is_pub: bool,
             _span: Span,
         ) -> CompileResult<()> {
@@ -222,7 +317,7 @@ mod value_domain_tests {
         }
         fn const_expr_type(
             &self,
-            _env: &ComptimeEnv<'_, Self::Value, Self::Type>,
+            _env: &ComptimeEnv<'_, Self::Value, Self::Type, Self::Name, Self::File>,
             _inst_ref: InstRef,
         ) -> Option<Self::Type> {
             None
@@ -248,59 +343,65 @@ mod value_domain_tests {
         fn record_named_type_dependency(&mut self, _ty: &Self::Type) {}
         fn resolve_named_type_value(
             &mut self,
-            _name: Spur,
+            _name: Self::Name,
             _span: Span,
         ) -> CompileResult<Option<Self::Type>> {
             Ok(Some(FakeType(7)))
         }
         fn resolve_comptime_type_path(
             &mut self,
-            _file: FileId,
-            _segments: &[Spur],
+            _file: Self::File,
+            _segments: &[Self::Name],
             _span: Span,
         ) -> CompileResult<Option<Self::Value>> {
             Ok(None)
         }
         fn resolve_module_comptime_callable(
             &mut self,
-            _file_id: FileId,
-            _segments: &[Spur],
-            _method: Spur,
+            _file_id: Self::File,
+            _segments: &[Self::Name],
+            _method: Self::Name,
             _span: Span,
-        ) -> CompileResult<Option<Spur>> {
+        ) -> CompileResult<Option<Self::Name>> {
             Ok(None)
         }
         fn admit_comptime_call(
             &mut self,
-            _name: Spur,
+            _name: Self::Name,
             _arg_count: usize,
             _arg_modes: &[ComptimeArgMode],
-            _env: &mut ComptimeEnv<'_, Self::Value, Self::Type>,
+            _env: &mut ComptimeEnv<'_, Self::Value, Self::Type, Self::Name, Self::File>,
             _name_is_resolved_key: bool,
-        ) -> CompileResult<Option<ComptimeCallAdmission<Self::CallAdmission>>> {
+        ) -> CompileResult<Option<ComptimeCallAdmission<Self::CallAdmission, Self::Name>>> {
             Ok(None)
         }
         fn bind_comptime_call(
             &self,
-            _admission: &ComptimeCallAdmission<Self::CallAdmission>,
+            _admission: &ComptimeCallAdmission<Self::CallAdmission, Self::Name>,
             _values: &[Self::Value],
             _span: Span,
-        ) -> CompileResult<Option<(AHashMap<Spur, Self::Type>, AHashMap<Spur, Self::Value>)>>
-        {
+        ) -> CompileResult<
+            Option<(
+                AHashMap<Self::Name, Self::Type>,
+                AHashMap<Self::Name, Self::Value>,
+            )>,
+        > {
             Ok(None)
         }
         fn prepare_local_comptime_call(
             &mut self,
-            _admission: ComptimeCallAdmission<Self::CallAdmission>,
-            _types: AHashMap<Spur, Self::Type>,
-            _values: AHashMap<Spur, Self::Value>,
+            _admission: ComptimeCallAdmission<Self::CallAdmission, Self::Name>,
+            _types: AHashMap<Self::Name, Self::Type>,
+            _values: AHashMap<Self::Name, Self::Value>,
             _span: Span,
-        ) -> CompileResult<Option<PreparedComptimeCall<Self::Value, Self::Type>>> {
+        ) -> CompileResult<
+            Option<PreparedComptimeCall<Self::Value, Self::Type, Self::Name, Self::File>>,
+        > {
             Ok(None)
         }
         fn finish_comptime_call(
             &mut self,
-            _plan: &PreparedComptimeCall<Self::Value, Self::Type>,
+            _plan: &PreparedComptimeCall<Self::Value, Self::Type, Self::Name, Self::File>,
             result: CompileResult<Option<Self::Value>>,
         ) -> CompileResult<Option<Self::Value>> {
             result
@@ -310,9 +411,9 @@ mod value_domain_tests {
         }
         fn canonical_function_producer(
             &self,
-            _name: Spur,
-            _types: &AHashMap<Spur, Self::Type>,
-            _values: &AHashMap<Spur, Self::Value>,
+            _name: Self::Name,
+            _types: &AHashMap<Self::Name, Self::Type>,
+            _values: &AHashMap<Self::Name, Self::Value>,
         ) -> Result<anon_structs::IssuedStableProducerId, crate::SemanticBodyExportFailure>
         {
             panic!("fake host does not issue producers")
@@ -320,8 +421,8 @@ mod value_domain_tests {
         fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
             &mut self,
             _syntax: rue_rir::RirTypeSyntaxRef,
-            _types: &AHashMap<Spur, Self::Type>,
-            _values: &AHashMap<Spur, Self::Value>,
+            _types: &AHashMap<Self::Name, Self::Type>,
+            _values: &AHashMap<Self::Name, Self::Value>,
             _span: Span,
         ) -> Option<Self::Type> {
             None
@@ -331,15 +432,15 @@ mod value_domain_tests {
             _struct_id: &Self::AnonymousStructId,
             _struct_type: Self::Type,
             _methods: &rue_rir::RirAnonStructMethodsRange,
-            _types: &AHashMap<Spur, Self::Type>,
-            _values: &AHashMap<Spur, Self::Value>,
+            _types: &AHashMap<Self::Name, Self::Type>,
+            _values: &AHashMap<Self::Name, Self::Value>,
         ) -> Option<()> {
             None
         }
         fn set_anon_struct_type_subst(
             &mut self,
             _struct_id: &Self::AnonymousStructId,
-            _subst: AHashMap<Spur, Self::Type>,
+            _subst: AHashMap<Self::Name, Self::Type>,
         ) {
         }
     }
@@ -361,11 +462,11 @@ mod value_domain_tests {
         });
         let mut host = FakeHost {
             rir: editor.finish(),
-            type_symbol: lasso::ThreadedRodeo::new().get_or_intern("T"),
-            interner: lasso::ThreadedRodeo::new(),
+            type_symbol: SymbolHandle::new(lasso::ThreadedRodeo::new().get_or_intern("T")),
             constant: None,
+            dependencies: Vec::new(),
         };
-        let mut env = ComptimeEnv::<FakeValue, FakeType>::new();
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile>::new();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(add, &mut env)
             .unwrap()
@@ -398,11 +499,11 @@ mod value_domain_tests {
         });
         let mut host = FakeHost {
             rir: editor.finish(),
-            type_symbol: lasso::ThreadedRodeo::new().get_or_intern("T"),
-            interner: lasso::ThreadedRodeo::new(),
+            type_symbol: SymbolHandle::new(lasso::ThreadedRodeo::new().get_or_intern("T")),
             constant: None,
+            dependencies: Vec::new(),
         };
-        let mut env = ComptimeEnv::<FakeValue, FakeType>::new();
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile>::new();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(branch, &mut env)
             .unwrap()
@@ -420,14 +521,14 @@ mod value_domain_tests {
             span: Span::new(0, 0),
         });
         let interner = lasso::ThreadedRodeo::new();
-        let type_symbol = interner.get_or_intern("T");
+        let type_symbol = SymbolHandle::new(interner.get_or_intern("T"));
         let mut host = FakeHost {
             rir: editor.finish(),
             type_symbol,
-            interner,
             constant: None,
+            dependencies: Vec::new(),
         };
-        let mut env = ComptimeEnv::<FakeValue, FakeType>::new();
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile>::new();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(type_const, &mut env)
             .unwrap()
@@ -439,25 +540,30 @@ mod value_domain_tests {
     fn runtime_binding_name_blocks_global_constant_fallback() {
         let mut editor = rue_rir::RirEditor::new();
         let interner = lasso::ThreadedRodeo::new();
-        let name = interner.get_or_intern("n");
+        let name_symbol = SymbolHandle::new(interner.get_or_intern("n"));
+        let name = FakeName(name_symbol.issuing_interner_ordinal() as u32);
         let reference = editor.add_inst(rue_rir::Inst {
-            data: InstData::VarRef { name, anchor: None },
+            data: InstData::VarRef {
+                name: name_symbol.spur(),
+                anchor: None,
+            },
             span: Span::new(0, 1),
         });
         let mut host = FakeHost {
             rir: editor.finish(),
-            type_symbol: interner.get_or_intern("T"),
-            interner,
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
             constant: Some((
-                name,
+                FakeFile(0),
+                name.clone(),
                 ComptimeConstInfo {
                     is_pub: true,
                     span: Span::new(10, 11),
                     value: Some(FakeValue::Integer(99)),
                 },
             )),
+            dependencies: Vec::new(),
         };
-        let mut env = ComptimeEnv::<FakeValue, FakeType>::new();
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile>::new();
         env.runtime_binding_names.insert(name);
         let value = ComptimeEngine::new(&mut host)
             .evaluate(reference, &mut env)
@@ -466,23 +572,62 @@ mod value_domain_tests {
     }
 
     #[test]
+    fn constant_dependency_uses_declaration_file_not_reference_file() {
+        let mut editor = rue_rir::RirEditor::new();
+        let interner = lasso::ThreadedRodeo::new();
+        let name_symbol = SymbolHandle::new(interner.get_or_intern("answer"));
+        let name = FakeName(name_symbol.issuing_interner_ordinal() as u32);
+        let reference = editor.add_inst(rue_rir::Inst {
+            data: InstData::VarRef {
+                name: name_symbol.spur(),
+                anchor: None,
+            },
+            span: Span::with_file(rue_span::FileId::new(3), 0, 1),
+        });
+        let mut host = FakeHost {
+            rir: editor.finish(),
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: Some((
+                FakeFile(3),
+                name,
+                ComptimeConstInfo {
+                    is_pub: true,
+                    span: Span::with_file(rue_span::FileId::new(9), 10, 11),
+                    value: Some(FakeValue::Integer(42)),
+                },
+            )),
+            dependencies: Vec::new(),
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile>::new();
+        let value = ComptimeEngine::new(&mut host)
+            .evaluate(reference, &mut env)
+            .unwrap();
+        assert_eq!(value, Some(FakeValue::Integer(42)));
+        assert_eq!(host.dependencies, vec![(FakeFile(9), FakeName(0))]);
+    }
+
+    #[test]
     fn runtime_local_name_precedes_same_named_comptime_substitutions() {
         let mut editor = rue_rir::RirEditor::new();
         let interner = lasso::ThreadedRodeo::new();
-        let name = interner.get_or_intern("n");
+        let name_symbol = SymbolHandle::new(interner.get_or_intern("n"));
+        let name = FakeName(name_symbol.issuing_interner_ordinal() as u32);
         let reference = editor.add_inst(rue_rir::Inst {
-            data: InstData::VarRef { name, anchor: None },
+            data: InstData::VarRef {
+                name: name_symbol.spur(),
+                anchor: None,
+            },
             span: Span::new(0, 1),
         });
         let mut host = FakeHost {
             rir: editor.finish(),
-            type_symbol: interner.get_or_intern("T"),
-            interner,
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
             constant: None,
+            dependencies: Vec::new(),
         };
-        let mut env = ComptimeEnv::<FakeValue, FakeType>::new();
-        env.type_subst.insert(name, FakeType(1));
-        env.value_subst.insert(name, FakeValue::Integer(2));
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile>::new();
+        env.type_subst.insert(name.clone(), FakeType(1));
+        env.value_subst.insert(name.clone(), FakeValue::Integer(2));
         env.runtime_local_names.insert(name);
         let value = ComptimeEngine::new(&mut host)
             .evaluate(reference, &mut env)
@@ -492,20 +637,20 @@ mod value_domain_tests {
 }
 
 #[derive(Debug)]
-pub(crate) struct PreparedComptimeCall<V, T> {
-    pub(crate) name: Spur,
+pub(crate) struct PreparedComptimeCall<V, T, N, F> {
+    pub(crate) name: N,
     pub(crate) body: InstRef,
-    pub(crate) file: FileId,
+    pub(crate) file: F,
     pub(crate) span: Span,
     pub(crate) function_span: Span,
-    pub(crate) callee_types: AHashMap<Spur, T>,
-    pub(crate) callee_values: AHashMap<Spur, V>,
+    pub(crate) callee_types: AHashMap<N, T>,
+    pub(crate) callee_values: AHashMap<N, V>,
 }
 
 pub(crate) type ComptimeArgMode = (rue_rir::RirArgMode, Span);
 
-pub(crate) struct ComptimeCallAdmission<A> {
-    pub(crate) name: Spur,
+pub(crate) struct ComptimeCallAdmission<A, N> {
+    pub(crate) name: N,
     pub(crate) payload: A,
 }
 
@@ -514,12 +659,17 @@ pub(crate) struct ComptimeCallAdmission<A> {
 pub(crate) trait ComptimeHost {
     type Type: ComptimeType;
     type Value: ComptimeValue<Type = Self::Type>;
+    type Name: ComptimeName;
+    type File: ComptimeFile;
     type CallAdmission;
     type AnonymousStructId: Clone;
     type AnonMethodSigs;
     fn program_rir(&self) -> &Rir;
-    fn body_interner(&self) -> &lasso::ThreadedRodeo;
-    fn value_const(&self, key: &(FileId, Spur)) -> Option<ComptimeConstInfo<Self::Value>>;
+    fn name_from_symbol(&self, symbol: SymbolHandle) -> Self::Name;
+    fn display_name(&self, name: &Self::Name) -> String;
+    fn file_from_span(&self, span: &Span) -> Self::File;
+    fn value_const(&self, key: &(Self::File, Self::Name))
+    -> Option<ComptimeConstInfo<Self::Value>>;
     fn match_pattern(
         &self,
         pattern: &rue_rir::RirPatternView<'_>,
@@ -531,27 +681,27 @@ pub(crate) trait ComptimeHost {
         what: &str,
         span: Span,
     ) -> CompileResult<()>;
-    fn record_body_named_dependency(&mut self, target: super::NamedConstDependencyTargetEvent);
+    fn record_value_const_dependency(&mut self, file: &Self::File, name: &Self::Name);
     fn reduce_external_comptime_call(
         &mut self,
-        name: Spur,
-        callee_types: &AHashMap<Spur, Self::Type>,
-        callee_values: &AHashMap<Spur, Self::Value>,
+        name: Self::Name,
+        callee_types: &AHashMap<Self::Name, Self::Type>,
+        callee_values: &AHashMap<Self::Name, Self::Value>,
         span: Span,
     ) -> Option<CompileResult<Option<Self::Value>>>;
     fn resolve_array_length(
         &mut self,
         length: &ArrayLen,
         span: Span,
-        values: Option<&AHashMap<Spur, Self::Value>>,
+        values: Option<&AHashMap<Self::Name, Self::Value>>,
     ) -> CompileResult<u64>;
-    fn rir_type_named_symbol(&self, syntax: rue_rir::RirTypeSyntaxRef) -> Option<Spur>;
+    fn rir_type_named_symbol(&self, syntax: rue_rir::RirTypeSyntaxRef) -> Option<Self::Name>;
     fn get_or_create_array_type(&mut self, element: Self::Type, length: u64) -> Self::Type;
     fn extract_anon_method_sigs(
         &mut self,
         methods: &rue_rir::RirAnonStructMethodsRange,
-        types: &AHashMap<Spur, Self::Type>,
-        values: &AHashMap<Spur, Self::Value>,
+        types: &AHashMap<Self::Name, Self::Type>,
+        values: &AHashMap<Self::Name, Self::Value>,
     ) -> Self::AnonMethodSigs;
     fn find_method_own_comptime_type_param(
         &self,
@@ -560,9 +710,9 @@ pub(crate) trait ComptimeHost {
     fn find_or_create_anon_struct(
         &mut self,
         identity: super::anon_structs::IssuedAnonymousNominalKey,
-        fields: &[ComptimeField<Self::Type>],
+        fields: &[ComptimeField<Self::Name, Self::Type>],
         sigs: &Self::AnonMethodSigs,
-        captured: &AHashMap<Spur, Self::Value>,
+        captured: &AHashMap<Self::Name, Self::Value>,
     ) -> CompileResult<(Self::Type, bool)>;
     fn find_or_create_anon_enum(
         &mut self,
@@ -571,12 +721,12 @@ pub(crate) trait ComptimeHost {
         payloads: &[Vec<Self::Type>],
     ) -> CompileResult<Self::Type>;
     fn anonymous_struct_id(&self, ty: &Self::Type) -> Option<Self::AnonymousStructId>;
-    fn has_method(&self, key: &Self::AnonymousStructId, method: Spur) -> bool;
+    fn has_method(&self, key: &Self::AnonymousStructId, method: Self::Name) -> bool;
     fn check_unqualified_visibility(
         &self,
         item_kind: &str,
-        name: &str,
-        defining_file_id: FileId,
+        name: &Self::Name,
+        defining_file_id: Self::File,
         is_pub: bool,
         span: Span,
     ) -> CompileResult<()>;
@@ -588,7 +738,7 @@ pub(crate) trait ComptimeHost {
     fn record_named_type_dependency(&mut self, ty: &Self::Type);
     fn const_expr_type(
         &self,
-        env: &ComptimeEnv<'_, Self::Value, Self::Type>,
+        env: &ComptimeEnv<'_, Self::Value, Self::Type, Self::Name, Self::File>,
         inst_ref: InstRef,
     ) -> Option<Self::Type>;
     fn finish_arith(
@@ -600,60 +750,65 @@ pub(crate) trait ComptimeHost {
     ) -> CompileResult<Option<Self::Value>>;
     fn resolve_named_type_value(
         &mut self,
-        _name: Spur,
+        _name: Self::Name,
         span: Span,
     ) -> CompileResult<Option<Self::Type>>;
     fn resolve_comptime_type_path(
         &mut self,
-        file: FileId,
-        segments: &[Spur],
+        file: Self::File,
+        segments: &[Self::Name],
         span: Span,
     ) -> CompileResult<Option<Self::Value>>;
     fn resolve_module_comptime_callable(
         &mut self,
-        file_id: FileId,
-        segments: &[Spur],
-        method: Spur,
+        file_id: Self::File,
+        segments: &[Self::Name],
+        method: Self::Name,
         span: Span,
-    ) -> CompileResult<Option<Spur>>;
+    ) -> CompileResult<Option<Self::Name>>;
     fn admit_comptime_call(
         &mut self,
-        name: Spur,
+        name: Self::Name,
         arg_count: usize,
         arg_modes: &[ComptimeArgMode],
-        env: &mut ComptimeEnv<'_, Self::Value, Self::Type>,
+        env: &mut ComptimeEnv<'_, Self::Value, Self::Type, Self::Name, Self::File>,
         name_is_resolved_key: bool,
-    ) -> CompileResult<Option<ComptimeCallAdmission<Self::CallAdmission>>>;
+    ) -> CompileResult<Option<ComptimeCallAdmission<Self::CallAdmission, Self::Name>>>;
     fn bind_comptime_call(
         &self,
-        admission: &ComptimeCallAdmission<Self::CallAdmission>,
+        admission: &ComptimeCallAdmission<Self::CallAdmission, Self::Name>,
         values: &[Self::Value],
         span: Span,
-    ) -> CompileResult<Option<(AHashMap<Spur, Self::Type>, AHashMap<Spur, Self::Value>)>>;
+    ) -> CompileResult<
+        Option<(
+            AHashMap<Self::Name, Self::Type>,
+            AHashMap<Self::Name, Self::Value>,
+        )>,
+    >;
     fn prepare_local_comptime_call(
         &mut self,
-        admission: ComptimeCallAdmission<Self::CallAdmission>,
-        types: AHashMap<Spur, Self::Type>,
-        values: AHashMap<Spur, Self::Value>,
+        admission: ComptimeCallAdmission<Self::CallAdmission, Self::Name>,
+        types: AHashMap<Self::Name, Self::Type>,
+        values: AHashMap<Self::Name, Self::Value>,
         span: Span,
-    ) -> CompileResult<Option<PreparedComptimeCall<Self::Value, Self::Type>>>;
+    ) -> CompileResult<Option<PreparedComptimeCall<Self::Value, Self::Type, Self::Name, Self::File>>>;
     fn finish_comptime_call(
         &mut self,
-        plan: &PreparedComptimeCall<Self::Value, Self::Type>,
+        plan: &PreparedComptimeCall<Self::Value, Self::Type, Self::Name, Self::File>,
         result: CompileResult<Option<Self::Value>>,
     ) -> CompileResult<Option<Self::Value>>;
     fn label_ctor_instantiation_site(error: CompileError, call_span: Span) -> CompileError;
     fn canonical_function_producer(
         &self,
-        name: Spur,
-        types: &AHashMap<Spur, Self::Type>,
-        values: &AHashMap<Spur, Self::Value>,
+        name: Self::Name,
+        types: &AHashMap<Self::Name, Self::Type>,
+        values: &AHashMap<Self::Name, Self::Value>,
     ) -> Result<super::anon_structs::IssuedStableProducerId, crate::SemanticBodyExportFailure>;
     fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
         &mut self,
         syntax: rue_rir::RirTypeSyntaxRef,
-        types: &AHashMap<Spur, Self::Type>,
-        values: &AHashMap<Spur, Self::Value>,
+        types: &AHashMap<Self::Name, Self::Type>,
+        values: &AHashMap<Self::Name, Self::Value>,
         span: Span,
     ) -> Option<Self::Type>;
     fn register_anon_struct_methods_for_comptime_with_subst(
@@ -661,13 +816,13 @@ pub(crate) trait ComptimeHost {
         struct_id: &Self::AnonymousStructId,
         struct_type: Self::Type,
         methods: &rue_rir::RirAnonStructMethodsRange,
-        types: &AHashMap<Spur, Self::Type>,
-        values: &AHashMap<Spur, Self::Value>,
+        types: &AHashMap<Self::Name, Self::Type>,
+        values: &AHashMap<Self::Name, Self::Value>,
     ) -> Option<()>;
     fn set_anon_struct_type_subst(
         &mut self,
         struct_id: &Self::AnonymousStructId,
-        subst: AHashMap<Spur, Self::Type>,
+        subst: AHashMap<Self::Name, Self::Type>,
     );
 }
 
@@ -684,10 +839,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         }
     }
 
+    fn name_from_rir(&self, symbol: SymbolHandle) -> H::Name {
+        self.host.name_from_symbol(symbol)
+    }
+
     pub(crate) fn evaluate(
         &mut self,
         inst_ref: InstRef,
-        env: &mut ComptimeEnv<'_, H::Value, H::Type>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File>,
     ) -> CompileResult<Option<H::Value>> {
         self.eval(inst_ref, env)
     }
@@ -697,9 +856,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     /// stay in this engine.
     fn evaluate_call(
         &mut self,
-        name: Spur,
+        name: H::Name,
         args: &rue_rir::RirCallArgsRange,
-        env: &mut ComptimeEnv<'_, H::Value, H::Type>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File>,
         span: Span,
     ) -> CompileResult<Option<H::Value>> {
         let args = self.host.program_rir().call_args(args).to_vec();
@@ -726,7 +885,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             return Ok(None);
         };
         if let Some(result) = self.host.reduce_external_comptime_call(
-            admission.name,
+            admission.name.clone(),
             &callee_types,
             &callee_values,
             span,
@@ -744,7 +903,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
     fn enter_call(
         &mut self,
-        plan: PreparedComptimeCall<H::Value, H::Type>,
+        plan: PreparedComptimeCall<H::Value, H::Type, H::Name, H::File>,
         call_span: Span,
     ) -> CompileResult<Option<H::Value>> {
         self.run_prepared(plan, call_span)
@@ -752,7 +911,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
     pub(crate) fn evaluate_prepared_root(
         &mut self,
-        plan: PreparedComptimeCall<H::Value, H::Type>,
+        plan: PreparedComptimeCall<H::Value, H::Type, H::Name, H::File>,
     ) -> CompileResult<Option<H::Value>> {
         let span = plan.span;
         // Direct type-constructor reductions are calls in the language model;
@@ -764,7 +923,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
     fn run_prepared(
         &mut self,
-        plan: PreparedComptimeCall<H::Value, H::Type>,
+        plan: PreparedComptimeCall<H::Value, H::Type, H::Name, H::File>,
         call_span: Span,
     ) -> CompileResult<Option<H::Value>> {
         if self.call_depth >= MAX_COMPTIME_CALL_DEPTH {
@@ -775,7 +934,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                          is a comptime-recursive function missing a compile-time-known \
                          base case, or a generic function recursively instantiating \
                          itself with new types?",
-                        self.host.body_interner().resolve(&plan.name),
+                        self.host.display_name(&plan.name),
                         MAX_COMPTIME_CALL_DEPTH
                     ),
                 },
@@ -784,7 +943,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         }
         let canonical_identity = self
             .host
-            .canonical_function_producer(plan.name, &plan.callee_types, &plan.callee_values)
+            .canonical_function_producer(plan.name.clone(), &plan.callee_types, &plan.callee_values)
             .map_err(|failure| {
                 CompileError::new(
                     ErrorKind::InternalError(format!(
@@ -797,7 +956,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let mut child_env = ComptimeEnv::with_subst(&plan.callee_types, &plan.callee_values);
         child_env.producer = Some(body);
         child_env.canonical_identity = Some(canonical_identity);
-        child_env.defining_file = Some(plan.file);
+        child_env.defining_file = Some(plan.file.clone());
         self.call_depth += 1;
         let result = self.eval(body, &mut child_env);
         self.call_depth -= 1;
@@ -808,9 +967,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     fn evaluate_method_call(
         &mut self,
         receiver: InstRef,
-        method: Spur,
+        method: H::Name,
         args: &rue_rir::RirCallArgsRange,
-        env: &mut ComptimeEnv<'_, H::Value, H::Type>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File>,
         span: Span,
     ) -> CompileResult<Option<H::Value>> {
         let args = self.host.program_rir().call_args(args).to_vec();
@@ -846,7 +1005,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             return Ok(None);
         };
         if let Some(result) = self.host.reduce_external_comptime_call(
-            admission.name,
+            admission.name.clone(),
             &callee_types,
             &callee_values,
             span,
@@ -869,15 +1028,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     fn decode_module_path(
         &self,
         receiver: InstRef,
-        env: &ComptimeEnv<'_, H::Value, H::Type>,
-    ) -> CompileResult<Option<(FileId, Vec<Spur>)>> {
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File>,
+    ) -> CompileResult<Option<(H::File, Vec<H::Name>)>> {
         let mut chain_rev = Vec::new();
         let mut cursor = receiver;
         let root = loop {
             match self.host.program_rir().get(cursor).data {
-                InstData::VarRef { name, .. } => break name,
+                InstData::VarRef { name, .. } => break self.name_from_rir(name.into()),
                 InstData::FieldGet { base, field } => {
-                    chain_rev.push(field);
+                    chain_rev.push(self.name_from_rir(field.into()));
                     cursor = base;
                 }
                 _ => return Ok(None),
@@ -891,7 +1050,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         {
             return Ok(None);
         }
-        let Some(file_id) = env.defining_file else {
+        let Some(file_id) = env.defining_file.clone() else {
             return Ok(None);
         };
         chain_rev.reverse();
@@ -908,15 +1067,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     fn decode_type_path(
         &self,
         inst_ref: InstRef,
-        env: &ComptimeEnv<'_, H::Value, H::Type>,
-    ) -> CompileResult<Option<(FileId, Vec<Spur>)>> {
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File>,
+    ) -> CompileResult<Option<(H::File, Vec<H::Name>)>> {
         let mut chain_rev = Vec::new();
         let mut cursor = inst_ref;
         let root = loop {
             match self.host.program_rir().get(cursor).data {
-                InstData::VarRef { name, .. } => break name,
+                InstData::VarRef { name, .. } => break self.name_from_rir(name.into()),
                 InstData::FieldGet { base, field } => {
-                    chain_rev.push(field);
+                    chain_rev.push(self.name_from_rir(field.into()));
                     cursor = base;
                 }
                 _ => return Ok(None),
@@ -930,7 +1089,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         {
             return Ok(None);
         }
-        let Some(file_id) = env.defining_file else {
+        let Some(file_id) = env.defining_file.clone() else {
             return Ok(None);
         };
         chain_rev.reverse();
@@ -944,7 +1103,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         &mut self,
         lhs: InstRef,
         rhs: InstRef,
-        env: &mut ComptimeEnv<'_, H::Value, H::Type>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File>,
     ) -> CompileResult<Option<(i128, i128)>> {
         let Some(l) = self.eval(lhs, env)?.and_then(|v| v.as_integer()) else {
             return Ok(None);
@@ -960,7 +1119,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     fn eval(
         &mut self,
         inst_ref: InstRef,
-        env: &mut ComptimeEnv<'_, H::Value, H::Type>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File>,
     ) -> CompileResult<Option<H::Value>> {
         let inst = {
             let source = self.host.program_rir().get(inst_ref);
@@ -1335,7 +1494,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     let value = if let InstData::Alloc { name, init, .. } =
                         &self.host.program_rir().get(stmt_ref).data
                     {
-                        let (name, init) = (*name, *init);
+                        let name = name.map(|name| self.name_from_rir(name.into()));
+                        let init = *init;
                         let Some(v) = self.eval(init, env)? else {
                             env.locals = saved_locals;
                             return Ok(None);
@@ -1425,7 +1585,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
                 let mut struct_fields = Vec::with_capacity(field_decls.len());
                 for (name_sym, type_sym) in field_decls {
-                    let name_str = self.host.body_interner().resolve(&name_sym).to_string();
+                    let field_name = self.name_from_rir(name_sym.into());
                     // Field types resolve through both the type substitution
                     // (`comptime T: type`) and the value substitution
                     // (`comptime N: i32`, so an `[i32; N]` field gets a concrete
@@ -1442,7 +1602,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         return Ok(None);
                     };
                     struct_fields.push(ComptimeField {
-                        name: name_str,
+                        name: field_name,
                         ty: field_ty,
                     });
                 }
@@ -1510,7 +1670,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         name: method_name, ..
                     } = &first_method_inst.data
                     {
-                        let needs_registration = !self.host.has_method(&struct_id, *method_name);
+                        let needs_registration = !self
+                            .host
+                            .has_method(&struct_id, self.name_from_rir((*method_name).into()));
 
                         if needs_registration
                             && self
@@ -1555,7 +1717,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 payloads,
                 anchor,
             } => {
-                let variant_syms: Vec<lasso::Spur> = self
+                let variant_syms = self
                     .host
                     .program_rir()
                     .anon_enum_variants(variants)
@@ -1578,7 +1740,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let mut variant_payloads: Vec<Vec<H::Type>> =
                     Vec::with_capacity(variant_syms.len());
                 for (&vsym, symbols) in variant_syms.iter().zip(payload_symbols) {
-                    variant_names.push(self.host.body_interner().resolve(&vsym).to_string());
+                    variant_names.push(self.host.display_name(&self.name_from_rir(vsym.into())));
                     let mut tys: Vec<H::Type> = Vec::with_capacity(symbols.len());
                     for ty_sym in symbols {
                         let Some(ty) = self
@@ -1662,7 +1824,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let len = match count {
                     RepeatCount::Literal(n) => n,
                     RepeatCount::Named(sym) => {
-                        let name = self.host.body_interner().resolve(&sym).to_string();
+                        let name = self.host.display_name(&self.name_from_rir(sym.into()));
                         match self.host.resolve_array_length(
                             &ArrayLen::Named(name),
                             span,
@@ -1680,28 +1842,29 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // VarRef: comptime let-bindings, comptime parameters, file-level
             // constants, then type names.
             InstData::VarRef { name, .. } => {
+                let name = self.name_from_rir((*name).into());
                 // 1. `let` bindings inside the comptime expression
-                if let Some(v) = env.locals.get(name) {
+                if let Some(v) = env.locals.get(&name) {
                     return Ok(Some(v.clone()));
                 }
                 // 2. Runtime locals shadow comptime parameters and file-level
                 //    constants: a reference that resolves to one is not
                 //    compile-time evaluable (spec 4.14:6).
-                if env.runtime_local_names.contains(name) {
+                if env.runtime_local_names.contains(&name) {
                     return Ok(None);
                 }
                 // 3. Comptime type parameters in scope
-                if let Some(ty) = env.type_subst.get(name) {
+                if let Some(ty) = env.type_subst.get(&name) {
                     return Ok(Some(H::Value::type_value(ty.clone())));
                 }
                 // 4. Comptime value parameters in scope
-                if let Some(v) = env.value_subst.get(name) {
+                if let Some(v) = env.value_subst.get(&name) {
                     return Ok(Some(v.clone()));
                 }
                 // 5. Runtime parameters shadow file-level constants and type
                 //    names. A comptime parameter with a concrete value was
                 //    already handled by the substitution maps above.
-                if env.runtime_binding_names.contains(name) {
+                if env.runtime_binding_names.contains(&name) {
                     return Ok(None);
                 }
                 // 6. File-level constants: the value was evaluated once
@@ -1718,17 +1881,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 //    VarRef's own span locates the referencing file;
                 //    speculative callers (`try_evaluate_const*`) swallow the
                 //    error and defer to runtime analysis, which re-checks.
-                if let Some(info) = self.host.value_const(&(span.file_id, *name)) {
-                    self.host.record_body_named_dependency(
-                        super::NamedConstDependencyTargetEvent::ValueConst {
-                            file: info.span.file_id.index(),
-                            name: self.host.body_interner().resolve(name).to_string(),
-                        },
-                    );
+                let file = self.host.file_from_span(&span);
+                if let Some(info) = self.host.value_const(&(file.clone(), name.clone())) {
+                    let defining_file = self.host.file_from_span(&info.span);
+                    self.host
+                        .record_value_const_dependency(&defining_file, &name);
                     self.host.check_unqualified_visibility(
                         "constant",
-                        self.host.body_interner().resolve(name),
-                        info.span.file_id,
+                        &name,
+                        defining_file,
                         info.is_pub,
                         span,
                     )?;
@@ -1742,7 +1903,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 }
                 // 7. Type names used as values (e.g. `Point` in
                 //    `fn make_type() -> type { Point }`)
-                let resolved = self.host.resolve_named_type_value(*name, span)?;
+                let resolved = self.host.resolve_named_type_value(name, span)?;
                 if let Some(ref ty) = resolved {
                     self.host.record_named_type_dependency(&ty);
                 }
@@ -1756,7 +1917,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // (`fn Alias() -> type { Point() }`), a nested argument
             // (`WrapA(WrapA(i32))`), and chains thereof (RUE-251).
             InstData::Call { name, args } => {
-                let name = *name;
+                let name = self.name_from_rir((*name).into());
                 self.evaluate_call(name, args, env, span)
             }
 
@@ -1797,7 +1958,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // not layout, so they evaluate to their integer bound (RUE-694).
             InstData::TypeIntrinsic { name, type_arg } => {
                 let (name, type_arg) = (*name, *type_arg);
-                let gate = self.host.body_interner().resolve(&name);
+                let gate_name = self.name_from_rir(name.into());
+                let gate = self.host.display_name(&gate_name);
                 // Both well-formedness gates reduce to unit at comptime:
                 // `@require_droppable` (instantiation-time, rejects `linear`) and
                 // `@require_trivially_droppable` (read-time, rejects drop glue —
@@ -1872,7 +2034,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 method,
                 args,
             } => {
-                let (receiver, method) = (*receiver, *method);
+                let receiver = *receiver;
+                let method = self.name_from_rir((*method).into());
                 self.evaluate_method_call(receiver, method, args, env, span)
             }
 
