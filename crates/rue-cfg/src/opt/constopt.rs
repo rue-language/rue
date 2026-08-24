@@ -132,11 +132,11 @@ pub fn run(cfg: &mut Cfg) -> Stats {
                         record_write(&mut slot_writes, slot, None);
                     }
                 }
-                // By-ref call arguments pass the ADDRESS of the argument
-                // place: the callee may write through it (inout), and the
-                // by-ref lowering needs the arg to remain a Load/PlaceRead.
-                // Disqualify any local the argument is rooted at.
-                CfgInstData::Call { args, .. } => {
+                // By-ref arguments on either call form pass the ADDRESS of
+                // the argument place: the callee may write through it
+                // (inout), and lowering needs the arg to remain a
+                // Load/PlaceRead. Disqualify any local the argument roots.
+                CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
                     for arg in cfg.call_args(args) {
                         if !arg.is_by_ref() {
                             continue;
@@ -475,6 +475,48 @@ mod tests {
             &mut cfg,
             CfgInstData::Call {
                 runtime: None,
+                name: Spur::try_from_usize(0).unwrap(),
+                args,
+            },
+            Type::UNIT,
+        );
+        let load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(load) });
+
+        let stats = run(&mut cfg);
+        assert_eq!(stats.loads_rewritten, 0);
+        assert!(matches!(
+            cfg.get_inst(arg_load).data,
+            CfgInstData::Load { slot: 0 }
+        ));
+        assert!(matches!(
+            cfg.get_inst(load).data,
+            CfgInstData::Load { slot: 0 }
+        ));
+    }
+
+    #[test]
+    fn test_byref_accessor_call_arg_disqualifies_slot() {
+        // An accessor can write through a by-ref argument too, so constant
+        // propagation must not substitute either the place argument or a
+        // later load with the pre-accessor constant.
+        let mut cfg = make_cfg(1);
+        let c = push(&mut cfg, CfgInstData::Const(5), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc { slot: 0, init: c },
+            Type::UNIT,
+        );
+        let arg_load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        let args = cfg
+            .push_call_args([CfgCallArg {
+                value: arg_load,
+                mode: CfgArgMode::Inout,
+            }])
+            .unwrap();
+        push(
+            &mut cfg,
+            CfgInstData::AccessorCall {
                 name: Spur::try_from_usize(0).unwrap(),
                 args,
             },
