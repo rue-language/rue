@@ -57,8 +57,8 @@ use rue_span::{FileId, Span};
 use super::comptime::{
     ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallPreparation,
     ComptimeConstInfo, ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile,
-    ComptimeFrame, ComptimeHost, ComptimeIdentity, ComptimeName, ComptimeOutcome,
-    ComptimeStructuredTypeResolution, ComptimeTrap, ComptimeType,
+    ComptimeFrame, ComptimeHost, ComptimeHostResult, ComptimeIdentity, ComptimeName,
+    ComptimeOutcome, ComptimeStructuredTypeResolution, ComptimeTrap, ComptimeType,
 };
 use super::context::{AnalysisContext, ConstValue};
 use super::info::FunctionCallInfo;
@@ -1105,7 +1105,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             callee_types.clone(),
             callee_values.clone(),
             span,
-        )?;
+        )
+        .map_err(super::comptime::ComptimeHostError::into_failure)?;
         let Some(preparation) = preparation else {
             return Ok(None);
         };
@@ -1800,8 +1801,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     fn value_const(
         &self,
         key: &(Self::File, Self::Name),
-    ) -> Option<ComptimeConstInfo<Self::Value>> {
-        let info = OrdinaryBodyEngine::value_const(self, key)?;
+    ) -> ComptimeHostResult<Option<ComptimeConstInfo<Self::Value>>, Self::Failure> {
+        let Some(info) = OrdinaryBodyEngine::value_const(self, key) else {
+            return Ok(None);
+        };
         let value = match info.value {
             ConstValue::Integer(value) => Some(ConstValue::Integer(value)),
             ConstValue::Bool(value) => Some(ConstValue::Bool(value)),
@@ -1809,11 +1812,11 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
             ConstValue::Type(value) => Some(ConstValue::Type(value)),
             _ => None,
         };
-        Some(ComptimeConstInfo {
+        Ok(Some(ComptimeConstInfo {
             is_pub: info.is_pub,
             span: info.span,
             value,
-        })
+        }))
     }
     fn match_pattern(
         &self,
@@ -1828,8 +1831,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         feature: rue_error::PreviewFeature,
         what: &str,
         span: Span,
-    ) -> CompileResult<()> {
-        OrdinaryBodyEngine::require_preview(self, feature, what, span)
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        OrdinaryBodyEngine::require_preview(self, feature, what, span).map_err(Into::into)
     }
     fn depth_exceeded(&self, name: &Spur, depth: usize, span: Span) -> Self::Failure {
         CompileError::new(
@@ -1898,9 +1901,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         name: &Spur,
         span: Span,
         values: Option<&AHashMap<Spur, ConstValue>>,
-    ) -> CompileResult<u64> {
+    ) -> ComptimeHostResult<u64, Self::Failure> {
         let name = self.body_interner().resolve(name).to_owned();
         OrdinaryBodyEngine::resolve_array_length(self, &ArrayLen::Named(name), span, values)
+            .map_err(Into::into)
     }
     fn rir_type_named_symbol(
         &self,
@@ -1920,8 +1924,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         methods: &rue_rir::RirAnonStructMethodsRange,
         types: &AHashMap<Spur, Type>,
         values: &AHashMap<Spur, ConstValue>,
-    ) -> Vec<super::AnonMethodSig> {
-        OrdinaryBodyEngine::extract_anon_method_sigs(self, methods, types, values)
+    ) -> ComptimeHostResult<Vec<super::AnonMethodSig>, Self::Failure> {
+        Ok(OrdinaryBodyEngine::extract_anon_method_sigs(
+            self, methods, types, values,
+        ))
     }
     fn find_method_own_comptime_type_param(
         &self,
@@ -1936,7 +1942,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         fields: &[super::comptime::ComptimeField<Spur, Type>],
         sigs: &Vec<super::AnonMethodSig>,
         captured: &AHashMap<Spur, ConstValue>,
-    ) -> CompileResult<(Type, bool)> {
+    ) -> ComptimeHostResult<(Type, bool), Self::Failure> {
         let fields: Vec<StructField> = fields
             .iter()
             .map(|field| StructField {
@@ -1945,14 +1951,16 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
             })
             .collect();
         OrdinaryBodyEngine::find_or_create_anon_struct(self, identity, &fields, sigs, captured)
+            .map_err(Into::into)
     }
     fn find_or_create_anon_enum(
         &mut self,
         identity: Self::AnonymousIdentity,
         names: &[String],
         payloads: &[Vec<Type>],
-    ) -> CompileResult<Type> {
+    ) -> ComptimeHostResult<Type, Self::Failure> {
         OrdinaryBodyEngine::find_or_create_anon_enum(self, identity, names, payloads)
+            .map_err(Into::into)
     }
     fn anonymous_struct_id(&self, ty: &Type) -> Option<crate::types::StructId> {
         ty.as_struct()
@@ -1967,15 +1975,24 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         file: FileId,
         is_pub: bool,
         span: Span,
-    ) -> CompileResult<()> {
+    ) -> ComptimeHostResult<(), Self::Failure> {
         let name = self.body_interner().resolve(name).to_owned();
         OrdinaryBodyEngine::check_unqualified_visibility(self, kind, &name, file, is_pub, span)
+            .map_err(Into::into)
     }
-    fn check_require_droppable(&mut self, ty: Type, span: Span) -> CompileResult<()> {
-        OrdinaryBodyEngine::check_require_droppable(self, ty, span)
+    fn check_require_droppable(
+        &mut self,
+        ty: Type,
+        span: Span,
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        OrdinaryBodyEngine::check_require_droppable(self, ty, span).map_err(Into::into)
     }
-    fn check_trivially_droppable(&mut self, ty: Type, span: Span) -> CompileResult<()> {
-        OrdinaryBodyEngine::check_trivially_droppable(self, ty, span)
+    fn check_trivially_droppable(
+        &mut self,
+        ty: Type,
+        span: Span,
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        OrdinaryBodyEngine::check_trivially_droppable(self, ty, span).map_err(Into::into)
     }
     fn const_expr_type(
         &self,
@@ -2031,19 +2048,24 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         ty: Option<Type>,
         op: &str,
         span: Span,
-    ) -> CompileResult<Option<ConstValue>> {
-        OrdinaryBodyEngine::finish_arith(self, result, ty, op, span)
+    ) -> ComptimeHostResult<Option<ConstValue>, Self::Failure> {
+        OrdinaryBodyEngine::finish_arith(self, result, ty, op, span).map_err(Into::into)
     }
-    fn resolve_named_type_value(&mut self, name: Spur, span: Span) -> CompileResult<Option<Type>> {
-        OrdinaryBodyEngine::resolve_named_type_value(self, name, span)
+    fn resolve_named_type_value(
+        &mut self,
+        name: Spur,
+        span: Span,
+    ) -> ComptimeHostResult<Option<Type>, Self::Failure> {
+        OrdinaryBodyEngine::resolve_named_type_value(self, name, span).map_err(Into::into)
     }
     fn resolve_comptime_type_path(
         &mut self,
         file: FileId,
         segments: &[Spur],
         span: Span,
-    ) -> CompileResult<Option<ConstValue>> {
+    ) -> ComptimeHostResult<Option<ConstValue>, Self::Failure> {
         OrdinaryBodyEngine::resolve_comptime_type_path(self, file, segments, span)
+            .map_err(Into::into)
     }
     fn resolve_module_comptime_callable(
         &mut self,
@@ -2051,8 +2073,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         segments: &[Spur],
         method: Spur,
         span: Span,
-    ) -> CompileResult<Option<Spur>> {
+    ) -> ComptimeHostResult<Option<Spur>, Self::Failure> {
         OrdinaryBodyEngine::resolve_module_comptime_callable(self, file, segments, method, span)
+            .map_err(Into::into)
     }
     fn admit_comptime_call(
         &mut self,
@@ -2061,16 +2084,19 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         modes: &[ComptimeArgMode],
         env: &mut ComptimeEnv<'_>,
         resolved: bool,
-    ) -> CompileResult<Option<ComptimeCallAdmission<FunctionCallInfo, Spur>>> {
+    ) -> ComptimeHostResult<Option<ComptimeCallAdmission<FunctionCallInfo, Spur>>, Self::Failure>
+    {
         OrdinaryBodyEngine::admit_comptime_call(self, name, count, modes, env, resolved)
+            .map_err(Into::into)
     }
     fn bind_comptime_call(
         &self,
         admission: &ComptimeCallAdmission<FunctionCallInfo, Spur>,
         values: &[ConstValue],
         span: Span,
-    ) -> CompileResult<Option<(AHashMap<Spur, Type>, AHashMap<Spur, ConstValue>)>> {
-        OrdinaryBodyEngine::bind_comptime_call(self, admission, values, span)
+    ) -> ComptimeHostResult<Option<(AHashMap<Spur, Type>, AHashMap<Spur, ConstValue>)>, Self::Failure>
+    {
+        OrdinaryBodyEngine::bind_comptime_call(self, admission, values, span).map_err(Into::into)
     }
     fn prepare_comptime_call(
         &mut self,
@@ -2078,7 +2104,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         types: AHashMap<Spur, Type>,
         values: AHashMap<Spur, ConstValue>,
         span: Span,
-    ) -> CompileResult<
+    ) -> ComptimeHostResult<
         Option<
             ComptimeCallPreparation<
                 ConstValue,
@@ -2090,6 +2116,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
                 CompileError,
             >,
         >,
+        Self::Failure,
     > {
         if let Some(result) = OrdinaryBodyEngine::reduce_external_comptime_call(
             self,
@@ -2098,14 +2125,17 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
             &values,
             span,
         ) {
-            return result.map(|result| {
-                Some(ComptimeCallPreparation::Memoized(match result {
-                    Some(value) => ComptimeOutcome::Known(value),
-                    None => ComptimeOutcome::RuntimeDependent,
-                }))
-            });
+            return result
+                .map(|result| {
+                    Some(ComptimeCallPreparation::Memoized(match result {
+                        Some(value) => ComptimeOutcome::Known(value),
+                        None => ComptimeOutcome::RuntimeDependent,
+                    }))
+                })
+                .map_err(Into::into);
         }
         OrdinaryBodyEngine::prepare_comptime_call(self, admission, types, values, span)
+            .map_err(Into::into)
     }
     fn finish_comptime_call(
         &mut self,
@@ -2123,17 +2153,17 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         types: &AHashMap<Spur, Type>,
         values: &AHashMap<Spur, ConstValue>,
         span: Span,
-    ) -> Result<Self::CanonicalIdentity, Self::Failure> {
-        OrdinaryBodyEngine::canonical_function_producer(self, name, types, values).map_err(
-            |failure| {
+    ) -> ComptimeHostResult<Self::CanonicalIdentity, Self::Failure> {
+        OrdinaryBodyEngine::canonical_function_producer(self, name, types, values)
+            .map_err(|failure| {
                 CompileError::new(
                     ErrorKind::InternalError(format!(
                         "failed to issue canonical comptime producer: {failure:?}"
                     )),
                     span,
                 )
-            },
-        )
+            })
+            .map_err(Into::into)
     }
     fn issue_anonymous_identity(
         &self,

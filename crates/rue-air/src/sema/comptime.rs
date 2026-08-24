@@ -448,6 +448,10 @@ mod value_domain_tests {
     use rue_rir::{Inst, RirEditor, RirValidationContext};
     use std::cell::Cell;
 
+    thread_local! {
+        static LABEL_CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+
     #[derive(Clone, Debug, PartialEq)]
     enum FakeValue {
         Integer(i128),
@@ -550,6 +554,8 @@ mod value_domain_tests {
         Trap,
         HostFailure,
         Abort,
+        AbortFromPrepare,
+        AbortFromArithmetic,
     }
 
     #[derive(Clone, Copy)]
@@ -627,11 +633,12 @@ mod value_domain_tests {
         fn value_const(
             &self,
             key: &(Self::File, Self::Name),
-        ) -> Option<ComptimeConstInfo<Self::Value>> {
-            self.constant
+        ) -> ComptimeHostResult<Option<ComptimeConstInfo<Self::Value>>, Self::Failure> {
+            Ok(self
+                .constant
                 .as_ref()
                 .filter(|(file, name, _)| *file == key.0 && *name == key.1)
-                .map(|(_, _, info)| info.clone())
+                .map(|(_, _, info)| info.clone()))
         }
         fn match_pattern(
             &self,
@@ -646,7 +653,7 @@ mod value_domain_tests {
             _feature: rue_error::PreviewFeature,
             _what: &str,
             _span: Span,
-        ) -> Result<(), Self::Failure> {
+        ) -> ComptimeHostResult<(), Self::Failure> {
             Ok(())
         }
         fn depth_exceeded(&self, _name: &Self::Name, _depth: usize, _span: Span) -> Self::Failure {
@@ -685,7 +692,7 @@ mod value_domain_tests {
             _name: &Self::Name,
             _span: Span,
             _values: Option<&AHashMap<Self::Name, Self::Value>>,
-        ) -> Result<u64, Self::Failure> {
+        ) -> ComptimeHostResult<u64, Self::Failure> {
             Ok(0)
         }
         fn rir_type_named_symbol(
@@ -708,7 +715,7 @@ mod value_domain_tests {
             _methods: &rue_rir::RirAnonStructMethodsRange,
             _types: &AHashMap<Self::Name, Self::Type>,
             _values: &AHashMap<Self::Name, Self::Value>,
-        ) -> Self::AnonMethodSigs {
+        ) -> ComptimeHostResult<Self::AnonMethodSigs, Self::Failure> {
             panic!("fake host does not construct anonymous methods")
         }
         fn find_method_own_comptime_type_param(
@@ -724,7 +731,7 @@ mod value_domain_tests {
             _fields: &[ComptimeField<Self::Name, Self::Type>],
             _sigs: &Self::AnonMethodSigs,
             _captured: &AHashMap<Self::Name, Self::Value>,
-        ) -> Result<(Self::Type, bool), Self::Failure> {
+        ) -> ComptimeHostResult<(Self::Type, bool), Self::Failure> {
             panic!("fake host does not construct anonymous structs")
         }
         fn find_or_create_anon_enum(
@@ -732,7 +739,7 @@ mod value_domain_tests {
             _identity: Self::AnonymousIdentity,
             _names: &[String],
             _payloads: &[Vec<Self::Type>],
-        ) -> Result<Self::Type, Self::Failure> {
+        ) -> ComptimeHostResult<Self::Type, Self::Failure> {
             panic!("fake host does not construct anonymous enums")
         }
         fn anonymous_struct_id(&self, _ty: &Self::Type) -> Option<Self::AnonymousStructId> {
@@ -748,21 +755,21 @@ mod value_domain_tests {
             _defining_file_id: Self::File,
             _is_pub: bool,
             _span: Span,
-        ) -> Result<(), Self::Failure> {
+        ) -> ComptimeHostResult<(), Self::Failure> {
             Ok(())
         }
         fn check_require_droppable(
             &mut self,
             _ty: Self::Type,
             _span: Span,
-        ) -> Result<(), Self::Failure> {
+        ) -> ComptimeHostResult<(), Self::Failure> {
             Ok(())
         }
         fn check_trivially_droppable(
             &mut self,
             _ty: Self::Type,
             _span: Span,
-        ) -> Result<(), Self::Failure> {
+        ) -> ComptimeHostResult<(), Self::Failure> {
             Ok(())
         }
         fn const_expr_type(
@@ -779,10 +786,10 @@ mod value_domain_tests {
             lhs: &Self::Value,
             rhs: &Self::Value,
             _span: Span,
-        ) -> Result<Option<Self::Type>, Self::Failure> {
+        ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
             if let (Some(lhs), Some(rhs)) = (lhs.as_integer_type(), rhs.as_integer_type()) {
                 if lhs != rhs {
-                    return Err(FakeFailure);
+                    return Err(FakeFailure.into());
                 }
             }
             Ok(resolved_type
@@ -796,7 +803,10 @@ mod value_domain_tests {
             _ty: Option<Self::Type>,
             _op: &str,
             _span: Span,
-        ) -> Result<Option<Self::Value>, Self::Failure> {
+        ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
+            if matches!(self.finish_outcome, FakeFinishOutcome::AbortFromArithmetic) {
+                return Err(ComptimeHostError::Abort(FakeFailure));
+            }
             Ok(result.checked().map(FakeValue::integer))
         }
         fn type_name(&self, ty: &Self::Type) -> String {
@@ -813,7 +823,7 @@ mod value_domain_tests {
             &mut self,
             _name: Self::Name,
             _span: Span,
-        ) -> Result<Option<Self::Type>, Self::Failure> {
+        ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
             Ok(Some(FakeType(7)))
         }
         fn resolve_comptime_type_path(
@@ -821,7 +831,7 @@ mod value_domain_tests {
             _file: Self::File,
             _segments: &[Self::Name],
             _span: Span,
-        ) -> Result<Option<Self::Value>, Self::Failure> {
+        ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
             Ok(None)
         }
         fn resolve_module_comptime_callable(
@@ -830,7 +840,7 @@ mod value_domain_tests {
             _segments: &[Self::Name],
             _method: Self::Name,
             _span: Span,
-        ) -> Result<Option<Self::Name>, Self::Failure> {
+        ) -> ComptimeHostResult<Option<Self::Name>, Self::Failure> {
             Ok(None)
         }
         fn admit_comptime_call(
@@ -847,8 +857,10 @@ mod value_domain_tests {
                 FakeIdentity,
             >,
             _name_is_resolved_key: bool,
-        ) -> Result<Option<ComptimeCallAdmission<Self::CallAdmission, Self::Name>>, Self::Failure>
-        {
+        ) -> ComptimeHostResult<
+            Option<ComptimeCallAdmission<Self::CallAdmission, Self::Name>>,
+            Self::Failure,
+        > {
             Ok(Some(ComptimeCallAdmission { name, payload: () }))
         }
         fn bind_comptime_call(
@@ -856,7 +868,7 @@ mod value_domain_tests {
             _admission: &ComptimeCallAdmission<Self::CallAdmission, Self::Name>,
             _values: &[Self::Value],
             _span: Span,
-        ) -> Result<
+        ) -> ComptimeHostResult<
             Option<(
                 AHashMap<Self::Name, Self::Type>,
                 AHashMap<Self::Name, Self::Value>,
@@ -871,7 +883,7 @@ mod value_domain_tests {
             _types: AHashMap<Self::Name, Self::Type>,
             _values: AHashMap<Self::Name, Self::Value>,
             _span: Span,
-        ) -> Result<
+        ) -> ComptimeHostResult<
             Option<
                 ComptimeCallPreparation<
                     Self::Value,
@@ -885,6 +897,9 @@ mod value_domain_tests {
             >,
             Self::Failure,
         > {
+            if matches!(self.finish_outcome, FakeFinishOutcome::AbortFromPrepare) {
+                return Err(ComptimeHostError::Abort(FakeFailure));
+            }
             if let Some((max_enters, call_body, terminal_body, memoized_at)) = self.recursive {
                 if memoized_at == Some(self.enter_count) {
                     return Ok(Some(ComptimeCallPreparation::Memoized(
@@ -952,7 +967,9 @@ mod value_domain_tests {
         ) -> ComptimeOutcome<Self::Value, Self::Failure> {
             self.finished.push((frame.program, frame.expected_result));
             match self.finish_outcome {
-                FakeFinishOutcome::Identity => result,
+                FakeFinishOutcome::Identity
+                | FakeFinishOutcome::AbortFromPrepare
+                | FakeFinishOutcome::AbortFromArithmetic => result,
                 FakeFinishOutcome::Structured(_) => result,
                 FakeFinishOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
                 FakeFinishOutcome::NotReady => ComptimeOutcome::NotReady,
@@ -966,6 +983,7 @@ mod value_domain_tests {
             }
         }
         fn label_ctor_instantiation_site(error: Self::Failure, _call_span: Span) -> Self::Failure {
+            LABEL_CALLS.with(|calls| calls.set(calls.get() + 1));
             error
         }
         fn canonical_function_producer(
@@ -974,7 +992,7 @@ mod value_domain_tests {
             _types: &AHashMap<Self::Name, Self::Type>,
             _values: &AHashMap<Self::Name, Self::Value>,
             _span: Span,
-        ) -> Result<Self::CanonicalIdentity, Self::Failure> {
+        ) -> ComptimeHostResult<Self::CanonicalIdentity, Self::Failure> {
             Ok(FakeIdentity {
                 token: name.ordinal,
             })
@@ -1091,7 +1109,7 @@ mod value_domain_tests {
             &mut self,
             _name: Self::Name,
             _site: &ComptimeSite<Self::ProgramKey>,
-        ) -> Result<bool, Self::Failure> {
+        ) -> ComptimeHostResult<bool, Self::Failure> {
             Ok(self.admits_durable_forms())
         }
 
@@ -1100,7 +1118,7 @@ mod value_domain_tests {
             _type_name: Self::Name,
             _variant: Self::Name,
             _site: &ComptimeSite<Self::ProgramKey>,
-        ) -> Result<bool, Self::Failure> {
+        ) -> ComptimeHostResult<bool, Self::Failure> {
             Ok(self.admits_durable_forms())
         }
 
@@ -1108,7 +1126,7 @@ mod value_domain_tests {
             &mut self,
             _field: Self::Name,
             _site: &ComptimeSite<Self::ProgramKey>,
-        ) -> Result<bool, Self::Failure> {
+        ) -> ComptimeHostResult<bool, Self::Failure> {
             Ok(self.admits_durable_forms())
         }
 
@@ -2612,6 +2630,98 @@ mod value_domain_tests {
         assert!(host.finished.is_empty());
     }
 
+    #[test]
+    fn host_abort_channel_cleans_entered_frames_and_preserves_labels() {
+        let interner = lasso::ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("abort");
+        let symbol_handle = SymbolHandle::new(symbol);
+        let base = symbol_handle.issuing_interner_ordinal() as u32;
+
+        let mut root_editor = RirEditor::new();
+        let call = root_editor.add_call(symbol, &[], Span::new(0, 0)).unwrap();
+        let direct = root_editor.add_inst(Inst {
+            data: InstData::IntConst(9),
+            span: Span::new(0, 0),
+        });
+        let mut child_editor = RirEditor::new();
+        let lhs = child_editor.add_inst(Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(0, 0),
+        });
+        let rhs = child_editor.add_inst(Inst {
+            data: InstData::IntConst(3),
+            span: Span::new(0, 0),
+        });
+        let child_body = child_editor.add_inst(Inst {
+            data: InstData::Add { lhs, rhs },
+            span: Span::new(0, 0),
+        });
+
+        let mut host = FakeHost {
+            programs: vec![root_editor.finish(), child_editor.finish()],
+            type_symbol: symbol_handle,
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::from([(
+                base,
+                FakePreparedCall::Enter {
+                    program: 1,
+                    body: child_body,
+                    expected: Some(FakeType(7)),
+                    name_bindings: AHashMap::new(),
+                },
+            )]),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::AbortFromArithmetic,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        LABEL_CALLS.with(|calls| calls.set(0));
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let mut engine = ComptimeEngine::new(&mut host);
+        let aborted = engine.evaluate(ComptimeFrame::expression(0, call), &mut env);
+        assert!(matches!(aborted, ComptimeOutcome::Abort(FakeFailure)));
+        assert!(matches!(
+            engine.evaluate(ComptimeFrame::expression(0, direct), &mut env),
+            ComptimeOutcome::Known(FakeValue::Integer(9))
+        ));
+        drop(engine);
+        assert_eq!(host.finished, vec![(1, Some(FakeType(7)))]);
+        LABEL_CALLS.with(|calls| assert_eq!(calls.get(), 0));
+
+        let mut root_editor = RirEditor::new();
+        let call = root_editor.add_call(symbol, &[], Span::new(0, 0)).unwrap();
+        let direct = root_editor.add_inst(Inst {
+            data: InstData::IntConst(11),
+            span: Span::new(0, 0),
+        });
+        let mut host = FakeHost {
+            programs: vec![root_editor.finish()],
+            type_symbol: SymbolHandle::new(symbol),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::AbortFromPrepare,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let mut engine = ComptimeEngine::new(&mut host);
+        assert!(matches!(
+            engine.evaluate(ComptimeFrame::expression(0, call), &mut env),
+            ComptimeOutcome::Abort(FakeFailure)
+        ));
+        assert!(matches!(
+            engine.evaluate(ComptimeFrame::expression(0, direct), &mut env),
+            ComptimeOutcome::Known(FakeValue::Integer(11))
+        ));
+        drop(engine);
+        assert!(host.finished.is_empty());
+    }
+
     fn registry_program(value: u64) -> (Arc<ValidatedRir>, InstRef) {
         let mut editor = RirEditor::new();
         let root = editor.add_inst(Inst {
@@ -2923,9 +3033,37 @@ macro_rules! host_value {
     ($value:expr) => {
         match $value {
             Ok(value) => value,
-            Err(error) => return ComptimeOutcome::HostFailure(error),
+            Err(ComptimeHostError::HostFailure(error)) => {
+                return ComptimeOutcome::HostFailure(error)
+            }
+            Err(ComptimeHostError::Abort(error)) => return ComptimeOutcome::Abort(error),
         }
     };
+}
+
+/// Error classification for fallible semantic host operations. Ordinary host
+/// failures are distinct from query cancellation/abort so the engine can
+/// preserve aborts through entered frames and keep them out of memoization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComptimeHostError<F> {
+    HostFailure(F),
+    Abort(F),
+}
+
+pub type ComptimeHostResult<T, F> = Result<T, ComptimeHostError<F>>;
+
+impl<F> From<F> for ComptimeHostError<F> {
+    fn from(value: F) -> Self {
+        Self::HostFailure(value)
+    }
+}
+
+impl<F> ComptimeHostError<F> {
+    pub(crate) fn into_failure(self) -> F {
+        match self {
+            Self::HostFailure(error) | Self::Abort(error) => error,
+        }
+    }
 }
 
 /// Semantic host boundary for the canonical dispatcher. No method accepts an
@@ -2950,8 +3088,10 @@ pub trait ComptimeHost {
     fn name_from_symbol(&self, program: &Self::ProgramKey, symbol: SymbolHandle) -> Self::Name;
     fn display_name(&self, name: &Self::Name) -> String;
     fn file_from_span(&self, span: &Span) -> Self::File;
-    fn value_const(&self, key: &(Self::File, Self::Name))
-    -> Option<ComptimeConstInfo<Self::Value>>;
+    fn value_const(
+        &self,
+        key: &(Self::File, Self::Name),
+    ) -> ComptimeHostResult<Option<ComptimeConstInfo<Self::Value>>, Self::Failure>;
     fn match_pattern(
         &self,
         program: &Self::ProgramKey,
@@ -2963,7 +3103,7 @@ pub trait ComptimeHost {
         feature: rue_error::PreviewFeature,
         what: &str,
         span: Span,
-    ) -> Result<(), Self::Failure>;
+    ) -> ComptimeHostResult<(), Self::Failure>;
     fn depth_exceeded(&self, name: &Self::Name, depth: usize, span: Span) -> Self::Failure;
     fn literal_out_of_range(&self, value: u64, ty: &Self::Type, span: Span) -> Self::Failure;
     fn float_not_implemented(&self, span: Span) -> Self::Failure;
@@ -2980,7 +3120,7 @@ pub trait ComptimeHost {
         name: &Self::Name,
         span: Span,
         values: Option<&AHashMap<Self::Name, Self::Value>>,
-    ) -> Result<u64, Self::Failure>;
+    ) -> ComptimeHostResult<u64, Self::Failure>;
     fn rir_type_named_symbol(
         &self,
         program: &Self::ProgramKey,
@@ -2993,7 +3133,7 @@ pub trait ComptimeHost {
         methods: &rue_rir::RirAnonStructMethodsRange,
         types: &AHashMap<Self::Name, Self::Type>,
         values: &AHashMap<Self::Name, Self::Value>,
-    ) -> Self::AnonMethodSigs;
+    ) -> ComptimeHostResult<Self::AnonMethodSigs, Self::Failure>;
     fn find_method_own_comptime_type_param(
         &self,
         program: &Self::ProgramKey,
@@ -3005,13 +3145,13 @@ pub trait ComptimeHost {
         fields: &[ComptimeField<Self::Name, Self::Type>],
         sigs: &Self::AnonMethodSigs,
         captured: &AHashMap<Self::Name, Self::Value>,
-    ) -> Result<(Self::Type, bool), Self::Failure>;
+    ) -> ComptimeHostResult<(Self::Type, bool), Self::Failure>;
     fn find_or_create_anon_enum(
         &mut self,
         identity: Self::AnonymousIdentity,
         names: &[String],
         payloads: &[Vec<Self::Type>],
-    ) -> Result<Self::Type, Self::Failure>;
+    ) -> ComptimeHostResult<Self::Type, Self::Failure>;
     fn anonymous_struct_id(&self, ty: &Self::Type) -> Option<Self::AnonymousStructId>;
     fn has_method(&self, key: &Self::AnonymousStructId, method: Self::Name) -> bool;
     fn check_unqualified_visibility(
@@ -3021,13 +3161,17 @@ pub trait ComptimeHost {
         defining_file_id: Self::File,
         is_pub: bool,
         span: Span,
-    ) -> Result<(), Self::Failure>;
-    fn check_require_droppable(&mut self, ty: Self::Type, span: Span) -> Result<(), Self::Failure>;
+    ) -> ComptimeHostResult<(), Self::Failure>;
+    fn check_require_droppable(
+        &mut self,
+        ty: Self::Type,
+        span: Span,
+    ) -> ComptimeHostResult<(), Self::Failure>;
     fn check_trivially_droppable(
         &mut self,
         ty: Self::Type,
         span: Span,
-    ) -> Result<(), Self::Failure>;
+    ) -> ComptimeHostResult<(), Self::Failure>;
     fn type_name(&self, ty: &Self::Type) -> String;
     fn type_is_unsigned(&self, ty: &Self::Type) -> bool;
     fn type_integer_semantics(&self, ty: &Self::Type) -> Option<IntegerType>;
@@ -3055,7 +3199,7 @@ pub trait ComptimeHost {
         lhs: &Self::Value,
         rhs: &Self::Value,
         _span: Span,
-    ) -> Result<Option<Self::Type>, Self::Failure> {
+    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
         Ok(resolved_type
             .cloned()
             .or_else(|| lhs.as_integer_type())
@@ -3070,7 +3214,7 @@ pub trait ComptimeHost {
         resolved_type: Option<&Self::Type>,
         operand: &Self::Value,
         _span: Span,
-    ) -> Result<Option<Self::Type>, Self::Failure> {
+    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
         Ok(resolved_type.cloned().or_else(|| operand.as_integer_type()))
     }
 
@@ -3092,25 +3236,25 @@ pub trait ComptimeHost {
         ty: Option<Self::Type>,
         op: &str,
         span: Span,
-    ) -> Result<Option<Self::Value>, Self::Failure>;
+    ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure>;
     fn resolve_named_type_value(
         &mut self,
         _name: Self::Name,
         span: Span,
-    ) -> Result<Option<Self::Type>, Self::Failure>;
+    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure>;
     fn resolve_comptime_type_path(
         &mut self,
         file: Self::File,
         segments: &[Self::Name],
         span: Span,
-    ) -> Result<Option<Self::Value>, Self::Failure>;
+    ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure>;
     fn resolve_module_comptime_callable(
         &mut self,
         file_id: Self::File,
         segments: &[Self::Name],
         method: Self::Name,
         span: Span,
-    ) -> Result<Option<Self::Name>, Self::Failure>;
+    ) -> ComptimeHostResult<Option<Self::Name>, Self::Failure>;
     fn admit_comptime_call(
         &mut self,
         name: Self::Name,
@@ -3125,13 +3269,16 @@ pub trait ComptimeHost {
             Self::CanonicalIdentity,
         >,
         name_is_resolved_key: bool,
-    ) -> Result<Option<ComptimeCallAdmission<Self::CallAdmission, Self::Name>>, Self::Failure>;
+    ) -> ComptimeHostResult<
+        Option<ComptimeCallAdmission<Self::CallAdmission, Self::Name>>,
+        Self::Failure,
+    >;
     fn bind_comptime_call(
         &self,
         admission: &ComptimeCallAdmission<Self::CallAdmission, Self::Name>,
         values: &[Self::Value],
         span: Span,
-    ) -> Result<
+    ) -> ComptimeHostResult<
         Option<(
             AHashMap<Self::Name, Self::Type>,
             AHashMap<Self::Name, Self::Value>,
@@ -3144,7 +3291,7 @@ pub trait ComptimeHost {
         types: AHashMap<Self::Name, Self::Type>,
         values: AHashMap<Self::Name, Self::Value>,
         span: Span,
-    ) -> Result<
+    ) -> ComptimeHostResult<
         Option<
             ComptimeCallPreparation<
                 Self::Value,
@@ -3177,7 +3324,7 @@ pub trait ComptimeHost {
         types: &AHashMap<Self::Name, Self::Type>,
         values: &AHashMap<Self::Name, Self::Value>,
         span: Span,
-    ) -> Result<Self::CanonicalIdentity, Self::Failure>;
+    ) -> ComptimeHostResult<Self::CanonicalIdentity, Self::Failure>;
     fn issue_anonymous_identity(
         &self,
         program: &Self::ProgramKey,
@@ -3273,7 +3420,7 @@ pub trait ComptimeHost {
         &mut self,
         _name: Self::Name,
         _site: &ComptimeSite<Self::ProgramKey>,
-    ) -> Result<bool, Self::Failure> {
+    ) -> ComptimeHostResult<bool, Self::Failure> {
         Ok(false)
     }
 
@@ -3309,7 +3456,7 @@ pub trait ComptimeHost {
         _type_name: Self::Name,
         _variant: Self::Name,
         _site: &ComptimeSite<Self::ProgramKey>,
-    ) -> Result<bool, Self::Failure> {
+    ) -> ComptimeHostResult<bool, Self::Failure> {
         Ok(false)
     }
 
@@ -3317,7 +3464,7 @@ pub trait ComptimeHost {
         &mut self,
         _field: Self::Name,
         _site: &ComptimeSite<Self::ProgramKey>,
-    ) -> Result<bool, Self::Failure> {
+    ) -> ComptimeHostResult<bool, Self::Failure> {
         Ok(false)
     }
 
@@ -3707,9 +3854,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 ComptimeOutcome::HostFailure(error) => {
                     ComptimeOutcome::HostFailure(H::label_ctor_instantiation_site(error, call_span))
                 }
-                ComptimeOutcome::Abort(error) => {
-                    ComptimeOutcome::Abort(H::label_ctor_instantiation_site(error, call_span))
-                }
+                ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
                 other => other,
             };
             self.host.finish_comptime_call(&frame, result)
@@ -3727,7 +3872,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         span: Span,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
         let args = self.program_rir().call_args(args).to_vec();
-        let decoded = host_value!(self.decode_module_path(receiver, env));
+        let decoded = self.decode_module_path(receiver, env);
         let Some((file_id, segments)) = decoded else {
             return ComptimeOutcome::RuntimeDependent;
         };
@@ -3782,7 +3927,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         &self,
         receiver: InstRef,
         env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
-    ) -> Result<Option<(H::File, Vec<H::Name>)>, H::Failure> {
+    ) -> Option<(H::File, Vec<H::Name>)> {
         let mut chain_rev = Vec::new();
         let mut cursor = receiver;
         let root = loop {
@@ -3792,7 +3937,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     chain_rev.push(self.name_from_rir(field.into()));
                     cursor = base;
                 }
-                _ => return Ok(None),
+                _ => return None,
             }
         };
         if env.locals.contains_key(&root)
@@ -3801,16 +3946,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             || env.type_subst.contains_key(&root)
             || env.value_subst.contains_key(&root)
         {
-            return Ok(None);
+            return None;
         }
-        let Some(file_id) = env.defining_file.clone() else {
-            return Ok(None);
-        };
+        let file_id = env.defining_file.clone()?;
         chain_rev.reverse();
         let mut segments = Vec::with_capacity(chain_rev.len() + 1);
         segments.push(root);
         segments.extend(chain_rev);
-        Ok(Some((file_id, segments)))
+        Some((file_id, segments))
     }
 
     /// Decode a dotted type path before crossing the host boundary. The host
@@ -3821,7 +3964,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         &self,
         inst_ref: InstRef,
         env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
-    ) -> Result<Option<(H::File, Vec<H::Name>)>, H::Failure> {
+    ) -> Option<(H::File, Vec<H::Name>)> {
         let mut chain_rev = Vec::new();
         let mut cursor = inst_ref;
         let root = loop {
@@ -3831,7 +3974,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     chain_rev.push(self.name_from_rir(field.into()));
                     cursor = base;
                 }
-                _ => return Ok(None),
+                _ => return None,
             }
         };
         if env.locals.contains_key(&root)
@@ -3840,16 +3983,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             || env.type_subst.contains_key(&root)
             || env.value_subst.contains_key(&root)
         {
-            return Ok(None);
+            return None;
         }
-        let Some(file_id) = env.defining_file.clone() else {
-            return Ok(None);
-        };
+        let file_id = env.defining_file.clone()?;
         chain_rev.reverse();
         let mut segments = Vec::with_capacity(chain_rev.len() + 1);
         segments.push(root);
         segments.extend(chain_rev);
-        Ok(Some((file_id, segments)))
+        Some((file_id, segments))
     }
 
     fn eval_int_operands(
@@ -3884,13 +4025,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let hint = self
             .host
             .const_expr_type(&self.program_key(), env, inst_ref);
-        match self
-            .host
-            .integer_operation_type(hint.as_ref(), lhs, rhs, span)
-        {
-            Ok(value) => ComptimeOutcome::Known(value),
-            Err(error) => ComptimeOutcome::HostFailure(error),
-        }
+        ComptimeOutcome::Known(host_value!(self.host.integer_operation_type(
+            hint.as_ref(),
+            lhs,
+            rhs,
+            span
+        )))
     }
 
     fn unary_integer_type_for(
@@ -3903,10 +4043,24 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let hint = self
             .host
             .const_expr_type(&self.program_key(), env, inst_ref);
-        match self.host.unary_integer_type(hint.as_ref(), operand, span) {
-            Ok(value) => ComptimeOutcome::Known(value),
-            Err(error) => ComptimeOutcome::HostFailure(error),
-        }
+        ComptimeOutcome::Known(host_value!(self.host.unary_integer_type(
+            hint.as_ref(),
+            operand,
+            span
+        )))
+    }
+
+    fn finish_arith_value(
+        &mut self,
+        result: CheckedIntegerResult,
+        ty: Option<H::Type>,
+        op: &str,
+        span: Span,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let Some(value) = host_value!(self.host.finish_arith(result, ty, op, span)) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        ComptimeOutcome::Known(value)
     }
 
     /// Keep recursive control-flow and call edges out of the large instruction
@@ -4101,11 +4255,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             || CheckedIntegerResult::from_raw((magnitude as i128).checked_neg()),
                             |integer| integer.checked_neg_literal_report_i128(magnitude as i128),
                         );
-                    match self.host.finish_arith(result, ty, "-", span) {
-                        Ok(Some(value)) => ComptimeOutcome::Known(value),
-                        Ok(None) => ComptimeOutcome::RuntimeDependent,
-                        Err(error) => ComptimeOutcome::HostFailure(error),
-                    }
+                    self.finish_arith_value(result, ty, "-", span)
                 } else {
                     match self.eval(*operand, env) {
                         ComptimeOutcome::Known(value) => {
@@ -4129,11 +4279,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                                     || CheckedIntegerResult::from_raw(n.checked_neg()),
                                     |integer| integer.checked_neg_report_i128(n),
                                 );
-                            match self.host.finish_arith(result, ty, "-", span) {
-                                Ok(Some(value)) => ComptimeOutcome::Known(value),
-                                Ok(None) => ComptimeOutcome::RuntimeDependent,
-                                Err(error) => ComptimeOutcome::HostFailure(error),
-                            }
+                            self.finish_arith_value(result, ty, "-", span)
                         }
                         other => other,
                     }
@@ -4170,11 +4316,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         || CheckedIntegerResult::from_raw(l.checked_add(r)),
                         |integer| integer.checked_add_report_i128(l, r),
                     );
-                match self.host.finish_arith(result, ty, "+", span) {
-                    Ok(Some(value)) => ComptimeOutcome::Known(value),
-                    Ok(None) => ComptimeOutcome::RuntimeDependent,
-                    Err(error) => ComptimeOutcome::HostFailure(error),
-                }
+                self.finish_arith_value(result, ty, "+", span)
             }
             InstData::Sub { lhs, rhs } => {
                 let operands = outcome_value!(self.eval_int_operands(*lhs, *rhs, env));
@@ -4193,11 +4335,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         || CheckedIntegerResult::from_raw(l.checked_sub(r)),
                         |integer| integer.checked_sub_report_i128(l, r),
                     );
-                match self.host.finish_arith(result, ty, "-", span) {
-                    Ok(Some(value)) => ComptimeOutcome::Known(value),
-                    Ok(None) => ComptimeOutcome::RuntimeDependent,
-                    Err(error) => ComptimeOutcome::HostFailure(error),
-                }
+                self.finish_arith_value(result, ty, "-", span)
             }
             InstData::Mul { lhs, rhs } => {
                 let operands = outcome_value!(self.eval_int_operands(*lhs, *rhs, env));
@@ -4216,11 +4354,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         || CheckedIntegerResult::from_raw(l.checked_mul(r)),
                         |integer| integer.checked_mul_report_i128(l, r),
                     );
-                match self.host.finish_arith(result, ty, "*", span) {
-                    Ok(Some(value)) => ComptimeOutcome::Known(value),
-                    Ok(None) => ComptimeOutcome::RuntimeDependent,
-                    Err(error) => ComptimeOutcome::HostFailure(error),
-                }
+                self.finish_arith_value(result, ty, "*", span)
             }
             InstData::Div { lhs, rhs } | InstData::Mod { lhs, rhs } => {
                 let is_div = matches!(&inst.data, InstData::Div { .. });
@@ -4272,11 +4406,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             }
                         },
                     );
-                match self.host.finish_arith(result, ty, op, span) {
-                    Ok(Some(value)) => ComptimeOutcome::Known(value),
-                    Ok(None) => ComptimeOutcome::RuntimeDependent,
-                    Err(error) => ComptimeOutcome::HostFailure(error),
-                }
+                self.finish_arith_value(result, ty, op, span)
             }
 
             // Comparison operations
@@ -4600,12 +4730,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 }
 
                 // Extract method signatures for structural equality comparison
-                let method_sigs = self.host.extract_anon_method_sigs(
+                let method_sigs = host_value!(self.host.extract_anon_method_sigs(
                     &self.program_key(),
                     methods,
                     &local_type_subst,
                     &local_value_subst,
-                );
+                ));
 
                 let Some(producer) = env.canonical_identity.clone() else {
                     return ComptimeOutcome::RuntimeDependent;
@@ -4803,14 +4933,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     RepeatCount::Literal(n) => n,
                     RepeatCount::Named(sym) => {
                         let name = self.name_from_rir(sym.into());
-                        match self.host.resolve_named_array_length(
+                        host_value!(self.host.resolve_named_array_length(
                             &name,
                             span,
                             Some(&env.value_subst),
-                        ) {
-                            Ok(n) => n,
-                            Err(error) => return ComptimeOutcome::HostFailure(error),
-                        }
+                        ))
                     }
                 };
                 let array_ty = self.host.get_or_create_array_type(elem_ty, len);
@@ -4860,7 +4987,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 //    speculative callers (`try_evaluate_const*`) swallow the
                 //    error and defer to runtime analysis, which re-checks.
                 let file = self.host.file_from_span(&span);
-                if let Some(info) = self.host.value_const(&(file.clone(), name.clone())) {
+                let info = host_value!(self.host.value_const(&(file.clone(), name.clone())));
+                if let Some(info) = info {
                     let defining_file = self.host.file_from_span(&info.span);
                     self.host
                         .record_value_const_dependency(&defining_file, &name);
@@ -4911,7 +5039,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 if let Some(value) = env.const_module_members.get(&inst_ref) {
                     return ComptimeOutcome::Known(value.clone());
                 }
-                if let Some((file, segments)) = host_value!(self.decode_type_path(inst_ref, env)) {
+                if let Some((file, segments)) = self.decode_type_path(inst_ref, env) {
                     if let Some(value) =
                         host_value!(self.host.resolve_comptime_type_path(file, &segments, span))
                     {
