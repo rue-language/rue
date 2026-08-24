@@ -119,6 +119,7 @@ mod tests {
     const INTRINSICS_SOURCE: &str = include_str!("analysis/intrinsics.rs");
     const ORDINARY_ENGINE_SOURCE: &str = include_str!("ordinary_engine.rs");
     const COMPTIME_EVAL_SOURCE: &str = include_str!("comptime_eval.rs");
+    const COMPTIME_ENGINE_SOURCE: &str = include_str!("comptime.rs");
     const SEMA_ROOT_SOURCE: &str = include_str!("mod.rs");
     const ANALYSIS_ROOT_SOURCE: &str = include_str!("analysis.rs");
     const INSTRUCTIONS_SOURCE: &str = include_str!("analysis/instructions.rs");
@@ -301,12 +302,24 @@ mod tests {
     #[test]
     fn comptime_body_adapter_cannot_reintroduce_rir_dispatch() {
         let source = COMPTIME_EVAL_SOURCE;
+        let engine = COMPTIME_ENGINE_SOURCE;
+        assert!(!engine.contains("OrdinaryBodyEngine"));
+        assert!(!engine.contains("eval_const_expr"));
+        assert_eq!(
+            engine.matches("    fn eval(\n").count(),
+            1,
+            "the canonical engine must have exactly one dispatcher"
+        );
+        assert_eq!(
+            engine.matches("match &inst.data").count(),
+            1,
+            "all supported RIR recursion must live in one dispatcher"
+        );
         assert_eq!(
             source.matches("fn eval_const_expr").count(),
             1,
             "the body adapter must have one canonical entry point"
         );
-        assert!(source.contains("struct ComptimeEngine") && source.contains("fn eval("));
         assert!(
             !source.contains("fn eval_comptime_type_call"),
             "the deleted recursive type-call evaluator must not return"
@@ -341,6 +354,7 @@ mod tests {
             "fn admit_comptime_call(",
             "fn bind_comptime_call(",
             "fn prepare_local_comptime_call(",
+            "fn resolve_comptime_type_path(",
             "fn resolve_module_comptime_callable(",
             "fn finish_comptime_call(",
         ] {
@@ -356,13 +370,7 @@ mod tests {
                 "{signature} must not recurse or invoke an evaluator"
             );
         }
-        let adapter = source
-            .split_once("pub(crate) fn eval_const_expr")
-            .expect("comptime adapter exists")
-            .1;
-        let adapter = adapter
-            .split_once("/// Resolve a decoded module path")
-            .map_or(adapter, |(prefix, _)| prefix);
+        let adapter = function_body(source, "pub(crate) fn eval_const_expr(");
         assert!(
             !adapter.contains("match &inst.data") && !adapter.contains("InstData::"),
             "the body adapter must delegate; RIR dispatch belongs to ComptimeEngine"
