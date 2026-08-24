@@ -9,13 +9,16 @@
 #[cfg(test)]
 mod comptime_public_contract_tests {
     use rue_air::{
-        ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeConstInfo,
-        ComptimeEngine, ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame, ComptimeHost,
-        ComptimeIdentity, ComptimeName, ComptimeOutcome, ComptimeType, ComptimeValue,
+        ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallKey,
+        ComptimeCallMemoLookup, ComptimeCompletedCallMemo, ComptimeConstInfo, ComptimeEngine,
+        ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame, ComptimeHost, ComptimeIdentity,
+        ComptimeMemoizedOutcome, ComptimeName, ComptimeOutcome, ComptimeProgram,
+        ComptimeProgramKey, ComptimeProgramRegistry, ComptimeType, ComptimeValue,
     };
-    use rue_rir::InstRef;
+    use rue_rir::{Inst, InstData, InstRef, RirEditor, RirValidationContext, ValidatedRir};
     use rue_span::Span;
     use std::hash::{Hash, Hasher};
+    use std::sync::Arc;
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct FakeType;
@@ -127,6 +130,57 @@ mod comptime_public_contract_tests {
         };
         let _arg_mode: ComptimeArgMode = (rue_rir::RirArgMode::Normal, Span::new(0, 0));
         let _anonymous_kind = ComptimeAnonymousKind::Struct;
+    }
+
+    #[test]
+    fn public_program_admission_contract_is_instantiable() {
+        type Registry = ComptimeProgramRegistry<u8, u8, u8, u8>;
+        type Memo = ComptimeCompletedCallMemo<u8, u8, u8, u8, u8>;
+        let program_key = ComptimeProgramKey {
+            declaration: 1,
+            configuration: 2,
+        };
+        let mut registry = Registry::new();
+        assert!(registry.get(&program_key).is_none());
+        let mut editor = RirEditor::new();
+        let body = editor.add_inst(Inst {
+            data: InstData::IntConst(7),
+            span: Span::new(0, 0),
+        });
+        let context = RirValidationContext {
+            symbol_count: 0,
+            source_lengths: &[(rue_span::FileId::DEFAULT, 1)],
+        };
+        let program = ComptimeProgram {
+            rir: Arc::new(ValidatedRir::finish(editor, &context).unwrap()),
+            symbols: Arc::from([]),
+            imports: 0_u8,
+        };
+        registry.register(program_key.clone(), program).unwrap();
+        assert_eq!(
+            registry.get(&program_key).unwrap().rir.get(body).data,
+            InstData::IntConst(7)
+        );
+
+        let call_key = ComptimeCallKey {
+            declaration: 1,
+            configuration: 2,
+            type_arguments: std::sync::Arc::from([3]),
+            value_arguments: std::sync::Arc::from([4]),
+        };
+        let mut memo = Memo::new();
+        assert!(matches!(
+            memo.lookup(&call_key),
+            ComptimeCallMemoLookup::Miss
+        ));
+        memo.insert(call_key.clone(), ComptimeMemoizedOutcome::NotReady)
+            .unwrap();
+        assert!(matches!(
+            memo.lookup(&call_key),
+            ComptimeCallMemoLookup::Memoized(ComptimeMemoizedOutcome::NotReady)
+        ));
+        assert_eq!(registry.len(), 1);
+        assert!(!registry.is_empty());
     }
 }
 
