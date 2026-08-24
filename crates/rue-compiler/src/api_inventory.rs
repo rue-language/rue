@@ -3106,6 +3106,10 @@ fn durable_const_integer_semantics_use_the_shared_kernel() {
 #[test]
 fn durable_comptime_services_are_named_authority_operations() {
     let facade = include_str!("durable_comptime.rs");
+    let production_facade = facade
+        .split("#[cfg(test)]\nmod tests")
+        .next()
+        .expect("durable comptime production source");
     for required in [
         "DurableImportSite",
         "DurableComptimeSemanticAuthority",
@@ -3118,6 +3122,8 @@ fn durable_comptime_services_are_named_authority_operations() {
         "resolve_candidate",
         "resolve_identity",
         "resolve_const",
+        "resolve_target_intrinsic",
+        "resolve_target_enum_variant",
         "probe_comptime_call",
         "observe_dependency",
         "observe_anonymous_nominal",
@@ -3160,16 +3166,130 @@ fn durable_comptime_services_are_named_authority_operations() {
     assert_eq!(facade.matches("gate.application.is_none()").count(), 1);
 
     let database = include_str!("revisioned_query_database.rs");
+    let target_kernel = facade
+        .split("pub(crate) fn resolve_target_intrinsic_facts")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("pub(crate) fn resolve_target_enum_variant_facts")
+                .next()
+        })
+        .expect("canonical target intrinsic kernel");
+    let target_variant_kernel = facade
+        .split("pub(crate) fn resolve_target_enum_variant_facts")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("#[derive(Debug, Clone, PartialEq, Eq)]")
+                .next()
+        })
+        .expect("canonical target variant kernel");
+    for required in [
+        "target_arch",
+        "target_os",
+        "target_data_model",
+        "IntrinsicWrongArgCount",
+        "unknown target descriptor intrinsic",
+    ] {
+        assert!(
+            target_kernel.contains(required),
+            "target intrinsic policy must remain in the canonical kernel: {required}"
+        );
+    }
+    for required in [
+        "VARIANTS",
+        "unknown target descriptor enum",
+        "UnknownVariant",
+        "canonical_variant",
+    ] {
+        assert!(
+            target_variant_kernel.contains(required),
+            "target variant policy must remain in the canonical kernel: {required}"
+        );
+    }
+    assert_eq!(production_facade.matches("\"target_arch\"").count(), 1);
+    assert_eq!(production_facade.matches("\"target_os\"").count(), 1);
+    assert_eq!(
+        production_facade.matches("\"target_data_model\"").count(),
+        1
+    );
     let evaluator = database
         .split("impl SemanticConstEvaluator<'_, '_> {")
         .nth(1)
         .and_then(|source| source.split("impl SemanticNucleusTypeProvider<'_>").next())
         .expect("durable evaluator source");
+    let target_authority = database
+        .split("impl crate::durable_comptime::DurableComptimeSemanticAuthority")
+        .nth(1)
+        .and_then(|source| source.split("thread_local! {").next())
+        .expect("durable semantic authority source");
+    for required in [
+        "resolve_target_intrinsic_facts",
+        "resolve_target_enum_variant_facts",
+        "map_err(rue_air::SemanticProviderError::Failure)",
+    ] {
+        assert!(
+            target_authority.contains(required),
+            "target policy must remain in SemanticComptimeAuthority: {required}"
+        );
+    }
+    for forbidden in [
+        "SemanticConstEvaluator",
+        "SEMANTIC_COMPTIME",
+        "ComptimeEngine",
+        "Rir",
+        "ValidatedRir",
+        "program_rir",
+        "child_instructions",
+        "InstData",
+        "InstRef",
+        ".eval(",
+        "evaluate",
+        "eval_const_expr",
+        "SemanticComptimeCallDepthGuard",
+        "callback",
+    ] {
+        assert!(
+            !target_authority.contains(forbidden),
+            "semantic authority must not become an evaluator: {forbidden}"
+        );
+    }
+    for policy in [
+        "\"target_arch\"",
+        "\"target_os\"",
+        "\"target_data_model\"",
+        "IntrinsicWrongArgCount",
+        "UnknownVariant",
+        "unknown target descriptor intrinsic",
+        "unknown target descriptor enum",
+    ] {
+        assert!(
+            !target_authority.contains(policy),
+            "target policy must occur only in the canonical kernel: {policy}"
+        );
+    }
     assert!(evaluator.contains("DurableComptimeServices::new(&authority)"));
     assert!(evaluator.contains(".resolve_import(&site)"));
     assert!(evaluator.contains(".resolve_candidate("));
     assert!(evaluator.contains(".resolve_identity("));
     assert!(evaluator.contains(".resolve_const("));
+    assert!(evaluator.contains(".resolve_target_intrinsic("));
+    assert!(evaluator.contains(".resolve_target_enum_variant("));
+    for forbidden in [
+        "self.provider.configuration.target",
+        "rue_target::Arch",
+        "rue_target::Os",
+        "rue_target::DataModel",
+        "IntrinsicWrongArgCount",
+        "UnknownVariant",
+        "unknown target descriptor intrinsic",
+        "unknown target descriptor enum",
+    ] {
+        assert!(
+            !evaluator.contains(forbidden),
+            "durable evaluator regained target policy beside service calls: {forbidden}"
+        );
+    }
     assert!(evaluator.contains("self.effects.observe_dependency("));
     assert!(evaluator.contains("self.effects.merge_projection("));
     for forbidden in [

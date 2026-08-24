@@ -121,7 +121,7 @@ use crate::{
 use crate::canonical_lower::CandidateModuleRirOutput;
 use crate::parsed_modules::{ParsedModule, ParsedModulesWork, ParsedProgram};
 
-use crate::durable_comptime::{EvaluatedSemanticConst, TargetEnumValue, TypedSemanticConst};
+use crate::durable_comptime::{EvaluatedSemanticConst, TypedSemanticConst};
 use crate::retained_charge::RetainedCharge;
 use crate::session::{AttemptId, QueryStructuralWork};
 use crate::typed_query_store::{
@@ -7150,6 +7150,42 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
             }
         })
     }
+
+    fn resolve_target_intrinsic(
+        &self,
+        name: &str,
+        argument_count: usize,
+    ) -> Result<
+        crate::durable_comptime::TargetEnumValue,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        crate::durable_comptime::resolve_target_intrinsic_facts(
+            name,
+            argument_count,
+            self.provider.configuration.target.arch(),
+            self.provider.configuration.target.os(),
+            self.provider.configuration.target.data_model(),
+        )
+        .map_err(rue_air::SemanticProviderError::Failure)
+    }
+
+    fn resolve_target_enum_variant(
+        &self,
+        type_name: &str,
+        variant: &str,
+    ) -> Result<
+        crate::durable_comptime::TargetEnumValue,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        crate::durable_comptime::resolve_target_enum_variant_facts(type_name, variant)
+            .map_err(rue_air::SemanticProviderError::Failure)
+    }
 }
 
 thread_local! {
@@ -7259,25 +7295,19 @@ impl SemanticConstEvaluator<'_, '_> {
         &self,
         name: lasso::Spur,
         args: &rue_rir::RirIntrinsicArgsRange,
-        type_name: &'static str,
-        variant: &'static str,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
-        let found = self.rir.intrinsic_args(args).len();
-        if found != 0 {
-            return Err(Self::domain_failure(
-                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                    rue_error::ErrorKind::IntrinsicWrongArgCount {
-                        name: self.symbol(&name).to_string(),
-                        expected: 0,
-                        found,
-                    },
-                ),
-            ));
-        }
-        Ok(EvaluatedSemanticConst::TargetEnum(TargetEnumValue {
-            type_name,
-            variant,
-        }))
+        let authority = SemanticComptimeAuthority {
+            provider: &*self.provider,
+            imports: self.imports,
+        };
+        let services = crate::durable_comptime::DurableComptimeServices::new(&authority);
+        services
+            .resolve_target_intrinsic(
+                self.symbol(&name).as_ref(),
+                self.rir.intrinsic_args(args).len(),
+            )
+            .map(|value| EvaluatedSemanticConst::TargetEnum(value))
+            .map_err(Self::provider_error)
     }
 
     fn target_enum_variant(
@@ -7285,42 +7315,15 @@ impl SemanticConstEvaluator<'_, '_> {
         type_name: &str,
         variant: &str,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
-        let canonical_type = match type_name {
-            "Arch" => "Arch",
-            "Os" => "Os",
-            "DataModel" => "DataModel",
-            _ => return Self::failure("unknown target descriptor enum"),
+        let authority = SemanticComptimeAuthority {
+            provider: &*self.provider,
+            imports: self.imports,
         };
-        let valid = match canonical_type {
-            "Arch" => matches!(variant, "X86_64" | "Aarch64"),
-            "Os" => matches!(variant, "Linux" | "Macos"),
-            "DataModel" => matches!(variant, "Ilp32" | "Lp64" | "Llp64"),
-            _ => unreachable!(),
-        };
-        if !valid {
-            return Err(Self::domain_failure(
-                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                    rue_error::ErrorKind::UnknownVariant {
-                        enum_name: canonical_type.to_owned(),
-                        variant_name: variant.to_owned(),
-                    },
-                ),
-            ));
-        }
-        let variant = match variant {
-            "X86_64" => "X86_64",
-            "Aarch64" => "Aarch64",
-            "Linux" => "Linux",
-            "Macos" => "Macos",
-            "Ilp32" => "Ilp32",
-            "Lp64" => "Lp64",
-            "Llp64" => "Llp64",
-            _ => unreachable!(),
-        };
-        Ok(EvaluatedSemanticConst::TargetEnum(TargetEnumValue {
-            type_name: canonical_type,
-            variant,
-        }))
+        let services = crate::durable_comptime::DurableComptimeServices::new(&authority);
+        services
+            .resolve_target_enum_variant(type_name, variant)
+            .map(|value| EvaluatedSemanticConst::TargetEnum(value))
+            .map_err(Self::provider_error)
     }
 
     fn bool_value(
@@ -8574,26 +8577,13 @@ impl SemanticConstEvaluator<'_, '_> {
                 self.eval_import(expression)
             }
             E::Intrinsic { name, args } if self.symbol(name).as_ref() == "target_arch" => {
-                let variant = match self.declaration.configuration.target.arch() {
-                    rue_target::Arch::X86_64 => "X86_64",
-                    rue_target::Arch::Aarch64 => "Aarch64",
-                };
-                self.target_intrinsic(*name, args, "Arch", variant)
+                self.target_intrinsic(*name, args)
             }
             E::Intrinsic { name, args } if self.symbol(name).as_ref() == "target_os" => {
-                let variant = match self.declaration.configuration.target.os() {
-                    rue_target::Os::Linux => "Linux",
-                    rue_target::Os::Macos => "Macos",
-                };
-                self.target_intrinsic(*name, args, "Os", variant)
+                self.target_intrinsic(*name, args)
             }
             E::Intrinsic { name, args } if self.symbol(name).as_ref() == "target_data_model" => {
-                let variant = match self.declaration.configuration.target.data_model() {
-                    rue_target::DataModel::Ilp32 => "Ilp32",
-                    rue_target::DataModel::Lp64 => "Lp64",
-                    rue_target::DataModel::Llp64 => "Llp64",
-                };
-                self.target_intrinsic(*name, args, "DataModel", variant)
+                self.target_intrinsic(*name, args)
             }
             E::TypeIntrinsic { name, type_arg }
                 if matches!(

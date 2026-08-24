@@ -519,6 +519,23 @@ pub(crate) trait DurableComptimeSemanticAuthority {
         &self,
         site: &DurableImportSite,
     ) -> Result<DurableImportResolution, QueryAbort>;
+
+    /// Resolve a target intrinsic from semantic name/arity facts.  The
+    /// authority owns the configured target and the diagnostic policy; no RIR
+    /// instruction or argument callback crosses this boundary.
+    fn resolve_target_intrinsic(
+        &self,
+        name: &str,
+        argument_count: usize,
+    ) -> Result<TargetEnumValue, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>;
+
+    /// Resolve a target descriptor member through the canonical target
+    /// authority, preserving the durable evaluator's exact value shape.
+    fn resolve_target_enum_variant(
+        &self,
+        type_name: &str,
+        variant: &str,
+    ) -> Result<TargetEnumValue, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>;
 }
 
 pub(crate) trait DurableComptimeForeignCallAuthority {
@@ -583,6 +600,26 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
     ) -> Result<DurableImportResolution, QueryAbort> {
         self.authority.resolve_import(site)
     }
+
+    pub(crate) fn resolve_target_intrinsic(
+        &self,
+        name: &str,
+        argument_count: usize,
+    ) -> Result<TargetEnumValue, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>
+    {
+        self.authority
+            .resolve_target_intrinsic(name, argument_count)
+    }
+
+    pub(crate) fn resolve_target_enum_variant(
+        &self,
+        type_name: &str,
+        variant: &str,
+    ) -> Result<TargetEnumValue, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>
+    {
+        self.authority
+            .resolve_target_enum_variant(type_name, variant)
+    }
 }
 
 impl<A: DurableComptimeForeignCallAuthority + ?Sized> DurableComptimeServices<'_, A> {
@@ -611,6 +648,93 @@ pub(crate) enum EvaluatedSemanticConst {
 pub(crate) struct TargetEnumValue {
     pub(crate) type_name: &'static str,
     pub(crate) variant: &'static str,
+}
+
+/// The canonical pure target-descriptor kernel used by durable semantic
+/// authorities.  It receives only decomposed target facts, so tests and
+/// future query adapters can cover data models not currently exposed by a
+/// concrete compiler target without copying the mapping policy.
+pub(crate) fn resolve_target_intrinsic_facts(
+    name: &str,
+    argument_count: usize,
+    arch: rue_target::Arch,
+    os: rue_target::Os,
+    data_model: rue_target::DataModel,
+) -> Result<TargetEnumValue, SemanticNucleusFailure> {
+    if argument_count != 0 {
+        return Err(SemanticNucleusFailure::Diagnostic(
+            rue_error::ErrorKind::IntrinsicWrongArgCount {
+                name: name.to_owned(),
+                expected: 0,
+                found: argument_count,
+            },
+        ));
+    }
+    let (type_name, variant) = match name {
+        "target_arch" => (
+            "Arch",
+            match arch {
+                rue_target::Arch::X86_64 => "X86_64",
+                rue_target::Arch::Aarch64 => "Aarch64",
+            },
+        ),
+        "target_os" => (
+            "Os",
+            match os {
+                rue_target::Os::Linux => "Linux",
+                rue_target::Os::Macos => "Macos",
+            },
+        ),
+        "target_data_model" => (
+            "DataModel",
+            match data_model {
+                rue_target::DataModel::Ilp32 => "Ilp32",
+                rue_target::DataModel::Lp64 => "Lp64",
+                rue_target::DataModel::Llp64 => "Llp64",
+            },
+        ),
+        _ => {
+            return Err(SemanticNucleusFailure::Resolution(Arc::from(
+                "unknown target descriptor intrinsic",
+            )));
+        }
+    };
+    Ok(TargetEnumValue { type_name, variant })
+}
+
+pub(crate) fn resolve_target_enum_variant_facts(
+    type_name: &str,
+    variant: &str,
+) -> Result<TargetEnumValue, SemanticNucleusFailure> {
+    const VARIANTS: &[(&str, &[&str])] = &[
+        ("Arch", &["X86_64", "Aarch64"]),
+        ("Os", &["Linux", "Macos"]),
+        ("DataModel", &["Ilp32", "Lp64", "Llp64"]),
+    ];
+    let Some((canonical_type, variants)) = VARIANTS
+        .iter()
+        .find(|(candidate, _)| *candidate == type_name)
+    else {
+        return Err(SemanticNucleusFailure::Resolution(Arc::from(
+            "unknown target descriptor enum",
+        )));
+    };
+    let Some(canonical_variant) = variants
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == variant)
+    else {
+        return Err(SemanticNucleusFailure::Diagnostic(
+            rue_error::ErrorKind::UnknownVariant {
+                enum_name: (*canonical_type).to_owned(),
+                variant_name: variant.to_owned(),
+            },
+        ));
+    };
+    Ok(TargetEnumValue {
+        type_name: canonical_type,
+        variant: canonical_variant,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -851,6 +975,101 @@ mod tests {
             EvaluatedSemanticConst::integer_typed(-12, Some(DurableComptimeType(ty.clone())));
         assert_eq!(original.clone(), original);
         assert_eq!(original.as_integer_type(), Some(DurableComptimeType(ty)));
+    }
+
+    #[test]
+    fn target_kernel_covers_all_facts_and_error_channels() {
+        for arch in [rue_target::Arch::X86_64, rue_target::Arch::Aarch64] {
+            for os in [rue_target::Os::Linux, rue_target::Os::Macos] {
+                for data_model in [
+                    rue_target::DataModel::Ilp32,
+                    rue_target::DataModel::Lp64,
+                    rue_target::DataModel::Llp64,
+                ] {
+                    assert_eq!(
+                        resolve_target_intrinsic_facts("target_arch", 0, arch, os, data_model,)
+                            .unwrap()
+                            .variant,
+                        match arch {
+                            rue_target::Arch::X86_64 => "X86_64",
+                            rue_target::Arch::Aarch64 => "Aarch64",
+                        }
+                    );
+                    assert_eq!(
+                        resolve_target_intrinsic_facts("target_os", 0, arch, os, data_model,)
+                            .unwrap()
+                            .variant,
+                        match os {
+                            rue_target::Os::Linux => "Linux",
+                            rue_target::Os::Macos => "Macos",
+                        }
+                    );
+                    assert_eq!(
+                        resolve_target_intrinsic_facts(
+                            "target_data_model",
+                            0,
+                            arch,
+                            os,
+                            data_model,
+                        )
+                        .unwrap()
+                        .variant,
+                        match data_model {
+                            rue_target::DataModel::Ilp32 => "Ilp32",
+                            rue_target::DataModel::Lp64 => "Lp64",
+                            rue_target::DataModel::Llp64 => "Llp64",
+                        }
+                    );
+                }
+            }
+        }
+        for (type_name, variants) in [
+            ("Arch", ["X86_64", "Aarch64"].as_slice()),
+            ("Os", ["Linux", "Macos"].as_slice()),
+            ("DataModel", ["Ilp32", "Lp64", "Llp64"].as_slice()),
+        ] {
+            for variant in variants {
+                assert_eq!(
+                    resolve_target_enum_variant_facts(type_name, variant).unwrap(),
+                    TargetEnumValue { type_name, variant }
+                );
+            }
+        }
+        assert!(matches!(
+            resolve_target_intrinsic_facts(
+                "target_os",
+                1,
+                rue_target::Arch::X86_64,
+                rue_target::Os::Linux,
+                rue_target::DataModel::Lp64,
+            ),
+            Err(SemanticNucleusFailure::Diagnostic(
+                rue_error::ErrorKind::IntrinsicWrongArgCount { found: 1, .. }
+            ))
+        ));
+        assert!(matches!(
+            resolve_target_intrinsic_facts(
+                "other",
+                0,
+                rue_target::Arch::X86_64,
+                rue_target::Os::Linux,
+                rue_target::DataModel::Lp64,
+            ),
+            Err(SemanticNucleusFailure::Resolution(message))
+                if message.as_ref() == "unknown target descriptor intrinsic"
+        ));
+        assert!(matches!(
+            resolve_target_enum_variant_facts("Target", "X86_64"),
+            Err(SemanticNucleusFailure::Resolution(message))
+                if message.as_ref() == "unknown target descriptor enum"
+        ));
+        assert!(matches!(
+            resolve_target_enum_variant_facts("Arch", "Linux"),
+            Err(SemanticNucleusFailure::Diagnostic(rue_error::ErrorKind::UnknownVariant {
+                enum_name,
+                variant_name,
+            })) if enum_name == "Arch" && variant_name == "Linux"
+        ));
     }
 }
 
