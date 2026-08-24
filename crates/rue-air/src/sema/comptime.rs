@@ -499,6 +499,7 @@ mod value_domain_tests {
     thread_local! {
         static LABEL_CALLS: Cell<usize> = const { Cell::new(0) };
         static TICKET_EVENTS: RefCell<Vec<(usize, bool)>> = const { RefCell::new(Vec::new()) };
+        static PRODUCER_CALLS: RefCell<Vec<(usize, usize, u32)>> = const { RefCell::new(Vec::new()) };
         static INTEGER_HINTS: RefCell<Vec<Option<FakeType>>> = const { RefCell::new(Vec::new()) };
         static METHOD_FAILURES: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
         static TYPE_RESOLUTION_CALLS: Cell<usize> = const { Cell::new(0) };
@@ -1102,11 +1103,16 @@ mod value_domain_tests {
         }
         fn canonical_function_producer(
             &self,
+            program: &Self::ProgramKey,
+            ticket: &Self::CompletionTicket,
             name: Self::Name,
             _types: &AHashMap<Self::Name, Self::Type>,
             _values: &AHashMap<Self::Name, Self::Value>,
             _span: Span,
         ) -> ComptimeHostResult<Self::CanonicalIdentity, Self::Failure> {
+            PRODUCER_CALLS.with(|calls| {
+                calls.borrow_mut().push((*program, *ticket, name.ordinal));
+            });
             if matches!(self.finish_outcome, FakeFinishOutcome::CanonicalFailure) {
                 return Err(FAKE_FAILURE.into());
             }
@@ -2513,7 +2519,8 @@ mod value_domain_tests {
 
     #[test]
     fn entered_programs_switch_on_colliding_refs_and_resume_the_parent() {
-        let (mut host, root, rhs, _base) = call_fixture();
+        let (mut host, root, rhs, base) = call_fixture();
+        PRODUCER_CALLS.with(|calls| calls.borrow_mut().clear());
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let (value, resumed) = {
             let mut engine = ComptimeEngine::new(&mut host);
@@ -2536,6 +2543,12 @@ mod value_domain_tests {
             vec![(2, Some(FakeType(7))), (1, Some(FakeType(7)))]
         );
         assert_eq!(resumed, Some(FakeValue::Integer(2)));
+        PRODUCER_CALLS.with(|calls| {
+            assert_eq!(
+                calls.borrow().as_slice(),
+                &[(1, 1, base), (2, 2, base + 2000)]
+            );
+        });
     }
 
     #[test]
@@ -2589,6 +2602,7 @@ mod value_domain_tests {
             finished: Vec::new(),
             float_evaluations: Cell::new(0),
         };
+        PRODUCER_CALLS.with(|calls| calls.borrow_mut().clear());
         TICKET_EVENTS.with(|events| events.borrow_mut().clear());
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let result = ComptimeEngine::new(&mut host)
@@ -2602,6 +2616,15 @@ mod value_domain_tests {
                 *events.borrow(),
                 vec![(1, true), (2, true), (2, false), (1, false)]
             );
+        });
+        PRODUCER_CALLS.with(|calls| {
+            let calls = calls.borrow();
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls[0].0, 1);
+            assert_eq!(calls[1].0, 1);
+            assert_eq!(calls[0].1, 1);
+            assert_eq!(calls[1].1, 2);
+            assert_ne!(calls[0].2, calls[1].2);
         });
     }
 
@@ -2891,16 +2914,26 @@ mod value_domain_tests {
 
     #[test]
     fn rejected_calls_never_activate_or_finish_their_ticket() {
-        let (mut host, root, _, _) = call_fixture();
+        let (mut host, root, rhs, base) = call_fixture();
         host.finish_outcome = FakeFinishOutcome::CanonicalFailure;
+        PRODUCER_CALLS.with(|calls| calls.borrow_mut().clear());
         TICKET_EVENTS.with(|events| events.borrow_mut().clear());
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let mut engine = ComptimeEngine::new(&mut host);
         assert!(matches!(
-            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, root), &mut env),
+            engine.evaluate(ComptimeFrame::expression(0, root), &mut env),
             ComptimeOutcome::HostFailure(FAKE_FAILURE)
         ));
+        assert!(matches!(
+            engine.evaluate(ComptimeFrame::expression(0, rhs), &mut env),
+            ComptimeOutcome::Known(FakeValue::Integer(2))
+        ));
+        drop(engine);
         assert!(host.finished.is_empty());
         TICKET_EVENTS.with(|events| assert!(events.borrow().is_empty()));
+        PRODUCER_CALLS.with(|calls| {
+            assert_eq!(calls.borrow().as_slice(), &[(1, 1, base)]);
+        });
     }
 
     #[test]
@@ -3853,6 +3886,8 @@ pub trait ComptimeHost {
     fn label_ctor_instantiation_site(error: Self::Failure, call_span: Span) -> Self::Failure;
     fn canonical_function_producer(
         &self,
+        program: &Self::ProgramKey,
+        ticket: &Self::CompletionTicket,
         name: Self::Name,
         types: &AHashMap<Self::Name, Self::Type>,
         values: &AHashMap<Self::Name, Self::Value>,
@@ -4558,6 +4593,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         }
         if let Some(name) = frame.name.clone() {
             let canonical_identity = host_value!(self.host.canonical_function_producer(
+                &frame.program,
+                &ticket,
                 name,
                 &frame.type_bindings,
                 &frame.value_bindings,
