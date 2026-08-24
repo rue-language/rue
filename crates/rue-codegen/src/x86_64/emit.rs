@@ -527,7 +527,7 @@ impl<'a> Emitter<'a> {
         }
 
         for inst in self.mir.iter() {
-            self.emit_inst(inst);
+            self.emit_inst(inst)?;
         }
         if self.frameless_frame_reference {
             return Err(ice_error!(
@@ -786,7 +786,7 @@ impl<'a> Emitter<'a> {
     }
 
     /// Emit a single instruction.
-    fn emit_inst(&mut self, inst: &X86Inst) {
+    fn emit_inst(&mut self, inst: &X86Inst) -> CompileResult<()> {
         match inst {
             X86Inst::MovRI32 { dst, imm } => {
                 self.begin_inst();
@@ -822,30 +822,6 @@ impl<'a> Emitter<'a> {
                 end_inst!(
                     self,
                     "mov [{}{}], {}",
-                    base,
-                    format_offset(adjusted_offset),
-                    src.as_physical()
-                );
-            }
-            X86Inst::Movzx8RM { dst, base, offset } => {
-                let adjusted_offset = self.adjust_fp_offset(*base, *offset);
-                self.begin_inst();
-                self.emit_movzx8_rm(dst.as_physical(), *base, adjusted_offset);
-                end_inst!(
-                    self,
-                    "movzx {}, byte [{}{}]",
-                    dst.as_physical(),
-                    base,
-                    format_offset(adjusted_offset)
-                );
-            }
-            X86Inst::MovMR8 { base, offset, src } => {
-                let adjusted_offset = self.adjust_fp_offset(*base, *offset);
-                self.begin_inst();
-                self.emit_mov_mr8(*base, adjusted_offset, src.as_physical());
-                end_inst!(
-                    self,
-                    "mov byte [{}{}], {}",
                     base,
                     format_offset(adjusted_offset),
                     src.as_physical()
@@ -1381,11 +1357,19 @@ impl<'a> Emitter<'a> {
 
             X86Inst::StringConstLen { dst, string_id } => {
                 // MOV dst, imm64 - Load string length as immediate
-                let string_len = self
-                    .strings
-                    .get(*string_id as usize)
-                    .map(|s| s.len() as i64)
-                    .unwrap_or(0);
+                let string_len = match self.strings.get(*string_id as usize) {
+                    Some(string) => string.len() as i64,
+                    None => {
+                        return Err(ice_error!(
+                            "invalid string constant id",
+                            phase: "codegen/emit",
+                            details: {
+                                "string_id" => string_id.to_string(),
+                                "string_table_len" => self.strings.len().to_string()
+                            }
+                        ));
+                    }
+                };
                 self.begin_inst();
                 self.emit_mov_ri64(dst.as_physical(), string_len);
                 end_inst!(self, "mov {}, {}", dst.as_physical(), string_len);
@@ -1399,6 +1383,7 @@ impl<'a> Emitter<'a> {
                 end_inst!(self, "mov {}, 0", dst.as_physical());
             }
         }
+        Ok(())
     }
 
     /// Emit LEA with simple [base + disp] addressing.
@@ -1586,15 +1571,6 @@ impl<'a> Emitter<'a> {
 
         // ModR/M and optional SIB/displacement
         self.emit_modrm_memory(src_enc, base_enc, offset);
-    }
-
-    /// Emit `movzx r64, byte [base + offset]` (REX.W 0F B6 /r).
-    fn emit_movzx8_rm(&mut self, dst: Reg, base: Reg, offset: i32) {
-        let rex =
-            0x48 | if dst.needs_rex() { 0x04 } else { 0 } | if base.needs_rex() { 0x01 } else { 0 };
-        self.code.push(rex);
-        self.code.extend_from_slice(&[0x0f, 0xb6]);
-        self.emit_modrm_memory(dst.encoding(), base.encoding(), offset);
     }
 
     /// Emit `mov byte [base + offset], r8` ([REX] 88 /r).
@@ -4103,26 +4079,6 @@ mod tests {
     }
 
     #[test]
-    fn test_physical_byte_load_and_store_encoding() {
-        assert_eq!(
-            emit_single(X86Inst::Movzx8RM {
-                dst: Operand::Physical(Reg::Rax),
-                base: Reg::Rbx,
-                offset: 0,
-            }),
-            vec![0x48, 0x0f, 0xb6, 0x43, 0x00]
-        );
-        assert_eq!(
-            emit_single(X86Inst::MovMR8 {
-                base: Reg::Rbx,
-                offset: 0,
-                src: Operand::Physical(Reg::Rcx),
-            }),
-            vec![0x40, 0x88, 0x4b, 0x00]
-        );
-    }
-
-    #[test]
     fn test_movzx16_to64() {
         let code = emit_single(X86Inst::Movzx16To64 {
             dst: Operand::Physical(Reg::Rax),
@@ -4491,6 +4447,24 @@ mod tests {
             code,
             vec![0x48, 0xB8, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
         );
+    }
+
+    #[test]
+    fn test_string_const_len_invalid_id_is_ice() {
+        let mut mir = X86Mir::new();
+        mir.push(X86Inst::StringConstLen {
+            dst: Operand::Physical(Reg::Rax),
+            string_id: 1,
+        });
+
+        let error = Emitter::new(&mir, 0, 0, 0, &[], &["hello".to_string()])
+            .without_frame()
+            .emit()
+            .expect_err("invalid string IDs must not silently encode zero");
+        let message = error.to_string();
+        assert!(message.contains("internal compiler error: invalid string constant id"));
+        assert!(message.contains("string_id: 1"));
+        assert!(message.contains("string_table_len: 1"));
     }
 
     // --- RSP-based memory addressing (requires SIB byte) ---
