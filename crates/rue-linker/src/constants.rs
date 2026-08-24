@@ -281,6 +281,8 @@ pub const S_ATTR_PURE_INSTRUCTIONS: u32 = 0x80000000;
 pub const S_ATTR_SOME_INSTRUCTIONS: u32 = 0x00000400;
 /// S_ZEROFILL: Section is zero-filled on demand (BSS)
 pub const S_ZEROFILL: u32 = 0x1;
+/// S_ATTR_DEBUG: Section carries debug info and is not part of the loaded image
+pub const S_ATTR_DEBUG: u32 = 0x02000000;
 
 // Mach-O platform constants
 
