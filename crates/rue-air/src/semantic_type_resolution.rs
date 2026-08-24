@@ -1122,6 +1122,19 @@ where
     resolve_structured_semantic_type_syntax_with(provider, root_scope, arena, root, AsRef::as_ref)
 }
 
+enum StructuredTypeWork {
+    Evaluate(rue_rir::RirTypeSyntaxRef),
+    FinishArray {
+        reference: rue_rir::RirTypeSyntaxRef,
+        length: rue_rir::RirTypeSyntaxRef,
+    },
+    FinishSlice {
+        syntax: Arc<str>,
+    },
+    FinishPointerConst,
+    FinishPointerMut,
+}
+
 /// Resolve a structured type whose symbols are owned by a separate authority,
 /// such as a body-local RIR interner. The resolver is consulted directly; no
 /// spelling is reconstructed and reparsed.
@@ -1148,40 +1161,128 @@ where
             syntax: structured_type_diagnostic_display(arena, root, resolve_symbol),
         })
     };
-    match arena.node(root).cloned().ok_or_else(unknown)? {
-        R::Named(symbol) => {
-            let name = resolve_symbol(arena.symbol(symbol).ok_or_else(unknown)?);
-            resolve_unqualified_semantic_type(provider, root_scope, name)?.ok_or_else(unknown)
-        }
-        R::Qualified { path } => {
-            let segments = structured_path(arena, path, resolve_symbol).ok_or_else(unknown)?;
-            resolve_qualified_semantic_type(
-                provider,
-                root_scope,
-                &segments,
-                structured_syntax_display(arena, root, resolve_symbol),
-            )
-        }
-        R::Unit => {
-            resolve_unqualified_semantic_type(provider, root_scope, "()")?.ok_or_else(unknown)
-        }
-        R::Never => {
-            resolve_unqualified_semantic_type(provider, root_scope, "!")?.ok_or_else(unknown)
-        }
-        R::Array { element, length } => {
-            let element = resolve_structured_semantic_type_syntax_with(
-                provider,
-                root_scope,
-                arena,
-                element,
-                resolve_symbol,
-            )?;
-            let length =
-                if let Some(length) = structured_value_syntax(arena, length, resolve_symbol) {
-                    lift_provider(provider.resolve_array_length(root_scope, length))?
-                } else if let Some(R::ValueCall { name, arguments }) = arena.node(length) {
-                    let name = resolve_symbol(arena.symbol(*name).ok_or_else(unknown)?);
-                    let arguments = structured_references(arena, *arguments).ok_or_else(unknown)?;
+    let mut work = vec![StructuredTypeWork::Evaluate(root)];
+    let mut values = Vec::new();
+    while let Some(item) = work.pop() {
+        match item {
+            StructuredTypeWork::Evaluate(reference) => {
+                let node_unknown = || {
+                    E::Semantic(F::UnknownType {
+                        syntax: structured_type_diagnostic_display(
+                            arena,
+                            reference,
+                            resolve_symbol,
+                        ),
+                    })
+                };
+                let node = arena.node(reference).cloned().ok_or_else(node_unknown)?;
+                match node {
+                    R::Named(symbol) => {
+                        let name = resolve_symbol(arena.symbol(symbol).ok_or_else(node_unknown)?);
+                        values.push(
+                            resolve_unqualified_semantic_type(provider, root_scope, name)?
+                                .ok_or_else(node_unknown)?,
+                        );
+                    }
+                    R::Qualified { path } => {
+                        let segments = structured_path(arena, path, resolve_symbol)
+                            .ok_or_else(node_unknown)?;
+                        values.push(resolve_qualified_semantic_type(
+                            provider,
+                            root_scope,
+                            &segments,
+                            structured_syntax_display(arena, reference, resolve_symbol),
+                        )?);
+                    }
+                    R::Unit => values.push(
+                        resolve_unqualified_semantic_type(provider, root_scope, "()")?
+                            .ok_or_else(node_unknown)?,
+                    ),
+                    R::Never => values.push(
+                        resolve_unqualified_semantic_type(provider, root_scope, "!")?
+                            .ok_or_else(node_unknown)?,
+                    ),
+                    R::Array { element, length } => {
+                        work.push(StructuredTypeWork::FinishArray { reference, length });
+                        work.push(StructuredTypeWork::Evaluate(element));
+                    }
+                    R::Slice { element } => {
+                        work.push(StructuredTypeWork::FinishSlice {
+                            syntax: structured_syntax_display(arena, reference, resolve_symbol),
+                        });
+                        work.push(StructuredTypeWork::Evaluate(element));
+                    }
+                    R::PointerConst { pointee } => {
+                        work.push(StructuredTypeWork::FinishPointerConst);
+                        work.push(StructuredTypeWork::Evaluate(pointee));
+                    }
+                    R::PointerMut { pointee } => {
+                        work.push(StructuredTypeWork::FinishPointerMut);
+                        work.push(StructuredTypeWork::Evaluate(pointee));
+                    }
+                    R::TypeCall { path, arguments } => {
+                        let segments = structured_path(arena, path, resolve_symbol)
+                            .ok_or_else(node_unknown)?;
+                        let arguments =
+                            structured_references(arena, arguments).ok_or_else(node_unknown)?;
+                        if let [name] = segments.as_slice()
+                            && let Some(value_arguments) = arguments
+                                .iter()
+                                .copied()
+                                .map(|argument| {
+                                    structured_value_syntax(arena, argument, resolve_symbol)
+                                })
+                                .collect::<Option<Vec<_>>>()
+                            && let Some(ty) = lift_provider(provider.builtin_type_call(
+                                root_scope,
+                                name,
+                                &value_arguments,
+                            ))?
+                        {
+                            values.push(ty);
+                            continue;
+                        }
+                        let call = resolve_structured_semantic_comptime_call(
+                            provider,
+                            root_scope,
+                            arena,
+                            resolve_symbol,
+                            reference,
+                            segments,
+                            arguments,
+                            SemanticComptimeCallExpectation::Type,
+                        )?;
+                        let SemanticComptimeCallResult::Type(ty) = call.result else {
+                            return Err(node_unknown());
+                        };
+                        lift_provider(provider.observe_materialized_type(&ty))?;
+                        values.push(ty);
+                    }
+                    R::AnonymousStruct { .. }
+                    | R::AnonymousEnum { .. }
+                    | R::ValueCall { .. }
+                    | R::Integer(_) => return Err(node_unknown()),
+                }
+            }
+            StructuredTypeWork::FinishArray { reference, length } => {
+                let array_unknown = || {
+                    E::Semantic(F::UnknownType {
+                        syntax: structured_type_diagnostic_display(
+                            arena,
+                            reference,
+                            resolve_symbol,
+                        ),
+                    })
+                };
+                let element = values.pop().ok_or_else(array_unknown)?;
+                let length = if let Some(syntax) =
+                    structured_value_syntax(arena, length, resolve_symbol)
+                {
+                    lift_provider(provider.resolve_array_length(root_scope, syntax))?
+                } else if let Some(R::ValueCall { name, arguments }) = arena.node(length).cloned() {
+                    let name = resolve_symbol(arena.symbol(name).ok_or_else(array_unknown)?);
+                    let arguments =
+                        structured_references(arena, arguments).ok_or_else(array_unknown)?;
                     let call = resolve_structured_semantic_comptime_call(
                         provider,
                         root_scope,
@@ -1193,80 +1294,31 @@ where
                         SemanticComptimeCallExpectation::Value,
                     )?;
                     let SemanticComptimeCallResult::Value(value) = call.result else {
-                        return Err(unknown());
+                        return Err(array_unknown());
                     };
                     lift_provider(provider.array_length_from_value(root_scope, &value))?
                 } else {
-                    return Err(unknown());
+                    return Err(array_unknown());
                 };
-            lift_provider(provider.array_type(element, length))
-        }
-        R::Slice { element } => {
-            let syntax = structured_syntax_display(arena, root, resolve_symbol);
-            let element = resolve_structured_semantic_type_syntax_with(
-                provider,
-                root_scope,
-                arena,
-                element,
-                resolve_symbol,
-            )?;
-            lift_provider(provider.slice_type(root_scope, &syntax, element))
-        }
-        R::PointerConst { pointee } => {
-            let pointee = resolve_structured_semantic_type_syntax_with(
-                provider,
-                root_scope,
-                arena,
-                pointee,
-                resolve_symbol,
-            )?;
-            lift_provider(provider.ptr_const_type(pointee))
-        }
-        R::PointerMut { pointee } => {
-            let pointee = resolve_structured_semantic_type_syntax_with(
-                provider,
-                root_scope,
-                arena,
-                pointee,
-                resolve_symbol,
-            )?;
-            lift_provider(provider.ptr_mut_type(pointee))
-        }
-        R::TypeCall { path, arguments } => {
-            let segments = structured_path(arena, path, resolve_symbol).ok_or_else(unknown)?;
-            let arguments = structured_references(arena, arguments).ok_or_else(unknown)?;
-            if let [name] = segments.as_slice()
-                && let Some(value_arguments) = arguments
-                    .iter()
-                    .copied()
-                    .map(|argument| structured_value_syntax(arena, argument, resolve_symbol))
-                    .collect::<Option<Vec<_>>>()
-                && let Some(ty) =
-                    lift_provider(provider.builtin_type_call(root_scope, name, &value_arguments))?
-            {
-                return Ok(ty);
+                values.push(lift_provider(provider.array_type(element, length))?);
             }
-            let call = resolve_structured_semantic_comptime_call(
-                provider,
-                root_scope,
-                arena,
-                resolve_symbol,
-                root,
-                segments,
-                arguments,
-                SemanticComptimeCallExpectation::Type,
-            )?;
-            let SemanticComptimeCallResult::Type(ty) = call.result else {
-                return Err(unknown());
-            };
-            lift_provider(provider.observe_materialized_type(&ty))?;
-            Ok(ty)
+            StructuredTypeWork::FinishSlice { syntax } => {
+                let element = values.pop().ok_or_else(unknown)?;
+                values.push(lift_provider(
+                    provider.slice_type(root_scope, &syntax, element),
+                )?);
+            }
+            StructuredTypeWork::FinishPointerConst => {
+                let pointee = values.pop().ok_or_else(unknown)?;
+                values.push(lift_provider(provider.ptr_const_type(pointee))?);
+            }
+            StructuredTypeWork::FinishPointerMut => {
+                let pointee = values.pop().ok_or_else(unknown)?;
+                values.push(lift_provider(provider.ptr_mut_type(pointee))?);
+            }
         }
-        R::AnonymousStruct { .. }
-        | R::AnonymousEnum { .. }
-        | R::ValueCall { .. }
-        | R::Integer(_) => Err(unknown()),
     }
+    values.pop().ok_or_else(unknown)
 }
 
 #[cfg(test)]
@@ -1978,6 +2030,50 @@ mod tests {
                 "fixture must fail for `{syntax}`"
             );
             assert!(!structured.calls.is_empty(), "work trace for `{syntax}`");
+        }
+    }
+
+    #[test]
+    fn nested_shape_failures_report_the_failing_child_syntax() {
+        for syntax in ["[Missing; 2]", "ptr const Missing"] {
+            let (arena, root) = structured_type(syntax);
+            let mut fixture = Fixture::default();
+            let error = resolve_structured_semantic_type_syntax(
+                &mut fixture,
+                &"app/main.rue",
+                &arena,
+                root,
+            )
+            .unwrap_err();
+            match error {
+                SemanticResolutionError::Semantic(SemanticTypeSyntaxFailure::UnknownType {
+                    syntax,
+                }) => assert_eq!(syntax.as_ref(), "Missing"),
+                other => panic!("unexpected nested diagnostic: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn nested_array_failures_report_the_failing_array_syntax() {
+        let mut builder = rue_rir::RirTypeSyntaxBuilder::default();
+        let element = builder.push_named_type(Arc::<str>::from("i32")).unwrap();
+        let invalid_length = builder.push_unit_type().unwrap();
+        let inner = builder.push_array_type(element, invalid_length).unwrap();
+        let outer_length = builder.push_integer(2).unwrap();
+        let root = builder.push_array_type(inner, outer_length).unwrap();
+        let arena = builder.finish();
+        let mut fixture = Fixture::default();
+        let error =
+            resolve_structured_semantic_type_syntax(&mut fixture, &"app/main.rue", &arena, root)
+                .unwrap_err();
+        match error {
+            SemanticResolutionError::Semantic(SemanticTypeSyntaxFailure::UnknownType {
+                syntax,
+            }) => {
+                assert_eq!(syntax.as_ref(), "[i32; ()]");
+            }
+            other => panic!("unexpected nested array diagnostic: {other:?}"),
         }
     }
 
