@@ -54,25 +54,24 @@ compile_stderr_not_contains = [
 
 [[case]]
 name = "struct_field_mismatch_uses_value_span"
-description = "RUE-1640: a struct field assignment mismatch points at the RHS expression, including its JSON primary span."
+description = "RUE-1640: a struct field assignment mismatch points at the RHS expression, including its JSON primary span; RUE-1653: the column counts Unicode scalar values, not UTF-8 bytes or UTF-16 code units."
 files = [{ path = "main.rue", source = """
 struct Pair { flag: bool }
 fn give() -> i32 { 1 }
 fn main() -> i32 {
     let mut p = Pair { flag: true };
-    p.flag = give();
+    let _s = "é😀"; p.flag = give();
     0
 }
 """ }]
 args = ["--error-format", "json", "main.rue", "-o", "prog"]
 compile_fail = true
 json_diagnostics = true
-json_diagnostic_order = ["error E0206 main.rue:5:14"]
+json_diagnostic_order = ["error E0206 main.rue:5:29"]
 error_contains = [
   '"code":"E0206"',
   '"message":"type mismatch: expected bool, found i32"',
-  '"start":119',
-  '"end":125',
+  '''"spans":[{"column":29,"end":144,"file":"main.rue","label":null,"line":5,"primary":true,"start":138}]''',
   '"primary":true',
 ]
 
