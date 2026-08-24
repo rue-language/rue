@@ -47,7 +47,6 @@
 //!   defer to the runtime check.
 
 use ahash::{AHashMap, AHashSet};
-use std::sync::LazyLock;
 use std::time::Instant;
 
 use lasso::Spur;
@@ -57,12 +56,14 @@ use rue_span::{FileId, Span};
 
 use super::comptime::{
     ComptimeArgMode, ComptimeCallAdmission, ComptimeConstInfo, ComptimeEngine, ComptimeHost,
-    PreparedComptimeCall,
+    ComptimeType, PreparedComptimeCall,
 };
-use super::context::{AnalysisContext, ConstValue, LocalVar, ParamIndex, ParamInfo};
+use super::context::{AnalysisContext, ConstValue};
+use super::info::FunctionCallInfo;
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 
 impl super::comptime::ComptimeValue for ConstValue {
+    type Type = Type;
     fn integer(value: i128) -> Self {
         Self::Integer(value)
     }
@@ -91,6 +92,8 @@ impl super::comptime::ComptimeValue for ConstValue {
         }
     }
 }
+
+impl ComptimeType for Type {}
 
 pub(super) fn validate_comptime_value_for_type_impl(
     interner: &lasso::ThreadedRodeo,
@@ -158,36 +161,34 @@ fn elapsed_ns(started: Instant) -> u64 {
 }
 
 /// Empty type substitution map for evaluation contexts without one.
-static EMPTY_TYPE_SUBST: LazyLock<AHashMap<Spur, Type>> = LazyLock::new(AHashMap::new);
 /// Empty value substitution map for evaluation contexts without one.
 /// The environment a compile-time expression is evaluated in.
-pub(crate) struct ComptimeEnv<'a, V: super::comptime::ComptimeValue = ConstValue> {
+pub(crate) struct ComptimeEnv<
+    'a,
+    V: super::comptime::ComptimeValue<Type = T> = ConstValue,
+    T: ComptimeType = Type,
+> {
     /// Definition-relative producer root for anonymous identity issuance.
     pub(crate) producer: Option<InstRef>,
     pub(crate) canonical_identity: Option<super::anon_structs::IssuedStableProducerId>,
     /// Comptime type parameters in scope (e.g. `T` -> `i32`).
-    pub(crate) type_subst: &'a AHashMap<Spur, Type>,
+    pub(crate) type_subst: AHashMap<Spur, T>,
     /// Comptime value parameters in scope (e.g. `N` -> `42`).
     pub(crate) value_subst: AHashMap<Spur, V>,
     /// Resolved types from HM inference for the function being analyzed.
     /// `None` when evaluating expressions outside a typed function context
     /// (comptime function bodies before specialization, const initializers).
-    pub(crate) resolved_types: Option<&'a AHashMap<InstRef, Type>>,
-    /// Runtime locals in scope at the point being evaluated. A runtime local
-    /// shadows same-named comptime parameters and file-level constants, so a
-    /// reference to it makes the expression non-evaluable — without this,
-    /// `let n = x; g(n)` inside a body with `comptime n` in scope would
-    /// wrongly evaluate `n` to the parameter's value (spec 4.14:6).
-    pub(crate) runtime_locals: Option<&'a AHashMap<Spur, LocalVar>>,
-    /// Runtime parameters in scope. They shadow same-named type values and
-    /// constants just like locals; comptime parameters resolve through the
-    /// substitution maps before this guard is consulted.
-    pub(crate) runtime_params: Option<(&'a [ParamInfo], &'a ParamIndex)>,
-    /// Runtime bindings known only by name during the pre-inference local
-    /// type-alias walk. This lightweight lexical view prevents ordinary
-    /// parameters and earlier `let` bindings from falling through to global
-    /// constant/type lookup before `AnalysisContext` exists.
-    pub(crate) runtime_binding_names: Option<&'a AHashSet<Spur>>,
+    pub(crate) resolved_types: Option<&'a AHashMap<InstRef, T>>,
+    /// Runtime locals in scope at the point being evaluated. These names
+    /// shadow same-named comptime parameters and file-level constants, so a
+    /// reference to one is not compile-time evaluable. The local adapter
+    /// builds this type-free lexical fact from its semantic context
+    /// (spec 4.14:6).
+    pub(crate) runtime_local_names: AHashSet<Spur>,
+    /// Runtime parameter names in scope. Comptime substitutions are checked
+    /// before this set, preserving a specialized comptime parameter even
+    /// though every parameter name is represented here.
+    pub(crate) runtime_binding_names: AHashSet<Spur>,
     /// `let` bindings introduced by blocks inside the comptime expression.
     pub(crate) locals: AHashMap<Spur, V>,
     /// Values of module-member accesses (`m.CONST`) appearing in this
@@ -209,7 +210,7 @@ pub(crate) struct ComptimeEnv<'a, V: super::comptime::ComptimeValue = ConstValue
     pub(crate) defining_file: Option<FileId>,
 }
 
-impl<'a, V: super::comptime::ComptimeValue> ComptimeEnv<'a, V> {
+impl<'a, V: super::comptime::ComptimeValue<Type = T>, T: ComptimeType> ComptimeEnv<'a, V, T> {
     /// The substitution maps augmented with this environment's comptime
     /// `let` locals (RUE-575): a type-valued local (`let Inner = Mk(T);`)
     /// participates in type resolution exactly like a `comptime T: type`
@@ -217,7 +218,7 @@ impl<'a, V: super::comptime::ComptimeValue> ComptimeEnv<'a, V> {
     /// parameter, wherever the anonymous-type arms resolve field, payload,
     /// and method-signature types. Locals are inserted last, so an alias
     /// shadows a same-named enclosing parameter (lexical scoping).
-    pub(crate) fn substs_with_locals(&self) -> (AHashMap<Spur, Type>, AHashMap<Spur, V>) {
+    pub(crate) fn substs_with_locals(&self) -> (AHashMap<Spur, T>, AHashMap<Spur, V>) {
         let mut type_subst = self.type_subst.clone();
         let mut value_subst = self.value_subst.clone();
         for (name, val) in &self.locals {
@@ -235,12 +236,11 @@ impl<'a, V: super::comptime::ComptimeValue> ComptimeEnv<'a, V> {
         Self {
             producer: None,
             canonical_identity: None,
-            type_subst: &EMPTY_TYPE_SUBST,
+            type_subst: AHashMap::new(),
             value_subst: AHashMap::new(),
             resolved_types: None,
-            runtime_locals: None,
-            runtime_params: None,
-            runtime_binding_names: None,
+            runtime_local_names: AHashSet::new(),
+            runtime_binding_names: AHashSet::new(),
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),
             defining_file: None,
@@ -250,18 +250,17 @@ impl<'a, V: super::comptime::ComptimeValue> ComptimeEnv<'a, V> {
     /// An environment with comptime parameter substitutions but no resolved
     /// types (used when evaluating a comptime function body at a call site).
     pub(crate) fn with_subst(
-        type_subst: &'a AHashMap<Spur, Type>,
+        type_subst: &AHashMap<Spur, T>,
         value_subst: &AHashMap<Spur, V>,
     ) -> Self {
         Self {
             producer: None,
             canonical_identity: None,
-            type_subst,
+            type_subst: type_subst.clone(),
             value_subst: value_subst.clone(),
             resolved_types: None,
-            runtime_locals: None,
-            runtime_params: None,
-            runtime_binding_names: None,
+            runtime_local_names: AHashSet::new(),
+            runtime_binding_names: AHashSet::new(),
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),
             defining_file: None,
@@ -269,19 +268,18 @@ impl<'a, V: super::comptime::ComptimeValue> ComptimeEnv<'a, V> {
     }
 }
 
-impl<'a> ComptimeEnv<'a, ConstValue> {
+impl<'a> ComptimeEnv<'a, ConstValue, Type> {
     /// The environment for expressions inside the function currently being
     /// analyzed: comptime parameters in scope plus HM-resolved types.
     pub(crate) fn for_analysis(ctx: &'a AnalysisContext) -> Self {
         Self {
             producer: Some(ctx.producer),
             canonical_identity: Some(ctx.canonical_producer.clone()),
-            type_subst: &ctx.comptime_type_vars,
+            type_subst: ctx.comptime_type_vars.clone(),
             value_subst: ctx.comptime_value_vars.clone(),
             resolved_types: Some(ctx.resolved_types),
-            runtime_locals: Some(&ctx.locals),
-            runtime_params: Some((ctx.params, ctx.param_index)),
-            runtime_binding_names: None,
+            runtime_local_names: ctx.locals.keys().copied().collect(),
+            runtime_binding_names: ctx.params.iter().map(|param| param.name).collect(),
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),
             defining_file: Some(ctx.current_file_id),
@@ -540,7 +538,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// second evaluator.
     fn finish_comptime_call(
         &mut self,
-        plan: &PreparedComptimeCall<ConstValue>,
+        plan: &PreparedComptimeCall<ConstValue, Type>,
         result: CompileResult<Option<ConstValue>>,
     ) -> CompileResult<Option<ConstValue>> {
         if let Ok(Some(ConstValue::Type(ty))) = &result {
@@ -857,7 +855,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         arg_modes: &[ComptimeArgMode],
         env: &mut ComptimeEnv,
         name_is_resolved_key: bool,
-    ) -> CompileResult<Option<ComptimeCallAdmission>> {
+    ) -> CompileResult<Option<ComptimeCallAdmission<FunctionCallInfo>>> {
         // During declaration binding, the callee may simply not be collected yet:
         // constant initializers and struct-field / enum-payload types can
         // evaluate before the source-order sweep reaches the callee's `FnDecl`
@@ -918,7 +916,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         Ok(Some(ComptimeCallAdmission {
             name: name_key,
-            function: fn_info,
+            payload: fn_info,
         }))
     }
 
@@ -963,13 +961,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// to remain authoritative before local-only checks run.
     fn bind_comptime_call(
         &self,
-        admission: &ComptimeCallAdmission,
+        admission: &ComptimeCallAdmission<FunctionCallInfo>,
         values: &[ConstValue],
         _span: Span,
     ) -> CompileResult<Option<(AHashMap<Spur, Type>, AHashMap<Spur, ConstValue>)>> {
-        let param_data = self.body_param_data(admission.function.params);
+        let param_data = self.body_param_data(admission.payload.params);
         let param_names = param_data.names().to_vec();
-        let param_comptime_type = self.comptime_type_param_flags(&admission.function);
+        let param_comptime_type = self.comptime_type_param_flags(&admission.payload);
         let mut callee_types: AHashMap<Spur, Type> = AHashMap::new();
         let mut callee_values: AHashMap<Spur, ConstValue> = AHashMap::new();
         for (i, v) in values.iter().copied().enumerate() {
@@ -1000,11 +998,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// or diagnostic remains authoritative.
     fn prepare_local_comptime_call(
         &mut self,
-        admission: ComptimeCallAdmission,
+        admission: ComptimeCallAdmission<FunctionCallInfo>,
         callee_types: AHashMap<Spur, Type>,
         callee_values: AHashMap<Spur, ConstValue>,
         span: Span,
-    ) -> CompileResult<Option<PreparedComptimeCall<ConstValue>>> {
+    ) -> CompileResult<Option<PreparedComptimeCall<ConstValue, Type>>> {
         let name_key = admission.name;
         let fn_body_info = self.function_body_info(name_key);
         let Some(fn_body_info) = fn_body_info else {
@@ -1141,7 +1139,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         callee_types: &AHashMap<Spur, Type>,
         callee_values: &AHashMap<Spur, ConstValue>,
         span: Span,
-    ) -> CompileResult<Option<PreparedComptimeCall<ConstValue>>> {
+    ) -> CompileResult<Option<PreparedComptimeCall<ConstValue, Type>>> {
         let Some(fn_body_info) = self.function_body_info(name) else {
             return Ok(None);
         };
@@ -1477,7 +1475,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut env = ComptimeEnv::with_subst(eval_types, eval_values);
         env.producer = Some(init);
         env.canonical_identity = self.active_anonymous_producer().cloned();
-        env.runtime_binding_names = Some(runtime_bindings);
+        env.runtime_local_names = runtime_bindings.clone();
         env.defining_file = Some(self.body_rir_ref().get(init).span.file_id);
         match self.eval_const_expr(init, &mut env).ok().flatten() {
             Some(ConstValue::Type(t)) => Some(t),
@@ -1800,15 +1798,16 @@ fn inline_ctor_head_candidates_with_work(
 /// exposes facts and named semantic hooks; recursive instruction traversal
 /// remains in `comptime::ComptimeEngine`.
 impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H> {
+    type Type = Type;
     type Value = ConstValue;
+    type CallAdmission = super::info::FunctionCallInfo;
+    type AnonymousStructId = crate::types::StructId;
+    type AnonMethodSigs = Vec<super::AnonMethodSig>;
     fn program_rir(&self) -> &rue_rir::Rir {
         OrdinaryBodyEngine::body_rir_ref(self)
     }
     fn body_interner(&self) -> &lasso::ThreadedRodeo {
         OrdinaryBodyEngine::body_interner(self)
-    }
-    fn body_type_pool(&self) -> &crate::intern_pool::TypeInternPool {
-        OrdinaryBodyEngine::body_type_pool(self)
     }
     fn value_const(&self, key: &(FileId, Spur)) -> Option<ComptimeConstInfo<Self::Value>> {
         let info = OrdinaryBodyEngine::value_const(self, key)?;
@@ -1863,12 +1862,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     fn rir_type_named_symbol(&self, syntax: rue_rir::RirTypeSyntaxRef) -> Option<Spur> {
         OrdinaryBodyEngine::rir_type_named_symbol(self, syntax)
     }
-    fn get_or_create_array_type(
-        &mut self,
-        element: Type,
-        length: u64,
-    ) -> crate::types::ArrayTypeId {
-        OrdinaryBodyEngine::get_or_create_array_type(self, element, length)
+    fn get_or_create_array_type(&mut self, element: Type, length: u64) -> Type {
+        Type::new_array(OrdinaryBodyEngine::get_or_create_array_type(
+            self, element, length,
+        ))
     }
     fn extract_anon_method_sigs(
         &mut self,
@@ -1887,11 +1884,18 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     fn find_or_create_anon_struct(
         &mut self,
         identity: super::anon_structs::IssuedAnonymousNominalKey,
-        fields: &[StructField],
-        sigs: &[super::AnonMethodSig],
+        fields: &[super::comptime::ComptimeField<Type>],
+        sigs: &Vec<super::AnonMethodSig>,
         captured: &AHashMap<Spur, ConstValue>,
     ) -> CompileResult<(Type, bool)> {
-        OrdinaryBodyEngine::find_or_create_anon_struct(self, identity, fields, sigs, captured)
+        let fields: Vec<StructField> = fields
+            .iter()
+            .map(|field| StructField {
+                name: field.name.clone(),
+                ty: field.ty,
+            })
+            .collect();
+        OrdinaryBodyEngine::find_or_create_anon_struct(self, identity, &fields, sigs, captured)
     }
     fn find_or_create_anon_enum(
         &mut self,
@@ -1901,8 +1905,11 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     ) -> CompileResult<Type> {
         OrdinaryBodyEngine::find_or_create_anon_enum(self, identity, names, payloads)
     }
-    fn has_method(&self, key: (crate::types::StructId, Spur)) -> bool {
-        OrdinaryBodyEngine::has_method(self, key)
+    fn anonymous_struct_id(&self, ty: &Type) -> Option<crate::types::StructId> {
+        ty.as_struct()
+    }
+    fn has_method(&self, key: &crate::types::StructId, method: Spur) -> bool {
+        OrdinaryBodyEngine::has_method(self, (*key, method))
     }
     fn check_unqualified_visibility(
         &self,
@@ -1922,6 +1929,46 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn const_expr_type(&self, env: &ComptimeEnv<'_>, inst_ref: InstRef) -> Option<Type> {
         OrdinaryBodyEngine::const_expr_type(self, env, inst_ref)
+    }
+    fn type_name(&self, ty: &Type) -> String {
+        ty.safe_name_with_pool(Some(self.body_type_pool()))
+    }
+    fn type_is_unsigned(&self, ty: &Type) -> bool {
+        ty.is_unsigned()
+    }
+    fn type_integer_semantics(&self, ty: &Type) -> Option<crate::integer_semantics::IntegerType> {
+        ty.integer_semantics()
+    }
+    fn record_named_type_dependency(&mut self, ty: &Type) {
+        match ty.kind() {
+            TypeKind::Struct(id) => {
+                let def = self
+                    .body_type_pool()
+                    .struct_metadata(id)
+                    .expect("struct type must have declaration metadata");
+                self.record_body_named_dependency(
+                    super::NamedConstDependencyTargetEvent::NamedType {
+                        file: def.file_id.index(),
+                        name: def.name.to_string(),
+                        kind: super::DeclarationTypeDependencyTargetKind::Struct,
+                    },
+                );
+            }
+            TypeKind::Enum(id) => {
+                let def = self
+                    .body_type_pool()
+                    .enum_metadata(id)
+                    .expect("enum type must have declaration metadata");
+                self.record_body_named_dependency(
+                    super::NamedConstDependencyTargetEvent::NamedType {
+                        file: def.file_id.index(),
+                        name: def.name.to_string(),
+                        kind: super::DeclarationTypeDependencyTargetKind::Enum,
+                    },
+                );
+            }
+            _ => {}
+        }
     }
     fn finish_arith(
         &self,
@@ -1959,12 +2006,12 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         modes: &[ComptimeArgMode],
         env: &mut ComptimeEnv<'_>,
         resolved: bool,
-    ) -> CompileResult<Option<ComptimeCallAdmission>> {
+    ) -> CompileResult<Option<ComptimeCallAdmission<FunctionCallInfo>>> {
         OrdinaryBodyEngine::admit_comptime_call(self, name, count, modes, env, resolved)
     }
     fn bind_comptime_call(
         &self,
-        admission: &ComptimeCallAdmission,
+        admission: &ComptimeCallAdmission<FunctionCallInfo>,
         values: &[ConstValue],
         span: Span,
     ) -> CompileResult<Option<(AHashMap<Spur, Type>, AHashMap<Spur, ConstValue>)>> {
@@ -1972,16 +2019,16 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn prepare_local_comptime_call(
         &mut self,
-        admission: ComptimeCallAdmission,
+        admission: ComptimeCallAdmission<FunctionCallInfo>,
         types: AHashMap<Spur, Type>,
         values: AHashMap<Spur, ConstValue>,
         span: Span,
-    ) -> CompileResult<Option<PreparedComptimeCall<ConstValue>>> {
+    ) -> CompileResult<Option<PreparedComptimeCall<ConstValue, Type>>> {
         OrdinaryBodyEngine::prepare_local_comptime_call(self, admission, types, values, span)
     }
     fn finish_comptime_call(
         &mut self,
-        plan: &PreparedComptimeCall<ConstValue>,
+        plan: &PreparedComptimeCall<ConstValue, Type>,
         result: CompileResult<Option<ConstValue>>,
     ) -> CompileResult<Option<ConstValue>> {
         OrdinaryBodyEngine::finish_comptime_call(self, plan, result)
@@ -2010,21 +2057,21 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn register_anon_struct_methods_for_comptime_with_subst(
         &mut self,
-        id: crate::types::StructId,
+        id: &crate::types::StructId,
         ty: Type,
         methods: &rue_rir::RirAnonStructMethodsRange,
         types: &AHashMap<Spur, Type>,
         values: &AHashMap<Spur, ConstValue>,
     ) -> Option<()> {
         OrdinaryBodyEngine::register_anon_struct_methods_for_comptime_with_subst(
-            self, id, ty, methods, types, values,
+            self, *id, ty, methods, types, values,
         )
     }
     fn set_anon_struct_type_subst(
         &mut self,
-        id: crate::types::StructId,
+        id: &crate::types::StructId,
         subst: AHashMap<Spur, Type>,
     ) {
-        OrdinaryBodyEngine::set_anon_struct_type_subst(self, id, subst)
+        OrdinaryBodyEngine::set_anon_struct_type_subst(self, *id, subst)
     }
 }

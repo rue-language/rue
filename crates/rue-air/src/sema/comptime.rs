@@ -10,24 +10,31 @@ use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_rir::{InstData, InstRef, RepeatCount, Rir};
 use rue_span::{FileId, Span};
 
-use super::comptime_eval::{ComptimeEnv, comptime_panic_err, const_int_fits};
-use super::info::FunctionCallInfo;
-use crate::integer_semantics::CheckedIntegerResult;
-use crate::intern_pool::TypeInternPool;
+use super::comptime_eval::{ComptimeEnv, comptime_panic_err};
+use crate::integer_semantics::{CheckedIntegerResult, IntegerType};
 use crate::specialize::MAX_COMPTIME_CALL_DEPTH;
-use crate::types::{ArrayLen, ArrayTypeId, StructField, Type, TypeKind};
+use crate::types::ArrayLen;
+
+pub(crate) trait ComptimeType: Clone {}
 
 /// Value algebra consumed by the canonical dispatcher.  The surrounding
 /// semantic type system remains local in this migration checkpoint; hosts may
 /// provide any value representation that can carry these four comptime forms.
 pub(crate) trait ComptimeValue: Clone {
+    type Type: ComptimeType;
     fn integer(value: i128) -> Self;
     fn boolean(value: bool) -> Self;
     fn unit() -> Self;
-    fn type_value(value: Type) -> Self;
+    fn type_value(value: Self::Type) -> Self;
     fn as_integer(&self) -> Option<i128>;
     fn as_boolean(&self) -> Option<bool>;
-    fn as_type(&self) -> Option<Type>;
+    fn as_type(&self) -> Option<Self::Type>;
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ComptimeField<T> {
+    pub(crate) name: String,
+    pub(crate) ty: T,
 }
 
 /// A declaration-level constant fact in the engine's value domain.  The
@@ -43,17 +50,23 @@ pub(crate) struct ComptimeConstInfo<V> {
 #[cfg(test)]
 mod value_domain_tests {
     use super::*;
-    use crate::sema::{AnonMethodSig, anon_structs};
+    use crate::sema::anon_structs;
 
     #[derive(Clone, Debug, PartialEq)]
     enum FakeValue {
         Integer(i128),
         Boolean(bool),
         Unit,
-        Type(Type),
+        Type(FakeType),
     }
 
+    #[derive(Clone, Debug, PartialEq, Copy)]
+    struct FakeType(u8);
+
+    impl ComptimeType for FakeType {}
+
     impl ComptimeValue for FakeValue {
+        type Type = FakeType;
         fn integer(value: i128) -> Self {
             Self::Integer(value)
         }
@@ -63,7 +76,7 @@ mod value_domain_tests {
         fn unit() -> Self {
             Self::Unit
         }
-        fn type_value(_value: Type) -> Self {
+        fn type_value(_value: FakeType) -> Self {
             Self::Type(_value)
         }
         fn as_integer(&self) -> Option<i128> {
@@ -78,7 +91,7 @@ mod value_domain_tests {
                 _ => None,
             }
         }
-        fn as_type(&self) -> Option<Type> {
+        fn as_type(&self) -> Option<FakeType> {
             match self {
                 Self::Type(value) => Some(*value),
                 _ => None,
@@ -89,22 +102,27 @@ mod value_domain_tests {
     struct FakeHost {
         rir: Rir,
         interner: lasso::ThreadedRodeo,
-        pool: TypeInternPool,
+        type_symbol: Spur,
+        constant: Option<(Spur, ComptimeConstInfo<FakeValue>)>,
     }
 
     impl ComptimeHost for FakeHost {
+        type Type = FakeType;
         type Value = FakeValue;
+        type CallAdmission = ();
+        type AnonymousStructId = u32;
+        type AnonMethodSigs = ();
         fn program_rir(&self) -> &Rir {
             &self.rir
         }
         fn body_interner(&self) -> &lasso::ThreadedRodeo {
             &self.interner
         }
-        fn body_type_pool(&self) -> &TypeInternPool {
-            &self.pool
-        }
-        fn value_const(&self, _key: &(FileId, Spur)) -> Option<ComptimeConstInfo<Self::Value>> {
-            None
+        fn value_const(&self, key: &(FileId, Spur)) -> Option<ComptimeConstInfo<Self::Value>> {
+            self.constant
+                .as_ref()
+                .filter(|(name, info)| *name == key.1 && info.span.file_id == key.0)
+                .map(|(_, info)| info.clone())
         }
         fn match_pattern(
             &self,
@@ -129,7 +147,7 @@ mod value_domain_tests {
         fn reduce_external_comptime_call(
             &mut self,
             _name: Spur,
-            _types: &AHashMap<Spur, Type>,
+            _types: &AHashMap<Spur, Self::Type>,
             _values: &AHashMap<Spur, Self::Value>,
             _span: Span,
         ) -> Option<CompileResult<Option<Self::Value>>> {
@@ -144,17 +162,17 @@ mod value_domain_tests {
             Ok(0)
         }
         fn rir_type_named_symbol(&self, _syntax: rue_rir::RirTypeSyntaxRef) -> Option<Spur> {
-            None
+            Some(self.type_symbol)
         }
-        fn get_or_create_array_type(&mut self, _element: Type, _length: u64) -> ArrayTypeId {
+        fn get_or_create_array_type(&mut self, _element: Self::Type, _length: u64) -> Self::Type {
             panic!("fake host does not construct array types")
         }
         fn extract_anon_method_sigs(
             &mut self,
             _methods: &rue_rir::RirAnonStructMethodsRange,
-            _types: &AHashMap<Spur, Type>,
+            _types: &AHashMap<Spur, Self::Type>,
             _values: &AHashMap<Spur, Self::Value>,
-        ) -> Vec<AnonMethodSig> {
+        ) -> Self::AnonMethodSigs {
             panic!("fake host does not construct anonymous methods")
         }
         fn find_method_own_comptime_type_param(
@@ -166,21 +184,24 @@ mod value_domain_tests {
         fn find_or_create_anon_struct(
             &mut self,
             _identity: anon_structs::IssuedAnonymousNominalKey,
-            _fields: &[StructField],
-            _sigs: &[AnonMethodSig],
+            _fields: &[ComptimeField<Self::Type>],
+            _sigs: &Self::AnonMethodSigs,
             _captured: &AHashMap<Spur, Self::Value>,
-        ) -> CompileResult<(Type, bool)> {
+        ) -> CompileResult<(Self::Type, bool)> {
             panic!("fake host does not construct anonymous structs")
         }
         fn find_or_create_anon_enum(
             &mut self,
             _identity: anon_structs::IssuedAnonymousNominalKey,
             _names: &[String],
-            _payloads: &[Vec<Type>],
-        ) -> CompileResult<Type> {
+            _payloads: &[Vec<Self::Type>],
+        ) -> CompileResult<Self::Type> {
             panic!("fake host does not construct anonymous enums")
         }
-        fn has_method(&self, _key: (crate::types::StructId, Spur)) -> bool {
+        fn anonymous_struct_id(&self, _ty: &Self::Type) -> Option<Self::AnonymousStructId> {
+            None
+        }
+        fn has_method(&self, _key: &Self::AnonymousStructId, _method: Spur) -> bool {
             false
         }
         fn check_unqualified_visibility(
@@ -193,34 +214,44 @@ mod value_domain_tests {
         ) -> CompileResult<()> {
             Ok(())
         }
-        fn check_require_droppable(&mut self, _ty: Type, _span: Span) -> CompileResult<()> {
+        fn check_require_droppable(&mut self, _ty: Self::Type, _span: Span) -> CompileResult<()> {
             Ok(())
         }
-        fn check_trivially_droppable(&mut self, _ty: Type, _span: Span) -> CompileResult<()> {
+        fn check_trivially_droppable(&mut self, _ty: Self::Type, _span: Span) -> CompileResult<()> {
             Ok(())
         }
         fn const_expr_type(
             &self,
-            _env: &ComptimeEnv<'_, Self::Value>,
+            _env: &ComptimeEnv<'_, Self::Value, Self::Type>,
             _inst_ref: InstRef,
-        ) -> Option<Type> {
+        ) -> Option<Self::Type> {
             None
         }
         fn finish_arith(
             &self,
             result: CheckedIntegerResult,
-            _ty: Option<Type>,
+            _ty: Option<Self::Type>,
             _op: &str,
             _span: Span,
         ) -> CompileResult<Option<Self::Value>> {
             Ok(result.checked().map(FakeValue::integer))
         }
+        fn type_name(&self, ty: &Self::Type) -> String {
+            format!("fake-type-{}", ty.0)
+        }
+        fn type_is_unsigned(&self, _ty: &Self::Type) -> bool {
+            false
+        }
+        fn type_integer_semantics(&self, _ty: &Self::Type) -> Option<IntegerType> {
+            None
+        }
+        fn record_named_type_dependency(&mut self, _ty: &Self::Type) {}
         fn resolve_named_type_value(
             &mut self,
             _name: Spur,
             _span: Span,
-        ) -> CompileResult<Option<Type>> {
-            Ok(None)
+        ) -> CompileResult<Option<Self::Type>> {
+            Ok(Some(FakeType(7)))
         }
         fn resolve_comptime_type_path(
             &mut self,
@@ -244,31 +275,32 @@ mod value_domain_tests {
             _name: Spur,
             _arg_count: usize,
             _arg_modes: &[ComptimeArgMode],
-            _env: &mut ComptimeEnv<'_, Self::Value>,
+            _env: &mut ComptimeEnv<'_, Self::Value, Self::Type>,
             _name_is_resolved_key: bool,
-        ) -> CompileResult<Option<ComptimeCallAdmission>> {
+        ) -> CompileResult<Option<ComptimeCallAdmission<Self::CallAdmission>>> {
             Ok(None)
         }
         fn bind_comptime_call(
             &self,
-            _admission: &ComptimeCallAdmission,
+            _admission: &ComptimeCallAdmission<Self::CallAdmission>,
             _values: &[Self::Value],
             _span: Span,
-        ) -> CompileResult<Option<(AHashMap<Spur, Type>, AHashMap<Spur, Self::Value>)>> {
+        ) -> CompileResult<Option<(AHashMap<Spur, Self::Type>, AHashMap<Spur, Self::Value>)>>
+        {
             Ok(None)
         }
         fn prepare_local_comptime_call(
             &mut self,
-            _admission: ComptimeCallAdmission,
-            _types: AHashMap<Spur, Type>,
+            _admission: ComptimeCallAdmission<Self::CallAdmission>,
+            _types: AHashMap<Spur, Self::Type>,
             _values: AHashMap<Spur, Self::Value>,
             _span: Span,
-        ) -> CompileResult<Option<PreparedComptimeCall<Self::Value>>> {
+        ) -> CompileResult<Option<PreparedComptimeCall<Self::Value, Self::Type>>> {
             Ok(None)
         }
         fn finish_comptime_call(
             &mut self,
-            _plan: &PreparedComptimeCall<Self::Value>,
+            _plan: &PreparedComptimeCall<Self::Value, Self::Type>,
             result: CompileResult<Option<Self::Value>>,
         ) -> CompileResult<Option<Self::Value>> {
             result
@@ -279,7 +311,7 @@ mod value_domain_tests {
         fn canonical_function_producer(
             &self,
             _name: Spur,
-            _types: &AHashMap<Spur, Type>,
+            _types: &AHashMap<Spur, Self::Type>,
             _values: &AHashMap<Spur, Self::Value>,
         ) -> Result<anon_structs::IssuedStableProducerId, crate::SemanticBodyExportFailure>
         {
@@ -288,26 +320,26 @@ mod value_domain_tests {
         fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
             &mut self,
             _syntax: rue_rir::RirTypeSyntaxRef,
-            _types: &AHashMap<Spur, Type>,
+            _types: &AHashMap<Spur, Self::Type>,
             _values: &AHashMap<Spur, Self::Value>,
             _span: Span,
-        ) -> Option<Type> {
+        ) -> Option<Self::Type> {
             None
         }
         fn register_anon_struct_methods_for_comptime_with_subst(
             &mut self,
-            _struct_id: crate::types::StructId,
-            _struct_type: Type,
+            _struct_id: &Self::AnonymousStructId,
+            _struct_type: Self::Type,
             _methods: &rue_rir::RirAnonStructMethodsRange,
-            _types: &AHashMap<Spur, Type>,
+            _types: &AHashMap<Spur, Self::Type>,
             _values: &AHashMap<Spur, Self::Value>,
         ) -> Option<()> {
             None
         }
         fn set_anon_struct_type_subst(
             &mut self,
-            _struct_id: crate::types::StructId,
-            _subst: AHashMap<Spur, Type>,
+            _struct_id: &Self::AnonymousStructId,
+            _subst: AHashMap<Spur, Self::Type>,
         ) {
         }
     }
@@ -329,10 +361,11 @@ mod value_domain_tests {
         });
         let mut host = FakeHost {
             rir: editor.finish(),
+            type_symbol: lasso::ThreadedRodeo::new().get_or_intern("T"),
             interner: lasso::ThreadedRodeo::new(),
-            pool: TypeInternPool::new(),
+            constant: None,
         };
-        let mut env = ComptimeEnv::<FakeValue>::new();
+        let mut env = ComptimeEnv::<FakeValue, FakeType>::new();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(add, &mut env)
             .unwrap()
@@ -365,44 +398,127 @@ mod value_domain_tests {
         });
         let mut host = FakeHost {
             rir: editor.finish(),
+            type_symbol: lasso::ThreadedRodeo::new().get_or_intern("T"),
             interner: lasso::ThreadedRodeo::new(),
-            pool: TypeInternPool::new(),
+            constant: None,
         };
-        let mut env = ComptimeEnv::<FakeValue>::new();
+        let mut env = ComptimeEnv::<FakeValue, FakeType>::new();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(branch, &mut env)
             .unwrap()
             .unwrap();
         assert_eq!(value, FakeValue::Integer(7));
     }
+
+    #[test]
+    fn non_local_type_domain_runs_the_real_type_dispatcher() {
+        let mut editor = rue_rir::RirEditor::new();
+        let type_const = editor.add_inst(rue_rir::Inst {
+            data: InstData::TypeConst {
+                type_name: rue_rir::RirTypeSyntaxRef::from_u32(0),
+            },
+            span: Span::new(0, 0),
+        });
+        let interner = lasso::ThreadedRodeo::new();
+        let type_symbol = interner.get_or_intern("T");
+        let mut host = FakeHost {
+            rir: editor.finish(),
+            type_symbol,
+            interner,
+            constant: None,
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType>::new();
+        let value = ComptimeEngine::new(&mut host)
+            .evaluate(type_const, &mut env)
+            .unwrap()
+            .unwrap();
+        assert_eq!(value, FakeValue::Type(FakeType(7)));
+    }
+
+    #[test]
+    fn runtime_binding_name_blocks_global_constant_fallback() {
+        let mut editor = rue_rir::RirEditor::new();
+        let interner = lasso::ThreadedRodeo::new();
+        let name = interner.get_or_intern("n");
+        let reference = editor.add_inst(rue_rir::Inst {
+            data: InstData::VarRef { name, anchor: None },
+            span: Span::new(0, 1),
+        });
+        let mut host = FakeHost {
+            rir: editor.finish(),
+            type_symbol: interner.get_or_intern("T"),
+            interner,
+            constant: Some((
+                name,
+                ComptimeConstInfo {
+                    is_pub: true,
+                    span: Span::new(10, 11),
+                    value: Some(FakeValue::Integer(99)),
+                },
+            )),
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType>::new();
+        env.runtime_binding_names.insert(name);
+        let value = ComptimeEngine::new(&mut host)
+            .evaluate(reference, &mut env)
+            .unwrap();
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn runtime_local_name_precedes_same_named_comptime_substitutions() {
+        let mut editor = rue_rir::RirEditor::new();
+        let interner = lasso::ThreadedRodeo::new();
+        let name = interner.get_or_intern("n");
+        let reference = editor.add_inst(rue_rir::Inst {
+            data: InstData::VarRef { name, anchor: None },
+            span: Span::new(0, 1),
+        });
+        let mut host = FakeHost {
+            rir: editor.finish(),
+            type_symbol: interner.get_or_intern("T"),
+            interner,
+            constant: None,
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType>::new();
+        env.type_subst.insert(name, FakeType(1));
+        env.value_subst.insert(name, FakeValue::Integer(2));
+        env.runtime_local_names.insert(name);
+        let value = ComptimeEngine::new(&mut host)
+            .evaluate(reference, &mut env)
+            .unwrap();
+        assert_eq!(value, None);
+    }
 }
 
 #[derive(Debug)]
-pub(crate) struct PreparedComptimeCall<V> {
+pub(crate) struct PreparedComptimeCall<V, T> {
     pub(crate) name: Spur,
     pub(crate) body: InstRef,
     pub(crate) file: FileId,
     pub(crate) span: Span,
     pub(crate) function_span: Span,
-    pub(crate) callee_types: AHashMap<Spur, Type>,
+    pub(crate) callee_types: AHashMap<Spur, T>,
     pub(crate) callee_values: AHashMap<Spur, V>,
 }
 
 pub(crate) type ComptimeArgMode = (rue_rir::RirArgMode, Span);
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ComptimeCallAdmission {
+pub(crate) struct ComptimeCallAdmission<A> {
     pub(crate) name: Spur,
-    pub(crate) function: FunctionCallInfo,
+    pub(crate) payload: A,
 }
 
 /// Semantic host boundary for the canonical dispatcher. No method accepts an
 /// instruction callback or a child RIR reference for evaluation.
 pub(crate) trait ComptimeHost {
-    type Value: ComptimeValue;
+    type Type: ComptimeType;
+    type Value: ComptimeValue<Type = Self::Type>;
+    type CallAdmission;
+    type AnonymousStructId: Clone;
+    type AnonMethodSigs;
     fn program_rir(&self) -> &Rir;
     fn body_interner(&self) -> &lasso::ThreadedRodeo;
-    fn body_type_pool(&self) -> &TypeInternPool;
     fn value_const(&self, key: &(FileId, Spur)) -> Option<ComptimeConstInfo<Self::Value>>;
     fn match_pattern(
         &self,
@@ -419,7 +535,7 @@ pub(crate) trait ComptimeHost {
     fn reduce_external_comptime_call(
         &mut self,
         name: Spur,
-        callee_types: &AHashMap<Spur, Type>,
+        callee_types: &AHashMap<Spur, Self::Type>,
         callee_values: &AHashMap<Spur, Self::Value>,
         span: Span,
     ) -> Option<CompileResult<Option<Self::Value>>>;
@@ -430,13 +546,13 @@ pub(crate) trait ComptimeHost {
         values: Option<&AHashMap<Spur, Self::Value>>,
     ) -> CompileResult<u64>;
     fn rir_type_named_symbol(&self, syntax: rue_rir::RirTypeSyntaxRef) -> Option<Spur>;
-    fn get_or_create_array_type(&mut self, element: Type, length: u64) -> ArrayTypeId;
+    fn get_or_create_array_type(&mut self, element: Self::Type, length: u64) -> Self::Type;
     fn extract_anon_method_sigs(
         &mut self,
         methods: &rue_rir::RirAnonStructMethodsRange,
-        types: &AHashMap<Spur, Type>,
+        types: &AHashMap<Spur, Self::Type>,
         values: &AHashMap<Spur, Self::Value>,
-    ) -> Vec<super::AnonMethodSig>;
+    ) -> Self::AnonMethodSigs;
     fn find_method_own_comptime_type_param(
         &self,
         methods: &rue_rir::RirAnonStructMethodsRange,
@@ -444,17 +560,18 @@ pub(crate) trait ComptimeHost {
     fn find_or_create_anon_struct(
         &mut self,
         identity: super::anon_structs::IssuedAnonymousNominalKey,
-        fields: &[StructField],
-        sigs: &[super::AnonMethodSig],
+        fields: &[ComptimeField<Self::Type>],
+        sigs: &Self::AnonMethodSigs,
         captured: &AHashMap<Spur, Self::Value>,
-    ) -> CompileResult<(Type, bool)>;
+    ) -> CompileResult<(Self::Type, bool)>;
     fn find_or_create_anon_enum(
         &mut self,
         identity: super::anon_structs::IssuedAnonymousNominalKey,
         names: &[String],
-        payloads: &[Vec<Type>],
-    ) -> CompileResult<Type>;
-    fn has_method(&self, key: (crate::types::StructId, Spur)) -> bool;
+        payloads: &[Vec<Self::Type>],
+    ) -> CompileResult<Self::Type>;
+    fn anonymous_struct_id(&self, ty: &Self::Type) -> Option<Self::AnonymousStructId>;
+    fn has_method(&self, key: &Self::AnonymousStructId, method: Spur) -> bool;
     fn check_unqualified_visibility(
         &self,
         item_kind: &str,
@@ -463,21 +580,29 @@ pub(crate) trait ComptimeHost {
         is_pub: bool,
         span: Span,
     ) -> CompileResult<()>;
-    fn check_require_droppable(&mut self, ty: Type, span: Span) -> CompileResult<()>;
-    fn check_trivially_droppable(&mut self, ty: Type, span: Span) -> CompileResult<()>;
+    fn check_require_droppable(&mut self, ty: Self::Type, span: Span) -> CompileResult<()>;
+    fn check_trivially_droppable(&mut self, ty: Self::Type, span: Span) -> CompileResult<()>;
+    fn type_name(&self, ty: &Self::Type) -> String;
+    fn type_is_unsigned(&self, ty: &Self::Type) -> bool;
+    fn type_integer_semantics(&self, ty: &Self::Type) -> Option<IntegerType>;
+    fn record_named_type_dependency(&mut self, ty: &Self::Type);
     fn const_expr_type(
         &self,
-        env: &ComptimeEnv<'_, Self::Value>,
+        env: &ComptimeEnv<'_, Self::Value, Self::Type>,
         inst_ref: InstRef,
-    ) -> Option<Type>;
+    ) -> Option<Self::Type>;
     fn finish_arith(
         &self,
         result: CheckedIntegerResult,
-        ty: Option<Type>,
+        ty: Option<Self::Type>,
         op: &str,
         span: Span,
     ) -> CompileResult<Option<Self::Value>>;
-    fn resolve_named_type_value(&mut self, _name: Spur, span: Span) -> CompileResult<Option<Type>>;
+    fn resolve_named_type_value(
+        &mut self,
+        _name: Spur,
+        span: Span,
+    ) -> CompileResult<Option<Self::Type>>;
     fn resolve_comptime_type_path(
         &mut self,
         file: FileId,
@@ -496,53 +621,53 @@ pub(crate) trait ComptimeHost {
         name: Spur,
         arg_count: usize,
         arg_modes: &[ComptimeArgMode],
-        env: &mut ComptimeEnv<'_, Self::Value>,
+        env: &mut ComptimeEnv<'_, Self::Value, Self::Type>,
         name_is_resolved_key: bool,
-    ) -> CompileResult<Option<ComptimeCallAdmission>>;
+    ) -> CompileResult<Option<ComptimeCallAdmission<Self::CallAdmission>>>;
     fn bind_comptime_call(
         &self,
-        admission: &ComptimeCallAdmission,
+        admission: &ComptimeCallAdmission<Self::CallAdmission>,
         values: &[Self::Value],
         span: Span,
-    ) -> CompileResult<Option<(AHashMap<Spur, Type>, AHashMap<Spur, Self::Value>)>>;
+    ) -> CompileResult<Option<(AHashMap<Spur, Self::Type>, AHashMap<Spur, Self::Value>)>>;
     fn prepare_local_comptime_call(
         &mut self,
-        admission: ComptimeCallAdmission,
-        types: AHashMap<Spur, Type>,
+        admission: ComptimeCallAdmission<Self::CallAdmission>,
+        types: AHashMap<Spur, Self::Type>,
         values: AHashMap<Spur, Self::Value>,
         span: Span,
-    ) -> CompileResult<Option<PreparedComptimeCall<Self::Value>>>;
+    ) -> CompileResult<Option<PreparedComptimeCall<Self::Value, Self::Type>>>;
     fn finish_comptime_call(
         &mut self,
-        plan: &PreparedComptimeCall<Self::Value>,
+        plan: &PreparedComptimeCall<Self::Value, Self::Type>,
         result: CompileResult<Option<Self::Value>>,
     ) -> CompileResult<Option<Self::Value>>;
     fn label_ctor_instantiation_site(error: CompileError, call_span: Span) -> CompileError;
     fn canonical_function_producer(
         &self,
         name: Spur,
-        types: &AHashMap<Spur, Type>,
+        types: &AHashMap<Spur, Self::Type>,
         values: &AHashMap<Spur, Self::Value>,
     ) -> Result<super::anon_structs::IssuedStableProducerId, crate::SemanticBodyExportFailure>;
     fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
         &mut self,
         syntax: rue_rir::RirTypeSyntaxRef,
-        types: &AHashMap<Spur, Type>,
+        types: &AHashMap<Spur, Self::Type>,
         values: &AHashMap<Spur, Self::Value>,
         span: Span,
-    ) -> Option<Type>;
+    ) -> Option<Self::Type>;
     fn register_anon_struct_methods_for_comptime_with_subst(
         &mut self,
-        struct_id: crate::types::StructId,
-        struct_type: Type,
+        struct_id: &Self::AnonymousStructId,
+        struct_type: Self::Type,
         methods: &rue_rir::RirAnonStructMethodsRange,
-        types: &AHashMap<Spur, Type>,
+        types: &AHashMap<Spur, Self::Type>,
         values: &AHashMap<Spur, Self::Value>,
     ) -> Option<()>;
     fn set_anon_struct_type_subst(
         &mut self,
-        struct_id: crate::types::StructId,
-        subst: AHashMap<Spur, Type>,
+        struct_id: &Self::AnonymousStructId,
+        subst: AHashMap<Spur, Self::Type>,
     );
 }
 
@@ -562,7 +687,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     pub(crate) fn evaluate(
         &mut self,
         inst_ref: InstRef,
-        env: &mut ComptimeEnv<'_, H::Value>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type>,
     ) -> CompileResult<Option<H::Value>> {
         self.eval(inst_ref, env)
     }
@@ -574,7 +699,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         &mut self,
         name: Spur,
         args: &rue_rir::RirCallArgsRange,
-        env: &mut ComptimeEnv<'_, H::Value>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type>,
         span: Span,
     ) -> CompileResult<Option<H::Value>> {
         let args = self.host.program_rir().call_args(args).to_vec();
@@ -619,7 +744,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
     fn enter_call(
         &mut self,
-        plan: PreparedComptimeCall<H::Value>,
+        plan: PreparedComptimeCall<H::Value, H::Type>,
         call_span: Span,
     ) -> CompileResult<Option<H::Value>> {
         self.run_prepared(plan, call_span)
@@ -627,7 +752,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
     pub(crate) fn evaluate_prepared_root(
         &mut self,
-        plan: PreparedComptimeCall<H::Value>,
+        plan: PreparedComptimeCall<H::Value, H::Type>,
     ) -> CompileResult<Option<H::Value>> {
         let span = plan.span;
         // Direct type-constructor reductions are calls in the language model;
@@ -639,7 +764,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
     fn run_prepared(
         &mut self,
-        plan: PreparedComptimeCall<H::Value>,
+        plan: PreparedComptimeCall<H::Value, H::Type>,
         call_span: Span,
     ) -> CompileResult<Option<H::Value>> {
         if self.call_depth >= MAX_COMPTIME_CALL_DEPTH {
@@ -685,7 +810,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         receiver: InstRef,
         method: Spur,
         args: &rue_rir::RirCallArgsRange,
-        env: &mut ComptimeEnv<'_, H::Value>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type>,
         span: Span,
     ) -> CompileResult<Option<H::Value>> {
         let args = self.host.program_rir().call_args(args).to_vec();
@@ -744,7 +869,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     fn decode_module_path(
         &self,
         receiver: InstRef,
-        env: &ComptimeEnv<'_, H::Value>,
+        env: &ComptimeEnv<'_, H::Value, H::Type>,
     ) -> CompileResult<Option<(FileId, Vec<Spur>)>> {
         let mut chain_rev = Vec::new();
         let mut cursor = receiver;
@@ -759,12 +884,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             }
         };
         if env.locals.contains_key(&root)
-            || env
-                .runtime_locals
-                .is_some_and(|locals| locals.contains_key(&root))
-            || env
-                .runtime_binding_names
-                .is_some_and(|names| names.contains(&root))
+            || env.runtime_local_names.contains(&root)
+            || env.runtime_binding_names.contains(&root)
             || env.type_subst.contains_key(&root)
             || env.value_subst.contains_key(&root)
         {
@@ -787,7 +908,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     fn decode_type_path(
         &self,
         inst_ref: InstRef,
-        env: &ComptimeEnv<'_, H::Value>,
+        env: &ComptimeEnv<'_, H::Value, H::Type>,
     ) -> CompileResult<Option<(FileId, Vec<Spur>)>> {
         let mut chain_rev = Vec::new();
         let mut cursor = inst_ref;
@@ -802,15 +923,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             }
         };
         if env.locals.contains_key(&root)
-            || env
-                .runtime_locals
-                .is_some_and(|locals| locals.contains_key(&root))
-            || env
-                .runtime_binding_names
-                .is_some_and(|names| names.contains(&root))
-            || env
-                .runtime_params
-                .is_some_and(|(params, index)| index.get(params, root).is_some())
+            || env.runtime_local_names.contains(&root)
+            || env.runtime_binding_names.contains(&root)
             || env.type_subst.contains_key(&root)
             || env.value_subst.contains_key(&root)
         {
@@ -830,7 +944,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         &mut self,
         lhs: InstRef,
         rhs: InstRef,
-        env: &mut ComptimeEnv<'_, H::Value>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type>,
     ) -> CompileResult<Option<(i128, i128)>> {
         let Some(l) = self.eval(lhs, env)?.and_then(|v| v.as_integer()) else {
             return Ok(None);
@@ -846,7 +960,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     fn eval(
         &mut self,
         inst_ref: InstRef,
-        env: &mut ComptimeEnv<'_, H::Value>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type>,
     ) -> CompileResult<Option<H::Value>> {
         let inst = {
             let source = self.host.program_rir().get(inst_ref);
@@ -863,11 +977,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             InstData::IntConst(value) => {
                 let v = *value as i128;
                 if let Some(ty) = self.host.const_expr_type(env, inst_ref) {
-                    if !const_int_fits(v, ty) {
+                    if !self
+                        .host
+                        .type_integer_semantics(&ty)
+                        .is_some_and(|integer| integer.fits_i128(v))
+                    {
                         return Err(CompileError::new(
                             ErrorKind::LiteralOutOfRange {
                                 value: *value,
-                                ty: ty.safe_name_with_pool(Some(self.host.body_type_pool())),
+                                ty: self.host.type_name(&ty),
                             },
                             span,
                         ));
@@ -901,12 +1019,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // Unary negation: -expr
             InstData::Neg { operand } => {
                 let ty = self.host.const_expr_type(env, inst_ref);
-                if let Some(ty) = ty {
-                    if ty.is_unsigned() {
+                if let Some(ref ty) = ty {
+                    if self.host.type_is_unsigned(&ty) {
                         return Err(CompileError::new(
-                            ErrorKind::CannotNegate(
-                                ty.safe_name_with_pool(Some(self.host.body_type_pool())),
-                            ),
+                            ErrorKind::CannotNegate(self.host.type_name(&ty)),
                             span,
                         ));
                     }
@@ -915,10 +1031,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     // The literal path uses mathematical magnitude semantics:
                     // unlike an ordinary runtime value, `128` must not first
                     // canonicalize to -128 before becoming `-128`.
-                    let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
-                        || CheckedIntegerResult::from_raw((*magnitude as i128).checked_neg()),
-                        |integer| integer.checked_neg_literal_report_i128(*magnitude as i128),
-                    );
+                    let result = ty
+                        .as_ref()
+                        .and_then(|ty| self.host.type_integer_semantics(ty))
+                        .map_or_else(
+                            || CheckedIntegerResult::from_raw((*magnitude as i128).checked_neg()),
+                            |integer| integer.checked_neg_literal_report_i128(*magnitude as i128),
+                        );
                     self.host.finish_arith(result, ty, "-", span)
                 } else {
                     match self.eval(*operand, env)? {
@@ -926,10 +1045,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             let Some(n) = value.as_integer() else {
                                 return Ok(None);
                             };
-                            let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
-                                || CheckedIntegerResult::from_raw(n.checked_neg()),
-                                |integer| integer.checked_neg_report_i128(n),
-                            );
+                            let result = ty
+                                .as_ref()
+                                .and_then(|ty| self.host.type_integer_semantics(ty))
+                                .map_or_else(
+                                    || CheckedIntegerResult::from_raw(n.checked_neg()),
+                                    |integer| integer.checked_neg_report_i128(n),
+                                );
                             self.host.finish_arith(result, ty, "-", span)
                         }
                         // Can't negate a boolean, type, or unit
@@ -956,10 +1078,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     return Ok(None);
                 };
                 let ty = self.host.const_expr_type(env, inst_ref);
-                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
-                    || CheckedIntegerResult::from_raw(l.checked_add(r)),
-                    |integer| integer.checked_add_report_i128(l, r),
-                );
+                let result = ty
+                    .as_ref()
+                    .and_then(|ty| self.host.type_integer_semantics(ty))
+                    .map_or_else(
+                        || CheckedIntegerResult::from_raw(l.checked_add(r)),
+                        |integer| integer.checked_add_report_i128(l, r),
+                    );
                 self.host.finish_arith(result, ty, "+", span)
             }
             InstData::Sub { lhs, rhs } => {
@@ -967,10 +1092,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     return Ok(None);
                 };
                 let ty = self.host.const_expr_type(env, inst_ref);
-                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
-                    || CheckedIntegerResult::from_raw(l.checked_sub(r)),
-                    |integer| integer.checked_sub_report_i128(l, r),
-                );
+                let result = ty
+                    .as_ref()
+                    .and_then(|ty| self.host.type_integer_semantics(ty))
+                    .map_or_else(
+                        || CheckedIntegerResult::from_raw(l.checked_sub(r)),
+                        |integer| integer.checked_sub_report_i128(l, r),
+                    );
                 self.host.finish_arith(result, ty, "-", span)
             }
             InstData::Mul { lhs, rhs } => {
@@ -978,10 +1106,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     return Ok(None);
                 };
                 let ty = self.host.const_expr_type(env, inst_ref);
-                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
-                    || CheckedIntegerResult::from_raw(l.checked_mul(r)),
-                    |integer| integer.checked_mul_report_i128(l, r),
-                );
+                let result = ty
+                    .as_ref()
+                    .and_then(|ty| self.host.type_integer_semantics(ty))
+                    .map_or_else(
+                        || CheckedIntegerResult::from_raw(l.checked_mul(r)),
+                        |integer| integer.checked_mul_report_i128(l, r),
+                    );
                 self.host.finish_arith(result, ty, "*", span)
             }
             InstData::Div { lhs, rhs } | InstData::Mod { lhs, rhs } => {
@@ -1007,22 +1138,25 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 if r == -1 && ty.is_none() && l == i128::from(i64::MIN) {
                     return Ok(None);
                 }
-                let result = ty.and_then(|ty| ty.integer_semantics()).map_or_else(
-                    || {
-                        CheckedIntegerResult::from_raw(if is_div {
-                            l.checked_div(r)
-                        } else {
-                            l.checked_rem(r)
-                        })
-                    },
-                    |integer| {
-                        if is_div {
-                            integer.checked_div_report_i128(l, r)
-                        } else {
-                            integer.checked_rem_report_i128(l, r)
-                        }
-                    },
-                );
+                let result = ty
+                    .as_ref()
+                    .and_then(|ty| self.host.type_integer_semantics(ty))
+                    .map_or_else(
+                        || {
+                            CheckedIntegerResult::from_raw(if is_div {
+                                l.checked_div(r)
+                            } else {
+                                l.checked_rem(r)
+                            })
+                        },
+                        |integer| {
+                            if is_div {
+                                integer.checked_div_report_i128(l, r)
+                            } else {
+                                integer.checked_rem_report_i128(l, r)
+                            }
+                        },
+                    );
                 self.host.finish_arith(result, ty, op, span)
             }
 
@@ -1141,8 +1275,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 };
                 match self.host.const_expr_type(env, inst_ref) {
                     Some(ty) => {
-                        let integer = ty
-                            .integer_semantics()
+                        let integer = self
+                            .host
+                            .type_integer_semantics(&ty)
                             .expect("const_expr_type returned non-integer");
                         // Two's-complement AND masks negative amounts the same
                         // way the hardware masks the count register.
@@ -1171,8 +1306,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     return Ok(None);
                 };
                 let v = match self.host.const_expr_type(env, inst_ref) {
-                    Some(ty) => ty
-                        .integer_semantics()
+                    Some(ty) => self
+                        .host
+                        .type_integer_semantics(&ty)
                         .expect("bitnot requires an integer type")
                         .bitnot_i128(n),
                     None => !n,
@@ -1305,7 +1441,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     else {
                         return Ok(None);
                     };
-                    struct_fields.push(StructField {
+                    struct_fields.push(ComptimeField {
                         name: name_str,
                         ty: field_ty,
                     });
@@ -1363,7 +1499,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             method_span,
                         ));
                     }
-                    let Some(struct_id) = struct_ty.as_struct() else {
+                    let Some(struct_id) = self.host.anonymous_struct_id(&struct_ty) else {
                         return Ok(None);
                     };
 
@@ -1374,14 +1510,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         name: method_name, ..
                     } = &first_method_inst.data
                     {
-                        let needs_registration = !self.host.has_method((struct_id, *method_name));
+                        let needs_registration = !self.host.has_method(&struct_id, *method_name);
 
                         if needs_registration
                             && self
                                 .host
                                 .register_anon_struct_methods_for_comptime_with_subst(
-                                    struct_id,
-                                    struct_ty,
+                                    &struct_id,
+                                    struct_ty.clone(),
                                     methods,
                                     &local_type_subst,
                                     &local_value_subst,
@@ -1402,7 +1538,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         // constructor's type parameters.
                         if needs_registration && !local_type_subst.is_empty() {
                             self.host
-                                .set_anon_struct_type_subst(struct_id, local_type_subst.clone());
+                                .set_anon_struct_type_subst(&struct_id, local_type_subst.clone());
                         }
                     }
                 }
@@ -1439,10 +1575,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let (enum_type_subst, enum_value_subst) = env.substs_with_locals();
 
                 let mut variant_names: Vec<String> = Vec::with_capacity(variant_syms.len());
-                let mut variant_payloads: Vec<Vec<Type>> = Vec::with_capacity(variant_syms.len());
+                let mut variant_payloads: Vec<Vec<H::Type>> =
+                    Vec::with_capacity(variant_syms.len());
                 for (&vsym, symbols) in variant_syms.iter().zip(payload_symbols) {
                     variant_names.push(self.host.body_interner().resolve(&vsym).to_string());
-                    let mut tys: Vec<Type> = Vec::with_capacity(symbols.len());
+                    let mut tys: Vec<H::Type> = Vec::with_capacity(symbols.len());
                     for ty_sym in symbols {
                         let Some(ty) = self
                             .host
@@ -1480,8 +1617,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let type_name = *type_name;
                 // Type parameters in scope substitute first.
                 if let Some(type_symbol) = self.host.rir_type_named_symbol(type_name) {
-                    if let Some(&ty) = env.type_subst.get(&type_symbol) {
-                        return Ok(Some(H::Value::type_value(ty)));
+                    if let Some(ty) = env.type_subst.get(&type_symbol) {
+                        return Ok(Some(H::Value::type_value(ty.clone())));
                     }
                     // A named type (primitive / struct / enum) resolves directly.
                     if let Some(ty) = self.host.resolve_named_type_value(type_symbol, span)? {
@@ -1500,7 +1637,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     .host
                     .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
                         type_name,
-                        env.type_subst,
+                        &env.type_subst,
                         &env.value_subst,
                         span,
                     )
@@ -1536,8 +1673,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         }
                     }
                 };
-                let array_type_id = self.host.get_or_create_array_type(elem_ty, len);
-                Ok(Some(H::Value::type_value(Type::new_array(array_type_id))))
+                let array_ty = self.host.get_or_create_array_type(elem_ty, len);
+                Ok(Some(H::Value::type_value(array_ty)))
             }
 
             // VarRef: comptime let-bindings, comptime parameters, file-level
@@ -1550,19 +1687,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 // 2. Runtime locals shadow comptime parameters and file-level
                 //    constants: a reference that resolves to one is not
                 //    compile-time evaluable (spec 4.14:6).
-                if let Some(locals) = env.runtime_locals {
-                    if locals.contains_key(name) {
-                        return Ok(None);
-                    }
-                }
-                if let Some(names) = env.runtime_binding_names
-                    && names.contains(name)
-                {
+                if env.runtime_local_names.contains(name) {
                     return Ok(None);
                 }
                 // 3. Comptime type parameters in scope
-                if let Some(&ty) = env.type_subst.get(name) {
-                    return Ok(Some(H::Value::type_value(ty)));
+                if let Some(ty) = env.type_subst.get(name) {
+                    return Ok(Some(H::Value::type_value(ty.clone())));
                 }
                 // 4. Comptime value parameters in scope
                 if let Some(v) = env.value_subst.get(name) {
@@ -1571,10 +1701,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 // 5. Runtime parameters shadow file-level constants and type
                 //    names. A comptime parameter with a concrete value was
                 //    already handled by the substitution maps above.
-                if let Some((params, param_index)) = env.runtime_params {
-                    if param_index.get(params, *name).is_some() {
-                        return Ok(None);
-                    }
+                if env.runtime_binding_names.contains(name) {
+                    return Ok(None);
                 }
                 // 6. File-level constants: the value was evaluated once
                 //    (and range-checked against the declared type) during
@@ -1615,38 +1743,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 // 7. Type names used as values (e.g. `Point` in
                 //    `fn make_type() -> type { Point }`)
                 let resolved = self.host.resolve_named_type_value(*name, span)?;
-                if let Some(ty) = resolved {
-                    match ty.kind() {
-                        TypeKind::Struct(id) => {
-                            let def = self
-                                .host
-                                .body_type_pool()
-                                .struct_metadata(id)
-                                .expect("struct type must have declaration metadata");
-                            self.host.record_body_named_dependency(
-                                super::NamedConstDependencyTargetEvent::NamedType {
-                                    file: def.file_id.index(),
-                                    name: def.name.to_string(),
-                                    kind: super::DeclarationTypeDependencyTargetKind::Struct,
-                                },
-                            );
-                        }
-                        TypeKind::Enum(id) => {
-                            let def = self
-                                .host
-                                .body_type_pool()
-                                .enum_metadata(id)
-                                .expect("enum type must have declaration metadata");
-                            self.host.record_body_named_dependency(
-                                super::NamedConstDependencyTargetEvent::NamedType {
-                                    file: def.file_id.index(),
-                                    name: def.name.to_string(),
-                                    kind: super::DeclarationTypeDependencyTargetKind::Enum,
-                                },
-                            );
-                        }
-                        _ => {}
-                    }
+                if let Some(ref ty) = resolved {
+                    self.host.record_named_type_dependency(&ty);
                 }
                 Ok(resolved.map(H::Value::type_value))
             }
@@ -1716,18 +1814,20 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         .host
                         .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
                             type_arg,
-                            env.type_subst,
+                            &env.type_subst,
                             &env.value_subst,
                             span,
                         )
                     else {
                         return Ok(None);
                     };
-                    let bound = if is_max {
-                        int_ty.int_max()
-                    } else {
-                        int_ty.int_min()
-                    };
+                    let bound = self.host.type_integer_semantics(&int_ty).map(|integer| {
+                        if is_max {
+                            integer.max_i128()
+                        } else {
+                            integer.min_i128()
+                        }
+                    });
                     // A non-integer argument is diagnosed by runtime analysis
                     // (`analyze_type_intrinsic`, E0702); stay non-evaluable
                     // rather than duplicating the diagnostic.
@@ -1744,7 +1844,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     .host
                     .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
                         type_arg,
-                        env.type_subst,
+                        &env.type_subst,
                         &env.value_subst,
                         span,
                     )

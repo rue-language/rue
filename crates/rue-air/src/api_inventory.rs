@@ -21,7 +21,7 @@ fn integer_consumers_use_one_representation_independent_kernel() {
 
     assert!(types.contains("pub fn integer_semantics(&self) -> Option<IntegerType>"));
     assert!(comptime.contains("integer.shift_i128"));
-    assert!(comptime.contains("integer_semantics()"));
+    assert!(comptime.contains("type_integer_semantics"));
     assert!(!comptime.contains("fn truncate_to_type("));
     assert!(semantics.contains("pub struct IntegerType"));
     assert!(semantics.contains("pub fn checked_div_i128"));
@@ -30,6 +30,78 @@ fn integer_consumers_use_one_representation_independent_kernel() {
     assert!(semantics.contains("pub fn checked_add_report_i128"));
     assert!(semantics.contains("pub fn checked_neg_literal_i128"));
     assert!(comptime.contains("checked_neg_literal_report_i128"));
+}
+
+#[test]
+fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
+    let comptime = include_str!("sema/comptime.rs");
+    let production_forbidden = [
+        "LocalVar",
+        "ParamInfo",
+        "ParamIndex",
+        "FunctionCallInfo",
+        "crate::types::Type",
+        "TypeKind",
+        "TypeInternPool",
+        "ArrayTypeId",
+        "StructField",
+        "crate::types::StructId",
+    ];
+    for forbidden in production_forbidden {
+        assert!(
+            !comptime.contains(forbidden),
+            "canonical comptime production leaked local symbol: {forbidden}"
+        );
+    }
+    let engine_start = comptime
+        .find("pub(crate) struct ComptimeEngine")
+        .expect("canonical comptime engine declaration");
+    let contract = &comptime[..engine_start];
+    for forbidden in production_forbidden {
+        assert!(
+            !contract.contains(forbidden),
+            "generic comptime contract leaked local symbol: {forbidden}"
+        );
+    }
+    assert!(contract.contains("type CallAdmission;"));
+    assert!(contract.contains("type Type: ComptimeType;"));
+    assert!(contract.contains("ComptimeEnv<'_, Self::Value, Self::Type>"));
+
+    let env_source = include_str!("sema/comptime_eval.rs");
+    let env_start = env_source
+        .find("pub(crate) struct ComptimeEnv")
+        .expect("generic comptime environment declaration");
+    let env_end = env_source[env_start..]
+        .find("impl<'a> ComptimeEnv<'a, ConstValue, Type>")
+        .map(|offset| env_start + offset)
+        .expect("generic comptime environment boundary");
+    let env = &env_source[env_start..env_end];
+    for forbidden in production_forbidden {
+        assert!(
+            !env.contains(forbidden),
+            "generic comptime environment leaked local symbol: {forbidden}"
+        );
+    }
+    assert!(env.contains("runtime_local_names"));
+    assert!(env.contains("runtime_binding_names"));
+    assert!(env.contains("resolved_types: Option<&'a AHashMap<InstRef, T>>"));
+    let analysis_source = env_source
+        .find("pub(crate) fn for_analysis")
+        .and_then(|start| env_source[start..].find("ctx.params.iter().map(|param| param.name)"))
+        .is_some();
+    assert!(analysis_source);
+    assert!(!env_source.contains("filter(|param| !param.is_comptime)"));
+
+    let alias_start = env_source
+        .find("fn try_eval_type_alias_init")
+        .expect("pre-inference type-alias adapter");
+    let alias_end = env_source[alias_start..]
+        .find("/// Pre-reduce inline type-constructor heads")
+        .map(|offset| alias_start + offset)
+        .expect("type-alias adapter boundary");
+    let alias = &env_source[alias_start..alias_end];
+    assert!(alias.contains("env.runtime_local_names = runtime_bindings.clone();"));
+    assert!(!alias.contains("env.runtime_binding_names = runtime_bindings.clone();"));
 }
 
 #[test]
