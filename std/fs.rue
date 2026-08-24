@@ -483,9 +483,15 @@ fn _at_symlink_nofollow() -> u64 {
 // possibly-negative argument (a seek offset) to `@syscall`, whose arguments are
 // u64. `@intCast` PANICS on a negative source (the value is not representable in
 // u64), so it cannot be used for the bit reinterpretation; the low path rebuilds
-// 2^64 + x from the magnitude with non-trapping unsigned arithmetic. (An offset
-// of i64::MIN is not supported — its negation overflows i64 — but no real seek
-// uses it.)
+// 2^64 + x from the magnitude with non-trapping unsigned arithmetic.
+//
+// EVERY i64 is supported, i64::MIN included. Spelling `|x| - 1` as `0 - x - 1`
+// would trap on i64::MIN, whose magnitude is not representable as an i64 --
+// `File.seek` is public and takes an arbitrary i64, so that was a live trap on
+// a legitimate argument, not a latent one (RUE-1759). `0 - (x + 1)` computes
+// the same value with every intermediate in range: for i64::MIN it is
+// `0 - (i64::MIN + 1)` == i64::MAX. This is the shape RUE-1709 established in
+// `IntMap._key_bits` for exactly the same reason.
 fn _i64_bits(x: i64) -> u64 {
     if x >= 0 {
         @intCast(x)
@@ -493,7 +499,7 @@ fn _i64_bits(x: i64) -> u64 {
         // Two's complement of a negative x: 2^64 - |x| == ~(|x| - 1) computed in
         // u64. `~` is a bitwise op (never traps), and |x| - 1 >= 0 for x < 0, so
         // it @intCasts cleanly. This avoids a 2^64-scale decimal literal.
-        let mag_minus_1: u64 = @intCast((0 - x) - 1);
+        let mag_minus_1: u64 = @intCast(0 - (x + 1));
         ~mag_minus_1
     }
 }

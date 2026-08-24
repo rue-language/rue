@@ -266,6 +266,23 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
+    // RUE-1759: the seek-offset boundary cases reach the same `@byte_copy` gap
+    // as the rest of the std.fs group -- both build their path through StrBuf.
+    // What they assert (that i64::MIN converts instead of trapping, and that
+    // ordinary negative offsets still land exactly) is pinned by their
+    // exact-stdout assertions, not by the oracle model.
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_seek_i64_min_offset_errors_instead_of_trapping",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_seek_negative_offsets_still_land_correctly",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
     // RUE-1481: directory enumeration (`read_dir`/`walk`) reaches the same
     // `@byte_copy` gap as the rest of the std.fs group — every entry's path is
     // pooled through StrBuf, which copies bytes in bulk. Ungated in the case
