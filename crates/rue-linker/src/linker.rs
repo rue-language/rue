@@ -120,7 +120,7 @@ fn is_bss_section(name: &str) -> bool {
 /// Keeping this next to the shared patcher gives collection and application
 /// one width authority. That lets the collector reject a malformed patch site
 /// while it still knows the source section's exact bounds.
-fn relocation_patch_size(rel_type: RelocationType) -> Result<usize, LinkError> {
+pub(crate) fn relocation_patch_size(rel_type: RelocationType) -> Result<usize, LinkError> {
     match rel_type {
         RelocationType::Abs64 | RelocationType::Aarch64Abs64 => Ok(8),
         RelocationType::Pc32
@@ -501,14 +501,22 @@ fn apply_relocation(
             // AArch64 branch (B) or branch with link (BL) - 26-bit PC-relative offset
             // Both use identical encoding for the immediate field
             let value = target_addr as i64 + addend - pc as i64;
-            // Offset is in units of 4 bytes (instructions)
-            let offset = value >> 2;
-            // Check for overflow: must fit in 26 bits signed
             let rel_name = if matches!(rel_type, RelocationType::Jump26) {
                 "Jump26"
             } else {
                 "Call26"
             };
+            // The immediate is in units of 4-byte instructions. Reject a
+            // non-instruction-aligned result before shifting, since shifting
+            // would silently discard the low bits of S + A - P.
+            if value & 0x3 != 0 {
+                return Err(LinkError::RelocationOverflow {
+                    symbol: sym_name.to_string(),
+                    rel_type: rel_name.to_string(),
+                });
+            }
+            let offset = value >> 2;
+            // Check for overflow: must fit in 26 bits signed
             if offset < -(1 << 25) || offset >= (1 << 25) {
                 return Err(LinkError::RelocationOverflow {
                     symbol: sym_name.to_string(),
@@ -1639,8 +1647,15 @@ impl Linker {
                     continue;
                 }
 
-                // Align
-                let align = section.align.max(1);
+                // AArch64 instructions are 4-byte words. Keep the existing
+                // section alignment for other ELF machines, but never merge
+                // an AArch64 text section at a byte-only offset.
+                let minimum_alignment = if matches!(self.target, Target::Aarch64Linux) {
+                    4
+                } else {
+                    1
+                };
+                let align = section.align.max(minimum_alignment);
                 let padding = align_up(merged_text.len() as u64, align) - merged_text.len() as u64;
                 merged_text.resize(merged_text.len() + padding as usize, 0xCC); // INT3 padding
 
@@ -2972,6 +2987,34 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, LinkError::RelocationOverflow { .. }));
+    }
+
+    #[test]
+    fn aarch64_branch26_accepts_aligned_signed_boundaries() {
+        for rel_type in [RelocationType::Jump26, RelocationType::Call26] {
+            let mut upper = 0u32.to_le_bytes().to_vec();
+            apply_relocation(&mut upper, 0, 0, (1 << 27) - 4, 0, rel_type, "upper").unwrap();
+
+            let mut lower = 0u32.to_le_bytes().to_vec();
+            let pc = 0x1000 + (1 << 27);
+            apply_relocation(&mut lower, 0, pc, 0x1000, 0, rel_type, "lower").unwrap();
+        }
+    }
+
+    #[test]
+    fn aarch64_branch26_rejects_low_bit_misalignment_with_canonical_name() {
+        for (rel_type, expected_name) in [
+            (RelocationType::Jump26, "Jump26"),
+            (RelocationType::Call26, "Call26"),
+        ] {
+            let mut buf = 0u32.to_le_bytes().to_vec();
+            let err = apply_relocation(&mut buf, 0, 0, 5, 0, rel_type, "misaligned").unwrap_err();
+            assert!(matches!(
+                err,
+                LinkError::RelocationOverflow { symbol, rel_type }
+                    if symbol == "misaligned" && rel_type == expected_name
+            ));
+        }
     }
 
     /// RUE-131 item 9: among multiple WEAK definitions, the first wins; a
@@ -5953,5 +5996,40 @@ mod tests {
         );
         assert_eq!(addr8 % 8, 0, "8-aligned bss symbol at {addr8:#x}");
         assert_eq!(addr16 % 16, 0, "16-aligned bss symbol at {addr16:#x}");
+    }
+
+    #[test]
+    fn elf_text_merge_has_aarch64_instruction_floor_only() {
+        let link_and_read = |target, machine| {
+            let make_text = |byte: u8, symbol: &str| {
+                make_obj(
+                    machine,
+                    vec![Section {
+                        name: ".text".into(),
+                        data: vec![byte, byte.wrapping_add(1), byte.wrapping_add(2)],
+                        size: 3,
+                        flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+                        relocations: Vec::new(),
+                        align: 1,
+                    }],
+                    vec![sym(symbol, Some(0), 0, SymbolBinding::Global)],
+                )
+            };
+            let mut linker = Linker::new(target);
+            linker.add_object(make_text(0xA0, "main")).unwrap();
+            linker.add_object(make_text(0xB0, "second")).unwrap();
+            let output = linker.link("main").unwrap();
+            let code_offset = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
+            output[code_offset..].to_vec()
+        };
+
+        let aarch64 = link_and_read(Target::Aarch64Linux, crate::elf::ElfMachine::Aarch64);
+        assert_eq!(&aarch64[..3], &[0xA0, 0xA1, 0xA2]);
+        assert_eq!(aarch64[3], 0xCC, "AArch64 padding fills the alignment gap");
+        assert_eq!(aarch64[4], 0xB0, "AArch64 text starts on a 4-byte boundary");
+
+        let x86 = link_and_read(Target::X86_64Linux, crate::elf::ElfMachine::X86_64);
+        assert_eq!(&x86[..3], &[0xA0, 0xA1, 0xA2]);
+        assert_eq!(x86[3], 0xB0, "x86 retains its byte alignment floor");
     }
 }
