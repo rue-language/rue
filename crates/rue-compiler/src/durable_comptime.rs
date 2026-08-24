@@ -24,6 +24,43 @@ type SemanticDeclarationDependency = crate::semantic_query_nucleus::SemanticDecl
 type DeferredOwnershipGate = crate::semantic_query_nucleus::DeferredOwnershipGate;
 type DeferredOwnershipApplication = crate::semantic_query_nucleus::DeferredOwnershipApplication;
 
+/// The ownership-site policy is issued with an admitted call rather than
+/// inferred while finishing it. Expression calls may attribute still-deferred
+/// gates to their parent call; structured type calls deliberately preserve
+/// missing applications for an enclosing expression call to fill.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DurableComptimeApplicationPolicy {
+    Preserve,
+    ApplyAtParentCall {
+        application: DeferredOwnershipApplication,
+    },
+}
+
+impl DurableComptimeApplicationPolicy {
+    pub(crate) fn preserve() -> Self {
+        Self::Preserve
+    }
+
+    pub(crate) fn apply_at_parent_call(
+        declaration: crate::declaration_candidate::DeclarationCandidateKey,
+        call_ordinal: u32,
+    ) -> Self {
+        Self::ApplyAtParentCall {
+            application: DeferredOwnershipApplication {
+                declaration,
+                call_ordinal,
+            },
+        }
+    }
+
+    fn application(&self) -> Option<DeferredOwnershipApplication> {
+        match self {
+            Self::Preserve => None,
+            Self::ApplyAtParentCall { application } => Some(application.clone()),
+        }
+    }
+}
+
 /// Effects observed while reducing one durable comptime root.
 ///
 /// The collections deliberately use the same canonical keys and ordering as
@@ -56,7 +93,7 @@ impl DurableComptimeEffects {
     pub(crate) fn merge_child(
         &mut self,
         child: DurableComptimeEffects,
-        application: Option<DeferredOwnershipApplication>,
+        policy: &DurableComptimeApplicationPolicy,
     ) {
         merge_effects_into(
             &mut self.anonymous_nominals,
@@ -65,7 +102,7 @@ impl DurableComptimeEffects {
             child.anonymous_nominals.into_values(),
             child.dependencies,
             child.deferred_ownership,
-            application,
+            policy.application(),
         );
     }
 
@@ -74,7 +111,7 @@ impl DurableComptimeEffects {
         anonymous_nominals: &[DurableAnonymousNominal],
         dependencies: &[SemanticDeclarationDependency],
         deferred_ownership: &[DeferredOwnershipGate],
-        application: Option<DeferredOwnershipApplication>,
+        policy: &DurableComptimeApplicationPolicy,
     ) {
         merge_effects_into(
             &mut self.anonymous_nominals,
@@ -83,7 +120,7 @@ impl DurableComptimeEffects {
             anonymous_nominals.iter().cloned(),
             dependencies.iter().cloned(),
             deferred_ownership.iter().cloned(),
-            application,
+            policy.application(),
         );
     }
 
@@ -114,7 +151,7 @@ impl DurableComptimeEffects {
         anonymous_nominals: &mut BTreeMap<crate::AnonymousNominalKey, DurableAnonymousNominal>,
         dependencies: &mut BTreeSet<SemanticDeclarationDependency>,
         deferred_ownership: &mut BTreeSet<DeferredOwnershipGate>,
-        application: Option<DeferredOwnershipApplication>,
+        policy: &DurableComptimeApplicationPolicy,
     ) {
         merge_effects_into(
             anonymous_nominals,
@@ -123,7 +160,7 @@ impl DurableComptimeEffects {
             self.anonymous_nominals.into_values(),
             self.dependencies,
             self.deferred_ownership,
-            application,
+            policy.application(),
         );
     }
 }
@@ -163,20 +200,49 @@ fn merge_effects_into(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DurableComptimeCallContext {
     query: crate::semantic_query_nucleus::ComptimeCallQueryKey,
-    call_ordinal: u32,
     parent_producer: crate::StableDefinitionKey,
     parent_declaration: crate::declaration_candidate::DeclarationCandidateKey,
     child_producer: crate::StableDefinitionKey,
     program: crate::body_query::ForeignComptimeProgramKey,
+    application_policy: DurableComptimeApplicationPolicy,
 }
 
 impl DurableComptimeCallContext {
+    #[cfg(test)]
     #[allow(dead_code)]
-    pub(crate) fn from_admitted(
+    pub(crate) fn from_admitted_expression(
         admitted: &crate::body_query::OwnedForeignComptimeProgram,
         parent_producer: crate::StableDefinitionKey,
         parent_declaration: crate::declaration_candidate::DeclarationCandidateKey,
         call_ordinal: u32,
+    ) -> Result<Self, DurableComptimeLifecycleError> {
+        let policy = DurableComptimeApplicationPolicy::apply_at_parent_call(
+            parent_declaration.clone(),
+            call_ordinal,
+        );
+        Self::from_admitted_with_policy(admitted, parent_producer, parent_declaration, policy)
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn from_admitted_structured(
+        admitted: &crate::body_query::OwnedForeignComptimeProgram,
+        parent_producer: crate::StableDefinitionKey,
+        parent_declaration: crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Result<Self, DurableComptimeLifecycleError> {
+        Self::from_admitted_with_policy(
+            admitted,
+            parent_producer,
+            parent_declaration,
+            DurableComptimeApplicationPolicy::preserve(),
+        )
+    }
+
+    fn from_admitted_with_policy(
+        admitted: &crate::body_query::OwnedForeignComptimeProgram,
+        parent_producer: crate::StableDefinitionKey,
+        parent_declaration: crate::declaration_candidate::DeclarationCandidateKey,
+        application_policy: DurableComptimeApplicationPolicy,
     ) -> Result<Self, DurableComptimeLifecycleError> {
         let child_producer = admitted.plan.key.producer.clone();
         let Some(child_declaration) =
@@ -210,7 +276,6 @@ impl DurableComptimeCallContext {
         };
         Ok(Self {
             query,
-            call_ordinal,
             parent_producer,
             parent_declaration,
             child_producer: child_producer.clone(),
@@ -218,6 +283,7 @@ impl DurableComptimeCallContext {
                 producer: child_producer,
                 configuration,
             },
+            application_policy,
         })
     }
 
@@ -227,6 +293,34 @@ impl DurableComptimeCallContext {
         parent_declaration: crate::declaration_candidate::DeclarationCandidateKey,
         child_producer: crate::StableDefinitionKey,
         call_ordinal: u32,
+    ) -> Self {
+        let policy = DurableComptimeApplicationPolicy::apply_at_parent_call(
+            parent_declaration.clone(),
+            call_ordinal,
+        );
+        Self::for_test_with_policy(parent_producer, parent_declaration, child_producer, policy)
+    }
+
+    #[cfg(test)]
+    fn for_test_structured(
+        parent_producer: crate::StableDefinitionKey,
+        parent_declaration: crate::declaration_candidate::DeclarationCandidateKey,
+        child_producer: crate::StableDefinitionKey,
+    ) -> Self {
+        Self::for_test_with_policy(
+            parent_producer,
+            parent_declaration,
+            child_producer,
+            DurableComptimeApplicationPolicy::preserve(),
+        )
+    }
+
+    #[cfg(test)]
+    fn for_test_with_policy(
+        parent_producer: crate::StableDefinitionKey,
+        parent_declaration: crate::declaration_candidate::DeclarationCandidateKey,
+        child_producer: crate::StableDefinitionKey,
+        application_policy: DurableComptimeApplicationPolicy,
     ) -> Self {
         let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
             target: rue_target::Target::X86_64Linux,
@@ -244,7 +338,6 @@ impl DurableComptimeCallContext {
                 type_arguments: Arc::from([]),
                 value_arguments: Arc::from([]),
             },
-            call_ordinal,
             parent_producer,
             parent_declaration,
             child_producer: child_producer.clone(),
@@ -252,11 +345,31 @@ impl DurableComptimeCallContext {
                 producer: child_producer,
                 configuration,
             },
+            application_policy,
         }
     }
 }
 
-/// Non-clone lifecycle capability issued only after ordered call admission.
+/// Non-clone edge capability issued after parent validation and before lookup.
+///
+/// An edge is the single capability for either side of a ready/admitted
+/// lookup.  A ready projection consumes it directly; an admitted program
+/// converts it into an entered-call ticket.  Its fields remain private so a
+/// host cannot reconstruct policy from an unordered binding map or use an
+/// edge for another call.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct DurableComptimeCallEdge {
+    owner: u64,
+    serial: u64,
+    expected_parent: Option<(u64, u64)>,
+    parent_producer: crate::StableDefinitionKey,
+    parent_declaration: crate::declaration_candidate::DeclarationCandidateKey,
+    application_policy: DurableComptimeApplicationPolicy,
+    consumed: bool,
+}
+
+/// Non-clone lifecycle capability issued only after an edge is admitted.
 /// Its fields remain private so a host cannot reconstruct a ticket from an
 /// unordered binding map or use a ticket for another call.
 #[allow(dead_code)] // opaque capability consumed by the root-integrated AIR host
@@ -283,6 +396,7 @@ pub(crate) enum DurableComptimeLifecycleError {
     OutOfOrder,
     TicketReused,
     InvalidContext,
+    ReadyProjectionRequired,
 }
 
 #[allow(dead_code)]
@@ -304,6 +418,7 @@ pub(crate) struct DurableComptimeCallLifecycle {
     active: Vec<(u64, u64)>,
     states: BTreeMap<(u64, u64), DurableTicketState>,
     contexts: BTreeMap<(u64, u64), DurableComptimeCallContext>,
+    scopes: BTreeMap<(u64, u64), DurableComptimeEffects>,
     effects: DurableComptimeEffects,
 }
 
@@ -331,17 +446,80 @@ impl DurableComptimeCallLifecycle {
             active: Vec::new(),
             states: BTreeMap::new(),
             contexts: BTreeMap::new(),
+            scopes: BTreeMap::new(),
             effects: DurableComptimeEffects::default(),
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare(
         &mut self,
         context: DurableComptimeCallContext,
     ) -> Result<DurableComptimeCallTicket, DurableComptimeLifecycleError> {
         let expected_parent = self.active.last().copied();
-        let (expected_producer, expected_declaration) = self
-            .active
+        let (expected_producer, expected_declaration) = self.current_parent_identity();
+        if context.parent_producer != expected_producer
+            || context.parent_declaration != expected_declaration
+        {
+            return Err(DurableComptimeLifecycleError::InvalidContext);
+        }
+        let serial = self.next_serial;
+        self.next_serial = self.next_serial.saturating_add(1);
+        Ok(DurableComptimeCallTicket {
+            owner: self.owner,
+            serial,
+            context,
+            expected_parent,
+            consumed: false,
+        })
+    }
+
+    /// Issue one validated edge for either a ready projection or an admitted
+    /// foreign program.  No lifecycle scope is created until an admitted edge
+    /// is entered.
+    pub(crate) fn prepare_expression_edge(
+        &mut self,
+        call_ordinal: u32,
+    ) -> Result<DurableComptimeCallEdge, DurableComptimeLifecycleError> {
+        let (_, parent_declaration) = self.current_parent_identity();
+        self.prepare_edge_with_policy(DurableComptimeApplicationPolicy::apply_at_parent_call(
+            parent_declaration,
+            call_ordinal,
+        ))
+    }
+
+    pub(crate) fn prepare_structured_edge(
+        &mut self,
+    ) -> Result<DurableComptimeCallEdge, DurableComptimeLifecycleError> {
+        self.prepare_edge_with_policy(DurableComptimeApplicationPolicy::preserve())
+    }
+
+    fn prepare_edge_with_policy(
+        &mut self,
+        application_policy: DurableComptimeApplicationPolicy,
+    ) -> Result<DurableComptimeCallEdge, DurableComptimeLifecycleError> {
+        let expected_parent = self.active.last().copied();
+        let (parent_producer, parent_declaration) = self.current_parent_identity();
+        let serial = self.next_serial;
+        self.next_serial = self.next_serial.saturating_add(1);
+        Ok(DurableComptimeCallEdge {
+            owner: self.owner,
+            serial,
+            expected_parent,
+            parent_producer,
+            parent_declaration,
+            application_policy,
+            consumed: false,
+        })
+    }
+
+    fn current_parent_identity(
+        &self,
+    ) -> (
+        crate::StableDefinitionKey,
+        crate::declaration_candidate::DeclarationCandidateKey,
+    ) {
+        self.active
             .last()
             .and_then(|key| self.contexts.get(key))
             .map(|context| {
@@ -355,19 +533,37 @@ impl DurableComptimeCallLifecycle {
                     self.parent_producer.clone(),
                     self.parent_declaration.clone(),
                 )
-            });
-        if context.parent_producer != expected_producer
-            || context.parent_declaration != expected_declaration
-        {
+            })
+    }
+
+    /// Consume an edge on the admitted-program branch and derive the exact
+    /// query context from the owned program. Admission deliberately does not
+    /// activate a scope; `enter` remains the sole activation point.
+    pub(crate) fn ticket_from_admitted_edge(
+        &mut self,
+        edge: DurableComptimeCallEdge,
+        admitted: &crate::body_query::OwnedForeignComptimeProgram,
+    ) -> Result<DurableComptimeCallTicket, DurableComptimeLifecycleError> {
+        if edge.consumed {
+            return Err(DurableComptimeLifecycleError::TicketReused);
+        }
+        if edge.owner != self.owner || edge.serial >= self.next_serial {
+            return Err(DurableComptimeLifecycleError::TicketMismatch);
+        }
+        if self.active.last().copied() != edge.expected_parent {
             return Err(DurableComptimeLifecycleError::InvalidContext);
         }
-        let serial = self.next_serial;
-        self.next_serial = self.next_serial.saturating_add(1);
+        let context = DurableComptimeCallContext::from_admitted_with_policy(
+            admitted,
+            edge.parent_producer.clone(),
+            edge.parent_declaration.clone(),
+            edge.application_policy.clone(),
+        )?;
         Ok(DurableComptimeCallTicket {
-            owner: self.owner,
-            serial,
+            owner: edge.owner,
+            serial: edge.serial,
             context,
-            expected_parent,
+            expected_parent: edge.expected_parent,
             consumed: false,
         })
     }
@@ -393,11 +589,78 @@ impl DurableComptimeCallLifecycle {
                 }
                 self.states.insert(key, DurableTicketState::Entered);
                 self.contexts.insert(key, ticket.context.clone());
+                self.scopes.insert(key, DurableComptimeEffects::default());
                 self.active.push(key);
                 Ok(())
             }
             Some(DurableTicketState::Entered) => Err(DurableComptimeLifecycleError::TicketReused),
         }
+    }
+
+    /// Merge a ready foreign-call projection without manufacturing a ticket.
+    ///
+    /// A ready projection is already a Known result, so it has no entered
+    /// child scope to finish. It still crosses the same explicit edge policy
+    /// as an entered call: first retain the projection's observations with
+    /// `Preserve`, then apply the edge policy as it enters the active parent
+    /// scope (or the root when there is no active call).
+    pub(crate) fn merge_ready_projection(
+        &mut self,
+        edge: &mut DurableComptimeCallEdge,
+        projection: &crate::semantic_query_nucleus::ComptimeCallProjection,
+    ) -> Result<(), DurableComptimeLifecycleError> {
+        self.validate_ready_edge(edge)?;
+        let mut ready = DurableComptimeEffects::default();
+        let preserve = DurableComptimeApplicationPolicy::preserve();
+        ready.merge_projection(
+            &projection.anonymous_nominals,
+            &projection.dependencies,
+            &projection.deferred_ownership,
+            &preserve,
+        );
+        edge.consumed = true;
+        if let Some(parent) = self.active.last().copied() {
+            self.scopes
+                .get_mut(&parent)
+                .expect("active parent must retain its effect scope")
+                .merge_child(ready, &edge.application_policy);
+        } else {
+            self.effects.merge_child(ready, &edge.application_policy);
+        }
+        Ok(())
+    }
+
+    /// Consume a foreign-call lookup only when it contains a ready Known
+    /// projection. Admission failures, misses, and query failures cannot
+    /// publish effects through this path.
+    pub(crate) fn merge_ready_lookup(
+        &mut self,
+        edge: &mut DurableComptimeCallEdge,
+        lookup: ForeignComptimeCallLookup,
+    ) -> Result<(), DurableComptimeLifecycleError> {
+        let ForeignComptimeCallLookup::Ready(projection) = lookup else {
+            return Err(DurableComptimeLifecycleError::ReadyProjectionRequired);
+        };
+        self.merge_ready_projection(edge, &projection)
+    }
+
+    fn validate_ready_edge(
+        &self,
+        edge: &DurableComptimeCallEdge,
+    ) -> Result<(), DurableComptimeLifecycleError> {
+        if edge.owner != self.owner || edge.serial >= self.next_serial {
+            return Err(DurableComptimeLifecycleError::TicketMismatch);
+        }
+        if edge.consumed {
+            return Err(DurableComptimeLifecycleError::TicketReused);
+        }
+        if self.active.last().copied() != edge.expected_parent {
+            return Err(DurableComptimeLifecycleError::InvalidContext);
+        }
+        if self.states.contains_key(&(edge.owner, edge.serial)) {
+            return Err(DurableComptimeLifecycleError::TicketReused);
+        }
+        Ok(())
     }
 
     pub(crate) fn validate_finish(
@@ -434,13 +697,28 @@ impl DurableComptimeCallLifecycle {
         ticket.consumed = true;
         self.active.pop();
         self.states.remove(&key);
-        self.contexts.remove(&key);
-        let application = Some(DeferredOwnershipApplication {
-            declaration: ticket.context.parent_declaration.clone(),
-            call_ordinal: ticket.context.call_ordinal,
-        });
+        let context = self
+            .contexts
+            .remove(&key)
+            .expect("entered ticket must retain its context");
+        let mut scope = self
+            .scopes
+            .remove(&key)
+            .expect("entered ticket must retain its effect scope");
         if matches!(outcome, rue_air::ComptimeOutcome::Known(_)) {
-            self.effects.merge_child(child, application);
+            // First retain all direct observations alongside effects from
+            // completed nested calls. The current call's policy is applied
+            // only when this complete scope crosses into its parent/root.
+            let preserve = DurableComptimeApplicationPolicy::preserve();
+            scope.merge_child(child, &preserve);
+            if let Some(parent) = self.active.last().copied() {
+                self.scopes
+                    .get_mut(&parent)
+                    .expect("active parent must retain its effect scope")
+                    .merge_child(scope, &context.application_policy);
+            } else {
+                self.effects.merge_child(scope, &context.application_policy);
+            }
         }
         Ok(())
     }
@@ -1117,6 +1395,25 @@ mod effect_lifecycle_tests {
         )
     }
 
+    fn structured_context() -> DurableComptimeCallContext {
+        structured_context_with_parent(definition("parent"))
+    }
+
+    fn structured_context_with_parent(
+        parent_producer: crate::StableDefinitionKey,
+    ) -> DurableComptimeCallContext {
+        let parent_declaration =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(
+                &parent_producer,
+            )
+            .unwrap();
+        DurableComptimeCallContext::for_test_structured(
+            parent_producer,
+            parent_declaration,
+            definition("child"),
+        )
+    }
+
     fn lifecycle() -> DurableComptimeCallLifecycle {
         DurableComptimeCallLifecycle::new(
             definition("parent"),
@@ -1148,6 +1445,60 @@ mod effect_lifecycle_tests {
     fn child_effects(ordinal: u32) -> DurableComptimeEffects {
         let mut effects = DurableComptimeEffects::default();
         effects.observe_deferred_ownership(gate(ordinal));
+        effects
+    }
+
+    fn ready_projection(ordinal: u32) -> crate::semantic_query_nucleus::ComptimeCallProjection {
+        crate::semantic_query_nucleus::ComptimeCallProjection {
+            result: crate::semantic_query_nucleus::ComptimeCallResultProjection::Value(
+                DurableConstValue::Integer(ordinal.into()),
+            ),
+            anonymous_nominals: Arc::from([]),
+            dependencies: Arc::from([]),
+            deferred_ownership: Arc::from([gate(ordinal)]),
+        }
+    }
+
+    fn child_effects_with_application(
+        ordinal: u32,
+        declaration: crate::declaration_candidate::DeclarationCandidateKey,
+        call_ordinal: u32,
+    ) -> DurableComptimeEffects {
+        let mut effects = DurableComptimeEffects::default();
+        let mut gate = gate(ordinal);
+        gate.application = Some(
+            crate::semantic_query_nucleus::DeferredOwnershipApplication {
+                declaration,
+                call_ordinal,
+            },
+        );
+        effects.observe_deferred_ownership(gate);
+        effects
+    }
+
+    fn observed_effects() -> DurableComptimeEffects {
+        let mut effects = DurableComptimeEffects::default();
+        let identity = crate::AnonymousNominalKey {
+            kind: rue_air::AnonymousNominalKind::Struct,
+            producer: crate::StableProducerId::Definition(definition("parent")),
+            anchor: rue_rir::RirStructuralAnchor::new(Vec::new()),
+        };
+        effects.observe_anonymous_nominal(DurableAnonymousNominal::new(
+            identity,
+            crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+                fields: Arc::from([]),
+                methods: Arc::from([]),
+            },
+            Arc::from([]),
+            Arc::from([]),
+        ));
+        effects.observe_dependency(SemanticDeclarationDependency {
+            source: definition("parent"),
+            kind: rue_air::DeclarationTypeDependencyKind::Body,
+            target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                definition("child"),
+            ),
+        });
         effects
     }
 
@@ -1269,9 +1620,13 @@ mod effect_lifecycle_tests {
         let parent_declaration =
             crate::revisioned_query_database::declaration_candidate_for_stable_key(&parent)
                 .unwrap();
-        let context =
-            DurableComptimeCallContext::from_admitted(&admitted, parent, parent_declaration, 42)
-                .unwrap();
+        let context = DurableComptimeCallContext::from_admitted_expression(
+            &admitted,
+            parent.clone(),
+            parent_declaration.clone(),
+            42,
+        )
+        .unwrap();
         assert_eq!(context.program, admitted.plan.key);
         assert_eq!(context.child_producer, producer);
         assert_eq!(
@@ -1284,12 +1639,49 @@ mod effect_lifecycle_tests {
         );
         assert_eq!(context.query.type_arguments, seed.type_arguments);
         assert_eq!(context.query.value_arguments, seed.value_arguments);
-        assert_eq!(context.call_ordinal, 42);
+        assert_eq!(
+            context.application_policy,
+            DurableComptimeApplicationPolicy::ApplyAtParentCall {
+                application: crate::semantic_query_nucleus::DeferredOwnershipApplication {
+                    declaration: context.parent_declaration.clone(),
+                    call_ordinal: 42,
+                },
+            }
+        );
+        let structured = DurableComptimeCallContext::from_admitted_structured(
+            &admitted,
+            parent,
+            parent_declaration,
+        )
+        .unwrap();
+        assert_eq!(
+            structured.application_policy,
+            DurableComptimeApplicationPolicy::Preserve
+        );
+
+        // The same pre-lookup edge can choose the admitted branch and derive
+        // the child query only from the owned program payload.
+        let mut lifecycle = lifecycle();
+        let edge = lifecycle.prepare_expression_edge(42).unwrap();
+        let mut ticket = lifecycle
+            .ticket_from_admitted_edge(edge, &admitted)
+            .unwrap();
+        assert!(lifecycle.active.is_empty());
+        lifecycle.enter(&ticket).unwrap();
+        assert_eq!(lifecycle.active.len(), 1);
+        lifecycle
+            .finish(
+                &mut ticket,
+                &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                DurableComptimeEffects::default(),
+            )
+            .unwrap();
+        lifecycle.finish_root().unwrap();
 
         let mut inconsistent = admitted.clone();
         inconsistent.plan.candidate = sibling;
         assert!(matches!(
-            DurableComptimeCallContext::from_admitted(
+            DurableComptimeCallContext::from_admitted_expression(
                 &inconsistent,
                 definition("parent"),
                 crate::revisioned_query_database::declaration_candidate_for_stable_key(
@@ -1348,6 +1740,501 @@ mod effect_lifecycle_tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn structured_calls_preserve_missing_application_directly() {
+        let mut lifecycle = lifecycle();
+        let mut ticket = lifecycle.prepare(structured_context()).unwrap();
+        lifecycle.enter(&ticket).unwrap();
+        lifecycle
+            .finish(
+                &mut ticket,
+                &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                child_effects(5),
+            )
+            .unwrap();
+        let effects = lifecycle.finish_root().unwrap();
+        assert!(
+            effects
+                .deferred_ownership()
+                .next()
+                .unwrap()
+                .application
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ready_projection_merges_at_root_with_its_edge_policy_without_a_ticket() {
+        let mut expression = lifecycle();
+        let mut expression_edge = expression.prepare_expression_edge(10).unwrap();
+        expression
+            .merge_ready_lookup(
+                &mut expression_edge,
+                ForeignComptimeCallLookup::Ready(ready_projection(10)),
+            )
+            .unwrap();
+        let expression_effects = expression.finish_root().unwrap();
+        assert_eq!(
+            expression_effects
+                .deferred_ownership()
+                .next()
+                .unwrap()
+                .application
+                .as_ref()
+                .unwrap()
+                .call_ordinal,
+            10
+        );
+
+        let mut structured = lifecycle();
+        let mut structured_edge = structured.prepare_structured_edge().unwrap();
+        structured
+            .merge_ready_projection(&mut structured_edge, &ready_projection(11))
+            .unwrap();
+        assert!(
+            structured
+                .finish_root()
+                .unwrap()
+                .deferred_ownership()
+                .next()
+                .unwrap()
+                .application
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ready_projection_uses_the_active_edge_policy_in_both_nested_directions() {
+        let mut expression_outer = lifecycle();
+        let mut outer = expression_outer.prepare(context(20)).unwrap();
+        expression_outer.enter(&outer).unwrap();
+        let mut inner_edge = expression_outer.prepare_structured_edge().unwrap();
+        expression_outer
+            .merge_ready_projection(&mut inner_edge, &ready_projection(21))
+            .unwrap();
+        expression_outer
+            .finish(
+                &mut outer,
+                &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                DurableComptimeEffects::default(),
+            )
+            .unwrap();
+        let effects = expression_outer.finish_root().unwrap();
+        assert_eq!(
+            effects
+                .deferred_ownership()
+                .next()
+                .unwrap()
+                .application
+                .as_ref()
+                .unwrap()
+                .call_ordinal,
+            20
+        );
+
+        let mut structured_outer = lifecycle();
+        let mut outer = structured_outer.prepare(structured_context()).unwrap();
+        structured_outer.enter(&outer).unwrap();
+        let mut inner_edge = structured_outer.prepare_expression_edge(22).unwrap();
+        structured_outer
+            .merge_ready_projection(&mut inner_edge, &ready_projection(22))
+            .unwrap();
+        structured_outer
+            .finish(
+                &mut outer,
+                &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                DurableComptimeEffects::default(),
+            )
+            .unwrap();
+        let effects = structured_outer.finish_root().unwrap();
+        assert_eq!(
+            effects
+                .deferred_ownership()
+                .next()
+                .unwrap()
+                .application
+                .as_ref()
+                .unwrap()
+                .call_ordinal,
+            22
+        );
+    }
+
+    #[test]
+    fn ready_projection_is_dropped_when_the_active_outer_call_is_not_known() {
+        let mut lifecycle = lifecycle();
+        let mut outer = lifecycle.prepare(context(30)).unwrap();
+        lifecycle.enter(&outer).unwrap();
+        let mut inner_edge = lifecycle.prepare_structured_edge().unwrap();
+        lifecycle
+            .merge_ready_projection(&mut inner_edge, &ready_projection(31))
+            .unwrap();
+        lifecycle
+            .finish(
+                &mut outer,
+                &rue_air::ComptimeOutcome::<(), ()>::RuntimeDependent,
+                DurableComptimeEffects::default(),
+            )
+            .unwrap();
+        assert!(lifecycle.finish_root().unwrap().is_empty());
+    }
+
+    #[test]
+    fn repeated_ready_projection_edges_preserve_distinct_expression_ordinals() {
+        let mut lifecycle = lifecycle();
+        for ordinal in [40, 41] {
+            let mut edge = lifecycle.prepare_expression_edge(ordinal).unwrap();
+            lifecycle
+                .merge_ready_projection(&mut edge, &ready_projection(ordinal))
+                .unwrap();
+        }
+        let applications = lifecycle
+            .finish_root()
+            .unwrap()
+            .deferred_ownership()
+            .map(|gate| gate.application.as_ref().unwrap().call_ordinal)
+            .collect::<Vec<_>>();
+        assert_eq!(applications, vec![40, 41]);
+    }
+
+    #[test]
+    fn non_ready_lookup_cannot_publish_or_consume_a_ready_edge() {
+        let mut lifecycle = lifecycle();
+        let mut edge = lifecycle.prepare_expression_edge(50).unwrap();
+        assert_eq!(
+            lifecycle.merge_ready_lookup(&mut edge, ForeignComptimeCallLookup::NotReady),
+            Err(DurableComptimeLifecycleError::ReadyProjectionRequired)
+        );
+        lifecycle
+            .merge_ready_lookup(
+                &mut edge,
+                ForeignComptimeCallLookup::Ready(ready_projection(50)),
+            )
+            .unwrap();
+        assert_eq!(
+            lifecycle.merge_ready_projection(&mut edge, &ready_projection(51)),
+            Err(DurableComptimeLifecycleError::TicketReused)
+        );
+        assert_eq!(
+            lifecycle
+                .finish_root()
+                .unwrap()
+                .deferred_ownership()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn wrong_lifecycle_ready_merge_preserves_the_edge_for_its_owner() {
+        let mut owner = lifecycle();
+        let mut other = lifecycle();
+        let mut edge = owner.prepare_expression_edge(51).unwrap();
+        let projection = ready_projection(51);
+
+        assert_eq!(
+            other.merge_ready_projection(&mut edge, &projection),
+            Err(DurableComptimeLifecycleError::TicketMismatch)
+        );
+        assert!(other.finish_root().unwrap().is_empty());
+
+        owner
+            .merge_ready_projection(&mut edge, &projection)
+            .unwrap();
+        assert_eq!(owner.finish_root().unwrap().deferred_ownership().count(), 1);
+    }
+
+    #[test]
+    fn mixed_expression_and_structured_scopes_apply_only_at_expression_sites() {
+        let parent_declaration =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&definition(
+                "parent",
+            ))
+            .unwrap();
+        let child_declaration =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&definition(
+                "child",
+            ))
+            .unwrap();
+
+        // Expression outer + structured inner: the outer expression supplies
+        // the only application site to both direct and nested gates.
+        let mut expression_lifecycle = lifecycle();
+        let mut outer = expression_lifecycle.prepare(context(3)).unwrap();
+        expression_lifecycle.enter(&outer).unwrap();
+        let mut inner = expression_lifecycle
+            .prepare(structured_context_with_parent(definition("child")))
+            .unwrap();
+        expression_lifecycle.enter(&inner).unwrap();
+        expression_lifecycle
+            .finish(
+                &mut inner,
+                &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                child_effects(4),
+            )
+            .unwrap();
+        expression_lifecycle
+            .finish(
+                &mut outer,
+                &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                child_effects(3),
+            )
+            .unwrap();
+        let effects = expression_lifecycle.finish_root().unwrap();
+        let applications = effects
+            .deferred_ownership()
+            .map(|gate| gate.application.clone().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(applications.len(), 2);
+        assert!(applications.iter().all(|application| {
+            application.declaration == parent_declaration && application.call_ordinal == 3
+        }));
+
+        // Structured outer + expression inner: the inner expression owns its
+        // application, while the outer structured call preserves its direct
+        // gate as unresolved.
+        let mut structured_lifecycle = lifecycle();
+        let mut outer = structured_lifecycle.prepare(structured_context()).unwrap();
+        structured_lifecycle.enter(&outer).unwrap();
+        let mut inner = structured_lifecycle
+            .prepare(context_with_parent(definition("child"), 4))
+            .unwrap();
+        structured_lifecycle.enter(&inner).unwrap();
+        structured_lifecycle
+            .finish(
+                &mut inner,
+                &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                child_effects(4),
+            )
+            .unwrap();
+        structured_lifecycle
+            .finish(
+                &mut outer,
+                &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                child_effects(3),
+            )
+            .unwrap();
+        let effects = structured_lifecycle.finish_root().unwrap();
+        let mut applications = effects
+            .deferred_ownership()
+            .map(|gate| gate.application.clone());
+        assert!(applications.next().unwrap().is_none());
+        assert_eq!(
+            applications.next().unwrap(),
+            Some(
+                crate::semantic_query_nucleus::DeferredOwnershipApplication {
+                    declaration: child_declaration,
+                    call_ordinal: 4,
+                }
+            )
+        );
+
+        // Structured nesting never manufactures an application.
+        let mut structured_nested_lifecycle = lifecycle();
+        let mut outer = structured_nested_lifecycle
+            .prepare(structured_context())
+            .unwrap();
+        structured_nested_lifecycle.enter(&outer).unwrap();
+        let mut inner = structured_nested_lifecycle
+            .prepare(structured_context_with_parent(definition("child")))
+            .unwrap();
+        structured_nested_lifecycle.enter(&inner).unwrap();
+        structured_nested_lifecycle
+            .finish(
+                &mut inner,
+                &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                child_effects(4),
+            )
+            .unwrap();
+        structured_nested_lifecycle
+            .finish(
+                &mut outer,
+                &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                child_effects(3),
+            )
+            .unwrap();
+        assert!(
+            structured_nested_lifecycle
+                .finish_root()
+                .unwrap()
+                .deferred_ownership()
+                .all(|gate| gate.application.is_none())
+        );
+    }
+
+    #[test]
+    fn non_known_outer_outcome_drops_nested_accumulated_effects() {
+        let mut lifecycle = lifecycle();
+        let mut outer = lifecycle.prepare(context(3)).unwrap();
+        lifecycle.enter(&outer).unwrap();
+        let mut inner = lifecycle
+            .prepare(structured_context_with_parent(definition("child")))
+            .unwrap();
+        lifecycle.enter(&inner).unwrap();
+        lifecycle
+            .finish(
+                &mut inner,
+                &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                child_effects(4),
+            )
+            .unwrap();
+        lifecycle
+            .finish(
+                &mut outer,
+                &rue_air::ComptimeOutcome::<(), ()>::RuntimeDependent,
+                child_effects(3),
+            )
+            .unwrap();
+        assert!(lifecycle.finish_root().unwrap().is_empty());
+    }
+
+    #[test]
+    fn every_non_known_outer_terminal_drops_nested_known_effects() {
+        fn assert_dropped(outcome: rue_air::ComptimeOutcome<(), ()>) {
+            let mut lifecycle = lifecycle();
+            let mut outer = lifecycle.prepare(context(3)).unwrap();
+            lifecycle.enter(&outer).unwrap();
+            let mut inner = lifecycle
+                .prepare(structured_context_with_parent(definition("child")))
+                .unwrap();
+            lifecycle.enter(&inner).unwrap();
+            lifecycle
+                .finish(
+                    &mut inner,
+                    &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                    child_effects(4),
+                )
+                .unwrap();
+            lifecycle
+                .finish(&mut outer, &outcome, child_effects(3))
+                .unwrap();
+            assert!(lifecycle.finish_root().unwrap().is_empty());
+        }
+
+        assert_dropped(rue_air::ComptimeOutcome::RuntimeDependent);
+        assert_dropped(rue_air::ComptimeOutcome::NotReady);
+        assert_dropped(rue_air::ComptimeOutcome::UnsupportedContext);
+        assert_dropped(rue_air::ComptimeOutcome::Trap(rue_air::ComptimeTrap {
+            operation: "test",
+            span: rue_span::Span::new(0, 0),
+        }));
+        assert_dropped(rue_air::ComptimeOutcome::HostFailure(()));
+        assert_dropped(rue_air::ComptimeOutcome::Abort(()));
+    }
+
+    #[test]
+    fn expression_sibling_occurrences_keep_distinct_application_ordinals() {
+        let mut lifecycle = lifecycle();
+        for ordinal in [10, 11] {
+            let mut ticket = lifecycle.prepare(context(ordinal)).unwrap();
+            lifecycle.enter(&ticket).unwrap();
+            lifecycle
+                .finish(
+                    &mut ticket,
+                    &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                    child_effects(ordinal),
+                )
+                .unwrap();
+        }
+        let applications = lifecycle
+            .finish_root()
+            .unwrap()
+            .deferred_ownership()
+            .map(|gate| gate.application.as_ref().unwrap().call_ordinal)
+            .collect::<Vec<_>>();
+        assert_eq!(applications, vec![10, 11]);
+    }
+
+    #[test]
+    fn nested_nominal_and_dependency_observations_merge_once() {
+        let mut lifecycle = lifecycle();
+        let mut outer = lifecycle.prepare(context(3)).unwrap();
+        lifecycle.enter(&outer).unwrap();
+        let mut inner = lifecycle
+            .prepare(context_with_parent(definition("child"), 4))
+            .unwrap();
+        lifecycle.enter(&inner).unwrap();
+        lifecycle
+            .finish(
+                &mut inner,
+                &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                observed_effects(),
+            )
+            .unwrap();
+        lifecycle
+            .finish(
+                &mut outer,
+                &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                observed_effects(),
+            )
+            .unwrap();
+        let effects = lifecycle.finish_root().unwrap();
+        assert_eq!(effects.anonymous_nominals().count(), 1);
+        assert_eq!(effects.dependencies().count(), 1);
+    }
+
+    #[test]
+    fn preexisting_applications_survive_the_full_policy_matrix() {
+        fn finish_pair(
+            outer_context: DurableComptimeCallContext,
+            inner_context: DurableComptimeCallContext,
+        ) -> Vec<Option<crate::semantic_query_nucleus::DeferredOwnershipApplication>> {
+            let mut lifecycle = lifecycle();
+            let mut outer = lifecycle.prepare(outer_context).unwrap();
+            lifecycle.enter(&outer).unwrap();
+            let mut inner = lifecycle.prepare(inner_context).unwrap();
+            lifecycle.enter(&inner).unwrap();
+            let application_declaration =
+                crate::revisioned_query_database::declaration_candidate_for_stable_key(
+                    &definition("child"),
+                )
+                .unwrap();
+            lifecycle
+                .finish(
+                    &mut inner,
+                    &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                    child_effects_with_application(4, application_declaration.clone(), 99),
+                )
+                .unwrap();
+            lifecycle
+                .finish(
+                    &mut outer,
+                    &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                    child_effects_with_application(3, application_declaration, 99),
+                )
+                .unwrap();
+            lifecycle
+                .finish_root()
+                .unwrap()
+                .deferred_ownership()
+                .map(|gate| gate.application.clone())
+                .collect()
+        }
+
+        let expression = context(3);
+        let expression_inner = context_with_parent(definition("child"), 4);
+        let structured = structured_context();
+        let structured_inner = structured_context_with_parent(definition("child"));
+        let expected = Some(
+            crate::semantic_query_nucleus::DeferredOwnershipApplication {
+                declaration:
+                    crate::revisioned_query_database::declaration_candidate_for_stable_key(
+                        &definition("child"),
+                    )
+                    .unwrap(),
+                call_ordinal: 99,
+            },
+        );
+        for applications in [
+            finish_pair(expression.clone(), expression_inner.clone()),
+            finish_pair(expression, structured_inner.clone()),
+            finish_pair(structured.clone(), expression_inner),
+            finish_pair(structured, structured_inner),
+        ] {
+            assert_eq!(applications, vec![expected.clone(), expected.clone()]);
+        }
     }
 
     #[test]
