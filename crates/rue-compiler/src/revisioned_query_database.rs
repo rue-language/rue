@@ -6949,6 +6949,7 @@ struct SemanticConstEvaluator<'a, 'provider> {
     producer: crate::StableProducerId,
     next_call: u32,
     expected_type: Option<crate::durable_semantics::DurableType>,
+    effects: crate::durable_comptime::DurableComptimeEffects,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -7762,7 +7763,7 @@ impl SemanticConstEvaluator<'_, '_> {
                     ..
                 } => key.clone(),
             };
-            self.provider.dependencies.insert(
+            self.effects.observe_dependency(
                 crate::semantic_query_nucleus::SemanticDeclarationDependency {
                     source: self.provider.dependency_source.clone(),
                     kind: rue_air::DeclarationTypeDependencyKind::Body,
@@ -7785,7 +7786,7 @@ impl SemanticConstEvaluator<'_, '_> {
         }
         if let Some(candidate) = self.resolve_candidate(&name, DefinitionKind::Function)? {
             let identity = self.resolve_identity(candidate)?;
-            self.provider.dependencies.insert(
+            self.effects.observe_dependency(
                 crate::semantic_query_nucleus::SemanticDeclarationDependency {
                     source: self.provider.dependency_source.clone(),
                     kind: rue_air::DeclarationTypeDependencyKind::Body,
@@ -7802,7 +7803,7 @@ impl SemanticConstEvaluator<'_, '_> {
         for kind in [DefinitionKind::Struct, DefinitionKind::Enum] {
             if let Some(candidate) = self.resolve_candidate(&name, kind)? {
                 let identity = self.resolve_identity(candidate)?;
-                self.provider.dependencies.insert(
+                self.effects.observe_dependency(
                     crate::semantic_query_nucleus::SemanticDeclarationDependency {
                         source: self.provider.dependency_source.clone(),
                         kind: rue_air::DeclarationTypeDependencyKind::Body,
@@ -7905,7 +7906,7 @@ impl SemanticConstEvaluator<'_, '_> {
             .provider
             .identity(candidate.clone())
             .map_err(Self::provider_error)?;
-        self.provider.dependencies.insert(
+        self.effects.observe_dependency(
             crate::semantic_query_nucleus::SemanticDeclarationDependency {
                 source: self.provider.dependency_source.clone(),
                 kind: rue_air::DeclarationTypeDependencyKind::Body,
@@ -8100,28 +8101,16 @@ impl SemanticConstEvaluator<'_, '_> {
         let queried = self.provider.query(query).map_err(Self::provider_error)?;
         match queried {
             SemanticNucleusValue::ComptimeCall(value) => {
-                self.provider.anonymous_nominals.extend(
-                    value
-                        .anonymous_nominals
-                        .iter()
-                        .cloned()
-                        .map(|value| (value.identity.clone(), value)),
-                );
-                self.provider
-                    .dependencies
-                    .extend(value.dependencies.iter().cloned());
-                self.provider.deferred_ownership.extend(
-                    value.deferred_ownership.iter().cloned().map(|mut gate| {
-                        if gate.application.is_none() {
-                            gate.application = Some(
-                                crate::semantic_query_nucleus::DeferredOwnershipApplication {
-                                    declaration: self.declaration.declaration.clone(),
-                                    call_ordinal,
-                                },
-                            );
-                        }
-                        gate
-                    }),
+                self.effects.merge_projection(
+                    &value.anonymous_nominals,
+                    &value.dependencies,
+                    &value.deferred_ownership,
+                    Some(
+                        crate::semantic_query_nucleus::DeferredOwnershipApplication {
+                            declaration: self.declaration.declaration.clone(),
+                            call_ordinal,
+                        },
+                    ),
                 );
                 Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
                     match value.result {
@@ -8330,9 +8319,8 @@ impl SemanticConstEvaluator<'_, '_> {
         }
         .with_canonical_producer()
         .into_owned();
-        self.provider.anonymous_nominals.insert(
-            identity.clone(),
-            DurableAnonymousNominal::new(
+        self.effects
+            .observe_anonymous_nominal(DurableAnonymousNominal::new(
                 identity.clone(),
                 shape,
                 self.provider
@@ -8347,8 +8335,7 @@ impl SemanticConstEvaluator<'_, '_> {
                     .map(|(name, value)| (name.clone(), value.clone()))
                     .collect::<Vec<_>>()
                     .into(),
-            ),
-        );
+            ));
         Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
             V::Type(DurableType::AnonymousNominal(identity)),
             DurableType::ComptimeType,
@@ -8635,7 +8622,7 @@ impl SemanticConstEvaluator<'_, '_> {
                 // the gate instead of inspecting nominal signatures here lets a
                 // recursive but indirect type graph finish before the keyed
                 // ownership query validates it.
-                self.provider.deferred_ownership.insert(
+                self.effects.observe_deferred_ownership(
                     crate::semantic_query_nucleus::DeferredOwnershipGate {
                         kind: if intrinsic_name.as_ref() == "require_droppable" {
                             crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireDroppable
@@ -8768,7 +8755,7 @@ impl SemanticConstEvaluator<'_, '_> {
                             ..
                         } => key.clone(),
                     };
-                    self.provider.dependencies.insert(
+                    self.effects.observe_dependency(
                         crate::semantic_query_nucleus::SemanticDeclarationDependency {
                             source: self.provider.dependency_source.clone(),
                             kind: rue_air::DeclarationTypeDependencyKind::Body,
@@ -8792,7 +8779,7 @@ impl SemanticConstEvaluator<'_, '_> {
                             .provider
                             .identity(candidate)
                             .map_err(Self::provider_error)?;
-                        self.provider.dependencies.insert(
+                        self.effects.observe_dependency(
                             crate::semantic_query_nucleus::SemanticDeclarationDependency {
                                 source: self.provider.dependency_source.clone(),
                                 kind: rue_air::DeclarationTypeDependencyKind::Body,
@@ -8816,7 +8803,7 @@ impl SemanticConstEvaluator<'_, '_> {
                         .provider
                         .identity(candidate)
                         .map_err(Self::provider_error)?;
-                    self.provider.dependencies.insert(
+                    self.effects.observe_dependency(
                         crate::semantic_query_nucleus::SemanticDeclarationDependency {
                             source: self.provider.dependency_source.clone(),
                             kind: rue_air::DeclarationTypeDependencyKind::Body,
@@ -8862,6 +8849,19 @@ impl SemanticConstEvaluator<'_, '_> {
 }
 
 impl SemanticNucleusTypeProvider<'_> {
+    fn merge_comptime_effects(
+        &mut self,
+        effects: crate::durable_comptime::DurableComptimeEffects,
+        application: Option<crate::semantic_query_nucleus::DeferredOwnershipApplication>,
+    ) {
+        effects.apply_to(
+            &mut self.anonymous_nominals,
+            &mut self.dependencies,
+            &mut self.deferred_ownership,
+            application,
+        );
+    }
+
     fn ffi_shape_failure(
         &mut self,
         ty: &crate::durable_semantics::DurableType,
@@ -13819,9 +13819,14 @@ impl RevisionedQueryDatabase {
                                                     producer: const_producer.clone(),
                                                     next_call: 0,
                                                     expected_type,
+                                                    effects: Default::default(),
                                                 };
-                                                evaluator.eval(*init)
+                                                let result = evaluator.eval(*init);
+                                                let effects = std::mem::take(&mut evaluator.effects);
+                                                (result, effects)
                                             };
+                                            let (result, effects) = result;
+                                            provider.merge_comptime_effects(effects, None);
                                             match result {
                                                 Ok(EvaluatedSemanticConst::Module(target)) => {
                                                     if declared_type.is_some() {
@@ -14331,9 +14336,14 @@ impl RevisionedQueryDatabase {
                                                     producer: producer.clone(),
                                                     next_call: 0,
                                                     expected_type: Some(expected_type),
+                                                    effects: Default::default(),
                                                 };
-                                                evaluator.eval(*body)
+                                                let result = evaluator.eval(*body);
+                                                let effects = std::mem::take(&mut evaluator.effects);
+                                                (result, effects)
                                             };
+                                            let (result, effects) = result;
+                                            provider.merge_comptime_effects(effects, None);
                                             match result {
                                                 Ok(EvaluatedSemanticConst::Value(value))
                                                     if matches!(value.value, crate::durable_semantics::DurableConstValue::Type(_)) =>
