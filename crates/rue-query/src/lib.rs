@@ -3109,6 +3109,20 @@ pub enum RequestExecution {
     Aborted,
 }
 
+/// Result of a non-evaluating registered-query observation.
+///
+/// A ready hit returns the exact retained terminal and records the same
+/// dependency/lease as an ordinary observed reuse. `Miss` means the key has no
+/// retained node or current terminal; `NotReady` means a retained node exists
+/// but its current-revision result is still being published or has an unsafe
+/// handoff. Neither negative result creates a node or starts work.
+#[derive(Debug, Clone)]
+pub enum ReadyQueryProbe<V> {
+    Ready(Arc<QueryTerminal<V>>),
+    Miss,
+    NotReady,
+}
+
 /// Runtime-owned immutable record of one nested query request.
 ///
 /// The value remains owned by its typed terminal. This type-erased lifecycle
@@ -6635,6 +6649,21 @@ where
         })
     }
 
+    /// Lease only an already-indexed node. Unlike `node`, this path never
+    /// mints an incarnation, so a ready-only observation cannot create a
+    /// competing admission authority on a cold key. The shard guard covers
+    /// lookup and the users increment together with retirement's re-check.
+    fn existing_node(&self, key: &K) -> Option<NodeLease<K, V>> {
+        let nodes = self.inner.nodes.shard(key);
+        let node = nodes.get(key)?.clone();
+        node.users.fetch_add(1, Ordering::AcqRel);
+        Some(NodeLease {
+            family: Arc::downgrade(&self.inner),
+            key: key.clone(),
+            node,
+        })
+    }
+
     fn query_task<F>(
         &self,
         task: Arc<Task>,
@@ -6665,6 +6694,130 @@ where
             None,
             true,
         )
+    }
+
+    fn probe_task_registered_ready(
+        &self,
+        task: &Arc<Task>,
+        key: &K,
+        origin_request: u64,
+    ) -> Result<ReadyQueryProbe<V>, QueryAbort> {
+        if task.cancellation.is_canceled() {
+            self.core
+                .metrics
+                .cancellations
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(QueryAbort::Canceled);
+        }
+
+        if let Some(terminal) = task.cached_query(self.inner.token, key) {
+            let exact_node = ExactNodeIdentity {
+                display: terminal.node.clone(),
+                incarnation: terminal.node_incarnation,
+            };
+            if let Some(cycle) = task.stack_cycle(&exact_node) {
+                self.core.metrics.cycles.fetch_add(1, Ordering::Relaxed);
+                return Err(QueryAbort::Cycle(cycle));
+            }
+            if task.cancellation.is_canceled() {
+                self.core
+                    .metrics
+                    .cancellations
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(QueryAbort::Canceled);
+            }
+            self.core.metrics.reuses.fetch_add(1, Ordering::Relaxed);
+            task.observe(&terminal);
+            let result = TaskQueryResult::Terminal {
+                terminal: terminal.clone(),
+                execution: RequestExecution::Reused,
+                work: Vec::new(),
+            };
+            task.record_nested(origin_request, || terminal.node.clone(), &result);
+            return Ok(ReadyQueryProbe::Ready(terminal));
+        }
+
+        // Probe the existing memo index directly. In particular, do not call
+        // `node`: a miss must not mint a node or enter the evaluator path.
+        // The lease pins the exact incarnation across state inspection and
+        // terminal observation, preventing ABA retirement/recreation races.
+        let Some(node_lease) = self.existing_node(key) else {
+            return Ok(ReadyQueryProbe::Miss);
+        };
+        let node = &node_lease.node;
+
+        let candidate = {
+            let state = lock(&node.state);
+            let mut current = None;
+            let mut in_progress = false;
+            for attempt in state.attempts.iter().rev() {
+                if attempt.revision != task.revision {
+                    continue;
+                }
+                match &attempt.state {
+                    AttemptState::Computing { .. } => in_progress = true,
+                    AttemptState::Terminal {
+                        terminal, handoffs, ..
+                    } => {
+                        if current.is_none() {
+                            current = Some((terminal.clone(), handoffs.clone()));
+                        }
+                    }
+                }
+            }
+            if in_progress {
+                None
+            } else {
+                current.map(|(terminal, handoffs)| {
+                    let pin = self
+                        .pin_terminal(&terminal)
+                        .expect("a family pins its own retained terminal");
+                    (terminal, handoffs, pin)
+                })
+            }
+        };
+        let Some((terminal, handoffs, pin)) = candidate else {
+            let state = lock(&node.state);
+            let current_revision_exists = state.attempts.iter().any(|attempt| {
+                attempt.revision == task.revision
+                    && matches!(
+                        &attempt.state,
+                        AttemptState::Computing { .. } | AttemptState::Terminal { .. }
+                    )
+            });
+            return Ok(if current_revision_exists {
+                ReadyQueryProbe::NotReady
+            } else {
+                ReadyQueryProbe::Miss
+            });
+        };
+
+        // A terminal with a pending/invalid handoff is not safe to expose yet.
+        // Leave it untouched so the ordinary request path can retry and own
+        // the handoff lifecycle later.
+        if !task.observe_handoff(handoffs) {
+            drop(pin);
+            return Ok(ReadyQueryProbe::NotReady);
+        }
+        if task.cancellation.is_canceled() {
+            drop(pin);
+            self.core
+                .metrics
+                .cancellations
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(QueryAbort::Canceled);
+        }
+        self.core.metrics.reuses.fetch_add(1, Ordering::Relaxed);
+        task.observe(&terminal);
+        self.lease_observed_pin(task, pin);
+        task.cache_query(self.inner.token, key, &terminal);
+        let result = TaskQueryResult::Terminal {
+            terminal: terminal.clone(),
+            execution: RequestExecution::Reused,
+            work: Vec::new(),
+        };
+        task.record_nested(origin_request, || terminal.node.clone(), &result);
+        Ok(ReadyQueryProbe::Ready(terminal))
     }
 
     fn query_task_registered_for_validation(
@@ -8441,6 +8594,30 @@ impl QueryContext {
             &result,
         );
         result.into_result()
+    }
+
+    /// Observes an already-published exact-current-revision terminal without
+    /// creating a node, evaluating, joining, or waiting. A miss or not-ready
+    /// result is intentionally typed so callers can materialize a separate
+    /// plan without accidentally demanding this registered family.
+    pub fn probe_registered_ready<K, V>(
+        &self,
+        family: &QueryFamily<K, V>,
+        key: K,
+    ) -> Result<ReadyQueryProbe<V>, QueryAbort>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        assert!(
+            family.inner.evaluator.is_some(),
+            "ready probes require a registered evaluator"
+        );
+        if !Arc::ptr_eq(&self.task_runtime(), &family.core) {
+            return Err(QueryAbort::ForeignRuntime);
+        }
+        let request_id = self.task.next_nested_request();
+        family.probe_task_registered_ready(&self.task, &key, request_id)
     }
 
     fn query_registered_ref<K, V>(
@@ -13349,6 +13526,240 @@ mod tests {
             64,
             "predicate enumeration visits the retained-key population"
         );
+    }
+
+    #[test]
+    fn ready_probe_observes_exact_terminal_without_demanding_a_miss() {
+        let runtime = QueryRuntime::new(1);
+        let first = revision(1);
+        publish_empty(&runtime, [first]);
+        let runs = Arc::new(AtomicUsize::new(0));
+        let runs_for_family = runs.clone();
+        let family = runtime
+            .family_with_evaluator::<Key, u64, _>("ready-probe", 8, move |_, _, _| {
+                runs_for_family.fetch_add(1, Ordering::Relaxed);
+                Ok(QueryOutput::success(7))
+            })
+            .unwrap();
+
+        let computed = runtime
+            .request_registered(&family, first, Key("ready"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        assert_eq!(runs.load(Ordering::Relaxed), 1);
+        drop(computed);
+
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>("ready-probe-root", 8, {
+                let family = family.clone();
+                move |context, _, _| {
+                    let ReadyQueryProbe::Ready(terminal) =
+                        context.probe_registered_ready(&family, Key("ready"))?
+                    else {
+                        unreachable!("the setup terminal is current and retained")
+                    };
+                    assert_eq!(terminal.outcome(), &QueryOutcome::Success(7));
+                    Ok(QueryOutput::success(8))
+                }
+            })
+            .unwrap();
+        let root_attempt =
+            runtime.request_registered(&root, first, Key("root"), CancellationToken::new());
+        assert!(root_attempt.abort().is_none());
+        assert_eq!(runs.load(Ordering::Relaxed), 1);
+        assert_eq!(root_attempt.terminal().unwrap().dependencies().len(), 1);
+        assert_eq!(
+            root_attempt
+                .nested_attempts()
+                .iter()
+                .filter(|attempt| attempt.node().family() == "ready-probe")
+                .count(),
+            1
+        );
+
+        drop(root_attempt);
+        drop(root);
+        drop(family);
+    }
+
+    #[test]
+    fn ready_probe_miss_and_stale_do_not_create_or_execute_work() {
+        let runtime = QueryRuntime::new(1);
+        let first = revision(1);
+        let second = revision(2);
+        publish_empty(&runtime, [first, second]);
+        let runs = Arc::new(AtomicUsize::new(0));
+        let runs_for_family = runs.clone();
+        let family = runtime
+            .family_with_evaluator::<Key, u64, _>("ready-probe-negative", 8, move |_, _, _| {
+                runs_for_family.fetch_add(1, Ordering::Relaxed);
+                Ok(QueryOutput::success(1))
+            })
+            .unwrap();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>("ready-probe-negative-root", 8, {
+                let family = family.clone();
+                move |context, _, _| {
+                    assert!(matches!(
+                        context.probe_registered_ready(&family, Key("absent"))?,
+                        ReadyQueryProbe::Miss
+                    ));
+                    Ok(QueryOutput::success(0))
+                }
+            })
+            .unwrap();
+        runtime
+            .request_registered(&root, first, Key("root"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        assert_eq!(runs.load(Ordering::Relaxed), 0);
+        assert!(!family.contains_retained_key(&Key("absent")));
+
+        runtime
+            .request_registered(&family, first, Key("stale"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        assert_eq!(runs.load(Ordering::Relaxed), 1);
+        let stale_root = runtime
+            .family_with_evaluator::<Key, u64, _>("ready-probe-stale-root", 8, {
+                let family = family.clone();
+                move |context, _, _| {
+                    assert!(matches!(
+                        context.probe_registered_ready(&family, Key("stale"))?,
+                        ReadyQueryProbe::Miss
+                    ));
+                    Ok(QueryOutput::success(0))
+                }
+            })
+            .unwrap();
+        runtime
+            .request_registered(&stale_root, second, Key("root"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        assert_eq!(runs.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn ready_probe_reuses_task_cache_after_indexed_terminal_is_retired() {
+        let runtime = QueryRuntime::new(2);
+        let current = revision(1);
+        publish_empty(&runtime, [current]);
+        let family = runtime
+            .family_with_evaluator::<Key, u64, _>("ready-probe-task-cache", 1, |_, _, key| {
+                Ok(QueryOutput::success(if key.0 == "first" { 1 } else { 2 }))
+            })
+            .unwrap();
+        runtime
+            .request_registered(&family, current, Key("first"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>("ready-probe-task-cache-root", 1, {
+                let family = family.clone();
+                let runtime = runtime.clone();
+                move |context, _, _| {
+                    assert!(matches!(
+                        context.probe_registered_ready(&family, Key("first"))?,
+                        ReadyQueryProbe::Ready(_)
+                    ));
+                    let node_lease = family
+                        .existing_node(&Key("first"))
+                        .expect("the first memo incarnation remains indexed");
+                    let attempt_id = lock(&node_lease.node.state)
+                        .attempts
+                        .iter()
+                        .find_map(|attempt| {
+                            matches!(attempt.state, AttemptState::Terminal { .. })
+                                .then_some(attempt.id)
+                        })
+                        .expect("the first incarnation has a terminal attempt");
+                    family.detach_terminal_attempt(&node_lease.node, attempt_id);
+                    assert!(
+                        family.contains_retained_key(&Key("first")),
+                        "the exact-node lease must keep the retired incarnation indexed"
+                    );
+                    drop(node_lease);
+                    assert!(
+                        !family.contains_retained_key(&Key("first")),
+                        "the indexed first incarnation should be retired"
+                    );
+                    runtime
+                        .request_registered(
+                            &family,
+                            current,
+                            Key("first"),
+                            CancellationToken::new(),
+                        )
+                        .into_result()?;
+                    assert!(family.contains_retained_key(&Key("first")));
+                    assert!(matches!(
+                        context.probe_registered_ready(&family, Key("first"))?,
+                        ReadyQueryProbe::Ready(_)
+                    ));
+                    Ok(QueryOutput::success(0))
+                }
+            })
+            .unwrap();
+        runtime
+            .request_registered(&root, current, Key("root"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+    }
+
+    #[test]
+    fn ready_probe_reports_in_progress_without_joining_or_waiting() {
+        let runtime = QueryRuntime::new(2);
+        let current = revision(1);
+        publish_empty(&runtime, [current]);
+        let claimed = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let family = runtime
+            .family_with_evaluator::<Key, u64, _>("ready-probe-progress", 8, {
+                let claimed = claimed.clone();
+                let release = release.clone();
+                let runs = runs.clone();
+                move |_, _, _| {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    claimed.wait();
+                    release.wait();
+                    Ok(QueryOutput::success(1))
+                }
+            })
+            .unwrap();
+        let owner = thread::spawn({
+            let family = family.clone();
+            let runtime = runtime.clone();
+            move || {
+                runtime
+                    .request_registered(&family, current, Key("busy"), CancellationToken::new())
+                    .into_result()
+                    .unwrap()
+            }
+        });
+        claimed.wait();
+
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>("ready-probe-progress-root", 8, {
+                let family = family.clone();
+                move |context, _, _| {
+                    assert!(matches!(
+                        context.probe_registered_ready(&family, Key("busy"))?,
+                        ReadyQueryProbe::NotReady
+                    ));
+                    Ok(QueryOutput::success(2))
+                }
+            })
+            .unwrap();
+        let root_attempt =
+            runtime.request_registered(&root, current, Key("root"), CancellationToken::new());
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert!(root_attempt.terminal().unwrap().dependencies().is_empty());
+        assert!(root_attempt.nested_attempts().is_empty());
+        root_attempt.into_result().unwrap();
+
+        release.wait();
+        owner.join().unwrap();
     }
 
     fn publish_empty(runtime: &QueryRuntime, revisions: impl IntoIterator<Item = Revision>) {

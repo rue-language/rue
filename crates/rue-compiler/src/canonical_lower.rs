@@ -498,6 +498,7 @@ impl DeclarationBodyPlan {
 
 #[derive(Debug)]
 pub(crate) struct DeclarationBodyPlanArtifacts {
+    pub(crate) candidate: crate::declaration_candidate::DeclarationCandidateKey,
     pub(crate) plan: DeclarationBodyPlan,
 }
 
@@ -520,7 +521,9 @@ impl RetainedCharge for DeclarationBodyPlan {
 
 impl RetainedCharge for DeclarationBodyPlanArtifacts {
     fn retained_charge(&self) -> u64 {
-        self.plan.retained_charge()
+        self.candidate
+            .retained_charge()
+            .saturating_add(self.plan.retained_charge())
     }
 }
 
@@ -707,6 +710,7 @@ fn lower_parsed_declaration_body_plan_internal(
     finish_declaration_body_plan(
         editor,
         symbols,
+        candidate.clone(),
         declaration,
         method_owner,
         module.file_id(),
@@ -778,6 +782,7 @@ fn validate_candidate_root(
 fn finish_declaration_body_plan(
     extracted: RirEditor,
     symbols: lasso::ThreadedRodeo,
+    candidate: crate::declaration_candidate::DeclarationCandidateKey,
     declaration: InstRef,
     method_owner: Option<PackedRirMethodOwner>,
     file_id: FileId,
@@ -850,6 +855,7 @@ fn finish_declaration_body_plan(
             other => DeclarationBodyPlanBuildFailure::Validation(Arc::from(format!("{other:?}"))),
         })?;
     Ok(DeclarationBodyPlanArtifacts {
+        candidate,
         plan: DeclarationBodyPlan { packed },
     })
 }
@@ -2107,7 +2113,8 @@ fn target(inout values: [i32; 4]) -> type {
             Arc::new(lower_parsed_declaration_body_plan(&module, &key, || Ok(())).unwrap());
         assert_eq!(
             artifact.retained_charge(),
-            std::mem::size_of::<DeclarationBodyPlanArtifacts>() as u64
+            artifact.candidate.retained_charge()
+                + std::mem::size_of::<DeclarationBodyPlanArtifacts>() as u64
                 + artifact.plan.packed.retained_allocation_charge(),
         );
     }

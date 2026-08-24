@@ -126,6 +126,162 @@ pub(crate) struct OwnedBodyInput {
     pub(crate) artifacts: Arc<crate::canonical_lower::DeclarationBodyPlanArtifacts>,
 }
 
+/// Stable identity of an admitted foreign comptime producer. The producer is
+/// the canonical semantic owner; the configuration is the other part of the
+/// durable identity. Candidate syntax is retained separately as lookup
+/// provenance and is never used as an alternate owner key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ForeignComptimeProgramKey {
+    pub(crate) producer: crate::StableDefinitionKey,
+    pub(crate) configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ForeignComptimeProgramPlan {
+    pub(crate) key: ForeignComptimeProgramKey,
+    /// Compiler-private syntax provenance used to fetch the canonical body
+    /// plan. It is not part of the stable program identity.
+    pub(crate) candidate: crate::declaration_candidate::DeclarationCandidateKey,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ForeignComptimeCallable {
+    pub(crate) body: rue_rir::InstRef,
+    pub(crate) context: crate::ModuleId,
+    pub(crate) root: rue_rir::InstRef,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ForeignComptimeImportOccurrence {
+    /// Owner-local instruction in the admitted RIR. The future host must use
+    /// this only with the `rir` retained by the same program payload.
+    pub(crate) inst: rue_rir::InstRef,
+    pub(crate) occurrence: u32,
+    pub(crate) specifier: Arc<str>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) enum ForeignComptimeProgramProjectionFailure {
+    Materialization(crate::canonical_lower::BodyPlanMaterializationFailure),
+    Artifact(crate::revisioned_query_database::DeclarationBodyPlanFailure),
+    ArtifactQueryFailure(rue_query::QueryFailure),
+    NotFunction { root: rue_rir::InstRef },
+    InvalidProducer(crate::StableDefinitionKey),
+    IdentityMismatch,
+}
+
+impl From<crate::canonical_lower::BodyPlanMaterializationFailure>
+    for ForeignComptimeProgramProjectionFailure
+{
+    fn from(error: crate::canonical_lower::BodyPlanMaterializationFailure) -> Self {
+        Self::Materialization(error)
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ForeignComptimeCallSeed {
+    pub(crate) type_arguments: Arc<[(Arc<str>, crate::durable_semantics::DurableType)]>,
+    pub(crate) value_arguments: Arc<[(Arc<str>, crate::durable_semantics::DurableConstValue)]>,
+}
+
+/// Owned compiler/query-side admission payload for a future durable comptime
+/// host. It is projected from the canonical declaration body plan and owns all
+/// data that would otherwise be borrowed from a revision-local source artifact.
+/// This slice only admits the payload; no evaluator consumes it yet.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct OwnedForeignComptimeProgram {
+    pub(crate) plan: ForeignComptimeProgramPlan,
+    pub(crate) rir: Arc<rue_rir::ValidatedRir>,
+    pub(crate) symbols: Arc<[Arc<str>]>,
+    pub(crate) import_occurrences: Arc<[ForeignComptimeImportOccurrence]>,
+    pub(crate) callable: ForeignComptimeCallable,
+    pub(crate) seed: ForeignComptimeCallSeed,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) enum ForeignComptimeCallLookup {
+    Ready(crate::semantic_query_nucleus::ComptimeCallProjection),
+    ReadyFailure(crate::semantic_query_nucleus::SemanticNucleusFailure),
+    ReadyQueryFailure(rue_query::QueryFailure),
+    Admitted(OwnedForeignComptimeProgram),
+    AdmissionFailure(ForeignComptimeProgramProjectionFailure),
+    NotReady,
+    UnexpectedReadyProjection,
+}
+
+impl OwnedForeignComptimeProgram {
+    #[allow(dead_code)]
+    pub(crate) fn from_body_plan(
+        plan: ForeignComptimeProgramPlan,
+        artifacts: &crate::canonical_lower::DeclarationBodyPlanArtifacts,
+        seed: ForeignComptimeCallSeed,
+        mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+    ) -> Result<Self, ForeignComptimeProgramProjectionFailure> {
+        if artifacts.candidate != plan.candidate {
+            return Err(ForeignComptimeProgramProjectionFailure::IdentityMismatch);
+        }
+        let (rir, spellings, root) = artifacts
+            .plan
+            .materialize_semantic_candidate_rir(&mut checkpoint)
+            .map_err(|error| ForeignComptimeProgramProjectionFailure::Materialization(error))?;
+        let Some(expected_candidate) =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(
+                &plan.key.producer,
+            )
+        else {
+            return Err(ForeignComptimeProgramProjectionFailure::IdentityMismatch);
+        };
+        if expected_candidate != plan.candidate {
+            return Err(ForeignComptimeProgramProjectionFailure::IdentityMismatch);
+        }
+        let body = match &rir.get(root).data {
+            rue_rir::InstData::FnDecl { body, .. } => *body,
+            _ => {
+                return Err(ForeignComptimeProgramProjectionFailure::NotFunction { root });
+            }
+        };
+        let import_occurrences =
+            crate::revisioned_query_database::semantic_candidate_import_occurrences(
+                &rir,
+                &spellings,
+                &mut checkpoint,
+            )
+            .map_err(|error| {
+                ForeignComptimeProgramProjectionFailure::Materialization(
+                    crate::canonical_lower::BodyPlanMaterializationFailure::Query(error),
+                )
+            })?
+            .into_iter()
+            .map(
+                |(inst, (occurrence, specifier))| ForeignComptimeImportOccurrence {
+                    inst,
+                    occurrence,
+                    specifier,
+                },
+            )
+            .collect::<Vec<_>>();
+        Ok(Self {
+            plan: plan.clone(),
+            rir: Arc::new(rir),
+            symbols: spellings.into_iter().map(Arc::from).collect(),
+            import_occurrences: import_occurrences.into(),
+            callable: ForeignComptimeCallable {
+                body,
+                context: plan.candidate.module.clone(),
+                root,
+            },
+            seed,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BodyInputIncomplete {
     UnsupportedInstance,
@@ -914,7 +1070,10 @@ impl BodyTransaction {
 
 #[cfg(test)]
 mod tests {
-    use super::{BodyQueryKey, merge_ordered_unique};
+    use super::{
+        BodyQueryKey, ForeignComptimeCallSeed, ForeignComptimeProgramKey,
+        ForeignComptimeProgramPlan, OwnedForeignComptimeProgram, merge_ordered_unique,
+    };
     use rue_air::Node;
     use std::collections::BTreeSet;
     use std::sync::Arc;
@@ -961,6 +1120,130 @@ mod tests {
             &*merge_ordered_unique(Arc::from([1, 2, 3]), selected),
             &[1, 2, 3]
         );
+    }
+
+    #[test]
+    fn foreign_program_projection_owns_rir_imports_and_preserves_seed_order() {
+        let snapshot = crate::SourceSnapshot::single(
+            "<foreign-program>",
+            "fn target() -> i32 { @import(\"dep\"); 1 } fn sibling() -> i32 { 2 }",
+        )
+        .unwrap();
+        let module = crate::parsed_modules::parse_source_snapshot_modules(&snapshot)
+            .unwrap()
+            .modules()[0]
+            .clone();
+        let candidate = module
+            .definitions()
+            .declaration_keys_in_source_order()
+            .find(|candidate| candidate.name.as_ref() == "target")
+            .unwrap()
+            .clone();
+        let sibling_candidate = module
+            .definitions()
+            .declaration_keys_in_source_order()
+            .find(|candidate| candidate.name.as_ref() == "sibling")
+            .unwrap()
+            .clone();
+        let artifacts =
+            crate::canonical_lower::lower_parsed_declaration_body_plan(&module, &candidate, || {
+                Ok(())
+            })
+            .unwrap();
+        let sibling_artifacts = crate::canonical_lower::lower_parsed_declaration_body_plan(
+            &module,
+            &sibling_candidate,
+            || Ok(()),
+        )
+        .unwrap();
+        let producer = crate::StableDefinitionKey::from_stable_parts(
+            candidate.module.clone(),
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            candidate.name.clone(),
+            None,
+        );
+        let plan = ForeignComptimeProgramPlan {
+            key: ForeignComptimeProgramKey {
+                producer,
+                configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                    target: rue_target::Target::X86_64Linux,
+                    preview_features: crate::StablePreviewFeatures::new(
+                        &crate::PreviewFeatures::default(),
+                    ),
+                },
+            },
+            candidate,
+        };
+        let seed = ForeignComptimeCallSeed {
+            type_arguments: Arc::from([
+                (Arc::from("z"), crate::durable_semantics::DurableType::I32),
+                (Arc::from("a"), crate::durable_semantics::DurableType::I64),
+            ]),
+            value_arguments: Arc::from([
+                (
+                    Arc::from("z"),
+                    crate::durable_semantics::DurableConstValue::Integer(9),
+                ),
+                (
+                    Arc::from("a"),
+                    crate::durable_semantics::DurableConstValue::Integer(1),
+                ),
+            ]),
+        };
+        let program =
+            OwnedForeignComptimeProgram::from_body_plan(plan, &artifacts, seed.clone(), || Ok(()))
+                .unwrap();
+        assert!(matches!(
+            OwnedForeignComptimeProgram::from_body_plan(
+                program.plan.clone(),
+                &sibling_artifacts,
+                seed.clone(),
+                || Ok(()),
+            ),
+            Err(super::ForeignComptimeProgramProjectionFailure::IdentityMismatch)
+        ));
+        let mut wrong_candidate = program.plan.candidate.clone();
+        wrong_candidate.name = Arc::from("sibling");
+        let wrong_plan = ForeignComptimeProgramPlan {
+            key: program.plan.key.clone(),
+            candidate: wrong_candidate,
+        };
+        assert!(matches!(
+            OwnedForeignComptimeProgram::from_body_plan(
+                wrong_plan,
+                &artifacts,
+                seed.clone(),
+                || Ok(())
+            ),
+            Err(super::ForeignComptimeProgramProjectionFailure::IdentityMismatch)
+        ));
+        drop(artifacts);
+
+        assert_eq!(program.seed, seed, "argument order is request order");
+        assert_eq!(program.callable.context, program.plan.candidate.module);
+        assert_eq!(
+            program.callable.root,
+            program
+                .rir
+                .iter()
+                .find_map(|(inst, instruction)| {
+                    matches!(&instruction.data, rue_rir::InstData::FnDecl { .. }).then_some(inst)
+                })
+                .unwrap()
+        );
+        let rue_rir::InstData::FnDecl { body, .. } = &program.rir.get(program.callable.root).data
+        else {
+            panic!("the admitted callable root must remain a function declaration");
+        };
+        assert_eq!(program.callable.body, *body);
+        assert_eq!(program.import_occurrences.len(), 1);
+        let import = &program.import_occurrences[0];
+        assert_eq!(import.specifier.as_ref(), "dep");
+        assert!(matches!(
+            &program.rir.get(import.inst).data,
+            rue_rir::InstData::Intrinsic { .. }
+        ));
     }
 }
 
