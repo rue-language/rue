@@ -40,6 +40,7 @@ use crate::constants::{
     MACHO64_RELOC_SIZE,
     MACHO64_SECTION_SIZE,
     MACHO64_SEGMENT_CMD_SIZE,
+    MACHO64_SYMTAB_CMD_SIZE,
     MH_MAGIC_64,
     MH_OBJECT,
     N_ABS,
@@ -562,14 +563,28 @@ impl ObjectFile {
                         // flags: u32 at offset 64
                         let flags = read_u32(data, sect_offset + 64);
 
-                        // Determine section flags
+                        // Determine section flags.
+                        //
+                        // ALLOC means "part of the loaded image". Mach-O has no
+                        // per-section ALLOC bit, so it is derived: everything is
+                        // loaded except debug sections, which carry S_ATTR_DEBUG
+                        // and live in the __DWARF segment. The distinction is
+                        // load-bearing — the linker refuses to silently drop a
+                        // relocation into an ALLOC section it cannot place, and
+                        // marking DWARF as ALLOC would turn that safety net into
+                        // spurious link failures (RUE-1647).
                         let mut section_flags = SectionFlags::empty();
-                        section_flags |= SectionFlags::ALLOC;
-                        // S_ATTR_PURE_INSTRUCTIONS = 0x80000000
-                        if flags & 0x80000000 != 0 {
+                        if flags & crate::constants::S_ATTR_DEBUG == 0 && segname != "__DWARF" {
+                            section_flags |= SectionFlags::ALLOC;
+                        }
+                        if flags & crate::constants::S_ATTR_PURE_INSTRUCTIONS != 0 {
                             section_flags |= SectionFlags::EXEC;
                         }
-                        // Check segment name for writability
+                        // Writability is a property of the segment. __DATA is
+                        // writable for the life of the process; __DATA_CONST is
+                        // not (it is read-only once fixups are applied, and this
+                        // linker applies them all statically), so it must not
+                        // pick up WRITE from a prefix match here.
                         if segname == "__DATA" {
                             section_flags |= SectionFlags::WRITE;
                         }
@@ -613,6 +628,18 @@ impl ObjectFile {
                     // nsyms: u32 at offset 12
                     // stroff: u32 at offset 16
                     // strsize: u32 at offset 20
+                    //
+                    // The loop only established that `cmd_offset + cmdsize` is
+                    // inside the file, so a command declaring a short cmdsize
+                    // would let these four reads run past the buffer and panic.
+                    // A malformed object must be an Err, never a panic
+                    // (RUE-1645).
+                    if cmdsize < MACHO64_SYMTAB_CMD_SIZE {
+                        return Err(ParseError::InvalidSymbol(format!(
+                            "LC_SYMTAB load command declares cmdsize {cmdsize}, \
+                             but the command is {MACHO64_SYMTAB_CMD_SIZE} bytes"
+                        )));
+                    }
                     symtab_offset = read_u32(data, cmd_offset + 8) as usize;
                     symtab_count = read_u32(data, cmd_offset + 12) as usize;
                     strtab_offset = read_u32(data, cmd_offset + 16) as usize;
@@ -1069,8 +1096,17 @@ impl ObjectFile {
         }
         let shstrtab_data = &data[shstrtab.offset as usize..shstrtab_end as usize];
 
-        // Helper to read null-terminated string
+        // Helper to read null-terminated string.
+        //
+        // `offset` is a file-controlled u32 (a symbol's `st_name` or a section's
+        // `sh_name`), so it must be checked against the table before slicing:
+        // Rust panics on a range whose START is past the slice, and a malformed
+        // object must produce an Err, not a panic (RUE-1645). An offset exactly
+        // at the end is the empty name and stays valid.
         let read_string = |strtab: &[u8], offset: usize| -> Result<String, ParseError> {
+            if offset > strtab.len() {
+                return Err(ParseError::InvalidStringTable);
+            }
             let start = offset;
             let mut end = start;
             while end < strtab.len() && strtab[end] != 0 {
@@ -1150,6 +1186,17 @@ impl ObjectFile {
         let mut symbols = Vec::new();
 
         if let (Some(symtab_i), Some(strtab_i)) = (symtab_idx, strtab_idx) {
+            // `strtab_i` is the `.symtab` header's `sh_link` field verbatim, so
+            // a malformed object can name a section index the file does not
+            // have. Reject it instead of indexing `raw_sections` and panicking
+            // (RUE-1645).
+            if strtab_i >= raw_sections.len() {
+                return Err(ParseError::InvalidSymbol(format!(
+                    "symbol table sh_link {} is out of bounds (have {} sections)",
+                    strtab_i,
+                    raw_sections.len()
+                )));
+            }
             let symtab = &raw_sections[symtab_i];
             let strtab = &raw_sections[strtab_i];
 
@@ -2341,6 +2388,123 @@ mod tests {
             matches!(&result, Err(ParseError::InvalidSymbol(msg)) if msg.contains("section index")),
             "Expected InvalidSymbol error about section index, got: {:?}",
             result
+        );
+    }
+
+    /// File offset of section header `index` in an ELF object, for the
+    /// malformed-input tests below that corrupt one field of a valid object.
+    fn shdr_offset(data: &[u8], index: usize) -> usize {
+        let e_shoff =
+            u64::from_le_bytes(data[E_SHOFF_OFFSET..E_SHOFF_OFFSET + 8].try_into().unwrap())
+                as usize;
+        let e_shentsize = u16::from_le_bytes(
+            data[E_SHENTSIZE_OFFSET..E_SHENTSIZE_OFFSET + 2]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        e_shoff + index * e_shentsize
+    }
+
+    /// Index of the first section header whose `sh_type` equals `sh_type`.
+    fn find_section_header(data: &[u8], sh_type: u32) -> usize {
+        let e_shnum =
+            u16::from_le_bytes(data[E_SHNUM_OFFSET..E_SHNUM_OFFSET + 2].try_into().unwrap())
+                as usize;
+        (0..e_shnum)
+            .find(|&i| {
+                let base = shdr_offset(data, i);
+                u32::from_le_bytes(data[base + 4..base + 8].try_into().unwrap()) == sh_type
+            })
+            .expect("section header of the requested type")
+    }
+
+    fn elf_object_bytes() -> Vec<u8> {
+        crate::emit::ObjectBuilder::new(rue_target::Target::X86_64Linux, "main")
+            .code(vec![0xC3])
+            .build()
+    }
+
+    /// A `.symtab` whose `sh_link` names a section index the file does not have
+    /// must be rejected, not indexed into. The parser took `sh_link` straight
+    /// from the header and later used it as `&raw_sections[strtab_i]`
+    /// (RUE-1645).
+    #[test]
+    fn malformed_symtab_sh_link_out_of_range_is_rejected() {
+        let mut data = elf_object_bytes();
+        let symtab = shdr_offset(&data, find_section_header(&data, SHT_SYMTAB));
+        // sh_link is a u32 at offset 40 of the section header.
+        data[symtab + 40..symtab + 44].copy_from_slice(&0xFFFF_u32.to_le_bytes());
+
+        let result = ObjectFile::parse(&data);
+        assert!(
+            matches!(&result, Err(ParseError::InvalidSymbol(msg)) if msg.contains("sh_link")),
+            "expected InvalidSymbol about sh_link, got: {result:?}"
+        );
+    }
+
+    /// A symbol whose `st_name` points past the end of its string table must be
+    /// rejected: the name reader sliced `strtab[start..end]`, and Rust panics on
+    /// an out-of-range range start (RUE-1645).
+    #[test]
+    fn malformed_symbol_name_offset_past_strtab_is_rejected() {
+        let mut data = elf_object_bytes();
+        let symtab_header = shdr_offset(&data, find_section_header(&data, SHT_SYMTAB));
+        let symtab_offset = u64::from_le_bytes(
+            data[symtab_header + 24..symtab_header + 32]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        // Entry 0 is the reserved null symbol; corrupt entry 1's st_name.
+        let sym = symtab_offset + ELF64_SYM_SIZE;
+        data[sym..sym + 4].copy_from_slice(&0x00FF_FFFF_u32.to_le_bytes());
+
+        let result = ObjectFile::parse(&data);
+        assert!(
+            matches!(&result, Err(ParseError::InvalidStringTable)),
+            "expected InvalidStringTable, got: {result:?}"
+        );
+    }
+
+    /// The same out-of-range slice start is reachable through a section's
+    /// `sh_name` offset into `.shstrtab` (RUE-1645).
+    #[test]
+    fn malformed_section_name_offset_past_shstrtab_is_rejected() {
+        let mut data = elf_object_bytes();
+        let text = shdr_offset(
+            &data,
+            find_section_header(&data, crate::constants::SHT_PROGBITS),
+        );
+        data[text..text + 4].copy_from_slice(&0x00FF_FFFF_u32.to_le_bytes());
+
+        let result = ObjectFile::parse(&data);
+        assert!(
+            matches!(&result, Err(ParseError::InvalidStringTable)),
+            "expected InvalidStringTable, got: {result:?}"
+        );
+    }
+
+    /// An `LC_SYMTAB` load command declaring a `cmdsize` smaller than the
+    /// `symtab_command` struct must be rejected. Only `cmd_offset + cmdsize <=
+    /// data.len()` was checked, so a final 8-byte command let the four u32
+    /// field reads run past the buffer (RUE-1645).
+    #[test]
+    fn malformed_macho_symtab_command_too_small_is_rejected() {
+        let mut data = vec![0u8; MACHO64_HEADER_SIZE + 8];
+        data[0..4].copy_from_slice(&MH_MAGIC_64.to_le_bytes());
+        data[4..8].copy_from_slice(&crate::constants::CPU_TYPE_ARM64.to_le_bytes());
+        data[12..16].copy_from_slice(&MH_OBJECT.to_le_bytes());
+        data[16..20].copy_from_slice(&1_u32.to_le_bytes()); // ncmds
+        data[20..24].copy_from_slice(&8_u32.to_le_bytes()); // sizeofcmds
+        // The single load command: LC_SYMTAB with a truncated cmdsize.
+        data[MACHO64_HEADER_SIZE..MACHO64_HEADER_SIZE + 4]
+            .copy_from_slice(&LC_SYMTAB.to_le_bytes());
+        data[MACHO64_HEADER_SIZE + 4..MACHO64_HEADER_SIZE + 8]
+            .copy_from_slice(&8_u32.to_le_bytes());
+
+        let result = ObjectFile::parse(&data);
+        assert!(
+            matches!(&result, Err(ParseError::InvalidSymbol(msg)) if msg.contains("LC_SYMTAB")),
+            "expected InvalidSymbol about LC_SYMTAB, got: {result:?}"
         );
     }
 }

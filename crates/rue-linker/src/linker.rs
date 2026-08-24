@@ -12,7 +12,7 @@ use crate::constants::{
     PF_R, PF_W, PF_X, PT_LOAD,
 };
 use crate::elf::Section;
-use crate::elf::{ObjectFile, RelocationType, Symbol, SymbolBinding};
+use crate::elf::{ObjectFile, RelocationType, SectionFlags, Symbol, SymbolBinding};
 use crate::util::align_up;
 
 /// Which merged output buffer a relocation's patch site lives in.
@@ -42,7 +42,9 @@ enum SectionKind {
     Rodata,
     /// Writable initialized data (`.data*` / `__DATA,__data` / `__data*`).
     Data,
-    /// Zero-initialized data (`.bss*` / `__DATA,__bss` / `__bss*`).
+    /// Zero-initialized data (`.bss*` / `__DATA,__bss` / `__bss*`, plus Mach-O
+    /// `__DATA,__common`, the S_ZEROFILL section holding tentative definitions
+    /// such as compiler-rt's `___aarch64_have_lse_atomics`).
     Bss,
     /// Anything else (debug info, notes, etc.) — not merged into a segment.
     Other,
@@ -53,6 +55,15 @@ enum SectionKind {
 /// section-classification authority; every merge/base-address decision routes
 /// through it so the classes cannot drift out of sync (RUE-336).
 ///
+/// A section this list does not recognize becomes [`SectionKind::Other`] and is
+/// not placed. That is correct for debug and note sections and wrong for
+/// anything the loader maps, so an unrecognized ALLOC section is caught rather
+/// than dropped: see [`collect_section_relocations`] (RUE-1647). Stock
+/// clang/rustc read-only output — `__DATA_CONST,*` and `__TEXT,__literal4/8/16`
+/// — is named here for that reason. `__DATA_CONST` is read-only once fixups are
+/// applied and this linker applies all of them statically, so it is rodata, not
+/// data.
+///
 /// The prefix sets are mutually exclusive, so the check order is immaterial.
 fn classify_section(name: &str) -> SectionKind {
     if name.starts_with(".text") || name == "__TEXT,__text" || name.starts_with("__text") {
@@ -62,13 +73,21 @@ fn classify_section(name: &str) -> SectionKind {
         || name == "__TEXT,__const"
         || name == "__TEXT,__cstring"
         || name == "__TEXT,__rodata"
+        || name.starts_with("__DATA_CONST,")
+        || name.starts_with("__TEXT,__literal")
+        || name.starts_with("__literal")
         || name.starts_with("__const")
         || name.starts_with(".cstring")
     {
         SectionKind::Rodata
     } else if name.starts_with(".data") || name == "__DATA,__data" || name.starts_with("__data") {
         SectionKind::Data
-    } else if name.starts_with(".bss") || name == "__DATA,__bss" || name.starts_with("__bss") {
+    } else if name.starts_with(".bss")
+        || name == "__DATA,__bss"
+        || name.starts_with("__bss")
+        || name == "__DATA,__common"
+        || name.starts_with("__common")
+    {
         SectionKind::Bss
     } else {
         SectionKind::Other
@@ -700,16 +719,31 @@ fn collect_section_relocations(
             continue;
         }
 
-        // We link text, rodata, data, and bss; skip relocations whose
-        // TARGET symbol lives in a section we don't link (e.g. debug).
+        // We link text, rodata, data, and bss. A relocation whose TARGET
+        // symbol lives in a section we don't link splits into two cases that
+        // used to share one silent `continue`:
+        //
+        // * Non-ALLOC (debug info, notes): the section is never loaded and no
+        //   running instruction can observe the patch site, so skipping is
+        //   correct — and required, since objects routinely carry them.
+        // * ALLOC: the section IS part of the loaded image, but this linker
+        //   places neither it nor its symbols. Skipping left the patch site in
+        //   `.text`/`.rodata`/`.data` holding placeholder bytes and reported a
+        //   successful link — a silent miscompile that only shows up as a wrong
+        //   pointer at runtime (RUE-1647). Fail the link instead; the fix for
+        //   such a section is to name it in `classify_section`, the way
+        //   `__DATA_CONST,*` and `__TEXT,__literal*` now are.
         if let Some(sec_idx) = sym.section_index {
             if sec_idx < obj.sections.len() {
                 let target_sec = &obj.sections[sec_idx];
-                if !is_text_section(&target_sec.name)
-                    && !is_rodata_section(&target_sec.name)
-                    && !is_data_section(&target_sec.name)
-                    && !is_bss_section(&target_sec.name)
-                {
+                if classify_section(&target_sec.name) == SectionKind::Other {
+                    if target_sec.flags.contains(SectionFlags::ALLOC) {
+                        return Err(LinkError::UnsupportedRelocation(format!(
+                            "{:?} against '{}': the target symbol is defined in allocatable \
+                             section '{}', which this linker does not place",
+                            reloc.rel_type, sym.name, target_sec.name
+                        )));
+                    }
                     continue;
                 }
             }
@@ -5639,5 +5673,285 @@ mod tests {
             has_g,
             "archive member defining g must be linked (pulled in by f)"
         );
+    }
+
+    /// Hand-build an object whose `.text` takes the address of a symbol defined
+    /// in `section` — the shape RUE-1647 is about: the patch site is in a
+    /// section we do link, the target is in one we may not.
+    fn object_referencing_section(
+        machine: crate::elf::ElfMachine,
+        text_name: &str,
+        section: Section,
+    ) -> ObjectFile {
+        let abs64 = match machine {
+            crate::elf::ElfMachine::X86_64 => RelocationType::Abs64,
+            crate::elf::ElfMachine::Aarch64 => RelocationType::Aarch64Abs64,
+        };
+        let text = text_section(
+            text_name,
+            vec![0u8; 16],
+            vec![Relocation {
+                offset: 8,
+                symbol_index: 1,
+                rel_type: abs64,
+                addend: 0,
+            }],
+        );
+        make_obj(
+            machine,
+            vec![text, section],
+            vec![
+                sym("main", Some(0), 0, SymbolBinding::Global),
+                sym("target", Some(1), 0, SymbolBinding::Global),
+            ],
+        )
+    }
+
+    /// RUE-1647: a relocation whose target symbol lives in an ALLOCATABLE
+    /// section this linker does not place must be a hard error. It was silently
+    /// skipped — the same `continue` that skips debug sections — leaving the
+    /// patch site in `.text` holding its placeholder bytes while the link
+    /// reported success.
+    #[test]
+    fn relocation_into_unhandled_allocatable_section_is_rejected() {
+        let obj = object_referencing_section(
+            crate::elf::ElfMachine::X86_64,
+            ".text",
+            Section {
+                name: ".init_array".into(),
+                data: vec![0u8; 8],
+                size: 8,
+                flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+                relocations: Vec::new(),
+                align: 8,
+            },
+        );
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+        let error = linker
+            .link("main")
+            .expect_err("dropping an allocatable section's relocation is a silent miscompile");
+        assert!(
+            matches!(&error, LinkError::UnsupportedRelocation(msg)
+                if msg.contains("target") && msg.contains(".init_array")),
+            "expected a diagnosable error naming the section, got: {error}"
+        );
+    }
+
+    /// The silent skip stays for genuinely non-allocatable sections: debug and
+    /// note sections are never loaded, so a reference into one cannot corrupt a
+    /// running program (RUE-1647).
+    #[test]
+    fn relocation_into_non_allocatable_section_is_still_skipped() {
+        let obj = object_referencing_section(
+            crate::elf::ElfMachine::X86_64,
+            ".text",
+            Section {
+                name: ".debug_info".into(),
+                data: vec![0u8; 8],
+                size: 8,
+                flags: SectionFlags::empty(),
+                relocations: Vec::new(),
+                align: 1,
+            },
+        );
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+        let elf = linker
+            .link("main")
+            .expect("debug references must not fail a link");
+        let (_, text_off, _) = parse_program_headers(&elf)
+            .into_iter()
+            .find(|(f, ..)| *f == (PF_R | PF_X))
+            .expect("R+X segment");
+        assert_eq!(
+            read_u64_at(&elf, text_off as usize + 8),
+            0,
+            "a skipped debug relocation leaves its placeholder"
+        );
+    }
+
+    /// RUE-1647: `__DATA_CONST,__const` and `__TEXT,__literal*` are ordinary
+    /// read-only data that stock clang/rustc emit. They fell through to
+    /// `Other`, so the linker placed neither the section nor its symbols and
+    /// dropped every reference to them.
+    #[test]
+    fn macho_data_const_and_literal_sections_are_linked() {
+        for name in [
+            "__DATA_CONST,__const",
+            "__TEXT,__literal4",
+            "__TEXT,__literal8",
+            "__TEXT,__literal16",
+        ] {
+            let marker = [0xEFu8, 0xBE, 0xAD, 0xDE, 0x0D, 0xF0, 0xED, 0xFE];
+            let obj = object_referencing_section(
+                crate::elf::ElfMachine::Aarch64,
+                "__TEXT,__text",
+                Section {
+                    name: name.into(),
+                    data: marker.to_vec(),
+                    size: marker.len() as u64,
+                    flags: SectionFlags::ALLOC,
+                    relocations: Vec::new(),
+                    align: 8,
+                },
+            );
+            let mut linker = Linker::new(Target::Aarch64Macos);
+            linker.add_object(obj).unwrap();
+            let macho = linker
+                .link("main")
+                .unwrap_or_else(|e| panic!("{name} must link: {e}"));
+
+            let (_, text_vmaddr, text_fileoff, _) = macho_segments(&macho)
+                .into_iter()
+                .find(|(n, ..)| n == "__TEXT")
+                .expect("__TEXT segment");
+            let code_off = macho_entryoff(&macho) as usize;
+            let slot = read_u64_at(&macho, code_off + 8);
+            assert!(
+                slot >= text_vmaddr,
+                "{name}: reference must be patched with a real address, got {slot:#x}"
+            );
+            let file_off = (slot - text_vmaddr + text_fileoff) as usize;
+            assert_eq!(
+                &macho[file_off..file_off + marker.len()],
+                &marker,
+                "{name}: the reference must point at the section's own bytes"
+            );
+        }
+    }
+
+    /// Build the two objects the bss-alignment tests link (RUE-1646).
+    ///
+    /// Object 0 holds `main`, a 17-byte `.data` whose two pointer slots take
+    /// the address of each bss symbol, and an 8-aligned bss section; object 1
+    /// holds a 16-aligned bss section. The odd `.data` size is the point: the
+    /// merged bss base used to be the unrounded end of merged `.data`, so every
+    /// bss symbol inherited that odd offset.
+    fn bss_alignment_objects(
+        machine: crate::elf::ElfMachine,
+        text_name: &str,
+        data_name: &str,
+        bss_name: &str,
+    ) -> (ObjectFile, ObjectFile) {
+        let abs64 = match machine {
+            crate::elf::ElfMachine::X86_64 => RelocationType::Abs64,
+            crate::elf::ElfMachine::Aarch64 => RelocationType::Aarch64Abs64,
+        };
+        let data = Section {
+            name: data_name.into(),
+            data: vec![0u8; 17],
+            size: 17,
+            flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+            relocations: vec![
+                Relocation {
+                    offset: 1,
+                    symbol_index: 1, // bss_align8
+                    rel_type: abs64,
+                    addend: 0,
+                },
+                Relocation {
+                    offset: 9,
+                    symbol_index: 2, // bss_align16 (defined in object 1)
+                    rel_type: abs64,
+                    addend: 0,
+                },
+            ],
+            align: 1,
+        };
+        let bss8 = Section {
+            name: bss_name.into(),
+            data: Vec::new(),
+            size: 4,
+            flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+            relocations: Vec::new(),
+            align: 8,
+        };
+        let obj0 = make_obj(
+            machine,
+            vec![
+                text_section(text_name, vec![0u8; 4], Vec::new()),
+                data,
+                bss8,
+            ],
+            vec![
+                sym("main", Some(0), 0, SymbolBinding::Global),
+                sym("bss_align8", Some(2), 0, SymbolBinding::Global),
+                sym("bss_align16", None, 0, SymbolBinding::Global),
+            ],
+        );
+
+        let bss16 = Section {
+            name: bss_name.into(),
+            data: Vec::new(),
+            size: 8,
+            flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+            relocations: Vec::new(),
+            align: 16,
+        };
+        let obj1 = make_obj(
+            machine,
+            vec![bss16],
+            vec![sym("bss_align16", Some(0), 0, SymbolBinding::Global)],
+        );
+        (obj0, obj1)
+    }
+
+    /// RUE-1646 (ELF): the merged bss base must honor the alignment its bss
+    /// sections declare. It was `data_vaddr + merged_data.len()` with no
+    /// rounding, so an odd-sized `.data` misaligned every bss symbol — the
+    /// runtime's own `AtomicU64` statics included.
+    #[test]
+    fn bss_base_honors_section_alignment_elf() {
+        let (obj0, obj1) =
+            bss_alignment_objects(crate::elf::ElfMachine::X86_64, ".text", ".data", ".bss");
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj0).unwrap();
+        linker.add_object(obj1).unwrap();
+        let elf = linker.link("main").unwrap();
+
+        let (_, data_off, data_vaddr) = parse_program_headers(&elf)
+            .into_iter()
+            .find(|(f, ..)| *f == (PF_R | PF_W))
+            .expect("RW data segment");
+
+        let addr8 = read_u64_at(&elf, data_off as usize + 1);
+        let addr16 = read_u64_at(&elf, data_off as usize + 9);
+        assert!(
+            addr8 > data_vaddr && addr16 > addr8,
+            "bss symbols must land after the merged data ({addr8:#x}, {addr16:#x})"
+        );
+        assert_eq!(addr8 % 8, 0, "8-aligned bss symbol at {addr8:#x}");
+        assert_eq!(addr16 % 16, 0, "16-aligned bss symbol at {addr16:#x}");
+    }
+
+    /// RUE-1646 (Mach-O): same bug, where the bss base was rounded only to a
+    /// hardcoded 8 regardless of what the bss sections asked for.
+    #[test]
+    fn bss_base_honors_section_alignment_macho() {
+        let (obj0, obj1) = bss_alignment_objects(
+            crate::elf::ElfMachine::Aarch64,
+            "__TEXT,__text",
+            "__DATA,__data",
+            "__DATA,__bss",
+        );
+        let mut linker = Linker::new(Target::Aarch64Macos);
+        linker.add_object(obj0).unwrap();
+        linker.add_object(obj1).unwrap();
+        let macho = linker.link("main").unwrap();
+
+        let (_, data_vmaddr, data_fileoff, _) = macho_segments(&macho)
+            .into_iter()
+            .find(|(n, ..)| n == "__DATA")
+            .expect("__DATA segment");
+
+        let addr8 = read_u64_at(&macho, data_fileoff as usize + 1);
+        let addr16 = read_u64_at(&macho, data_fileoff as usize + 9);
+        assert!(
+            addr8 > data_vmaddr && addr16 > addr8,
+            "bss symbols must land after the merged data ({addr8:#x}, {addr16:#x})"
+        );
+        assert_eq!(addr8 % 8, 0, "8-aligned bss symbol at {addr8:#x}");
+        assert_eq!(addr16 % 16, 0, "16-aligned bss symbol at {addr16:#x}");
     }
 }
