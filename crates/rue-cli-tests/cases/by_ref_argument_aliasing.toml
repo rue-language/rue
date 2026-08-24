@@ -1,0 +1,116 @@
+# A by-reference argument is a PLACE, not a snapshot (RUE-1789).
+#
+# `docs/formal/01-core-calculus.md` §6.2's evaluation-context grammar admits
+# only a by-VALUE argument as a redex; a by-reference argument is not reduced
+# (§6.9), so nothing about it is observed until the callee reads through it.
+# Concretely: when one argument of a call is passed by reference and a LATER
+# argument mutates the same root, the callee sees the mutation.
+#
+# These cases exist for the differential oracle, not for codegen. The compiler
+# has always been right here — it passes an address. The oracle copied each
+# by-reference argument in at that argument's own position in the list, which
+# is a snapshot, so it computed the pre-mutation value and DISAGREED with the
+# compiled binary without reporting a model gap. Every case below diverged
+# before the fix; the last one is the control that agreed both ways.
+#
+# Ordering is what makes these bite: the aliasing must run AFTER the by-ref
+# argument's position. The accumulator idiom in `nested_loan_str_view.toml`
+# (`add(mul(3, 4, inout flags), 5, inout flags)`) puts the mutation first, so
+# it never exercised this.
+#
+# Note the shapes that are absent: an enclosing SHARED loan (a `borrow self`
+# receiver, say) with a nested exclusive loan of the same root is rejected by
+# the call-loan rule (spec 6.1:30), so it cannot be pinned here.
+
+[section]
+id = "cli.by_ref_argument_aliasing"
+name = "By-reference arguments observe a later argument's mutation"
+description = "A by-reference argument is read through its place when the callee receives it, not snapshotted at its position in the argument list (RUE-1789)."
+
+[[case]]
+name = "inout_self_receiver_reads_nested_write"
+description = "RUE-1789 repro: the `inout self` receiver is address-passed, so `bump` reads the 1 that `grow` wrote during argument evaluation, not the 0 the root held when the receiver was named."
+files = [{ path = "main.rue", source = """
+struct Arena {
+    n: i32,
+
+    fn bump(inout self, x: i32) -> i32 { self.n + x }
+}
+fn grow(inout a: Arena) -> i32 { a.n = 1; 0 }
+fn main() -> i32 {
+    let mut a = Arena { n: 0 };
+    @dbg(a.bump(grow(inout a)));
+    0
+}
+""" }]
+stdout = "1\n"
+exit_code = 0
+
+[[case]]
+name = "inout_argument_before_mutating_sibling"
+description = "The same rule without a receiver: `flags` is passed `inout` in argument position 0 and mutated by argument position 1, so the callee reads 1 + 12."
+files = [{ path = "main.rue", source = """
+fn mul(a: i32, b: i32, inout flags: i32) -> i32 { flags = flags + 1; a * b }
+fn add(inout flags: i32, x: i32) -> i32 { flags + x }
+fn main() -> i32 {
+    let mut flags = 0;
+    @dbg(add(inout flags, mul(3, 4, inout flags)));
+    0
+}
+""" }]
+stdout = "13\n"
+exit_code = 0
+
+[[case]]
+name = "inout_field_projection_reads_nested_write"
+description = "The place can be a projection: `inout h.a` is a field of the root the sibling argument mutates through."
+files = [{ path = "main.rue", source = """
+struct Inner { n: i32 }
+struct Holder { a: Inner, b: i32 }
+fn read(inout i: Inner, x: i32) -> i32 { i.n + x }
+fn grow(inout h: Holder) -> i32 { h.a.n = 5; 0 }
+fn main() -> i32 {
+    let mut h = Holder { a: Inner { n: 0 }, b: 0 };
+    @dbg(read(inout h.a, grow(inout h)));
+    0
+}
+""" }]
+stdout = "5\n"
+exit_code = 0
+
+[[case]]
+name = "inout_array_element_reads_nested_write"
+description = "And an index projection: `inout xs[0]` observes the write the sibling argument makes to the same element."
+files = [{ path = "main.rue", source = """
+fn read(inout v: i32, x: i32) -> i32 { v + x }
+fn grow(inout xs: [i32; 3]) -> i32 { xs[0] = 9; 0 }
+fn main() -> i32 {
+    let mut xs: [i32; 3] = [0, 0, 0];
+    @dbg(read(inout xs[0], grow(inout xs)));
+    0
+}
+""" }]
+stdout = "9\n"
+exit_code = 0
+
+# The over-correction control. Re-reading the place must not pick up a write to
+# a DIFFERENT root: `a` still reads 3 even though `b` was mutated to 7 during
+# the same argument list. This case agreed before the fix and must keep
+# agreeing after it.
+[[case]]
+name = "unaliased_inout_argument_is_unaffected"
+description = "Control: a by-reference argument whose root no other argument touches reads its own value, and the other root's mutation still lands."
+files = [{ path = "main.rue", source = """
+struct Arena { n: i32 }
+fn read(inout a: Arena, x: i32) -> i32 { a.n + x }
+fn grow(inout b: Arena) -> i32 { b.n = 7; 0 }
+fn main() -> i32 {
+    let mut a = Arena { n: 3 };
+    let mut b = Arena { n: 0 };
+    @dbg(read(inout a, grow(inout b)));
+    @dbg(b.n);
+    0
+}
+""" }]
+stdout = "3\n7\n"
+exit_code = 0
