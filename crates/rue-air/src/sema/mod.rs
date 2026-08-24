@@ -34,6 +34,7 @@ mod binding_manifest;
 mod body_endpoint;
 mod body_identity;
 mod call_resolution;
+mod comptime;
 mod comptime_eval;
 mod context;
 mod control_flow;

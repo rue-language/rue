@@ -17,7 +17,7 @@ fn peer_one_body_authority_cannot_return() {
 fn integer_consumers_use_one_representation_independent_kernel() {
     let semantics = include_str!("integer_semantics.rs");
     let types = include_str!("types.rs");
-    let comptime = include_str!("sema/comptime_eval.rs");
+    let comptime = include_str!("sema/comptime.rs");
 
     assert!(types.contains("pub fn integer_semantics(&self) -> Option<IntegerType>"));
     assert!(comptime.contains("integer.shift_i128"));
