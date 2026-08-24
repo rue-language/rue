@@ -316,6 +316,21 @@ mod tests {
             "all supported RIR recursion must live in one dispatcher"
         );
         assert_eq!(
+            engine.matches("match data").count(),
+            1,
+            "the recursion trampoline must have one routing match"
+        );
+        assert_eq!(
+            engine.matches("fn eval_dispatch(").count(),
+            1,
+            "the instruction dispatcher must have one implementation"
+        );
+        assert!(
+            engine.contains("InstData::Comptime { .. }\n            | InstData::Block { .. }")
+                && engine.contains("InstData::Call { .. } => unreachable!"),
+            "routed recursive arms must not regain lower dispatcher bodies"
+        );
+        assert_eq!(
             source.matches("fn eval_const_expr").count(),
             1,
             "the body adapter must have one canonical entry point"

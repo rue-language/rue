@@ -63,10 +63,11 @@ pub use comptime::{
     ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallKey,
     ComptimeCallMemoLookup, ComptimeCallPreparation, ComptimeCompletedCallMemo, ComptimeConstInfo,
     ComptimeEngine, ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame, ComptimeHost,
-    ComptimeIdentity, ComptimeMemoInsertError, ComptimeMemoizedOutcome, ComptimeName,
-    ComptimeOutcome, ComptimeProgram, ComptimeProgramKey, ComptimeProgramRegistrationError,
-    ComptimeProgramRegistry, ComptimeStructuredTypeResolution, ComptimeStructuredTypeSuspension,
-    ComptimeTrap, ComptimeType, ComptimeValue, MAX_COMPTIME_CALL_DEPTH,
+    ComptimeIdentity, ComptimeIntrinsicArgument, ComptimeMemoInsertError, ComptimeMemoizedOutcome,
+    ComptimeName, ComptimeOutcome, ComptimeProgram, ComptimeProgramKey,
+    ComptimeProgramRegistrationError, ComptimeProgramRegistry, ComptimeSite, ComptimeSiteKind,
+    ComptimeStructuredTypeResolution, ComptimeStructuredTypeSuspension, ComptimeTrap, ComptimeType,
+    ComptimeValue, MAX_COMPTIME_CALL_DEPTH,
 };
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;

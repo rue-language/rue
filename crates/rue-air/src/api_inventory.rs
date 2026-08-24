@@ -53,6 +53,9 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "ComptimeFile",
         "ComptimeFrame",
         "ComptimeHost",
+        "ComptimeIntrinsicArgument",
+        "ComptimeSite",
+        "ComptimeSiteKind",
         "ComptimeIdentity",
         "ComptimeName",
         "ComptimeOutcome",
@@ -153,6 +156,22 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     let host_contract = &production[host_start..engine_start];
     assert!(host_contract.contains("fn program_rir(&self, program:"));
     assert!(!host_contract.contains("ComptimeEngine::new"));
+    for hook in ["fn integer_operation_type(", "fn unary_integer_type("] {
+        let start = host_contract
+            .find(hook)
+            .unwrap_or_else(|| panic!("missing semantic integer hook: {hook}"));
+        let end = host_contract[start + hook.len()..]
+            .find("\n    fn ")
+            .map(|offset| start + hook.len() + offset)
+            .unwrap_or(host_contract.len());
+        let signature = &host_contract[start..end];
+        for forbidden in ["ProgramKey", "ComptimeEnv", "InstRef"] {
+            assert!(
+                !signature.contains(forbidden),
+                "{hook} leaked evaluator authority: {forbidden}"
+            );
+        }
+    }
     let preparation_start = host_contract
         .find("fn prepare_comptime_call")
         .expect("canonical call preparation hook");
@@ -172,6 +191,21 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         production.matches("fn eval(").count(),
         1,
         "canonical comptime module must have one recursive dispatcher"
+    );
+    assert_eq!(
+        production.matches("match &inst.data").count(),
+        1,
+        "the AIR instruction dispatcher must have one authoritative data match"
+    );
+    assert_eq!(
+        production.matches("match data").count(),
+        1,
+        "the AIR recursion trampoline must have one routing match"
+    );
+    assert_eq!(
+        production.matches("fn eval_dispatch(").count(),
+        1,
+        "the AIR instruction dispatcher must have one implementation"
     );
     assert!(production.contains("self.frames.push(frame)"));
     assert!(production.contains("self.frames.pop()"));
