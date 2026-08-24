@@ -230,6 +230,21 @@ Use proportionate validation:
 3. Run the broad/full suite once when the change is cross-cutting or high-risk.
    CI is the final full-platform authority.
 
+A tier is not a preview of required CI, which is why the quickstart names the
+oracle-diff check separately. `test.sh` selects on `rue_test_tier_premerge`,
+while both oracle-diff corpora are `tier = "slow"` and
+`test (linux-x64-oracle-diff*)` gates the merge queue regardless — so no local
+premerge run can report on them, however green it comes back.
+
+Adding a CLI or spec case is the ordinary way to land in that gap, not an edge
+case: the corpus audit classifies every case, and one reaching a construct the
+oracle does not model is a HARNESS FAILURE until its gap is registered in
+`crates/rue-oracle-diff/src/model_gaps/`. A `StrBuf`-built path reaches the
+unmodeled byte-copy gap immediately, so a new `std.fs` case starts there by
+default. The audit prints the exact `Entry::new(...)` line to add, which is
+the whole fix — read past "unknown oracle model gap" to it rather than reading
+the message as a compiler bug. RUE-1711 cost a red CI round for want of this.
+
 The generated-oracle smoke target has a fixed two-second child-process budget
 and can time out under heavy parallel load on the local macOS host. If failures
 are timeout-only and unrelated tests are competing for the machine, rerun that
