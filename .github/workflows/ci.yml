@@ -630,7 +630,15 @@ jobs:
           scripts/ci-timed "rue-bench build" -- ./buck2 build //crates/rue-bench:rue-bench
           BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
           git fetch --no-tags origin trunk
-          git fetch --no-tags origin performance-data-v1
+          # Tip only (RUE-1794). This job materializes index.json and the
+          # selected live-epoch records, all present in the tip commit; the
+          # branch's full history still carries the 3.8 GiB pre-compaction
+          # store behind the performance-data-v1-pre-compaction tag, and
+          # fetching it here cost a measured 70s and ~143 MiB of pack against
+          # depth-1's 7s and ~30 MiB. A blob:none partial fetch was measured
+          # too and rejected: the checkouts below lazy-fetch one blob per
+          # round trip, which is slower than either.
+          git fetch --no-tags --depth=1 origin performance-data-v1
           DATA="$(mktemp -d)"
           # Read the live epoch, not the whole store. performance-data-v1 is
           # append-only and now grows by hundreds of megabytes a day, while
