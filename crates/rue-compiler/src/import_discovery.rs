@@ -44,6 +44,15 @@ impl ImportDiscoveryContext {
     ) -> CompileResult<Self> {
         let project_root = normalize_absolute(project_root.as_ref())?;
         let std_root = std_root.map(normalize_absolute).transpose()?.map(Arc::from);
+        if std_root
+            .as_deref()
+            .is_some_and(|std_root| Path::new(&project_root).starts_with(std_root))
+        {
+            return Err(invalid_input(format!(
+                "project root {:?} is inside the configured standard-library root",
+                project_root
+            )));
+        }
         Ok(Self {
             epoch,
             project_root: Arc::from(project_root),
@@ -1506,6 +1515,7 @@ fn canonicalize_accepted(mut accepted: Vec<&AcceptedImportSource>) -> Vec<&Accep
 pub(crate) fn escaping_import_candidate(
     context: &ImportDiscoveryContext,
     specifier: &str,
+    importer: &ModuleId,
     importer_requested_path: &str,
 ) -> CompileResult<Option<String>> {
     if specifier == "std" {
@@ -1518,10 +1528,18 @@ pub(crate) fn escaping_import_candidate(
         return Ok(None);
     }
     let importer_path = normalize_absolute(importer_requested_path)?;
-    let boundary_root = context
-        .std_root()
-        .filter(|std_root| Path::new(&importer_path).starts_with(std_root))
-        .unwrap_or(context.project_root());
+    // The trusted-standard-library boundary belongs to the module's accepted
+    // provenance, not to whatever filesystem spelling happened to accompany
+    // the read. A project source may live beneath a misconfigured std root;
+    // treating that lexical fact as authority would grant it std-only
+    // semantics and let it mint trusted identities.
+    let boundary_root = if importer.is_trusted_standard_library() {
+        context.std_root().ok_or_else(|| {
+            invalid_input("trusted standard-library module has no captured std root")
+        })?
+    } else {
+        context.project_root()
+    };
     let importer_dir = parent_dir(&importer_path);
     let groups = discovery_candidate_groups(
         specifier,
@@ -1613,8 +1631,13 @@ pub(crate) fn discovery_groups_for_occurrence(
     // decided lexically from the importer anchor and its project or captured
     // standard-library root, and the diagnostic projection recomputes the same
     // check (`escape_diagnostics`).
-    if escaping_import_candidate(context, occurrence.specifier(), importer_requested_path)?
-        .is_some()
+    if escaping_import_candidate(
+        context,
+        occurrence.specifier(),
+        occurrence.importer(),
+        importer_requested_path,
+    )?
+    .is_some()
     {
         return Ok(Vec::new());
     }
@@ -1750,7 +1773,8 @@ pub(crate) fn escape_diagnostics(
                 continue;
             }
         };
-        match escaping_import_candidate(context, site.specifier(), &importer_path) {
+        match escaping_import_candidate(context, site.specifier(), site.importer(), &importer_path)
+        {
             Ok(Some(candidate)) => {
                 let file_id = program
                     .module(site.importer())
@@ -3033,9 +3057,17 @@ fn classify_module(
                     requested, std_root
                 )));
             }
-            return ModuleId::from_trusted_standard_library_path(
-                Path::new("\0rue-std").join(relative).to_string_lossy(),
-            );
+            let logical = Path::new("\0rue-std").join(relative);
+            if logical
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+            {
+                return Err(invalid_input(format!(
+                    "trusted standard-library source {:?} would receive an escaping identity",
+                    requested
+                )));
+            }
+            return ModuleId::from_trusted_standard_library_path(logical.to_string_lossy());
         }
     }
     let project_root = Path::new(context.project_root());
@@ -3045,6 +3077,15 @@ fn classify_module(
             requested
         ))
     })?;
+    if logical
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(invalid_input(format!(
+            "project source {:?} would receive an escaping identity",
+            requested
+        )));
+    }
     ModuleId::from_logical_path(logical.to_string_lossy())
 }
 
@@ -3103,6 +3144,12 @@ fn lexical_relative_path(base: &Path, target: &Path) -> Option<PathBuf> {
             result.push(part);
         }
     }
+    if result
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return None;
+    }
     Some(result)
 }
 pub(crate) fn source_fingerprint(source: &str) -> u64 {
@@ -3120,6 +3167,43 @@ mod tests {
 
     fn context(epoch: u64) -> ImportDiscoveryContext {
         ImportDiscoveryContext::new(epoch, "/project", Some("/sdk"), "all").unwrap()
+    }
+
+    #[test]
+    fn project_root_inside_or_equal_to_std_root_is_rejected() {
+        for (project, std_root) in [("/sdk/project", "/sdk"), ("/sdk", "/sdk")] {
+            let error = ImportDiscoveryContext::new(1, project, Some(std_root), "all")
+                .expect_err("a project rooted inside std must fail closed");
+            assert!(
+                error
+                    .to_string()
+                    .contains("inside the configured standard-library root")
+            );
+        }
+        // The supported layout remains valid: the captured std tree is a
+        // child of the project, so project-relative and trusted identities have
+        // disjoint roots.
+        ImportDiscoveryContext::new(1, "/project", Some("/project/std"), "all")
+            .expect("std nested inside the project is valid");
+    }
+
+    #[test]
+    fn project_provenance_does_not_inherit_std_boundary_from_its_path() {
+        let context =
+            ImportDiscoveryContext::new(1, "/project", Some("/project/std"), "all").unwrap();
+        let importer = ModuleId::from_logical_path("std/main.rue").unwrap();
+        // The spelling is beneath std, but the accepted module provenance is a
+        // caller module. Its escape is measured against the project root.
+        assert_eq!(
+            escaping_import_candidate(
+                &context,
+                "../outside.rue",
+                &importer,
+                "/project/std/main.rue",
+            )
+            .unwrap(),
+            None
+        );
     }
 
     fn occurrence(importer: &str, specifier: &str) -> ImportOccurrenceKey {
@@ -3148,9 +3232,14 @@ mod tests {
             (&facade, "/sdk/nested/mod.rue", "/outside/_outside.rue"),
         ] {
             assert_eq!(
-                escaping_import_candidate(&context, occurrence.specifier(), importer)
-                    .unwrap()
-                    .as_deref(),
+                escaping_import_candidate(
+                    &context,
+                    occurrence.specifier(),
+                    occurrence.importer(),
+                    importer
+                )
+                .unwrap()
+                .as_deref(),
                 Some(expected)
             );
             assert!(
@@ -3212,7 +3301,13 @@ mod tests {
             // One mistake, one diagnostic: the escape check declines these so
             // they are not also reported as leaving the project root.
             assert_eq!(
-                escaping_import_candidate(&context, specifier, "/project/main.rue").unwrap(),
+                escaping_import_candidate(
+                    &context,
+                    specifier,
+                    &ModuleId::from_logical_path("main.rue").unwrap(),
+                    "/project/main.rue",
+                )
+                .unwrap(),
                 None,
                 "{specifier} also reported as escaping"
             );
@@ -3238,8 +3333,13 @@ mod tests {
         let context = context(1);
         let in_root = occurrence("/sdk/nested/mod.rue", "../nested/helper.rue");
         assert_eq!(
-            escaping_import_candidate(&context, in_root.specifier(), "/sdk/nested/mod.rue")
-                .unwrap(),
+            escaping_import_candidate(
+                &context,
+                in_root.specifier(),
+                in_root.importer(),
+                "/sdk/nested/mod.rue",
+            )
+            .unwrap(),
             None
         );
         assert!(
@@ -3250,7 +3350,13 @@ mod tests {
 
         let std = occurrence("/sdk/nested/mod.rue", "std");
         assert_eq!(
-            escaping_import_candidate(&context, std.specifier(), "/sdk/nested/mod.rue").unwrap(),
+            escaping_import_candidate(
+                &context,
+                std.specifier(),
+                std.importer(),
+                "/sdk/nested/mod.rue",
+            )
+            .unwrap(),
             None
         );
         assert!(
@@ -3315,7 +3421,6 @@ mod tests {
                 // The production path normalizer resolves nested and parent-relative
                 // spellings before classify_module assigns the durable identity.
                 project.join("./left/nested/../entry.rue"),
-                root.join("dep.rue"),
                 project.join("right/shared.rue"),
             ]
             .iter()
@@ -3323,21 +3428,24 @@ mod tests {
             .collect()
         }
 
+        fn rejects_external_source(root: &Path) {
+            let project = root.join("project");
+            let context =
+                ImportDiscoveryContext::new(1, project.to_string_lossy(), None, "all").unwrap();
+            let path = normalize_path(&root.join("dep.rue").to_string_lossy());
+            assert!(classify_module(&context, &path, &path).is_err());
+        }
+
         let base = if cfg!(windows) {
             PathBuf::from(r"C:\rue-import-discovery-relocation")
         } else {
             PathBuf::from("/tmp/rue-import-discovery-relocation")
         };
-        let expected = [
-            "main.rue",
-            "left/entry.rue",
-            "../dep.rue",
-            "right/shared.rue",
-        ]
-        .into_iter()
-        .map(ModuleId::from_logical_path)
-        .map(Result::unwrap)
-        .collect::<Vec<_>>();
+        let expected = ["main.rue", "left/entry.rue", "right/shared.rue"]
+            .into_iter()
+            .map(ModuleId::from_logical_path)
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
 
         assert_eq!(
             identities(&base.join("a")),
@@ -3349,6 +3457,7 @@ mod tests {
             expected,
             "moving the physical project root does not change module identities"
         );
+        rejects_external_source(&base.join("a"));
     }
 
     #[test]

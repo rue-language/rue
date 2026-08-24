@@ -265,6 +265,27 @@ compile_stdout_contains = [
 compile_stderr_not_contains = ["undefined variable", "nope", "E0201"]
 
 [[case]]
+name = "ordinary_project_deps_use_nonescaping_identities"
+description = "RUE-1702: ordinary project-relative imports retain complete deps topology without trusted or escaping identities."
+files = [
+    { path = "main.rue", source = """
+const helper = @import("helper.rue");
+fn main() -> i32 { helper.answer() }
+""" },
+    { path = "helper.rue", source = """
+pub fn answer() -> i32 { 42 }
+""" },
+]
+args = ["--emit", "deps", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "\"status\": \"complete\"",
+    "\"module\": \"helper.rue\"",
+    "\"status\": \"resolved\"",
+]
+compile_stdout_not_contains = ["rue-std", "../"]
+
+[[case]]
 name = "emit_deps_rejects_unresolved_import"
 description = "RUE-810: --emit deps preserves a closed unresolved graph in an incomplete envelope and exits unsuccessfully."
 files = [
@@ -666,6 +687,69 @@ env = { RUE_STD_PATH = "${REAL_STD}" }
 compile_stderr_not_contains = ["unused function", "exit_syscall_number"]
 stdout = "5\n"
 
+# A project rooted beneath the configured toolchain must fail before import
+# discovery can mint trusted identities or write a dependency envelope.
+[[case]]
+name = "project_root_inside_std_root_is_configuration_error"
+description = "RUE-1702: a project nested beneath RUE_STD_PATH is rejected before deps output can contain trusted or escaping identities."
+env = { RUE_STD_PATH = "sdk" }
+files = [{ path = "sdk/project/main.rue", source = """
+fn main() -> i32 {
+    0
+}
+""" }]
+args = ["--emit", "deps", "sdk/project/main.rue"]
+compile_fail = true
+error_contains = ["project root", "inside the configured standard-library root"]
+compile_stdout_not_contains = ["rue-std", ".."]
+compile_stderr_not_contains = ["rue-std", ".."]
+
+[[case]]
+name = "project_root_inside_std_denies_std_only_intrinsic"
+description = "RUE-1702: configuration failure preempts a std-only intrinsic in a project nested beneath RUE_STD_PATH."
+env = { RUE_STD_PATH = "sdk" }
+files = [{ path = "sdk/project/main.rue", source = """
+const bridge = @import("bridge.rue");
+
+fn main() -> i32 {
+    let value: i64 = 7;
+    let pointer: ptr const i64 = checked { @raw(value) };
+    let P = bridge.Buf(i64);
+    let p = P { buf: pointer, value };
+    @intCast(p.get_ref(pointer))
+}
+""" },
+    { path = "sdk/project/bridge.rue", source = """
+pub fn Buf(comptime T: type) -> type {
+    struct {
+        buf: ptr const T,
+        value: T,
+
+        fn get_ref(borrow self, other: ptr const T) -> borrow T {
+            yield checked { @place(@ptr_offset(self.buf, 0)) };
+        }
+    }
+}
+""" },
+]
+args = ["sdk/project/main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["project root", "inside the configured standard-library root"]
+compile_stderr_not_contains = ["trusted standard-library", "rue-std", ".."]
+
+[[case]]
+name = "symlink_spelled_project_inside_std_root_is_configuration_error"
+description = "RUE-1702: canonical physical roots reject a project reached through a symlink into RUE_STD_PATH."
+env = { RUE_STD_PATH = "sdk" }
+files = [{ path = "sdk/main.rue", source = """
+fn main() -> i32 { 0 }
+""" }]
+symlinks = [{ link = "project", target = "sdk" }]
+args = ["project/main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["project root", "inside the configured standard-library root"]
+compile_stderr_not_contains = ["rue-std", ".."]
+
 # A trusted standard-library module may not use a relative import to leave the
 # captured SDK root. The rejected target exists so this exercises the lexical
 # escape decision rather than an absent-file diagnostic (RUE-1738).
@@ -735,6 +819,66 @@ pub fn answer() -> i32 {
 """ },
 ]
 exit_code = 42
+
+[[case]]
+name = "trusted_std_deps_use_safe_module_identities"
+description = "RUE-1702: valid captured std imports retain their physical closure while deps output contains no escaping identities or paths."
+env = { RUE_STD_PATH = "sdk" }
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 { std.nested.answer() }
+""" },
+    { path = "sdk/_std.rue", source = """
+pub const nested = @import("nested/helper.rue");
+""" },
+    { path = "sdk/nested/helper.rue", source = """
+pub fn answer() -> i32 { 42 }
+""" },
+]
+args = ["--emit", "deps", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "\"status\": \"complete\"",
+    "std/nested/helper.rue",
+    "\"status\": \"resolved\"",
+]
+compile_stdout_not_contains = ["../"]
+
+[[case]]
+name = "trusted_std_place_bridge_exact_shape_compiles"
+description = "RUE-1702: the exact receiver-rooted place bridge is admissible for a captured trusted std module."
+env = { RUE_STD_PATH = "sdk" }
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let value: i64 = 7;
+    let pointer: ptr const i64 = checked { @raw(value) };
+    let P = std.bridge.Buf(i64);
+    let p = P { buf: pointer, value };
+    @intCast(p.get_ref(pointer))
+}
+""" },
+    { path = "sdk/_std.rue", source = """
+pub const bridge = @import("bridge.rue");
+""" },
+    { path = "sdk/bridge.rue", source = """
+pub fn Buf(comptime T: type) -> type {
+    struct {
+        buf: ptr const T,
+        value: T,
+
+        fn get_ref(borrow self, other: ptr const T) -> borrow T {
+            yield checked { @place(@ptr_offset(self.buf, 0)) };
+        }
+    }
+}
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+exit_code = 7
 
 [[case]]
 name = "program_anchored_std_import_precedes_sdk"
