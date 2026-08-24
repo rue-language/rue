@@ -7065,6 +7065,51 @@ fn semantic_candidate_type_is_named(
         .is_some_and(|symbol| symbols[symbol.into_usize()] == expected)
 }
 
+/// Exact query authorities used by durable comptime services. Keeping this
+/// adapter separate from the evaluator makes cancellation and import-site
+/// resolution reusable by the AIR host without allowing it to inspect RIR.
+struct SemanticComptimeAuthority<'provider, 'db> {
+    provider: &'provider SemanticNucleusTypeProvider<'db>,
+    imports: &'db QueryFamily<DeclarationImportQueryKey, DeclarationImportQueryValue>,
+}
+
+impl crate::durable_comptime::DurableComptimeSemanticAuthority
+    for SemanticComptimeAuthority<'_, '_>
+{
+    fn check_canceled(&self) -> Result<(), QueryAbort> {
+        self.provider.context.check_canceled()
+    }
+
+    fn resolve_import(
+        &self,
+        site: &crate::durable_comptime::DurableImportSite,
+    ) -> Result<crate::durable_comptime::DurableImportResolution, QueryAbort> {
+        let key = crate::declaration_candidate::DeclarationImportSiteKey {
+            declaration: site.declaration.clone(),
+            occurrence: site.occurrence,
+            specifier: site.specifier.clone(),
+        };
+        let terminal = self
+            .provider
+            .context
+            .query_registered(self.imports, DeclarationImportQueryKey(key))?;
+        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+            unreachable!("DeclarationImport publishes typed values")
+        };
+        Ok(match value {
+            DeclarationImportQueryValue::Available(crate::CanonicalImportResolution::Resolved(
+                module,
+            )) => crate::durable_comptime::DurableImportResolution::Resolved(module.clone()),
+            DeclarationImportQueryValue::Available(crate::CanonicalImportResolution::Missing) => {
+                crate::durable_comptime::DurableImportResolution::Missing
+            }
+            DeclarationImportQueryValue::Failure(failure) => {
+                crate::durable_comptime::DurableImportResolution::Failure(failure.clone())
+            }
+        })
+    }
+}
+
 thread_local! {
     static SEMANTIC_COMPTIME_CALL_DEPTH: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
@@ -7621,28 +7666,28 @@ impl SemanticConstEvaluator<'_, '_> {
                 "exact const import is absent from its candidate RIR occurrence index",
             );
         };
-        let key = crate::declaration_candidate::DeclarationImportSiteKey {
+        let authority = SemanticComptimeAuthority {
+            provider: &*self.provider,
+            imports: self.imports,
+        };
+        let services = crate::durable_comptime::DurableComptimeServices::new(&authority);
+        let site = crate::durable_comptime::DurableImportSite {
             declaration: self.declaration.declaration.clone(),
             occurrence: *occurrence,
             specifier: specifier.clone(),
         };
-        let terminal = self
-            .provider
-            .context
-            .query_registered(self.imports, DeclarationImportQueryKey(key.clone()))
-            .map_err(EvaluateSemanticConstError::Abort)?;
-        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
-            unreachable!("DeclarationImport publishes typed values")
-        };
-        match value {
-            DeclarationImportQueryValue::Available(crate::CanonicalImportResolution::Resolved(
-                module,
-            )) => Ok(EvaluatedSemanticConst::Module(module.clone())),
-            DeclarationImportQueryValue::Available(crate::CanonicalImportResolution::Missing) => {
+        match services
+            .resolve_import(&site)
+            .map_err(EvaluateSemanticConstError::Abort)?
+        {
+            crate::durable_comptime::DurableImportResolution::Resolved(module) => {
+                Ok(EvaluatedSemanticConst::Module(module))
+            }
+            crate::durable_comptime::DurableImportResolution::Missing => {
                 Self::failure(format!("cannot find module `{specifier}`"))
             }
-            DeclarationImportQueryValue::Failure(
-                crate::declaration_candidate::DeclarationImportFailure::ResolutionUnavailable(_),
+            crate::durable_comptime::DurableImportResolution::Failure(
+                crate::declaration_candidate::DeclarationImportFailure::ResolutionUnavailable(key),
             ) => Err(EvaluateSemanticConstError::Abort(QueryAbort::MissingInput(
                 InputIdentity::new(
                     "declaration-import-resolution",
@@ -7654,7 +7699,9 @@ impl SemanticConstEvaluator<'_, '_> {
                     ),
                 ),
             ))),
-            DeclarationImportQueryValue::Failure(failure) => Self::failure(format!("{failure:?}")),
+            crate::durable_comptime::DurableImportResolution::Failure(failure) => {
+                Self::failure(format!("{failure:?}"))
+            }
         }
     }
 
@@ -8250,8 +8297,11 @@ impl SemanticConstEvaluator<'_, '_> {
         &mut self,
         expression: rue_rir::InstRef,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
-        self.provider
-            .context
+        let authority = SemanticComptimeAuthority {
+            provider: &*self.provider,
+            imports: self.imports,
+        };
+        crate::durable_comptime::DurableComptimeServices::new(&authority)
             .check_canceled()
             .map_err(Self::abort)?;
         use crate::durable_semantics::DurableConstValue as V;
@@ -23571,7 +23621,7 @@ impl<'a> CompilerBodyFactProvider<'a> {
     /// owned foreign-program payload; an in-progress semantic handoff remains
     /// NotReady and never competes with the active evaluator.
     #[allow(dead_code)]
-    fn probe_comptime_call(
+    fn probe_comptime_call_inner(
         &self,
         producer: &crate::StableDefinitionKey,
         type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
@@ -23673,6 +23723,19 @@ impl<'a> CompilerBodyFactProvider<'a> {
                 Ok(crate::body_query::ForeignComptimeCallLookup::NotReady)
             }
         }
+    }
+
+    pub(crate) fn probe_comptime_call(
+        &self,
+        producer: &crate::StableDefinitionKey,
+        type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
+        value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
+    ) -> Result<crate::body_query::ForeignComptimeCallLookup, QueryAbort> {
+        crate::durable_comptime::DurableComptimeServices::new(self).probe_comptime_call(
+            producer,
+            type_arguments,
+            value_arguments,
+        )
     }
 
     fn nucleus(
@@ -23828,6 +23891,17 @@ impl<'a> CompilerBodyFactProvider<'a> {
             });
         }
         found
+    }
+}
+
+impl crate::durable_comptime::DurableComptimeForeignCallAuthority for CompilerBodyFactProvider<'_> {
+    fn probe_comptime_call(
+        &self,
+        producer: &crate::StableDefinitionKey,
+        type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
+        value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
+    ) -> Result<crate::body_query::ForeignComptimeCallLookup, QueryAbort> {
+        self.probe_comptime_call_inner(producer, type_arguments, value_arguments)
     }
 }
 

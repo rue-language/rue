@@ -9,9 +9,91 @@
 use std::sync::Arc;
 
 use rue_air::{ComptimeType, ComptimeValue};
+use rue_query::QueryAbort;
 
 use crate::ModuleId;
+use crate::body_query::ForeignComptimeCallLookup;
+use crate::declaration_candidate::{DeclarationCandidateKey, DeclarationImportFailure};
 use crate::durable_semantics::{DurableConstValue, DurableType};
+
+/// The exact semantic site consumed by the durable import authority.
+///
+/// This intentionally carries the declaration identity, semantic occurrence,
+/// and decoded specifier only. It cannot name or evaluate an RIR instruction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DurableImportSite {
+    pub(crate) declaration: DeclarationCandidateKey,
+    pub(crate) occurrence: u32,
+    pub(crate) specifier: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DurableImportResolution {
+    Resolved(ModuleId),
+    Missing,
+    Failure(DeclarationImportFailure),
+}
+
+/// Canonical semantic services needed by durable comptime entry points.
+///
+/// Implementations live beside the query authorities. This facade is an
+/// operation boundary, not an evaluator: neither trait accepts an instruction
+/// reference, instruction data, or callback capable of evaluating a child.
+pub(crate) trait DurableComptimeSemanticAuthority {
+    fn check_canceled(&self) -> Result<(), QueryAbort>;
+
+    fn resolve_import(
+        &self,
+        site: &DurableImportSite,
+    ) -> Result<DurableImportResolution, QueryAbort>;
+}
+
+pub(crate) trait DurableComptimeForeignCallAuthority {
+    fn probe_comptime_call(
+        &self,
+        producer: &crate::StableDefinitionKey,
+        type_arguments: &[(Arc<str>, DurableType)],
+        value_arguments: &[(Arc<str>, DurableConstValue)],
+    ) -> Result<ForeignComptimeCallLookup, QueryAbort>;
+}
+
+pub(crate) struct DurableComptimeServices<'a, A: ?Sized> {
+    authority: &'a A,
+}
+
+impl<'a, A: ?Sized> DurableComptimeServices<'a, A> {
+    pub(crate) fn new(authority: &'a A) -> Self {
+        Self { authority }
+    }
+}
+
+impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A> {
+    pub(crate) fn check_canceled(&self) -> Result<(), QueryAbort> {
+        self.authority.check_canceled()
+    }
+
+    pub(crate) fn resolve_import(
+        &self,
+        site: &DurableImportSite,
+    ) -> Result<DurableImportResolution, QueryAbort> {
+        self.authority.resolve_import(site)
+    }
+}
+
+impl<A: DurableComptimeForeignCallAuthority + ?Sized> DurableComptimeServices<'_, A> {
+    /// Probe only an already-published foreign fact or admit its owned body
+    /// frame. The authority owns dependency observation and cancellation; this
+    /// method never demands a child comptime query.
+    pub(crate) fn probe_comptime_call(
+        &self,
+        producer: &crate::StableDefinitionKey,
+        type_arguments: &[(Arc<str>, DurableType)],
+        value_arguments: &[(Arc<str>, DurableConstValue)],
+    ) -> Result<ForeignComptimeCallLookup, QueryAbort> {
+        self.authority
+            .probe_comptime_call(producer, type_arguments, value_arguments)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EvaluatedSemanticConst {

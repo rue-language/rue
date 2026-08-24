@@ -2562,6 +2562,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         if !matches!(
             *name,
             "declaration_candidate"
+                | "durable_comptime"
                 | "parsed_modules"
                 | "revisioned_query_database"
                 | "semantic_query_nucleus"
@@ -3100,6 +3101,43 @@ fn durable_const_integer_semantics_use_the_shared_kernel() {
             "durable evaluator regained local integer policy: {forbidden}"
         );
     }
+}
+
+#[test]
+fn durable_comptime_services_are_named_authority_operations() {
+    let facade = include_str!("durable_comptime.rs");
+    for required in [
+        "DurableImportSite",
+        "DurableComptimeSemanticAuthority",
+        "DurableComptimeForeignCallAuthority",
+        "probe_comptime_call",
+    ] {
+        assert!(
+            facade.contains(required),
+            "durable facade missing {required}"
+        );
+    }
+    for forbidden in ["InstData", "eval_const_expr", "ComptimeEngine", "InstRef"] {
+        assert!(
+            !facade.contains(forbidden),
+            "durable service facade must not become an evaluator: {forbidden}"
+        );
+    }
+
+    let database = include_str!("revisioned_query_database.rs");
+    let evaluator = database
+        .split("impl SemanticConstEvaluator<'_, '_> {")
+        .nth(1)
+        .and_then(|source| source.split("impl SemanticNucleusTypeProvider<'_>").next())
+        .expect("durable evaluator source");
+    assert!(evaluator.contains("DurableComptimeServices::new(&authority)"));
+    assert!(evaluator.contains(".resolve_import(&site)"));
+    let provider = database
+        .split("pub(crate) struct CompilerBodyFactProvider<'a>")
+        .nth(1)
+        .and_then(|source| source.split("impl rue_air::BodyFactProvider").next())
+        .expect("body fact provider source");
+    assert!(provider.contains("DurableComptimeServices::new(self).probe_comptime_call"));
 }
 
 #[test]
