@@ -112,6 +112,26 @@ fn fmt_narrow_offset(offset: i32) -> String {
     }
 }
 
+/// Encode a signed byte offset in the imm9 field used by AArch64's unscaled
+/// pre/post-indexed loads and stores.
+fn signed_imm9(offset: i32) -> u32 {
+    assert!(
+        (-256..=255).contains(&offset),
+        "signed imm9 byte offset {offset} is outside -256..=255"
+    );
+    (offset as u32) & 0x1FF
+}
+
+/// Encode a signed, 8-byte-scaled offset in the imm7 field used by AArch64's
+/// pair pre/post-indexed loads and stores.
+fn scaled_signed_imm7(offset: i32) -> u32 {
+    assert!(
+        (-512..=504).contains(&offset) && offset % 8 == 0,
+        "scaled signed imm7 byte offset {offset} must be 8-byte aligned and in -512..=504"
+    );
+    ((offset / 8) as u32) & 0x7F
+}
+
 // ========== AArch64 Instruction Encoding Constants ==========
 //
 // These constants represent the base opcodes for AArch64 instructions.
@@ -562,8 +582,8 @@ impl<'a> Emitter<'a> {
     /// On AArch64, registers are saved in pairs (16 bytes per pair), rounded up.
     /// This is the callee-saved GPR area only (the FP/LR pair is separate);
     /// sourced from the frame-layout authority so it cannot drift.
-    fn callee_saved_stack_size(&self) -> i32 {
-        crate::frame_layout::aarch64_callee_saved_pairs_bytes(self.callee_saved.len()) as i32
+    fn callee_saved_stack_size(&self) -> i64 {
+        crate::frame_layout::aarch64_callee_saved_pairs_bytes(self.callee_saved.len()) as i64
     }
 
     /// Adjust an FP-relative offset to account for callee-saved registers.
@@ -577,7 +597,7 @@ impl<'a> Emitter<'a> {
     /// This is the single funnel every FP-based operand passes through, so it
     /// is also where a frameless function is checked against actually naming a
     /// frame location (RUE-1171).
-    fn adjust_fp_offset(&mut self, base: Reg, offset: i32) -> i32 {
+    fn adjust_fp_offset(&mut self, base: Reg, offset: i64) -> i64 {
         if base != Reg::Fp {
             return offset;
         }
@@ -589,6 +609,16 @@ impl<'a> Emitter<'a> {
         } else {
             offset
         }
+    }
+
+    /// Convert a signed immediate's magnitude at the emitter boundary. The
+    /// arithmetic above is deliberately wider than the MIR field so values
+    /// such as `-i32::MIN` remain representable until this point.
+    fn signed_magnitude_u32(value: i64) -> u32 {
+        let magnitude = value
+            .checked_abs()
+            .expect("signed immediate magnitude cannot be i64::MIN");
+        u32::try_from(magnitude).expect("signed immediate magnitude must fit u32")
     }
 
     /// The canonical frame layout for this function, falling back to a framed
@@ -840,7 +870,9 @@ impl<'a> Emitter<'a> {
 
             Aarch64Inst::Ldr { dst, base, offset } => {
                 let rd = dst.as_physical();
-                let adjusted_offset = self.adjust_fp_offset(*base, *offset);
+                let adjusted_offset =
+                    i32::try_from(self.adjust_fp_offset(*base, i64::from(*offset)))
+                        .expect("adjusted LDR offset must fit i32");
                 self.begin_inst();
                 self.emit_ldr(rd, *base, adjusted_offset);
                 end_inst!(self, "ldr {}, [{}, #{}]", rd, base, adjusted_offset);
@@ -848,7 +880,9 @@ impl<'a> Emitter<'a> {
 
             Aarch64Inst::Str { src, base, offset } => {
                 let rs = src.as_physical();
-                let adjusted_offset = self.adjust_fp_offset(*base, *offset);
+                let adjusted_offset =
+                    i32::try_from(self.adjust_fp_offset(*base, i64::from(*offset)))
+                        .expect("adjusted STR offset must fit i32");
                 self.begin_inst();
                 self.emit_str(rs, *base, adjusted_offset);
                 end_inst!(self, "str {}, [{}, #{}]", rs, base, adjusted_offset);
@@ -940,15 +974,17 @@ impl<'a> Emitter<'a> {
                 let rn = src.as_physical();
                 // Adjust offset for FP-relative address calculations (same as Ldr/Str).
                 // This is used when computing addresses of locals for inout arguments.
-                let adjusted_imm = self.adjust_fp_offset(rn, *imm);
+                let adjusted_imm = self.adjust_fp_offset(rn, i64::from(*imm));
                 self.begin_inst();
                 if adjusted_imm < 0 {
                     // Negative immediate: use SUB with the absolute value
-                    self.emit_sub_imm(rd, rn, (-adjusted_imm) as u32);
-                    end_inst!(self, "sub {}, {}, #{}", rd, rn, -adjusted_imm);
+                    let magnitude = Self::signed_magnitude_u32(adjusted_imm);
+                    self.emit_sub_imm(rd, rn, magnitude);
+                    end_inst!(self, "sub {}, {}, #{}", rd, rn, magnitude);
                 } else {
-                    self.emit_add_imm(rd, rn, adjusted_imm as u32);
-                    end_inst!(self, "add {}, {}, #{}", rd, rn, adjusted_imm);
+                    let magnitude = Self::signed_magnitude_u32(adjusted_imm);
+                    self.emit_add_imm(rd, rn, magnitude);
+                    end_inst!(self, "add {}, {}, #{}", rd, rn, magnitude);
                 }
             }
 
@@ -982,17 +1018,23 @@ impl<'a> Emitter<'a> {
             Aarch64Inst::SubImm { dst, src, imm } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
-                // Adjust immediate for FP-relative addresses to account for callee-saved registers.
-                // When computing addresses relative to FP, we need to skip past the callee-saved
-                // register save area.
-                let adjusted_imm = if rn == Reg::Fp {
-                    *imm as u32 + self.callee_saved_stack_size() as u32
-                } else {
-                    *imm as u32
-                };
+                // SubImm is base - imm, while adjust_fp_offset takes the
+                // signed displacement used by the load/store and AddImm paths.
+                // Convert to that displacement before applying the canonical
+                // FP/callee-saved adjustment, then preserve its sign when
+                // selecting ADD versus SUB (including large immediates).
+                let displacement = -i64::from(*imm);
+                let adjusted_displacement = self.adjust_fp_offset(rn, displacement);
                 self.begin_inst();
-                self.emit_sub_imm(rd, rn, adjusted_imm);
-                end_inst!(self, "sub {}, {}, #{}", rd, rn, adjusted_imm);
+                if adjusted_displacement <= 0 {
+                    let magnitude = Self::signed_magnitude_u32(adjusted_displacement);
+                    self.emit_sub_imm(rd, rn, magnitude);
+                    end_inst!(self, "sub {}, {}, #{}", rd, rn, magnitude);
+                } else {
+                    let magnitude = Self::signed_magnitude_u32(adjusted_displacement);
+                    self.emit_add_imm(rd, rn, magnitude);
+                    end_inst!(self, "add {}, {}, #{}", rd, rn, magnitude);
+                }
             }
 
             Aarch64Inst::MulRR { dst, src1, src2 } => {
@@ -1909,7 +1951,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_str_pre(&mut self, rs: Reg, offset: i32) {
         // STR Xt, [SP, #imm]!
-        let imm9 = (offset as u32) & 0x1FF;
+        let imm9 = signed_imm9(offset);
         let inst =
             OPCODE_STR_PRE | (imm9 << 12) | (Reg::Sp.encoding() as u32) << 5 | rs.encoding() as u32;
         self.emit_u32(inst);
@@ -1917,7 +1959,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_ldr_post(&mut self, rd: Reg, offset: i32) {
         // LDR Xt, [SP], #imm
-        let imm9 = (offset as u32) & 0x1FF;
+        let imm9 = signed_imm9(offset);
         let inst = OPCODE_LDR_POST
             | (imm9 << 12)
             | (Reg::Sp.encoding() as u32) << 5
@@ -1927,7 +1969,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_stp_pre(&mut self, rt1: Reg, rt2: Reg, offset: i32) {
         // STP Xt1, Xt2, [SP, #imm]!
-        let imm7 = ((offset / 8) as u32) & 0x7F;
+        let imm7 = scaled_signed_imm7(offset);
         let inst = OPCODE_STP_PRE
             | (imm7 << 15)
             | (rt2.encoding() as u32) << 10
@@ -1938,7 +1980,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_ldp_post(&mut self, rt1: Reg, rt2: Reg, offset: i32) {
         // LDP Xt1, Xt2, [SP], #imm
-        let imm7 = ((offset / 8) as u32) & 0x7F;
+        let imm7 = scaled_signed_imm7(offset);
         let inst = OPCODE_LDP_POST
             | (imm7 << 15)
             | (rt2.encoding() as u32) << 10
@@ -2679,6 +2721,97 @@ mod tests {
             .emit()
             .unwrap()
             .0
+    }
+
+    fn emit_single_with_callee_saved(inst: Aarch64Inst, callee_saved: &[Reg]) -> Vec<u8> {
+        let mut mir = Aarch64Mir::new();
+        mir.push(inst);
+        Emitter::new(&mir, 0, 0, 0, callee_saved, &[])
+            .without_frame()
+            .emit()
+            .unwrap()
+            .0
+    }
+
+    fn direct_str_pre(offset: i32) -> u32 {
+        let mir = Aarch64Mir::new();
+        let mut emitter = Emitter::new(&mir, 0, 0, 0, &[], &[]);
+        emitter.emit_str_pre(Reg::X0, offset);
+        u32::from_le_bytes(emitter.code.try_into().unwrap())
+    }
+
+    fn direct_ldr_post(offset: i32) -> u32 {
+        let mir = Aarch64Mir::new();
+        let mut emitter = Emitter::new(&mir, 0, 0, 0, &[], &[]);
+        emitter.emit_ldr_post(Reg::X0, offset);
+        u32::from_le_bytes(emitter.code.try_into().unwrap())
+    }
+
+    fn direct_stp_pre(offset: i32) -> u32 {
+        let mir = Aarch64Mir::new();
+        let mut emitter = Emitter::new(&mir, 0, 0, 0, &[], &[]);
+        emitter.emit_stp_pre(Reg::X0, Reg::X1, offset);
+        u32::from_le_bytes(emitter.code.try_into().unwrap())
+    }
+
+    fn direct_ldp_post(offset: i32) -> u32 {
+        let mir = Aarch64Mir::new();
+        let mut emitter = Emitter::new(&mir, 0, 0, 0, &[], &[]);
+        emitter.emit_ldp_post(Reg::X0, Reg::X1, offset);
+        u32::from_le_bytes(emitter.code.try_into().unwrap())
+    }
+
+    fn direct_sub_imm(rd: Reg, rn: Reg, imm: u32) -> Vec<u8> {
+        let mir = Aarch64Mir::new();
+        let mut emitter = Emitter::new(&mir, 0, 0, 0, &[], &[]);
+        emitter.emit_sub_imm(rd, rn, imm);
+        emitter.code
+    }
+
+    fn emit_pair_guard_case(case: &str) {
+        let offset = match case {
+            "stp-low" | "ldp-low" => -520,
+            "stp-high" | "ldp-high" => 512,
+            "stp-align" | "ldp-align" => -503,
+            _ => unreachable!("unknown imm7 guard case: {case}"),
+        };
+        if case.starts_with("stp") {
+            direct_stp_pre(offset);
+        } else {
+            direct_ldp_post(offset);
+        }
+    }
+
+    fn assert_guard_aborts(test_name: &str, case: &str) {
+        let expected = match case {
+            "str-lower" | "ldr-lower" => "signed imm9 byte offset -257 is outside -256..=255",
+            "str-upper" | "ldr-upper" => "signed imm9 byte offset 256 is outside -256..=255",
+            "stp-low" | "ldp-low" => {
+                "scaled signed imm7 byte offset -520 must be 8-byte aligned and in -512..=504"
+            }
+            "stp-high" | "ldp-high" => {
+                "scaled signed imm7 byte offset 512 must be 8-byte aligned and in -512..=504"
+            }
+            "stp-align" | "ldp-align" => {
+                "scaled signed imm7 byte offset -503 must be 8-byte aligned and in -512..=504"
+            }
+            _ => unreachable!("unknown guard case: {case}"),
+        };
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test_name, "--nocapture"])
+            .env("RUE_AARCH64_GUARD_CASE", case)
+            .stdout(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "expected the guard to abort the child test"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(expected),
+            "child failed without the expected guard message {expected:?}: {stderr}"
+        );
     }
 
     #[test]
@@ -3635,6 +3768,231 @@ mod tests {
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
         // LDP post-index: 0xA8C00000 base
         assert_eq!(inst & 0xFFC00000, 0xA8C00000, "Should be LDP post-index");
+    }
+
+    #[test]
+    fn test_signed_imm9_boundaries_and_guards() {
+        if let Ok(case) = std::env::var("RUE_AARCH64_GUARD_CASE") {
+            let _ = match case.as_str() {
+                "str-lower" => direct_str_pre(-257),
+                "str-upper" => direct_str_pre(256),
+                "ldr-lower" => direct_ldr_post(-257),
+                "ldr-upper" => direct_ldr_post(256),
+                _ => unreachable!("unknown imm9 guard case: {case}"),
+            };
+            return;
+        }
+
+        for offset in [-256, 255] {
+            let str_inst = direct_str_pre(offset);
+            let ldr_inst = direct_ldr_post(offset);
+            assert_eq!((str_inst >> 12) & 0x1FF, (offset as u32) & 0x1FF);
+            assert_eq!((ldr_inst >> 12) & 0x1FF, (offset as u32) & 0x1FF);
+        }
+
+        for case in ["str-lower", "str-upper", "ldr-lower", "ldr-upper"] {
+            assert_guard_aborts(
+                "aarch64::emit::tests::test_signed_imm9_boundaries_and_guards",
+                case,
+            );
+        }
+    }
+
+    #[test]
+    fn test_scaled_signed_imm7_boundaries_alignment_and_guards() {
+        if let Ok(case) = std::env::var("RUE_AARCH64_GUARD_CASE") {
+            emit_pair_guard_case(&case);
+            return;
+        }
+
+        for offset in [-512, 504] {
+            let expected = ((offset / 8) as u32) & 0x7F;
+            assert_eq!((direct_stp_pre(offset) >> 15) & 0x7F, expected);
+            assert_eq!((direct_ldp_post(offset) >> 15) & 0x7F, expected);
+        }
+
+        for case in [
+            "stp-low",
+            "stp-high",
+            "stp-align",
+            "ldp-low",
+            "ldp-high",
+            "ldp-align",
+        ] {
+            assert_guard_aborts(
+                "aarch64::emit::tests::test_scaled_signed_imm7_boundaries_alignment_and_guards",
+                case,
+            );
+        }
+    }
+
+    #[test]
+    fn test_sub_imm_fp_adjustment_uses_signed_displacement() {
+        let callee_saved = [Reg::X19, Reg::X20];
+        let code = emit_single(Aarch64Inst::SubImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 0,
+        });
+        let inst = u32::from_le_bytes(code.try_into().unwrap());
+        assert_eq!(inst & 0xFF000000, OPCODE_SUB_IMM_X);
+
+        let code = emit_single_with_callee_saved(
+            Aarch64Inst::SubImm {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Physical(Reg::Fp),
+                imm: 0,
+            },
+            &callee_saved,
+        );
+        let inst = u32::from_le_bytes(code.try_into().unwrap());
+        assert_eq!(inst & 0xFF000000, OPCODE_SUB_IMM_X);
+        assert_eq!((inst >> 10) & 0xFFF, 0);
+
+        let code = emit_single_with_callee_saved(
+            Aarch64Inst::SubImm {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Physical(Reg::Fp),
+                imm: 8,
+            },
+            &callee_saved,
+        );
+        let inst = u32::from_le_bytes(code.try_into().unwrap());
+        assert_eq!(inst & 0xFF000000, OPCODE_SUB_IMM_X);
+        assert_eq!((inst >> 10) & 0xFFF, 24);
+
+        let code = emit_single_with_callee_saved(
+            Aarch64Inst::SubImm {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Physical(Reg::Fp),
+                imm: -8,
+            },
+            &callee_saved,
+        );
+        let inst = u32::from_le_bytes(code.try_into().unwrap());
+        assert_eq!(inst & 0xFF000000, OPCODE_ADD_IMM_X);
+        assert_eq!((inst >> 10) & 0xFFF, 8);
+
+        // SubImm's i32 field includes MIN, whose negated displacement is
+        // 2^31 and must reach the ADD materialization path without overflow.
+        let code = emit_single(Aarch64Inst::SubImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: i32::MIN,
+        });
+        assert_eq!(code.len(), 12, "2^31 ADD should materialize then use ADD");
+        let last = u32::from_le_bytes(code[8..12].try_into().unwrap());
+        assert_eq!(last & 0xFF200000, OPCODE_ADD_X & 0xFF200000);
+
+        // A negative SubImm whose magnitude exceeds the two-instruction ADD
+        // immediate limit must still use ADD materialization, not a wrapped
+        // SUB immediate.
+        let large = MAX_ADD_SUB_IMMEDIATE + 1;
+        let sub_negative = emit_single(Aarch64Inst::SubImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: -large,
+        });
+        let add_positive = emit_single(Aarch64Inst::AddImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: large,
+        });
+        assert_eq!(sub_negative, add_positive);
+
+        // FP-relative positive SubImm values shift below FP by the rounded
+        // AArch64 callee-saved pair area. One and two saved registers both
+        // occupy one pair; three occupy two pairs.
+        let fp_large = emit_single_with_callee_saved(
+            Aarch64Inst::SubImm {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Physical(Reg::Fp),
+                imm: large,
+            },
+            &[Reg::X19],
+        );
+        let fp_large_two = emit_single_with_callee_saved(
+            Aarch64Inst::SubImm {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Physical(Reg::Fp),
+                imm: large,
+            },
+            &[Reg::X19, Reg::X20],
+        );
+        let fp_large_three = emit_single_with_callee_saved(
+            Aarch64Inst::SubImm {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Physical(Reg::Fp),
+                imm: large,
+            },
+            &[Reg::X19, Reg::X20, Reg::X21],
+        );
+        let expected_one_pair = emit_single(Aarch64Inst::SubImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::Fp),
+            imm: large + 16,
+        });
+        let expected_two_pairs = emit_single(Aarch64Inst::SubImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::Fp),
+            imm: large + 32,
+        });
+        assert_eq!(fp_large, expected_one_pair);
+        assert_eq!(fp_large_two, expected_one_pair);
+        assert_eq!(fp_large_three, expected_two_pairs);
+
+        // Near the i32 boundary, the saved-pair shift must stay wide and keep
+        // SubImm as SUB rather than wrapping into a positive ADD displacement.
+        let fp_i32_max = emit_single_with_callee_saved(
+            Aarch64Inst::SubImm {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Physical(Reg::Fp),
+                imm: i32::MAX,
+            },
+            &[Reg::X19],
+        );
+        assert_eq!(
+            fp_i32_max,
+            direct_sub_imm(Reg::X0, Reg::Fp, i32::MAX as u32 + 16)
+        );
+
+        // The same boundary through AddImm's signed FP displacement must also
+        // remain SUB after the one-pair adjustment: |i32::MIN| + 16.
+        let fp_i32_min_add = emit_single_with_callee_saved(
+            Aarch64Inst::AddImm {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Physical(Reg::Fp),
+                imm: i32::MIN,
+            },
+            &[Reg::X19],
+        );
+        assert_eq!(
+            fp_i32_min_add,
+            direct_sub_imm(Reg::X0, Reg::Fp, (1_u32 << 31) + 16)
+        );
+    }
+
+    #[test]
+    fn test_sub_imm_fp_reference_in_frameless_layout_is_an_internal_error() {
+        let mut mir = Aarch64Mir::new();
+        mir.push(Aarch64Inst::SubImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::Fp),
+            imm: 8,
+        });
+        let layout = crate::frame_layout::FrameLayout::frameless(
+            crate::frame_layout::SavedRegScheme::Aarch64,
+            0,
+        );
+        let error = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .with_frame_layout(layout)
+            .emit()
+            .expect_err("an FP reference must be rejected for a frameless function");
+        assert!(
+            error
+                .to_string()
+                .contains("frame planning omitted the frame pointer")
+        );
     }
 
     // --- Condition code encoding ---
