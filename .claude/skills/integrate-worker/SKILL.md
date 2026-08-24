@@ -49,9 +49,11 @@ Each step exists because skipping it once caused a real failure.
    checkout while it runs — switching branches mid-run once produced a
    fabricated `E0583: file not found for module comptime` citing a line that
    existed only on trunk, and cost an hour of chasing a bug that was not there.
-   Judge the run by the `Tests finished: Pass N. Fail 0 ...` TALLY, never the
-   banner: a signal-killed run still prints `=== TEST SUITE: PASSED ===`
-   (RUE-1782).
+   Read the banner: `=== TEST SUITE: PASSED ===` is now asserted rather than
+   inferred, and a killed run says `INTERRUPTED (SIG..)` instead (RUE-1782).
+   Do NOT judge by the tally alone — Buck can return cached results, so a run
+   stopped partway can print a complete-looking `Tests finished: ... Fail 0`
+   and still not have finished. The banner is what distinguishes them.
 
 7. **Ship + queue.** `jj describe` (subject + why + what was verified),
    `jj git push -c @`, `gh pr create --repo rue-language/rue --base trunk
