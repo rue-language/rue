@@ -21,6 +21,7 @@ SCRIPT = Path(__file__).with_name("validate-shell-bash-baseline.py")
 policy = load_script("validate-shell-bash-baseline.py", __file__)
 
 BASELINE_BASH = "/bin/bash"
+WRAPPER_ROOT_ENV = "RUE_BASH_BASELINE_ROOT"
 
 # The RUE-1511 break, as it shipped: the `"` opened after `covered=` is never
 # closed, because the `)` ending the command substitution is followed by
@@ -790,6 +791,47 @@ class MechanismTests(unittest.TestCase):
         result = self.run_bash('a=()\necho "${a[@]}"\n')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unbound variable", result.stderr)
+
+    def test_buck_wrapper_accepts_no_arguments(self) -> None:
+        # Exercise the real wrapper with the supported interpreter and a fake
+        # dotslash. Bash 3.2 rejects an empty "${args[@]}" expansion under
+        # `set -u`; the wrapper must still reach its normal executable handoff
+        # with no Buck arguments.
+        wrapper_input_root = os.environ.get(WRAPPER_ROOT_ENV)
+        if wrapper_input_root:
+            wrapper_input = Path(wrapper_input_root) / "buck2"
+        else:
+            # Direct invocation from a checkout has no Buck materialization;
+            # this fallback keeps the focused probe runnable by developers.
+            wrapper_input = SCRIPT.resolve().parent.parent / "buck2"
+        self.assertTrue(wrapper_input.is_file(), wrapper_input)
+        with tempfile.TemporaryDirectory() as directory:
+            sandbox = Path(directory)
+            wrapper = sandbox / "buck2"
+            wrapper.write_text(wrapper_input.read_text())
+            wrapper.chmod(0o755)
+            fakebin = sandbox / "bin"
+            fakebin.mkdir()
+            dotslash = fakebin / "dotslash"
+            dotslash.write_text(
+                "#!/bin/sh\nprintf '%s\\n' \"$#\" >\"$DOTSLASH_ARGC\"\n"
+            )
+            dotslash.chmod(0o755)
+
+            environment = os.environ.copy()
+            environment["PATH"] = f"{fakebin}:{environment.get('PATH', '')}"
+            environment["DOTSLASH_ARGC"] = str(sandbox / "dotslash-argc")
+            result = subprocess.run(
+                [BASELINE_BASH, str(wrapper)],
+                cwd=sandbox,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((sandbox / "dotslash-argc").read_text().strip(), "1")
 
     def test_read_assigns_nothing_when_it_fails(self) -> None:
         # The third: `read` clears its variable at EOF but leaves it untouched

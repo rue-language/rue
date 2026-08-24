@@ -982,12 +982,20 @@ rue_sh_test(
     },
 )
 
+# Keep the mechanism test's wrapper input explicit: under Buck it must not
+# reach back through the validator's source symlink into the checkout.
+filegroup(
+    name = "shell-bash-baseline-inputs",
+    srcs = {"buck2": "buck2"},
+)
+
 rue_sh_test(
     name = "shell-bash-baseline-tool-tests",
     test = "scripts/test-validate-shell-bash-baseline.py",
     resources = ["scripts/validate-shell-bash-baseline.py"] +
         [":gatelib-sources"],
     env = {
+        "RUE_BASH_BASELINE_ROOT": "$(location :shell-bash-baseline-inputs)",
         "PYTHONDONTWRITEBYTECODE": "1",
     },
 )
