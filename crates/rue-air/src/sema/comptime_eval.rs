@@ -2208,6 +2208,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn canonical_function_producer(
         &self,
+        _program: &Self::ProgramKey,
+        _ticket: &Self::CompletionTicket,
         name: Spur,
         types: &AHashMap<Spur, Type>,
         values: &AHashMap<Spur, ConstValue>,

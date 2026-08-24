@@ -180,6 +180,35 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .expect("canonical host contract");
     let host_contract = &production[host_start..engine_start];
     assert!(host_contract.contains("fn program_rir(&self, program:"));
+    let producer_hook = host_contract
+        .split("fn canonical_function_producer(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn ").next())
+        .expect("canonical producer hook");
+    assert!(producer_hook.contains("program: &Self::ProgramKey"));
+    assert!(producer_hook.contains("ticket: &Self::CompletionTicket"));
+    for forbidden in [
+        "ComptimeFrame",
+        "Rir",
+        "ValidatedRir",
+        "InstRef",
+        "InstData",
+        "ComptimeEnv",
+        "program_rir",
+        "child_instructions",
+        "eval(",
+        "evaluate",
+        "callback",
+        "closure",
+        "ComptimeEngine",
+        "SemanticConstEvaluator",
+        "ComptimeCallDepth",
+    ] {
+        assert!(
+            !producer_hook.contains(forbidden),
+            "canonical producer hook leaked evaluator authority: {forbidden}"
+        );
+    }
     assert!(!host_contract.contains("extract_anon_method_sigs"));
     assert!(!host_contract.contains("find_method_own_comptime_type_param"));
     assert!(!host_contract.contains("ComptimeEngine::new"));
