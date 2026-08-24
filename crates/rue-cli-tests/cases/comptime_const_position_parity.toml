@@ -64,3 +64,50 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 compile_stderr_contains = ["E1200", "exceeded the maximum nesting depth"]
+
+# RUE-1767: a `comptime { }` block that overruns the depth budget must name the
+# depth limit, as 4.14:18 requires. It used to report the generic E1200 reason
+# "expression contains values that cannot be known at compile time", which
+# points at 4.14:4 -- a runtime-value problem -- and tells the programmer
+# nothing about the real cause.
+#
+# The two positions above route around the body host; a call written directly
+# in a block goes through `reduce_external_comptime_call`, whose diagnostic arm
+# discarded the depth failure for any call that was neither a self call nor a
+# `-> type` call. The guard always fired and always produced the right message;
+# only the arm that received it threw it away.
+[[case]]
+name = "block_position_overrun_names_the_depth_limit"
+files = [{ path = "main.rue", source = """
+fn count(comptime n: i64) -> i64 {
+    if n <= 0 { 0 } else { 1 + count(n - 1) }
+}
+
+fn main() -> i32 {
+    let x: i64 = comptime { count(4000) };
+    @dbg(x);
+    0
+}
+""" }]
+compile_fail = true
+compile_stderr_contains = ["E1200", "exceeded the maximum nesting depth"]
+
+# The companion control: the fix changes which message an overrun prints, not
+# where the budget sits. A depth the block position accepted before must still
+# compile and still produce the right value -- otherwise "better diagnostic"
+# would have quietly become "stricter compiler".
+[[case]]
+name = "block_position_accepts_a_depth_within_budget"
+files = [{ path = "main.rue", source = """
+fn count(comptime n: i64) -> i64 {
+    if n <= 0 { 0 } else { 1 + count(n - 1) }
+}
+
+fn main() -> i32 {
+    let x: i64 = comptime { count(40) };
+    @dbg(x);
+    0
+}
+""" }]
+stdout = "40\n"
+exit_code = 0

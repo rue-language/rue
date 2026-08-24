@@ -4562,15 +4562,33 @@ where
         let Some(value_arguments) = value_arguments else {
             return Some(Ok(None));
         };
-        // A self call reached this point only because the caller already bound
-        // every parameter to a constant, so a durable failure is a real
-        // evaluation failure and must surface rather than be swallowed into
-        // "not compile-time known" — that swallowing is what let direction 2 of
-        // RUE-1700 compile. When the durable evaluator cannot represent the
-        // callable at all it reports `NotReduced`, and the request-local
-        // evaluator remains the fallback for the value self call so no shape
-        // that reduced before stops reducing.
-        let report_diagnostic = required_type_reduction || self_call;
+        // Every call reaching this point already bound every parameter to a
+        // constant, so a durable `Diagnostic` is a real evaluation failure and
+        // must surface rather than be swallowed into "not compile-time known"
+        // — that swallowing is what let direction 2 of RUE-1700 compile.
+        //
+        // RUE-1700 narrowed the swallow to non-self, non-type calls; RUE-1767
+        // removes what was left of it. The remnant was why a `comptime { }`
+        // block that overran the comptime nesting depth reported E1200
+        // "expression contains values that cannot be known at compile time"
+        // — pointing at 4.14:4, a runtime-value problem — instead of naming
+        // the depth limit as 4.14:18 requires. The depth guard fires and
+        // produces the right diagnostic; only this arm discarded it, because
+        // `count(49)` inside a block is neither a self call nor a `-> type`
+        // call. The `const` position, which routes around this host, reported
+        // the depth message correctly all along.
+        //
+        // Suppressing a diagnostic here can only ever downgrade a specific
+        // message to a vaguer one: the call is already fully bound, so there
+        // is no runtime reading of it left to preserve. Measured on the three
+        // comptime positions, the depth at which each accepts or rejects is
+        // unchanged — only the message the block position prints improves.
+        //
+        // When the durable evaluator cannot represent the callable at all it
+        // reports `NotReduced`, which is a representation gap rather than a
+        // diagnosis; the request-local evaluator remains the fallback for the
+        // value self call there, so no shape that reduced before stops
+        // reducing.
         let reduced =
             match self
                 .source
@@ -4579,13 +4597,12 @@ where
                 DurableComptimeCallOutcome::Reduced(reduced) => reduced,
                 DurableComptimeCallOutcome::NotReduced if value_self_call => return None,
                 DurableComptimeCallOutcome::NotReduced => return Some(Ok(None)),
-                DurableComptimeCallOutcome::Diagnostic(diagnostic) if report_diagnostic => {
+                DurableComptimeCallOutcome::Diagnostic(diagnostic) => {
                     return Some(Err(CompileError::new(
                         diagnostic.kind,
                         diagnostic.span.unwrap_or(span),
                     )));
                 }
-                DurableComptimeCallOutcome::Diagnostic(_) => return Some(Ok(None)),
             };
         let producer = (|| {
             Some(FunctionInstanceKey::Specialization {
