@@ -33,6 +33,7 @@ const FAILED_REOBSERVE_RETRY: Duration = Duration::from_millis(250);
 // synchronization without wall-clock sleeps.
 const TEST_PROTOCOL_ENV: &str = "RUE_WATCH_TEST_PROTOCOL";
 const TEST_COMPILE_DELAY_ENV: &str = "RUE_WATCH_TEST_COMPILE_DELAY_MS";
+const TEST_BOUNDARY_DELAY_ENV: &str = "RUE_WATCH_TEST_BOUNDARY_DELAY_MS";
 
 fn test_event(event: &str) {
     let Some(path) = std::env::var_os(TEST_PROTOCOL_ENV) else {
@@ -47,6 +48,19 @@ fn test_event(event: &str) {
 
 fn test_compile_delay() {
     let Ok(delay) = std::env::var(TEST_COMPILE_DELAY_ENV) else {
+        return;
+    };
+    let Ok(milliseconds) = delay.parse::<u64>() else {
+        return;
+    };
+    thread::sleep(Duration::from_millis(milliseconds.min(5_000)));
+}
+
+// Widen the unobserved gap between the change monitor stopping and the
+// trailing input check. Test-only, like the compile delay above: it exists so
+// an edit can be made to land inside that window on purpose.
+fn test_boundary_delay() {
+    let Ok(delay) = std::env::var(TEST_BOUNDARY_DELAY_ENV) else {
         return;
     };
     let Ok(milliseconds) = delay.parse::<u64>() else {
@@ -250,13 +264,21 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
         }
 
         let monitor_changed = monitor.finish();
+        // The monitor has stopped and nothing observes the inputs again until
+        // the trailing check below. That gap is where RUE-1783 lived, and it is
+        // normally too short to hit deliberately -- so the harness can widen it
+        // to make the race reproducible instead of hoping a loaded runner
+        // supplies it.
+        test_boundary_delay();
         let changed = watch_cycle_changed(
             publication_changed,
             monitor_changed,
             inputs_changed(&inputs),
         );
-        if !changed {
-            wait_for_change(&inputs);
+        match cycle_boundary_action(changed, monitor_changed) {
+            CycleBoundary::Wait => wait_for_change(&inputs),
+            CycleBoundary::Announce => test_event("change-detected"),
+            CycleBoundary::AlreadyAnnounced => {}
         }
         debounce(&inputs);
         needs_reobserve = true;
@@ -326,6 +348,43 @@ fn watch_cycle_changed(
     publication_changed || monitor_changed || observed_changed
 }
 
+/// What the cycle boundary owes the test protocol once the cycle has settled.
+///
+/// `change-detected` is the protocol's single "a newer revision exists"
+/// milestone, but a cycle can learn that three different ways: the in-flight
+/// `ChangeMonitor`, the publication guard, or the trailing `inputs_changed`
+/// observation. Only the monitor announces itself.
+///
+/// That asymmetry was a race (RUE-1783). The milestone was emitted solely from
+/// `wait_for_change`, which the loop reaches only when the cycle ends with no
+/// change pending — so whether it was emitted depended on whether an edit
+/// landed before or after the trailing check. An edit landing *before* it left
+/// the milestone unsent while the watcher went on to rebuild and publish
+/// perfectly correctly, so a harness waiting on the milestone hung against a
+/// watcher that was doing its job. It reproduced on slow runners because a
+/// longer compile widens the window in which the edit can land early.
+///
+/// Announcing here makes the milestone unconditional: every cycle that ends
+/// knowing about a change reports it exactly once, whichever path found it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CycleBoundary {
+    /// Nothing has changed yet; block until something does. `wait_for_change`
+    /// emits the milestone itself when it returns.
+    Wait,
+    /// A change is already pending and nobody has announced it.
+    Announce,
+    /// The monitor thread announced this change when it cancelled the compile.
+    AlreadyAnnounced,
+}
+
+fn cycle_boundary_action(changed: bool, monitor_changed: bool) -> CycleBoundary {
+    match (changed, monitor_changed) {
+        (false, _) => CycleBoundary::Wait,
+        (true, true) => CycleBoundary::AlreadyAnnounced,
+        (true, false) => CycleBoundary::Announce,
+    }
+}
+
 fn current_fingerprints(inputs: &[WatchInput]) -> Vec<Option<WatchFingerprint>> {
     watch_input_fingerprints(inputs)
 }
@@ -370,6 +429,52 @@ mod tests {
         assert!(watch_cycle_changed(true, false, false));
         assert!(watch_cycle_changed(true, false, true));
         assert!(!watch_cycle_changed(false, false, false));
+    }
+
+    // RUE-1783. The milestone used to be emitted only from `wait_for_change`,
+    // so a cycle that already knew about a change skipped it entirely and a
+    // harness waiting on it hung against a correctly-working watcher.
+    #[test]
+    fn a_settled_cycle_waits_and_lets_wait_for_change_announce() {
+        assert_eq!(
+            cycle_boundary_action(false, false),
+            CycleBoundary::Wait,
+            "with nothing pending the loop must block, not announce"
+        );
+    }
+
+    #[test]
+    fn a_change_found_at_the_boundary_is_announced_exactly_once() {
+        // The trailing `inputs_changed` observation and the publication guard
+        // both reach here with the monitor quiet: nobody has announced yet.
+        assert_eq!(
+            cycle_boundary_action(true, false),
+            CycleBoundary::Announce,
+            "an edit that landed before the trailing check must still be reported"
+        );
+    }
+
+    #[test]
+    fn a_change_the_monitor_already_reported_is_not_announced_twice() {
+        assert_eq!(
+            cycle_boundary_action(true, true),
+            CycleBoundary::AlreadyAnnounced,
+            "the monitor emits the milestone when it cancels; a second is a phantom revision"
+        );
+    }
+
+    // Whichever path detects it, a cycle that ends knowing about a change must
+    // never fall through to `wait_for_change` -- that would block on a change
+    // that has already happened, which is the hang RUE-1783 filed.
+    #[test]
+    fn no_pending_change_is_ever_waited_on() {
+        for monitor_changed in [false, true] {
+            assert_ne!(
+                cycle_boundary_action(true, monitor_changed),
+                CycleBoundary::Wait,
+                "a known change must not send the loop back to sleep"
+            );
+        }
     }
 
     #[test]

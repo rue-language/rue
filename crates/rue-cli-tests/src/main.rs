@@ -1061,6 +1061,12 @@ struct WatchScenario {
     source_path: Option<String>,
     #[serde(default)]
     compile_delay_ms: Option<u64>,
+    /// Widen the gap between the watcher's change monitor stopping and its
+    /// trailing input check, so an edit can be made to land inside it on
+    /// purpose. That window is where RUE-1783 lived: a change discovered there
+    /// was acted on but never announced on the protocol.
+    #[serde(default)]
+    boundary_delay_ms: Option<u64>,
     edits: Vec<WatchEdit>,
     expected_exit_codes: Vec<i32>,
 }
@@ -2588,6 +2594,9 @@ fn run_watch_case(
         .stderr(Stdio::piped());
     if let Some(delay) = scenario.compile_delay_ms {
         command.env("RUE_WATCH_TEST_COMPILE_DELAY_MS", delay.to_string());
+    }
+    if let Some(delay) = scenario.boundary_delay_ms {
+        command.env("RUE_WATCH_TEST_BOUNDARY_DELAY_MS", delay.to_string());
     }
     configure_process_group(&mut command);
     let mut child = command
