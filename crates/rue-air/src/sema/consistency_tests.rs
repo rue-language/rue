@@ -922,6 +922,10 @@ mod tests {
             "the query-backed body host implements the shared fact host exactly once"
         );
         assert!(TYPECK_SOURCE.contains("pub(super) trait TypeSyntaxHost"));
+        let provider_state = item(TYPECK_SOURCE, "pub(super) struct TypeSyntaxProviderState");
+        assert!(!provider_state.contains("&mut H"));
+        assert!(!provider_state.contains("host:"));
+        assert!(!provider_state.contains("Option<&AHashMap"));
         assert!(TYPECK_SOURCE.contains("pub(super) struct TypeSyntaxProvider"));
         assert!(TYPECK_SOURCE.contains("pub(super) enum SemaTypeResolutionContext"));
         assert!(TYPECK_SOURCE.contains("pub(super) fn resolve_array_length_fact("));
@@ -983,6 +987,10 @@ mod tests {
                 method.contains(provider),
                 "the provider host constructs the generic evaluator"
             );
+            assert!(
+                method.contains("TypeSyntaxProviderState::new"),
+                "the provider host owns state before borrowing the semantic host"
+            );
             assert!(!method.contains("SemaTypeSyntaxProvider"));
         }
         assert!(!TYPECK_SOURCE.contains("SemaTypeSyntaxProvider"));
@@ -992,7 +1000,22 @@ mod tests {
                 .matches("pub fn resolve_structured_semantic_type_syntax_with<")
                 .count(),
             1,
-            "all storage hosts share one recursive structured policy"
+            "all storage hosts share one structured-type machine"
+        );
+        let structured_resolver = item(
+            SEMANTIC_TYPE_RESOLUTION_SOURCE,
+            "pub fn resolve_structured_semantic_type_syntax_with<",
+        );
+        assert!(
+            structured_resolver.contains("StructuredTypeWork::Evaluate"),
+            "the canonical structured resolver must drive its owned work stack"
+        );
+        assert_eq!(
+            structured_resolver
+                .matches("resolve_structured_semantic_type_syntax_with(")
+                .count(),
+            0,
+            "the canonical structured resolver must not self-dispatch recursively"
         );
         for forbidden in [
             "pub fn resolve_semantic_type_syntax",
