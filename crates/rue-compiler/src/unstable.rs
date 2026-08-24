@@ -99,6 +99,18 @@ pub fn begin_import_wave(
     session.begin_import_wave(revision, plan, frontier)
 }
 
+/// Open a discovery wave while seeding it with the physical representatives
+/// already assembled by the filesystem host.
+pub fn begin_import_wave_with_accepted_reads(
+    session: &mut crate::CompilerSession,
+    revision: ImportInputRevision,
+    plan: &crate::ImportDiscoveryPlan,
+    frontier: &ImportDemandFrontier,
+    accepted_reads: &crate::AcceptedReadManifest,
+) -> crate::CompileResult<ImportDiscoveryWave> {
+    session.begin_import_wave_with_accepted_reads(revision, plan, frontier, Some(accepted_reads))
+}
+
 /// Record one wave hop's answers and derive the next hop's operations. The host
 /// supplies only results for the exact batch [`ImportDiscoveryWave::requests`]
 /// named, in that order.

@@ -328,6 +328,7 @@ impl ImportObservationStatus {
 pub struct AcceptedImportSource {
     requested_path: Arc<str>,
     canonical_path: Arc<str>,
+    symlink_route: Arc<[PhysicalFileIdentity]>,
     metadata_identity: PhysicalFileIdentity,
     metadata_fingerprint: FileMetadataFingerprint,
     content_fingerprint: u64,
@@ -349,6 +350,7 @@ impl AcceptedImportSource {
         Ok(Self {
             requested_path,
             canonical_path,
+            symlink_route: Arc::from([]),
             metadata_identity,
             metadata_fingerprint,
             content_fingerprint,
@@ -360,6 +362,17 @@ impl AcceptedImportSource {
     }
     pub fn canonical_path(&self) -> &str {
         &self.canonical_path
+    }
+    /// Record the ordered physical identities of symlink components traversed
+    /// below the host's captured logical boundary. This is host evidence, not
+    /// part of the physical observation identity: two routes are aliases only
+    /// when they resolve through different symlink components.
+    pub fn with_symlink_route(mut self, route: Arc<[PhysicalFileIdentity]>) -> Self {
+        self.symlink_route = route;
+        self
+    }
+    pub fn symlink_route(&self) -> &[PhysicalFileIdentity] {
+        &self.symlink_route
     }
     pub fn content_fingerprint(&self) -> u64 {
         self.content_fingerprint
@@ -1100,6 +1113,11 @@ pub struct ImportDiscoveryWave {
     /// Modules whose occurrences are already accounted for — the revision's own
     /// modules plus everything the wave has read.
     known_modules: BTreeSet<ModuleId>,
+    /// Physical representatives already assembled before this wave. This
+    /// prevents a hard-link import of the root (or another carried source)
+    /// from manufacturing a second parsed module that the assembler will not
+    /// publish.
+    known_physical: BTreeMap<PhysicalFileIdentity, ModuleId>,
     /// This hop's deduplicated host operations and the occurrence requests each
     /// one answers.
     requests: Vec<ImportDiscoveryRequest>,
@@ -1124,10 +1142,11 @@ pub struct ImportDiscoveryWave {
 impl ImportDiscoveryWave {
     /// Begin a wave from a round's starting frontier. `ledger` is the revision's
     /// carried ledger; `frontier` is the batch the host is about to answer.
-    pub(crate) fn begin(
+    pub(crate) fn begin_with_accepted_reads(
         plan: &ImportDiscoveryPlan,
         frontier: &ImportDemandFrontier,
         ledger: ImportObservationLedger,
+        accepted_reads: Option<&AcceptedReadManifest>,
     ) -> CompileResult<Self> {
         if frontier.mode != ImportDemandMode::Rooted {
             return Err(invalid_input(
@@ -1142,12 +1161,18 @@ impl ImportDiscoveryWave {
             .iter()
             .map(|revision| revision.module.clone())
             .collect();
+        let known_physical = accepted_reads
+            .into_iter()
+            .flat_map(AcceptedReadManifest::iter)
+            .map(|entry| (entry.metadata_identity(), entry.module().clone()))
+            .collect();
         Ok(Self {
             revision: frontier.revision,
             context: plan.context().clone(),
             ledger,
             open,
             known_modules,
+            known_physical,
             requests: frontier.requests.to_vec(),
             fanout: frontier.fanout.to_vec(),
             batch_requests: Vec::new(),
@@ -1224,6 +1249,18 @@ impl ImportDiscoveryWave {
                 source.requested_path(),
                 source.canonical_path(),
             )?;
+            if self
+                .known_physical
+                .contains_key(&source.metadata_identity())
+            {
+                // The physical representative is already known. Its import
+                // occurrence remains in the ledger for close-time diagnostics,
+                // but parsing it as a second logical module would create a
+                // successor source the assembler intentionally does not carry.
+                continue;
+            }
+            self.known_physical
+                .insert(source.metadata_identity(), module.clone());
             if !self.known_modules.insert(module.clone()) {
                 continue;
             }
@@ -1445,7 +1482,15 @@ fn canonicalize_accepted(mut accepted: Vec<&AcceptedImportSource>) -> Vec<&Accep
             .then(left.canonical_path.cmp(&right.canonical_path))
     });
     accepted.dedup_by(|left, right| {
-        left.canonical_path == right.canonical_path
+        // A hard link has a distinct canonical path but is still one physical
+        // source. Keep the first source in canonical request order as the
+        // representative; the complete observation ledger remains available
+        // to the close-time diagnostic projection, which can report the
+        // incompatible logical identities at their import sites. Do not
+        // collapse unlike observations: a changed stamp must still reach the
+        // assembler's fail-closed guard.
+        left.metadata_identity == right.metadata_identity
+            && left.metadata_fingerprint == right.metadata_fingerprint
             && left.content_fingerprint == right.content_fingerprint
     });
     accepted
@@ -1733,6 +1778,7 @@ pub(crate) fn exact_import_diagnostics(
     context: &ImportDiscoveryContext,
     groups: &[Arc<[ImportDiscoveryRequest]>],
     ledger: &ImportObservationLedger,
+    accepted_reads: &AcceptedReadManifest,
 ) -> CompileErrors {
     let mut errors = ImportDiscoveryPlan::shape_diagnostics(program);
     errors.extend(specifier_diagnostics(program));
@@ -1783,6 +1829,27 @@ pub(crate) fn exact_import_diagnostics(
             failed_sites.insert((*site).clone());
         }
     }
+    // The assembler receives one physical representative so that an alias
+    // conflict can reach this canonical close-time projection with the exact
+    // import occurrence spans still available in the ledger. Seed the identity
+    // map with the assembled manifest (including the root), then compare every
+    // winning import under that identity in deterministic occurrence order.
+    let mut physical_modules = BTreeMap::<
+        PhysicalFileIdentity,
+        (ModuleId, Arc<str>, Arc<str>, Arc<[PhysicalFileIdentity]>),
+    >::new();
+    for entry in accepted_reads.iter() {
+        physical_modules
+            .entry(entry.metadata_identity())
+            .or_insert_with(|| {
+                (
+                    entry.module().clone(),
+                    Arc::from(entry.canonical_path()),
+                    safe_import_display(context, entry.requested_path()),
+                    Arc::from(entry.symlink_route().to_vec()),
+                )
+            });
+    }
     for (site, groups) in groups_by_site {
         if failed_sites.contains(site) {
             continue;
@@ -1820,8 +1887,59 @@ pub(crate) fn exact_import_diagnostics(
                 span,
             )),
         }
+        if let Some(source) = winning.as_ref().and_then(|sources| sources.first()) {
+            let module =
+                match classify_module(context, source.requested_path(), source.canonical_path()) {
+                    Ok(module) => module,
+                    Err(error) => {
+                        errors.push(error);
+                        continue;
+                    }
+                };
+            if let Some((previous, previous_canonical, previous_spelling, previous_route)) =
+                physical_modules.get(&source.metadata_identity())
+            {
+                let different_symlink_routes = previous_canonical.as_ref()
+                    == source.canonical_path()
+                    && previous_route.as_ref() != source.symlink_route();
+                if previous != &module && !different_symlink_routes {
+                    errors.push(CompileError::new(
+                        ErrorKind::ImportSpellingsSameFile {
+                            first: previous_spelling.to_string(),
+                            second: site.specifier().to_owned(),
+                        },
+                        span,
+                    ));
+                }
+            } else {
+                physical_modules.insert(
+                    source.metadata_identity(),
+                    (
+                        module,
+                        Arc::from(source.canonical_path()),
+                        Arc::from(site.specifier()),
+                        Arc::from(source.symlink_route().to_vec()),
+                    ),
+                );
+            }
+        }
     }
     errors
+}
+
+/// Render an accepted manifest path without exposing compiler-only logical
+/// module namespaces (notably the NUL-prefixed trusted standard-library IDs).
+fn safe_import_display(context: &ImportDiscoveryContext, path: &str) -> Arc<str> {
+    let path = Path::new(path);
+    if let Some(std_root) = context.std_root()
+        && let Ok(relative) = path.strip_prefix(std_root)
+    {
+        return Arc::from(format!("std/{}", relative.to_string_lossy()));
+    }
+    if let Ok(relative) = path.strip_prefix(context.project_root()) {
+        return Arc::from(relative.to_string_lossy().into_owned());
+    }
+    Arc::from(path.to_string_lossy().into_owned())
 }
 
 pub(crate) fn reduce_exact_import_graph(
@@ -2266,6 +2384,7 @@ pub struct AcceptedReadManifestEntry {
     module: ModuleId,
     requested_path: Arc<str>,
     canonical_path: Arc<str>,
+    symlink_route: Arc<[PhysicalFileIdentity]>,
     metadata_identity: PhysicalFileIdentity,
     metadata_fingerprint: FileMetadataFingerprint,
     content_fingerprint: u64,
@@ -2280,6 +2399,9 @@ impl AcceptedReadManifestEntry {
     }
     pub fn canonical_path(&self) -> &str {
         &self.canonical_path
+    }
+    pub fn symlink_route(&self) -> &[PhysicalFileIdentity] {
+        &self.symlink_route
     }
     pub fn content_fingerprint(&self) -> u64 {
         self.content_fingerprint
@@ -2300,6 +2422,26 @@ impl DiscoverySourceAssembler {
         metadata_identity: PhysicalFileIdentity,
         metadata_fingerprint: FileMetadataFingerprint,
         root_source: Arc<String>,
+    ) -> CompileResult<Self> {
+        Self::new_with_symlink_route(
+            context,
+            root_requested_path,
+            root_canonical_path,
+            metadata_identity,
+            metadata_fingerprint,
+            root_source,
+            Arc::from([]),
+        )
+    }
+
+    pub fn new_with_symlink_route(
+        context: ImportDiscoveryContext,
+        root_requested_path: impl Into<Arc<str>>,
+        root_canonical_path: impl Into<Arc<str>>,
+        metadata_identity: PhysicalFileIdentity,
+        metadata_fingerprint: FileMetadataFingerprint,
+        root_source: Arc<String>,
+        symlink_route: Arc<[PhysicalFileIdentity]>,
     ) -> CompileResult<Self> {
         let requested_path = Arc::from(normalize_absolute(&root_requested_path.into())?);
         let canonical_path = Arc::from(normalize_absolute(&root_canonical_path.into())?);
@@ -2327,6 +2469,7 @@ impl DiscoverySourceAssembler {
                 module: module.clone(),
                 requested_path,
                 canonical_path: canonical_path.clone(),
+                symlink_route,
                 metadata_identity,
                 metadata_fingerprint,
                 content_fingerprint: source_fingerprint(&root_source),
@@ -2359,13 +2502,35 @@ impl DiscoverySourceAssembler {
         metadata_fingerprint: FileMetadataFingerprint,
         source: Arc<String>,
     ) -> CompileResult<bool> {
-        self.add_source(&AcceptedImportSource::new(
-            Arc::from(normalize_absolute(requested_path)?),
-            Arc::from(canonical_path),
+        self.add_explicit_with_symlink_route(
+            requested_path,
+            canonical_path,
             metadata_identity,
             metadata_fingerprint,
             source,
-        )?)
+            Arc::from([]),
+        )
+    }
+
+    pub fn add_explicit_with_symlink_route(
+        &mut self,
+        requested_path: &str,
+        canonical_path: &str,
+        metadata_identity: PhysicalFileIdentity,
+        metadata_fingerprint: FileMetadataFingerprint,
+        source: Arc<String>,
+        symlink_route: Arc<[PhysicalFileIdentity]>,
+    ) -> CompileResult<bool> {
+        self.add_source(
+            &AcceptedImportSource::new(
+                Arc::from(normalize_absolute(requested_path)?),
+                Arc::from(canonical_path),
+                metadata_identity,
+                metadata_fingerprint,
+                source,
+            )?
+            .with_symlink_route(symlink_route),
+        )
     }
 
     pub fn add_plan_reads(
@@ -2382,7 +2547,7 @@ impl DiscoverySourceAssembler {
         self.plan_reads_reduced = self.plan_reads_reduced.saturating_add(reduced.len() as u64);
         let mut added = 0;
         for source in reduced {
-            added += usize::from(self.add_source(source)?);
+            added += usize::from(self.add_reduced_source(source)?);
         }
         Ok(added)
     }
@@ -2403,7 +2568,7 @@ impl DiscoverySourceAssembler {
         self.plan_reads_reduced = self.plan_reads_reduced.saturating_add(reduced.len() as u64);
         let mut added = 0;
         for source in reduced {
-            added += usize::from(self.add_source(source)?);
+            added += usize::from(self.add_reduced_source(source)?);
         }
         Ok(added)
     }
@@ -2425,9 +2590,61 @@ impl DiscoverySourceAssembler {
         self.plan_reads_reduced = self.plan_reads_reduced.saturating_add(reduced.len() as u64);
         let mut added = 0;
         for source in reduced {
-            added += usize::from(self.add_source(source)?);
+            added += usize::from(self.add_reduced_source(source)?);
         }
         Ok(added)
+    }
+
+    /// Reduce a canonical accepted-source projection against sources already
+    /// assembled in this lineage. A root/import alias can share a physical
+    /// identity before the wave's own projection sees both entries; retain the
+    /// existing representative so the assembler backstop remains reserved for
+    /// malformed direct input, while close-time diagnostics reject the alias.
+    fn add_reduced_source(&mut self, source: &AcceptedImportSource) -> CompileResult<bool> {
+        let module = classify_module(
+            &self.context,
+            source.requested_path(),
+            source.canonical_path(),
+        )?;
+        if let Some(previous_identity) = self.canonical_identities.get(source.canonical_path())
+            && previous_identity != &source.metadata_identity
+        {
+            return Err(invalid_input(format!(
+                "canonical source {:?} changed physical identity during discovery epoch",
+                source.canonical_path()
+            )));
+        }
+        if let Some(owner) = self.physical.get(&source.metadata_identity()) {
+            let existing = self
+                .entries
+                .get(&owner.module)
+                .expect("physical map references entry");
+            if source_fingerprint(&existing.source) != source.content_fingerprint {
+                return Err(invalid_input(format!(
+                    "physical source {:?} changed during discovery epoch",
+                    source.canonical_path()
+                )));
+            }
+            let provenance = self
+                .accepted_reads
+                .get(&owner.module)
+                .expect("accepted source retains provenance");
+            if provenance.metadata_identity != source.metadata_identity
+                || provenance.metadata_fingerprint != source.metadata_fingerprint
+            {
+                return Err(invalid_input(format!(
+                    "physical source {:?} metadata changed during discovery epoch",
+                    source.canonical_path()
+                )));
+            }
+            if owner.module != module {
+                // The close-time diagnostic projection owns the user-facing
+                // conflict. All source and observation invariants were checked
+                // above before retaining the existing representative.
+                return Ok(false);
+            }
+        }
+        self.add_source(source)
     }
 
     fn add_source(&mut self, source: &AcceptedImportSource) -> CompileResult<bool> {
@@ -2496,6 +2713,10 @@ impl DiscoverySourceAssembler {
                         .get_mut(&owner.module)
                         .unwrap()
                         .canonical_path = source.canonical_path.clone();
+                    self.accepted_reads
+                        .get_mut(&owner.module)
+                        .unwrap()
+                        .symlink_route = source.symlink_route.clone();
                     self.physical
                         .get_mut(&source.metadata_identity)
                         .unwrap()
@@ -2539,6 +2760,7 @@ impl DiscoverySourceAssembler {
                 module,
                 requested_path: source.requested_path.clone(),
                 canonical_path: source.canonical_path.clone(),
+                symlink_route: source.symlink_route.clone(),
                 metadata_identity: source.metadata_identity,
                 metadata_fingerprint: source.metadata_fingerprint,
                 content_fingerprint: source.content_fingerprint,
@@ -3260,6 +3482,7 @@ mod tests {
                 module: snapshot.module_id(source.file_id).unwrap().clone(),
                 requested_path: Arc::from(source.path),
                 canonical_path: Arc::from(source.path),
+                symlink_route: Arc::from([]),
                 metadata_identity: PhysicalFileIdentity::new(1, source.file_id.index() as u64),
                 metadata_fingerprint: metadata_fingerprint(),
                 content_fingerprint: source_fingerprint(source.source),
@@ -3273,6 +3496,7 @@ mod tests {
             module: ModuleId::from_logical_path(format!("module_{index:04}.rue")).unwrap(),
             requested_path: Arc::from(format!("/project/module_{index:04}.rue").as_str()),
             canonical_path: Arc::from(format!("/project/module_{index:04}.rue").as_str()),
+            symlink_route: Arc::from([]),
             metadata_identity: PhysicalFileIdentity::new(1, identity),
             metadata_fingerprint: metadata_fingerprint(),
             content_fingerprint: index,
@@ -3587,6 +3811,383 @@ mod tests {
                 )
                 .unwrap_err();
             assert!(error.to_string().contains("incompatible logical IDs"));
+        }
+    }
+
+    #[test]
+    fn reduced_alias_conflicts_remain_fail_closed_before_suppression() {
+        let mut assembler = assembler_for_physical_identity_test();
+        assembler
+            .add_explicit(
+                "/project/a.rue",
+                "/real/a.rue",
+                PhysicalFileIdentity::new(9, 9),
+                metadata_fingerprint(),
+                Arc::new("same inode".into()),
+            )
+            .unwrap();
+
+        let mismatched_content = AcceptedImportSource::new(
+            "/project/b.rue",
+            "/real/b.rue",
+            PhysicalFileIdentity::new(9, 9),
+            metadata_fingerprint(),
+            Arc::new("changed content".into()),
+        )
+        .unwrap();
+        assert!(
+            assembler
+                .add_reduced_source(&mismatched_content)
+                .unwrap_err()
+                .to_string()
+                .contains("changed during discovery epoch")
+        );
+
+        let mismatched_metadata = AcceptedImportSource::new(
+            "/project/b.rue",
+            "/real/b.rue",
+            PhysicalFileIdentity::new(9, 9),
+            FileMetadataFingerprint::new(2, 3, 4),
+            Arc::new("same inode".into()),
+        )
+        .unwrap();
+        assert!(
+            assembler
+                .add_reduced_source(&mismatched_metadata)
+                .unwrap_err()
+                .to_string()
+                .contains("metadata changed during discovery epoch")
+        );
+
+        let mismatched_canonical_identity = AcceptedImportSource::new(
+            "/project/a.rue",
+            "/real/a.rue",
+            PhysicalFileIdentity::new(9, 10),
+            metadata_fingerprint(),
+            Arc::new("same inode".into()),
+        )
+        .unwrap();
+        assert!(
+            assembler
+                .add_reduced_source(&mismatched_canonical_identity)
+                .unwrap_err()
+                .to_string()
+                .contains("changed physical identity during discovery epoch")
+        );
+    }
+
+    #[test]
+    fn accepted_projection_deduplicates_hard_links_but_keeps_distinct_logicals_for_diagnostics() {
+        let first = AcceptedImportSource::new(
+            "/project/a.rue",
+            "/real/a.rue",
+            PhysicalFileIdentity::new(9, 9),
+            metadata_fingerprint(),
+            Arc::new("same inode".into()),
+        )
+        .unwrap();
+        let second = AcceptedImportSource::new(
+            "/project/b.rue",
+            "/real/b.rue",
+            PhysicalFileIdentity::new(9, 9),
+            metadata_fingerprint(),
+            Arc::new("same inode".into()),
+        )
+        .unwrap();
+        let reduced = canonicalize_accepted(vec![&second, &first]);
+        assert_eq!(reduced.len(), 1);
+        assert_eq!(reduced[0].requested_path(), "/project/a.rue");
+    }
+
+    #[test]
+    fn hard_link_logical_conflict_is_reported_at_the_later_import_site() {
+        let source = snapshot(
+            &[
+                (
+                    1,
+                    "/project/main.rue",
+                    "main.rue",
+                    "const a = @import(\"a.rue\");\nconst b = @import(\"b.rue\");\nfn main() -> i32 { 0 }",
+                ),
+                (2, "/project/a.rue", "a.rue", "pub fn value() -> i32 { 1 }"),
+            ],
+            1,
+        );
+        let mut session = crate::CompilerSession::new();
+        let plan = session
+            .stage_import_discovery(
+                &source,
+                context(51),
+                accepted_reads(&source),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let mut ledger = ImportObservationLedger::default();
+        for request in plan.pending_requests(&ledger) {
+            let (canonical, source_text) = if request.requested_path().ends_with("/a.rue") {
+                ("/real/a.rue", "pub fn value() -> i32 { 1 }")
+            } else if request.requested_path().ends_with("/b.rue") {
+                ("/real/b.rue", "pub fn value() -> i32 { 1 }")
+            } else {
+                continue;
+            };
+            ledger
+                .record(
+                    ImportObservation::accepted(
+                        request.clone(),
+                        AcceptedImportSource::new(
+                            request.requested_path(),
+                            canonical,
+                            PhysicalFileIdentity::new(1, 2),
+                            metadata_fingerprint(),
+                            Arc::new(source_text.into()),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let errors = session.close_import_discovery(ledger).unwrap_err();
+        assert!(matches!(
+            &errors.as_slice()[0].kind,
+            ErrorKind::ImportSpellingsSameFile { first, second }
+                if first == "a.rue" && second == "b.rue"
+        ));
+        assert_eq!(errors.as_slice()[0].span().unwrap().start, 38);
+    }
+
+    #[test]
+    fn case_alias_conflict_is_reported_but_symlink_alias_is_deduplicated() {
+        let source = snapshot(
+            &[
+                (
+                    1,
+                    "/project/main.rue",
+                    "main.rue",
+                    "const lower = @import(\"real.rue\");\nconst upper = @import(\"REAL.rue\");\nfn main() -> i32 { 0 }",
+                ),
+                (
+                    2,
+                    "/project/real.rue",
+                    "real.rue",
+                    "pub fn value() -> i32 { 1 }",
+                ),
+            ],
+            1,
+        );
+        let mut session = crate::CompilerSession::new();
+        let plan = session
+            .stage_import_discovery(
+                &source,
+                context(52),
+                accepted_reads(&source),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let mut ledger = ImportObservationLedger::default();
+        for request in plan.pending_requests(&ledger) {
+            ledger
+                .record(
+                    ImportObservation::accepted(
+                        request.clone(),
+                        AcceptedImportSource::new(
+                            request.requested_path(),
+                            "/real/shared.rue",
+                            PhysicalFileIdentity::new(1, 2),
+                            metadata_fingerprint(),
+                            Arc::new("pub fn value() -> i32 { 1 }".into()),
+                        )
+                        .unwrap()
+                        .with_symlink_route(Arc::from([])),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let errors = session.close_import_discovery(ledger).unwrap_err();
+        assert!(
+            errors.iter().any(|error| {
+                matches!(
+                    &error.kind,
+                    ErrorKind::ImportSpellingsSameFile { first, second }
+                        if first == "real.rue" && second == "REAL.rue"
+                )
+            }),
+            "{errors:?}"
+        );
+
+        let mut symlink_ledger = ImportObservationLedger::default();
+        for request in plan.pending_requests(&ImportObservationLedger::default()) {
+            let route = request
+                .requested_path()
+                .ends_with("REAL.rue")
+                .then(|| PhysicalFileIdentity::new(9, 99))
+                .map_or_else(|| Arc::from([]), |identity| Arc::from([identity]));
+            symlink_ledger
+                .record(
+                    ImportObservation::accepted(
+                        request.clone(),
+                        AcceptedImportSource::new(
+                            request.requested_path(),
+                            "/real/shared.rue",
+                            PhysicalFileIdentity::new(1, 2),
+                            metadata_fingerprint(),
+                            Arc::new("pub fn value() -> i32 { 1 }".into()),
+                        )
+                        .unwrap()
+                        .with_symlink_route(route),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let mut symlink_session = crate::CompilerSession::new();
+        let mut symlink_manifest = accepted_reads(&source).to_vec();
+        symlink_manifest[1].canonical_path = Arc::from("/real/shared.rue");
+        symlink_manifest[1].symlink_route = Arc::from([]);
+        let symlink_plan = symlink_session
+            .stage_import_discovery(
+                &source,
+                context(52),
+                Arc::from(symlink_manifest),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        assert_eq!(symlink_plan.groups(), plan.groups());
+        if let Err(symlink_errors) = symlink_session.close_import_discovery(symlink_ledger) {
+            assert!(
+                !symlink_errors.iter().any(|error| {
+                    matches!(error.kind, ErrorKind::ImportSpellingsSameFile { .. })
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn trusted_manifest_conflict_uses_safe_spellings_at_the_import_site() {
+        let root = FileId::new(1);
+        let trusted_std = FileId::new(2);
+        let trusted_option = FileId::new(3);
+        let metadata = SourceMetadata::new_with_trusted_standard_library(
+            root,
+            AHashMap::from([
+                (root, "/project/main.rue".to_owned()),
+                (trusted_std, "/sdk/_std.rue".to_owned()),
+                (trusted_option, "/sdk/option.rue".to_owned()),
+            ]),
+            AHashMap::from([
+                (root, "main.rue".to_owned()),
+                (trusted_std, "\0rue-std/_std.rue".to_owned()),
+                (trusted_option, "\0rue-std/option.rue".to_owned()),
+            ]),
+            ahash::AHashSet::from([trusted_std, trusted_option]),
+        )
+        .unwrap();
+        let main_text = "const std = @import(\"std\"); fn main() -> i32 { 0 }";
+        let std_text = "pub const lower = @import(\"option.rue\");\npub const upper = @import(\"OPTION.rue\");";
+        let option_text = "pub fn value() -> i32 { 1 }";
+        let source = SourceSnapshot::new(
+            metadata,
+            vec![
+                (root, Arc::new(main_text.into())),
+                (trusted_std, Arc::new(std_text.into())),
+                (trusted_option, Arc::new(option_text.into())),
+            ],
+        )
+        .unwrap();
+        let manifest = AcceptedReadManifest::from_entries(vec![
+            AcceptedReadManifestEntry {
+                module: ModuleId::from_logical_path("main.rue").unwrap(),
+                requested_path: Arc::from("/project/main.rue"),
+                canonical_path: Arc::from("/project/main.rue"),
+                symlink_route: Arc::from([]),
+                metadata_identity: PhysicalFileIdentity::new(1, 1),
+                metadata_fingerprint: metadata_fingerprint(),
+                content_fingerprint: source_fingerprint(main_text),
+            },
+            AcceptedReadManifestEntry {
+                module: ModuleId::from_trusted_standard_library_path("\0rue-std/_std.rue").unwrap(),
+                requested_path: Arc::from("/sdk/_std.rue"),
+                canonical_path: Arc::from("/sdk/_std.rue"),
+                symlink_route: Arc::from([]),
+                metadata_identity: PhysicalFileIdentity::new(1, 2),
+                metadata_fingerprint: metadata_fingerprint(),
+                content_fingerprint: source_fingerprint(std_text),
+            },
+            AcceptedReadManifestEntry {
+                module: ModuleId::from_trusted_standard_library_path("\0rue-std/option.rue")
+                    .unwrap(),
+                requested_path: Arc::from("/sdk/option.rue"),
+                canonical_path: Arc::from("/sdk/option.rue"),
+                symlink_route: Arc::from([]),
+                metadata_identity: PhysicalFileIdentity::new(1, 3),
+                metadata_fingerprint: metadata_fingerprint(),
+                content_fingerprint: source_fingerprint(option_text),
+            },
+        ]);
+        let mut session = crate::CompilerSession::new();
+        let plan = session
+            .stage_import_discovery(
+                &source,
+                context(54),
+                manifest.shared_slice(),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let mut ledger = ImportObservationLedger::default();
+        loop {
+            let pending = plan.pending_requests(&ledger);
+            if pending.is_empty() {
+                break;
+            }
+            for request in pending {
+                let requested = request.requested_path();
+                let observation = if requested.starts_with("/project/") {
+                    ImportObservation::absent(request)
+                } else if requested.ends_with("/option.rue") || requested.ends_with("/OPTION.rue") {
+                    ImportObservation::accepted(
+                        request.clone(),
+                        AcceptedImportSource::new(
+                            requested,
+                            "/sdk/option.rue",
+                            PhysicalFileIdentity::new(1, 3),
+                            metadata_fingerprint(),
+                            Arc::new(option_text.into()),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                } else {
+                    ImportObservation::accepted(
+                        request.clone(),
+                        AcceptedImportSource::new(
+                            requested,
+                            "/sdk/_std.rue",
+                            PhysicalFileIdentity::new(1, 2),
+                            metadata_fingerprint(),
+                            Arc::new(std_text.into()),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                };
+                ledger.record(observation).unwrap();
+            }
+        }
+        let errors = session.close_import_discovery(ledger).unwrap_err();
+        let diagnostic = errors
+            .iter()
+            .find(|error| matches!(error.kind, ErrorKind::ImportSpellingsSameFile { .. }))
+            .expect("trusted standard-library alias has E0715");
+        match &diagnostic.kind {
+            ErrorKind::ImportSpellingsSameFile { first, second } => {
+                assert_eq!(first, "std/option.rue");
+                assert_eq!(second, "OPTION.rue");
+                assert!(!first.contains('\0'));
+                assert!(!second.contains('\0'));
+            }
+            _ => unreachable!(),
         }
     }
 

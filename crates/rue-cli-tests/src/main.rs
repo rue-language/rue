@@ -64,6 +64,11 @@
 //!   is the only way a case can set up a symlink — a `files` entry always
 //!   produces a regular file — which filesystem-facing cases need in order to
 //!   pin symlink behavior (`std.fs` cannot create one either)
+//! - `hard_links`: regular hard links created after `files`, as
+//!   `[{ link = "alias.rue", target = "real.rue" }]`; the harness reports a
+//!   fixture error explicitly if the host cannot create hard links
+//! - `requires_case_insensitive_fs`: report the case as ignored with an
+//!   explicit capability reason when the host preserves case-sensitive names
 //! - `env`: extra env vars for the compiler; the value `"${REAL_STD}"`
 //!   expands to the absolute path of the repo's `std/` directory
 //! - `program_args`: command-line arguments for the compiled program's run
@@ -1050,6 +1055,16 @@ struct SymlinkFixture {
     target: String,
 }
 
+/// A regular hard link staged after the source files. Hard-link support is a
+/// filesystem capability of the test host, so failure is reported rather than
+/// silently turning a regression case into an ordinary-file control.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct HardLinkFixture {
+    link: String,
+    target: String,
+}
+
 /// Imperative end-to-end watch scenario. These cases use the watch protocol
 /// seam in `rue` to synchronize edits and then terminate the watch process;
 /// ordinary CLI cases remain declarative and use the normal compile/run path.
@@ -1112,6 +1127,14 @@ struct Case {
     /// symlink behavior.
     #[serde(default)]
     symlinks: Vec<SymlinkFixture>,
+    /// Hard links staged in the temp directory alongside `files`.
+    #[serde(default)]
+    hard_links: Vec<HardLinkFixture>,
+    /// Run only when distinct path spellings differing by case resolve to one
+    /// file. Hosts without that filesystem capability report an explicit
+    /// ignored result rather than dropping the regression.
+    #[serde(default)]
+    requires_case_insensitive_fs: bool,
     /// Repo-root-relative source file to compile directly instead of copying
     /// inline source into the temp directory. Use this when a CLI case should
     /// pin a checked-in example/program rather than duplicating its source.
@@ -2021,6 +2044,8 @@ fn case_runs_prebuilt_program(case: &Case) -> bool {
         // environment as the compile path, so all of these carry over.
         files: _,
         symlinks: _,
+        hard_links: _,
+        requires_case_insensitive_fs: _,
         program_args: _,
         program_env: _,
         stdin: _,
@@ -2171,6 +2196,27 @@ fn run_case(
             TestFailure::fatal(format!(
                 "failed to symlink {} -> {}: {}",
                 symlink.link, symlink.target, e
+            ))
+        })?;
+    }
+
+    // Staged hard links. Created after regular files so each target is known
+    // to exist; unsupported filesystems fail the case explicitly.
+    for hard_link in &case.hard_links {
+        let link = dir.join(&hard_link.link);
+        let target = dir.join(&hard_link.target);
+        if let Some(parent) = link.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                TestFailure::fatal(format!(
+                    "failed to create dir for hard link {}: {}",
+                    hard_link.link, e
+                ))
+            })?;
+        }
+        std::fs::hard_link(&target, &link).map_err(|e| {
+            TestFailure::fatal(format!(
+                "hard-link capability unavailable for {} -> {}: {}",
+                hard_link.link, hard_link.target, e
             ))
         })?;
     }
@@ -2567,6 +2613,23 @@ fn run_watch_case(
             TestFailure::fatal(format!("failed to create watch symlink: {error}"))
         })?;
     }
+    for hard_link in &case.hard_links {
+        let link = dir.join(&hard_link.link);
+        let target = dir.join(&hard_link.target);
+        if let Some(parent) = link.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                TestFailure::fatal(format!(
+                    "failed to create watch hard-link directory: {error}"
+                ))
+            })?;
+        }
+        std::fs::hard_link(&target, &link).map_err(|error| {
+            TestFailure::fatal(format!(
+                "hard-link capability unavailable for watch fixture {} -> {}: {error}",
+                hard_link.link, hard_link.target
+            ))
+        })?;
+    }
 
     let source = scenario
         .source_path
@@ -2897,6 +2960,22 @@ fn run_case_wrapper(
         return ctx.ignore_for("no system `cc` linker driver on PATH");
     }
 
+    if case.requires_case_insensitive_fs {
+        match case_insensitive_filesystem_available() {
+            Ok(true) => {}
+            Ok(false) => {
+                return ctx.ignore_for(
+                    "requires a case-insensitive filesystem for distinct case aliases",
+                );
+            }
+            Err(error) => {
+                return Err(RunError::fail(format!(
+                    "could not probe case-insensitive filesystem capability: {error}"
+                )));
+            }
+        }
+    }
+
     // Host-dependent cases: only run on the listed platforms.
     if !case.only_on.is_empty()
         && !case
@@ -2940,6 +3019,22 @@ fn run_case_wrapper(
             KnownBugDisposition::Ignore(reason) => ctx.ignore_for(reason),
             KnownBugDisposition::Fail(reason) => Err(RunError::fail(reason)),
         },
+    }
+}
+
+fn case_insensitive_filesystem_available() -> Result<bool, String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let upper = directory.path().join("RueCaseProbe");
+    let lower = directory.path().join("ruecaseprobe");
+    std::fs::write(&upper, b"probe").map_err(|error| error.to_string())?;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lower)
+    {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(true),
+        Err(error) => Err(error.to_string()),
     }
 }
 

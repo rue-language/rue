@@ -10,12 +10,12 @@ use rue_compiler::unstable::{
     AcceptedImportSource, DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode,
     ImportDiscoveryPlan, ImportDiscoveryRequest, ImportDiscoveryWave, ImportInputRevision,
     ImportObservation, ImportObservationStatus, RootedParkOutcome, TrustedSuccessorDelta,
-    begin_import_input_request, begin_import_wave, close_import_discovery_successor,
-    close_import_input_request, closed_discovery_continuation, discovery_attempt,
-    extend_import_wave, import_demand_frontier_for_roots, import_observation_ledger,
-    plan_delta_roots, plan_round_roots, publish_import_observation_batch, publish_import_wave,
-    publish_trusted_toolchain_successor, rooted_or_toolchain_park,
-    stage_import_discovery_successor, stage_import_input_request,
+    begin_import_input_request, begin_import_wave_with_accepted_reads,
+    close_import_discovery_successor, close_import_input_request, closed_discovery_continuation,
+    discovery_attempt, extend_import_wave, import_demand_frontier_for_roots,
+    import_observation_ledger, plan_delta_roots, plan_round_roots,
+    publish_import_observation_batch, publish_import_wave, publish_trusted_toolchain_successor,
+    rooted_or_toolchain_park, stage_import_discovery_successor, stage_import_input_request,
 };
 #[cfg(test)]
 use rue_compiler::unstable::{
@@ -438,12 +438,58 @@ fn cached_source_for_module(
     })
 }
 
+/// Capture the ordered physical identities of symlink components traversed
+/// below a spelling's logical boundary. Ancestors shared by the host's path
+/// layout (for example `/var -> /private/var`) are deliberately outside the
+/// evidence: only project/std leaf or directory aliases are spelling-specific.
+fn symlink_route(path: &Path, boundary: &Path) -> Arc<[PhysicalFileIdentity]> {
+    let Ok(relative) = path.strip_prefix(boundary) else {
+        return Arc::from([]);
+    };
+    let mut current = boundary.to_path_buf();
+    let mut route = Vec::new();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        let Ok(metadata) = fs::symlink_metadata(&current) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink()
+            && let Some(identity) = symlink_component_identity(&metadata)
+        {
+            route.push(identity);
+        }
+    }
+    route.into()
+}
+
+#[cfg(unix)]
+fn symlink_component_identity(metadata: &fs::Metadata) -> Option<PhysicalFileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+
+    Some(PhysicalFileIdentity::new(metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+fn symlink_component_identity(_: &fs::Metadata) -> Option<PhysicalFileIdentity> {
+    None
+}
+
+fn spelling_boundary(context: &ImportDiscoveryContext, requested: &Path) -> PathBuf {
+    context
+        .std_root()
+        .filter(|std_root| requested.starts_with(std_root))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(context.project_root()))
+}
+
 fn accepted_source_from_read(
     entry: &rue_compiler::AcceptedReadManifestEntry,
     canonical_path: &Path,
     read: StableRead,
     cached_source: Option<Arc<String>>,
+    boundary: &Path,
 ) -> Result<AcceptedImportSource, SourceLoadError> {
+    let symlink_route = symlink_route(Path::new(entry.requested_path()), boundary);
     let observed = AcceptedImportSource::new(
         Arc::from(entry.requested_path()),
         Arc::from(canonical_path.to_string_lossy().into_owned()),
@@ -451,6 +497,7 @@ fn accepted_source_from_read(
         read.fingerprint,
         Arc::new(read.source),
     )
+    .map(|source| source.with_symlink_route(symlink_route.clone()))
     .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
     let source = cached_source
         .filter(|_| observed.content_fingerprint() == entry.content_fingerprint())
@@ -462,6 +509,7 @@ fn accepted_source_from_read(
         read.fingerprint,
         source,
     )
+    .map(|source| source.with_symlink_route(symlink_route))
     .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))
 }
 
@@ -469,6 +517,7 @@ fn reobserve_accepted_reads(
     snapshot: &SourceSnapshot,
     manifest: &AcceptedReadManifest,
     source_manifest: Option<&SourceManifest>,
+    context: &ImportDiscoveryContext,
 ) -> Result<AHashMap<String, AcceptedImportSource>, SourceLoadError> {
     let now = SystemTime::now();
     let mut observed = AHashMap::with_capacity(manifest.len());
@@ -481,6 +530,7 @@ fn reobserve_accepted_reads(
                 ))
             })?;
         let requested_path = Path::new(entry.requested_path());
+        let boundary = spelling_boundary(context, requested_path);
         if source_manifest.is_some_and(|policy| !policy.declares_path_without_probe(requested_path))
         {
             continue;
@@ -517,6 +567,7 @@ fn reobserve_accepted_reads(
                 entry.metadata_fingerprint(),
                 cached_source,
             )
+            .map(|source| source.with_symlink_route(symlink_route(requested_path, &boundary)))
             .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?
         } else {
             let read = match stable_read_to_string(&canonical_path) {
@@ -528,6 +579,7 @@ fn reobserve_accepted_reads(
                 &canonical_path,
                 read,
                 canonical_unchanged.then_some(cached_source.clone()),
+                &boundary,
             )?
         };
         observed.insert(entry.requested_path().to_owned(), accepted);
@@ -589,6 +641,12 @@ fn execute_import_request(
                     read.fingerprint,
                     Arc::new(read.source),
                 )
+                .map(|source| {
+                    source.with_symlink_route(symlink_route(
+                        candidate,
+                        &spelling_boundary(request.context(), candidate),
+                    ))
+                })
                 .expect("stable file reads satisfy accepted import invariants");
                 ImportObservation::accepted(request, accepted)
                     .expect("accepted source matches its compiler request")
@@ -993,8 +1051,15 @@ fn run_import_wave(
     reobserved_reads: Option<&AHashMap<String, AcceptedImportSource>>,
 ) -> Result<(ImportInputRevision, ImportDemandFrontier), SourceLoadError> {
     for attempt in 0..=WAVE_STAMP_RETRIES {
-        let mut wave = begin_import_wave(staging, input_revision, plan, frontier)
-            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        let accepted_reads = assembler.accepted_read_manifest();
+        let mut wave = begin_import_wave_with_accepted_reads(
+            staging,
+            input_revision,
+            plan,
+            frontier,
+            &accepted_reads,
+        )
+        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
         while !wave.is_complete() {
             let observations = wave
                 .requests()
@@ -1386,13 +1451,17 @@ pub(crate) fn discover_and_load_imports(
             ),
         })
     })?;
-    let mut assembler = DiscoverySourceAssembler::new(
+    let mut assembler = DiscoverySourceAssembler::new_with_symlink_route(
         context.clone(),
         root_path.to_string_lossy(),
         root_canonical.to_string_lossy(),
         root_read.identity,
         root_read.fingerprint,
         Arc::new(root_read.source),
+        symlink_route(
+            &root_path,
+            root_path.parent().unwrap_or_else(|| Path::new("/")),
+        ),
     )
     .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
 
@@ -1465,6 +1534,7 @@ pub(crate) fn reload_from_filesystem(
         &result.source_snapshot,
         &result.read_manifest,
         source_manifest.as_ref(),
+        &context,
     )?;
     let root_module = result.source_snapshot.source_revision().root();
     let root_entry = result
@@ -1478,13 +1548,14 @@ pub(crate) fn reload_from_filesystem(
             root_entry.requested_path()
         ))
     })?;
-    let mut assembler = DiscoverySourceAssembler::new(
+    let mut assembler = DiscoverySourceAssembler::new_with_symlink_route(
         context.clone(),
         root.requested_path(),
         root.canonical_path(),
         root.metadata_identity(),
         root.metadata_fingerprint(),
         root.source().clone(),
+        Arc::from(root.symlink_route().to_vec()),
     )
     .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
     // Seed only the root. Reobserved predecessor reads are an observation cache
@@ -2049,12 +2120,13 @@ fn satisfy_toolchain_module_demand(
     })?;
 
     assembler
-        .add_explicit(
+        .add_explicit_with_symlink_route(
             requested.to_string_lossy().as_ref(),
             canonical.to_string_lossy().as_ref(),
             read.identity,
             read.fingerprint,
             Arc::new(read.source),
+            symlink_route(&requested, std_root),
         )
         .map_err(|error| ToolchainIntegrityError::Unreadable {
             logical_path: demand.logical_path().to_owned(),
@@ -2205,6 +2277,55 @@ mod tests {
             parse_source_manifest_entry("dir/trailing-backslash\\"),
             "dir/trailing-backslash\\"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_routes_are_boundary_scoped_and_pair_distinguishing() {
+        let dir = TestDir::new("symlink-evidence-boundary");
+        let actual_project = dir.path.join("actual").join("project");
+        fs::create_dir_all(&actual_project).unwrap();
+        fs::write(actual_project.join("real.rue"), "source").unwrap();
+        let shared = dir.path.join("shared");
+        std::os::unix::fs::symlink(dir.path.join("actual"), &shared).unwrap();
+        let boundary = shared.join("project");
+
+        // The shared prefix is outside the captured project boundary. Direct
+        // spellings, including a case-only alias on a case-insensitive host,
+        // must not inherit symlink evidence from that ancestor.
+        assert!(symlink_route(&boundary.join("real.rue"), &boundary).is_empty());
+        assert!(symlink_route(&boundary.join("REAL.rue"), &boundary).is_empty());
+
+        // A symlink introduced below the boundary remains spelling-specific.
+        let leaf = boundary.join("alias.rue");
+        std::os::unix::fs::symlink("real.rue", &leaf).unwrap();
+        let leaf_route = symlink_route(&leaf, &boundary);
+        assert_eq!(leaf_route.len(), 1);
+        assert_ne!(leaf_route.as_ref(), &[]);
+
+        // Direct and leaf-alias routes differ, so they are aliases that can
+        // safely deduplicate. Two distinct leaf aliases also have distinct
+        // route identities even when they target the same canonical file.
+        let leaf_two = boundary.join("alias-two.rue");
+        std::os::unix::fs::symlink("real.rue", &leaf_two).unwrap();
+        let leaf_two_route = symlink_route(&leaf_two, &boundary);
+        assert_ne!(leaf_route.as_ref(), leaf_two_route.as_ref());
+
+        // A directory symlink below the captured boundary is part of both
+        // spellings' route. This is the case-only alias shape on a
+        // case-insensitive filesystem: both routes are identical and must be
+        // diagnosed rather than treated as distinct symlink aliases.
+        let below_boundary = dir.path.join("below");
+        fs::create_dir_all(below_boundary.join("project")).unwrap();
+        fs::write(below_boundary.join("project").join("real.rue"), "source").unwrap();
+        let project_alias = below_boundary.join("project-alias");
+        std::os::unix::fs::symlink(below_boundary.join("project"), &project_alias).unwrap();
+        let lower = project_alias.join("real.rue");
+        let upper = project_alias.join("REAL.rue");
+        let lower_route = symlink_route(&lower, &below_boundary);
+        let upper_route = symlink_route(&upper, &below_boundary);
+        assert_eq!(lower_route, upper_route);
+        assert_eq!(lower_route.len(), 1);
     }
 
     #[test]

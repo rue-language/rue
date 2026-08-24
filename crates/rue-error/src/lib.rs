@@ -438,6 +438,10 @@ impl ErrorCode {
     /// and an absolute specifier would additionally bind the program to one
     /// machine's layout, which project-root-relative identity exists to avoid.
     pub const IMPORT_SPECIFIER_NOT_RELATIVE: Self = Self(714);
+    /// Two logical import spellings resolve to one physical file. Importing a
+    /// physical file under more than one logical identity would make the
+    /// source graph ambiguous (RUE-1705).
+    pub const IMPORT_SPELLINGS_SAME_FILE: Self = Self(715);
 
     // ========================================================================
     // Literal/operator errors (E0800-E0899)
@@ -1790,6 +1794,11 @@ pub enum ErrorKind {
          relative to the importing file"
     )]
     ImportSpecifierAbsolute { path: String },
+    #[error(
+        "import spellings '{first}' and '{second}' refer to the same physical file; \
+         import it under one name"
+    )]
+    ImportSpellingsSameFile { first: String, second: String },
     #[error("standard library not found")]
     StdLibNotFound,
     #[error("{item_kind} `{name}` is private")]
@@ -2258,6 +2267,7 @@ impl ErrorKind {
             ErrorKind::ImportSpecifierEmpty | ErrorKind::ImportSpecifierAbsolute { .. } => {
                 ErrorCode::IMPORT_SPECIFIER_NOT_RELATIVE
             }
+            ErrorKind::ImportSpellingsSameFile { .. } => ErrorCode::IMPORT_SPELLINGS_SAME_FILE,
             ErrorKind::StdLibNotFound => ErrorCode::STD_LIB_NOT_FOUND,
             ErrorKind::PrivateMemberAccess { .. } => ErrorCode::PRIVATE_MEMBER_ACCESS,
             ErrorKind::PrivateUnqualifiedAccess(_) => ErrorCode::PRIVATE_UNQUALIFIED_ACCESS,
