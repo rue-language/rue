@@ -7,7 +7,7 @@ feature-flag: hm-inference
 created: 2025-12-24
 accepted: 2025-12-24
 implemented: 2025-12-24
-spec-sections: []
+spec-sections: ["3.11:2", "3.11:4"]
 supersedes: 0002
 superseded-by:
 ---
@@ -50,12 +50,38 @@ HM inference:
 - Handles **all** type decisions uniformly through constraint solving
 - Is **principal**: finds the most general type
 - Is **decidable**: Algorithm W has proven termination
-- Scales to **generics/polymorphism** if we add them later
+- Provides a constraint-solving foundation for future type-system work
 - Is **well-understood**: decades of research and implementations
 
-Note: We're implementing HM for **inference consistency**, not for polymorphism. Rue currently has no generics, and this ADR doesn't add them.
+Note: We're implementing HM for **inference consistency within a callable
+body**, not for polymorphism. Rue currently has no generics, and this ADR does
+not add them. Future type-system features require their own language-design
+decision and do not inherit a wider inference scope from this ADR.
 
 ## Decision
+
+### Inference scope and semantic firebreaks
+
+Whole callable-body inference is Rue's permanent maximum inference scope. The
+compiler solves all constraints produced by one callable body together, in
+isolation. No inference variable, unsolved literal, or body-local constraint
+crosses a callable boundary.
+
+Explicit parameter types, explicit return types, and explicit value-constant
+types are semantic firebreaks. A call site cannot refine a callee's signature,
+and a callee's body cannot refine a caller's argument or result type. The same
+boundary applies to every callable body currently in the language and to any
+future callable form. Closures, traits, overloads, and generics therefore MUST
+NOT infer across callable boundaries unless a new language-design decision
+explicitly changes or scopes this contract.
+
+Statement-level inference reuse is a non-goal. An implementation may reuse
+intermediate results only when it proves that they are equivalent to solving
+the complete owning body, including its order-independent types and
+diagnostics. A stable public-interface or `BodyReferences` projection may remain
+green when body-internal inference results change without affecting that
+projection; that is an incremental projection property, not permission to
+publish body inference across a callable boundary.
 
 ### Architecture Overview
 
@@ -287,7 +313,8 @@ Code that compiled before will compile after with the same types.
 - **Consistent inference**: No more scattered i32 defaults
 - **Principled approach**: Well-understood algorithm with proven properties
 - **Better errors**: Full constraint context for diagnostics
-- **Foundation for generics**: If we add polymorphism later, the infrastructure exists
+- **Foundation for future type-system work**: Any polymorphism or other
+  cross-callable feature still requires an explicit language-design decision
 - **Simpler mental model**: One algorithm handles all inference
 
 ### Negative
@@ -312,9 +339,12 @@ Code that compiled before will compile after with the same types.
 
 ## Future Work
 
-- **Polymorphic functions**: `fn identity<T>(x: T) -> T` - this ADR lays groundwork
+- **Polymorphic functions**: `fn identity<T>(x: T) -> T` require a separate
+  language-design decision; this ADR does not widen inference across callable
+  boundaries
 - **Type aliases**: `type Int = i32` - straightforward extension
-- **Trait bounds**: `fn print<T: Display>(x: T)` - requires trait system first
+- **Trait bounds**: `fn print<T: Display>(x: T)` require a trait system and a
+  separate inference-scope decision
 - **Associated types**: Complex, depends on traits
 
 ## References

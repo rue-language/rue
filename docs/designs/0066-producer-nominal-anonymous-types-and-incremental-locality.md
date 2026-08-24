@@ -148,9 +148,20 @@ obtains exact raw body, lookup, declaration, anonymous-producer, and trusted
 toolchain facts through registered queries, and invokes rue-air's
 provider-native body analyzer.
 
-Each body analysis owns its mutable inference and compact type state. It
-publishes a durable body result, diagnostics, and independently queryable
-`BodyReferences`. A body-specific anonymous producer or trusted
+Each body analysis owns its mutable inference and compact type state. This is
+the query implementation of ADR-0007's permanent callable-body inference
+boundary, not a temporary implementation-local choice: constraints are solved
+for the complete owning body, and explicit parameter, return, and
+value-constant types remain semantic firebreaks. No callable body may infer
+through another callable's boundary without a new language-design decision;
+statement-level inference reuse is out of scope unless equivalence to the
+complete body solution is proven.
+
+The analysis publishes a durable body result, diagnostics, and independently
+queryable `BodyReferences`. A stable public-interface or `BodyReferences`
+projection may remain green when body-internal inference results change without
+affecting that projection; that projection stability does not widen the
+inference boundary. A body-specific anonymous producer or trusted
 standard-library demand is materialized only for the body that observes it.
 
 Provider lookups record the exact positive, negative, ambiguous, visibility,

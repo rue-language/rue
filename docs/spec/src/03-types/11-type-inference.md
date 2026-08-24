@@ -25,14 +25,17 @@ of.
 
 {{ rule(id="3.11:2", cat="normative") }}
 
-Type inference operates on one function body in isolation. Type information does
-not flow across a function boundary: a callee's parameter and return types are
-not inferred from its call sites, and a caller does not observe inference
-variables of a callee. To make each boundary self-describing, every function
-parameter, every function return type, and every value constant (6.5) **MUST**
-carry an explicit type annotation. A `let` binding (5.1) **MAY** omit its
-annotation, in which case its type is determined by inference from its
-initializer and later uses.
+Type inference operates on one function body in isolation. This one-body scope
+is the permanent maximum inference scope, not merely an implementation or
+query-locality choice. Type information does not flow across a function
+boundary: a callee's parameter and return types are not inferred from its call
+sites, and a caller does not observe inference variables of a callee. To make
+each boundary self-describing, every function parameter, every function return
+type, and every value constant (6.5) **MUST** carry an explicit type
+annotation; these annotations are semantic firebreaks. A `let` binding (5.1)
+**MAY** omit its annotation, in which case its type is determined by inference
+from its initializer and later uses. Future closures, trait systems, overloads,
+and generics do not widen this boundary without a new language-design decision.
 
 {{ rule(id="3.11:3") }}
 
