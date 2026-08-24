@@ -3110,10 +3110,21 @@ fn durable_comptime_services_are_named_authority_operations() {
         "DurableImportSite",
         "DurableComptimeSemanticAuthority",
         "DurableComptimeForeignCallAuthority",
+        "DurableComptimeEffects",
+        "DurableComptimeCallLifecycle",
+        "DurableComptimeCallTicket",
+        "DurableComptimeLifecycleError",
+        "from_admitted",
         "resolve_candidate",
         "resolve_identity",
         "resolve_const",
         "probe_comptime_call",
+        "observe_dependency",
+        "observe_anonymous_nominal",
+        "observe_deferred_ownership",
+        "merge_projection",
+        "merge_child",
+        "finish_root",
     ] {
         assert!(
             facade.contains(required),
@@ -3126,6 +3137,27 @@ fn durable_comptime_services_are_named_authority_operations() {
             "durable service facade must not become an evaluator: {forbidden}"
         );
     }
+    assert!(facade.contains("query: crate::semantic_query_nucleus::ComptimeCallQueryKey"));
+    assert!(facade.contains("child_producer: crate::StableDefinitionKey"));
+    let context_block = facade
+        .split("pub(crate) struct DurableComptimeCallContext {")
+        .nth(1)
+        .and_then(|source| source.split("}\n\nimpl DurableComptimeCallContext").next())
+        .expect("durable call context block");
+    assert!(
+        !context_block.contains("pub(crate)"),
+        "durable call context identity fields must remain private"
+    );
+    assert_eq!(facade.matches("fn merge_effects_into(").count(), 1);
+    assert_eq!(facade.matches("merge_effects_into(").count(), 4);
+    let ticket_block = facade
+        .split("/// Non-clone lifecycle capability issued only after ordered call admission.")
+        .nth(1)
+        .and_then(|source| source.split("}\n\n#[allow(dead_code)]").next())
+        .expect("durable call ticket block");
+    assert!(!ticket_block.contains("Clone"));
+    assert!(!facade.contains("impl Clone for DurableComptimeCallTicket"));
+    assert_eq!(facade.matches("gate.application.is_none()").count(), 1);
 
     let database = include_str!("revisioned_query_database.rs");
     let evaluator = database
@@ -3138,6 +3170,22 @@ fn durable_comptime_services_are_named_authority_operations() {
     assert!(evaluator.contains(".resolve_candidate("));
     assert!(evaluator.contains(".resolve_identity("));
     assert!(evaluator.contains(".resolve_const("));
+    assert!(evaluator.contains("self.effects.observe_dependency("));
+    assert!(evaluator.contains("self.effects.merge_projection("));
+    for forbidden in [
+        "self.provider.dependencies",
+        "self.provider.anonymous_nominals",
+        "self.provider.deferred_ownership",
+        "value.anonymous_nominals.iter().cloned().map",
+        "value.dependencies.iter().cloned().map",
+        "value.deferred_ownership.iter().cloned().map",
+    ] {
+        assert!(
+            !evaluator.contains(forbidden),
+            "durable evaluator must publish effects through DurableComptimeEffects: {forbidden}"
+        );
+    }
+    assert!(database.contains("provider.merge_comptime_effects("));
     let provider = database
         .split("pub(crate) struct CompilerBodyFactProvider<'a>")
         .nth(1)
