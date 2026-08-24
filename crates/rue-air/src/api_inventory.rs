@@ -53,6 +53,8 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "ComptimeFile",
         "ComptimeFrame",
         "ComptimeHost",
+        "ComptimeHostError",
+        "ComptimeHostResult",
         "ComptimeIntrinsicArgument",
         "ComptimeSite",
         "ComptimeSiteKind",
@@ -148,6 +150,20 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     assert!(!production.contains("eval_const_expr"));
     assert!(!production.contains("ComptimeEngine::new"));
     assert!(!production.contains("reduce_external_comptime_call"));
+    let macro_start = production
+        .find("macro_rules! host_value")
+        .expect("canonical host-value funnel");
+    let macro_end = macro_start
+        + production[macro_start..]
+            .find("\n}\n\n/// Error classification")
+            .map(|offset| offset + 2)
+            .expect("canonical host-value funnel end");
+    let production_outside_host_value =
+        format!("{}{}", &production[..macro_start], &production[macro_end..]);
+    assert!(
+        !production_outside_host_value.contains("ComptimeHostError::"),
+        "tagged host errors must be converted only by host_value!"
+    );
     assert_eq!(production.matches("struct PreparedComptimeCall").count(), 0);
 
     let host_start = production
@@ -156,6 +172,10 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     let host_contract = &production[host_start..engine_start];
     assert!(host_contract.contains("fn program_rir(&self, program:"));
     assert!(!host_contract.contains("ComptimeEngine::new"));
+    assert!(
+        !host_contract.contains("-> Result<"),
+        "fallible host hooks must use ComptimeHostResult"
+    );
     for hook in ["fn integer_operation_type(", "fn unary_integer_type("] {
         let start = host_contract
             .find(hook)
