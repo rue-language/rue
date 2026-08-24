@@ -274,6 +274,48 @@ pub struct ComptimeField<N, T> {
     pub ty: T,
 }
 
+/// A resolved method type used when comparing anonymous structural types.
+/// `Self` remains a distinct shape until the enclosing anonymous type has been
+/// assigned an identity; all other types have already gone through the
+/// engine's structured type resolver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComptimeMethodType<T> {
+    SelfType,
+    Concrete(T),
+    Unsupported(String),
+}
+
+/// A method parameter in an anonymous structural type descriptor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComptimeMethodParameter<T> {
+    pub ty: ComptimeMethodType<T>,
+    pub mode: rue_rir::RirParamMode,
+    pub is_comptime: bool,
+    /// Whether the source spelling is the unsupported own `comptime type`
+    /// parameter form.  Keeping this bit on the descriptor lets the engine
+    /// issue RUE-284 at the declaration without making the host decode RIR.
+    pub is_comptime_type: bool,
+}
+
+/// Canonical, engine-owned metadata for an anonymous method signature.
+/// The descriptor carries only resolved signature facts and semantic names.
+/// Method-body registration remains an ordinary local concern; generic hosts
+/// never receive a child-RIR reference through this type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComptimeMethodDescriptor<N, T> {
+    pub name: N,
+    pub has_self: bool,
+    pub self_mode: rue_rir::RirParamMode,
+    pub returns_borrow: bool,
+    pub returns_inout: bool,
+    pub parameters: Vec<ComptimeMethodParameter<T>>,
+    /// Parameter names are decoded by the engine so structural consumers do
+    /// not need to reopen the owning RIR.
+    pub parameter_names: Vec<N>,
+    pub result: ComptimeMethodType<T>,
+    pub declaration_span: Span,
+}
+
 /// A declaration-level constant fact in the engine's value domain.  The
 /// adapter supplies only the metadata needed for dependency/privacy handling
 /// and a value when that declaration is representable by the current domain.
@@ -376,6 +418,10 @@ where
     pub locals: AHashMap<N, V>,
     pub const_module_members: AHashMap<InstRef, V>,
     pub defining_file: Option<F>,
+    /// Expected result for the active frame. This is deliberately carried in
+    /// the environment rather than keyed by program so concurrent/nested
+    /// instantiations cannot observe one another's integer context.
+    pub expected_result: Option<T>,
 }
 
 impl<'a, V, T, N, F, I> ComptimeEnv<'a, V, T, N, F, I>
@@ -410,6 +456,7 @@ where
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),
             defining_file: None,
+            expected_result: None,
         }
     }
 
@@ -424,6 +471,7 @@ where
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),
             defining_file: None,
+            expected_result: None,
         }
     }
 }
@@ -446,10 +494,14 @@ mod value_domain_tests {
     use super::*;
     use lasso::Key;
     use rue_rir::{Inst, RirEditor, RirValidationContext};
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     thread_local! {
         static LABEL_CALLS: Cell<usize> = const { Cell::new(0) };
+        static TICKET_EVENTS: RefCell<Vec<(usize, bool)>> = const { RefCell::new(Vec::new()) };
+        static INTEGER_HINTS: RefCell<Vec<Option<FakeType>>> = const { RefCell::new(Vec::new()) };
+        static METHOD_FAILURES: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+        static TYPE_RESOLUTION_CALLS: Cell<usize> = const { Cell::new(0) };
     }
 
     #[derive(Clone, Debug, PartialEq)]
@@ -531,8 +583,16 @@ mod value_domain_tests {
 
     impl ComptimeIdentity for FakeIdentity {}
 
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    struct FakeFailure;
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum FakeFailure {
+        Generic,
+        NonFunctionMethod,
+        OwnComptimeTypeParameter,
+    }
+
+    // Keep the existing compact fixture construction readable while allowing
+    // the decoder regressions to assert their exact semantic failure reason.
+    const FAKE_FAILURE: FakeFailure = FakeFailure::Generic;
 
     enum FakePreparedCall {
         Enter {
@@ -540,6 +600,10 @@ mod value_domain_tests {
             body: InstRef,
             expected: Option<FakeType>,
             name_bindings: AHashMap<FakeName, FakeName>,
+        },
+        UnnamedEnter {
+            program: usize,
+            body: InstRef,
         },
         Memoized(ComptimeOutcome<FakeValue, FakeFailure>),
     }
@@ -556,6 +620,7 @@ mod value_domain_tests {
         Abort,
         AbortFromPrepare,
         AbortFromArithmetic,
+        CanonicalFailure,
     }
 
     #[derive(Clone, Copy)]
@@ -607,8 +672,8 @@ mod value_domain_tests {
         type ProgramKey = usize;
         type Failure = FakeFailure;
         type CallAdmission = ();
+        type CompletionTicket = usize;
         type AnonymousStructId = u32;
-        type AnonMethodSigs = ();
         type StructuredTypeSuspension = FakeStructuredSuspension;
         fn program_rir(&self, program: &Self::ProgramKey) -> &Rir {
             &self.programs[*program]
@@ -619,7 +684,9 @@ mod value_domain_tests {
             }
         }
         fn display_name(&self, name: &Self::Name) -> String {
-            if name.ordinal % 1000 == 0 {
+            if name.ordinal == self.type_symbol.issuing_interner_ordinal() as u32 {
+                "type".to_owned()
+            } else if name.ordinal % 1000 == 0 {
                 "import".to_owned()
             } else {
                 format!("fake-name-{}", name.ordinal)
@@ -657,7 +724,7 @@ mod value_domain_tests {
             Ok(())
         }
         fn depth_exceeded(&self, _name: &Self::Name, _depth: usize, _span: Span) -> Self::Failure {
-            FakeFailure
+            FAKE_FAILURE
         }
         fn literal_out_of_range(
             &self,
@@ -665,24 +732,29 @@ mod value_domain_tests {
             _ty: &Self::Type,
             _span: Span,
         ) -> Self::Failure {
-            FakeFailure
+            FAKE_FAILURE
         }
         fn float_not_implemented(&self, _span: Span) -> Self::Failure {
             self.float_evaluations.set(self.float_evaluations.get() + 1);
-            FakeFailure
+            FAKE_FAILURE
         }
         fn cannot_negate(&self, _ty: &Self::Type, _span: Span) -> Self::Failure {
-            FakeFailure
+            FAKE_FAILURE
         }
         fn comptime_panic(&self, _reason: String, _span: Span) -> Self::Failure {
-            FakeFailure
+            FAKE_FAILURE
         }
         fn unsupported_anon_method_type_param(
             &self,
             _method_span: Span,
             _method_name: &str,
         ) -> Self::Failure {
-            FakeFailure
+            METHOD_FAILURES.with(|failures| failures.borrow_mut().push("own_type"));
+            FakeFailure::OwnComptimeTypeParameter
+        }
+        fn non_function_anon_method(&self, _method_span: Span) -> Self::Failure {
+            METHOD_FAILURES.with(|failures| failures.borrow_mut().push("non_function"));
+            FakeFailure::NonFunctionMethod
         }
         fn record_value_const_dependency(&mut self, file: &Self::File, name: &Self::Name) {
             self.dependencies.push((file.clone(), name.clone()));
@@ -706,30 +778,21 @@ mod value_domain_tests {
                 Some(self.name_from_symbol(&0, self.type_symbol))
             }
         }
-        fn get_or_create_array_type(&mut self, _element: Self::Type, _length: u64) -> Self::Type {
-            panic!("fake host does not construct array types")
-        }
-        fn extract_anon_method_sigs(
-            &mut self,
-            _program: &Self::ProgramKey,
-            _methods: &rue_rir::RirAnonStructMethodsRange,
-            _types: &AHashMap<Self::Name, Self::Type>,
-            _values: &AHashMap<Self::Name, Self::Value>,
-        ) -> ComptimeHostResult<Self::AnonMethodSigs, Self::Failure> {
-            panic!("fake host does not construct anonymous methods")
-        }
-        fn find_method_own_comptime_type_param(
+        fn render_rir_type(
             &self,
             _program: &Self::ProgramKey,
-            _methods: &rue_rir::RirAnonStructMethodsRange,
-        ) -> Option<(Span, String)> {
-            None
+            syntax: rue_rir::RirTypeSyntaxRef,
+        ) -> String {
+            format!("{syntax:?}")
+        }
+        fn get_or_create_array_type(&mut self, _element: Self::Type, _length: u64) -> Self::Type {
+            panic!("fake host does not construct array types")
         }
         fn find_or_create_anon_struct(
             &mut self,
             _identity: Self::AnonymousIdentity,
             _fields: &[ComptimeField<Self::Name, Self::Type>],
-            _sigs: &Self::AnonMethodSigs,
+            _sigs: &[ComptimeMethodDescriptor<Self::Name, Self::Type>],
             _captured: &AHashMap<Self::Name, Self::Value>,
         ) -> ComptimeHostResult<(Self::Type, bool), Self::Failure> {
             panic!("fake host does not construct anonymous structs")
@@ -787,9 +850,10 @@ mod value_domain_tests {
             rhs: &Self::Value,
             _span: Span,
         ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+            INTEGER_HINTS.with(|hints| hints.borrow_mut().push(resolved_type.copied()));
             if let (Some(lhs), Some(rhs)) = (lhs.as_integer_type(), rhs.as_integer_type()) {
                 if lhs != rhs {
-                    return Err(FakeFailure.into());
+                    return Err(FAKE_FAILURE.into());
                 }
             }
             Ok(resolved_type
@@ -805,7 +869,7 @@ mod value_domain_tests {
             _span: Span,
         ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
             if matches!(self.finish_outcome, FakeFinishOutcome::AbortFromArithmetic) {
-                return Err(ComptimeHostError::Abort(FakeFailure));
+                return Err(ComptimeHostError::Abort(FAKE_FAILURE));
             }
             Ok(result.checked().map(FakeValue::integer))
         }
@@ -815,8 +879,8 @@ mod value_domain_tests {
         fn type_is_unsigned(&self, _ty: &Self::Type) -> bool {
             false
         }
-        fn type_integer_semantics(&self, _ty: &Self::Type) -> Option<IntegerType> {
-            IntegerType::new(8, true)
+        fn type_integer_semantics(&self, ty: &Self::Type) -> Option<IntegerType> {
+            (ty.0 != 99).then(|| IntegerType::new(8, true)).flatten()
         }
         fn record_named_type_dependency(&mut self, _ty: &Self::Type) {}
         fn resolve_named_type_value(
@@ -893,12 +957,13 @@ mod value_domain_tests {
                     Self::ProgramKey,
                     Self::CanonicalIdentity,
                     Self::Failure,
+                    Self::CompletionTicket,
                 >,
             >,
             Self::Failure,
         > {
             if matches!(self.finish_outcome, FakeFinishOutcome::AbortFromPrepare) {
-                return Err(ComptimeHostError::Abort(FakeFailure));
+                return Err(ComptimeHostError::Abort(FAKE_FAILURE));
             }
             if let Some((max_enters, call_body, terminal_body, memoized_at)) = self.recursive {
                 if memoized_at == Some(self.enter_count) {
@@ -906,25 +971,29 @@ mod value_domain_tests {
                         ComptimeOutcome::Known(FakeValue::Integer(1)),
                     )));
                 }
+                let expected = Some(FakeType(7 + self.enter_count as u8));
                 self.enter_count += 1;
                 let body = if self.enter_count == max_enters {
                     terminal_body
                 } else {
                     call_body
                 };
-                return Ok(Some(ComptimeCallPreparation::Enter(ComptimeFrame {
-                    program: 1,
-                    body,
-                    name: Some(admission.name),
-                    context: Some(FakeFile { index: 0 }),
-                    span: Span::new(0, 0),
-                    function_span: Span::new(0, 0),
-                    type_bindings: AHashMap::new(),
-                    value_bindings: AHashMap::new(),
-                    name_bindings: AHashMap::new(),
-                    call_identity: None,
-                    expected_result: Some(FakeType(7)),
-                })));
+                return Ok(Some(ComptimeCallPreparation::Enter {
+                    frame: ComptimeFrame {
+                        program: 1,
+                        body,
+                        name: Some(admission.name),
+                        context: Some(FakeFile { index: 0 }),
+                        span: Span::new(0, 0),
+                        function_span: Span::new(0, 0),
+                        type_bindings: AHashMap::new(),
+                        value_bindings: AHashMap::new(),
+                        name_bindings: AHashMap::new(),
+                        call_identity: None,
+                        expected_result: expected,
+                    },
+                    ticket: self.enter_count,
+                }));
             }
             let Some(plan) = self.call_plans.remove(&admission.name.ordinal) else {
                 return Ok(None);
@@ -935,21 +1004,44 @@ mod value_domain_tests {
                     body,
                     expected,
                     name_bindings,
-                } => ComptimeCallPreparation::Enter(ComptimeFrame {
-                    program,
-                    body,
-                    name: Some(admission.name),
-                    context: Some(FakeFile {
-                        index: program as u32,
-                    }),
-                    span: Span::new(0, 0),
-                    function_span: Span::new(0, 0),
-                    type_bindings: AHashMap::new(),
-                    value_bindings: AHashMap::new(),
-                    name_bindings,
-                    call_identity: None,
-                    expected_result: expected,
-                }),
+                } => ComptimeCallPreparation::Enter {
+                    frame: ComptimeFrame {
+                        program,
+                        body,
+                        name: Some(admission.name),
+                        context: Some(FakeFile {
+                            index: program as u32,
+                        }),
+                        span: Span::new(0, 0),
+                        function_span: Span::new(0, 0),
+                        type_bindings: AHashMap::new(),
+                        value_bindings: AHashMap::new(),
+                        name_bindings,
+                        call_identity: None,
+                        expected_result: expected,
+                    },
+                    ticket: program,
+                },
+                FakePreparedCall::UnnamedEnter { program, body } => {
+                    ComptimeCallPreparation::Enter {
+                        frame: ComptimeFrame {
+                            program,
+                            body,
+                            name: None,
+                            context: Some(FakeFile {
+                                index: program as u32,
+                            }),
+                            span: Span::new(0, 0),
+                            function_span: Span::new(0, 0),
+                            type_bindings: AHashMap::new(),
+                            value_bindings: AHashMap::new(),
+                            name_bindings: AHashMap::new(),
+                            call_identity: None,
+                            expected_result: None,
+                        },
+                        ticket: 777,
+                    }
+                }
                 FakePreparedCall::Memoized(outcome) => ComptimeCallPreparation::Memoized(outcome),
             }))
         }
@@ -963,13 +1055,18 @@ mod value_domain_tests {
                 Self::ProgramKey,
                 Self::CanonicalIdentity,
             >,
+            ticket: Self::CompletionTicket,
             result: ComptimeOutcome<Self::Value, Self::Failure>,
         ) -> ComptimeOutcome<Self::Value, Self::Failure> {
             self.finished.push((frame.program, frame.expected_result));
+            TICKET_EVENTS.with(|events| {
+                events.borrow_mut().push((ticket, false));
+            });
             match self.finish_outcome {
                 FakeFinishOutcome::Identity
                 | FakeFinishOutcome::AbortFromPrepare
-                | FakeFinishOutcome::AbortFromArithmetic => result,
+                | FakeFinishOutcome::AbortFromArithmetic
+                | FakeFinishOutcome::CanonicalFailure => result,
                 FakeFinishOutcome::Structured(_) => result,
                 FakeFinishOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
                 FakeFinishOutcome::NotReady => ComptimeOutcome::NotReady,
@@ -978,9 +1075,26 @@ mod value_domain_tests {
                     operation: "fake trap",
                     span: Span::new(0, 0),
                 }),
-                FakeFinishOutcome::HostFailure => ComptimeOutcome::HostFailure(FakeFailure),
-                FakeFinishOutcome::Abort => ComptimeOutcome::Abort(FakeFailure),
+                FakeFinishOutcome::HostFailure => ComptimeOutcome::HostFailure(FAKE_FAILURE),
+                FakeFinishOutcome::Abort => ComptimeOutcome::Abort(FAKE_FAILURE),
             }
+        }
+        fn enter_comptime_call(
+            &mut self,
+            _frame: &ComptimeFrame<
+                Self::Value,
+                Self::Type,
+                Self::Name,
+                Self::File,
+                Self::ProgramKey,
+                Self::CanonicalIdentity,
+            >,
+            ticket: &Self::CompletionTicket,
+        ) -> ComptimeHostResult<(), Self::Failure> {
+            TICKET_EVENTS.with(|events| {
+                events.borrow_mut().push((*ticket, true));
+            });
+            Ok(())
         }
         fn label_ctor_instantiation_site(error: Self::Failure, _call_span: Span) -> Self::Failure {
             LABEL_CALLS.with(|calls| calls.set(calls.get() + 1));
@@ -993,6 +1107,9 @@ mod value_domain_tests {
             _values: &AHashMap<Self::Name, Self::Value>,
             _span: Span,
         ) -> ComptimeHostResult<Self::CanonicalIdentity, Self::Failure> {
+            if matches!(self.finish_outcome, FakeFinishOutcome::CanonicalFailure) {
+                return Err(FAKE_FAILURE.into());
+            }
             Ok(FakeIdentity {
                 token: name.ordinal,
             })
@@ -1014,17 +1131,7 @@ mod value_domain_tests {
             _values: &AHashMap<Self::Name, Self::Value>,
             _span: Span,
         ) -> Option<Self::Type> {
-            None
-        }
-        fn register_anon_struct_methods_for_comptime_with_subst(
-            &mut self,
-            _program: &Self::ProgramKey,
-            _struct_id: &Self::AnonymousStructId,
-            _struct_type: Self::Type,
-            _methods: &rue_rir::RirAnonStructMethodsRange,
-            _types: &AHashMap<Self::Name, Self::Type>,
-            _values: &AHashMap<Self::Name, Self::Value>,
-        ) -> Option<()> {
+            TYPE_RESOLUTION_CALLS.with(|calls| calls.set(calls.get() + 1));
             None
         }
         fn set_anon_struct_type_subst(
@@ -1208,25 +1315,29 @@ mod value_domain_tests {
                     Self::ProgramKey,
                     Self::CanonicalIdentity,
                     Self::Failure,
+                    Self::CompletionTicket,
                 >,
             >,
             Self::Failure,
         > {
             match suspension.preparations[suspension.index] {
                 FakeStructuredPreparation::Enter => {
-                    ComptimeOutcome::Known(Some(ComptimeCallPreparation::Enter(ComptimeFrame {
-                        program: 1,
-                        body: InstRef::from_raw(0),
-                        name: Some(FakeName { ordinal: 1 }),
-                        context: Some(FakeFile { index: 0 }),
-                        span: Span::new(0, 0),
-                        function_span: Span::new(0, 0),
-                        type_bindings: AHashMap::new(),
-                        value_bindings: AHashMap::new(),
-                        name_bindings: AHashMap::new(),
-                        call_identity: None,
-                        expected_result: None,
-                    })))
+                    ComptimeOutcome::Known(Some(ComptimeCallPreparation::Enter {
+                        frame: ComptimeFrame {
+                            program: 1,
+                            body: InstRef::from_raw(0),
+                            name: Some(FakeName { ordinal: 1 }),
+                            context: Some(FakeFile { index: 0 }),
+                            span: Span::new(0, 0),
+                            function_span: Span::new(0, 0),
+                            type_bindings: AHashMap::new(),
+                            value_bindings: AHashMap::new(),
+                            name_bindings: AHashMap::new(),
+                            call_identity: None,
+                            expected_result: None,
+                        },
+                        ticket: 0,
+                    }))
                 }
                 FakeStructuredPreparation::Memoized => {
                     ComptimeOutcome::Known(Some(ComptimeCallPreparation::Memoized(
@@ -1242,8 +1353,10 @@ mod value_domain_tests {
                     operation: "structured fake trap",
                     span: Span::new(0, 0),
                 }),
-                FakeStructuredPreparation::HostFailure => ComptimeOutcome::HostFailure(FakeFailure),
-                FakeStructuredPreparation::Abort => ComptimeOutcome::Abort(FakeFailure),
+                FakeStructuredPreparation::HostFailure => {
+                    ComptimeOutcome::HostFailure(FAKE_FAILURE)
+                }
+                FakeStructuredPreparation::Abort => ComptimeOutcome::Abort(FAKE_FAILURE),
             }
         }
 
@@ -1503,7 +1616,7 @@ mod value_domain_tests {
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(ComptimeFrame::expression(0, add), &mut env)
-            .into_result(|_| FakeFailure)
+            .into_result(|_| FAKE_FAILURE)
             .unwrap()
             .unwrap();
         assert_eq!(value, FakeValue::Integer(42));
@@ -1787,7 +1900,7 @@ mod value_domain_tests {
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let result = ComptimeEngine::new(&mut host)
             .evaluate(ComptimeFrame::expression(0, checked), &mut env);
-        assert!(matches!(result, ComptimeOutcome::HostFailure(FakeFailure)));
+        assert!(matches!(result, ComptimeOutcome::HostFailure(FAKE_FAILURE)));
         assert_eq!(host.float_evaluations.get(), 1);
     }
 
@@ -1824,7 +1937,7 @@ mod value_domain_tests {
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let result = ComptimeEngine::new(&mut host)
             .evaluate(ComptimeFrame::expression(0, field), &mut env)
-            .into_result(|_| FakeFailure)
+            .into_result(|_| FAKE_FAILURE)
             .unwrap();
         assert_eq!(result, Some(FakeValue::Integer(31)));
     }
@@ -1958,7 +2071,7 @@ mod value_domain_tests {
         assert!(matches!(
             ComptimeEngine::new(&mut host)
                 .evaluate(ComptimeFrame::expression(0, equality), &mut env),
-            ComptimeOutcome::HostFailure(FakeFailure)
+            ComptimeOutcome::HostFailure(FAKE_FAILURE)
         ));
     }
 
@@ -2065,7 +2178,7 @@ mod value_domain_tests {
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         assert!(matches!(
             ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, eq), &mut env),
-            ComptimeOutcome::HostFailure(FakeFailure)
+            ComptimeOutcome::HostFailure(FAKE_FAILURE)
         ));
         assert_eq!(host.float_evaluations.get(), 1);
 
@@ -2156,7 +2269,7 @@ mod value_domain_tests {
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(ComptimeFrame::expression(0, branch), &mut env)
-            .into_result(|_| FakeFailure)
+            .into_result(|_| FAKE_FAILURE)
             .unwrap()
             .unwrap();
         assert_eq!(value, FakeValue::Integer(7));
@@ -2188,7 +2301,7 @@ mod value_domain_tests {
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(ComptimeFrame::expression(0, type_const), &mut env)
-            .into_result(|_| FakeFailure)
+            .into_result(|_| FAKE_FAILURE)
             .unwrap()
             .unwrap();
         assert_eq!(value, FakeValue::Type(FakeType(7)));
@@ -2233,7 +2346,7 @@ mod value_domain_tests {
         env.runtime_binding_names.insert(name);
         let value = ComptimeEngine::new(&mut host)
             .evaluate(ComptimeFrame::expression(0, reference), &mut env)
-            .into_result(|_| FakeFailure)
+            .into_result(|_| FAKE_FAILURE)
             .unwrap();
         assert_eq!(value, None);
     }
@@ -2276,7 +2389,7 @@ mod value_domain_tests {
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(ComptimeFrame::expression(0, reference), &mut env)
-            .into_result(|_| FakeFailure)
+            .into_result(|_| FAKE_FAILURE)
             .unwrap();
         assert_eq!(value, Some(FakeValue::Integer(42)));
         assert_eq!(
@@ -2318,7 +2431,7 @@ mod value_domain_tests {
         env.runtime_local_names.insert(name);
         let value = ComptimeEngine::new(&mut host)
             .evaluate(ComptimeFrame::expression(0, reference), &mut env)
-            .into_result(|_| FakeFailure)
+            .into_result(|_| FAKE_FAILURE)
             .unwrap();
         assert_eq!(value, None);
     }
@@ -2406,14 +2519,14 @@ mod value_domain_tests {
             let mut engine = ComptimeEngine::new(&mut host);
             let value = engine
                 .evaluate(ComptimeFrame::expression(0, root), &mut env)
-                .into_result(|_| FakeFailure)
+                .into_result(|_| FAKE_FAILURE)
                 .unwrap();
             // A second root evaluation proves the parent frame was popped
             // after the child program returned; no ambient program or stack
             // state leaks.
             let resumed = engine
                 .evaluate(ComptimeFrame::expression(0, rhs), &mut env)
-                .into_result(|_| FakeFailure)
+                .into_result(|_| FAKE_FAILURE)
                 .unwrap();
             (value, resumed)
         };
@@ -2423,6 +2536,148 @@ mod value_domain_tests {
             vec![(2, Some(FakeType(7))), (1, Some(FakeType(7)))]
         );
         assert_eq!(resumed, Some(FakeValue::Integer(2)));
+    }
+
+    #[test]
+    fn ordered_same_program_calls_keep_distinct_tickets_in_lifo_order() {
+        let interner = lasso::ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("nested");
+        let symbol_handle = SymbolHandle::new(symbol);
+        let mut root = rue_rir::RirEditor::new();
+        let root_call = root.add_call(symbol, &[], Span::new(0, 0)).unwrap();
+        let mut child = rue_rir::RirEditor::new();
+        let nested_call = child.add_call(symbol, &[], Span::new(0, 0)).unwrap();
+        let outer_rhs = child.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(0, 0),
+        });
+        let _type_hint_probe = child.add_inst(rue_rir::Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 0),
+        });
+        let outer_add = child.add_inst(rue_rir::Inst {
+            data: InstData::Add {
+                lhs: nested_call,
+                rhs: outer_rhs,
+            },
+            span: Span::new(0, 0),
+        });
+        let inner_lhs = child.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(3),
+            span: Span::new(0, 0),
+        });
+        let inner_rhs = child.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(4),
+            span: Span::new(0, 0),
+        });
+        let inner_add = child.add_inst(rue_rir::Inst {
+            data: InstData::Add {
+                lhs: inner_lhs,
+                rhs: inner_rhs,
+            },
+            span: Span::new(0, 0),
+        });
+        let mut host = FakeHost {
+            programs: vec![root.finish(), child.finish()],
+            type_symbol: symbol_handle,
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: Some((2, outer_add, inner_add, None)),
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        TICKET_EVENTS.with(|events| events.borrow_mut().clear());
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result = ComptimeEngine::new(&mut host)
+            .evaluate(ComptimeFrame::expression(0, root_call), &mut env);
+        assert!(matches!(
+            result,
+            ComptimeOutcome::Known(FakeValue::Integer(9))
+        ));
+        TICKET_EVENTS.with(|events| {
+            assert_eq!(
+                *events.borrow(),
+                vec![(1, true), (2, true), (2, false), (1, false)]
+            );
+        });
+    }
+
+    #[test]
+    fn nested_expected_integer_contexts_restore_for_the_parent_and_root() {
+        let interner = lasso::ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("typed_nested");
+        let symbol_handle = SymbolHandle::new(symbol);
+        let mut root = rue_rir::RirEditor::new();
+        let root_call = root.add_call(symbol, &[], Span::new(0, 0)).unwrap();
+        let root_value = root.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(9),
+            span: Span::new(0, 0),
+        });
+        let mut child = rue_rir::RirEditor::new();
+        let nested_call = child.add_call(symbol, &[], Span::new(0, 0)).unwrap();
+        let outer_rhs = child.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(0, 0),
+        });
+        let _type_hint_probe = child.add_inst(rue_rir::Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 0),
+        });
+        let outer_add = child.add_inst(rue_rir::Inst {
+            data: InstData::Add {
+                lhs: nested_call,
+                rhs: outer_rhs,
+            },
+            span: Span::new(0, 0),
+        });
+        let inner_lhs = child.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(3),
+            span: Span::new(0, 0),
+        });
+        let inner_rhs = child.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(4),
+            span: Span::new(0, 0),
+        });
+        let inner_add = child.add_inst(rue_rir::Inst {
+            data: InstData::Add {
+                lhs: inner_lhs,
+                rhs: inner_rhs,
+            },
+            span: Span::new(0, 0),
+        });
+        let mut host = FakeHost {
+            programs: vec![root.finish(), child.finish()],
+            type_symbol: symbol_handle,
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: Some((2, outer_add, inner_add, None)),
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        INTEGER_HINTS.with(|hints| hints.borrow_mut().clear());
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result = ComptimeEngine::new(&mut host)
+            .evaluate(ComptimeFrame::expression(0, root_call), &mut env);
+        assert!(matches!(
+            result,
+            ComptimeOutcome::Known(FakeValue::Integer(9))
+        ));
+        INTEGER_HINTS.with(|hints| {
+            assert_eq!(*hints.borrow(), vec![Some(FakeType(8)), Some(FakeType(7))]);
+        });
+        assert!(matches!(
+            ComptimeEngine::new(&mut host)
+                .evaluate(ComptimeFrame::expression(0, root_value), &mut env),
+            ComptimeOutcome::Known(FakeValue::Integer(9))
+        ));
+        INTEGER_HINTS
+            .with(|hints| assert_eq!(*hints.borrow(), vec![Some(FakeType(8)), Some(FakeType(7))]));
     }
 
     #[test]
@@ -2477,11 +2732,15 @@ mod value_domain_tests {
         };
         let mut engine = ComptimeEngine::new(&mut host);
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        TICKET_EVENTS.with(|events| events.borrow_mut().clear());
         assert!(matches!(
             engine.evaluate(ComptimeFrame::expression(0, root_call), &mut env),
-            ComptimeOutcome::HostFailure(FakeFailure)
+            ComptimeOutcome::HostFailure(FAKE_FAILURE)
         ));
         assert_eq!(host.enter_count, MAX_COMPTIME_CALL_DEPTH + 1);
+        TICKET_EVENTS.with(|events| {
+            assert_eq!(events.borrow().len(), MAX_COMPTIME_CALL_DEPTH * 2);
+        });
 
         let mut editor = rue_rir::RirEditor::new();
         let root_call = editor.add_call(symbol, &[], Span::new(0, 0)).unwrap();
@@ -2631,6 +2890,259 @@ mod value_domain_tests {
     }
 
     #[test]
+    fn rejected_calls_never_activate_or_finish_their_ticket() {
+        let (mut host, root, _, _) = call_fixture();
+        host.finish_outcome = FakeFinishOutcome::CanonicalFailure;
+        TICKET_EVENTS.with(|events| events.borrow_mut().clear());
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        assert!(matches!(
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, root), &mut env),
+            ComptimeOutcome::HostFailure(FAKE_FAILURE)
+        ));
+        assert!(host.finished.is_empty());
+        TICKET_EVENTS.with(|events| assert!(events.borrow().is_empty()));
+    }
+
+    #[test]
+    fn unnamed_enter_is_rejected_before_ticket_lifecycle() {
+        let (mut host, root, rhs, base) = call_fixture();
+        host.call_plans.insert(
+            base,
+            FakePreparedCall::UnnamedEnter {
+                program: 1,
+                body: InstRef::from_raw(0),
+            },
+        );
+        TICKET_EVENTS.with(|events| events.borrow_mut().clear());
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result =
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, root), &mut env);
+        assert!(matches!(result, ComptimeOutcome::UnsupportedContext));
+        assert!(host.finished.is_empty());
+        TICKET_EVENTS.with(|events| assert!(events.borrow().is_empty()));
+
+        // The invalid preparation did not leave a frame on the stack.
+        assert!(matches!(
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, rhs), &mut env),
+            ComptimeOutcome::Known(FakeValue::Integer(2))
+        ));
+    }
+
+    #[test]
+    fn named_frames_cannot_bypass_the_entered_call_lifecycle() {
+        let (mut host, _root, _rhs, _base) = call_fixture();
+        TICKET_EVENTS.with(|events| events.borrow_mut().clear());
+        let mut frame = ComptimeFrame::expression(0, InstRef::from_raw(0));
+        frame.name = Some(FakeName { ordinal: 99 });
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result = ComptimeEngine::new(&mut host).evaluate(frame, &mut env);
+        assert!(matches!(result, ComptimeOutcome::UnsupportedContext));
+        assert!(host.finished.is_empty());
+        TICKET_EVENTS.with(|events| assert!(events.borrow().is_empty()));
+    }
+
+    #[test]
+    fn anonymous_method_decoder_rejects_non_function_entries_exactly() {
+        let interner = lasso::ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("method");
+        let mut editor = RirEditor::new();
+        let non_function = editor.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(4, 5),
+        });
+        let root = editor
+            .add_anon_struct_type(
+                &[],
+                &[non_function],
+                rue_rir::RirStructuralAnchor::new(Vec::new()),
+                Span::new(0, 1),
+            )
+            .unwrap();
+        let rir = editor.finish();
+        let methods = match &rir.get(root).data {
+            InstData::AnonStructType { methods, .. } => methods.clone(),
+            _ => unreachable!(),
+        };
+        let mut host = FakeHost {
+            programs: vec![rir],
+            type_symbol: SymbolHandle::new(symbol),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        METHOD_FAILURES.with(|failures| failures.borrow_mut().clear());
+        let result = ComptimeEngine::new(&mut host).decode_anon_method_descriptors(
+            &0,
+            &methods,
+            &AHashMap::new(),
+            &AHashMap::new(),
+        );
+        assert!(matches!(
+            result,
+            ComptimeOutcome::HostFailure(FakeFailure::NonFunctionMethod)
+        ));
+        METHOD_FAILURES.with(|failures| assert_eq!(*failures.borrow(), vec!["non_function"]));
+    }
+
+    #[test]
+    fn own_comptime_type_parameter_wins_before_later_type_resolution() {
+        let interner = lasso::ThreadedRodeo::new();
+        let method_name = interner.get_or_intern("method");
+        let type_name = interner.get_or_intern("type");
+        let mut editor = RirEditor::new();
+        let type_syntax = editor.add_named_type(type_name).unwrap();
+        let body = editor.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(10, 11),
+        });
+        let method = editor
+            .add_fn_decl(
+                &[],
+                false,
+                false,
+                false,
+                false,
+                method_name,
+                &[rue_rir::RirParam {
+                    name: type_name,
+                    ty: type_syntax,
+                    mode: rue_rir::RirParamMode::Normal,
+                    is_comptime: true,
+                    span: Span::new(12, 13),
+                }],
+                type_syntax,
+                body,
+                false,
+                rue_rir::RirParamMode::Normal,
+                false,
+                false,
+                Span::new(8, 9),
+            )
+            .unwrap();
+        let root = editor
+            .add_anon_struct_type(
+                &[],
+                &[method],
+                rue_rir::RirStructuralAnchor::new(Vec::new()),
+                Span::new(0, 1),
+            )
+            .unwrap();
+        let rir = editor.finish();
+        let methods = match &rir.get(root).data {
+            InstData::AnonStructType { methods, .. } => methods.clone(),
+            _ => unreachable!(),
+        };
+        let mut host = FakeHost {
+            programs: vec![rir],
+            type_symbol: SymbolHandle::new(type_name),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        METHOD_FAILURES.with(|failures| failures.borrow_mut().clear());
+        TYPE_RESOLUTION_CALLS.with(|calls| calls.set(0));
+        let result = ComptimeEngine::new(&mut host).decode_anon_method_descriptors(
+            &0,
+            &methods,
+            &AHashMap::new(),
+            &AHashMap::new(),
+        );
+        assert!(matches!(
+            result,
+            ComptimeOutcome::HostFailure(FakeFailure::OwnComptimeTypeParameter)
+        ));
+        METHOD_FAILURES.with(|failures| assert_eq!(*failures.borrow(), vec!["own_type"]));
+        TYPE_RESOLUTION_CALLS.with(|calls| assert_eq!(calls.get(), 0));
+    }
+
+    #[test]
+    fn expected_integer_context_is_frame_local_and_integer_only() {
+        let mut editor = RirEditor::new();
+        let lhs = editor.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 0),
+        });
+        let rhs = editor.add_inst(Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(0, 0),
+        });
+        let _unused = editor.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 0),
+        });
+        let add = editor.add_inst(Inst {
+            data: InstData::Add { lhs, rhs },
+            span: Span::new(0, 0),
+        });
+        let interner = lasso::ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("context");
+        let mut host = FakeHost {
+            programs: vec![editor.finish()],
+            type_symbol: SymbolHandle::new(symbol),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        env.expected_result = Some(FakeType(3));
+        INTEGER_HINTS.with(|hints| hints.borrow_mut().clear());
+        let frame = ComptimeFrame {
+            program: 0,
+            body: add,
+            name: None,
+            context: None,
+            span: Span::new(0, 0),
+            function_span: Span::new(0, 0),
+            type_bindings: AHashMap::new(),
+            value_bindings: AHashMap::new(),
+            name_bindings: AHashMap::new(),
+            call_identity: None,
+            expected_result: Some(FakeType(16)),
+        };
+        assert!(matches!(
+            ComptimeEngine::new(&mut host).evaluate(frame, &mut env),
+            ComptimeOutcome::Known(FakeValue::Integer(3))
+        ));
+        assert_eq!(env.expected_result, Some(FakeType(3)));
+        INTEGER_HINTS.with(|hints| assert_eq!(*hints.borrow(), vec![Some(FakeType(16))]));
+
+        INTEGER_HINTS.with(|hints| hints.borrow_mut().clear());
+        let non_integer_frame = ComptimeFrame {
+            program: 0,
+            body: add,
+            name: None,
+            context: None,
+            span: Span::new(0, 0),
+            function_span: Span::new(0, 0),
+            type_bindings: AHashMap::new(),
+            value_bindings: AHashMap::new(),
+            name_bindings: AHashMap::new(),
+            call_identity: None,
+            expected_result: Some(FakeType(99)),
+        };
+        assert!(matches!(
+            ComptimeEngine::new(&mut host).evaluate(non_integer_frame, &mut env),
+            ComptimeOutcome::Known(FakeValue::Integer(3))
+        ));
+        INTEGER_HINTS.with(|hints| assert_eq!(*hints.borrow(), vec![None]));
+    }
+
+    #[test]
     fn host_abort_channel_cleans_entered_frames_and_preserves_labels() {
         let interner = lasso::ThreadedRodeo::new();
         let symbol = interner.get_or_intern("abort");
@@ -2678,10 +3190,11 @@ mod value_domain_tests {
             float_evaluations: Cell::new(0),
         };
         LABEL_CALLS.with(|calls| calls.set(0));
+        TICKET_EVENTS.with(|events| events.borrow_mut().clear());
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let mut engine = ComptimeEngine::new(&mut host);
         let aborted = engine.evaluate(ComptimeFrame::expression(0, call), &mut env);
-        assert!(matches!(aborted, ComptimeOutcome::Abort(FakeFailure)));
+        assert!(matches!(aborted, ComptimeOutcome::Abort(FAKE_FAILURE)));
         assert!(matches!(
             engine.evaluate(ComptimeFrame::expression(0, direct), &mut env),
             ComptimeOutcome::Known(FakeValue::Integer(9))
@@ -2689,6 +3202,7 @@ mod value_domain_tests {
         drop(engine);
         assert_eq!(host.finished, vec![(1, Some(FakeType(7)))]);
         LABEL_CALLS.with(|calls| assert_eq!(calls.get(), 0));
+        TICKET_EVENTS.with(|events| assert_eq!(*events.borrow(), vec![(1, true), (1, false)]));
 
         let mut root_editor = RirEditor::new();
         let call = root_editor.add_call(symbol, &[], Span::new(0, 0)).unwrap();
@@ -2708,11 +3222,12 @@ mod value_domain_tests {
             finished: Vec::new(),
             float_evaluations: Cell::new(0),
         };
+        TICKET_EVENTS.with(|events| events.borrow_mut().clear());
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let mut engine = ComptimeEngine::new(&mut host);
         assert!(matches!(
             engine.evaluate(ComptimeFrame::expression(0, call), &mut env),
-            ComptimeOutcome::Abort(FakeFailure)
+            ComptimeOutcome::Abort(FAKE_FAILURE)
         ));
         assert!(matches!(
             engine.evaluate(ComptimeFrame::expression(0, direct), &mut env),
@@ -2720,6 +3235,7 @@ mod value_domain_tests {
         ));
         drop(engine);
         assert!(host.finished.is_empty());
+        TICKET_EVENTS.with(|events| assert!(events.borrow().is_empty()));
     }
 
     fn registry_program(value: u64) -> (Arc<ValidatedRir>, InstRef) {
@@ -2970,14 +3486,17 @@ impl<V, T, N, F, P, I> ComptimeFrame<V, T, N, F, P, I> {
 }
 
 #[derive(Debug)]
-pub enum ComptimeCallPreparation<V, T, N, File, P, I, Failure> {
+pub enum ComptimeCallPreparation<V, T, N, File, P, I, Failure, K> {
     /// A completed fact from the evaluation-local memo. This includes
     /// not-ready/runtime-dependent facts and therefore must not be confused
     /// with a cache miss.
     Memoized(ComptimeOutcome<V, Failure>),
     /// A cache miss represented by an owned foreign frame. The engine enters
     /// it and evaluates it; hosts never recursively dispatch its RIR.
-    Enter(ComptimeFrame<V, T, N, File, P, I>),
+    Enter {
+        frame: ComptimeFrame<V, T, N, File, P, I>,
+        ticket: K,
+    },
 }
 
 #[derive(Debug)]
@@ -3078,8 +3597,9 @@ pub trait ComptimeHost {
     type ProgramKey: Clone;
     type Failure;
     type CallAdmission;
+    /// Opaque host-owned completion state issued during ordered preparation.
+    type CompletionTicket;
     type AnonymousStructId: Clone;
-    type AnonMethodSigs;
     /// The sole continuation representation accepted by the engine for a
     /// structured type reduction. This is sealed below to prevent a peer
     /// resolver state machine from being hidden behind the host boundary.
@@ -3114,6 +3634,7 @@ pub trait ComptimeHost {
         method_span: Span,
         method_name: &str,
     ) -> Self::Failure;
+    fn non_function_anon_method(&self, method_span: Span) -> Self::Failure;
     fn record_value_const_dependency(&mut self, file: &Self::File, name: &Self::Name);
     fn resolve_named_array_length(
         &mut self,
@@ -3126,24 +3647,20 @@ pub trait ComptimeHost {
         program: &Self::ProgramKey,
         syntax: rue_rir::RirTypeSyntaxRef,
     ) -> Option<Self::Name>;
-    fn get_or_create_array_type(&mut self, element: Self::Type, length: u64) -> Self::Type;
-    fn extract_anon_method_sigs(
-        &mut self,
-        program: &Self::ProgramKey,
-        methods: &rue_rir::RirAnonStructMethodsRange,
-        types: &AHashMap<Self::Name, Self::Type>,
-        values: &AHashMap<Self::Name, Self::Value>,
-    ) -> ComptimeHostResult<Self::AnonMethodSigs, Self::Failure>;
-    fn find_method_own_comptime_type_param(
+    /// Render an unsupported type syntax using the owning program's arena and
+    /// semantic symbol mapping. The engine never derives identity from the
+    /// compact syntax reference itself.
+    fn render_rir_type(
         &self,
         program: &Self::ProgramKey,
-        methods: &rue_rir::RirAnonStructMethodsRange,
-    ) -> Option<(Span, String)>;
+        syntax: rue_rir::RirTypeSyntaxRef,
+    ) -> String;
+    fn get_or_create_array_type(&mut self, element: Self::Type, length: u64) -> Self::Type;
     fn find_or_create_anon_struct(
         &mut self,
         identity: Self::AnonymousIdentity,
         fields: &[ComptimeField<Self::Name, Self::Type>],
-        sigs: &Self::AnonMethodSigs,
+        sigs: &[ComptimeMethodDescriptor<Self::Name, Self::Type>],
         captured: &AHashMap<Self::Name, Self::Value>,
     ) -> ComptimeHostResult<(Self::Type, bool), Self::Failure>;
     fn find_or_create_anon_enum(
@@ -3301,6 +3818,7 @@ pub trait ComptimeHost {
                 Self::ProgramKey,
                 Self::CanonicalIdentity,
                 Self::Failure,
+                Self::CompletionTicket,
             >,
         >,
         Self::Failure,
@@ -3315,8 +3833,23 @@ pub trait ComptimeHost {
             Self::ProgramKey,
             Self::CanonicalIdentity,
         >,
+        ticket: Self::CompletionTicket,
         result: ComptimeOutcome<Self::Value, Self::Failure>,
     ) -> ComptimeOutcome<Self::Value, Self::Failure>;
+    /// Activate a prepared completion ticket only after the engine has
+    /// admitted depth and issued the canonical producer identity.
+    fn enter_comptime_call(
+        &mut self,
+        _frame: &ComptimeFrame<
+            Self::Value,
+            Self::Type,
+            Self::Name,
+            Self::File,
+            Self::ProgramKey,
+            Self::CanonicalIdentity,
+        >,
+        _ticket: &Self::CompletionTicket,
+    ) -> ComptimeHostResult<(), Self::Failure>;
     fn label_ctor_instantiation_site(error: Self::Failure, call_span: Span) -> Self::Failure;
     fn canonical_function_producer(
         &self,
@@ -3376,6 +3909,7 @@ pub trait ComptimeHost {
                 Self::ProgramKey,
                 Self::CanonicalIdentity,
                 Self::Failure,
+                Self::CompletionTicket,
             >,
         >,
         Self::Failure,
@@ -3389,15 +3923,6 @@ pub trait ComptimeHost {
         ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
         Self::Failure,
     >;
-    fn register_anon_struct_methods_for_comptime_with_subst(
-        &mut self,
-        program: &Self::ProgramKey,
-        struct_id: &Self::AnonymousStructId,
-        struct_type: Self::Type,
-        methods: &rue_rir::RirAnonStructMethodsRange,
-        types: &AHashMap<Self::Name, Self::Type>,
-        values: &AHashMap<Self::Name, Self::Value>,
-    ) -> Option<()>;
     fn set_anon_struct_type_subst(
         &mut self,
         struct_id: &Self::AnonymousStructId,
@@ -3567,9 +4092,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             let reduced = match preparation {
                 ComptimeOutcome::Known(Some(preparation)) => match preparation {
                     ComptimeCallPreparation::Memoized(outcome) => outcome,
-                    ComptimeCallPreparation::Enter(frame) => {
+                    ComptimeCallPreparation::Enter { frame, ticket } => {
                         let span = frame.span;
-                        self.enter_call(frame, span)
+                        self.enter_prepared_call(frame, ticket, span)
                     }
                 },
                 ComptimeOutcome::Known(None) => ComptimeOutcome::RuntimeDependent,
@@ -3629,6 +4154,158 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             ComptimeOutcome::HostFailure(error) => ComptimeOutcome::HostFailure(error),
             ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
         }
+    }
+
+    /// Decode anonymous method signatures from RIR exactly once, at the AIR
+    /// boundary. Hosts receive the resolved descriptor below and therefore do
+    /// not need to interpret `FnDecl`, parameter ranges, or type syntax.
+    pub(crate) fn decode_anon_method_descriptors(
+        &mut self,
+        program: &H::ProgramKey,
+        methods: &rue_rir::RirAnonStructMethodsRange,
+        types: &AHashMap<H::Name, H::Type>,
+        values: &AHashMap<H::Name, H::Value>,
+    ) -> ComptimeOutcome<Vec<ComptimeMethodDescriptor<H::Name, H::Type>>, H::Failure> {
+        let method_refs = self
+            .host
+            .program_rir(program)
+            .anon_struct_methods(methods)
+            .to_vec();
+        let mut descriptors = Vec::with_capacity(method_refs.len());
+        for method_ref in method_refs {
+            let (instruction_data, method_span) = {
+                let instruction = self.host.program_rir(program).get(method_ref);
+                (instruction.data.clone(), instruction.span)
+            };
+            let InstData::FnDecl {
+                name,
+                params,
+                return_type,
+                has_self,
+                self_mode,
+                returns_borrow,
+                returns_inout,
+                ..
+            } = instruction_data
+            else {
+                return ComptimeOutcome::HostFailure(
+                    self.host.non_function_anon_method(method_span),
+                );
+            };
+            let method_name = self.host.name_from_symbol(program, name.into());
+            let parameter_data = self.host.program_rir(program).params(&params).to_vec();
+            let parameter_names = parameter_data
+                .iter()
+                .map(|parameter| self.host.name_from_symbol(program, parameter.name.into()))
+                .collect();
+            // Preserve declaration-level diagnostic priority: reject an own
+            // comptime type parameter before any other parameter or result
+            // syntax can suspend or fail.
+            if parameter_data.iter().any(|parameter| {
+                parameter.is_comptime
+                    && self
+                        .host
+                        .rir_type_named_symbol(program, parameter.ty)
+                        .is_some_and(|name| self.host.display_name(&name) == "type")
+            }) {
+                return ComptimeOutcome::HostFailure(self.host.unsupported_anon_method_type_param(
+                    method_span,
+                    &self.host.display_name(&method_name),
+                ));
+            }
+            let mut parameters = Vec::with_capacity(parameter_data.len());
+            for parameter in parameter_data {
+                let is_self = self
+                    .host
+                    .rir_type_named_symbol(program, parameter.ty)
+                    .is_some_and(|name| self.host.display_name(&name) == "Self");
+                let is_comptime_type = parameter.is_comptime
+                    && self
+                        .host
+                        .rir_type_named_symbol(program, parameter.ty)
+                        .is_some_and(|name| self.host.display_name(&name) == "type");
+                let ty = if is_self {
+                    ComptimeMethodType::SelfType
+                } else {
+                    match self.evaluate_comptime_type_syntax(
+                        program,
+                        parameter.ty,
+                        types,
+                        values,
+                        method_span,
+                    ) {
+                        ComptimeOutcome::Known(ty) => ComptimeMethodType::Concrete(ty),
+                        ComptimeOutcome::RuntimeDependent | ComptimeOutcome::UnsupportedContext => {
+                            ComptimeMethodType::Unsupported(
+                                self.host
+                                    .rir_type_named_symbol(program, parameter.ty)
+                                    .map_or_else(
+                                        || self.host.render_rir_type(program, parameter.ty),
+                                        |name| self.host.display_name(&name),
+                                    ),
+                            )
+                        }
+                        ComptimeOutcome::NotReady => return ComptimeOutcome::NotReady,
+                        ComptimeOutcome::Trap(trap) => return ComptimeOutcome::Trap(trap),
+                        ComptimeOutcome::HostFailure(error) => {
+                            return ComptimeOutcome::HostFailure(error);
+                        }
+                        ComptimeOutcome::Abort(error) => return ComptimeOutcome::Abort(error),
+                    }
+                };
+                parameters.push(ComptimeMethodParameter {
+                    ty,
+                    mode: parameter.mode,
+                    is_comptime: parameter.is_comptime,
+                    is_comptime_type,
+                });
+            }
+            let result = if self
+                .host
+                .rir_type_named_symbol(program, return_type)
+                .is_some_and(|name| self.host.display_name(&name) == "Self")
+            {
+                ComptimeMethodType::SelfType
+            } else {
+                match self.evaluate_comptime_type_syntax(
+                    program,
+                    return_type,
+                    types,
+                    values,
+                    method_span,
+                ) {
+                    ComptimeOutcome::Known(ty) => ComptimeMethodType::Concrete(ty),
+                    ComptimeOutcome::RuntimeDependent | ComptimeOutcome::UnsupportedContext => {
+                        ComptimeMethodType::Unsupported(
+                            self.host
+                                .rir_type_named_symbol(program, return_type)
+                                .map_or_else(
+                                    || self.host.render_rir_type(program, return_type),
+                                    |name| self.host.display_name(&name),
+                                ),
+                        )
+                    }
+                    ComptimeOutcome::NotReady => return ComptimeOutcome::NotReady,
+                    ComptimeOutcome::Trap(trap) => return ComptimeOutcome::Trap(trap),
+                    ComptimeOutcome::HostFailure(error) => {
+                        return ComptimeOutcome::HostFailure(error);
+                    }
+                    ComptimeOutcome::Abort(error) => return ComptimeOutcome::Abort(error),
+                }
+            };
+            descriptors.push(ComptimeMethodDescriptor {
+                name: method_name,
+                has_self,
+                self_mode,
+                returns_borrow,
+                returns_inout,
+                parameters,
+                parameter_names,
+                result,
+                declaration_span: method_span,
+            });
+        }
+        ComptimeOutcome::Known(descriptors)
     }
 
     fn program_rir(&self) -> &Rir {
@@ -3716,14 +4393,19 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         >,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
+        // Public expression evaluation is intentionally ticket-free. Named
+        // frames may only enter through the admitted-call path, after depth
+        // and canonical-producer checks have issued their mandatory ticket.
         if frame.name.is_some() {
-            let span = frame.span;
-            return self.run_frame(frame, span);
+            return ComptimeOutcome::UnsupportedContext;
         }
         let body = frame.body;
+        let previous_expected = env.expected_result.clone();
+        env.expected_result = frame.expected_result.clone();
         self.frames.push(frame);
         let result = self.eval(body, env);
         self.frames.pop();
+        env.expected_result = previous_expected;
         result
     }
 
@@ -3771,8 +4453,33 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         };
         match preparation {
             ComptimeCallPreparation::Memoized(outcome) => outcome,
-            ComptimeCallPreparation::Enter(frame) => self.enter_call(frame, span),
+            ComptimeCallPreparation::Enter { frame, ticket } => {
+                self.enter_prepared_call(frame, ticket, span)
+            }
         }
+    }
+
+    #[inline(never)]
+    fn enter_prepared_call(
+        &mut self,
+        frame: ComptimeFrame<
+            H::Value,
+            H::Type,
+            H::Name,
+            H::File,
+            H::ProgramKey,
+            H::CanonicalIdentity,
+        >,
+        ticket: H::CompletionTicket,
+        call_span: Span,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        // Root expression frames are intentionally ticket-free. A host must
+        // not be able to smuggle one through Enter and silently bypass the
+        // enter/finish lifecycle.
+        if frame.name.is_none() {
+            return ComptimeOutcome::UnsupportedContext;
+        }
+        self.enter_call(frame, ticket, call_span)
     }
 
     #[inline(never)]
@@ -3786,9 +4493,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             H::ProgramKey,
             H::CanonicalIdentity,
         >,
+        ticket: H::CompletionTicket,
         call_span: Span,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
-        self.run_frame(frame, call_span)
+        self.run_frame(frame, ticket, call_span)
     }
 
     pub fn evaluate_frame(
@@ -3802,9 +4510,24 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             H::CanonicalIdentity,
         >,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let mut env = ComptimeEnv::with_subst(&frame.type_bindings, &frame.value_bindings);
+        self.evaluate(frame, &mut env)
+    }
+
+    pub(crate) fn evaluate_entered_frame(
+        &mut self,
+        frame: ComptimeFrame<
+            H::Value,
+            H::Type,
+            H::Name,
+            H::File,
+            H::ProgramKey,
+            H::CanonicalIdentity,
+        >,
+        ticket: H::CompletionTicket,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
         let span = frame.span;
-        let result = self.run_frame(frame, span);
-        result
+        self.run_frame(frame, ticket, span)
     }
 
     #[inline(never)]
@@ -3818,6 +4541,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             H::ProgramKey,
             H::CanonicalIdentity,
         >,
+        ticket: H::CompletionTicket,
         call_span: Span,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
         let entered_depth = self
@@ -3840,10 +4564,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 frame.span,
             ));
             frame.call_identity = Some(canonical_identity);
+            // Admission and canonical producer issuance are complete. Only
+            // now may a host activate the opaque completion ticket carried by
+            // this frame; depth/producer failures above never activate it.
+            host_value!(self.host.enter_comptime_call(&frame, &ticket));
         }
         let mut child_env = ComptimeEnv::with_subst(&frame.type_bindings, &frame.value_bindings);
         child_env.canonical_identity = frame.call_identity.clone();
         child_env.defining_file = frame.context.clone();
+        child_env.expected_result = frame.expected_result.clone();
         let body = frame.body;
         let is_call = frame.name.is_some();
         self.frames.push(frame);
@@ -3857,7 +4586,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
                 other => other,
             };
-            self.host.finish_comptime_call(&frame, result)
+            self.host.finish_comptime_call(&frame, ticket, result)
         } else {
             result
         }
@@ -3915,7 +4644,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         };
         match preparation {
             ComptimeCallPreparation::Memoized(outcome) => outcome,
-            ComptimeCallPreparation::Enter(frame) => self.enter_call(frame, span),
+            ComptimeCallPreparation::Enter { frame, ticket } => {
+                self.enter_prepared_call(frame, ticket, span)
+            }
         }
     }
 
@@ -4024,7 +4755,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     ) -> ComptimeOutcome<Option<H::Type>, H::Failure> {
         let hint = self
             .host
-            .const_expr_type(&self.program_key(), env, inst_ref);
+            .const_expr_type(&self.program_key(), env, inst_ref)
+            .or_else(|| {
+                env.expected_result
+                    .as_ref()
+                    .filter(|ty| self.host.type_integer_semantics(ty).is_some())
+                    .cloned()
+            });
         ComptimeOutcome::Known(host_value!(self.host.integer_operation_type(
             hint.as_ref(),
             lhs,
@@ -4042,7 +4779,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     ) -> ComptimeOutcome<Option<H::Type>, H::Failure> {
         let hint = self
             .host
-            .const_expr_type(&self.program_key(), env, inst_ref);
+            .const_expr_type(&self.program_key(), env, inst_ref)
+            .or_else(|| {
+                env.expected_result
+                    .as_ref()
+                    .filter(|ty| self.host.type_integer_semantics(ty).is_some())
+                    .cloned()
+            });
         ComptimeOutcome::Known(host_value!(self.host.unary_integer_type(
             hint.as_ref(),
             operand,
@@ -4729,8 +5472,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     });
                 }
 
-                // Extract method signatures for structural equality comparison
-                let method_sigs = host_value!(self.host.extract_anon_method_sigs(
+                // Decode method signatures in the canonical engine. The host
+                // receives only resolved semantic descriptors below.
+                let method_sigs = outcome_value!(self.decode_anon_method_descriptors(
                     &self.program_key(),
                     methods,
                     &local_type_subst,
@@ -4753,70 +5497,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     &local_value_subst,
                 ));
 
-                // Register methods if present and not yet registered for this
-                // struct (it may have been created earlier without methods).
-                if !self.program_rir().anon_struct_methods(methods).is_empty() {
-                    // A method that declares its own `comptime T: type`
-                    // parameter would need per-call monomorphization over that
-                    // parameter, which is unsupported (RUE-284). Reject it at
-                    // the method declaration so the enclosing `-> type`
-                    // reduction cannot degrade into an unrelated E1200 at the
-                    // instantiation site.
-                    if let Some((method_span, method_name)) = self
-                        .host
-                        .find_method_own_comptime_type_param(&self.program_key(), methods)
-                    {
-                        return ComptimeOutcome::HostFailure(
-                            self.host
-                                .unsupported_anon_method_type_param(method_span, &method_name),
-                        );
-                    }
-                    let Some(struct_id) = self.host.anonymous_struct_id(&struct_ty) else {
-                        return ComptimeOutcome::RuntimeDependent;
-                    };
-
-                    let method_refs = self.program_rir().anon_struct_methods(methods);
-                    let first_method_ref = method_refs.get(0).unwrap();
-                    let first_method_inst = self.program_rir().get(first_method_ref);
-                    if let InstData::FnDecl {
-                        name: method_name, ..
-                    } = &first_method_inst.data
-                    {
-                        let needs_registration = !self
-                            .host
-                            .has_method(&struct_id, self.name_from_rir((*method_name).into()));
-
-                        if needs_registration
-                            && self
-                                .host
-                                .register_anon_struct_methods_for_comptime_with_subst(
-                                    &self.program_key(),
-                                    &struct_id,
-                                    struct_ty.clone(),
-                                    methods,
-                                    &local_type_subst,
-                                    &local_value_subst,
-                                )
-                                .is_none()
-                        {
-                            // Registration failure (e.g. duplicate method
-                            // names) makes the type non-evaluable; the
-                            // caller reports the comptime failure.
-                            return ComptimeOutcome::RuntimeDependent;
-                        }
-
-                        // Remember the enclosing type substitution (e.g.
-                        // `T -> i32` for `Vec(i32)`) so it resolves inside every
-                        // method *body*, not just the signatures registered
-                        // above (RUE-313). Method bodies are analyzed later, in
-                        // a separate pass that has no other way to recover the
-                        // constructor's type parameters.
-                        if needs_registration && !local_type_subst.is_empty() {
-                            self.host
-                                .set_anon_struct_type_subst(&struct_id, local_type_subst.clone());
-                        }
-                    }
-                }
+                // Method body registration is an ordinary analysis concern.
+                // The generic comptime host receives only structural method
+                // descriptors and never a child-RIR token.
                 ComptimeOutcome::Known(H::Value::type_value(struct_ty))
             }
 

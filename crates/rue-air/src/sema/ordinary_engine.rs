@@ -496,16 +496,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         )
     }
 
-    pub(crate) fn rir_type_is_named(&self, syntax: RirTypeSyntaxRef, name: &str) -> bool {
-        let arena = self.body_rir_ref().type_syntax();
-        let Some(rue_rir::RirTypeSyntaxNode::Named(symbol)) = arena.node(syntax) else {
-            return false;
-        };
-        arena
-            .symbol(*symbol)
-            .is_some_and(|symbol| self.body_interner().resolve(symbol) == name)
-    }
-
     pub(crate) fn rir_type_named_symbol(&self, syntax: RirTypeSyntaxRef) -> Option<Spur> {
         let arena = self.body_rir_ref().type_syntax();
         let rue_rir::RirTypeSyntaxNode::Named(symbol) = arena.node(syntax)? else {
@@ -554,203 +544,83 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             .resolve_body_type_with_substitutions(syntax, span, Some(type_subst), Some(value_subst))
             .ok()
     }
-    pub(crate) fn extract_anon_method_sigs(
-        &mut self,
-        methods: &rue_rir::RirAnonStructMethodsRange,
-        type_subst: &AHashMap<Spur, Type>,
-        value_subst: &AHashMap<Spur, ConstValue>,
-    ) -> Vec<super::AnonMethodSig> {
-        fn resolve<H: OrdinaryBodyAnalysisHost>(
-            engine: &mut OrdinaryBodyEngine<'_, H>,
-            syntax: RirTypeSyntaxRef,
-            type_subst: &AHashMap<Spur, Type>,
-            value_subst: &AHashMap<Spur, ConstValue>,
-            span: Span,
-        ) -> super::AnonMethodType {
-            use super::AnonMethodType as T;
-            if engine.rir_type_is_named(syntax, "Self") {
-                return T::SelfType;
-            }
-            engine
-                .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-                    syntax,
-                    type_subst,
-                    value_subst,
-                    span,
-                )
-                .map_or_else(
-                    || T::Syntax(engine.render_rir_type(syntax).into()),
-                    T::Concrete,
-                )
-        }
-
-        let method_refs = self.body_rir_ref().anon_struct_methods(methods).to_vec();
-        let mut sigs = Vec::with_capacity(method_refs.len());
-        for method_ref in method_refs {
-            let method_inst = {
-                let source = self.body_rir_ref().get(method_ref);
-                rue_rir::Inst {
-                    data: source.data.clone(),
-                    span: source.span,
-                }
-            };
-            if let rue_rir::InstData::FnDecl {
-                name,
-                params,
-                return_type,
-                has_self,
-                self_mode,
-                returns_borrow,
-                returns_inout,
-                ..
-            } = method_inst.data
-            {
-                let params = self.body_rir_ref().params(&params).to_vec();
-                let param_types = params
-                    .iter()
-                    .map(|p| resolve(self, p.ty, type_subst, value_subst, method_inst.span))
-                    .collect();
-                let param_modes = params.iter().map(|p| p.mode).collect();
-                let param_comptime = params.iter().map(|p| p.is_comptime).collect();
-                sigs.push(super::AnonMethodSig {
-                    name,
-                    has_self,
-                    self_mode,
-                    returns_borrow,
-                    returns_inout,
-                    param_types,
-                    param_modes,
-                    param_comptime,
-                    return_type: resolve(
-                        self,
-                        return_type,
-                        type_subst,
-                        value_subst,
-                        method_inst.span,
-                    ),
-                });
-            }
-        }
-        sigs
-    }
-
-    pub(crate) fn find_method_own_comptime_type_param(
-        &self,
-        methods: &rue_rir::RirAnonStructMethodsRange,
-    ) -> Option<(Span, String)> {
-        for method_ref in self.body_rir_ref().anon_struct_methods(methods) {
-            let method_inst = self.body_rir_ref().get(method_ref);
-            if let rue_rir::InstData::FnDecl {
-                name: method_name,
-                params,
-                ..
-            } = &method_inst.data
-            {
-                for param in self.body_rir_ref().params(params) {
-                    if param.is_comptime && self.rir_type_is_named(param.ty, "type") {
-                        return Some((
-                            method_inst.span,
-                            self.body_interner().resolve(method_name).to_owned(),
-                        ));
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    pub(crate) fn register_anon_struct_methods_for_comptime_with_subst(
+    pub(crate) fn register_anon_struct_method_bodies(
         &mut self,
         struct_id: StructId,
         struct_type: Type,
-        methods: &rue_rir::RirAnonStructMethodsRange,
-        type_subst: &AHashMap<Spur, Type>,
-        value_subst: &AHashMap<Spur, ConstValue>,
+        method_range: &rue_rir::RirAnonStructMethodsRange,
+        methods: &[super::comptime::ComptimeMethodDescriptor<Spur, Type>],
     ) -> Option<()> {
-        let method_refs = self.body_rir_ref().anon_struct_methods(methods).to_vec();
+        let method_refs = self
+            .body_rir_ref()
+            .anon_struct_methods(method_range)
+            .to_vec();
+        if method_refs.len() != methods.len() {
+            return None;
+        }
         let mut seen_methods = AHashSet::new();
-        let mut staged = Vec::with_capacity(method_refs.len());
-        for method_ref in method_refs {
-            let method_inst = {
-                let source = self.body_rir_ref().get(method_ref);
-                rue_rir::Inst {
-                    data: source.data.clone(),
-                    span: source.span,
-                }
+        let mut staged = Vec::with_capacity(methods.len());
+        for (method_ref, method) in method_refs.iter().zip(methods) {
+            // This local registration path needs only the executable body
+            // facts. Signature fields, parameter names, and type resolution
+            // have already been decoded by the canonical AIR engine.
+            let source = self.body_rir_ref().get(*method_ref);
+            let (body, self_is_mut) = match &source.data {
+                rue_rir::InstData::FnDecl {
+                    body, self_is_mut, ..
+                } => (*body, *self_is_mut),
+                _ => return None,
             };
-            let rue_rir::InstData::FnDecl {
-                name: method_name,
-                params,
-                return_type,
-                body,
-                has_self,
-                self_mode,
-                self_is_mut,
-                returns_borrow,
-                returns_inout,
-                ..
-            } = method_inst.data
-            else {
-                continue;
-            };
+            let method_name = method.name;
             let key = (struct_id, method_name);
             // Anonymous accessors remain a user-language restriction. The
             // trusted std source path is the deliberate exception required by
             // generic `ArrayBuf(T)`/collection bodies (RUE-1017).
             let trusted_std_accessor = self
-                .file_module_is_trusted_standard_library(method_inst.span.file_id)
-                && (returns_borrow || returns_inout);
+                .file_module_is_trusted_standard_library(method.declaration_span.file_id)
+                && (method.returns_borrow || method.returns_inout);
             if !seen_methods.insert(method_name)
                 || self.has_method(key)
-                || ((returns_borrow || returns_inout) && !trusted_std_accessor)
+                || ((method.returns_borrow || method.returns_inout) && !trusted_std_accessor)
             {
                 return None;
             }
-            let parameters = self.body_rir_ref().params(&params).to_vec();
-            let mut parameter_types = Vec::with_capacity(parameters.len());
-            for parameter in &parameters {
-                let resolved = if self.rir_type_is_named(parameter.ty, "Self") {
-                    Ok(struct_type)
-                } else {
-                    self.resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-                        parameter.ty,
-                        type_subst,
-                        value_subst,
-                        method_inst.span,
-                    )
-                    .ok_or(())
-                };
-                parameter_types.push(resolved.ok()?);
-            }
-            let return_ty = if self.rir_type_is_named(return_type, "Self") {
-                struct_type
-            } else {
-                self.resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-                    return_type,
-                    type_subst,
-                    value_subst,
-                    method_inst.span,
-                )?
+            let parameter_types = method
+                .parameters
+                .iter()
+                .map(|parameter| match &parameter.ty {
+                    super::comptime::ComptimeMethodType::SelfType => Some(struct_type),
+                    super::comptime::ComptimeMethodType::Concrete(ty) => Some(*ty),
+                    super::comptime::ComptimeMethodType::Unsupported(_) => None,
+                })
+                .collect::<Option<Vec<_>>>()?;
+            let return_ty = match &method.result {
+                super::comptime::ComptimeMethodType::SelfType => struct_type,
+                super::comptime::ComptimeMethodType::Concrete(ty) => *ty,
+                super::comptime::ComptimeMethodType::Unsupported(_) => return None,
             };
             let param_range = self.storage.allocate_method_params(
-                parameters.iter().map(|parameter| parameter.name),
+                method.parameter_names.iter().copied(),
                 parameter_types,
-                parameters.iter().map(|parameter| parameter.mode),
-                parameters.iter().map(|parameter| parameter.is_comptime),
+                method.parameters.iter().map(|parameter| parameter.mode),
+                method
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.is_comptime),
             );
             staged.push((
                 key,
                 MethodInfo {
                     struct_type,
-                    has_self,
-                    self_mode,
+                    has_self: method.has_self,
+                    self_mode: method.self_mode,
                     self_is_mut,
                     params: param_range,
                     return_type: return_ty,
                     body,
-                    span: method_inst.span,
-                    returns_borrow: trusted_std_accessor && returns_borrow,
-                    returns_inout: trusted_std_accessor && returns_inout,
+                    span: method.declaration_span,
+                    returns_borrow: trusted_std_accessor && method.returns_borrow,
+                    returns_inout: trusted_std_accessor && method.returns_inout,
                 },
             ));
         }

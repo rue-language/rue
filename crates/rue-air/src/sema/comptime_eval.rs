@@ -57,8 +57,8 @@ use rue_span::{FileId, Span};
 use super::comptime::{
     ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallPreparation,
     ComptimeConstInfo, ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile,
-    ComptimeFrame, ComptimeHost, ComptimeHostResult, ComptimeIdentity, ComptimeName,
-    ComptimeOutcome, ComptimeStructuredTypeResolution, ComptimeTrap, ComptimeType,
+    ComptimeFrame, ComptimeHost, ComptimeHostResult, ComptimeIdentity, ComptimeMethodDescriptor,
+    ComptimeName, ComptimeOutcome, ComptimeStructuredTypeResolution, ComptimeTrap, ComptimeType,
 };
 use super::context::{AnalysisContext, ConstValue};
 use super::info::FunctionCallInfo;
@@ -199,6 +199,7 @@ impl<'a>
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),
             defining_file: Some(ctx.current_file_id),
+            expected_result: None,
         }
     }
 }
@@ -470,6 +471,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             (),
             super::anon_structs::IssuedStableProducerId,
         >,
+        _ticket: (),
         result: ComptimeOutcome<ConstValue, CompileError>,
     ) -> ComptimeOutcome<ConstValue, CompileError> {
         if let (Some(name), ComptimeOutcome::Known(ConstValue::Type(ty))) = (frame.name, &result) {
@@ -943,6 +945,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 (),
                 super::anon_structs::IssuedStableProducerId,
                 CompileError,
+                (),
             >,
         >,
     > {
@@ -959,19 +962,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             &callee_values,
             fn_body_info.span,
         )?;
-        Ok(Some(ComptimeCallPreparation::Enter(ComptimeFrame {
-            program: (),
-            body: fn_body_info.body,
-            name: Some(name_key),
-            context: Some(fn_body_info.file_id),
-            span,
-            function_span: fn_body_info.span,
-            type_bindings: callee_types,
-            value_bindings: callee_values,
-            name_bindings: AHashMap::new(),
-            call_identity: None,
-            expected_result: Some(fn_body_info.return_type),
-        })))
+        Ok(Some(ComptimeCallPreparation::Enter {
+            frame: ComptimeFrame {
+                program: (),
+                body: fn_body_info.body,
+                name: Some(name_key),
+                context: Some(fn_body_info.file_id),
+                span,
+                function_span: fn_body_info.span,
+                type_bindings: callee_types,
+                value_bindings: callee_values,
+                name_bindings: AHashMap::new(),
+                call_identity: None,
+                expected_result: Some(fn_body_info.return_type),
+            },
+            ticket: (),
+        }))
     }
 
     pub(crate) fn validate_comptime_value_for_type(
@@ -1114,8 +1120,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ComptimeCallPreparation::Memoized(outcome) => {
                 outcome.into_result(|trap| self.trap_failure(trap))
             }
-            ComptimeCallPreparation::Enter(frame) => ComptimeEngine::new(self)
-                .evaluate_frame(frame)
+            ComptimeCallPreparation::Enter { frame, ticket } => ComptimeEngine::new(self)
+                .evaluate_entered_frame(frame, ticket)
                 .into_result(|trap| self.trap_failure(trap)),
         }
     }
@@ -1740,8 +1746,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     type ProgramKey = ();
     type Failure = CompileError;
     type CallAdmission = super::info::FunctionCallInfo;
+    type CompletionTicket = ();
     type AnonymousStructId = crate::types::StructId;
-    type AnonMethodSigs = Vec<super::AnonMethodSig>;
     type StructuredTypeSuspension = crate::semantic_type_resolution::ComptimeStructuredTypeJob<
         (),
         (),
@@ -1766,6 +1772,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
                 Self::ProgramKey,
                 Self::CanonicalIdentity,
                 Self::Failure,
+                (),
             >,
         >,
         Self::Failure,
@@ -1886,6 +1893,14 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
             method_span,
         )
     }
+    fn non_function_anon_method(&self, method_span: Span) -> Self::Failure {
+        CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: "anonymous type carries a non-function method instruction".to_owned(),
+            },
+            method_span,
+        )
+    }
     fn record_value_const_dependency(&mut self, file: &Self::File, name: &Self::Name) {
         let name = self.body_interner().resolve(name).to_owned();
         OrdinaryBodyEngine::record_body_named_dependency(
@@ -1913,34 +1928,23 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     ) -> Option<Spur> {
         OrdinaryBodyEngine::rir_type_named_symbol(self, syntax)
     }
+    fn render_rir_type(
+        &self,
+        _program: &Self::ProgramKey,
+        syntax: rue_rir::RirTypeSyntaxRef,
+    ) -> String {
+        OrdinaryBodyEngine::render_rir_type(self, syntax)
+    }
     fn get_or_create_array_type(&mut self, element: Type, length: u64) -> Type {
         Type::new_array(OrdinaryBodyEngine::get_or_create_array_type(
             self, element, length,
         ))
     }
-    fn extract_anon_method_sigs(
-        &mut self,
-        _program: &Self::ProgramKey,
-        methods: &rue_rir::RirAnonStructMethodsRange,
-        types: &AHashMap<Spur, Type>,
-        values: &AHashMap<Spur, ConstValue>,
-    ) -> ComptimeHostResult<Vec<super::AnonMethodSig>, Self::Failure> {
-        Ok(OrdinaryBodyEngine::extract_anon_method_sigs(
-            self, methods, types, values,
-        ))
-    }
-    fn find_method_own_comptime_type_param(
-        &self,
-        _program: &Self::ProgramKey,
-        methods: &rue_rir::RirAnonStructMethodsRange,
-    ) -> Option<(Span, String)> {
-        OrdinaryBodyEngine::find_method_own_comptime_type_param(self, methods)
-    }
     fn find_or_create_anon_struct(
         &mut self,
         identity: Self::AnonymousIdentity,
         fields: &[super::comptime::ComptimeField<Spur, Type>],
-        sigs: &Vec<super::AnonMethodSig>,
+        sigs: &[ComptimeMethodDescriptor<Spur, Type>],
         captured: &AHashMap<Spur, ConstValue>,
     ) -> ComptimeHostResult<(Type, bool), Self::Failure> {
         let fields: Vec<StructField> = fields
@@ -1950,7 +1954,53 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
                 ty: field.ty,
             })
             .collect();
-        OrdinaryBodyEngine::find_or_create_anon_struct(self, identity, &fields, sigs, captured)
+        let sigs: Vec<super::AnonMethodSig> = sigs
+            .iter()
+            .map(|sig| super::AnonMethodSig {
+                name: sig.name,
+                has_self: sig.has_self,
+                self_mode: sig.self_mode,
+                returns_borrow: sig.returns_borrow,
+                returns_inout: sig.returns_inout,
+                param_types: sig
+                    .parameters
+                    .iter()
+                    .map(|parameter| match &parameter.ty {
+                        super::comptime::ComptimeMethodType::SelfType => {
+                            super::AnonMethodType::SelfType
+                        }
+                        super::comptime::ComptimeMethodType::Concrete(ty) => {
+                            super::AnonMethodType::Concrete(*ty)
+                        }
+                        super::comptime::ComptimeMethodType::Unsupported(shape) => {
+                            super::AnonMethodType::Syntax(shape.clone().into())
+                        }
+                    })
+                    .collect(),
+                param_modes: sig
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.mode)
+                    .collect(),
+                param_comptime: sig
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.is_comptime)
+                    .collect(),
+                return_type: match &sig.result {
+                    super::comptime::ComptimeMethodType::SelfType => {
+                        super::AnonMethodType::SelfType
+                    }
+                    super::comptime::ComptimeMethodType::Concrete(ty) => {
+                        super::AnonMethodType::Concrete(*ty)
+                    }
+                    super::comptime::ComptimeMethodType::Unsupported(shape) => {
+                        super::AnonMethodType::Syntax(shape.clone().into())
+                    }
+                },
+            })
+            .collect();
+        OrdinaryBodyEngine::find_or_create_anon_struct(self, identity, &fields, &sigs, captured)
             .map_err(Into::into)
     }
     fn find_or_create_anon_enum(
@@ -2114,6 +2164,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
                 (),
                 Self::CanonicalIdentity,
                 CompileError,
+                (),
             >,
         >,
         Self::Failure,
@@ -2140,9 +2191,17 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     fn finish_comptime_call(
         &mut self,
         frame: &ComptimeFrame<ConstValue, Type, Spur, FileId, (), Self::CanonicalIdentity>,
+        _ticket: (),
         result: ComptimeOutcome<ConstValue, CompileError>,
     ) -> ComptimeOutcome<ConstValue, CompileError> {
-        OrdinaryBodyEngine::finish_comptime_call(self, frame, result)
+        OrdinaryBodyEngine::finish_comptime_call(self, frame, (), result)
+    }
+    fn enter_comptime_call(
+        &mut self,
+        _frame: &ComptimeFrame<ConstValue, Type, Spur, FileId, (), Self::CanonicalIdentity>,
+        _ticket: &(),
+    ) -> ComptimeHostResult<(), CompileError> {
+        Ok(())
     }
     fn label_ctor_instantiation_site(error: CompileError, span: Span) -> CompileError {
         OrdinaryBodyEngine::<H>::label_ctor_instantiation_site(error, span)
@@ -2191,19 +2250,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     ) -> Option<Type> {
         OrdinaryBodyEngine::resolve_rir_type_for_comptime_with_subst_and_values_at_span(
             self, syntax, types, values, span,
-        )
-    }
-    fn register_anon_struct_methods_for_comptime_with_subst(
-        &mut self,
-        _program: &Self::ProgramKey,
-        id: &crate::types::StructId,
-        ty: Type,
-        methods: &rue_rir::RirAnonStructMethodsRange,
-        types: &AHashMap<Spur, Type>,
-        values: &AHashMap<Spur, ConstValue>,
-    ) -> Option<()> {
-        OrdinaryBodyEngine::register_anon_struct_methods_for_comptime_with_subst(
-            self, *id, ty, methods, types, values,
         )
     }
     fn set_anon_struct_type_subst(

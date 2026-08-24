@@ -1130,8 +1130,8 @@ mod tests {
             COMPTIME_ENGINE_SOURCE
                 .matches("self.evaluate_comptime_type_syntax(")
                 .count(),
-            5,
-            "all five type-bearing RIR arms must use the engine helper"
+            7,
+            "all type-bearing RIR arms and anonymous method descriptors must use the engine helper"
         );
         for forbidden in [
             "pub fn resolve_semantic_type_syntax",
@@ -1363,6 +1363,7 @@ mod tests {
             ("ordinary_engine.rs", ORDINARY_ENGINE_SOURCE),
             ("fact_mode.rs", include_str!("fact_mode.rs")),
             ("comptime_eval.rs", include_str!("comptime_eval.rs")),
+            ("comptime.rs", include_str!("comptime.rs")),
             ("declarations.rs", include_str!("declarations.rs")),
             (
                 "provider_body_host.rs",
@@ -1377,6 +1378,10 @@ mod tests {
         // family it fed. `resolve_type_for_comptime_with_subst_and_values_at_span`
         // is the surviving scoped form and must not match these needles.
         for (file, source) in RESOLVER_SOURCES {
+            assert!(
+                !source.contains("extract_anon_method_sigs"),
+                "{file} retains a compiler-side anonymous method signature decoder"
+            );
             for retired in [
                 "GlobalSpeculative",
                 "resolve_type_for_comptime(",
@@ -1388,6 +1393,19 @@ mod tests {
                 assert!(
                     !source.contains(retired),
                     "{file} reintroduces the scope-free resolver surface: {retired}"
+                );
+            }
+            if let Some(start) = source.find("fn register_anon_struct_method_bodies(") {
+                let registration = &source[start..];
+                let registration = registration
+                    .find("\n    fn ")
+                    .map_or(registration, |end| &registration[..end]);
+                assert!(
+                    !registration.contains("params(&")
+                        && !registration.contains("return_type,")
+                        && !registration.contains("RirTypeSyntaxRef")
+                        && !registration.contains("resolve_rir_type"),
+                    "{file} reintroduces RIR signature decoding in method registration"
                 );
             }
         }
