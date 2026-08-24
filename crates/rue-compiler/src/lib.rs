@@ -52,6 +52,7 @@ mod diagnostic;
 mod diagnostic_attempt_store;
 mod drop_glue;
 mod durable_cfg;
+mod durable_comptime;
 mod durable_semantics;
 mod import_discovery;
 mod import_graph;

@@ -121,6 +121,7 @@ use crate::{
 use crate::canonical_lower::CandidateModuleRirOutput;
 use crate::parsed_modules::{ParsedModule, ParsedModulesWork, ParsedProgram};
 
+use crate::durable_comptime::{EvaluatedSemanticConst, TargetEnumValue, TypedSemanticConst};
 use crate::retained_charge::RetainedCharge;
 use crate::session::{AttemptId, QueryStructuralWork};
 use crate::typed_query_store::{
@@ -4044,48 +4045,6 @@ impl LinearOwnershipFact {
             (Self::Deferred, _) | (_, Self::Deferred) => Self::Deferred,
             _ => Self::DoesNotCarry,
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum EvaluatedSemanticConst {
-    Value(Arc<TypedSemanticConst>),
-    Module(ModuleId),
-    TargetEnum(TargetEnumValue),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TargetEnumValue {
-    type_name: &'static str,
-    variant: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TypedSemanticConst {
-    value: crate::durable_semantics::DurableConstValue,
-    /// `None` is reserved for an unconstrained integer literal. Every named
-    /// value, local derived from one, and completed operation carries its
-    /// canonical semantic type; consumers must never reconstruct it from the
-    /// value's magnitude.
-    ty: Option<crate::durable_semantics::DurableType>,
-}
-
-impl TypedSemanticConst {
-    fn typed(
-        value: crate::durable_semantics::DurableConstValue,
-        ty: crate::durable_semantics::DurableType,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            value,
-            ty: Some(ty),
-        })
-    }
-
-    fn integer_literal(value: i128) -> Arc<Self> {
-        Arc::new(Self {
-            value: crate::durable_semantics::DurableConstValue::Integer(value),
-            ty: None,
-        })
     }
 }
 
