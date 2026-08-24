@@ -4506,15 +4506,30 @@ where
             definition
         };
         let signature = DurableCallableSource::function(&self.source, &definition)?;
-        // Runtime-valued self calls are request-local and use the ordinary
-        // evaluator. A `-> type` self call, however, must ask the canonical
-        // comptime query: a same-key recursion is a typed query cycle that the
-        // required reduction below turns into an E1200 at this call site.
-        if name == self.function_symbol
-            && !matches!(signature.result, crate::SemanticImportType::ComptimeType)
-        {
-            return None;
-        }
+        // A self call asks the canonical comptime query like any other call.
+        // The query is keyed by declaration *plus arguments*, so the recursive
+        // step of a terminating comptime recursion (`f(1)` reducing `f(0)`) is
+        // a different key, not a cycle; only a genuinely non-terminating
+        // recursion revisits a key, and the cycle abort inside
+        // `reduce_comptime_call` turns that into the depth diagnostic.
+        //
+        // A value-returning self call used to opt out here and fall back to the
+        // request-local evaluator, which reduces the callee body with no
+        // resolved types and so did its arithmetic under the untyped-i64
+        // fallback: `~0` at u8 came back as -1 and was rejected, and an
+        // overflowing `n + 100` at u8 silently produced a wrapped result
+        // instead of the compile error 4.14:4 requires (RUE-1700). The durable
+        // evaluator knows the declared operand types, so routing through it
+        // makes a value reached through a self call equal the same value
+        // computed directly.
+        let self_call = name == self.function_symbol;
+        let required_type_reduction =
+            matches!(signature.result, crate::SemanticImportType::ComptimeType);
+        // A `-> type` self call already asked the canonical query and had no
+        // local fallback; only the value-returning self call, which is the one
+        // that used to opt out entirely, gains one. Keeping the two apart is
+        // what makes this change a strict addition for type constructors.
+        let value_self_call = self_call && !required_type_reduction;
         let type_arguments = signature
             .parameters
             .iter()
@@ -4547,16 +4562,24 @@ where
         let Some(value_arguments) = value_arguments else {
             return Some(Ok(None));
         };
-        let required_type_reduction =
-            matches!(signature.result, crate::SemanticImportType::ComptimeType);
+        // A self call reached this point only because the caller already bound
+        // every parameter to a constant, so a durable failure is a real
+        // evaluation failure and must surface rather than be swallowed into
+        // "not compile-time known" — that swallowing is what let direction 2 of
+        // RUE-1700 compile. When the durable evaluator cannot represent the
+        // callable at all it reports `NotReduced`, and the request-local
+        // evaluator remains the fallback for the value self call so no shape
+        // that reduced before stops reducing.
+        let report_diagnostic = required_type_reduction || self_call;
         let reduced =
             match self
                 .source
                 .reduce_comptime_call(&definition, &type_arguments, &value_arguments)
             {
                 DurableComptimeCallOutcome::Reduced(reduced) => reduced,
+                DurableComptimeCallOutcome::NotReduced if value_self_call => return None,
                 DurableComptimeCallOutcome::NotReduced => return Some(Ok(None)),
-                DurableComptimeCallOutcome::Diagnostic(diagnostic) if required_type_reduction => {
+                DurableComptimeCallOutcome::Diagnostic(diagnostic) if report_diagnostic => {
                     return Some(Err(CompileError::new(
                         diagnostic.kind,
                         diagnostic.span.unwrap_or(span),
@@ -4612,6 +4635,12 @@ where
                 self.materialize_durable_const_value(&value)
             }
         };
+        // A durable result this request cannot materialize is the same kind of
+        // representation gap as `NotReduced`, so a value self call keeps its
+        // local fallback there too.
+        if value.is_none() && value_self_call {
+            return None;
+        }
         Some(Ok(value))
     }
     fn stable_definition_symbol_component(&self, token: &SemanticDefinitionToken) -> String {

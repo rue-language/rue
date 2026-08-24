@@ -1,0 +1,704 @@
+# Comptime self-call reduction evaluates the callee body with its declared types
+# (RUE-1700, another step of the RUE-1750 "one authority" epic).
+#
+# A comptime-recursive function reduces its own recursive call. That self call
+# used to opt out of the typed canonical reduction that every *cross*-callable
+# comptime call goes through, and fall back to the request-local evaluator,
+# which reduces a callee body with no resolved types and so does its arithmetic
+# under an untyped-i64 fallback. The callee's parameter and return types are
+# declared, so the fallback was discarding information it already had, and it
+# broke in both directions:
+#
+#   fn f(comptime n: u8) -> u8 { comptime { if n == 0 { ~0 } else { f(n - 1) } } }
+#   f(0)  // 255 - typed, correct
+#   f(1)  // E1200 "value -1 is out of range for type u8" - `~0` went untyped
+#
+#   fn g(comptime n: u8) -> u8 { comptime { if n == 200 { (n + 100) - 100 } else { g(n + 1) } } }
+#   g(200)  // correctly rejected: 300 does not fit in u8
+#   g(199)  // compiled and ran - the identical body, reached through the self
+#           // call, wrapped in i64 and the 4.14:4 compile error vanished
+#
+# The second direction is the dangerous one: a spec-mandated compile error was
+# silently skipped, not merely misreported.
+#
+# The governing property these cases pin is that a value computed *through* a
+# self call equals the same value computed directly, and equals runtime. Every
+# differential case below prints, for one operation, the direct reduction
+# (`f(0, ..)`), the same value one self-call hop away (`f(1, ..)`), three hops
+# away (`f(3, ..)`), and the runtime computation, and pins the exact stdout, so
+# a divergence in any single position fails the case. `differential_opt`
+# additionally runs each at -O0..-O3, putting the CFG constant folder on the
+# same property.
+#
+# The controls at the bottom are the other half: an operation that genuinely
+# panics at runtime must keep failing *through* the self call, not only when
+# reduced directly. Several are written in the "recovering" shape of direction 2
+# above, where an untyped evaluation lands back in range and the error vanishes
+# entirely rather than being misreported - the shape a plain `a + b` control
+# cannot catch, because its out-of-range result stays visible to the return-type
+# check and gets rejected by accident.
+
+[section]
+id = "cli.comptime_self_call_typing"
+name = "Comptime self-call reduction is typed"
+description = "A value reached through a comptime function's recursive self call equals the same value reduced directly and computed at runtime."
+
+[[case]]
+name = "self_call_repro_bitnot_at_every_depth"
+description = "The RUE-1700 direction-1 repro: `~0` at u8 in the base case is 255 whether reached directly or through self-call hops. `f(1)` used to be E1200 'value -1 is out of range for type u8'."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: u8) -> u8 {
+    comptime {
+        if n == 0 { ~0 } else { f(n - 1) }
+    }
+}
+
+fn main() -> i32 {
+    @dbg(f(0));
+    @dbg(f(1));
+    @dbg(f(2));
+    @dbg(f(7));
+    0
+}
+""" }]
+differential_opt = true
+exit_code = 0
+stdout = """255
+255
+255
+255
+"""
+
+[[case]]
+name = "self_call_repro_overflow_one_level_deep_is_rejected"
+description = "The RUE-1700 direction-2 repro: `f(199)` reaches the same overflowing `(n + 100)` body as `f(200)` through the self call, so it must be rejected too. It used to compile and print 200."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: u8) -> u8 {
+    comptime {
+        if n == 200 { (n + 100) - 100 } else { f(n + 1) }
+    }
+}
+
+fn main() -> i32 {
+    @dbg(f(199));
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "integer overflow", "u8", "300", "would panic at runtime"]
+
+[[case]]
+name = "self_call_repro_overflow_reduced_directly_is_rejected"
+description = "The same body reduced directly (`f(200)`) was always rejected; pinned beside the one-level-deep case so the two can never drift apart again."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: u8) -> u8 {
+    comptime {
+        if n == 200 { (n + 100) - 100 } else { f(n + 1) }
+    }
+}
+
+fn main() -> i32 {
+    @dbg(f(200));
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "integer overflow", "u8", "300", "would panic at runtime"]
+
+[[case]]
+name = "self_call_differential_all_ops_all_widths"
+description = "`~`, `<<`, `>>`, `+`, `-`, `*` at u8/i8/u16/i16/u32/i32/u64/i64. Each line group prints the direct reduction, the one-hop self call, the three-hop self call, and runtime; all four must agree. Before the fix this program did not even compile: `~` and `<<` through the self call were spurious E1200s at every unsigned width."
+files = [{ path = "main.rue", source = """
+fn id_u8(v: u8) -> u8 { v }
+fn id_i8(v: i8) -> i8 { v }
+fn id_u16(v: u16) -> u16 { v }
+fn id_i16(v: i16) -> i16 { v }
+fn id_u32(v: u32) -> u32 { v }
+fn id_i32(v: i32) -> i32 { v }
+fn id_u64(v: u64) -> u64 { v }
+fn id_i64(v: i64) -> i64 { v }
+
+fn bitnot_u8(comptime n: u32, comptime a: u8) -> u8 {
+    comptime { if n == 0 { ~a } else { bitnot_u8(n - 1, a) } }
+}
+fn bitnot_i8(comptime n: u32, comptime a: i8) -> i8 {
+    comptime { if n == 0 { ~a } else { bitnot_i8(n - 1, a) } }
+}
+fn bitnot_u16(comptime n: u32, comptime a: u16) -> u16 {
+    comptime { if n == 0 { ~a } else { bitnot_u16(n - 1, a) } }
+}
+fn bitnot_i16(comptime n: u32, comptime a: i16) -> i16 {
+    comptime { if n == 0 { ~a } else { bitnot_i16(n - 1, a) } }
+}
+fn bitnot_u32(comptime n: u32, comptime a: u32) -> u32 {
+    comptime { if n == 0 { ~a } else { bitnot_u32(n - 1, a) } }
+}
+fn bitnot_i32(comptime n: u32, comptime a: i32) -> i32 {
+    comptime { if n == 0 { ~a } else { bitnot_i32(n - 1, a) } }
+}
+fn bitnot_u64(comptime n: u32, comptime a: u64) -> u64 {
+    comptime { if n == 0 { ~a } else { bitnot_u64(n - 1, a) } }
+}
+fn bitnot_i64(comptime n: u32, comptime a: i64) -> i64 {
+    comptime { if n == 0 { ~a } else { bitnot_i64(n - 1, a) } }
+}
+fn shl_u8(comptime n: u32, comptime a: u8) -> u8 {
+    comptime { if n == 0 { a << 3 } else { shl_u8(n - 1, a) } }
+}
+fn shl_i8(comptime n: u32, comptime a: i8) -> i8 {
+    comptime { if n == 0 { a << 3 } else { shl_i8(n - 1, a) } }
+}
+fn shl_u16(comptime n: u32, comptime a: u16) -> u16 {
+    comptime { if n == 0 { a << 3 } else { shl_u16(n - 1, a) } }
+}
+fn shl_i16(comptime n: u32, comptime a: i16) -> i16 {
+    comptime { if n == 0 { a << 3 } else { shl_i16(n - 1, a) } }
+}
+fn shl_u32(comptime n: u32, comptime a: u32) -> u32 {
+    comptime { if n == 0 { a << 3 } else { shl_u32(n - 1, a) } }
+}
+fn shl_i32(comptime n: u32, comptime a: i32) -> i32 {
+    comptime { if n == 0 { a << 3 } else { shl_i32(n - 1, a) } }
+}
+fn shl_u64(comptime n: u32, comptime a: u64) -> u64 {
+    comptime { if n == 0 { a << 3 } else { shl_u64(n - 1, a) } }
+}
+fn shl_i64(comptime n: u32, comptime a: i64) -> i64 {
+    comptime { if n == 0 { a << 3 } else { shl_i64(n - 1, a) } }
+}
+fn shr_u8(comptime n: u32, comptime a: u8) -> u8 {
+    comptime { if n == 0 { a >> 2 } else { shr_u8(n - 1, a) } }
+}
+fn shr_i8(comptime n: u32, comptime a: i8) -> i8 {
+    comptime { if n == 0 { a >> 2 } else { shr_i8(n - 1, a) } }
+}
+fn shr_u16(comptime n: u32, comptime a: u16) -> u16 {
+    comptime { if n == 0 { a >> 2 } else { shr_u16(n - 1, a) } }
+}
+fn shr_i16(comptime n: u32, comptime a: i16) -> i16 {
+    comptime { if n == 0 { a >> 2 } else { shr_i16(n - 1, a) } }
+}
+fn shr_u32(comptime n: u32, comptime a: u32) -> u32 {
+    comptime { if n == 0 { a >> 2 } else { shr_u32(n - 1, a) } }
+}
+fn shr_i32(comptime n: u32, comptime a: i32) -> i32 {
+    comptime { if n == 0 { a >> 2 } else { shr_i32(n - 1, a) } }
+}
+fn shr_u64(comptime n: u32, comptime a: u64) -> u64 {
+    comptime { if n == 0 { a >> 2 } else { shr_u64(n - 1, a) } }
+}
+fn shr_i64(comptime n: u32, comptime a: i64) -> i64 {
+    comptime { if n == 0 { a >> 2 } else { shr_i64(n - 1, a) } }
+}
+fn add_u8(comptime n: u32, comptime a: u8, comptime b: u8) -> u8 {
+    comptime { if n == 0 { a + b } else { add_u8(n - 1, a, b) } }
+}
+fn add_i8(comptime n: u32, comptime a: i8, comptime b: i8) -> i8 {
+    comptime { if n == 0 { a + b } else { add_i8(n - 1, a, b) } }
+}
+fn add_u16(comptime n: u32, comptime a: u16, comptime b: u16) -> u16 {
+    comptime { if n == 0 { a + b } else { add_u16(n - 1, a, b) } }
+}
+fn add_i16(comptime n: u32, comptime a: i16, comptime b: i16) -> i16 {
+    comptime { if n == 0 { a + b } else { add_i16(n - 1, a, b) } }
+}
+fn add_u32(comptime n: u32, comptime a: u32, comptime b: u32) -> u32 {
+    comptime { if n == 0 { a + b } else { add_u32(n - 1, a, b) } }
+}
+fn add_i32(comptime n: u32, comptime a: i32, comptime b: i32) -> i32 {
+    comptime { if n == 0 { a + b } else { add_i32(n - 1, a, b) } }
+}
+fn add_u64(comptime n: u32, comptime a: u64, comptime b: u64) -> u64 {
+    comptime { if n == 0 { a + b } else { add_u64(n - 1, a, b) } }
+}
+fn add_i64(comptime n: u32, comptime a: i64, comptime b: i64) -> i64 {
+    comptime { if n == 0 { a + b } else { add_i64(n - 1, a, b) } }
+}
+fn sub_u8(comptime n: u32, comptime a: u8, comptime b: u8) -> u8 {
+    comptime { if n == 0 { a - b } else { sub_u8(n - 1, a, b) } }
+}
+fn sub_i8(comptime n: u32, comptime a: i8, comptime b: i8) -> i8 {
+    comptime { if n == 0 { a - b } else { sub_i8(n - 1, a, b) } }
+}
+fn sub_u16(comptime n: u32, comptime a: u16, comptime b: u16) -> u16 {
+    comptime { if n == 0 { a - b } else { sub_u16(n - 1, a, b) } }
+}
+fn sub_i16(comptime n: u32, comptime a: i16, comptime b: i16) -> i16 {
+    comptime { if n == 0 { a - b } else { sub_i16(n - 1, a, b) } }
+}
+fn sub_u32(comptime n: u32, comptime a: u32, comptime b: u32) -> u32 {
+    comptime { if n == 0 { a - b } else { sub_u32(n - 1, a, b) } }
+}
+fn sub_i32(comptime n: u32, comptime a: i32, comptime b: i32) -> i32 {
+    comptime { if n == 0 { a - b } else { sub_i32(n - 1, a, b) } }
+}
+fn sub_u64(comptime n: u32, comptime a: u64, comptime b: u64) -> u64 {
+    comptime { if n == 0 { a - b } else { sub_u64(n - 1, a, b) } }
+}
+fn sub_i64(comptime n: u32, comptime a: i64, comptime b: i64) -> i64 {
+    comptime { if n == 0 { a - b } else { sub_i64(n - 1, a, b) } }
+}
+fn mul_u8(comptime n: u32, comptime a: u8, comptime b: u8) -> u8 {
+    comptime { if n == 0 { a * b } else { mul_u8(n - 1, a, b) } }
+}
+fn mul_i8(comptime n: u32, comptime a: i8, comptime b: i8) -> i8 {
+    comptime { if n == 0 { a * b } else { mul_i8(n - 1, a, b) } }
+}
+fn mul_u16(comptime n: u32, comptime a: u16, comptime b: u16) -> u16 {
+    comptime { if n == 0 { a * b } else { mul_u16(n - 1, a, b) } }
+}
+fn mul_i16(comptime n: u32, comptime a: i16, comptime b: i16) -> i16 {
+    comptime { if n == 0 { a * b } else { mul_i16(n - 1, a, b) } }
+}
+fn mul_u32(comptime n: u32, comptime a: u32, comptime b: u32) -> u32 {
+    comptime { if n == 0 { a * b } else { mul_u32(n - 1, a, b) } }
+}
+fn mul_i32(comptime n: u32, comptime a: i32, comptime b: i32) -> i32 {
+    comptime { if n == 0 { a * b } else { mul_i32(n - 1, a, b) } }
+}
+fn mul_u64(comptime n: u32, comptime a: u64, comptime b: u64) -> u64 {
+    comptime { if n == 0 { a * b } else { mul_u64(n - 1, a, b) } }
+}
+fn mul_i64(comptime n: u32, comptime a: i64, comptime b: i64) -> i64 {
+    comptime { if n == 0 { a * b } else { mul_i64(n - 1, a, b) } }
+}
+
+fn main() -> i32 {
+    @dbg(bitnot_u8(0, 200)); @dbg(bitnot_u8(1, 200)); @dbg(bitnot_u8(3, 200)); @dbg(~id_u8(200));
+    @dbg(bitnot_i8(0, -100)); @dbg(bitnot_i8(1, -100)); @dbg(bitnot_i8(3, -100)); @dbg(~id_i8(-100));
+    @dbg(bitnot_u16(0, 50000)); @dbg(bitnot_u16(1, 50000)); @dbg(bitnot_u16(3, 50000)); @dbg(~id_u16(50000));
+    @dbg(bitnot_i16(0, -20000)); @dbg(bitnot_i16(1, -20000)); @dbg(bitnot_i16(3, -20000)); @dbg(~id_i16(-20000));
+    @dbg(bitnot_u32(0, 3000000000)); @dbg(bitnot_u32(1, 3000000000)); @dbg(bitnot_u32(3, 3000000000)); @dbg(~id_u32(3000000000));
+    @dbg(bitnot_i32(0, -1000000000)); @dbg(bitnot_i32(1, -1000000000)); @dbg(bitnot_i32(3, -1000000000)); @dbg(~id_i32(-1000000000));
+    @dbg(bitnot_u64(0, 18000000000000000000)); @dbg(bitnot_u64(1, 18000000000000000000)); @dbg(bitnot_u64(3, 18000000000000000000)); @dbg(~id_u64(18000000000000000000));
+    @dbg(bitnot_i64(0, -9000000000000000000)); @dbg(bitnot_i64(1, -9000000000000000000)); @dbg(bitnot_i64(3, -9000000000000000000)); @dbg(~id_i64(-9000000000000000000));
+    @dbg(shl_u8(0, 200)); @dbg(shl_u8(1, 200)); @dbg(shl_u8(3, 200)); @dbg(id_u8(200) << 3);
+    @dbg(shl_i8(0, -100)); @dbg(shl_i8(1, -100)); @dbg(shl_i8(3, -100)); @dbg(id_i8(-100) << 3);
+    @dbg(shl_u16(0, 50000)); @dbg(shl_u16(1, 50000)); @dbg(shl_u16(3, 50000)); @dbg(id_u16(50000) << 3);
+    @dbg(shl_i16(0, -20000)); @dbg(shl_i16(1, -20000)); @dbg(shl_i16(3, -20000)); @dbg(id_i16(-20000) << 3);
+    @dbg(shl_u32(0, 3000000000)); @dbg(shl_u32(1, 3000000000)); @dbg(shl_u32(3, 3000000000)); @dbg(id_u32(3000000000) << 3);
+    @dbg(shl_i32(0, -1000000000)); @dbg(shl_i32(1, -1000000000)); @dbg(shl_i32(3, -1000000000)); @dbg(id_i32(-1000000000) << 3);
+    @dbg(shl_u64(0, 18000000000000000000)); @dbg(shl_u64(1, 18000000000000000000)); @dbg(shl_u64(3, 18000000000000000000)); @dbg(id_u64(18000000000000000000) << 3);
+    @dbg(shl_i64(0, -9000000000000000000)); @dbg(shl_i64(1, -9000000000000000000)); @dbg(shl_i64(3, -9000000000000000000)); @dbg(id_i64(-9000000000000000000) << 3);
+    @dbg(shr_u8(0, 200)); @dbg(shr_u8(1, 200)); @dbg(shr_u8(3, 200)); @dbg(id_u8(200) >> 2);
+    @dbg(shr_i8(0, -100)); @dbg(shr_i8(1, -100)); @dbg(shr_i8(3, -100)); @dbg(id_i8(-100) >> 2);
+    @dbg(shr_u16(0, 50000)); @dbg(shr_u16(1, 50000)); @dbg(shr_u16(3, 50000)); @dbg(id_u16(50000) >> 2);
+    @dbg(shr_i16(0, -20000)); @dbg(shr_i16(1, -20000)); @dbg(shr_i16(3, -20000)); @dbg(id_i16(-20000) >> 2);
+    @dbg(shr_u32(0, 3000000000)); @dbg(shr_u32(1, 3000000000)); @dbg(shr_u32(3, 3000000000)); @dbg(id_u32(3000000000) >> 2);
+    @dbg(shr_i32(0, -1000000000)); @dbg(shr_i32(1, -1000000000)); @dbg(shr_i32(3, -1000000000)); @dbg(id_i32(-1000000000) >> 2);
+    @dbg(shr_u64(0, 18000000000000000000)); @dbg(shr_u64(1, 18000000000000000000)); @dbg(shr_u64(3, 18000000000000000000)); @dbg(id_u64(18000000000000000000) >> 2);
+    @dbg(shr_i64(0, -9000000000000000000)); @dbg(shr_i64(1, -9000000000000000000)); @dbg(shr_i64(3, -9000000000000000000)); @dbg(id_i64(-9000000000000000000) >> 2);
+    @dbg(add_u8(0, 200, 55)); @dbg(add_u8(1, 200, 55)); @dbg(add_u8(3, 200, 55)); @dbg(id_u8(200) + id_u8(55));
+    @dbg(add_i8(0, 100, 27)); @dbg(add_i8(1, 100, 27)); @dbg(add_i8(3, 100, 27)); @dbg(id_i8(100) + id_i8(27));
+    @dbg(add_u16(0, 50000, 15535)); @dbg(add_u16(1, 50000, 15535)); @dbg(add_u16(3, 50000, 15535)); @dbg(id_u16(50000) + id_u16(15535));
+    @dbg(add_i16(0, 20000, 12767)); @dbg(add_i16(1, 20000, 12767)); @dbg(add_i16(3, 20000, 12767)); @dbg(id_i16(20000) + id_i16(12767));
+    @dbg(add_u32(0, 3000000000, 1294967295)); @dbg(add_u32(1, 3000000000, 1294967295)); @dbg(add_u32(3, 3000000000, 1294967295)); @dbg(id_u32(3000000000) + id_u32(1294967295));
+    @dbg(add_i32(0, 1000000000, 1147483647)); @dbg(add_i32(1, 1000000000, 1147483647)); @dbg(add_i32(3, 1000000000, 1147483647)); @dbg(id_i32(1000000000) + id_i32(1147483647));
+    @dbg(add_u64(0, 18000000000000000000, 446744073709551615)); @dbg(add_u64(1, 18000000000000000000, 446744073709551615)); @dbg(add_u64(3, 18000000000000000000, 446744073709551615)); @dbg(id_u64(18000000000000000000) + id_u64(446744073709551615));
+    @dbg(add_i64(0, 9000000000000000000, 223372036854775807)); @dbg(add_i64(1, 9000000000000000000, 223372036854775807)); @dbg(add_i64(3, 9000000000000000000, 223372036854775807)); @dbg(id_i64(9000000000000000000) + id_i64(223372036854775807));
+    @dbg(sub_u8(0, 200, 55)); @dbg(sub_u8(1, 200, 55)); @dbg(sub_u8(3, 200, 55)); @dbg(id_u8(200) - id_u8(55));
+    @dbg(sub_i8(0, 100, 27)); @dbg(sub_i8(1, 100, 27)); @dbg(sub_i8(3, 100, 27)); @dbg(id_i8(100) - id_i8(27));
+    @dbg(sub_u16(0, 50000, 15535)); @dbg(sub_u16(1, 50000, 15535)); @dbg(sub_u16(3, 50000, 15535)); @dbg(id_u16(50000) - id_u16(15535));
+    @dbg(sub_i16(0, 20000, 12767)); @dbg(sub_i16(1, 20000, 12767)); @dbg(sub_i16(3, 20000, 12767)); @dbg(id_i16(20000) - id_i16(12767));
+    @dbg(sub_u32(0, 3000000000, 1294967295)); @dbg(sub_u32(1, 3000000000, 1294967295)); @dbg(sub_u32(3, 3000000000, 1294967295)); @dbg(id_u32(3000000000) - id_u32(1294967295));
+    @dbg(sub_i32(0, 1000000000, 1147483647)); @dbg(sub_i32(1, 1000000000, 1147483647)); @dbg(sub_i32(3, 1000000000, 1147483647)); @dbg(id_i32(1000000000) - id_i32(1147483647));
+    @dbg(sub_u64(0, 18000000000000000000, 446744073709551615)); @dbg(sub_u64(1, 18000000000000000000, 446744073709551615)); @dbg(sub_u64(3, 18000000000000000000, 446744073709551615)); @dbg(id_u64(18000000000000000000) - id_u64(446744073709551615));
+    @dbg(sub_i64(0, 9000000000000000000, 223372036854775807)); @dbg(sub_i64(1, 9000000000000000000, 223372036854775807)); @dbg(sub_i64(3, 9000000000000000000, 223372036854775807)); @dbg(id_i64(9000000000000000000) - id_i64(223372036854775807));
+    @dbg(mul_u8(0, 15, 17)); @dbg(mul_u8(1, 15, 17)); @dbg(mul_u8(3, 15, 17)); @dbg(id_u8(15) * id_u8(17));
+    @dbg(mul_i8(0, -11, 11)); @dbg(mul_i8(1, -11, 11)); @dbg(mul_i8(3, -11, 11)); @dbg(id_i8(-11) * id_i8(11));
+    @dbg(mul_u16(0, 250, 261)); @dbg(mul_u16(1, 250, 261)); @dbg(mul_u16(3, 250, 261)); @dbg(id_u16(250) * id_u16(261));
+    @dbg(mul_i16(0, -181, 181)); @dbg(mul_i16(1, -181, 181)); @dbg(mul_i16(3, -181, 181)); @dbg(id_i16(-181) * id_i16(181));
+    @dbg(mul_u32(0, 65535, 65537)); @dbg(mul_u32(1, 65535, 65537)); @dbg(mul_u32(3, 65535, 65537)); @dbg(id_u32(65535) * id_u32(65537));
+    @dbg(mul_i32(0, 46340, 46341)); @dbg(mul_i32(1, 46340, 46341)); @dbg(mul_i32(3, 46340, 46341)); @dbg(id_i32(46340) * id_i32(46341));
+    @dbg(mul_u64(0, 4294967295, 4294967297)); @dbg(mul_u64(1, 4294967295, 4294967297)); @dbg(mul_u64(3, 4294967295, 4294967297)); @dbg(id_u64(4294967295) * id_u64(4294967297));
+    @dbg(mul_i64(0, 3037000499, 3037000499)); @dbg(mul_i64(1, 3037000499, 3037000499)); @dbg(mul_i64(3, 3037000499, 3037000499)); @dbg(id_i64(3037000499) * id_i64(3037000499));
+    0
+}
+""" }]
+differential_opt = true
+exit_code = 0
+stdout = """55
+55
+55
+55
+99
+99
+99
+99
+15535
+15535
+15535
+15535
+19999
+19999
+19999
+19999
+1294967295
+1294967295
+1294967295
+1294967295
+999999999
+999999999
+999999999
+999999999
+446744073709551615
+446744073709551615
+446744073709551615
+446744073709551615
+8999999999999999999
+8999999999999999999
+8999999999999999999
+8999999999999999999
+64
+64
+64
+64
+-32
+-32
+-32
+-32
+6784
+6784
+6784
+6784
+-28928
+-28928
+-28928
+-28928
+2525163520
+2525163520
+2525163520
+2525163520
+589934592
+589934592
+589934592
+589934592
+14872791484033138688
+14872791484033138688
+14872791484033138688
+14872791484033138688
+1786976294838206464
+1786976294838206464
+1786976294838206464
+1786976294838206464
+50
+50
+50
+50
+-25
+-25
+-25
+-25
+12500
+12500
+12500
+12500
+-5000
+-5000
+-5000
+-5000
+750000000
+750000000
+750000000
+750000000
+-250000000
+-250000000
+-250000000
+-250000000
+4500000000000000000
+4500000000000000000
+4500000000000000000
+4500000000000000000
+-2250000000000000000
+-2250000000000000000
+-2250000000000000000
+-2250000000000000000
+255
+255
+255
+255
+127
+127
+127
+127
+65535
+65535
+65535
+65535
+32767
+32767
+32767
+32767
+4294967295
+4294967295
+4294967295
+4294967295
+2147483647
+2147483647
+2147483647
+2147483647
+18446744073709551615
+18446744073709551615
+18446744073709551615
+18446744073709551615
+9223372036854775807
+9223372036854775807
+9223372036854775807
+9223372036854775807
+145
+145
+145
+145
+73
+73
+73
+73
+34465
+34465
+34465
+34465
+7233
+7233
+7233
+7233
+1705032705
+1705032705
+1705032705
+1705032705
+-147483647
+-147483647
+-147483647
+-147483647
+17553255926290448385
+17553255926290448385
+17553255926290448385
+17553255926290448385
+8776627963145224193
+8776627963145224193
+8776627963145224193
+8776627963145224193
+255
+255
+255
+255
+-121
+-121
+-121
+-121
+65250
+65250
+65250
+65250
+-32761
+-32761
+-32761
+-32761
+4294967295
+4294967295
+4294967295
+4294967295
+2147441940
+2147441940
+2147441940
+2147441940
+18446744073709551615
+18446744073709551615
+18446744073709551615
+18446744073709551615
+9223372030926249001
+9223372030926249001
+9223372030926249001
+9223372030926249001
+"""
+
+[[case]]
+name = "self_call_terminating_recursion_still_computes"
+description = "A comptime recursion with a real base case must keep compiling and give the right answer: the fix must not over-reject. `sum(n)` is the n-th triangular number."
+files = [{ path = "main.rue", source = """
+fn sum(comptime n: u32) -> u32 {
+    comptime {
+        if n == 0 { 0 } else { n + sum(n - 1) }
+    }
+}
+
+fn fact(comptime n: u64) -> u64 {
+    comptime {
+        if n == 0 { 1 } else { n * fact(n - 1) }
+    }
+}
+
+fn main() -> i32 {
+    @dbg(sum(0));
+    @dbg(sum(1));
+    @dbg(sum(10));
+    @dbg(sum(40));
+    @dbg(fact(0));
+    @dbg(fact(10));
+    @dbg(fact(20));
+    0
+}
+""" }]
+differential_opt = true
+exit_code = 0
+stdout = """0
+1
+55
+820
+1
+3628800
+2432902008176640000
+"""
+
+# --- Controls: an operation that panics at runtime must still be rejected when
+# it is reached ONE LEVEL DEEP through the self call, not only when the body is
+# reduced directly. Direction 2 of RUE-1700 is exactly the failure where these
+# get silently skipped, so each control is pinned at depth 1 rather than 0.
+#
+# The "recovering" shape (`(a + b) - b`) is the one that failed silently: an
+# untyped i64 evaluation computes 300 and then 200, and 200 fits u8, so nothing
+# downstream ever notices the operation that would have panicked. Ten of these
+# compiled and ran before the fix.
+
+[[case]]
+name = "control_add_overflow_one_level_deep"
+description = "`200 + 100` at u8 inside a recovering expression, reached through one self-call hop. Compiled and printed 200 before the fix."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: u32, comptime a: u8, comptime b: u8) -> u8 {
+    comptime { if n == 0 { (a + b) - b } else { f(n - 1, a, b) } }
+}
+
+fn main() -> i32 {
+    @dbg(f(1, 200, 100));
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "integer overflow", "u8", "300", "would panic at runtime"]
+
+[[case]]
+name = "control_sub_underflow_one_level_deep"
+description = "`10 - 200` at u8 inside a recovering expression, one self-call hop deep. Compiled and printed 10 before the fix."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: u32, comptime a: u8, comptime b: u8) -> u8 {
+    comptime { if n == 0 { (a - b) + b } else { f(n - 1, a, b) } }
+}
+
+fn main() -> i32 {
+    @dbg(f(1, 10, 200));
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "integer overflow", "u8", "-190", "would panic at runtime"]
+
+[[case]]
+name = "control_mul_overflow_one_level_deep"
+description = "`100 * 3` at u8 inside a recovering expression, one self-call hop deep. Compiled and printed 100 before the fix."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: u32, comptime a: u8, comptime b: u8) -> u8 {
+    comptime { if n == 0 { (a * b) / b } else { f(n - 1, a, b) } }
+}
+
+fn main() -> i32 {
+    @dbg(f(1, 100, 3));
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "integer overflow", "u8", "300", "would panic at runtime"]
+
+[[case]]
+name = "control_add_overflow_i32_one_level_deep"
+description = "The same recovering shape at i32, where the untyped i64 fallback has plenty of room to hide the overflow. Compiled and printed 2147483647 before the fix."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: u32, comptime a: i32, comptime b: i32) -> i32 {
+    comptime { if n == 0 { (a + b) - b } else { f(n - 1, a, b) } }
+}
+
+fn main() -> i32 {
+    @dbg(f(1, 2147483647, 1));
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "integer overflow", "i32", "2147483648", "would panic at runtime"]
+
+[[case]]
+name = "control_negate_min_one_level_deep"
+description = "Negating i8's minimum panics at runtime, so `-(-a)` with a = -128 must be rejected one self-call hop deep. Compiled and printed -128 before the fix."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: u32, comptime a: i8) -> i8 {
+    comptime { if n == 0 { -(-a) } else { f(n - 1, a) } }
+}
+
+fn main() -> i32 {
+    @dbg(f(1, -128));
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "integer overflow", "i8", "128", "would panic at runtime"]
+
+[[case]]
+name = "control_division_by_zero_one_level_deep"
+description = "`10 / 0` reached through the self call is still E1200 and still says it would panic at runtime."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: u32, comptime a: u8, comptime b: u8) -> u8 {
+    comptime { if n == 0 { a / b } else { f(n - 1, a, b) } }
+}
+
+fn main() -> i32 {
+    @dbg(f(1, 10, 0));
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "division by zero", "would panic at runtime"]
+
+[[case]]
+name = "control_remainder_by_zero_one_level_deep"
+description = "`10 % 0` reached through the self call is still E1200."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: u32, comptime a: u8, comptime b: u8) -> u8 {
+    comptime { if n == 0 { a % b } else { f(n - 1, a, b) } }
+}
+
+fn main() -> i32 {
+    @dbg(f(1, 10, 0));
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "remainder by zero", "would panic at runtime"]
+
+[[case]]
+name = "control_runaway_self_recursion_reaches_depth_diagnostic"
+description = "A comptime recursion with no base case must reach the nesting-depth diagnostic rather than spinning: routing the self call through the canonical query must not turn the bound into a hang."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: u64) -> u64 {
+    comptime { f(n + 1) }
+}
+
+fn main() -> i32 {
+    @dbg(f(0));
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "exceeded the maximum nesting depth"]
+
+[[case]]
+name = "control_same_argument_self_recursion_reaches_depth_diagnostic"
+description = "A self call with an unchanging argument revisits one canonical query key. That is a genuine cycle, and it must surface as the nesting-depth diagnostic, not as a query-cycle ICE."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: u64) -> u64 {
+    comptime { f(n) }
+}
+
+fn main() -> i32 {
+    @dbg(f(0));
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "exceeded the maximum nesting depth"]
