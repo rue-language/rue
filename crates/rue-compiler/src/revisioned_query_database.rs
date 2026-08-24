@@ -3552,31 +3552,20 @@ fn pending_occurrence_requests(
 ) -> Vec<ImportDiscoveryRequest> {
     let mut pending = Vec::new();
     for group in groups {
-        let observations = group
-            .iter()
-            .map(|request| ledger.get(request))
-            .collect::<Vec<_>>();
-        if observations
-            .iter()
-            .any(|observation| observation.is_some_and(|value| value.status().is_failure()))
-        {
-            // ADR-0078: an unreadable candidate is skipped, not conclusive.
-            continue;
-        }
-        let missing = group
-            .iter()
-            .zip(&observations)
-            .filter_map(|(request, observation)| observation.is_none().then_some(request.clone()))
-            .collect::<Vec<_>>();
-        if !missing.is_empty() {
-            pending.extend(missing);
-            break;
-        }
-        if observations
-            .iter()
-            .any(|observation| observation.is_some_and(|value| value.accepted_source().is_some()))
-        {
-            break;
+        match crate::import_discovery::exact_import_group_state(group, ledger) {
+            crate::import_discovery::ExactImportGroupState::ConclusiveFailure(_)
+            | crate::import_discovery::ExactImportGroupState::Cancelled(_)
+            | crate::import_discovery::ExactImportGroupState::Resolved(_) => break,
+            crate::import_discovery::ExactImportGroupState::Pending => {
+                pending.extend(
+                    group
+                        .iter()
+                        .filter(|request| ledger.get(request).is_none())
+                        .cloned(),
+                );
+                break;
+            }
+            crate::import_discovery::ExactImportGroupState::Skippable => {}
         }
     }
     pending
@@ -25756,6 +25745,47 @@ mod tests {
             namespace: DefinitionNamespace::ModuleItem,
             name: name.into(),
         })
+    }
+
+    #[test]
+    fn incremental_pending_requests_stop_at_conclusive_vendored_std_failure() {
+        let context = ImportDiscoveryContext::new(1, "/project", Some("/sdk"), "all").unwrap();
+        let occurrence = crate::ImportOccurrenceKey::from_directive(&crate::ImportDirective::new(
+            ModuleId::from_logical_path("main.rue").unwrap(),
+            0,
+            3,
+            "std".into(),
+        ));
+        let groups = crate::import_discovery::discovery_groups_for_occurrence(
+            &context,
+            &occurrence,
+            "/project/main.rue",
+        )
+        .unwrap();
+        assert_eq!(groups.len(), 2);
+        let mut ledger = ImportObservationLedger::default();
+        ledger
+            .record(
+                ImportObservation::failure(
+                    groups[0][0].clone(),
+                    crate::ImportObservationStatus::PresentUnreadable("synthetic".into()),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let toolchain = crate::AcceptedImportSource::new(
+            groups[1][0].requested_path(),
+            groups[1][0].requested_path(),
+            PhysicalFileIdentity::new(4, 1),
+            FileMetadataFingerprint::new(1, 1, 1),
+            Arc::new("pub fn answer() -> i32 { 7 }".into()),
+        )
+        .unwrap();
+        ledger
+            .record(ImportObservation::accepted(groups[1][0].clone(), toolchain).unwrap())
+            .unwrap();
+
+        assert!(pending_occurrence_requests(&groups, &ledger).is_empty());
     }
 
     #[test]

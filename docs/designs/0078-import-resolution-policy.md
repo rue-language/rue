@@ -196,13 +196,18 @@ generator that produces a manifest sees a vendored `std/` and declares it;
 omitting it is a build-system defect, and its failure mode is the declared
 toolchain std rather than a silent read of an undeclared file.
 
-Because a candidate that cannot be read is skipped rather than conclusive,
-a failed observation is reported only when *no* candidate in the
-occurrence's chain resolved. Under policy v2 only `std` has more than one
-candidate, so this rule is confined to the std chain: every relative
-specifier still fails on its single candidate's failure. Denied and absent
-remain distinguishable typed observations, satisfying ADR-0063; they are
-merely both non-resolutions for precedence purposes.
+Because source-manifest denials are policy outcomes (with lexical denial taking
+no probe), only `DeniedLexical` and `DeniedCanonical` observations are skipped
+and allow the walk to continue. A probed candidate that is present but unusable —
+`PresentUnreadable`, `InvalidPhysicalType`, or `UnstableRead` — is conclusive:
+it is reported immediately and cannot be replaced by a later candidate. Under
+policy v2 only `std` has more than one candidate, so this distinction is
+confined to the std chain: every relative specifier still fails on its single
+candidate's failure. Denied and absent remain distinguishable typed
+observations, satisfying ADR-0063; they are merely both non-resolutions for
+precedence purposes. Cancellation is not a candidate outcome: it is a
+non-closing terminal state for the current read transaction and does not
+advance precedence or permit a later candidate to win.
 
 ### 5. Nonlocality, stated
 
