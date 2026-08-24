@@ -105,7 +105,7 @@ where
         }
 
         for &target in self.adapter.jump_targets(inst) {
-            self.record_jump_target(target);
+            self.record_jump_target(idx, inst, target)?;
         }
 
         Ok(())
@@ -113,28 +113,46 @@ where
 
     fn verify_label(&mut self, idx: usize, inst: &A::Inst, label: LabelId) -> CompileResult<()> {
         if let Some(&expected_depth) = self.label_depths.get(&label) {
-            if expected_depth != self.current_depth {
-                return Err(self.adapter.error(
-                    idx,
-                    inst,
-                    self.current_depth,
-                    format!(
-                        "control flow join has inconsistent stack depth: expected {}, got {}",
-                        expected_depth, self.current_depth
-                    ),
-                ));
-            }
+            self.verify_join_depth(idx, inst, expected_depth)?;
         } else {
             self.label_depths.insert(label, self.current_depth);
         }
         Ok(())
     }
 
-    fn record_jump_target(&mut self, label: LabelId) {
-        // If this is a forward jump, record the expected depth now and check it
-        // when the label is encountered. If the label was already seen, the
-        // entry preserves that observed depth, matching the previous verifier
-        // behavior.
-        self.label_depths.entry(label).or_insert(self.current_depth);
+    fn verify_join_depth(
+        &self,
+        idx: usize,
+        inst: &A::Inst,
+        expected_depth: i64,
+    ) -> CompileResult<()> {
+        if expected_depth != self.current_depth {
+            return Err(self.adapter.error(
+                idx,
+                inst,
+                self.current_depth,
+                format!(
+                    "control flow join has inconsistent stack depth: expected {}, got {}",
+                    expected_depth, self.current_depth
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn record_jump_target(
+        &mut self,
+        idx: usize,
+        inst: &A::Inst,
+        label: LabelId,
+    ) -> CompileResult<()> {
+        if let Some(&expected_depth) = self.label_depths.get(&label) {
+            self.verify_join_depth(idx, inst, expected_depth)?;
+        } else {
+            // If this is a forward jump, record the expected depth now and
+            // check it when the label is encountered.
+            self.label_depths.insert(label, self.current_depth);
+        }
+        Ok(())
     }
 }

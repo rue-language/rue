@@ -6,6 +6,7 @@
 
 use std::ops::Range;
 
+use ahash::AHashSet;
 use rue_cfg::{BasicBlock, BlockId, CfgValue, Terminator, Type};
 
 use crate::call_plan::{self, ReturnPlan};
@@ -350,10 +351,25 @@ fn moves_for_edge<A: TerminatorAdapter>(
         }
     }
 
+    // Edge moves are emitted sequentially, so consuming an earlier
+    // destination would silently change the generated program.
+    assert_sequential_move_safety(&moves);
+
     EdgePlan {
         target,
         moves,
         fallthrough: order.next(source_block) == Some(target),
+    }
+}
+
+fn assert_sequential_move_safety(moves: &[SlotMove]) {
+    let mut earlier_destinations = AHashSet::with_capacity(moves.len());
+    for movement in moves {
+        assert!(
+            !earlier_destinations.contains(&movement.source),
+            "edge move destination must not be used as a later move source"
+        );
+        earlier_destinations.insert(movement.destination);
     }
 }
 
@@ -621,7 +637,7 @@ mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
     use rue_air::{FrozenTypeInternPool, StructDef, StructField, TypeInternPool};
-    use rue_cfg::{Cfg, CfgInst, CfgInstData};
+    use rue_cfg::{Cfg, CfgInst, CfgInstData, CfgValue};
     use rue_span::{FileId, Span};
     use rue_target::Target;
 
@@ -685,6 +701,121 @@ mod tests {
             cfg.fn_name()
         );
         x86_trace
+    }
+
+    struct CollisionAdapter;
+
+    impl TerminatorAdapter for CollisionAdapter {
+        fn materialize_value(&mut self, value: CfgValue, plan: ValuePlan) -> MaterializedValue {
+            match plan.shape {
+                ValueShape::ZeroSized => MaterializedValue {
+                    primary: VReg::new(0),
+                    slots: Vec::new(),
+                },
+                ValueShape::Scalar => MaterializedValue {
+                    primary: VReg::new(value.as_u32()),
+                    slots: Vec::new(),
+                },
+                ValueShape::CompleteAggregate { slot_count } => MaterializedValue {
+                    primary: VReg::new(0),
+                    slots: (0..slot_count).map(VReg::new).collect(),
+                },
+            }
+        }
+
+        fn materialize_block_param(
+            &mut self,
+            _target: BlockId,
+            param_index: u32,
+            _target_value: CfgValue,
+            plan: ValuePlan,
+        ) -> MaterializedValue {
+            match plan.shape {
+                ValueShape::ZeroSized => MaterializedValue {
+                    primary: VReg::new(0),
+                    slots: Vec::new(),
+                },
+                ValueShape::Scalar => MaterializedValue {
+                    primary: VReg::new(param_index + 1),
+                    slots: Vec::new(),
+                },
+                ValueShape::CompleteAggregate { slot_count } => MaterializedValue {
+                    primary: VReg::new(1),
+                    slots: (1..=slot_count).map(VReg::new).collect(),
+                },
+            }
+        }
+
+        fn emit_block_label(&mut self, _block: BlockId) {}
+
+        fn emit_terminator(&mut self, _plan: TerminatorPlan) {}
+    }
+
+    #[test]
+    #[should_panic(expected = "edge move destination must not be used as a later move source")]
+    fn moves_for_edge_rejects_aggregate_slot_collision() {
+        let (pool, aggregate_ty, _interner) =
+            struct_pool("CollisionPair", vec![Type::I32, Type::I32]);
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "aggregate_collision".to_string(), vec![]);
+        let source_block = cfg.new_block();
+        let target = cfg.new_block();
+        cfg.entry = source_block;
+        let left = cfg.append_inst(source_block, inst(CfgInstData::Const(1), Type::I32));
+        let right = cfg.append_inst(source_block, inst(CfgInstData::Const(2), Type::I32));
+        let struct_id = match aggregate_ty.kind() {
+            rue_air::TypeKind::Struct(id) => id,
+            _ => panic!("fixture aggregate must be a struct"),
+        };
+        let aggregate = cfg
+            .append_struct_init(
+                source_block,
+                struct_id,
+                [left, right],
+                aggregate_ty,
+                Span::new(0, 0),
+            )
+            .unwrap();
+        cfg.add_block_param(target, aggregate_ty);
+        cfg.set_goto(source_block, target, [aggregate]);
+        cfg.set_return(target, None);
+
+        let ctx = CfgLowerContext::new(&cfg, &pool);
+        let order = BlockOrder::of(&ctx);
+        moves_for_edge(
+            &ctx,
+            &order,
+            &mut CollisionAdapter,
+            &[aggregate],
+            target,
+            source_block,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "edge move destination must not be used as a later move source")]
+    fn moves_for_edge_rejects_cross_argument_collision() {
+        let pool = FrozenTypeInternPool::new();
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "argument_collision".to_string(), vec![]);
+        let source_block = cfg.new_block();
+        let target = cfg.new_block();
+        cfg.entry = source_block;
+        let first = cfg.append_inst(source_block, inst(CfgInstData::Const(1), Type::I32));
+        let second = cfg.append_inst(source_block, inst(CfgInstData::Const(2), Type::I32));
+        cfg.add_block_param(target, Type::I32);
+        cfg.add_block_param(target, Type::I32);
+        cfg.set_goto(source_block, target, [first, second]);
+        cfg.set_return(target, None);
+
+        let ctx = CfgLowerContext::new(&cfg, &pool);
+        let order = BlockOrder::of(&ctx);
+        moves_for_edge(
+            &ctx,
+            &order,
+            &mut CollisionAdapter,
+            &[first, second],
+            target,
+            source_block,
+        );
     }
 
     fn struct_pool(name: &str, fields: Vec<Type>) -> (FrozenTypeInternPool, Type, ThreadedRodeo) {
