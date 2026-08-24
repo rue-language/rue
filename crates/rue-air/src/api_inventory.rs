@@ -52,6 +52,9 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "ComptimeField",
         "ComptimeFile",
         "ComptimeFrame",
+        "ComptimeMethodDescriptor",
+        "ComptimeMethodParameter",
+        "ComptimeMethodType",
         "ComptimeHost",
         "ComptimeHostError",
         "ComptimeHostResult",
@@ -143,10 +146,16 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         );
     }
     assert!(contract.contains("type CallAdmission;"));
+    assert!(contract.contains("type CompletionTicket;"));
+    assert!(!contract.contains("type CompletionTicket: Clone"));
+    assert!(!contract.contains("pub completion_ticket"));
     assert!(contract.contains("type Type: ComptimeType;"));
     assert!(contract.contains("type Failure;"));
     assert!(contract.contains("Self::CanonicalIdentity"));
     assert!(contract.contains("Self::File,"));
+    assert!(production.contains("decode_anon_method_descriptors"));
+    assert!(production.contains("Root expression frames are intentionally ticket-free"));
+    assert!(production.contains("if frame.name.is_none()"));
     assert!(!production.contains("eval_const_expr"));
     assert!(!production.contains("ComptimeEngine::new"));
     assert!(!production.contains("reduce_external_comptime_call"));
@@ -171,6 +180,8 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .expect("canonical host contract");
     let host_contract = &production[host_start..engine_start];
     assert!(host_contract.contains("fn program_rir(&self, program:"));
+    assert!(!host_contract.contains("extract_anon_method_sigs"));
+    assert!(!host_contract.contains("find_method_own_comptime_type_param"));
     assert!(!host_contract.contains("ComptimeEngine::new"));
     assert!(
         !host_contract.contains("-> Result<"),

@@ -5,6 +5,7 @@
 
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
+use crate::sema::comptime::{ComptimeEngine, ComptimeMethodType, ComptimeOutcome};
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Analyze an RIR instruction, producing AIR instructions.
@@ -407,13 +408,85 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     });
                 }
 
-                // Extract method signatures for structural equality comparison
-                // (uses type symbols, not resolved Types, so Self matches Self)
-                let method_sigs = self.extract_anon_method_sigs(
+                // Signature decoding is owned by the canonical comptime
+                // engine. Ordinary analysis consumes its resolved descriptors
+                // and only adapts them to the legacy registration record.
+                let descriptors = match ComptimeEngine::new(self).decode_anon_method_descriptors(
+                    &(),
                     methods,
                     &ctx.comptime_type_vars,
                     &ctx.comptime_value_vars,
-                );
+                ) {
+                    ComptimeOutcome::Known(value) => value,
+                    ComptimeOutcome::RuntimeDependent => Vec::new(),
+                    ComptimeOutcome::UnsupportedContext => Vec::new(),
+                    ComptimeOutcome::NotReady => {
+                        return Err(CompileError::new(
+                            ErrorKind::ComptimeEvaluationFailed {
+                                reason: "anonymous method signature was not ready".to_owned(),
+                            },
+                            inst.span,
+                        ));
+                    }
+                    ComptimeOutcome::Trap(trap) => {
+                        return Err(CompileError::new(
+                            ErrorKind::ComptimeEvaluationFailed {
+                                reason: trap.operation.to_owned(),
+                            },
+                            trap.span,
+                        ));
+                    }
+                    ComptimeOutcome::HostFailure(error) | ComptimeOutcome::Abort(error) => {
+                        return Err(error);
+                    }
+                };
+                let method_sigs = descriptors
+                    .iter()
+                    .map(|descriptor| super::super::info::AnonMethodSig {
+                        name: descriptor.name,
+                        has_self: descriptor.has_self,
+                        self_mode: descriptor.self_mode,
+                        returns_borrow: descriptor.returns_borrow,
+                        returns_inout: descriptor.returns_inout,
+                        param_types: descriptor
+                            .parameters
+                            .clone()
+                            .into_iter()
+                            .map(|parameter| match parameter.ty {
+                                ComptimeMethodType::SelfType => {
+                                    super::super::info::AnonMethodType::SelfType
+                                }
+                                ComptimeMethodType::Concrete(ty) => {
+                                    super::super::info::AnonMethodType::Concrete(ty)
+                                }
+                                ComptimeMethodType::Unsupported(syntax) => {
+                                    super::super::info::AnonMethodType::Syntax(syntax.into())
+                                }
+                            })
+                            .collect(),
+                        param_modes: descriptor
+                            .parameters
+                            .iter()
+                            .map(|parameter| parameter.mode)
+                            .collect(),
+                        param_comptime: descriptor
+                            .parameters
+                            .iter()
+                            .map(|parameter| parameter.is_comptime)
+                            .collect(),
+                        return_type: match &descriptor.result {
+                            ComptimeMethodType::SelfType => {
+                                super::super::info::AnonMethodType::SelfType
+                            }
+                            ComptimeMethodType::Concrete(ty) => {
+                                super::super::info::AnonMethodType::Concrete(*ty)
+                            }
+                            ComptimeMethodType::Unsupported(syntax) => {
+                                super::super::info::AnonMethodType::Syntax(syntax.clone().into())
+                            }
+                        },
+                    })
+                    .collect::<Vec<_>>();
 
                 // Check if an equivalent anonymous struct already exists (structural equality)
                 // This now compares fields, method signatures, AND captured comptime values
@@ -427,16 +500,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     &method_sigs,
                     &ctx.comptime_value_vars,
                 )?;
-                if is_new && !self.body_rir_ref().anon_struct_methods(methods).is_empty() {
+                if is_new && !descriptors.is_empty() {
                     let struct_id = struct_ty
                         .as_struct()
                         .expect("anonymous struct must have a StructId");
-                    self.register_anon_struct_methods_for_comptime_with_subst(
+                    self.register_anon_struct_method_bodies(
                         struct_id,
                         struct_ty,
                         methods,
-                        &ctx.comptime_type_vars,
-                        &ctx.comptime_value_vars,
+                        &descriptors,
                     )
                     .ok_or_else(|| {
                         CompileError::new(
