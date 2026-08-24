@@ -7080,6 +7080,47 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
         self.provider.context.check_canceled()
     }
 
+    fn resolve_candidate(
+        &self,
+        module: &ModuleId,
+        name: &str,
+        kind: DefinitionKind,
+    ) -> Result<
+        Option<crate::declaration_candidate::DeclarationCandidateKey>,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        self.provider.candidate(module, name, kind)
+    }
+
+    fn resolve_identity(
+        &self,
+        declaration: crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Result<
+        crate::semantic_query_nucleus::DeclarationIdentityProjection,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        self.provider.identity(declaration)
+    }
+
+    fn resolve_const(
+        &self,
+        declaration: crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Result<
+        crate::semantic_query_nucleus::ConstResolutionProjection,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        self.provider.const_resolution(declaration)
+    }
+
     fn resolve_import(
         &self,
         site: &crate::durable_comptime::DurableImportSite,
@@ -7712,19 +7753,8 @@ impl SemanticConstEvaluator<'_, '_> {
         if let Some(value) = self.locals.get(&name) {
             return Ok(value.clone());
         }
-        if let Some(candidate) = self
-            .provider
-            .candidate(
-                &self.declaration.declaration.module,
-                &name,
-                DefinitionKind::Const,
-            )
-            .map_err(Self::provider_error)?
-        {
-            let resolution = self
-                .provider
-                .const_resolution(candidate)
-                .map_err(Self::provider_error)?;
+        if let Some(candidate) = self.resolve_candidate(&name, DefinitionKind::Const)? {
+            let resolution = self.resolve_const(candidate)?;
             let key = match &resolution {
                 crate::semantic_query_nucleus::ConstResolutionProjection::Value { key, .. }
                 | crate::semantic_query_nucleus::ConstResolutionProjection::ModuleBinding {
@@ -7753,19 +7783,8 @@ impl SemanticConstEvaluator<'_, '_> {
                 } => EvaluatedSemanticConst::Module(target),
             });
         }
-        if let Some(candidate) = self
-            .provider
-            .candidate(
-                &self.declaration.declaration.module,
-                &name,
-                DefinitionKind::Function,
-            )
-            .map_err(Self::provider_error)?
-        {
-            let identity = self
-                .provider
-                .identity(candidate)
-                .map_err(Self::provider_error)?;
+        if let Some(candidate) = self.resolve_candidate(&name, DefinitionKind::Function)? {
+            let identity = self.resolve_identity(candidate)?;
             self.provider.dependencies.insert(
                 crate::semantic_query_nucleus::SemanticDeclarationDependency {
                     source: self.provider.dependency_source.clone(),
@@ -7781,15 +7800,8 @@ impl SemanticConstEvaluator<'_, '_> {
             )));
         }
         for kind in [DefinitionKind::Struct, DefinitionKind::Enum] {
-            if let Some(candidate) = self
-                .provider
-                .candidate(&self.declaration.declaration.module, &name, kind)
-                .map_err(Self::provider_error)?
-            {
-                let identity = self
-                    .provider
-                    .identity(candidate)
-                    .map_err(Self::provider_error)?;
+            if let Some(candidate) = self.resolve_candidate(&name, kind)? {
+                let identity = self.resolve_identity(candidate)?;
                 self.provider.dependencies.insert(
                     crate::semantic_query_nucleus::SemanticDeclarationDependency {
                         source: self.provider.dependency_source.clone(),
@@ -7808,6 +7820,56 @@ impl SemanticConstEvaluator<'_, '_> {
             }
         }
         Self::failure(format!("undefined constant `{name}`"))
+    }
+
+    fn resolve_candidate(
+        &self,
+        name: &str,
+        kind: DefinitionKind,
+    ) -> Result<
+        Option<crate::declaration_candidate::DeclarationCandidateKey>,
+        EvaluateSemanticConstError,
+    > {
+        let authority = SemanticComptimeAuthority {
+            provider: &*self.provider,
+            imports: self.imports,
+        };
+        let services = crate::durable_comptime::DurableComptimeServices::new(&authority);
+        services
+            .resolve_candidate(&self.declaration.declaration.module, name, kind)
+            .map_err(Self::provider_error)
+    }
+
+    fn resolve_identity(
+        &self,
+        declaration: crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Result<
+        crate::semantic_query_nucleus::DeclarationIdentityProjection,
+        EvaluateSemanticConstError,
+    > {
+        let authority = SemanticComptimeAuthority {
+            provider: &*self.provider,
+            imports: self.imports,
+        };
+        let services = crate::durable_comptime::DurableComptimeServices::new(&authority);
+        services
+            .resolve_identity(declaration)
+            .map_err(Self::provider_error)
+    }
+
+    fn resolve_const(
+        &self,
+        declaration: crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Result<crate::semantic_query_nucleus::ConstResolutionProjection, EvaluateSemanticConstError>
+    {
+        let authority = SemanticComptimeAuthority {
+            provider: &*self.provider,
+            imports: self.imports,
+        };
+        let services = crate::durable_comptime::DurableComptimeServices::new(&authority);
+        services
+            .resolve_const(declaration)
+            .map_err(Self::provider_error)
     }
 
     fn eval_call(
