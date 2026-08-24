@@ -32,7 +32,7 @@ use super::ordinary_engine::{
 use super::semantic_body_export::SemanticBodyExportHost;
 use super::typeck::{
     SemaTypeResolutionContext, TypeRootAuthority, TypeSyntaxHost, TypeSyntaxNamedKind,
-    TypeSyntaxProvider, semantic_type_syntax_compile_error,
+    TypeSyntaxProvider, TypeSyntaxProviderState, semantic_type_syntax_compile_error,
 };
 use super::{
     AnalyzedFunction, BodyAnalysisWork, BodyFactProvider, ConstInfo, ConstValue,
@@ -191,6 +191,188 @@ fn synthetic_argument_names_match_the_canonical_spelling_without_a_heap_buffer()
     for index in [0, 9, 10, 1_024, usize::MAX] {
         let symbol = intern_synthetic_argument_name(&interner, index);
         assert_eq!(interner.resolve(&symbol), format!("arg{index}"));
+    }
+}
+
+#[cfg(test)]
+mod type_syntax_provider_trace_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct SymbolTrace {
+        symbol_lookups: usize,
+    }
+
+    impl TypeSyntaxHost for SymbolTrace {
+        fn type_syntax_symbol(&mut self, _name: &str) -> Spur {
+            self.symbol_lookups += 1;
+            panic!("the no-substitution path must not intern a symbol")
+        }
+
+        fn type_syntax_module_binding(
+            &mut self,
+            _authority: TypeRootAuthority,
+            _module: Option<ModuleId>,
+            _name: Spur,
+        ) -> CompileResult<Option<crate::SemanticModuleBinding<ModuleId, FileId>>> {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_module_display_name(&self, _module: ModuleId) -> Arc<str> {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_accessing_domain(
+            &self,
+            _authority: TypeRootAuthority,
+        ) -> crate::SemanticVisibilityDomain {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_named_type(
+            &mut self,
+            _authority: TypeRootAuthority,
+            _module: Option<ModuleId>,
+            _name: Spur,
+            _kind: TypeSyntaxNamedKind,
+        ) -> CompileResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_make_str(&mut self, _span: Span) -> CompileResult<Type> {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_make_array(
+            &mut self,
+            _element: Type,
+            _length: u64,
+            _span: Span,
+        ) -> CompileResult<Type> {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_make_ptr_const(
+            &mut self,
+            _pointee: Type,
+            _span: Span,
+        ) -> CompileResult<Type> {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_make_ptr_mut(&mut self, _pointee: Type, _span: Span) -> CompileResult<Type> {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_make_slice(
+            &mut self,
+            _syntax: &str,
+            _element: Type,
+            _span: Span,
+        ) -> CompileResult<Type> {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_make_fixed_str(
+            &mut self,
+            _capacity: u64,
+            _span: Span,
+        ) -> CompileResult<Type> {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_record_builtin_call(&mut self) {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_constructor(
+            &mut self,
+            _authority: TypeRootAuthority,
+            _module: Option<ModuleId>,
+            _name: Spur,
+        ) -> CompileResult<Option<crate::SemanticTypeConstructorHead<Spur, Spur, FileId>>> {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_reduce_constructor(
+            &mut self,
+            _head: &crate::SemanticTypeConstructorHead<Spur, Spur, FileId>,
+            _type_arguments: &[(Spur, Type)],
+            _value_arguments: &[(Spur, ConstValue)],
+            _span: Span,
+        ) -> CompileResult<Option<ConstValue>> {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_value_const(
+            &self,
+            _file: FileId,
+            _name: Spur,
+        ) -> Option<super::super::info::ConstInfo> {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_recover_const(
+            &mut self,
+            _file: FileId,
+            _name: Spur,
+        ) -> CompileResult<Option<ConstValue>> {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_record_named_const_dependency(&mut self, _file: FileId, _name: String) {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_out_of_scope_const_hint(&self, _name: Spur, _exclude: FileId) -> String {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_dependencies(
+            &self,
+            _ty: Type,
+        ) -> Vec<(
+            FileId,
+            String,
+            super::super::DeclarationTypeDependencyTargetKind,
+        )> {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_flush_dependency(
+            &mut self,
+            _file: FileId,
+            _name: String,
+            _kind: super::super::DeclarationTypeDependencyTargetKind,
+        ) {
+            panic!("unused test host hook")
+        }
+    }
+
+    #[test]
+    fn missing_substitutions_skip_symbol_lookup() {
+        let mut host = SymbolTrace::default();
+        let mut state = TypeSyntaxProviderState::new(
+            Span::new(0, 1),
+            TypeRootAuthority::in_file(FileId::new(0)),
+            SemaTypeResolutionContext::Type,
+            None,
+            None,
+        );
+        let result = {
+            let mut provider = TypeSyntaxProvider::new(&mut host, &mut state);
+            <TypeSyntaxProvider<'_, '_, SymbolTrace> as crate::SemanticTypeSyntaxProvider<
+                FileId,
+                ModuleId,
+                FileId,
+                Spur,
+                Spur,
+                Type,
+                ConstValue,
+            >>::substituted_type(&mut provider, &FileId::new(0), "T")
+        };
+        assert_eq!(result.unwrap(), None);
+        assert_eq!(host.symbol_lookups, 0);
     }
 }
 
@@ -3871,21 +4053,24 @@ where
         crate::SemanticTypeSyntaxError<std::convert::Infallible, CompileError, FileId, Spur>,
     > {
         let interner = Arc::clone(&self.interner);
-        let mut provider = TypeSyntaxProvider::new(
-            self,
+        let mut state = TypeSyntaxProviderState::new(
             request.span,
             TypeRootAuthority::in_file(request.root_file),
             SemaTypeResolutionContext::Type,
             request.type_substitutions,
             request.value_substitutions,
         );
-        let result = crate::resolve_structured_semantic_type_syntax_with(
-            &mut provider,
-            &request.root_file,
-            &request.syntax.arena,
-            request.syntax.root,
-            |symbol| interner.resolve(symbol),
-        );
+        let result = {
+            let mut provider = TypeSyntaxProvider::new(self, &mut state);
+            crate::resolve_structured_semantic_type_syntax_with(
+                &mut provider,
+                &request.root_file,
+                &request.syntax.arena,
+                request.syntax.root,
+                |symbol| interner.resolve(symbol),
+            )
+        };
+        let mut provider = TypeSyntaxProvider::new(self, &mut state);
         provider.flush_observed_type_dependencies();
         result
     }
@@ -3894,22 +4079,21 @@ where
         &mut self,
         request: ModulePrefixRequest<'_>,
     ) -> CompileResult<(ModuleId, Option<FileId>, String)> {
-        let mut provider = TypeSyntaxProvider::new(
-            self,
+        let mut state = TypeSyntaxProviderState::new(
             request.span,
             TypeRootAuthority::in_file(request.root_file),
             SemaTypeResolutionContext::Type,
             None,
             None,
         );
-        let resolved = crate::resolve_semantic_module_path(
-            &mut provider,
-            &request.root_file,
-            request.segments,
-        )
+        let resolved = {
+            let mut provider = TypeSyntaxProvider::new(self, &mut state);
+            crate::resolve_semantic_module_path(&mut provider, &request.root_file, request.segments)
+        }
         .map_err(|failure| {
             super::typeck::module_path_resolution_compile_error(failure, request.span)
         })?;
+        let mut provider = TypeSyntaxProvider::new(self, &mut state);
         provider.flush_observed_type_dependencies();
         let definition = self.calls.module_def(resolved.module).ok_or_else(|| {
             CompileError::new(
@@ -3928,15 +4112,18 @@ where
     }
 
     fn resolve_array_length(&mut self, request: ArrayLengthRequest<'_>) -> CompileResult<u64> {
-        let mut provider = TypeSyntaxProvider::new(
-            self,
+        let mut state = TypeSyntaxProviderState::new(
             request.span,
             TypeRootAuthority::in_file(request.span.file_id),
             SemaTypeResolutionContext::Type,
             None,
             request.value_substitutions,
         );
-        let result = provider.resolve_array_length_fact(request.span.file_id, request.length);
+        let result = {
+            let mut provider = TypeSyntaxProvider::new(self, &mut state);
+            provider.resolve_array_length_fact(request.span.file_id, request.length)
+        };
+        let mut provider = TypeSyntaxProvider::new(self, &mut state);
         provider.flush_observed_type_dependencies();
         result
     }

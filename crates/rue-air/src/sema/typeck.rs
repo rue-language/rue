@@ -116,17 +116,23 @@ pub(super) enum TypeSyntaxNamedKind {
 
 type ObservedTypeDependency = (FileId, String, super::DeclarationTypeDependencyTargetKind);
 
-pub(super) struct TypeSyntaxProvider<'host, 'c, H: TypeSyntaxHost> {
-    host: &'host mut H,
+pub(super) struct TypeSyntaxProviderState {
     span: Span,
     root_authority: TypeRootAuthority,
     resolution_context: SemaTypeResolutionContext,
-    type_substitutions: Option<&'c AHashMap<Spur, Type>>,
-    value_substitutions: Option<&'c AHashMap<Spur, ConstValue>>,
+    type_substitutions: Option<AHashMap<Spur, Type>>,
+    value_substitutions: Option<AHashMap<Spur, ConstValue>>,
     // Preserve observation order for the host while using a lazy membership
     // index once a resolution grows beyond the allocation-free small case.
     observed_type_dependencies: Vec<ObservedTypeDependency>,
     observed_type_dependency_index: Option<AHashSet<ObservedTypeDependency>>,
+}
+
+/// Short-lived adapter that borrows the semantic host only while a provider
+/// operation is in progress. The reusable state contains no host reference.
+pub(super) struct TypeSyntaxProvider<'host, 'state, H: TypeSyntaxHost> {
+    host: &'host mut H,
+    state: &'state mut TypeSyntaxProviderState,
 }
 
 /// The lexical root a type-syntax resolution walks from.
@@ -184,10 +190,11 @@ impl<H: TypeSyntaxHost> crate::SemanticModulePathProvider<FileId, crate::types::
     ) -> SemaProviderResult<Option<crate::SemanticModuleBinding<crate::types::ModuleId, FileId>>>
     {
         let symbol = self.host.type_syntax_symbol(name);
-        provider_failure(
-            self.host
-                .type_syntax_module_binding(self.root_authority, None, symbol),
-        )
+        provider_failure(self.host.type_syntax_module_binding(
+            self.state.root_authority,
+            None,
+            symbol,
+        ))
     }
 
     fn module_binding(
@@ -198,7 +205,7 @@ impl<H: TypeSyntaxHost> crate::SemanticModulePathProvider<FileId, crate::types::
     {
         let name = self.host.type_syntax_symbol(name);
         provider_failure(self.host.type_syntax_module_binding(
-            self.root_authority,
+            self.state.root_authority,
             Some(*module),
             name,
         ))
@@ -209,7 +216,8 @@ impl<H: TypeSyntaxHost> crate::SemanticModulePathProvider<FileId, crate::types::
     }
 
     fn accessing_domain(&self, _scope: &FileId) -> crate::SemanticVisibilityDomain {
-        self.host.type_syntax_accessing_domain(self.root_authority)
+        self.host
+            .type_syntax_accessing_domain(self.state.root_authority)
     }
 }
 
@@ -229,11 +237,15 @@ impl<H: TypeSyntaxHost>
         _scope: &FileId,
         name: &str,
     ) -> SemaProviderResult<Option<Type>> {
-        let Some(type_substitutions) = self.type_substitutions else {
+        if self.state.type_substitutions.is_none() {
             return Ok(None);
-        };
+        }
         let symbol = self.host.type_syntax_symbol(name);
-        Ok(type_substitutions.get(&symbol).copied())
+        Ok(self
+            .state
+            .type_substitutions
+            .as_ref()
+            .and_then(|substitutions| substitutions.get(&symbol).copied()))
     }
 
     fn primitive_type(&mut self, name: &str) -> SemaProviderResult<Option<Type>> {
@@ -242,7 +254,7 @@ impl<H: TypeSyntaxHost>
 
     fn builtin_type(&mut self, _scope: &FileId, name: &str) -> SemaProviderResult<Option<Type>> {
         if name == "str" {
-            provider_failure(self.host.type_syntax_make_str(self.span).map(Some))
+            provider_failure(self.host.type_syntax_make_str(self.state.span).map(Some))
         } else {
             Ok(None)
         }
@@ -255,7 +267,7 @@ impl<H: TypeSyntaxHost>
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
         let symbol = self.host.type_syntax_symbol(name);
         provider_failure(self.host.type_syntax_named_type(
-            self.root_authority,
+            self.state.root_authority,
             None,
             symbol,
             TypeSyntaxNamedKind::Struct,
@@ -269,7 +281,7 @@ impl<H: TypeSyntaxHost>
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
         let symbol = self.host.type_syntax_symbol(name);
         provider_failure(self.host.type_syntax_named_type(
-            self.root_authority,
+            self.state.root_authority,
             None,
             symbol,
             TypeSyntaxNamedKind::Enum,
@@ -283,7 +295,7 @@ impl<H: TypeSyntaxHost>
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
         let symbol = self.host.type_syntax_symbol(name);
         provider_failure(self.host.type_syntax_named_type(
-            self.root_authority,
+            self.state.root_authority,
             None,
             symbol,
             TypeSyntaxNamedKind::Alias,
@@ -297,7 +309,7 @@ impl<H: TypeSyntaxHost>
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
         let symbol = self.host.type_syntax_symbol(name);
         provider_failure(self.host.type_syntax_named_type(
-            self.root_authority,
+            self.state.root_authority,
             Some(*module),
             symbol,
             TypeSyntaxNamedKind::Struct,
@@ -311,7 +323,7 @@ impl<H: TypeSyntaxHost>
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
         let symbol = self.host.type_syntax_symbol(name);
         provider_failure(self.host.type_syntax_named_type(
-            self.root_authority,
+            self.state.root_authority,
             Some(*module),
             symbol,
             TypeSyntaxNamedKind::Enum,
@@ -325,7 +337,7 @@ impl<H: TypeSyntaxHost>
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
         let symbol = self.host.type_syntax_symbol(name);
         provider_failure(self.host.type_syntax_named_type(
-            self.root_authority,
+            self.state.root_authority,
             Some(*module),
             symbol,
             TypeSyntaxNamedKind::Alias,
@@ -368,7 +380,7 @@ impl<H: TypeSyntaxHost>
         _scope: &FileId,
         expectation: crate::SemanticComptimeCallExpectation,
     ) -> bool {
-        !(self.resolution_context == SemaTypeResolutionContext::ArrayLength
+        !(self.state.resolution_context == SemaTypeResolutionContext::ArrayLength
             && expectation == crate::SemanticComptimeCallExpectation::Value)
     }
 
@@ -384,7 +396,7 @@ impl<H: TypeSyntaxHost>
                         ErrorKind::InvalidArrayLength {
                             reason: format!("array length must be non-negative, got {value}"),
                         },
-                        self.span,
+                        self.state.span,
                     ))
                 })?;
                 ArrayLen::Literal(value)
@@ -405,14 +417,14 @@ impl<H: TypeSyntaxHost>
                     ErrorKind::InvalidArrayLength {
                         reason: format!("array length must be non-negative, got {value}"),
                     },
-                    self.span,
+                    self.state.span,
                 ))
             }),
             _ => provider_failure(Err(CompileError::new(
                 ErrorKind::InvalidArrayLength {
                     reason: "array length must be an integer".to_string(),
                 },
-                self.span,
+                self.state.span,
             ))),
         }
     }
@@ -421,16 +433,19 @@ impl<H: TypeSyntaxHost>
         provider_failure(self.host.type_syntax_make_array(
             element,
             length.expect("concrete type resolution always resolves array lengths"),
-            self.span,
+            self.state.span,
         ))
     }
 
     fn ptr_const_type(&mut self, pointee: Type) -> SemaProviderResult<Type> {
-        provider_failure(self.host.type_syntax_make_ptr_const(pointee, self.span))
+        provider_failure(
+            self.host
+                .type_syntax_make_ptr_const(pointee, self.state.span),
+        )
     }
 
     fn ptr_mut_type(&mut self, pointee: Type) -> SemaProviderResult<Type> {
-        provider_failure(self.host.type_syntax_make_ptr_mut(pointee, self.span))
+        provider_failure(self.host.type_syntax_make_ptr_mut(pointee, self.state.span))
     }
 
     fn slice_type(
@@ -439,7 +454,10 @@ impl<H: TypeSyntaxHost>
         syntax: &str,
         element: Type,
     ) -> SemaProviderResult<Type> {
-        provider_failure(self.host.type_syntax_make_slice(syntax, element, self.span))
+        provider_failure(
+            self.host
+                .type_syntax_make_slice(syntax, element, self.state.span),
+        )
     }
 
     fn builtin_type_call(
@@ -456,7 +474,7 @@ impl<H: TypeSyntaxHost>
                             ErrorKind::InvalidArrayLength {
                                 reason: format!("array length must be non-negative, got {value}"),
                             },
-                            self.span,
+                            self.state.span,
                         ))
                     })?
                 }
@@ -469,14 +487,14 @@ impl<H: TypeSyntaxHost>
                 _ => {
                     return provider_failure(Err(CompileError::new(
                         ErrorKind::UnknownType(format!("{name}(...)")),
-                        self.span,
+                        self.state.span,
                     )));
                 }
             };
             self.host.type_syntax_record_builtin_call();
             provider_failure(
                 self.host
-                    .type_syntax_make_fixed_str(capacity, self.span)
+                    .type_syntax_make_fixed_str(capacity, self.state.span)
                     .map(Some),
             )
         } else {
@@ -492,7 +510,7 @@ impl<H: TypeSyntaxHost>
         let symbol = self.host.type_syntax_symbol(name);
         provider_failure(
             self.host
-                .type_syntax_constructor(self.root_authority, None, symbol),
+                .type_syntax_constructor(self.state.root_authority, None, symbol),
         )
     }
 
@@ -503,7 +521,7 @@ impl<H: TypeSyntaxHost>
     ) -> SemaProviderResult<Option<crate::SemanticTypeConstructorHead<Spur, Spur, FileId>>> {
         let symbol = self.host.type_syntax_symbol(name);
         provider_failure(self.host.type_syntax_constructor(
-            self.root_authority,
+            self.state.root_authority,
             Some(*module),
             symbol,
         ))
@@ -524,7 +542,9 @@ impl<H: TypeSyntaxHost>
         }
         match self.resolve_value_argument_fact(*scope, constructor, syntax) {
             Ok(value) => Ok(value),
-            Err(error) if self.resolution_context == SemaTypeResolutionContext::ArrayLength => {
+            Err(error)
+                if self.state.resolution_context == SemaTypeResolutionContext::ArrayLength =>
+            {
                 let crate::SemanticValueSyntax::Name(name) = syntax else {
                     return provider_failure(Err(error));
                 };
@@ -545,7 +565,12 @@ impl<H: TypeSyntaxHost>
     ) -> SemaProviderResult<Option<crate::SemanticComptimeCallResult<Type, ConstValue>>> {
         provider_failure(
             self.host
-                .type_syntax_reduce_constructor(head, type_arguments, value_arguments, self.span)
+                .type_syntax_reduce_constructor(
+                    head,
+                    type_arguments,
+                    value_arguments,
+                    self.state.span,
+                )
                 .map(|result| match (head.returns_type, result) {
                     (_, None) => None,
                     (true, Some(ConstValue::Type(ty))) => {
@@ -559,35 +584,72 @@ impl<H: TypeSyntaxHost>
 }
 
 impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
+    pub(super) fn new(host: &'s mut H, state: &'c mut TypeSyntaxProviderState) -> Self {
+        Self { host, state }
+    }
+}
+
+impl TypeSyntaxProviderState {
     pub(super) fn new(
-        host: &'s mut H,
         span: Span,
         root_authority: TypeRootAuthority,
         resolution_context: SemaTypeResolutionContext,
-        type_substitutions: Option<&'c AHashMap<Spur, Type>>,
-        value_substitutions: Option<&'c AHashMap<Spur, ConstValue>>,
+        type_substitutions: Option<&AHashMap<Spur, Type>>,
+        value_substitutions: Option<&AHashMap<Spur, ConstValue>>,
     ) -> Self {
         Self {
-            host,
             span,
             root_authority,
             resolution_context,
-            type_substitutions,
-            value_substitutions,
+            type_substitutions: type_substitutions.cloned(),
+            value_substitutions: value_substitutions.cloned(),
             observed_type_dependencies: Vec::new(),
             observed_type_dependency_index: None,
         }
     }
 
+    fn observe_type_dependency(
+        &mut self,
+        file: FileId,
+        name: String,
+        kind: super::DeclarationTypeDependencyTargetKind,
+    ) {
+        const LINEAR_ADMISSION_LIMIT: usize = 8;
+
+        let dependency = (file, name, kind);
+        if let Some(index) = &mut self.observed_type_dependency_index {
+            if index.insert(dependency.clone()) {
+                self.observed_type_dependencies.push(dependency);
+            }
+            return;
+        }
+        if !self.observed_type_dependencies.contains(&dependency) {
+            self.observed_type_dependencies.push(dependency);
+            if self.observed_type_dependencies.len() == LINEAR_ADMISSION_LIMIT {
+                self.observed_type_dependency_index =
+                    Some(self.observed_type_dependencies.iter().cloned().collect());
+            }
+        }
+    }
+
+    fn take_observed_type_dependencies(&mut self) -> Vec<ObservedTypeDependency> {
+        if let Some(index) = &mut self.observed_type_dependency_index {
+            index.clear();
+        }
+        std::mem::take(&mut self.observed_type_dependencies)
+    }
+}
+
+impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
     pub(super) fn resolve_array_length_fact(
         &mut self,
         scope: FileId,
         length: &ArrayLen,
     ) -> CompileResult<u64> {
-        let previous_context = self.resolution_context;
-        self.resolution_context = SemaTypeResolutionContext::ArrayLength;
+        let previous_context = self.state.resolution_context;
+        self.state.resolution_context = SemaTypeResolutionContext::ArrayLength;
         let result = self.resolve_array_length_fact_inner(scope, length);
-        self.resolution_context = previous_context;
+        self.state.resolution_context = previous_context;
         result
     }
 
@@ -603,9 +665,11 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
             return Ok(*value);
         };
         let symbol = self.host.type_syntax_symbol(name);
-        let root_file = self.root_authority.file();
+        let root_file = self.state.root_authority.file();
         let value = if let Some(value) = self
+            .state
             .value_substitutions
+            .as_ref()
             .and_then(|substitutions| substitutions.get(&symbol))
         {
             *value
@@ -641,7 +705,7 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
     }
 
     fn invalid_array_length(&self, reason: String) -> CompileError {
-        CompileError::new(ErrorKind::InvalidArrayLength { reason }, self.span)
+        CompileError::new(ErrorKind::InvalidArrayLength { reason }, self.state.span)
     }
 
     fn observe_materialized_type_fact(&mut self, ty: Type) {
@@ -651,10 +715,7 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
     }
 
     pub(super) fn flush_observed_type_dependencies(&mut self) {
-        if let Some(index) = &mut self.observed_type_dependency_index {
-            index.clear();
-        }
-        for (file, name, kind) in std::mem::take(&mut self.observed_type_dependencies) {
+        for (file, name, kind) in self.state.take_observed_type_dependencies() {
             self.host.type_syntax_flush_dependency(file, name, kind);
         }
     }
@@ -665,22 +726,7 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
         name: String,
         kind: super::DeclarationTypeDependencyTargetKind,
     ) {
-        const LINEAR_ADMISSION_LIMIT: usize = 8;
-
-        let dependency = (file, name, kind);
-        if let Some(index) = &mut self.observed_type_dependency_index {
-            if index.insert(dependency.clone()) {
-                self.observed_type_dependencies.push(dependency);
-            }
-            return;
-        }
-        if !self.observed_type_dependencies.contains(&dependency) {
-            self.observed_type_dependencies.push(dependency);
-            if self.observed_type_dependencies.len() == LINEAR_ADMISSION_LIMIT {
-                self.observed_type_dependency_index =
-                    Some(self.observed_type_dependencies.iter().cloned().collect());
-            }
-        }
+        self.state.observe_type_dependency(file, name, kind);
     }
 
     fn resolve_value_argument_fact(
@@ -702,19 +748,19 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
             return Ok(ConstValue::Bool(false));
         }
         let symbol = self.host.type_syntax_symbol(text);
-        if let Some(value_substitutions) = self.value_substitutions
+        if let Some(value_substitutions) = &self.state.value_substitutions
             && let Some(value) = value_substitutions.get(&symbol)
         {
             return Ok(*value);
         }
-        if let Some(type_substitutions) = self.type_substitutions
+        if let Some(type_substitutions) = &self.state.type_substitutions
             && let Some(ty) = type_substitutions.get(&symbol)
         {
             return Ok(ConstValue::Type(*ty));
         }
         if let Some(info) = self
             .host
-            .type_syntax_value_const(self.root_authority.file(), symbol)
+            .type_syntax_value_const(self.state.root_authority.file(), symbol)
         {
             return Ok(info.value);
         }
@@ -725,7 +771,7 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
                     text, constructor
                 ),
             },
-            self.span,
+            self.state.span,
         ))
     }
 }
@@ -1071,5 +1117,57 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// saturated value is never used for real allocation.
     pub(crate) fn abi_slot_count(&self, ty: Type) -> u32 {
         self.body_type_pool().provisional_abi_slot_count(ty)
+    }
+}
+
+#[cfg(test)]
+mod type_syntax_provider_state_tests {
+    use super::*;
+
+    #[test]
+    fn dependencies_survive_reborrows_and_flush_once() {
+        let mut state = TypeSyntaxProviderState::new(
+            Span::new(0, 1),
+            TypeRootAuthority::in_file(FileId::new(0)),
+            SemaTypeResolutionContext::Type,
+            None,
+            None,
+        );
+
+        // These calls model separate short-lived provider borrows. The state
+        // owns ordering and deduplication, so neither borrow can lose
+        // observations before the host flushes them.
+        state.observe_type_dependency(
+            FileId::new(1),
+            "Outer".to_owned(),
+            super::super::DeclarationTypeDependencyTargetKind::Struct,
+        );
+        state.observe_type_dependency(
+            FileId::new(2),
+            "Inner".to_owned(),
+            super::super::DeclarationTypeDependencyTargetKind::Enum,
+        );
+        state.observe_type_dependency(
+            FileId::new(1),
+            "Outer".to_owned(),
+            super::super::DeclarationTypeDependencyTargetKind::Struct,
+        );
+
+        assert_eq!(
+            state.take_observed_type_dependencies(),
+            vec![
+                (
+                    FileId::new(1),
+                    "Outer".to_owned(),
+                    super::super::DeclarationTypeDependencyTargetKind::Struct,
+                ),
+                (
+                    FileId::new(2),
+                    "Inner".to_owned(),
+                    super::super::DeclarationTypeDependencyTargetKind::Enum,
+                ),
+            ]
+        );
+        assert!(state.take_observed_type_dependencies().is_empty());
     }
 }
