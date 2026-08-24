@@ -278,14 +278,16 @@ buck2_bin() {
     printf '%s\n' "${RUE_AFFECTED_BUCK2:-$repo_root/buck2}"
 }
 
-# `buck2` prints the cell (`root//:foo`); parse-btd-impacted.py has already
-# stripped it from the impacted list. One spelling, so set membership below is
-# exact rather than a match across two forms.
+# `buck2` prints the cell (`root//:foo`); configured queries may also append a
+# configuration (`root//:foo (cfg)`). parse-btd-impacted.py has already stripped
+# the cell from impacted lists. Normalize all three spellings so set membership
+# below is exact rather than a match across graph-query output formats.
 normalize_cell() {
-    sed 's|^root//|//|'
+    sed -E 's|^root//|//|; s| \([^()]*\)$||'
 }
 
-# The crate-scoped corpus actions a build-verification step must not name.
+# The crate-scoped targets a build-verification step must not name when their
+# dependency closure reaches a corpus action owned by a required lane.
 #
 # `cached_corpus_suite` splits a corpus in two (see corpus.bzl): a
 # `_corpus_action` genrule that RUNS the harness, and a thin `sh_test` that
@@ -303,9 +305,11 @@ normalize_cell() {
 # `test (linux-x64-oracle-diff*)` lanes that exist to own them, on a second
 # runner, at the same execution configuration (RUE-1511).
 #
-# The property is the rule kind, so the rule kind is what this asks the live
-# graph. Any corpus added anywhere is covered, including one added after this
-# was written.
+# The invariant is two graph operations: `_corpus_action` nodes in
+# `deps(required selection)` establish the owned actions, then
+# `rdeps(//crates/..., owned actions)` establishes the exact crate exclusion
+# set. Any corpus added anywhere is covered, including one added after this was
+# written; no `NAME-action` convention is involved.
 #
 # WHAT THIS GIVES UP, stated plainly. The lanes deferred to are themselves
 # gated by this determinator, while the unnarrowed premerge build was not: it
@@ -316,9 +320,9 @@ normalize_cell() {
 # deliberate reduction, not an oversight: `buck2 build //crates/...` never
 # reached the root-level `//:cli-tests-*`/`//:spec-tests` actions either, so
 # those corpora have had no premerge backstop since RUE-1119, and this makes
-# oracle-diff consistent with them rather than uniquely privileged. The narrowed
-# spelling keeps a stronger guarantee, because `buck.deps` puts the action in
-# its own `sh_test`'s closure: an impacted action drags its test in with it.
+# oracle-diff consistent with them rather than uniquely privileged. The same
+# reverse-dependency exclusion set applies to both scope spellings: it removes
+# every impacted wrapper, carrier, and action that reaches an owned action.
 #
 # `SELECTABLE_CORPUS` now has a second consumer with the opposite failure
 # direction from its first. For selection, an unknown entry fails safe toward
@@ -329,44 +333,23 @@ normalize_cell() {
 #
 # FAIL-CLOSED ON COVERAGE, like every other decision in this file. Today the
 # premerge build step is accidentally the thing that *executes* these corpora,
-# so dropping them is only safe where some required lane demonstrably runs the
-# corpus instead. An action is deferred only when its test target is one
-# `test.sh` runs in this same lane (premerge tier, and not held back by the
-# dedicated-lane or CLI-shard filters that invocation applies), or one the
-# platform-corpus inventory above gives a lane of its own. Anything else stays
-# in the build, loudly: over-building costs wall time, and a corpus nothing runs
-# is the RUE-924 false green. `cached_corpus_suite` names the action
-# `NAME-action` for the test `NAME`, so that mapping is the rule's own
-# construction rather than an inference about the graph.
+# so dropping them is only safe where the required selection demonstrably owns
+# the action. The configured dependency query derives that ownership from
+# `deps(required selection)`; anything outside it stays safely in the build.
+# Over-building costs wall time, and a corpus nothing runs is the RUE-924 false
+# green.
 #
 # Fails non-zero when Buck cannot answer, and the caller then builds the corpus
 # actions exactly as it did before.
-deferred_corpus_actions() {
-    local buck2 actions covered action test_target query
+deferred_corpus_targets() {
+    local buck2 covered query covered_expr joined
     buck2="$(buck2_bin)"
 
-    # Buck's own error reaches stderr rather than being discarded. The whole
-    # design is "fail open loudly", and swallowing the one line that explains
-    # why leaves a CI log saying only that something did not work — a nested
-    # `buck2` invocation, a cold daemon, and a syntax error read identically.
-    if ! actions="$("$buck2" uquery "kind('_corpus_action', //crates/...)")"; then
-        echo "affected-targets: could not query crate-scoped corpus actions" >&2
-        return 1
-    fi
-    # The query lives in its own variable rather than inline, because the
-    # inline spelling ran several lines and lost its closing `"`: the `)`
-    # ending the command substitution was followed by `; then` instead of `)"`,
-    # so the quote opened before `$(` never closed and bash read to end of file
-    # looking for it — "unexpected EOF while looking for matching `\"'",
-    # reported several lines later at an innocent line.
-    #
-    # Correcting the note left here when that was repaired: this is not a Bash
-    # 3.2 limit. A `$(...)` whose body spans a line continuation and contains a
-    # quoted argument with parentheses parses on 3.2.57 and on 5.2.15 alike;
-    # the missing quote was the whole defect, and every bash rejects it. Hence
-    # RUE-1512 — `scripts/validate-shell-bash-baseline.py` now runs `bash -n`
-    # over every script, because its construct table could not see this: a
-    # syntax error is not a construct to name.
+    # Build the required-lane ownership expression from the same live graph
+    # inventories used by selection. A covered test's transitive deps include
+    # its cached `_corpus_action`; cquery then computes every //crates target
+    # reverse-dependent on those actions. This catches wrappers and transitive
+    # carriers even when their names do not end in `-action` or match the test.
     query="attrfilter(labels, rue_test_tier_premerge, //crates/...)"
     query="$query except (attrfilter(labels, rue_ci_dedicated_lane, //crates/...)"
     query="$query + attrfilter(labels, rue_cli_shard, //crates/...))"
@@ -375,28 +358,32 @@ deferred_corpus_actions() {
         return 1
     fi
 
-    actions="$(normalize_cell <<<"$actions" | grep . || true)"
     covered="$(printf '%s\n%s\n' "$(normalize_cell <<<"$covered")" \
         "$(printf '%s\n' "${SELECTABLE_CORPUS[@]}")" | grep . || true)"
-    [[ -n "$actions" ]] || return 0
+    [[ -n "$covered" ]] || return 0
 
-    while IFS= read -r action; do
-        [[ -n "$action" ]] || continue
-        test_target="${action%-action}"
-        if grep -Fxq "$test_target" <<<"$covered"; then
-            printf '%s\n' "$action"
-        else
-            echo "affected-targets: ${action} runs a corpus no required lane owns;" \
-                 "keeping it in the build scope" >&2
-        fi
-    done <<<"$actions"
+    # cquery takes a set expression, not newline-delimited shell input. Keep
+    # the construction separate from command substitution for Bash 3.2, which
+    # is the system shell on macOS.
+    joined="${covered//$'\n'/ }"
+    covered_expr="set($joined)"
+    query="rdeps(//crates/..., kind('_corpus_action', deps($covered_expr)))"
+    if ! covered="$("$buck2" cquery "$query")"; then
+        # Buck's own error reaches stderr rather than being discarded. The
+        # caller turns this non-zero result into the prior unfiltered scope;
+        # over-building costs wall time, never coverage.
+        echo "affected-targets: could not query deferred corpus dependency closure" >&2
+        return 1
+    fi
+    covered="$(normalize_cell <<<"$covered" | grep . || true)"
+    [[ -n "$covered" ]] && printf '%s\n' "$covered"
     return 0
 }
 
 # The targets a *pattern* lane may build, for lanes whose scope is
 # `//crates/...` rather than a fixed list. With an impacted list it is the
 # narrowed subset; without one it is the whole pattern. Both are the same scope
-# minus the same corpus actions, because both lose independently: fixing only
+# minus the same deferred targets, because both lose independently: fixing only
 # the narrowed spelling leaves the common case — a compiler change, which
 # impacts more than NARROW_LIMIT targets and so is never narrowed — building
 # the corpora exactly as before.
@@ -411,7 +398,7 @@ deferred_corpus_actions() {
 build_scope() {
     local file="${1:-}"
     local deferred kept buck2 expr scope
-    deferred="$(deferred_corpus_actions)" || deferred=""
+    deferred="$(deferred_corpus_targets)" || deferred=""
 
     if [[ -z "$file" ]]; then
         # The unnarrowed scope. `buck2 build` accepts patterns and target

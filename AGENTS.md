@@ -74,7 +74,7 @@ scripts/rue build                    # build the compiler and print its path
 scripts/rue exec prog.rue            # compile and run a quick program
 RUE="$(scripts/rue-bin)"; "$RUE" main.rue -o out
 scripts/rue quick                    # fast unit suite
-scripts/rue premerge                 # canonical required-CI tier
+scripts/rue premerge                 # local premerge test tier (not all required CI)
 scripts/rue slow                     # canonical scheduled slow tier
 scripts/rue stress                   # canonical opt-in stress tier
 scripts/rue all                      # canonical union of all tiers
@@ -89,6 +89,9 @@ scripts/rue storage clean            # reclaim stale Buck2 artifacts host-wide
 scripts/rue cache install            # securely install the shared cache config
 scripts/rue cache apply --all        # provision current Git/Codex worktrees
 ```
+
+When corpus-affecting cases change, use this focused check:
+`./buck2 test //crates/rue-oracle-diff:oracle-diff-test`.
 
 Use `scripts/rue-bin` to obtain an absolute compiler path. Do not reconstruct
 one from Buck output with `--show-output` and `awk`.

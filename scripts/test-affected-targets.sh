@@ -284,28 +284,99 @@ scope_root="$(mktemp -d)"
 mkdir -p "$scope_root/bin"
 cat >"$scope_root/bin/fake-buck" <<'FAKEBUCK'
 #!/usr/bin/env bash
-# Answers the three queries build_scope() makes, and nothing else.
-case "$2" in
-  "kind('_corpus_action', //crates/...)")
-    printf '%s\n' \
-      root//crates/rue-oracle-diff:oracle-diff-test-action \
-      root//crates/rue-oracle-diff:oracle-diff-spec-test-action \
-      root//crates/rue-newthing:newthing-test-action ;;
-  attrfilter*)
-    # The premerge-tier selection. Deliberately omits `newthing-test`, so that
-    # action is owned by no lane.
-    printf '%s\n' \
-      root//crates/rue-oracle-diff:oracle-diff-test \
-      root//crates/rue-oracle-diff:oracle-diff-spec-test ;;
-  //crates/...*)
-    printf '%s\n' \
-      root//crates/rue-compiler:rue-compiler \
-      root//crates/rue-span:rue-span-test ;;
-  *) echo "fake-buck: unexpected query: $2" >&2; exit 1 ;;
+# Answers the ownership and closure queries build_scope() makes, and nothing
+# else. The cquery result is a reverse-dependency closure, not a name-derived
+# action/test pair: `corpus-carrier` intentionally has no matching suffix.
+contains_target() {
+  local query="$1" target="$2" tokenized
+  tokenized="${query//set(/ }"
+  tokenized="${tokenized//)/ }"
+  case " $tokenized " in
+    *" $target "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+case "$1" in
+  uquery)
+    case "$2" in
+      attrfilter*)
+        # The premerge-tier selection. Deliberately omits `newthing-test`, so
+        # that action is owned by no lane.
+        printf '%s\n' \
+          root//crates/rue-oracle-diff:oracle-diff-test \
+          root//crates/rue-oracle-diff:oracle-diff-spec-test ;;
+      //crates/...*)
+        if [[ "$2" == *' except set('* ]] \
+            && contains_target "$2" '//crates/rue-oracle-diff:oracle-diff-test-action' \
+            && contains_target "$2" '//crates/rue-oracle-diff:oracle-diff-test' \
+            && contains_target "$2" '//crates/rue-oracle-diff:corpus-carrier' \
+            && contains_target "$2" '//crates/rue-oracle-diff:oracle-diff-spec-test-action' \
+            && contains_target "$2" '//crates/rue-oracle-diff:oracle-diff-spec-test'; then
+          # The production query must subtract every reverse-dependent target
+          # returned by cquery. If it drops the except/set expression, this
+          # branch deliberately returns the pre-fix full crate scope instead.
+          printf '%s\n' \
+            root//crates/rue-compiler:rue-compiler \
+            root//crates/rue-newthing:newthing-test-action \
+            root//crates/rue-span:rue-span-test
+        else
+          printf '%s\n' \
+            root//crates/rue-compiler:rue-compiler \
+            root//crates/rue-oracle-diff:oracle-diff-test-action \
+            root//crates/rue-oracle-diff:oracle-diff-test \
+            root//crates/rue-oracle-diff:corpus-carrier \
+            root//crates/rue-newthing:newthing-test-action \
+            root//crates/rue-span:rue-span-test
+        fi
+        ;;
+      *) echo "fake-buck: unexpected uquery: $2" >&2; exit 1 ;;
+    esac
+    ;;
+  cquery)
+    case "$2" in
+      deps\(set\(*\))
+        # Model the graph when the test asks whether a produced scope still
+        # reaches a deferred action. A scope containing the carrier or wrapper
+        # would expose the action here; a clean scope returns no deferred
+        # action at all.
+        if [[ "$2" == *'rue-oracle-diff:oracle-diff-test'* \
+            || "$2" == *'rue-oracle-diff:corpus-carrier'* ]]; then
+          printf '%s\n' root//crates/rue-oracle-diff:oracle-diff-test-action
+        fi
+        if [[ "$2" == *'rue-oracle-diff:oracle-diff-spec-test'* ]]; then
+          printf '%s\n' root//crates/rue-oracle-diff:oracle-diff-spec-test-action
+        fi
+        ;;
+      rdeps\(//crates/...,\ kind\(\'_corpus_action\',\ deps\(set\(*\)\)\)\))
+        # Include configured labels to pin normalization and a transitive
+        # carrier whose spelling is unrelated to its action.
+        printf '%s\n' \
+          'root//crates/rue-oracle-diff:oracle-diff-test-action (linux)' \
+          'root//crates/rue-oracle-diff:oracle-diff-test (linux)' \
+          'root//crates/rue-oracle-diff:corpus-carrier (linux)' \
+          'root//crates/rue-oracle-diff:oracle-diff-spec-test-action (linux)' \
+          'root//crates/rue-oracle-diff:oracle-diff-spec-test (linux)' ;;
+      *) echo "fake-buck: unexpected cquery: $2" >&2; exit 1 ;;
+    esac
+    ;;
+  *) echo "fake-buck: unexpected command: $1" >&2; exit 1 ;;
 esac
 FAKEBUCK
 chmod +x "$scope_root/bin/fake-buck"
 SCOPED=("${AFFECTED[@]}")
+
+assert_scope_closure_clear() { # assert_scope_closure_clear <description> <scope>
+  local desc="$1" scope="$2" labels closure
+  labels="${scope//$'\n'/ }"
+  closure="$("$scope_root/bin/fake-buck" cquery "deps(set($labels))")"
+  TESTS=$((TESTS + 1))
+  if grep -Fq -- '//crates/rue-oracle-diff:oracle-diff-test-action' <<<"$closure" \
+      || grep -Fq -- '//crates/rue-oracle-diff:oracle-diff-spec-test-action' <<<"$closure"; then
+    fail "narrow: $desc still reaches a deferred corpus action"
+  else
+    pass "narrow: $desc dependency closure has no deferred corpus action"
+  fi
+}
 
 # `build-scope` is what keeps a pattern lane's narrowing a SUBSET of what the
 # lane built before: exactly `//crates/...`, the scope linux-premerge built
@@ -323,8 +394,9 @@ SCOPED=("${AFFECTED[@]}")
 # whose median is 304s — concurrently with the dedicated
 # `test (linux-x64-oracle-diff*)` lanes that exist to own them. The exclusion no
 # longer needs labels on the action, which is what "tracked separately" was
-# waiting for: it asks the live graph for `kind('_corpus_action', ...)` and
-# defers only actions whose test target a required lane demonstrably runs.
+# waiting for: it derives owned `_corpus_action` nodes from
+# `deps(required selection)` and excludes the same `rdeps(//crates/..., owned)`
+# closure from either build-scope spelling.
 printf '%s\n' \
   //crates/rue-compiler:rue-compiler \
   //:cli-tests \
@@ -333,37 +405,45 @@ printf '%s\n' \
   //:spec-tests-action \
   //:cli-tests-shard-2-action \
   //crates/rue-oracle-diff:oracle-diff-test-action \
+  //crates/rue-oracle-diff:corpus-carrier \
   >"$narrow_root/mixed"
 TESTS=$((TESTS + 1))
-if [ "$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope "$narrow_root/mixed" | tr '\n' ' ')" \
+narrowed_scope="$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope "$narrow_root/mixed")"
+if [ "$(tr '\n' ' ' <<<"$narrowed_scope")" \
      = "//crates/rue-compiler:rue-compiler //crates/rue-codegen:rue-codegen-test " ]; then
   pass "narrow: build-scope keeps the crate scope and drops every corpus action"
 else
   fail "narrow: build-scope did not restore the //crates/... scope"
 fi
+assert_scope_closure_clear "narrowed build-scope" "$narrowed_scope"
 
-# RUE-1511: `build-scope` asks the live graph which targets are corpus actions,
-# so these cases stub Buck exactly as the end-to-end decision case below does.
+# RUE-1788: `build-scope` applies one configured live-graph reverse-dependency
+# closure to both narrowed and unnarrowed scopes, so these cases stub Buck
+# exactly as the end-to-end decision case below does.
 # A real `./buck2` here would be a RECURSIVE Buck invocation — this suite runs
 # as an sh_test under buck2, which refuses the nested query with rc=3 — and the
 # suite's contract is that it needs neither network nor Buck.
 
 # The unnarrowed spelling loses independently of the narrowed one, and it is the
 # common case — a compiler change impacts more than NARROW_LIMIT targets, so it
-# is never narrowed. Both must drop the same actions, or fixing one leaves
-# premerge building the corpora exactly as before.
+# is never narrowed. Both must apply the same reverse-dependency exclusion, or
+# fixing one leaves premerge building the corpora exactly as before.
 TESTS=$((TESTS + 1))
 unnarrowed="$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope 2>/dev/null)"
-if [ -n "$unnarrowed" ] && ! grep -q -- '-action$' <<<"$unnarrowed"; then
-  pass "narrow: build-scope with no list expands the pattern without any corpus action"
+if [ -n "$unnarrowed" ] \
+    && grep -Fxq -- '//crates/rue-newthing:newthing-test-action' <<<"$unnarrowed" \
+    && ! grep -Fq -- '//crates/rue-oracle-diff:oracle-diff-test-action' <<<"$unnarrowed" \
+    && ! grep -Fq -- '//crates/rue-oracle-diff:corpus-carrier' <<<"$unnarrowed"; then
+  pass "narrow: build-scope with no list excludes the deferred dependency closure"
 else
-  fail "narrow: build-scope with no list kept a corpus action or produced nothing"
+  fail "narrow: build-scope with no list kept a deferred closure or dropped an unowned action"
 fi
+assert_scope_closure_clear "unnarrowed build-scope" "$unnarrowed"
 
-# FAIL CLOSED is the property the whole change rests on: an action whose test
-# target no required lane runs must stay in the build, because a corpus nothing
-# executes is the RUE-924 false green. `newthing-test-action` is owned by no
-# lane in the stub, so it must survive both spellings.
+# FAIL CLOSED is the property the whole change rests on: an action no required
+# lane runs must stay in the build, because a corpus nothing executes is the
+# RUE-924 false green. `newthing-test-action` is owned by no lane in the stub,
+# so it must survive both spellings.
 printf '%s\n' \
   //crates/rue-oracle-diff:oracle-diff-test-action \
   //crates/rue-newthing:newthing-test-action \
@@ -385,6 +465,52 @@ if [ "$degraded" = "//crates/rue-oracle-diff:oracle-diff-test-action //crates/ru
   pass "narrow: an unanswerable Buck query falls open to the unfiltered scope"
 else
   fail "narrow: a failed query did not fall open (got '$degraded')"
+fi
+
+# A successful ownership query followed by a failed configured closure query
+# must have the same conservative result. Exercise both scope spellings: the
+# narrowed list remains intact, and the unnarrowed pattern remains expanded.
+cat >"$scope_root/bin/closure-fail-buck" <<'FAILING_CLOSURE'
+#!/usr/bin/env bash
+case "$1" in
+  uquery)
+    case "$2" in
+      attrfilter*)
+        printf '%s\n' \
+          root//crates/rue-oracle-diff:oracle-diff-test \
+          root//crates/rue-oracle-diff:oracle-diff-spec-test ;;
+      //crates/...*)
+        printf '%s\n' \
+          root//crates/rue-compiler:rue-compiler \
+          root//crates/rue-oracle-diff:oracle-diff-test-action \
+          root//crates/rue-newthing:newthing-test-action \
+          root//crates/rue-span:rue-span-test ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  cquery)
+    echo "closure-fail-buck: configured closure unavailable" >&2
+    exit 1
+    ;;
+  *) exit 1 ;;
+esac
+FAILING_CLOSURE
+chmod +x "$scope_root/bin/closure-fail-buck"
+TESTS=$((TESTS + 1))
+closure_failed_narrow="$(RUE_AFFECTED_BUCK2="$scope_root/bin/closure-fail-buck" \
+  "${AFFECTED[@]}" build-scope "$narrow_root/unowned" 2>/dev/null | tr '\n' ' ')"
+if [ "$closure_failed_narrow" = "//crates/rue-oracle-diff:oracle-diff-test-action //crates/rue-newthing:newthing-test-action //crates/rue-span:rue-span-test " ]; then
+  pass "narrow: a failed configured closure keeps the narrowed scope"
+else
+  fail "narrow: a failed configured closure changed the narrowed scope (got '$closure_failed_narrow')"
+fi
+TESTS=$((TESTS + 1))
+closure_failed_unnarrowed="$(RUE_AFFECTED_BUCK2="$scope_root/bin/closure-fail-buck" \
+  "${AFFECTED[@]}" build-scope 2>/dev/null | tr '\n' ' ')"
+if [ "$closure_failed_unnarrowed" = "//crates/rue-compiler:rue-compiler //crates/rue-oracle-diff:oracle-diff-test-action //crates/rue-newthing:newthing-test-action //crates/rue-span:rue-span-test " ]; then
+  pass "narrow: a failed configured closure keeps the unnarrowed scope"
+else
+  fail "narrow: a failed configured closure changed the unnarrowed scope (got '$closure_failed_unnarrowed')"
 fi
 
 # An impacted closure naming only corpora is legitimate — corpus data can change
