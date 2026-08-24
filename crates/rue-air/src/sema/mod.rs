@@ -59,6 +59,11 @@ pub use binding_manifest::{
     SemanticDeclarationShell, SemanticDeclarationShellIdentity, SemanticDefinitionIdentity,
     SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
 };
+pub use comptime::{
+    ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeConstInfo,
+    ComptimeEngine, ComptimeEnv, ComptimeField, ComptimeFile, ComptimeHost, ComptimeIdentity,
+    ComptimeName, ComptimeType, ComptimeValue, PreparedComptimeCall,
+};
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;
 pub(crate) use fact_mode::StructuredTypeSyntax;

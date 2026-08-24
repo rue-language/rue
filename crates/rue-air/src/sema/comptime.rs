@@ -1,6 +1,6 @@
 //! Host-generic canonical compile-time evaluator.
 //!
-//! This module owns every recursive RIR edge for the local comptime path. Hosts
+//! This module owns every recursive RIR edge for compile-time evaluation. Hosts
 //! provide semantic facts and side effects through named hooks; they never walk
 //! child instructions or invoke another evaluator.
 
@@ -13,9 +13,8 @@ use crate::integer_semantics::{CheckedIntegerResult, IntegerType};
 use crate::specialize::MAX_COMPTIME_CALL_DEPTH;
 pub trait ComptimeType: Clone {}
 
-/// Value algebra consumed by the canonical dispatcher.  The surrounding
-/// semantic type system remains local in this migration checkpoint; hosts may
-/// provide any value representation that can carry these four comptime forms.
+/// Value algebra consumed by the canonical dispatcher. Hosts provide any value
+/// representation that can carry these four compile-time forms.
 pub trait ComptimeValue: Clone {
     type Type: ComptimeType;
     fn integer(value: i128) -> Self;
@@ -29,8 +28,8 @@ pub trait ComptimeValue: Clone {
 
 #[derive(Debug, Clone)]
 pub struct ComptimeField<N, T> {
-    pub(crate) name: N,
-    pub(crate) ty: T,
+    pub name: N,
+    pub ty: T,
 }
 
 /// A declaration-level constant fact in the engine's value domain.  The
@@ -38,9 +37,9 @@ pub struct ComptimeField<N, T> {
 /// and a value when that declaration is representable by the current domain.
 #[derive(Debug, Clone)]
 pub struct ComptimeConstInfo<V> {
-    pub(crate) is_pub: bool,
-    pub(crate) span: Span,
-    pub(crate) value: Option<V>,
+    pub is_pub: bool,
+    pub span: Span,
+    pub value: Option<V>,
 }
 
 pub trait ComptimeName: Clone + Eq + Hash {}
@@ -66,16 +65,15 @@ where
     F: ComptimeFile,
     I: ComptimeIdentity,
 {
-    pub(crate) producer: Option<InstRef>,
-    pub(crate) canonical_identity: Option<I>,
-    pub(crate) type_subst: AHashMap<N, T>,
-    pub(crate) value_subst: AHashMap<N, V>,
-    pub(crate) resolved_types: Option<&'a AHashMap<InstRef, T>>,
-    pub(crate) runtime_local_names: AHashSet<N>,
-    pub(crate) runtime_binding_names: AHashSet<N>,
-    pub(crate) locals: AHashMap<N, V>,
-    pub(crate) const_module_members: AHashMap<InstRef, V>,
-    pub(crate) defining_file: Option<F>,
+    pub canonical_identity: Option<I>,
+    pub type_subst: AHashMap<N, T>,
+    pub value_subst: AHashMap<N, V>,
+    pub resolved_types: Option<&'a AHashMap<InstRef, T>>,
+    pub runtime_local_names: AHashSet<N>,
+    pub runtime_binding_names: AHashSet<N>,
+    pub locals: AHashMap<N, V>,
+    pub const_module_members: AHashMap<InstRef, V>,
+    pub defining_file: Option<F>,
 }
 
 impl<'a, V, T, N, F, I> ComptimeEnv<'a, V, T, N, F, I>
@@ -99,9 +97,8 @@ where
         (type_subst, value_subst)
     }
 
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            producer: None,
             canonical_identity: None,
             type_subst: AHashMap::new(),
             value_subst: AHashMap::new(),
@@ -114,9 +111,8 @@ where
         }
     }
 
-    pub(crate) fn with_subst(type_subst: &AHashMap<N, T>, value_subst: &AHashMap<N, V>) -> Self {
+    pub fn with_subst(type_subst: &AHashMap<N, T>, value_subst: &AHashMap<N, V>) -> Self {
         Self {
-            producer: None,
             canonical_identity: None,
             type_subst: type_subst.clone(),
             value_subst: value_subst.clone(),
@@ -727,26 +723,26 @@ mod value_domain_tests {
 }
 
 #[derive(Debug)]
-pub(crate) struct PreparedComptimeCall<V, T, N, F> {
-    pub(crate) name: N,
-    pub(crate) body: InstRef,
-    pub(crate) file: F,
-    pub(crate) span: Span,
-    pub(crate) function_span: Span,
-    pub(crate) callee_types: AHashMap<N, T>,
-    pub(crate) callee_values: AHashMap<N, V>,
+pub struct PreparedComptimeCall<V, T, N, F> {
+    pub name: N,
+    pub body: InstRef,
+    pub file: F,
+    pub span: Span,
+    pub function_span: Span,
+    pub callee_types: AHashMap<N, T>,
+    pub callee_values: AHashMap<N, V>,
 }
 
-pub(crate) type ComptimeArgMode = (rue_rir::RirArgMode, Span);
+pub type ComptimeArgMode = (rue_rir::RirArgMode, Span);
 
-pub(crate) struct ComptimeCallAdmission<A, N> {
-    pub(crate) name: N,
-    pub(crate) payload: A,
+pub struct ComptimeCallAdmission<A, N> {
+    pub name: N,
+    pub payload: A,
 }
 
 /// Semantic host boundary for the canonical dispatcher. No method accepts an
 /// instruction callback or a child RIR reference for evaluation.
-pub(crate) trait ComptimeHost {
+pub trait ComptimeHost {
     type Type: ComptimeType;
     type Value: ComptimeValue<Type = Self::Type>;
     type Name: ComptimeName;
@@ -958,13 +954,13 @@ pub(crate) trait ComptimeHost {
     );
 }
 
-pub(crate) struct ComptimeEngine<'e, H: ComptimeHost> {
+pub struct ComptimeEngine<'e, H: ComptimeHost> {
     host: &'e mut H,
     call_depth: usize,
 }
 
 impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
-    pub(crate) fn new(host: &'e mut H) -> Self {
+    pub fn new(host: &'e mut H) -> Self {
         Self {
             host,
             call_depth: 0,
@@ -975,7 +971,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         self.host.name_from_symbol(symbol)
     }
 
-    pub(crate) fn evaluate(
+    pub fn evaluate(
         &mut self,
         inst_ref: InstRef,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
@@ -1041,7 +1037,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         self.run_prepared(plan, call_span)
     }
 
-    pub(crate) fn evaluate_prepared_root(
+    pub fn evaluate_prepared_root(
         &mut self,
         plan: PreparedComptimeCall<H::Value, H::Type, H::Name, H::File>,
     ) -> Result<Option<H::Value>, H::Failure> {
@@ -1073,7 +1069,6 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         )?;
         let body = plan.body;
         let mut child_env = ComptimeEnv::with_subst(&plan.callee_types, &plan.callee_values);
-        child_env.producer = Some(body);
         child_env.canonical_identity = Some(canonical_identity);
         child_env.defining_file = Some(plan.file.clone());
         self.call_depth += 1;
@@ -1268,7 +1263,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
             // Float literals stop here for the same reason they stop in
             // `analyze_inst_dispatch` (ADR-0065, RUE-1069): there is no
-            // `comptime_float` value in `ConstValue` yet. Naming the real
+            // `comptime_float` value in the host's value domain yet. Naming the real
             // reason matters more here than elsewhere — falling through to
             // the generic "not knowable at compile time" would be actively
             // wrong about a literal, which is the most compile-time-knowable
@@ -1657,7 +1652,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // Comptime-known `match`: evaluate the scrutinee, select the first
             // arm whose pattern matches, and reduce to that arm's body value
             // (spec 4.14:19, RUE-262). An enum-variant (`Path`) pattern isn't
-            // representable as a `ConstValue`, and a non-constant scrutinee is
+            // representable in the host's value domain, and a non-constant scrutinee is
             // not decidable here — both make the `match` non-evaluable.
             InstData::Match { scrutinee, arms } => {
                 let scrutinee = *scrutinee;
@@ -1911,7 +1906,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // An array-repeat expression `[T; N]` used as a comptime *type* value
             // (RUE-565). The surface form `[i32; 2]` in expression position parses
             // as an array-repeat literal whose element is a type value; when that
-            // element reduces to a `ConstValue::Type`, the whole expression is the
+            // element reduces to a type-valued comptime value, the whole expression is the
             // array TYPE `[T; N]` — a legal type-constructor argument
             // (`Option([i32; 2])`). A repeat over a *runtime* element is a genuine
             // array value literal and is not comptime-foldable here (`None`).

@@ -35,6 +35,28 @@ fn integer_consumers_use_one_representation_independent_kernel() {
 #[test]
 fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     let comptime = include_str!("sema/comptime.rs");
+    let facade = include_str!("lib.rs");
+    for export in [
+        "ComptimeAnonymousKind",
+        "ComptimeArgMode",
+        "ComptimeCallAdmission",
+        "ComptimeConstInfo",
+        "ComptimeEngine",
+        "ComptimeEnv",
+        "ComptimeField",
+        "ComptimeFile",
+        "ComptimeHost",
+        "ComptimeIdentity",
+        "ComptimeName",
+        "ComptimeType",
+        "ComptimeValue",
+        "PreparedComptimeCall",
+    ] {
+        assert!(
+            facade.contains(export),
+            "canonical comptime export missing: {export}"
+        );
+    }
     let test_start = comptime
         .find("#[cfg(test)]\nmod value_domain_tests")
         .expect("value-domain test module boundary");
@@ -66,6 +88,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "SemanticBodyExportFailure",
         "CompileError",
         "CompileResult",
+        "ConstValue",
         "ErrorKind",
         "comptime_panic_err",
         "ProducerFailure",
@@ -76,8 +99,14 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
             "canonical comptime production leaked local symbol: {forbidden}"
         );
     }
+    assert!(
+        !production
+            .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+            .any(|token| token == "ConstInfo"),
+        "canonical comptime production leaked the local ConstInfo identifier"
+    );
     let engine_start = production
-        .find("pub(crate) struct ComptimeEngine")
+        .find("pub struct ComptimeEngine")
         .expect("canonical comptime engine declaration");
     let contract = &production[..engine_start];
     for forbidden in production_forbidden {
@@ -91,6 +120,8 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     assert!(contract.contains("type Failure;"));
     assert!(contract.contains("Self::CanonicalIdentity"));
     assert!(contract.contains("Self::File,"));
+    assert!(!production.contains("eval_const_expr"));
+    assert!(!production.contains("ComptimeEngine::new"));
 
     let env_source = include_str!("sema/comptime.rs");
     let env_start = env_source
