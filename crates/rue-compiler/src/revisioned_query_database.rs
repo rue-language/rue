@@ -8108,11 +8108,9 @@ impl SemanticConstEvaluator<'_, '_> {
                     &value.anonymous_nominals,
                     &value.dependencies,
                     &value.deferred_ownership,
-                    Some(
-                        crate::semantic_query_nucleus::DeferredOwnershipApplication {
-                            declaration: self.declaration.declaration.clone(),
-                            call_ordinal,
-                        },
+                    &crate::durable_comptime::DurableComptimeApplicationPolicy::apply_at_parent_call(
+                        self.declaration.declaration.clone(),
+                        call_ordinal,
                     ),
                 );
                 Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
@@ -8842,13 +8840,13 @@ impl SemanticNucleusTypeProvider<'_> {
     fn merge_comptime_effects(
         &mut self,
         effects: crate::durable_comptime::DurableComptimeEffects,
-        application: Option<crate::semantic_query_nucleus::DeferredOwnershipApplication>,
+        policy: &crate::durable_comptime::DurableComptimeApplicationPolicy,
     ) {
         effects.apply_to(
             &mut self.anonymous_nominals,
             &mut self.dependencies,
             &mut self.deferred_ownership,
-            application,
+            policy,
         );
     }
 
@@ -10852,16 +10850,17 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         let queried = self.query(query)?;
         match queried {
             V::ComptimeCall(value) => {
-                self.anonymous_nominals.extend(
-                    value
-                        .anonymous_nominals
-                        .iter()
-                        .cloned()
-                        .map(|value| (value.identity.clone(), value)),
+                let mut effects = crate::durable_comptime::DurableComptimeEffects::default();
+                effects.merge_projection(
+                    &value.anonymous_nominals,
+                    &value.dependencies,
+                    &value.deferred_ownership,
+                    &crate::durable_comptime::DurableComptimeApplicationPolicy::preserve(),
                 );
-                self.dependencies.extend(value.dependencies.iter().cloned());
-                self.deferred_ownership
-                    .extend(value.deferred_ownership.iter().cloned());
+                self.merge_comptime_effects(
+                    effects,
+                    &crate::durable_comptime::DurableComptimeApplicationPolicy::preserve(),
+                );
                 match value.result {
                     P::Type(value) => Ok(Some(rue_air::SemanticComptimeCallResult::Type(value))),
                     P::Value(value) => Ok(Some(rue_air::SemanticComptimeCallResult::Value(value))),
@@ -13864,7 +13863,10 @@ impl RevisionedQueryDatabase {
                                                 (result, effects)
                                             };
                                             let (result, effects) = result;
-                                            provider.merge_comptime_effects(effects, None);
+                                            provider.merge_comptime_effects(
+                                                effects,
+                                                &crate::durable_comptime::DurableComptimeApplicationPolicy::preserve(),
+                                            );
                                             match result {
                                                 Ok(EvaluatedSemanticConst::Module(target)) => {
                                                     if declared_type.is_some() {
@@ -14381,7 +14383,10 @@ impl RevisionedQueryDatabase {
                                                 (result, effects)
                                             };
                                             let (result, effects) = result;
-                                            provider.merge_comptime_effects(effects, None);
+                                            provider.merge_comptime_effects(
+                                                effects,
+                                                &crate::durable_comptime::DurableComptimeApplicationPolicy::preserve(),
+                                            );
                                             match result {
                                                 Ok(EvaluatedSemanticConst::Value(value))
                                                     if matches!(value.value, crate::durable_semantics::DurableConstValue::Type(_)) =>

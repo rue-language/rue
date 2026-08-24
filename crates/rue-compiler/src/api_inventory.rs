@@ -3116,9 +3116,10 @@ fn durable_comptime_services_are_named_authority_operations() {
         "DurableComptimeForeignCallAuthority",
         "DurableComptimeEffects",
         "DurableComptimeCallLifecycle",
+        "DurableComptimeCallEdge",
         "DurableComptimeCallTicket",
         "DurableComptimeLifecycleError",
-        "from_admitted",
+        "DurableComptimeApplicationPolicy",
         "resolve_candidate",
         "resolve_identity",
         "resolve_const",
@@ -3129,6 +3130,11 @@ fn durable_comptime_services_are_named_authority_operations() {
         "observe_anonymous_nominal",
         "observe_deferred_ownership",
         "merge_projection",
+        "merge_ready_projection",
+        "merge_ready_lookup",
+        "prepare_expression_edge",
+        "prepare_structured_edge",
+        "ticket_from_admitted_edge",
         "merge_child",
         "finish_root",
     ] {
@@ -3154,16 +3160,87 @@ fn durable_comptime_services_are_named_authority_operations() {
         !context_block.contains("pub(crate)"),
         "durable call context identity fields must remain private"
     );
+    assert!(context_block.contains("application_policy"));
+    assert!(!context_block.contains("call_ordinal"));
     assert_eq!(facade.matches("fn merge_effects_into(").count(), 1);
     assert_eq!(facade.matches("merge_effects_into(").count(), 4);
     let ticket_block = facade
-        .split("/// Non-clone lifecycle capability issued only after ordered call admission.")
+        .split("/// Non-clone edge capability issued after parent validation and before lookup.")
         .nth(1)
-        .and_then(|source| source.split("}\n\n#[allow(dead_code)]").next())
-        .expect("durable call ticket block");
+        .and_then(|source| {
+            source
+                .split("/// Non-clone lifecycle capability issued only after an edge is admitted.")
+                .next()
+        })
+        .expect("durable call capability block");
     assert!(!ticket_block.contains("Clone"));
+    assert!(!facade.contains("impl Clone for DurableComptimeCallEdge"));
     assert!(!facade.contains("impl Clone for DurableComptimeCallTicket"));
-    assert_eq!(facade.matches("gate.application.is_none()").count(), 1);
+    let edge_fields = facade
+        .split("pub(crate) struct DurableComptimeCallEdge {")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("}\n\n/// Non-clone lifecycle capability")
+                .next()
+        })
+        .expect("durable call edge block");
+    assert!(!edge_fields.contains("pub(crate)"));
+    assert!(!edge_fields.contains("context:"));
+    assert!(edge_fields.contains("application_policy:"));
+    let ready_projection = facade
+        .split("pub(crate) fn merge_ready_projection(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n    /// Consume a foreign-call lookup")
+                .next()
+        })
+        .expect("ready projection lifecycle operation");
+    assert!(ready_projection.contains("edge: &mut DurableComptimeCallEdge"));
+    assert!(!ready_projection.contains("policy:"));
+    assert!(ready_projection.contains("edge.application_policy"));
+    assert!(facade.contains("pub(crate) fn prepare_expression_edge("));
+    assert!(facade.contains("pub(crate) fn prepare_structured_edge("));
+    let direct_prepare_prefix = facade
+        .split("pub(crate) fn prepare(\n")
+        .next()
+        .expect("test-only direct ticket preparation helper");
+    assert!(
+        direct_prepare_prefix
+            .rsplit("\n")
+            .take(4)
+            .any(|line| line.contains("#[cfg(test)]")),
+        "direct ticket preparation bypasses the pre-lookup edge seam"
+    );
+    for helper in ["from_admitted_expression", "from_admitted_structured"] {
+        let helper_prefix = facade
+            .split(&format!("pub(crate) fn {helper}"))
+            .next()
+            .expect("test-only admitted helper");
+        assert!(
+            helper_prefix
+                .rsplit("\n")
+                .take(4)
+                .any(|line| line.contains("#[cfg(test)]")),
+            "admitted helper bypasses the pre-lookup edge seam: {helper}"
+        );
+    }
+    assert!(facade.contains("ticket_from_admitted_edge"));
+    assert_eq!(
+        production_facade
+            .matches("gate.application.is_none()")
+            .count(),
+        1
+    );
+    let finish = facade
+        .split("pub(crate) fn finish<V, F>(")
+        .nth(1)
+        .and_then(|source| source.split("\n    pub(crate) fn effects(").next())
+        .expect("durable lifecycle finish implementation");
+    assert!(!finish.contains("DeferredOwnershipApplication {"));
+    assert!(finish.contains("scope.merge_child(child, &preserve)"));
+    assert!(finish.contains(".merge_child(scope, &context.application_policy)"));
 
     let database = include_str!("revisioned_query_database.rs");
     let target_kernel = facade
