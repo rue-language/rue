@@ -3903,8 +3903,34 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         } else {
             None
         };
+        // Compare at the LENGTH's width. The fat pointer's length is `u64`
+        // while the index carries the source expression's own integer type, so
+        // `Lt` of the two was a mixed-width comparison: codegen takes the
+        // comparison width from the left operand, which truncated the length
+        // to the index's width (`cmp ebx, r14d` for an `i32` index). Benign
+        // only while every length stays under the index type's range -- the
+        // same shape as RUE-87, which was a real out-of-bounds read.
+        //
+        // Widening rather than narrowing the length is what keeps the check
+        // sound: a narrow index cannot represent a large length, so narrowing
+        // would compare against a truncated bound. The cast cannot trap: the
+        // signed lower-bound check above has already rejected negatives, and
+        // every non-negative value of every integer type Rue has fits in
+        // `u64` (RUE-1777).
+        let widened_index_ref = if index_result.ty == Type::U64 {
+            index_result.air_ref
+        } else {
+            air.add_inst(AirInst {
+                data: AirInstData::IntCast {
+                    value: index_result.air_ref,
+                    from_ty: index_result.ty,
+                },
+                ty: Type::U64,
+                span,
+            })
+        };
         let upper_bound_ref = air.add_inst(AirInst {
-            data: AirInstData::Lt(index_result.air_ref, len_ref),
+            data: AirInstData::Lt(widened_index_ref, len_ref),
             ty: Type::BOOL,
             span,
         });
