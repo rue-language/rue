@@ -792,6 +792,157 @@ mod tests {
     }
 
     #[test]
+    fn test_threads_one_branch_side_preserving_other_edge_args() {
+        let mut cfg = make_cfg();
+        let cond = push(&mut cfg, CfgInstData::BoolConst(true), Type::BOOL);
+        let forwarded_arg = push(&mut cfg, CfgInstData::Const(10), Type::I32);
+        let untouched_arg_a = push(&mut cfg, CfgInstData::Const(20), Type::I32);
+        let untouched_arg_b = push(&mut cfg, CfgInstData::Const(30), Type::I32);
+        let then_forwarder = cfg.new_block();
+        let else_destination = cfg.new_block();
+        let then_destination = cfg.new_block();
+        let then_param = cfg.add_block_param(then_destination, Type::I32);
+        let else_param_a = cfg.add_block_param(else_destination, Type::I32);
+        let _else_param_b = cfg.add_block_param(else_destination, Type::I32);
+
+        let else_args = cfg
+            .push_else_args(vec![untouched_arg_a, untouched_arg_b])
+            .unwrap();
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Branch {
+                cond,
+                then_block: then_forwarder,
+                then_args: crate::payload::CfgThenArgs::EMPTY,
+                else_block: else_destination,
+                else_args,
+            },
+        );
+        let then_args = cfg.push_goto_args(vec![forwarded_arg]).unwrap();
+        cfg.set_terminator(
+            then_forwarder,
+            Terminator::Goto {
+                target: then_destination,
+                args: then_args,
+            },
+        );
+        cfg.set_terminator(
+            then_destination,
+            Terminator::Return {
+                value: Some(then_param),
+            },
+        );
+        cfg.set_terminator(
+            else_destination,
+            Terminator::Return {
+                value: Some(else_param_a),
+            },
+        );
+        cfg.verify().unwrap();
+
+        let stats = thread_only(&mut cfg);
+        assert_eq!(stats.edges_threaded, 1);
+        assert_eq!(stats.forwarders_resolved, 1);
+
+        let term = &cfg.get_block(cfg.entry).terminator;
+        match term {
+            Terminator::Branch {
+                then_block,
+                else_block,
+                ..
+            } => {
+                assert_eq!(*then_block, then_destination);
+                assert_eq!(*else_block, else_destination);
+                assert_eq!(cfg.get_branch_then_args(term), &[forwarded_arg]);
+                assert_eq!(
+                    cfg.get_branch_else_args(term),
+                    &[untouched_arg_a, untouched_arg_b]
+                );
+            }
+            other => panic!("expected Branch after threading, got {other:?}"),
+        }
+        cfg.verify().unwrap();
+    }
+
+    #[test]
+    fn test_threads_both_branch_sides_with_distinct_edge_args() {
+        let mut cfg = make_cfg();
+        let cond = push(&mut cfg, CfgInstData::BoolConst(false), Type::BOOL);
+        let then_arg_a = push(&mut cfg, CfgInstData::Const(10), Type::I32);
+        let then_arg_b = push(&mut cfg, CfgInstData::Const(11), Type::I32);
+        let else_arg_a = push(&mut cfg, CfgInstData::Const(20), Type::I32);
+        let else_arg_b = push(&mut cfg, CfgInstData::Const(21), Type::I32);
+        let then_forwarder = cfg.new_block();
+        let else_forwarder = cfg.new_block();
+        let then_destination = cfg.new_block();
+        let else_destination = cfg.new_block();
+        let then_param = cfg.add_block_param(then_destination, Type::I32);
+        let _then_param_b = cfg.add_block_param(then_destination, Type::I32);
+        let else_param = cfg.add_block_param(else_destination, Type::I32);
+        let _else_param_b = cfg.add_block_param(else_destination, Type::I32);
+
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Branch {
+                cond,
+                then_block: then_forwarder,
+                then_args: crate::payload::CfgThenArgs::EMPTY,
+                else_block: else_forwarder,
+                else_args: crate::payload::CfgElseArgs::EMPTY,
+            },
+        );
+        let then_args = cfg.push_goto_args(vec![then_arg_a, then_arg_b]).unwrap();
+        cfg.set_terminator(
+            then_forwarder,
+            Terminator::Goto {
+                target: then_destination,
+                args: then_args,
+            },
+        );
+        let else_args = cfg.push_goto_args(vec![else_arg_a, else_arg_b]).unwrap();
+        cfg.set_terminator(
+            else_forwarder,
+            Terminator::Goto {
+                target: else_destination,
+                args: else_args,
+            },
+        );
+        cfg.set_terminator(
+            then_destination,
+            Terminator::Return {
+                value: Some(then_param),
+            },
+        );
+        cfg.set_terminator(
+            else_destination,
+            Terminator::Return {
+                value: Some(else_param),
+            },
+        );
+        cfg.verify().unwrap();
+
+        let stats = thread_only(&mut cfg);
+        assert_eq!(stats.edges_threaded, 2);
+        assert_eq!(stats.forwarders_resolved, 2);
+
+        let term = &cfg.get_block(cfg.entry).terminator;
+        match term {
+            Terminator::Branch {
+                then_block,
+                else_block,
+                ..
+            } => {
+                assert_eq!(*then_block, then_destination);
+                assert_eq!(*else_block, else_destination);
+                assert_eq!(cfg.get_branch_then_args(term), &[then_arg_a, then_arg_b]);
+                assert_eq!(cfg.get_branch_else_args(term), &[else_arg_a, else_arg_b]);
+            }
+            other => panic!("expected Branch after threading, got {other:?}"),
+        }
+        cfg.verify().unwrap();
+    }
+
+    #[test]
     fn test_forwarder_cycle_left_alone() {
         // Two empty blocks forwarding to each other: an empty infinite loop.
         // Threading must not "skip past" it and change semantics.
