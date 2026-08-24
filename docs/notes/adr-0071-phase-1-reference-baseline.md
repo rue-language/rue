@@ -15,9 +15,9 @@ completed and their canonical run objects entered epoch 5:
 
 | platform | run object | Lattice process median | peak RSS median |
 | --- | --- | ---: | ---: |
-| x86_64 Linux, reference | `9b7d4bdb4bf398301fa5bd90b6a57e75f4764a982aacf2723c485b59b5398394` | 2,887.26 ms | 310.9 MiB |
-| AArch64 Linux, directional | `08deff0a5bd6beb187063db4ed31d70634067cf9aa9d5c453a78be828fa953e0` | 3,096.26 ms | 308.9 MiB |
-| AArch64 macOS, directional | `1404128c40051b386dd7b545c9eb555333004f0774ec99689df1fce296042f18` | 1,940.71 ms | 378.9 MiB |
+| x86_64 Linux, reference | `04d68164f7181a56474f5376cb4d8a7f3acc67a5c808dbe3812c3b049e8c69d5` | 2,887.26 ms | 310.9 MiB |
+| AArch64 Linux, directional | `90ce3c28ec00960aec3964029b61a2b4895e38207e7426172bbf47ef6a6e3245` | 3,096.26 ms | 308.9 MiB |
+| AArch64 macOS, directional | `56fa775ba66ea1fd3ec446f6090e2fd67802d1212b24aee655c01e867b308f69` | 1,940.71 ms | 378.9 MiB |
 
 Only x86_64 Linux adjudicates the absolute target. Its three Lattice process
 samples were 2,914.57, 2,887.26, and 2,878.98 ms, giving an 8.28 ms MAD. The
