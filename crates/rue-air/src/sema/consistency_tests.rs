@@ -1007,8 +1007,13 @@ mod tests {
             "pub fn resolve_structured_semantic_type_syntax_with<",
         );
         assert!(
-            structured_resolver.contains("StructuredTypeWork::Evaluate"),
-            "the canonical structured resolver must drive its owned work stack"
+            !structured_resolver.contains("StructuredTypeWork::Evaluate"),
+            "the synchronous resolver must remain a traversal-free wrapper"
+        );
+        assert_eq!(
+            structured_resolver.matches("reduce_comptime_call(").count(),
+            1,
+            "the synchronous resolver must be the sole reduction adapter"
         );
         assert_eq!(
             structured_resolver
@@ -1016,6 +1021,54 @@ mod tests {
                 .count(),
             0,
             "the canonical structured resolver must not self-dispatch recursively"
+        );
+        let structured_machine = item(
+            SEMANTIC_TYPE_RESOLUTION_SOURCE,
+            "fn poll_structured_type_machine<",
+        );
+        assert!(
+            structured_machine.contains("StructuredTypeWork::Evaluate"),
+            "the private poller must own the structured work-stack dispatch"
+        );
+        assert_eq!(
+            structured_machine.matches("reduce_comptime_call(").count(),
+            0,
+            "the private poller must not reduce comptime calls"
+        );
+        for declaration in [
+            "enum StructuredTypePoll<",
+            "struct StructuredTypeSuspension<",
+            "struct SemanticComptimeCallRequestView<",
+            "fn resume<",
+        ] {
+            let line = SEMANTIC_TYPE_RESOLUTION_SOURCE
+                .lines()
+                .find(|line| line.contains(declaration))
+                .unwrap_or_else(|| panic!("missing typed suspension item: {declaration}"));
+            assert!(
+                line.trim_start().starts_with(declaration),
+                "the typed suspension seam must remain private until it is keyed: {line}"
+            );
+        }
+        for declaration in [
+            "enum StructuredTypePoll<",
+            "struct StructuredTypeSuspension<",
+            "struct SemanticComptimeCallRequestView<",
+        ] {
+            let offset = SEMANTIC_TYPE_RESOLUTION_SOURCE
+                .find(declaration)
+                .expect("typed suspension item");
+            let attribute_start = SEMANTIC_TYPE_RESOLUTION_SOURCE[..offset]
+                .rfind("\n\n")
+                .map_or(0, |offset| offset + 2);
+            assert!(
+                !SEMANTIC_TYPE_RESOLUTION_SOURCE[attribute_start..offset].contains("Clone"),
+                "typed suspension state must not derive Clone: {declaration}"
+            );
+        }
+        assert!(
+            !SEMANTIC_TYPE_RESOLUTION_SOURCE.contains("Clone for StructuredTypeSuspension"),
+            "the paired suspension must be consumed exactly once"
         );
         for forbidden in [
             "pub fn resolve_semantic_type_syntax",
