@@ -629,10 +629,34 @@ impl ObjectBuilder {
                 }
             })
             .collect();
-        // Mach-O ARM64 relocation entries have no addend field: a non-zero
-        // addend is carried by an extra ARM64_RELOC_ADDEND entry immediately
-        // preceding the relocation it modifies (RUE-131 item 5b).
-        let num_addend_entries = text_relocs.iter().filter(|r| r.addend != 0).count();
+        // Mach-O ARM64 relocation entries have no addend field. The
+        // ARM64_RELOC_ADDEND companion is valid for the PC-relative forms
+        // below, while ARM64_RELOC_UNSIGNED carries its addend in the 8-byte
+        // patch slot itself.
+        let uses_addend_entry = |rel_type: RelocationType| {
+            matches!(
+                rel_type,
+                RelocationType::Call26
+                    | RelocationType::Jump26
+                    | RelocationType::AdrpPage21
+                    | RelocationType::AddLo12
+            )
+        };
+        let macho_r_length = |rel_type: RelocationType| -> u32 {
+            let patch_size = crate::linker::relocation_patch_size(rel_type)
+                .expect("Mach-O emission only supports known relocations");
+            match patch_size {
+                1 => 0,
+                2 => 1,
+                4 => 2,
+                8 => 3,
+                _ => panic!("Mach-O cannot encode a {patch_size}-byte relocation patch"),
+            }
+        };
+        let num_addend_entries = text_relocs
+            .iter()
+            .filter(|r| r.addend != 0 && uses_addend_entry(r.rel_type))
+            .count();
         let num_text_relocs = text_relocs.len() + num_addend_entries;
 
         // On macOS, all external C symbols get a leading underscore prefix.
@@ -859,7 +883,19 @@ impl ObjectBuilder {
         while macho.len() < text_offset {
             macho.push(0);
         }
-        macho.extend_from_slice(&self.code);
+        let mut code = self.code;
+        // ARM64_RELOC_UNSIGNED uses an implicit addend: the linker reads the
+        // existing 8-byte value at the relocation site. Store the explicit
+        // relocation addend in that slot for every non-zero addend rather than
+        // emitting an ARM64_RELOC_ADDEND pair (which is not valid for
+        // UNSIGNED).
+        for reloc in &text_relocs {
+            if reloc.rel_type == RelocationType::Aarch64Abs64 && reloc.addend != 0 {
+                let offset = reloc.offset as usize;
+                code[offset..offset + 8].copy_from_slice(&(reloc.addend as u64).to_le_bytes());
+            }
+        }
+        macho.extend_from_slice(&code);
 
         // Add rodata section if present
         if has_rodata {
@@ -915,17 +951,18 @@ impl ObjectBuilder {
             };
 
             // A non-zero addend is emitted as an ARM64_RELOC_ADDEND entry
-            // immediately preceding the relocation it modifies (Mach-O ARM64
-            // relocation entries have no addend field of their own).
-            if reloc.addend != 0 {
+            // immediately preceding the PC-relative relocation it modifies.
+            // ARM64_RELOC_UNSIGNED uses the bytes at its patch site instead.
+            if reloc.addend != 0 && uses_addend_entry(reloc.rel_type) {
                 assert!(
                     (-(1 << 23)..(1 << 23)).contains(&reloc.addend),
                     "ARM64_RELOC_ADDEND only encodes signed 24-bit addends, got {}",
                     reloc.addend
                 );
+                let addend_r_length = macho_r_length(reloc.rel_type);
                 macho.extend_from_slice(&(reloc.offset as u32).to_le_bytes());
                 let addend_info: u32 = ((reloc.addend as u32) & 0x00FFFFFF)  // r_symbolnum = addend
-                    | (2 << 25)  // r_length (unused for ADDEND, match the reloc)
+                    | (addend_r_length << 25)  // r_length (unused for ADDEND)
                     | (ARM64_RELOC_ADDEND << 28);
                 macho.extend_from_slice(&addend_info.to_le_bytes());
             }
@@ -945,9 +982,10 @@ impl ObjectBuilder {
                 ),
             };
 
+            let r_length = macho_r_length(reloc.rel_type);
             let info: u32 = (sym_num & 0x00FFFFFF)  // r_symbolnum (bits 0-23)
                 | (r_pcrel << 24)  // r_pcrel (bit 24)
-                | (2 << 25)  // r_length (bits 25-26) - 2 means 4 bytes
+                | (r_length << 25)  // r_length (bits 25-26)
                 | ((is_extern as u32) << 27)  // r_extern (bit 27)
                 | (r_type << 28); // r_type (bits 28-31)
             macho.extend_from_slice(&info.to_le_bytes());
@@ -1458,9 +1496,9 @@ mod tests {
         assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
     }
 
-    /// RUE-131 item 5b: non-zero addends must round-trip through the Mach-O
-    /// object format: emission writes ARM64_RELOC_ADDEND entries and parsing
-    /// re-attaches them to the following relocation.
+    /// RUE-131 item 5b / RUE-1648: non-zero addends must round-trip through
+    /// the Mach-O object format. PC-relative forms use ARM64_RELOC_ADDEND;
+    /// UNSIGNED uses its 8-byte patch slot and a quad r_length instead.
     #[test]
     fn test_macho_addend_roundtrip() {
         let obj_bytes = ObjectBuilder::new(Target::Aarch64Macos, "main")
@@ -1469,6 +1507,8 @@ mod tests {
                 0x00, 0x00, 0x00, 0x91, // add x0, x0, <offset>
                 0x00, 0x00, 0x00, 0x94, // bl other
                 0xC0, 0x03, 0x5F, 0xD6, // ret
+                0x00, 0x00, 0x00, 0x00, // pointer addend (low half)
+                0x00, 0x00, 0x00, 0x00, // pointer addend (high half)
             ])
             .relocation(CodeRelocation {
                 offset: 0,
@@ -1488,6 +1528,12 @@ mod tests {
                 rel_type: RelocationType::Call26,
                 addend: 0, // no ADDEND entry for this one
             })
+            .relocation(CodeRelocation {
+                offset: 16,
+                symbol: "pointer".into(),
+                rel_type: RelocationType::Aarch64Abs64,
+                addend: 0x1234,
+            })
             .build();
 
         let obj = ObjectFile::parse(&obj_bytes).expect("parse emitted Mach-O");
@@ -1495,7 +1541,7 @@ mod tests {
         let relocs = &obj.sections[text_idx].relocations;
         assert_eq!(
             relocs.len(),
-            3,
+            4,
             "ADDEND entries must not surface as relocations"
         );
         assert_eq!(relocs[0].rel_type, RelocationType::AdrpPage21);
@@ -1504,6 +1550,24 @@ mod tests {
         assert_eq!(relocs[1].addend, 16);
         assert_eq!(relocs[2].rel_type, RelocationType::Call26);
         assert_eq!(relocs[2].addend, 0);
+        assert_eq!(relocs[3].rel_type, RelocationType::Aarch64Abs64);
+        assert_eq!(relocs[3].addend, 0x1234);
+        assert_eq!(
+            u64::from_le_bytes(obj.sections[text_idx].data[16..24].try_into().unwrap()),
+            0x1234
+        );
+
+        // The text section has two ADDEND companions (for ADRP and ADD), but
+        // UNSIGNED is a single relocation with r_length=3 (quad).
+        let section_header = 32 + 72;
+        let read_u32 =
+            |offset| u32::from_le_bytes(obj_bytes[offset..offset + 4].try_into().unwrap());
+        let reloff = read_u32(section_header + 56) as usize;
+        let nreloc = read_u32(section_header + 60);
+        assert_eq!(nreloc, 6);
+        let unsigned_info = read_u32(reloff + 5 * 8 + 4);
+        assert_eq!((unsigned_info >> 28) & 0xf, ARM64_RELOC_UNSIGNED);
+        assert_eq!((unsigned_info >> 25) & 0x3, 3);
     }
 
     /// Test recursive self-calls (function calling itself).
