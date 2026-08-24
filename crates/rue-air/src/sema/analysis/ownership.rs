@@ -1332,34 +1332,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     span,
                 ));
             }
-            if let Some((_, exclusive_span)) = ctx
-                .expression_exclusive_uses
-                .iter()
-                .find(|(used_root, _)| *used_root == root)
-            {
-                return Err(CompileError::new(
-                    ErrorKind::AccessorLoanConflict {
-                        variable: self.body_interner().resolve(&root).to_string(),
-                        conflict: "for an accessor result after an exclusive use",
-                    },
-                    span,
-                )
-                .with_label("exclusive use here", *exclusive_span));
-            }
-            if loan_kind == CallLoanKind::Inout
-                && ctx
-                    .expression_shared_reads
-                    .iter()
-                    .any(|(read_root, _)| *read_root == root)
-            {
-                return Err(CompileError::new(
-                    ErrorKind::AccessorLoanConflict {
-                        variable: self.body_interner().resolve(&root).to_string(),
-                        conflict: "for an exclusive accessor result after a shared read",
-                    },
-                    span,
-                ));
-            }
+            self.reject_accessor_loan_against_expression_ledgers(root, loan_kind, span, ctx)?;
             ctx.expression_loans.push((root, span, loan_kind));
         }
         ctx.accessor_call_insts.insert(inst_ref, (method, root));
@@ -5761,6 +5734,47 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
+    /// Check the completed-use ledgers that a nested full-expression boundary
+    /// temporarily hides. Direct accessor calls and arm-loan readmission both
+    /// use this check so evaluation order has one conflict rule.
+    fn reject_accessor_loan_against_expression_ledgers(
+        &self,
+        root: Spur,
+        kind: CallLoanKind,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<()> {
+        if let Some((_, exclusive_span)) = ctx
+            .expression_exclusive_uses
+            .iter()
+            .find(|(used_root, _)| *used_root == root)
+        {
+            return Err(CompileError::new(
+                ErrorKind::AccessorLoanConflict {
+                    variable: self.body_interner().resolve(&root).to_string(),
+                    conflict: "for an accessor result after an exclusive use",
+                },
+                span,
+            )
+            .with_label("exclusive use here", *exclusive_span));
+        }
+        if kind == CallLoanKind::Inout
+            && ctx
+                .expression_shared_reads
+                .iter()
+                .any(|(read_root, _)| *read_root == root)
+        {
+            return Err(CompileError::new(
+                ErrorKind::AccessorLoanConflict {
+                    variable: self.body_interner().resolve(&root).to_string(),
+                    conflict: "for an exclusive accessor result after a shared read",
+                },
+                span,
+            ));
+        }
+        Ok(())
+    }
+
     /// Remember an exclusive use after its operation has completed. A
     /// nested call's live loan frame disappears when that call returns, but
     /// its exclusive use still conflicts with a later accessor result in the
@@ -5893,38 +5907,38 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         found
     }
 
-    /// Does the value of `operand` carry an accessor result out of a join
-    /// (ADR-0062, RUE-1678)? Used by the `if`/`match` arm analyses to decide
-    /// whether an arm's accessor loan outlives the arm's nested-full-expression
-    /// boundary; see [`Self::accessor_results_of`].
-    fn yields_accessor_result(&self, operand: InstRef, ctx: &AnalysisContext) -> bool {
-        !self.accessor_results_of(operand, ctx).is_empty()
-    }
-
     /// Carry an `if`/`match` arm's accessor loans into the join's enclosing
-    /// full expression, when the arm's value is what the join yields
+    /// full expression when the arm's tail is the join's value
     /// (ADR-0062 6.6:10, RUE-1678).
     ///
     /// Each arm is analyzed as a nested full expression, so `loans` — taken
     /// with `nested_expression_loans` just before that boundary closed — has
-    /// already been discarded by the time this runs. For an arm whose value
-    /// is an accessor result the discard is wrong: the loan's extent is the
-    /// full expression the JOIN belongs to, so an exclusive use of the same
-    /// root anywhere in it is still E0259 (`using(if c { g.at(0) } else { 0 },
-    /// inout g)`). Arms are alternatives rather than siblings, so every arm's
-    /// loans are readmitted only after the last arm has been analyzed —
-    /// readmitting earlier would make one arm's loan conflict with the next
-    /// arm's accessor call on the same root.
+    /// already been discarded by the time this runs. A loan still active at
+    /// the arm's tail belongs to the full expression the JOIN belongs to,
+    /// even when that tail consumes the accessor result into an ordinary
+    /// value: an exclusive use of the same root anywhere in it is still E0259
+    /// (`using(if c { g.at(0) + 1 } else { 0 }, inout g)`).
+    /// Arms are alternatives rather than siblings, so every arm's loans are
+    /// readmitted only after the last arm has been analyzed — readmitting
+    /// earlier would make one arm's loan conflict with the next arm's
+    /// accessor call on the same root.
+    /// `value_continues` is false for diverging arms, unreachable joins, and
+    /// comptime-selected unit-valued `if` bodies; those paths carry no value
+    /// loan into the enclosing full expression.
     pub(crate) fn readmit_arm_accessor_loans(
         &self,
         ctx: &mut AnalysisContext,
-        arm: InstRef,
         loans: Vec<(Spur, Span, CallLoanKind)>,
-    ) {
-        if loans.is_empty() || !self.yields_accessor_result(arm, ctx) {
-            return;
+        value_continues: bool,
+    ) -> CompileResult<()> {
+        if loans.is_empty() || !value_continues {
+            return Ok(());
+        }
+        for (root, span, kind) in &loans {
+            self.reject_accessor_loan_against_expression_ledgers(*root, *kind, *span, ctx)?;
         }
         ctx.readmit_expression_loans(loans);
+        Ok(())
     }
 
     /// Reject the escape of an accessor result (ADR-0062): `operand` is the
