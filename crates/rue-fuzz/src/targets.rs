@@ -1,7 +1,8 @@
 //! Fuzz targets for the Rue compiler.
 //!
-//! Every registered target maps to a distinct pipeline boundary, so no two
-//! targets spend their budget re-fuzzing the same endpoint (RUE-776):
+//! Every registered target maps to a distinct pipeline boundary or concrete
+//! configuration endpoint, so no two targets spend their budget re-fuzzing the
+//! same endpoint (RUE-776):
 //! - `lexer`: tokenization only.
 //! - `parser`: tokenization + AST construction.
 //! - `sema`: frontend through the canonical rooted optimized-CFG artifact,
@@ -9,6 +10,10 @@
 //! - `compiler`: the *whole* pipeline — frontend, MIR
 //!   lowering, register allocation, machine emission, and internal linking to a
 //!   finished executable. Strictly deeper than `sema`.
+//! - `compiler_aarch64`: the same finished-image boundary with explicit
+//!   AArch64 Linux/O0 options; the image is never executed on the x86-64 runner.
+//! - `compiler_x86_64_o1`: the same x86-64 Linux boundary with explicit O1
+//!   optimization.
 //! - `payloadschemas`: the RIR/AIR/CFG payload publication path.
 //! - `emitter` / `emitteraarch64`: single-instruction encoding.
 //! - `emittersequence` / `emittersequenceaarch64`: instruction-sequence encoding.
@@ -78,17 +83,53 @@ fn query_semantics(source: &str) -> rue_compiler::MultiErrorResult<()> {
         .map(drop)
 }
 
+/// Build the explicit options used by source-level compiler fuzz targets.
+///
+/// Keeping target and optimization selection in one constructor makes each
+/// registered endpoint auditable: a target cannot accidentally fall back to
+/// the host/O0 defaults while still looking distinct in the fuzzer's registry.
+fn source_compile_options(
+    target: rue_compiler::Target,
+    opt_level: rue_compiler::OptLevel,
+) -> rue_compiler::CompileOptions {
+    rue_compiler::CompileOptions {
+        target,
+        linker: rue_compiler::LinkerMode::Internal,
+        opt_level,
+        preview_features: rue_compiler::PreviewFeatures::new(),
+        link_archives: Vec::new(),
+    }
+}
+
+fn host_source_compile_options(opt_level: rue_compiler::OptLevel) -> rue_compiler::CompileOptions {
+    source_compile_options(
+        rue_compiler::Target::host()
+            .expect("Rue fuzz compiler requires a supported compilation host"),
+        opt_level,
+    )
+}
+
 /// Drive the whole compilation pipeline — frontend, backend code generation, and
 /// linking — to a finished executable. This is the endpoint of the `compiler`
 /// target and a strictly deeper boundary than [`query_semantics`]: it reaches
 /// CFG construction, MIR lowering, register allocation, machine emission, and
 /// object/link assembly, none of which the sema query touches (RUE-776). The
-/// default [`CompileOptions`] select the internal linker, so this stays
-/// in-process — no external linker is spawned.
-fn query_full_compile(source: &str) -> rue_compiler::MultiErrorResult<rue_compiler::CompileOutput> {
+/// explicit host/O0 options preserve the original target's endpoint while the
+/// sibling source targets exercise other concrete configurations.
+fn query_full_compile_with_options(
+    source: &str,
+    options: &rue_compiler::CompileOptions,
+) -> rue_compiler::MultiErrorResult<rue_compiler::CompileOutput> {
     let snapshot = rue_compiler::SourceSnapshot::single("<fuzz>", source)
         .map_err(rue_compiler::CompileErrors::from)?;
-    rue_compiler::compile_snapshot(&snapshot, &rue_compiler::CompileOptions::default())
+    rue_compiler::compile_snapshot(&snapshot, options)
+}
+
+fn query_full_compile(source: &str) -> rue_compiler::MultiErrorResult<rue_compiler::CompileOutput> {
+    query_full_compile_with_options(
+        source,
+        &host_source_compile_options(rue_compiler::OptLevel::O0),
+    )
 }
 
 /// Fuzz target for the lexer.
@@ -197,6 +238,72 @@ impl FuzzTarget for CompilerTarget {
             let result = query_full_compile(source);
             assert_no_ice(&result);
         }
+    }
+}
+
+/// Source-level whole-pipeline fuzzing for the AArch64 Linux backend.
+///
+/// The generated image is inspected only as bytes; this target deliberately
+/// never executes it on the x86-64 nightly runner. That still reaches AArch64
+/// lowering, register allocation, emission, and internal ELF linking.
+pub struct CompilerAarch64Target;
+
+impl FuzzTarget for CompilerAarch64Target {
+    fn name(&self) -> &'static str {
+        "compiler_aarch64"
+    }
+
+    fn fuzz(&self, input: &[u8]) {
+        if let Ok(source) = std::str::from_utf8(input) {
+            let result = Self::compile(source);
+            assert_no_ice(&result);
+        }
+    }
+}
+
+impl CompilerAarch64Target {
+    fn options() -> rue_compiler::CompileOptions {
+        source_compile_options(
+            rue_compiler::Target::Aarch64Linux,
+            rue_compiler::OptLevel::O0,
+        )
+    }
+
+    fn compile(source: &str) -> rue_compiler::MultiErrorResult<rue_compiler::CompileOutput> {
+        query_full_compile_with_options(source, &Self::options())
+    }
+}
+
+/// Source-level x86-64 Linux whole-pipeline fuzzing with basic optimization.
+///
+/// Naming the concrete target keeps a crash replay identical on every supported
+/// developer host instead of resolving `Target::host()` differently from the
+/// Linux x86-64 nightly runner.
+pub struct CompilerX86_64O1Target;
+
+impl FuzzTarget for CompilerX86_64O1Target {
+    fn name(&self) -> &'static str {
+        "compiler_x86_64_o1"
+    }
+
+    fn fuzz(&self, input: &[u8]) {
+        if let Ok(source) = std::str::from_utf8(input) {
+            let result = Self::compile(source);
+            assert_no_ice(&result);
+        }
+    }
+}
+
+impl CompilerX86_64O1Target {
+    fn options() -> rue_compiler::CompileOptions {
+        source_compile_options(
+            rue_compiler::Target::X86_64Linux,
+            rue_compiler::OptLevel::O1,
+        )
+    }
+
+    fn compile(source: &str) -> rue_compiler::MultiErrorResult<rue_compiler::CompileOutput> {
+        query_full_compile_with_options(source, &Self::options())
     }
 }
 
@@ -1077,6 +1184,8 @@ pub fn all_targets() -> Vec<Box<dyn FuzzTarget>> {
         Box::new(ParserTarget),
         Box::new(SemaTarget),
         Box::new(CompilerTarget),
+        Box::new(CompilerAarch64Target),
+        Box::new(CompilerX86_64O1Target),
         Box::new(PayloadSchemasTarget),
         Box::new(EmitterTarget),
         Box::new(EmitterAarch64Target),
@@ -1092,6 +1201,8 @@ pub fn get_target(name: &str) -> Option<Box<dyn FuzzTarget>> {
         "parser" => Some(Box::new(ParserTarget)),
         "sema" => Some(Box::new(SemaTarget)),
         "compiler" => Some(Box::new(CompilerTarget)),
+        "compiler_aarch64" => Some(Box::new(CompilerAarch64Target)),
+        "compiler_x86_64_o1" => Some(Box::new(CompilerX86_64O1Target)),
         "payload_schemas" => Some(Box::new(PayloadSchemasTarget)),
         "emitter" => Some(Box::new(EmitterTarget)),
         "emitter_aarch64" => Some(Box::new(EmitterAarch64Target)),
@@ -1159,6 +1270,57 @@ mod tests {
     fn test_compiler_target_type_error() {
         let target = CompilerTarget;
         target.fuzz(b"fn main() -> i32 { true }");
+    }
+
+    #[test]
+    fn compiler_aarch64_target_selects_aarch64_and_links_without_running() {
+        let options = CompilerAarch64Target::options();
+        assert_eq!(options.target, rue_compiler::Target::Aarch64Linux);
+        assert_eq!(options.opt_level, rue_compiler::OptLevel::O0);
+
+        let output = CompilerAarch64Target::compile("fn main() -> i32 { 42 }")
+            .expect("AArch64 source compile reaches the linker");
+        assert!(output.elf.starts_with(b"\x7fELF"));
+        assert_eq!(
+            u16::from_le_bytes([output.elf[18], output.elf[19]]),
+            0xB7,
+            "finished image must be an AArch64 ELF executable"
+        );
+    }
+
+    #[test]
+    fn compiler_x86_64_o1_target_selects_and_applies_basic_optimization() {
+        let options = CompilerX86_64O1Target::options();
+        assert_eq!(options.target, rue_compiler::Target::X86_64Linux);
+        assert_eq!(options.opt_level, rue_compiler::OptLevel::O1);
+
+        // A dynamic identity cannot be folded by the frontend: O1 removes the
+        // addition in `identity`, so its finished image differs from x86-64/O0.
+        // Calling the target's exact compile method makes this fail if nightly
+        // wiring silently returns to host/O0 defaults.
+        let source = "fn identity(value: i32) -> i32 { value + 0 } \
+                      fn main() -> i32 { identity(42) }";
+        let output = CompilerX86_64O1Target::compile(source)
+            .expect("x86-64 O1 source compile reaches the linker");
+        assert!(output.elf.starts_with(b"\x7fELF"));
+        assert_eq!(
+            u16::from_le_bytes([output.elf[18], output.elf[19]]),
+            0x3E,
+            "finished image must be an x86-64 ELF executable"
+        );
+
+        let o0 = query_full_compile_with_options(
+            source,
+            &source_compile_options(
+                rue_compiler::Target::X86_64Linux,
+                rue_compiler::OptLevel::O0,
+            ),
+        )
+        .expect("x86-64 O0 comparison compile succeeds");
+        assert_ne!(
+            output.elf, o0.elf,
+            "the registered O1 path must apply an optimization observable in the finished image"
+        );
     }
 
     #[test]
@@ -1446,7 +1608,7 @@ mod tests {
     #[test]
     fn test_all_targets() {
         let targets = all_targets();
-        assert_eq!(targets.len(), 9);
+        assert_eq!(targets.len(), 11);
     }
 
     #[test]
@@ -1455,6 +1617,8 @@ mod tests {
         assert!(get_target("parser").is_some());
         assert!(get_target("sema").is_some());
         assert!(get_target("compiler").is_some());
+        assert!(get_target("compiler_aarch64").is_some());
+        assert!(get_target("compiler_x86_64_o1").is_some());
         assert!(get_target("payload_schemas").is_some());
         assert!(get_target("emitter").is_some());
         assert!(get_target("emitter_aarch64").is_some());

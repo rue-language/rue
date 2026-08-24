@@ -96,6 +96,23 @@ jobs:
         timeout-minutes: 10
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 compiler crates/rue-fuzz/corpus
 
+      # These source-level variants stay on the x86-64 runner: they compile
+      # deterministic source inputs to finished images but never execute the
+      # generated AArch64 bytes. Keeping each configuration as its own target
+      # makes crash repro metadata replayable and keeps the nightly budget
+      # visible in --list/aggregation/reporting.
+      - name: Fuzz compiler (AArch64 Linux, 5 minutes)
+        id: fuzz-compiler-aarch64
+        continue-on-error: true
+        timeout-minutes: 10
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 compiler_aarch64 crates/rue-fuzz/corpus
+
+      - name: Fuzz compiler (x86-64 Linux O1, 5 minutes)
+        id: fuzz-compiler-x86-64-o1
+        continue-on-error: true
+        timeout-minutes: 10
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 compiler_x86_64_o1 crates/rue-fuzz/corpus
+
       - name: Fuzz payload schemas (5 minutes)
         id: fuzz-payload-schemas
         continue-on-error: true
@@ -132,6 +149,10 @@ jobs:
       # miscompile. A compiler rejection or oracle Unsupported result is a
       # generator-contract failure. Either class exits non-zero and writes a
       # self-contained seed/source repro to crates/rue-fuzz/crashes/.
+      # Keep this native differential target host-only: its fixed 500-seed
+      # budget and executable replay contract are deliberately unchanged. The
+      # source compiler_x86_64_o1 target above supplies bounded optimization
+      # coverage with the same replayable target on every developer host.
       - name: Differential fuzz (oracle vs compiled, 500 seeds)
         id: fuzz-differential
         continue-on-error: true
@@ -156,6 +177,8 @@ jobs:
           steps.fuzz-parser.outcome == 'failure' ||
           steps.fuzz-sema.outcome == 'failure' ||
           steps.fuzz-compiler.outcome == 'failure' ||
+          steps.fuzz-compiler-aarch64.outcome == 'failure' ||
+          steps.fuzz-compiler-x86-64-o1.outcome == 'failure' ||
           steps.fuzz-payload-schemas.outcome == 'failure' ||
           steps.fuzz-emitter.outcome == 'failure' ||
           steps.fuzz-emitter-aarch64.outcome == 'failure' ||
@@ -196,6 +219,8 @@ jobs:
           record parser '${{ steps.fuzz-parser.outcome }}'
           record sema '${{ steps.fuzz-sema.outcome }}'
           record compiler '${{ steps.fuzz-compiler.outcome }}'
+          record compiler_aarch64 '${{ steps.fuzz-compiler-aarch64.outcome }}'
+          record compiler_x86_64_o1 '${{ steps.fuzz-compiler-x86-64-o1.outcome }}'
           record payload_schemas '${{ steps.fuzz-payload-schemas.outcome }}'
           record emitter '${{ steps.fuzz-emitter.outcome }}'
           record emitter_aarch64 '${{ steps.fuzz-emitter-aarch64.outcome }}'
