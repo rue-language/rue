@@ -10,8 +10,8 @@
 mod comptime_public_contract_tests {
     use rue_air::{
         ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeConstInfo,
-        ComptimeEngine, ComptimeEnv, ComptimeField, ComptimeFile, ComptimeHost, ComptimeIdentity,
-        ComptimeName, ComptimeType, ComptimeValue, PreparedComptimeCall,
+        ComptimeEngine, ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame, ComptimeHost,
+        ComptimeIdentity, ComptimeName, ComptimeOutcome, ComptimeType, ComptimeValue,
     };
     use rue_rir::InstRef;
     use rue_span::Span;
@@ -87,25 +87,30 @@ mod comptime_public_contract_tests {
     #[allow(dead_code)]
     fn generic_engine_entry<H: ComptimeHost>(
         host: &mut H,
+        program: H::ProgramKey,
         root: InstRef,
-    ) -> Result<Option<H::Value>, H::Failure> {
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
         let mut env =
             ComptimeEnv::<H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>::new();
-        ComptimeEngine::new(host).evaluate(root, &mut env)
+        ComptimeEngine::new(host).evaluate(ComptimeFrame::expression(program, root), &mut env)
     }
 
     #[test]
     fn public_domain_and_engine_contract_is_instantiable() {
         let _env: ComptimeEnv<'static, FakeValue, FakeType, FakeName, FakeFile, FakeIdentity> =
             ComptimeEnv::new();
-        let _plan = PreparedComptimeCall {
-            name: FakeName,
+        let _frame = ComptimeFrame {
+            program: (),
             body: InstRef::from_raw(0),
-            file: FakeFile,
+            name: Some(FakeName),
+            context: Some(FakeFile),
             span: Span::new(0, 0),
             function_span: Span::new(0, 0),
-            callee_types: ahash::AHashMap::<FakeName, FakeType>::new(),
-            callee_values: ahash::AHashMap::<FakeName, FakeValue>::new(),
+            type_bindings: ahash::AHashMap::<FakeName, FakeType>::new(),
+            value_bindings: ahash::AHashMap::<FakeName, FakeValue>::new(),
+            name_bindings: ahash::AHashMap::<FakeName, FakeName>::new(),
+            call_identity: Some(FakeIdentity),
+            expected_result: None,
         };
         let _field = ComptimeField {
             name: FakeName,

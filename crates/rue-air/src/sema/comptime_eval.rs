@@ -55,9 +55,10 @@ use rue_rir::{InstData, InstRef};
 use rue_span::{FileId, Span};
 
 use super::comptime::{
-    ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeConstInfo,
-    ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile, ComptimeHost,
-    ComptimeIdentity, ComptimeName, ComptimeType, PreparedComptimeCall,
+    ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallPreparation,
+    ComptimeConstInfo, ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile,
+    ComptimeFrame, ComptimeHost, ComptimeIdentity, ComptimeName, ComptimeOutcome, ComptimeTrap,
+    ComptimeType,
 };
 use super::context::{AnalysisContext, ConstValue};
 use super::info::FunctionCallInfo;
@@ -444,7 +445,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         inst_ref: InstRef,
         env: &mut ComptimeEnv,
     ) -> CompileResult<Option<ConstValue>> {
-        ComptimeEngine::new(self).evaluate(inst_ref, env)
+        ComptimeEngine::new(self)
+            .evaluate(ComptimeFrame::expression((), inst_ref), env)
+            .into_result(|trap| self.trap_failure(trap))
+    }
+
+    fn trap_failure(&self, trap: ComptimeTrap) -> CompileError {
+        comptime_panic_err(
+            format!("{} (this operation would panic at runtime)", trap.operation),
+            trap.span,
+        )
     }
 
     /// Complete a child call after the engine has evaluated its body. This
@@ -452,11 +462,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// second evaluator.
     fn finish_comptime_call(
         &mut self,
-        plan: &PreparedComptimeCall<ConstValue, Type, Spur, FileId>,
-        result: CompileResult<Option<ConstValue>>,
-    ) -> CompileResult<Option<ConstValue>> {
-        if let Ok(Some(ConstValue::Type(ty))) = &result {
-            self.record_ctor_type_display(plan.name, *ty, &plan.callee_types, &plan.callee_values);
+        frame: &ComptimeFrame<
+            ConstValue,
+            Type,
+            Spur,
+            FileId,
+            (),
+            super::anon_structs::IssuedStableProducerId,
+        >,
+        result: ComptimeOutcome<ConstValue, CompileError>,
+    ) -> ComptimeOutcome<ConstValue, CompileError> {
+        if let (Some(name), ComptimeOutcome::Known(ConstValue::Type(ty))) = (frame.name, &result) {
+            self.record_ctor_type_display(name, *ty, &frame.type_bindings, &frame.value_bindings);
         }
         result
     }
@@ -910,13 +927,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Finish an admitted local call after its arguments have been evaluated.
     /// Provider calls must be queried before this hook so their cached result
     /// or diagnostic remains authoritative.
-    fn prepare_local_comptime_call(
+    fn prepare_comptime_call(
         &mut self,
         admission: ComptimeCallAdmission<FunctionCallInfo, Spur>,
         callee_types: AHashMap<Spur, Type>,
         callee_values: AHashMap<Spur, ConstValue>,
         span: Span,
-    ) -> CompileResult<Option<PreparedComptimeCall<ConstValue, Type, Spur, FileId>>> {
+    ) -> CompileResult<
+        Option<
+            ComptimeCallPreparation<
+                ConstValue,
+                Type,
+                Spur,
+                FileId,
+                (),
+                super::anon_structs::IssuedStableProducerId,
+                CompileError,
+            >,
+        >,
+    > {
         let name_key = admission.name;
         let fn_body_info = self.function_body_info(name_key);
         let Some(fn_body_info) = fn_body_info else {
@@ -930,15 +959,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             &callee_values,
             fn_body_info.span,
         )?;
-        Ok(Some(PreparedComptimeCall {
-            name: name_key,
+        Ok(Some(ComptimeCallPreparation::Enter(ComptimeFrame {
+            program: (),
             body: fn_body_info.body,
-            file: fn_body_info.file_id,
+            name: Some(name_key),
+            context: Some(fn_body_info.file_id),
             span,
             function_span: fn_body_info.span,
-            callee_types,
-            callee_values,
-        }))
+            type_bindings: callee_types,
+            value_bindings: callee_values,
+            name_bindings: AHashMap::new(),
+            call_identity: None,
+            expected_result: Some(fn_body_info.return_type),
+        })))
     }
 
     pub(crate) fn validate_comptime_value_for_type(
@@ -1047,35 +1080,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
-    fn prepare_comptime_body(
-        &mut self,
-        name: Spur,
-        callee_types: &AHashMap<Spur, Type>,
-        callee_values: &AHashMap<Spur, ConstValue>,
-        span: Span,
-    ) -> CompileResult<Option<PreparedComptimeCall<ConstValue, Type, Spur, FileId>>> {
-        let Some(fn_body_info) = self.function_body_info(name) else {
-            return Ok(None);
-        };
-        let fn_info = crate::sema::info::FunctionCallInfo::from_body(fn_body_info);
-        self.validate_comptime_call_substitutions(
-            name,
-            &fn_info,
-            callee_types,
-            callee_values,
-            fn_body_info.span,
-        )?;
-        Ok(Some(PreparedComptimeCall {
-            name,
-            body: fn_body_info.body,
-            file: fn_body_info.file_id,
-            span,
-            function_span: fn_body_info.span,
-            callee_types: callee_types.clone(),
-            callee_values: callee_values.clone(),
-        }))
-    }
-
     /// Reduce a comptime-evaluable function body under concrete substitutions.
     /// This is the shared path for type constructors and value-returning
     /// comptime functions, so it validates the argument contract once before
@@ -1088,16 +1092,31 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         callee_values: &AHashMap<Spur, ConstValue>,
         span: Span,
     ) -> CompileResult<Option<ConstValue>> {
-        if let Some(result) =
-            self.reduce_external_comptime_call(name, callee_types, callee_values, span)
-        {
-            return result;
-        }
-        let Some(plan) = self.prepare_comptime_body(name, callee_types, callee_values, span)?
-        else {
+        let Some(info) = self.function_info(name) else {
             return Ok(None);
         };
-        ComptimeEngine::new(self).evaluate_prepared_root(plan)
+        let admission = ComptimeCallAdmission {
+            name,
+            payload: info,
+        };
+        let preparation = <Self as ComptimeHost>::prepare_comptime_call(
+            self,
+            admission,
+            callee_types.clone(),
+            callee_values.clone(),
+            span,
+        )?;
+        let Some(preparation) = preparation else {
+            return Ok(None);
+        };
+        match preparation {
+            ComptimeCallPreparation::Memoized(outcome) => {
+                outcome.into_result(|trap| self.trap_failure(trap))
+            }
+            ComptimeCallPreparation::Enter(frame) => ComptimeEngine::new(self)
+                .evaluate_frame(frame)
+                .into_result(|trap| self.trap_failure(trap)),
+        }
     }
 
     /// Record `Ctor(args...)` as the display name for an anonymous type just
@@ -1717,14 +1736,19 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     type File = FileId;
     type CanonicalIdentity = super::anon_structs::IssuedStableProducerId;
     type AnonymousIdentity = super::anon_structs::IssuedAnonymousNominalKey;
+    type ProgramKey = ();
     type Failure = CompileError;
     type CallAdmission = super::info::FunctionCallInfo;
     type AnonymousStructId = crate::types::StructId;
     type AnonMethodSigs = Vec<super::AnonMethodSig>;
-    fn program_rir(&self) -> &rue_rir::Rir {
+    fn program_rir(&self, _program: &Self::ProgramKey) -> &rue_rir::Rir {
         OrdinaryBodyEngine::body_rir_ref(self)
     }
-    fn name_from_symbol(&self, symbol: rue_rir::SymbolHandle) -> Self::Name {
+    fn name_from_symbol(
+        &self,
+        _program: &Self::ProgramKey,
+        symbol: rue_rir::SymbolHandle,
+    ) -> Self::Name {
         symbol.spur()
     }
     fn display_name(&self, name: &Self::Name) -> String {
@@ -1753,6 +1777,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn match_pattern(
         &self,
+        _program: &Self::ProgramKey,
         pattern: &rue_rir::RirPatternView<'_>,
         value: &ConstValue,
     ) -> Option<bool> {
@@ -1828,15 +1853,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
             },
         )
     }
-    fn reduce_external_comptime_call(
-        &mut self,
-        name: Spur,
-        types: &AHashMap<Spur, Type>,
-        values: &AHashMap<Spur, ConstValue>,
-        span: Span,
-    ) -> Option<CompileResult<Option<ConstValue>>> {
-        OrdinaryBodyEngine::reduce_external_comptime_call(self, name, types, values, span)
-    }
     fn resolve_named_array_length(
         &mut self,
         name: &Spur,
@@ -1846,7 +1862,11 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         let name = self.body_interner().resolve(name).to_owned();
         OrdinaryBodyEngine::resolve_array_length(self, &ArrayLen::Named(name), span, values)
     }
-    fn rir_type_named_symbol(&self, syntax: rue_rir::RirTypeSyntaxRef) -> Option<Spur> {
+    fn rir_type_named_symbol(
+        &self,
+        _program: &Self::ProgramKey,
+        syntax: rue_rir::RirTypeSyntaxRef,
+    ) -> Option<Spur> {
         OrdinaryBodyEngine::rir_type_named_symbol(self, syntax)
     }
     fn get_or_create_array_type(&mut self, element: Type, length: u64) -> Type {
@@ -1856,6 +1876,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn extract_anon_method_sigs(
         &mut self,
+        _program: &Self::ProgramKey,
         methods: &rue_rir::RirAnonStructMethodsRange,
         types: &AHashMap<Spur, Type>,
         values: &AHashMap<Spur, ConstValue>,
@@ -1864,6 +1885,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn find_method_own_comptime_type_param(
         &self,
+        _program: &Self::ProgramKey,
         methods: &rue_rir::RirAnonStructMethodsRange,
     ) -> Option<(Span, String)> {
         OrdinaryBodyEngine::find_method_own_comptime_type_param(self, methods)
@@ -1915,7 +1937,12 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     fn check_trivially_droppable(&mut self, ty: Type, span: Span) -> CompileResult<()> {
         OrdinaryBodyEngine::check_trivially_droppable(self, ty, span)
     }
-    fn const_expr_type(&self, env: &ComptimeEnv<'_>, inst_ref: InstRef) -> Option<Type> {
+    fn const_expr_type(
+        &self,
+        _program: &Self::ProgramKey,
+        env: &ComptimeEnv<'_>,
+        inst_ref: InstRef,
+    ) -> Option<Type> {
         OrdinaryBodyEngine::const_expr_type(self, env, inst_ref)
     }
     fn type_name(&self, ty: &Type) -> String {
@@ -2005,21 +2032,47 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     ) -> CompileResult<Option<(AHashMap<Spur, Type>, AHashMap<Spur, ConstValue>)>> {
         OrdinaryBodyEngine::bind_comptime_call(self, admission, values, span)
     }
-    fn prepare_local_comptime_call(
+    fn prepare_comptime_call(
         &mut self,
         admission: ComptimeCallAdmission<FunctionCallInfo, Spur>,
         types: AHashMap<Spur, Type>,
         values: AHashMap<Spur, ConstValue>,
         span: Span,
-    ) -> CompileResult<Option<PreparedComptimeCall<ConstValue, Type, Spur, FileId>>> {
-        OrdinaryBodyEngine::prepare_local_comptime_call(self, admission, types, values, span)
+    ) -> CompileResult<
+        Option<
+            ComptimeCallPreparation<
+                ConstValue,
+                Type,
+                Spur,
+                FileId,
+                (),
+                Self::CanonicalIdentity,
+                CompileError,
+            >,
+        >,
+    > {
+        if let Some(result) = OrdinaryBodyEngine::reduce_external_comptime_call(
+            self,
+            admission.name,
+            &types,
+            &values,
+            span,
+        ) {
+            return result.map(|result| {
+                Some(ComptimeCallPreparation::Memoized(match result {
+                    Some(value) => ComptimeOutcome::Known(value),
+                    None => ComptimeOutcome::RuntimeDependent,
+                }))
+            });
+        }
+        OrdinaryBodyEngine::prepare_comptime_call(self, admission, types, values, span)
     }
     fn finish_comptime_call(
         &mut self,
-        plan: &PreparedComptimeCall<ConstValue, Type, Spur, FileId>,
-        result: CompileResult<Option<ConstValue>>,
-    ) -> CompileResult<Option<ConstValue>> {
-        OrdinaryBodyEngine::finish_comptime_call(self, plan, result)
+        frame: &ComptimeFrame<ConstValue, Type, Spur, FileId, (), Self::CanonicalIdentity>,
+        result: ComptimeOutcome<ConstValue, CompileError>,
+    ) -> ComptimeOutcome<ConstValue, CompileError> {
+        OrdinaryBodyEngine::finish_comptime_call(self, frame, result)
     }
     fn label_ctor_instantiation_site(error: CompileError, span: Span) -> CompileError {
         OrdinaryBodyEngine::<H>::label_ctor_instantiation_site(error, span)
@@ -2044,6 +2097,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn issue_anonymous_identity(
         &self,
+        _program: &Self::ProgramKey,
         kind: ComptimeAnonymousKind,
         producer: &Self::CanonicalIdentity,
         anchor: &rue_rir::RirStructuralAnchor,
@@ -2059,6 +2113,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
         &mut self,
+        _program: &Self::ProgramKey,
         syntax: rue_rir::RirTypeSyntaxRef,
         types: &AHashMap<Spur, Type>,
         values: &AHashMap<Spur, ConstValue>,
@@ -2070,6 +2125,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn register_anon_struct_methods_for_comptime_with_subst(
         &mut self,
+        _program: &Self::ProgramKey,
         id: &crate::types::StructId,
         ty: Type,
         methods: &rue_rir::RirAnonStructMethodsRange,

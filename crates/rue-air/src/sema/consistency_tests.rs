@@ -327,7 +327,7 @@ mod tests {
         assert!(
             source.contains("fn admit_comptime_call")
                 && source.contains("fn bind_comptime_call")
-                && source.contains("fn prepare_local_comptime_call")
+                && source.contains("fn prepare_comptime_call")
                 && source.contains("fn finish_comptime_call"),
             "call admission, binding, preparation, and completion must be named hooks"
         );
@@ -353,7 +353,7 @@ mod tests {
         for signature in [
             "fn admit_comptime_call(",
             "fn bind_comptime_call(",
-            "fn prepare_local_comptime_call(",
+            "fn prepare_comptime_call(",
             "fn resolve_comptime_type_path(",
             "fn resolve_module_comptime_callable(",
             "fn finish_comptime_call(",
