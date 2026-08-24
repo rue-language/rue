@@ -73,3 +73,37 @@ expected_exit_codes = [1, 2]
 [[case.watch.edits]]
 path = "helper.rue"
 symlink_target = "target_b.rue"
+
+# RUE-1783. The watcher can learn that its inputs changed three ways: the
+# in-flight change monitor, the publication guard, or the trailing check once
+# the monitor has stopped. Only the monitor announced itself, and the
+# `change-detected` milestone was emitted solely from `wait_for_change` -- which
+# the loop reaches only when the cycle ends with nothing pending. So an edit
+# landing after the monitor stopped but before the trailing check was acted on
+# correctly (the watcher rebuilt and republished) and never announced, hanging
+# any consumer waiting on the milestone.
+#
+# The window is normally microseconds, which is why this only ever failed on
+# loaded CI runners. `boundary_delay_ms` widens it on purpose so the edit lands
+# inside it every run: without the fix this case times out after 30s with
+# `timed out waiting for watch event "change-detected"`, exactly as CI reported.
+#
+# `compile_delay_ms` is deliberately 0 here -- this case is about the boundary
+# window, not the in-flight one, and leaving the compile fast keeps the edit
+# from being caught by the monitor instead.
+[[case]]
+name = "change_after_monitor_stops_is_still_announced"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 1 }\n" }]
+
+[case.watch]
+kind = "cancel"
+boundary_delay_ms = 400
+expected_exit_codes = [1, 3]
+
+[[case.watch.edits]]
+path = "main.rue"
+source = "fn main() -> i32 { 2 }\n"
+
+[[case.watch.edits]]
+path = "main.rue"
+source = "fn main() -> i32 { 3 }\n"
