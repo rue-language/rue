@@ -1183,3 +1183,88 @@ fn main() -> i32 {
 """ }]
 stdout = "0\n"
 exit_code = 0
+
+# RUE-1759. `_i64_bits` reinterprets a seek offset as its raw u64 bit pattern
+# for `@syscall`. It spelled `|x| - 1` as `(0 - x) - 1`, and i64::MIN's
+# magnitude is not representable as an i64 -- so negating it trapped.
+#
+# `File.seek` is public and takes an arbitrary i64, so this was a LIVE trap on
+# a legitimate argument, not a latent one: the program died with `integer
+# overflow` (exit 101) before the syscall was ever issued. The in-source comment
+# claimed "no real seek uses it", which is not a property the signature enforces.
+#
+# Same shape and same fix as RUE-1709's `IntMap._key_bits`: spell it
+# `0 - (x + 1)`, which keeps every intermediate in range.
+[[case]]
+name = "fs_seek_i64_min_offset_errors_instead_of_trapping"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "RUE-1759: seeking by i64::MIN reaches the kernel and comes back as an ordinary error, rather than trapping in the offset conversion."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let W = std.fs.Whence;
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("seekmin.dat");
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 81; } };
+
+    // i64::MIN, built without a literal that would itself be out of range.
+    let m: i64 = 0 - 9223372036854775807;
+    let min: i64 = m - 1;
+
+    // Reaching either arm proves the conversion did not trap. The kernel
+    // rejects the offset, so Err is the expected arm.
+    match f.seek(min, W.Cur) {
+        WR.Ok(_p) => { @dbg(1); },
+        WR.Err(_e) => { @dbg(0); },
+    };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 82; } };
+    0
+}
+""" }]
+stdout = "0\n"
+exit_code = 0
+
+# The control that catches an off-by-one in the rewrite: ordinary negative
+# offsets must still land where they did. `-1` is the edge that matters, since
+# it is where `|x| - 1` is exactly 0.
+[[case]]
+name = "fs_seek_negative_offsets_still_land_correctly"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "RUE-1759 control: the two's-complement rewrite keeps ordinary negative seeks exact, including the -1 edge where |x| - 1 is zero."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+    let W = std.fs.Whence;
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("negseek.dat");
+    let mut out = Buf.new();
+    let mut k: u64 = 0;
+    while k < 10 { out.push(48 + @intCast(k)); k = k + 1; }
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 81; } };
+    match f.write_all(borrow out) { CR.Ok(_u) => {}, CR.Err(_e) => { return 82; } };
+
+    let back3: i64 = 0 - 3;
+    match f.seek(back3, W.End) { WR.Ok(p) => { let pv: i64 = @intCast(p); @dbg(pv); }, WR.Err(_e) => { return 83; } };
+    let back1: i64 = 0 - 1;
+    match f.seek(back1, W.End) { WR.Ok(p) => { let pv: i64 = @intCast(p); @dbg(pv); }, WR.Err(_e) => { return 84; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 85; } };
+    0
+}
+""" }]
+stdout = "7\n9\n"
+exit_code = 0
