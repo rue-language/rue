@@ -13,9 +13,10 @@
 //! invents a trap out of thin air — the exact inverse of RUE-57, where DCE
 //! *deleted* a mandatory trap. So **only [`classify::is_speculatable`] ops move**
 //! (neither `may_trap` nor observable). Every trapping invariant op —
-//! `Add`/`Sub`/`Mul`/`Div`/`Mod`/`Neg`, `IntCast`, an indexed `PlaceRead` — stays
-//! in the loop body even when invariant. Guarded hoisting of trapping ops is
-//! RUE-934, after loop rotation lands; there is no cleverness here.
+//! `Add`/`Sub`/`Mul`/`Div`/`Mod`/`Neg`, `IntCast`, an indirect or indexed
+//! `PlaceRead` — stays in the loop body even when invariant. Guarded hoisting of
+//! trapping ops is RUE-934, after loop rotation lands; there is no cleverness
+//! here.
 //!
 //! ## Invariance
 //!
@@ -31,10 +32,11 @@
 //!
 //! ### Memory reads — phase-2 conservatism
 //!
-//! A non-indexed `Load`/`PlaceRead` is speculatable per the classifier (it never
-//! traps), but its *result* is only invariant if no store inside the loop can
-//! change the memory it reads. Rue has no memory-versioning / alias analysis
-//! today, so this phase is maximally conservative: a memory read is treated as
+//! A direct, non-indexed `Load`/`PlaceRead` is speculatable per the classifier,
+//! but its *result* is only invariant if no store inside the loop can change the
+//! memory it reads. Indirect `PlaceRead`s remain non-speculatable because the
+//! dereference can fault. Rue has no memory-versioning / alias analysis today,
+//! so this phase is maximally conservative: a memory read is treated as
 //! **non-invariant whenever the loop body contains any instruction with an
 //! observable side effect** (`Call`, `Intrinsic`, `Store`, `ParamStore`,
 //! `PlaceWrite`, `Alloc`, `Drop`) — everything
@@ -316,8 +318,8 @@ fn hoist_loop(
 /// parameter, and — for a memory read — only when the loop body is effect-free.
 fn is_hoist_candidate(cfg: &Cfg, value: CfgValue, body_has_effect: bool) -> bool {
     // Trapping or observable ops never move (ADR-0054 §2). This already excludes
-    // arithmetic, IntCast, indexed PlaceRead, calls, stores, allocs, drops, and
-    // the storage markers.
+    // arithmetic, IntCast, indirect/indexed PlaceRead, calls, stores, allocs,
+    // drops, and the storage markers.
     if !classify::is_speculatable(cfg, value) {
         return false;
     }
@@ -447,6 +449,10 @@ mod tests {
     }
 
     fn single_loop() -> LoopShape {
+        single_loop_with_condition(true)
+    }
+
+    fn single_loop_with_condition(condition: bool) -> LoopShape {
         let mut cfg = make_cfg();
         let entry = cfg.new_block();
         cfg.entry = entry;
@@ -460,7 +466,12 @@ mod tests {
         // body then contains exactly the op each test adds.
         let a = push(&mut cfg, entry, CfgInstData::Const(6), Type::I32);
         let b = push(&mut cfg, entry, CfgInstData::Const(7), Type::I32);
-        let cond = bool_const(&mut cfg, entry);
+        let cond = push(
+            &mut cfg,
+            entry,
+            CfgInstData::BoolConst(condition),
+            Type::BOOL,
+        );
         cfg.set_terminator(entry, goto(header));
 
         cfg.set_terminator(header, branch(cond, body, exit));
@@ -708,6 +719,57 @@ mod tests {
         let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.invariants_hoisted, 0, "body has a store: Load stays");
         assert_eq!(block_of(&s.cfg, load), Some(s.body));
+    }
+
+    #[test]
+    fn indirect_place_read_stays_in_loop_but_direct_read_hoists() {
+        // A direct local read remains safe to speculate. An indirect read with
+        // no projections can fault on a bad pointer, so it must stay behind the
+        // explicitly false loop condition and cannot manufacture a zero-trip
+        // fault.
+        let mut s = single_loop_with_condition(false);
+        let direct_place = s
+            .cfg
+            .make_place(crate::PlaceBase::Local(0), Type::I32, std::iter::empty())
+            .unwrap();
+        let direct = push(
+            &mut s.cfg,
+            s.body,
+            CfgInstData::PlaceRead {
+                place: direct_place,
+            },
+            Type::I32,
+        );
+        let type_pool = rue_air::TypeInternPool::new();
+        let pointer = push(
+            &mut s.cfg,
+            s.entry,
+            CfgInstData::Const(0),
+            Type::new_ptr_const(type_pool.intern_ptr_const_from_type(Type::I32)),
+        );
+        let indirect_place = s
+            .cfg
+            .make_place(
+                crate::PlaceBase::Indirect(pointer),
+                Type::I32,
+                std::iter::empty(),
+            )
+            .unwrap();
+        let indirect = push(
+            &mut s.cfg,
+            s.body,
+            CfgInstData::PlaceRead {
+                place: indirect_place,
+            },
+            Type::I32,
+        );
+        s.cfg.verify().unwrap();
+
+        let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.invariants_hoisted, 1, "only the direct read hoists");
+        assert_eq!(block_of(&s.cfg, direct), Some(s.entry));
+        assert_eq!(block_of(&s.cfg, indirect), Some(s.body));
+        s.cfg.verify().unwrap();
     }
 
     #[test]

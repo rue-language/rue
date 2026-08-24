@@ -1,12 +1,13 @@
 //! Shared trap / speculation classifier for optimizer passes.
 //!
 //! DCE, LICM (RUE-927), and unrolling (RUE-928) all need to reason about whether
-//! a CFG instruction can *trap* — abort the program with a runtime panic that
-//! ADR-0044 counts as defined, observable behavior no optimization level may add
-//! or remove. Historically that knowledge lived only inside DCE's private
-//! `has_side_effects` predicate, which conflated two independent axes. ADR-0054
-//! §2 makes this module the single place that names the trapping set, so the two
-//! axes cannot drift apart across the passes that consult them.
+//! a CFG instruction can *trap* — either abort with a Rue-defined runtime panic
+//! or fault during an unsafe memory access. The latter is a conservative
+//! classification for speculation and DCE safety, not a statement about Rue's
+//! raw-pointer semantics. Historically that knowledge lived only inside DCE's
+//! private `has_side_effects` predicate, which conflated two independent axes.
+//! ADR-0054 §2 makes this module the single place that names the trapping set,
+//! so the two axes cannot drift apart across the passes that consult them.
 //!
 //! ## Why a module in `opt` (not `CfgInstData` methods)
 //!
@@ -15,19 +16,20 @@
 //! optimizer-facing analyses in `opt/` (`dce`, `forward`, `cse`, …) and its
 //! `inst` module deliberately free of pass policy — what "traps" is an optimizer
 //! concern, not an intrinsic property of the instruction enum. The classifier
-//! also needs the `Cfg` (an indexed `PlaceRead` is only trap-carrying when its
-//! projection list contains an `Index`, which lives in `Cfg::projections`), so a
-//! free function taking `(&Cfg, CfgValue)` matches DCE's existing call shape
-//! exactly and lets LICM/unrolling reuse it verbatim.
+//! also needs the `Cfg` (a `PlaceRead` may trap based on both its base and its
+//! indexed projection list, which lives in `Cfg::projections`), so a free
+//! function taking `(&Cfg, CfgValue)` matches DCE's existing call shape exactly
+//! and lets LICM/unrolling reuse it verbatim.
 //!
 //! ## The two axes (defined independently)
 //!
-//! - [`may_trap`]: the instruction can panic at runtime — overflow-checked
+//! - [`may_trap`]: the instruction can panic or fault at runtime — overflow-checked
 //!   arithmetic (`Add`/`Sub`/`Mul`/`Neg`), division checks (`Div`/`Mod`), the
 //!   `IntCast` range check (`__rue_intcast_overflow`), and the bounds check of a
-//!   `PlaceRead` whose place contains an `Index` projection. This is the axis
-//!   LICM and unrolling need on its own: hoisting a `may_trap` op into a
-//!   zero-trip preheader would manufacture a trap out of thin air.
+//!   `PlaceRead` through an indirect base or an `Index` projection. The indirect
+//!   case is conservatively included for fault safety; this is the axis LICM and
+//!   unrolling need on its own: hoisting a `may_trap` op into a zero-trip
+//!   preheader would manufacture a trap or fault out of thin air.
 //! - [`has_observable_side_effect`]: the instruction is visible beyond its
 //!   result value — `Call`, `Intrinsic`, `Alloc`, `Store`, `ParamStore`,
 //!   `PlaceWrite`, `Drop`, `StorageLive`/`StorageDead`. This is the axis DCE
@@ -50,18 +52,20 @@
 //! ```
 //!
 //! Bitwise ops, shifts (counts are masked per spec, so they never trap),
-//! comparisons, `Not`/`BitNot`, constants, non-indexed `PlaceRead`/`Load`, and
-//! the aggregate constructors are the speculatable set — the ops LICM may hoist.
+//! comparisons, `Not`/`BitNot`, constants, direct non-indexed `PlaceRead`/`Load`,
+//! and the aggregate constructors are the speculatable set — the ops LICM may
+//! hoist.
 
 use crate::{Cfg, CfgInstData, CfgValue, Projection};
 
-/// Returns `true` if evaluating `value` can trap (panic) at runtime.
+/// Returns `true` if evaluating `value` can trap or fault at runtime.
 ///
 /// The trapping set, named once here per ADR-0054 §2:
 /// - overflow-checked arithmetic: `Add`, `Sub`, `Mul`, `Neg`;
 /// - division checks: `Div`, `Mod` (divide-by-zero / `INT_MIN / -1`);
 /// - `IntCast` (range check, panics via `__rue_intcast_overflow`);
-/// - `PlaceRead` through an `Index` projection (array bounds check).
+/// - `PlaceRead` through an indirect base (a conservatively classified pointer
+///   dereference) or an `Index` projection (array bounds check).
 ///
 /// Bitwise ops and shifts do **not** trap (shift counts are masked per spec).
 pub(crate) fn may_trap(cfg: &Cfg, value: CfgValue) -> bool {
@@ -78,15 +82,18 @@ pub(crate) fn may_trap(cfg: &Cfg, value: CfgValue) -> bool {
         // value is out of range for the target type.
         CfgInstData::IntCast { .. } => true,
 
-        // A PlaceRead is pure for field projections, but an array index read
-        // performs a bounds check that panics when out of range. Only a place
-        // containing an Index projection can trap (RUE-57).
-        CfgInstData::PlaceRead { place } => cfg
-            .get_place_projections(place)
-            .iter()
-            .any(|p| matches!(p, Projection::Index { .. })),
+        // A direct PlaceRead is pure for field projections, but an indirect
+        // base dereferences a pointer and an array index performs a bounds
+        // check. Either can trap or fault before the read produces its result.
+        CfgInstData::PlaceRead { place } => {
+            matches!(place.base, crate::PlaceBase::Indirect(_))
+                || cfg
+                    .get_place_projections(place)
+                    .iter()
+                    .any(|p| matches!(p, Projection::Index { .. }))
+        }
 
-        // Everything else evaluates without a runtime trap.
+        // Everything else is outside this conservative trapping set.
         _ => false,
     }
 }
@@ -246,6 +253,43 @@ mod tests {
             is_speculatable(&cfg, read),
             "non-indexed PlaceRead is speculatable"
         );
+    }
+
+    #[test]
+    fn indirect_place_read_may_trap() {
+        // Dereferencing an indirect base can fault even without projections;
+        // classifying only Index projections would let LICM speculate it.
+        let mut cfg = make_cfg();
+        let type_pool = rue_air::TypeInternPool::new();
+        let pointer = add(
+            &mut cfg,
+            CfgInstData::Const(0),
+            Type::new_ptr_const(type_pool.intern_ptr_const_from_type(Type::I32)),
+        );
+        let place = cfg
+            .make_place(PlaceBase::Indirect(pointer), Type::I32, std::iter::empty())
+            .unwrap();
+        let read_place = place.duplicate_with_owner();
+        let read = add(
+            &mut cfg,
+            CfgInstData::PlaceRead { place: read_place },
+            Type::I32,
+        );
+        assert!(may_trap(&cfg, read), "indirect PlaceRead must be may_trap");
+        assert!(!is_speculatable(&cfg, read));
+        assert!(!has_observable_side_effect(&cfg, read));
+
+        // PlaceWrite remains on the observable-effect axis; the indirect-base
+        // trap classification is intentionally specific to PlaceRead.
+        let value = konst(&mut cfg, 1);
+        let write = add(
+            &mut cfg,
+            CfgInstData::PlaceWrite { place, value },
+            Type::UNIT,
+        );
+        assert!(!may_trap(&cfg, write));
+        assert!(has_observable_side_effect(&cfg, write));
+        assert!(!is_speculatable(&cfg, write));
     }
 
     // --- The side-effect axis: every observable op reports the effect and is
