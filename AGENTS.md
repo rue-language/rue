@@ -74,7 +74,7 @@ scripts/rue build                    # build the compiler and print its path
 scripts/rue exec prog.rue            # compile and run a quick program
 RUE="$(scripts/rue-bin)"; "$RUE" main.rue -o out
 scripts/rue quick                    # fast unit suite
-scripts/rue premerge                 # canonical required-CI tier
+scripts/rue premerge                 # canonical premerge test tier
 scripts/rue slow                     # canonical scheduled slow tier
 scripts/rue stress                   # canonical opt-in stress tier
 scripts/rue all                      # canonical union of all tiers
@@ -226,6 +226,17 @@ Use proportionate validation:
    architecture-specific suites.
 3. Run the broad/full suite once when the change is cross-cutting or high-risk.
    CI is the final full-platform authority.
+
+`scripts/rue premerge` is a tier, not a preview of required CI. It selects on
+`rue_test_tier_premerge`, so a required lane whose target sits in another tier
+is outside what it can report — the oracle-diff corpora are `tier = "slow"`
+while `test (linux-x64-oracle-diff*)` gates the merge queue. Adding a CLI or
+spec case is the common way to land in that gap: a case reaching a construct
+the oracle does not model is a harness failure until its gap is registered in
+`crates/rue-oracle-diff/src/model_gaps/`, and the audit prints the exact entry
+to add. Run `./buck2 test //crates/rue-oracle-diff:oracle-diff-test` when a
+change adds or edits corpus cases; it reproduces that failure in about two
+minutes (RUE-1711 cost a CI round for want of it).
 
 The generated-oracle smoke target has a fixed two-second child-process budget
 and can time out under heavy parallel load on the local macOS host. If failures

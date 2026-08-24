@@ -285,6 +285,14 @@ mkdir -p "$scope_root/bin"
 cat >"$scope_root/bin/fake-buck" <<'FAKEBUCK'
 #!/usr/bin/env bash
 # Answers the three queries build_scope() makes, and nothing else.
+#
+# The `//crates/...` universe carries each corpus suite as the PAIR
+# `cached_corpus_suite` really emits — the `sh_test` and the `-action` it
+# depends on — and this stub honours the `except set(...)` the caller builds.
+# Returning a universe with no corpus targets in it, and ignoring the
+# subtraction, is what let RUE-1788 sit here undetected: the unnarrowed case
+# could assert only that no `-action` label appeared, which was true of the
+# stub's answer no matter what the script subtracted.
 case "$2" in
   "kind('_corpus_action', //crates/...)")
     printf '%s\n' \
@@ -298,9 +306,31 @@ case "$2" in
       root//crates/rue-oracle-diff:oracle-diff-test \
       root//crates/rue-oracle-diff:oracle-diff-spec-test ;;
   //crates/...*)
-    printf '%s\n' \
-      root//crates/rue-compiler:rue-compiler \
-      root//crates/rue-span:rue-span-test ;;
+    fake_universe="root//crates/rue-compiler:rue-compiler
+root//crates/rue-span:rue-span-test
+root//crates/rue-oracle-diff:oracle-diff-test
+root//crates/rue-oracle-diff:oracle-diff-test-action
+root//crates/rue-oracle-diff:oracle-diff-spec-test
+root//crates/rue-oracle-diff:oracle-diff-spec-test-action
+root//crates/rue-newthing:newthing-test
+root//crates/rue-newthing:newthing-test-action"
+    fake_excluded=" "
+    case "$2" in
+      *"except set("*)
+        fake_rest="${2#*except set(}"
+        fake_excluded=" ${fake_rest%)} " ;;
+    esac
+    printf '%s\n' "$fake_universe" | while IFS= read -r fake_target; do
+      [ -n "$fake_target" ] || continue
+      # The caller subtracts normalized (`//`) labels; the graph answers with
+      # `root//`. Match either spelling so the stub cannot pass by accident.
+      fake_short="${fake_target#root}"
+      case "$fake_excluded" in
+        *" $fake_target "*) continue ;;
+        *" $fake_short "*) continue ;;
+      esac
+      printf '%s\n' "$fake_target"
+    done ;;
   *) echo "fake-buck: unexpected query: $2" >&2; exit 1 ;;
 esac
 FAKEBUCK
@@ -333,11 +363,12 @@ printf '%s\n' \
   //:spec-tests-action \
   //:cli-tests-shard-2-action \
   //crates/rue-oracle-diff:oracle-diff-test-action \
+  //crates/rue-oracle-diff:oracle-diff-test \
   >"$narrow_root/mixed"
 TESTS=$((TESTS + 1))
 if [ "$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope "$narrow_root/mixed" | tr '\n' ' ')" \
      = "//crates/rue-compiler:rue-compiler //crates/rue-codegen:rue-codegen-test " ]; then
-  pass "narrow: build-scope keeps the crate scope and drops every corpus action"
+  pass "narrow: build-scope keeps the crate scope and drops every corpus target"
 else
   fail "narrow: build-scope did not restore the //crates/... scope"
 fi
@@ -352,25 +383,58 @@ fi
 # common case — a compiler change impacts more than NARROW_LIMIT targets, so it
 # is never narrowed. Both must drop the same actions, or fixing one leaves
 # premerge building the corpora exactly as before.
+#
+# Asserted as an EXACT scope rather than as "no `-action` label appears".
+# RUE-1788 was invisible to the weaker form: the subtraction named the two
+# oracle-diff actions, the build reached them anyway through the `sh_test` that
+# carries `$(location :NAME-action)`, and no `-action` label was ever printed
+# while that happened. What the step must not contain is anything that BUILDS a
+# deferred corpus, which for this rule means the pair, so the pair is what the
+# expectation spells out.
 TESTS=$((TESTS + 1))
-unnarrowed="$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope 2>/dev/null)"
-if [ -n "$unnarrowed" ] && ! grep -q -- '-action$' <<<"$unnarrowed"; then
-  pass "narrow: build-scope with no list expands the pattern without any corpus action"
+unnarrowed="$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope 2>/dev/null | tr '\n' ' ')"
+if [ "$unnarrowed" = "//crates/rue-compiler:rue-compiler //crates/rue-span:rue-span-test //crates/rue-newthing:newthing-test //crates/rue-newthing:newthing-test-action " ]; then
+  pass "narrow: build-scope with no list drops each deferred action AND its test target"
 else
-  fail "narrow: build-scope with no list kept a corpus action or produced nothing"
+  fail "narrow: build-scope with no list kept a deferred corpus target (got '$unnarrowed')"
+fi
+
+# RUE-1788 head-on, in both spellings: naming the action alone is not a
+# subtraction, because the test target reaches it. A fix that removes only the
+# `-action` label passes every other case in this file and fails these two.
+TESTS=$((TESTS + 1))
+if [ "${unnarrowed#*oracle-diff}" = "$unnarrowed" ]; then
+  pass "narrow: no deferred corpus suite survives the unnarrowed scope in any spelling"
+else
+  fail "narrow: a deferred corpus target survived the unnarrowed scope ('$unnarrowed')"
+fi
+
+printf '%s\n' \
+  //crates/rue-oracle-diff:oracle-diff-test \
+  //crates/rue-oracle-diff:oracle-diff-spec-test \
+  //crates/rue-span:rue-span-test >"$narrow_root/wrappers"
+TESTS=$((TESTS + 1))
+kept_wrappers="$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope "$narrow_root/wrappers" 2>/dev/null | tr '\n' ' ')"
+if [ "$kept_wrappers" = "//crates/rue-span:rue-span-test " ]; then
+  pass "narrow: build-scope drops a deferred corpus test target from an impacted list"
+else
+  fail "narrow: build-scope kept a deferred corpus test target (got '$kept_wrappers')"
 fi
 
 # FAIL CLOSED is the property the whole change rests on: an action whose test
 # target no required lane runs must stay in the build, because a corpus nothing
 # executes is the RUE-924 false green. `newthing-test-action` is owned by no
 # lane in the stub, so it must survive both spellings.
+# Both halves survive, for the same reason: the corpus must still execute
+# somewhere, and it is the action that executes it.
 printf '%s\n' \
   //crates/rue-oracle-diff:oracle-diff-test-action \
   //crates/rue-newthing:newthing-test-action \
+  //crates/rue-newthing:newthing-test \
   //crates/rue-span:rue-span-test >"$narrow_root/unowned"
 TESTS=$((TESTS + 1))
 kept_unowned="$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope "$narrow_root/unowned" 2>/dev/null | tr '\n' ' ')"
-if [ "$kept_unowned" = "//crates/rue-newthing:newthing-test-action //crates/rue-span:rue-span-test " ]; then
+if [ "$kept_unowned" = "//crates/rue-newthing:newthing-test-action //crates/rue-newthing:newthing-test //crates/rue-span:rue-span-test " ]; then
   pass "narrow: build-scope keeps a corpus action no required lane owns"
 else
   fail "narrow: build-scope deferred an action nothing runs (got '$kept_unowned')"
@@ -381,7 +445,7 @@ fi
 # coverage.
 TESTS=$((TESTS + 1))
 degraded="$(RUE_AFFECTED_BUCK2="$scope_root/bin/absent" "${AFFECTED[@]}" build-scope "$narrow_root/unowned" 2>/dev/null | tr '\n' ' ')"
-if [ "$degraded" = "//crates/rue-oracle-diff:oracle-diff-test-action //crates/rue-newthing:newthing-test-action //crates/rue-span:rue-span-test " ]; then
+if [ "$degraded" = "//crates/rue-oracle-diff:oracle-diff-test-action //crates/rue-newthing:newthing-test-action //crates/rue-newthing:newthing-test //crates/rue-span:rue-span-test " ]; then
   pass "narrow: an unanswerable Buck query falls open to the unfiltered scope"
 else
   fail "narrow: a failed query did not fall open (got '$degraded')"

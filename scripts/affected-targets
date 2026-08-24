@@ -45,7 +45,8 @@
 #   build-scope        Print the targets a `//crates/...` lane may build, with
 #                      or without an impacted list. Narrowing must stay inside
 #                      the lane's own scope, and neither spelling of that scope
-#                      may name a corpus action (RUE-1511).
+#                      may name a corpus action (RUE-1511) or the test target
+#                      that depends on one (RUE-1788).
 #
 # Deliberately NOT `set -e`: a full run is the safe fallback, so failures are
 # handled explicitly and converted into "full", never into a hard error that
@@ -339,9 +340,23 @@ normalize_cell() {
 # `NAME-action` for the test `NAME`, so that mapping is the rule's own
 # construction rather than an inference about the graph.
 #
+# EACH DEFERRAL IS A PAIR, and RUE-1788 is what naming only half of it costs.
+# The `sh_test` the macro emits alongside the action carries
+# `args = ["$(location :NAME-action)"]`, so `NAME` depends on `NAME-action`:
+# subtracting the action while leaving its test target in scope builds the
+# action anyway, through the edge, and runs the corpus exactly as before. That
+# is what `premerge (linux-x64)` did from RUE-1511 until RUE-1788 — the two
+# oracle-diff corpora were subtracted by name and rebuilt by dependency, and
+# both this script's tests and the acceptance check asserted only that no
+# `-action` label appeared in the output, which stayed true throughout.
+#
+# So both halves are emitted. `cquery rdeps` confirms the test target is the
+# action's only dependent, which is what makes the pair the whole closure and
+# not merely the part of it this file happens to know how to name.
+#
 # Fails non-zero when Buck cannot answer, and the caller then builds the corpus
 # actions exactly as it did before.
-deferred_corpus_actions() {
+deferred_corpus_targets() {
     local buck2 actions covered action test_target query
     buck2="$(buck2_bin)"
 
@@ -384,7 +399,9 @@ deferred_corpus_actions() {
         [[ -n "$action" ]] || continue
         test_target="${action%-action}"
         if grep -Fxq "$test_target" <<<"$covered"; then
-            printf '%s\n' "$action"
+            # The test target too: it depends on the action, so subtracting the
+            # action alone leaves the build reaching it through that edge.
+            printf '%s\n' "$action" "$test_target"
         else
             echo "affected-targets: ${action} runs a corpus no required lane owns;" \
                  "keeping it in the build scope" >&2
@@ -396,10 +413,14 @@ deferred_corpus_actions() {
 # The targets a *pattern* lane may build, for lanes whose scope is
 # `//crates/...` rather than a fixed list. With an impacted list it is the
 # narrowed subset; without one it is the whole pattern. Both are the same scope
-# minus the same corpus actions, because both lose independently: fixing only
-# the narrowed spelling leaves the common case — a compiler change, which
-# impacts more than NARROW_LIMIT targets and so is never narrowed — building
-# the corpora exactly as before.
+# minus the same deferred corpus targets, because both lose independently:
+# fixing only the narrowed spelling leaves the common case — a compiler change,
+# which impacts more than NARROW_LIMIT targets and so is never narrowed —
+# building the corpora exactly as before.
+#
+# Both spellings subtract a set that `deferred_corpus_targets` returns whole,
+# each action paired with the test target that depends on it, so neither can
+# reach an action through an edge the other blocks (RUE-1788).
 #
 # RUE-1130 handed the raw impacted closure to `buck2 build` in linux-premerge.
 # That closure spans the whole graph, so narrowing WIDENED the step: it re-ran
@@ -411,7 +432,7 @@ deferred_corpus_actions() {
 build_scope() {
     local file="${1:-}"
     local deferred kept buck2 expr scope
-    deferred="$(deferred_corpus_actions)" || deferred=""
+    deferred="$(deferred_corpus_targets)" || deferred=""
 
     if [[ -z "$file" ]]; then
         # The unnarrowed scope. `buck2 build` accepts patterns and target
