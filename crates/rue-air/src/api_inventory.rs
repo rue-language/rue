@@ -64,6 +64,11 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "AnonymousNominalKind",
         "ArrayLen",
         "SemanticBodyExportFailure",
+        "CompileError",
+        "CompileResult",
+        "ErrorKind",
+        "comptime_panic_err",
+        "ProducerFailure",
     ];
     for forbidden in production_forbidden {
         assert!(
@@ -83,6 +88,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     }
     assert!(contract.contains("type CallAdmission;"));
     assert!(contract.contains("type Type: ComptimeType;"));
+    assert!(contract.contains("type Failure;"));
     assert!(contract.contains("Self::CanonicalIdentity"));
     assert!(contract.contains("Self::File,"));
 

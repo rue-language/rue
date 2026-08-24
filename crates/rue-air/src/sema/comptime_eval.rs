@@ -1720,7 +1720,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     type File = FileId;
     type CanonicalIdentity = super::anon_structs::IssuedStableProducerId;
     type AnonymousIdentity = super::anon_structs::IssuedAnonymousNominalKey;
-    type ProducerFailure = crate::SemanticBodyExportFailure;
+    type Failure = CompileError;
     type CallAdmission = super::info::FunctionCallInfo;
     type AnonymousStructId = crate::types::StructId;
     type AnonMethodSigs = Vec<super::AnonMethodSig>;
@@ -1768,6 +1768,58 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         span: Span,
     ) -> CompileResult<()> {
         OrdinaryBodyEngine::require_preview(self, feature, what, span)
+    }
+    fn depth_exceeded(&self, name: &Spur, depth: usize, span: Span) -> Self::Failure {
+        CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: format!(
+                    "specialization of '{}' exceeded the maximum nesting depth ({}); \
+                     is a comptime-recursive function missing a compile-time-known \
+                     base case, or a generic function recursively instantiating \
+                     itself with new types?",
+                    self.body_interner().resolve(name),
+                    depth
+                ),
+            },
+            span,
+        )
+    }
+    fn literal_out_of_range(&self, value: u64, ty: &Type, span: Span) -> Self::Failure {
+        CompileError::new(
+            ErrorKind::LiteralOutOfRange {
+                value,
+                ty: self.type_name(ty),
+            },
+            span,
+        )
+    }
+    fn float_not_implemented(&self, span: Span) -> Self::Failure {
+        CompileError::new(ErrorKind::FloatNotYetImplemented, span)
+    }
+    fn cannot_negate(&self, ty: &Type, span: Span) -> Self::Failure {
+        CompileError::new(ErrorKind::CannotNegate(self.type_name(ty)), span)
+    }
+    fn comptime_panic(&self, reason: String, span: Span) -> Self::Failure {
+        comptime_panic_err(reason, span)
+    }
+    fn unsupported_anon_method_type_param(
+        &self,
+        method_span: Span,
+        method_name: &str,
+    ) -> Self::Failure {
+        CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: format!(
+                    "method '{}' declares its own `comptime` type parameter, \
+                     which is not yet supported (a method cannot be \
+                     monomorphized over its own type parameter); \
+                     move the type parameter to the enclosing type \
+                     constructor instead",
+                    method_name
+                ),
+            },
+            method_span,
+        )
     }
     fn record_value_const_dependency(&mut self, file: &Self::File, name: &Self::Name) {
         let name = self.body_interner().resolve(name).to_owned();
@@ -1980,8 +2032,18 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         name: Spur,
         types: &AHashMap<Spur, Type>,
         values: &AHashMap<Spur, ConstValue>,
-    ) -> Result<Self::CanonicalIdentity, Self::ProducerFailure> {
-        OrdinaryBodyEngine::canonical_function_producer(self, name, types, values)
+        span: Span,
+    ) -> Result<Self::CanonicalIdentity, Self::Failure> {
+        OrdinaryBodyEngine::canonical_function_producer(self, name, types, values).map_err(
+            |failure| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "failed to issue canonical comptime producer: {failure:?}"
+                    )),
+                    span,
+                )
+            },
+        )
     }
     fn issue_anonymous_identity(
         &self,
