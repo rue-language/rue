@@ -508,7 +508,14 @@ _CLI_TEST_ABSOLUTIZE = _CLI_TEST_BASE_ABSOLUTIZE + ["RUE_CLI_STAGED_PROGRAMS"]
 # healthy runs. //:cli-tests sat at 1800s against a 3600s derived deadline (and
 # a 2203s measured expected cost) until //:cli-timeout-policy-validation started
 # comparing the two.
-_CLI_TESTS_TIMEOUT_SECONDS = 3700
+#
+# Raised 3700 -> 3800 when RUE-1777's three new `cli.slices` cases pushed the
+# derived deadline to 3701 and the validation failed by one second. The bound
+# is a single global that every case addition pushes on, and trunk had grown
+# flush against it, so restoring the ~100s of headroom 3700 was originally
+# chosen with is what keeps the next case addition from re-failing. Raising it
+# only to the derived value would spend that headroom immediately.
+_CLI_TESTS_TIMEOUT_SECONDS = 3800
 _CLI_SHARD_TIMEOUT_SECONDS = 1200
 
 # The bounded premerge CLI corpus in one invocation: the canonical target that a
