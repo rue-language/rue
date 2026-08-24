@@ -603,3 +603,65 @@ fn main() -> i32 {
 args = ["main.rue", "--preview", "slices", "-o", "prog"]
 compile_fail = true
 error_contains = ["unknown preview feature", "slices"]
+
+# RUE-1777. A slice's length is a `u64` in the fat pointer; the index carries
+# the source expression's own integer type. `Lt` of the two was a mixed-width
+# comparison, and codegen takes the comparison width from the LEFT operand, so
+# the length was truncated to the index's width -- `cmp ebx, r14d` for an `i32`
+# index, comparing against the low 32 bits of the length.
+#
+# WHY THESE ASSERT ON EMITTED AIR RATHER THAN ON BEHAVIOR: the truncation is
+# only observable once a length reaches the index type's range, i.e. a slice of
+# 2^32 or more elements. That is not constructible in a test, which is exactly
+# why the bug sat latent -- the same shape as RUE-87, where it was NOT latent
+# and read out of bounds. So the property pinned here is the one that can be:
+# the comparison happens at the length's width.
+[[case]]
+name = "bounds_check_widens_a_narrower_index_to_the_length_width"
+description = "RUE-1777: an `i32` index is widened to the length's `u64` before the bounds comparison, so the length is never truncated to the index's width."
+files = [{ path = "main.rue", source = """
+fn get(borrow s: [i64], i: i32) -> i64 { s[i] }
+fn main() -> i32 {
+    let a: [i64; 3] = [7, 8, 9];
+    @dbg(get(borrow a, 1));
+    0
+}
+""" }]
+args = ["--emit", "air", "main.rue"]
+compile_only = true
+# The program contains no `@intCast`, so the only cast in its AIR is the one
+# the bounds check introduces.
+compile_stdout_contains = ["intcast", "from i32"]
+
+# The counterpart: an index already at the length's width needs no cast, so the
+# fix adds no work to the common `u64` case.
+[[case]]
+name = "bounds_check_does_not_widen_an_index_already_at_length_width"
+description = "RUE-1777: a `u64` index already matches the length's width, so no cast is emitted."
+files = [{ path = "main.rue", source = """
+fn get_u64(borrow s: [i64], i: u64) -> i64 { s[i] }
+fn main() -> i32 {
+    let a: [i64; 3] = [7, 8, 9];
+    @dbg(get_u64(borrow a, 1));
+    0
+}
+""" }]
+args = ["--emit", "air", "main.rue"]
+compile_only = true
+compile_stdout_not_contains = ["intcast"]
+
+# Behavior control: widening must not disturb ordinary indexing, and the signed
+# lower-bound check still runs FIRST -- which is what makes the widening cast
+# infallible, since every non-negative value of every integer type fits in u64.
+[[case]]
+name = "signed_index_still_traps_below_zero_after_widening"
+description = "RUE-1777: `index >= 0` is still checked before the widening cast, so a negative index traps as a bounds violation."
+files = [{ path = "main.rue", source = """
+fn get(borrow s: [i64], i: i32) -> i64 { s[i] }
+fn main() -> i32 {
+    let a: [i64; 3] = [7, 8, 9];
+    @dbg(get(borrow a, 0 - 1));
+    0
+}
+""" }]
+exit_code = 101
