@@ -746,9 +746,8 @@ impl RegAlloc {
 
                 match Self::get_allocation(context, dst) {
                     Some(Allocation::Register(reg)) => {
-                        mir.push(X86Inst::Shl {
+                        mir.push(X86Inst::ShlRCl {
                             dst: Operand::Physical(reg),
-                            count: Operand::Physical(SHIFT_COUNT),
                         });
                     }
                     Some(Allocation::Spill(offset)) => {
@@ -757,9 +756,8 @@ impl RegAlloc {
                             base: Reg::Rbp,
                             offset,
                         });
-                        mir.push(X86Inst::Shl {
+                        mir.push(X86Inst::ShlRCl {
                             dst: Operand::Physical(SCRATCH_VALUE),
-                            count: Operand::Physical(SHIFT_COUNT),
                         });
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
@@ -771,10 +769,7 @@ impl RegAlloc {
                         unreachable!("destination cannot be rematerializable")
                     }
                     None => {
-                        mir.push(X86Inst::Shl {
-                            dst,
-                            count: Operand::Physical(SHIFT_COUNT),
-                        });
+                        mir.push(X86Inst::ShlRCl { dst });
                     }
                 }
             }
@@ -1586,6 +1581,59 @@ mod tests {
             }
             _ => panic!("expected MovRI32"),
         }
+    }
+
+    #[test]
+    fn dynamic_shl_with_physical_rcx_count_becomes_shl_rcl_without_move() {
+        let mut mir = X86Mir::new();
+        mir.push(X86Inst::Shl {
+            dst: Operand::Physical(Reg::R8),
+            count: Operand::Physical(Reg::Rcx),
+        });
+
+        let mir = RegAlloc::new(mir, 0).allocate().unwrap();
+
+        assert!(matches!(
+            mir.instructions(),
+            [X86Inst::ShlRCl {
+                dst: Operand::Physical(Reg::R8),
+            }]
+        ));
+    }
+
+    #[test]
+    fn dynamic_shl_moves_allocated_count_to_rcx_before_shl_rcl() {
+        let mut mir = X86Mir::new();
+        let count = mir.alloc_vreg();
+        mir.push(X86Inst::MovRM {
+            dst: Operand::Virtual(count),
+            base: Reg::Rdi,
+            offset: 0,
+        });
+        mir.push(X86Inst::Shl {
+            dst: Operand::Physical(Reg::R8),
+            count: Operand::Virtual(count),
+        });
+
+        let mir = RegAlloc::new(mir, 0).allocate().unwrap();
+        let instructions = mir.instructions();
+
+        assert!(matches!(
+            instructions,
+            [
+                X86Inst::MovRM {
+                    dst: Operand::Physical(count_reg),
+                    ..
+                },
+                X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rcx),
+                    src: Operand::Physical(src_reg),
+                },
+                X86Inst::ShlRCl {
+                    dst: Operand::Physical(Reg::R8),
+                }
+            ] if *count_reg == *src_reg && *count_reg != Reg::Rcx
+        ));
     }
 
     #[test]

@@ -64,8 +64,9 @@ pub enum Reg {
 /// * **Machine role.** `rsp` is the stack pointer and `rbp` the frame pointer.
 /// * **Fixed instruction operand.** `idiv`/`div`/`mul` read and write the
 ///   `rdx:rax` pair (see `X86Inst::clobbers`), `cdq`/`cqo` write `rdx`, and the
-///   variable-count shifts take their count in `cl`, i.e. `rcx`. The emitter
-///   asserts the shift destination is not `rcx` for exactly this reason.
+///   variable-count shifts take their count in `cl`, i.e. `rcx`. Keeping `rcx`
+///   reserved lets register allocation load the count without destroying the
+///   shift destination.
 /// * **Register-allocation scratch.** [`SCRATCH_VALUE`], [`SCRATCH_SOURCE`],
 ///   [`SCRATCH_ADDR_BASE`], and [`SCRATCH_ADDR_INDEX`] hold reloaded spill
 ///   values and lowered address components while an instruction is rewritten.
@@ -110,9 +111,8 @@ pub(crate) const SCRATCH_ADDR_BASE: Reg = Reg::Rdx;
 pub(crate) const SCRATCH_ADDR_INDEX: Reg = Reg::Rcx;
 
 /// The register a variable-count shift takes its count in: `cl`, the low byte
-/// of `rcx`. This is a fixed machine operand, not a choice — the emitter
-/// asserts that a shift's destination is not this register, and the allocator
-/// therefore cannot hand it out.
+/// of `rcx`. This is a fixed machine operand, not a choice, so the allocator
+/// cannot hand it out.
 pub(crate) const SHIFT_COUNT: Reg = Reg::Rcx;
 
 /// Whether the allocator is forbidden from handing out `reg`.
@@ -578,7 +578,9 @@ pub enum X86Inst {
     /// `lea dst, [base + disp]` - Load effective address.
     Lea { dst: Operand, base: Reg, disp: i32 },
 
-    /// `shl dst, count` - Shift left (multiply by 2^count).
+    /// `shl dst, count` - Pre-register-allocation variable left-shift pseudo.
+    /// Register allocation loads `count` into `cl` and lowers this to
+    /// [`X86Inst::ShlRCl`] before scheduling.
     Shl { dst: Operand, count: Operand },
 
     /// `mov dst, [base]` - Load from memory via a virtual base register.

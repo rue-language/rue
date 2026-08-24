@@ -479,6 +479,28 @@ mod tests {
     }
 
     #[test]
+    fn runtime_shift_preserves_incoming_flags_for_liveness() {
+        let instructions = vec![
+            X86Inst::CmpRR {
+                src1: Operand::Physical(Reg::Rax),
+                src2: Operand::Physical(Reg::Rbx),
+            },
+            X86Inst::ShlRCl {
+                dst: Operand::Physical(Reg::Rax),
+            },
+            X86Inst::Sete {
+                dst: Operand::Physical(Reg::Rcx),
+            },
+        ];
+
+        // A runtime count of zero leaves FLAGS untouched, so the shift cannot
+        // be considered a killing writer when deciding whether the compare's
+        // FLAGS are live. Both implementations must retain that fact.
+        assert!(!flags_dead_after(&instructions, 0));
+        assert!(!compute_flags_dead(&instructions)[0]);
+    }
+
+    #[test]
     fn test_keep_nonzero_shift() {
         let mut instructions = vec![
             X86Inst::ShlRI {
