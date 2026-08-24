@@ -252,16 +252,21 @@ target once in isolation. A clean isolated 64/64 run is sufficient local
 evidence; do not repeatedly rerun the entire suite. A semantic disagreement,
 compiler error, or isolated timeout remains a real failure.
 
-An unfiltered `scripts/rue test` is host-serialized across Rue worktrees and
-runs the opaque spec, UI, CLI, oracle, and reproducibility harnesses one at a
-time. Do not bypass that coordination with a direct `buck2 test //...` when a
-full local run is intended. Quick, filtered, and targeted checks do not take the
-host lock. The optional BuildBuddy action cache uses one private user config and
-ignored per-worktree symlinks; see `docs/process/build-cache.md`. Never commit or
-print its credential. Full remote execution is supported (RUE-320, Done
-2026-07-18): the repository wrapper defaults to `--prefer-local`, and
-`--prefer-remote` is an explicit opt-in for cache-population or RE-debugging
-runs, not the default local-development policy.
+An unfiltered `scripts/rue test` delegates selection and execution to Buck in
+one `buck2 test` invocation. Its standard selection includes the premerge and
+slow tiers while leaving stress tests opt-in. Corpus suites are cacheable Buck
+build actions; `weight_percentage = 100` keeps two corpus actions from running
+together within one Buck daemon/worktree while still allowing corpus work to
+overlap non-corpus actions such as unit tests and compiles. There is no
+full-suite host lock or cross-worktree test serialization, so sibling worktrees
+may run concurrently. The cross-worktree coordination relevant here is the
+`buck2` wrapper's `scripts/rue-storage` disk-pressure guard. The optional
+BuildBuddy action cache uses one private user config and ignored per-worktree
+symlinks; see `docs/process/build-cache.md`. Never commit or print its
+credential. Full remote execution is supported (RUE-320, Done 2026-07-18): the
+repository wrapper defaults to `--prefer-local`, and `--prefer-remote` is an
+explicit opt-in for cache-population or RE-debugging runs, not the default
+local-development policy.
 
 Testing conventions:
 
