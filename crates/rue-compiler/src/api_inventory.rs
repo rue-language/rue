@@ -3124,6 +3124,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         "DurableComptimeForeignCallAuthority",
         "DurableComptimeEffects",
         "DurableComptimeCallLifecycle",
+        "DurableComptimeCompletion",
         "DurableComptimeCallEdge",
         "accessing_source",
         "DurableComptimeCallTicket",
@@ -3146,6 +3147,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         "observe_dependency",
         "observe_anonymous_nominal",
         "observe_deferred_ownership",
+        "current_effects_mut",
         "merge_projection",
         "merge_ready_projection",
         "merge_ready_lookup",
@@ -3153,7 +3155,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         "prepare_structured_edge",
         "ticket_from_admitted_edge",
         "merge_child",
-        "finish_root",
+        "complete_root",
     ] {
         assert!(
             facade.contains(required),
@@ -3273,13 +3275,121 @@ fn durable_comptime_services_are_named_authority_operations() {
     let finish = facade
         .split("pub(crate) fn finish<V, F>(")
         .nth(1)
-        .and_then(|source| source.split("\n    pub(crate) fn effects(").next())
+        .and_then(|source| source.split("\n    pub(crate) fn complete_root<").next())
         .expect("durable lifecycle finish implementation");
     assert!(!finish.contains("DeferredOwnershipApplication {"));
-    assert!(finish.contains("scope.merge_child(child, &preserve)"));
     assert!(finish.contains(".merge_child(scope, &context.application_policy)"));
+    assert!(finish.contains("ComptimeOutcome::Known"));
+    assert!(!finish.contains("DurableComptimeEffects"));
+    let completion = facade
+        .split("pub(crate) struct DurableComptimeCompletion")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n\n#[allow(dead_code)]\nimpl DurableComptimeCallLifecycle")
+                .next()
+        })
+        .expect("durable root completion");
+    assert!(completion.contains("ComptimeOutcome<V, F>"));
+    assert!(completion.contains("DurableComptimeEffects"));
+    let production_completion = completion
+        .split("#[cfg(test)]")
+        .next()
+        .expect("durable production completion surface");
+    assert!(production_completion.contains("into_parts(self)"));
+    assert!(!production_completion.contains("fn outcome("));
+    assert!(!production_completion.contains("fn effects("));
+    assert!(
+        !completion.contains("Clone"),
+        "durable completion must remain a one-shot, non-Clone handoff"
+    );
+    assert!(!facade.contains("impl Clone for DurableComptimeCompletion"));
+    assert!(!facade.contains("pub(crate) fn finish_root("));
+    assert!(!finish.contains("child: DurableComptimeEffects"));
+    assert_eq!(
+        production_facade.matches("fn current_effects_mut(").count(),
+        1
+    );
+    let lifecycle_source = production_facade
+        .split("impl DurableComptimeCallLifecycle {")
+        .nth(1)
+        .expect("durable lifecycle implementation");
+    for observer in [
+        "pub(crate) fn observe_dependency(",
+        "pub(crate) fn observe_anonymous_nominal(",
+        "pub(crate) fn observe_deferred_ownership(",
+    ] {
+        let body = lifecycle_source
+            .split(observer)
+            .nth(1)
+            .and_then(|source| source.split("\n    }").next())
+            .expect("durable lifecycle observer");
+        assert!(
+            body.contains("current_effects_mut()"),
+            "durable observation bypasses the lifecycle effect scope: {observer}"
+        );
+    }
+    assert!(finish.contains("if matches!(outcome, rue_air::ComptimeOutcome::Known(_))"));
+    assert!(
+        finish.contains("self.active.pop()")
+            && finish.contains("self\n            .scopes\n            .remove(&key)"),
+        "finish must consume only an entered lifecycle scope after validation"
+    );
+    let validate_at = finish
+        .find("validate_finish(ticket)")
+        .expect("finish validation");
+    let consume_at = finish
+        .find("ticket.consumed = true")
+        .expect("ticket consumption");
+    let pop_at = finish.find("self.active.pop()").expect("active pop");
+    let context_at = finish
+        .find("self\n            .contexts\n            .remove(&key)")
+        .expect("context removal");
+    let scope_at = finish
+        .find("self\n            .scopes\n            .remove(&key)")
+        .expect("scope removal");
+    let known_at = finish
+        .find("if matches!(outcome, rue_air::ComptimeOutcome::Known(_))")
+        .expect("known transfer");
+    let merge_at = finish
+        .find(".merge_child(scope, &context.application_policy)")
+        .expect("scope transfer");
+    assert!(validate_at < consume_at);
+    assert!(consume_at < pop_at && pop_at < context_at && context_at < scope_at);
+    assert!(scope_at < known_at && known_at < merge_at);
 
     let database = include_str!("revisioned_query_database.rs");
+    assert_eq!(
+        database.matches("SemanticConstEvaluator {").count(),
+        2,
+        "durable roots must retain exactly two legacy evaluator constructions"
+    );
+    let evaluator_roots = database
+        .split("let mut evaluator = SemanticConstEvaluator {")
+        .skip(1)
+        .map(|source| {
+            source
+                .split("match result")
+                .next()
+                .expect("legacy evaluator root body")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(evaluator_roots.len(), 2);
+    for root in evaluator_roots {
+        assert!(root.contains("effects:"));
+        assert!(root.contains("std::mem::take(&mut evaluator.effects)"));
+        assert!(root.contains("provider.merge_comptime_effects("));
+        for forbidden in [
+            "DurableComptimeCallLifecycle",
+            "DurableComptimeCompletion",
+            "complete_root(",
+        ] {
+            assert!(
+                !root.contains(forbidden),
+                "legacy root crossed lifecycle seam: {forbidden}"
+            );
+        }
+    }
     let target_kernel = facade
         .split("pub(crate) fn resolve_target_intrinsic_facts")
         .nth(1)

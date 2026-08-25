@@ -414,12 +414,60 @@ pub(crate) enum DurableComptimeLifecycleError {
 #[allow(dead_code)]
 static NEXT_DURABLE_LIFECYCLE_ID: AtomicU64 = AtomicU64::new(1);
 
+/// The unchanged result and effects published by one completed durable root.
+///
+/// Effects are deliberately attached to the exact AIR outcome rather than
+/// represented by a compiler-local outcome enum. Only `Known` outcomes carry
+/// observations; every other terminal has an empty effects value.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct DurableComptimeCompletion<V, F> {
+    outcome: rue_air::ComptimeOutcome<V, F>,
+    effects: DurableComptimeEffects,
+}
+
+#[allow(dead_code)]
+impl<V, F> DurableComptimeCompletion<V, F> {
+    pub(crate) fn into_parts(self) -> (rue_air::ComptimeOutcome<V, F>, DurableComptimeEffects) {
+        (self.outcome, self.effects)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn outcome(&self) -> &rue_air::ComptimeOutcome<V, F> {
+        &self.outcome
+    }
+
+    #[cfg(test)]
+    pub(crate) fn effects(&self) -> &DurableComptimeEffects {
+        &self.effects
+    }
+
+    #[cfg(test)]
+    fn deferred_ownership(&self) -> impl Iterator<Item = &DeferredOwnershipGate> {
+        self.effects.deferred_ownership()
+    }
+
+    #[cfg(test)]
+    fn anonymous_nominals(&self) -> impl Iterator<Item = &DurableAnonymousNominal> {
+        self.effects.anonymous_nominals()
+    }
+
+    #[cfg(test)]
+    fn dependencies(&self) -> impl Iterator<Item = &SemanticDeclarationDependency> {
+        self.effects.dependencies()
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.effects.is_empty()
+    }
+}
+
 /// Root-local call/effect authority for a durable comptime host.
 ///
-/// `finish` consumes the ticket and accepts the child outcome opaquely. The
-/// outcome is intentionally generic: cleanup happens for every AIR terminal,
-/// while effects publish only for a known result, without copying AIR's
-/// outcome algebra into the compiler.
+/// `finish` consumes an entered ticket and its lifecycle-owned scope. Cleanup
+/// happens for every AIR terminal, while effects publish only for a known
+/// result, without copying AIR's outcome algebra into the compiler.
 #[allow(dead_code)] // AIR owns the active root lifecycle until compiler cutover
 #[derive(Debug)]
 pub(crate) struct DurableComptimeCallLifecycle {
@@ -548,6 +596,29 @@ impl DurableComptimeCallLifecycle {
             })
     }
 
+    fn current_effects_mut(&mut self) -> &mut DurableComptimeEffects {
+        if let Some(key) = self.active.last().copied() {
+            self.scopes
+                .get_mut(&key)
+                .expect("active call must retain its effect scope")
+        } else {
+            &mut self.effects
+        }
+    }
+
+    pub(crate) fn observe_dependency(&mut self, dependency: SemanticDeclarationDependency) {
+        self.current_effects_mut().observe_dependency(dependency);
+    }
+
+    pub(crate) fn observe_anonymous_nominal(&mut self, nominal: DurableAnonymousNominal) {
+        self.current_effects_mut()
+            .observe_anonymous_nominal(nominal);
+    }
+
+    pub(crate) fn observe_deferred_ownership(&mut self, gate: DeferredOwnershipGate) {
+        self.current_effects_mut().observe_deferred_ownership(gate);
+    }
+
     /// Consume an edge on the admitted-program branch and derive the exact
     /// query context from the owned program. Admission deliberately does not
     /// activate a scope; `enter` remains the sole activation point.
@@ -631,14 +702,8 @@ impl DurableComptimeCallLifecycle {
             &preserve,
         );
         edge.consumed = true;
-        if let Some(parent) = self.active.last().copied() {
-            self.scopes
-                .get_mut(&parent)
-                .expect("active parent must retain its effect scope")
-                .merge_child(ready, &edge.application_policy);
-        } else {
-            self.effects.merge_child(ready, &edge.application_policy);
-        }
+        self.current_effects_mut()
+            .merge_child(ready, &edge.application_policy);
         Ok(())
     }
 
@@ -700,11 +765,8 @@ impl DurableComptimeCallLifecycle {
         &mut self,
         ticket: &mut DurableComptimeCallTicket,
         outcome: &rue_air::ComptimeOutcome<V, F>,
-        child: DurableComptimeEffects,
-    ) -> Result<(), (DurableComptimeLifecycleError, DurableComptimeEffects)> {
-        if let Err(error) = self.validate_finish(ticket) {
-            return Err((error, child));
-        }
+    ) -> Result<(), DurableComptimeLifecycleError> {
+        self.validate_finish(ticket)?;
         let key = (ticket.owner, ticket.serial);
         ticket.consumed = true;
         self.active.pop();
@@ -713,7 +775,7 @@ impl DurableComptimeCallLifecycle {
             .contexts
             .remove(&key)
             .expect("entered ticket must retain its context");
-        let mut scope = self
+        let scope = self
             .scopes
             .remove(&key)
             .expect("entered ticket must retain its effect scope");
@@ -721,8 +783,6 @@ impl DurableComptimeCallLifecycle {
             // First retain all direct observations alongside effects from
             // completed nested calls. The current call's policy is applied
             // only when this complete scope crosses into its parent/root.
-            let preserve = DurableComptimeApplicationPolicy::preserve();
-            scope.merge_child(child, &preserve);
             if let Some(parent) = self.active.last().copied() {
                 self.scopes
                     .get_mut(&parent)
@@ -735,18 +795,26 @@ impl DurableComptimeCallLifecycle {
         Ok(())
     }
 
-    pub(crate) fn effects(&self) -> &DurableComptimeEffects {
-        &self.effects
-    }
-
-    pub(crate) fn finish_root(
+    pub(crate) fn complete_root<V, F>(
         self,
-    ) -> Result<DurableComptimeEffects, (Self, DurableComptimeLifecycleError)> {
-        if self.active.is_empty() {
-            Ok(self.effects)
-        } else {
-            Err((self, DurableComptimeLifecycleError::OutOfOrder))
+        outcome: rue_air::ComptimeOutcome<V, F>,
+    ) -> Result<
+        DurableComptimeCompletion<V, F>,
+        (
+            Self,
+            rue_air::ComptimeOutcome<V, F>,
+            DurableComptimeLifecycleError,
+        ),
+    > {
+        if !self.active.is_empty() {
+            return Err((self, outcome, DurableComptimeLifecycleError::OutOfOrder));
         }
+        let effects = if matches!(outcome, rue_air::ComptimeOutcome::Known(_)) {
+            self.effects
+        } else {
+            DurableComptimeEffects::default()
+        };
+        Ok(DurableComptimeCompletion { outcome, effects })
     }
 }
 
@@ -1767,6 +1835,67 @@ mod effect_lifecycle_tests {
         effects
     }
 
+    trait LifecycleTestEffects {
+        fn finish_with_effects<V, F>(
+            &mut self,
+            ticket: &mut DurableComptimeCallTicket,
+            outcome: &rue_air::ComptimeOutcome<V, F>,
+            effects: DurableComptimeEffects,
+        ) -> Result<(), DurableComptimeLifecycleError>;
+
+        fn complete_known(
+            self,
+        ) -> Result<
+            DurableComptimeCompletion<(), ()>,
+            (
+                Self,
+                rue_air::ComptimeOutcome<(), ()>,
+                DurableComptimeLifecycleError,
+            ),
+        >
+        where
+            Self: Sized;
+
+        fn root_effects_for_test(&self) -> &DurableComptimeEffects;
+    }
+
+    impl LifecycleTestEffects for DurableComptimeCallLifecycle {
+        fn finish_with_effects<V, F>(
+            &mut self,
+            ticket: &mut DurableComptimeCallTicket,
+            outcome: &rue_air::ComptimeOutcome<V, F>,
+            effects: DurableComptimeEffects,
+        ) -> Result<(), DurableComptimeLifecycleError> {
+            for nominal in effects.anonymous_nominals.into_values() {
+                self.observe_anonymous_nominal(nominal);
+            }
+            for dependency in effects.dependencies {
+                self.observe_dependency(dependency);
+            }
+            for gate in effects.deferred_ownership {
+                self.observe_deferred_ownership(gate);
+            }
+            self.finish(ticket, outcome)
+        }
+
+        fn complete_known(
+            self,
+        ) -> Result<
+            DurableComptimeCompletion<(), ()>,
+            (
+                Self,
+                rue_air::ComptimeOutcome<(), ()>,
+                DurableComptimeLifecycleError,
+            ),
+        > {
+            self.complete_root(rue_air::ComptimeOutcome::Known(()))
+        }
+
+        fn root_effects_for_test(&self) -> &DurableComptimeEffects {
+            &self.effects
+        }
+    }
+
     fn observed_effects() -> DurableComptimeEffects {
         let mut effects = DurableComptimeEffects::default();
         let identity = crate::AnonymousNominalKey {
@@ -1837,6 +1966,116 @@ mod effect_lifecycle_tests {
         assert_eq!(effects.dependencies().count(), 1);
         assert_eq!(effects.anonymous_nominals().next(), Some(&second));
         assert_eq!(effects.deferred_ownership().count(), 1);
+    }
+
+    #[test]
+    fn root_completion_preserves_known_outcome_and_direct_observations() {
+        let mut lifecycle = lifecycle();
+        let mut direct = observed_effects();
+        lifecycle.observe_anonymous_nominal(
+            direct
+                .anonymous_nominals
+                .pop_first()
+                .expect("direct nominal observation")
+                .1,
+        );
+        lifecycle.observe_dependency(SemanticDeclarationDependency {
+            source: definition("parent"),
+            kind: rue_air::DeclarationTypeDependencyKind::Body,
+            target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                definition("child"),
+            ),
+        });
+        lifecycle.observe_deferred_ownership(gate(77));
+        let completion = lifecycle
+            .complete_root(rue_air::ComptimeOutcome::<u32, ()>::Known(17))
+            .unwrap();
+        assert!(matches!(
+            completion.outcome(),
+            rue_air::ComptimeOutcome::Known(17)
+        ));
+        assert_eq!(completion.effects().anonymous_nominals().count(), 1);
+        assert_eq!(completion.effects().dependencies().count(), 1);
+        assert_eq!(completion.effects().deferred_ownership().count(), 1);
+        let (outcome, effects) = completion.into_parts();
+        assert!(matches!(outcome, rue_air::ComptimeOutcome::Known(17)));
+        assert_eq!(effects.deferred_ownership().count(), 1);
+    }
+
+    #[test]
+    fn root_completion_preserves_every_non_known_terminal_without_effects() {
+        fn assert_empty(
+            outcome: rue_air::ComptimeOutcome<(), &'static str>,
+            expected: fn(&rue_air::ComptimeOutcome<(), &'static str>) -> bool,
+        ) {
+            let mut lifecycle = lifecycle();
+            lifecycle.observe_dependency(SemanticDeclarationDependency {
+                source: definition("parent"),
+                kind: rue_air::DeclarationTypeDependencyKind::Body,
+                target:
+                    crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                        definition("child"),
+                    ),
+            });
+            let completion = lifecycle.complete_root(outcome).unwrap();
+            assert!(expected(completion.outcome()));
+            assert!(completion.effects().is_empty());
+        }
+
+        assert_empty(rue_air::ComptimeOutcome::RuntimeDependent, |outcome| {
+            matches!(outcome, rue_air::ComptimeOutcome::RuntimeDependent)
+        });
+        assert_empty(rue_air::ComptimeOutcome::NotReady, |outcome| {
+            matches!(outcome, rue_air::ComptimeOutcome::NotReady)
+        });
+        assert_empty(rue_air::ComptimeOutcome::UnsupportedContext, |outcome| {
+            matches!(outcome, rue_air::ComptimeOutcome::UnsupportedContext)
+        });
+        assert_empty(
+            rue_air::ComptimeOutcome::Trap(rue_air::ComptimeTrap {
+                operation: "root",
+                span: rue_span::Span::new(0, 0),
+            }),
+            |outcome| {
+                matches!(
+                    outcome,
+                    rue_air::ComptimeOutcome::Trap(rue_air::ComptimeTrap {
+                        operation: "root",
+                        ..
+                    })
+                )
+            },
+        );
+        assert_empty(rue_air::ComptimeOutcome::HostFailure("host"), |outcome| {
+            matches!(outcome, rue_air::ComptimeOutcome::HostFailure("host"))
+        });
+        assert_empty(rue_air::ComptimeOutcome::Abort("abort"), |outcome| {
+            matches!(outcome, rue_air::ComptimeOutcome::Abort("abort"))
+        });
+    }
+
+    #[test]
+    fn root_failure_discards_direct_and_ready_observations() {
+        let mut lifecycle = lifecycle();
+        lifecycle.observe_dependency(SemanticDeclarationDependency {
+            source: definition("parent"),
+            kind: rue_air::DeclarationTypeDependencyKind::Body,
+            target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                definition("child"),
+            ),
+        });
+        let mut edge = lifecycle.prepare_expression_edge(88).unwrap();
+        lifecycle
+            .merge_ready_projection(&mut edge, &ready_projection(88))
+            .unwrap();
+        let completion = lifecycle
+            .complete_root(rue_air::ComptimeOutcome::<(), ()>::RuntimeDependent)
+            .unwrap();
+        assert!(completion.effects().is_empty());
+        assert!(matches!(
+            completion.outcome(),
+            rue_air::ComptimeOutcome::RuntimeDependent
+        ));
     }
 
     #[test]
@@ -1962,13 +2201,13 @@ mod effect_lifecycle_tests {
         lifecycle.enter(&ticket).unwrap();
         assert_eq!(lifecycle.active.len(), 1);
         lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut ticket,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 DurableComptimeEffects::default(),
             )
             .unwrap();
-        lifecycle.finish_root().unwrap();
+        lifecycle.complete_known().unwrap();
 
         let mut inconsistent = admitted.clone();
         inconsistent.plan.candidate = sibling;
@@ -1997,15 +2236,15 @@ mod effect_lifecycle_tests {
         lifecycle.enter(&inner).unwrap();
         let inner_outcome = rue_air::ComptimeOutcome::<(), ()>::Known(());
         assert_eq!(
-            lifecycle.finish(&mut inner, &inner_outcome, child_effects(4),),
+            lifecycle.finish_with_effects(&mut inner, &inner_outcome, child_effects(4)),
             Ok(())
         );
         let outer_outcome = rue_air::ComptimeOutcome::<(), ()>::Known(());
         assert_eq!(
-            lifecycle.finish(&mut outer, &outer_outcome, child_effects(3),),
+            lifecycle.finish_with_effects(&mut outer, &outer_outcome, child_effects(3)),
             Ok(())
         );
-        let effects = lifecycle.finish_root().unwrap();
+        let effects = lifecycle.complete_known().unwrap();
         let applications = effects
             .deferred_ownership()
             .map(|gate| {
@@ -2040,13 +2279,13 @@ mod effect_lifecycle_tests {
         let mut ticket = lifecycle.prepare(structured_context()).unwrap();
         lifecycle.enter(&ticket).unwrap();
         lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut ticket,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 child_effects(5),
             )
             .unwrap();
-        let effects = lifecycle.finish_root().unwrap();
+        let effects = lifecycle.complete_known().unwrap();
         assert!(
             effects
                 .deferred_ownership()
@@ -2067,7 +2306,7 @@ mod effect_lifecycle_tests {
                 ForeignComptimeCallLookup::Ready(ready_projection(10)),
             )
             .unwrap();
-        let expression_effects = expression.finish_root().unwrap();
+        let expression_effects = expression.complete_known().unwrap();
         assert_eq!(
             expression_effects
                 .deferred_ownership()
@@ -2087,7 +2326,7 @@ mod effect_lifecycle_tests {
             .unwrap();
         assert!(
             structured
-                .finish_root()
+                .complete_known()
                 .unwrap()
                 .deferred_ownership()
                 .next()
@@ -2108,13 +2347,13 @@ mod effect_lifecycle_tests {
             .merge_ready_projection(&mut inner_edge, &ready_projection(21))
             .unwrap();
         expression_outer
-            .finish(
+            .finish_with_effects(
                 &mut outer,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 DurableComptimeEffects::default(),
             )
             .unwrap();
-        let effects = expression_outer.finish_root().unwrap();
+        let effects = expression_outer.complete_known().unwrap();
         assert_eq!(
             effects
                 .deferred_ownership()
@@ -2136,13 +2375,13 @@ mod effect_lifecycle_tests {
             .merge_ready_projection(&mut inner_edge, &ready_projection(22))
             .unwrap();
         structured_outer
-            .finish(
+            .finish_with_effects(
                 &mut outer,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 DurableComptimeEffects::default(),
             )
             .unwrap();
-        let effects = structured_outer.finish_root().unwrap();
+        let effects = structured_outer.complete_known().unwrap();
         assert_eq!(
             effects
                 .deferred_ownership()
@@ -2166,13 +2405,13 @@ mod effect_lifecycle_tests {
             .merge_ready_projection(&mut inner_edge, &ready_projection(31))
             .unwrap();
         lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut outer,
                 &rue_air::ComptimeOutcome::<(), ()>::RuntimeDependent,
                 DurableComptimeEffects::default(),
             )
             .unwrap();
-        assert!(lifecycle.finish_root().unwrap().is_empty());
+        assert!(lifecycle.complete_known().unwrap().is_empty());
     }
 
     #[test]
@@ -2185,7 +2424,7 @@ mod effect_lifecycle_tests {
                 .unwrap();
         }
         let applications = lifecycle
-            .finish_root()
+            .complete_known()
             .unwrap()
             .deferred_ownership()
             .map(|gate| gate.application.as_ref().unwrap().call_ordinal)
@@ -2213,7 +2452,7 @@ mod effect_lifecycle_tests {
         );
         assert_eq!(
             lifecycle
-                .finish_root()
+                .complete_known()
                 .unwrap()
                 .deferred_ownership()
                 .count(),
@@ -2232,12 +2471,15 @@ mod effect_lifecycle_tests {
             other.merge_ready_projection(&mut edge, &projection),
             Err(DurableComptimeLifecycleError::TicketMismatch)
         );
-        assert!(other.finish_root().unwrap().is_empty());
+        assert!(other.complete_known().unwrap().is_empty());
 
         owner
             .merge_ready_projection(&mut edge, &projection)
             .unwrap();
-        assert_eq!(owner.finish_root().unwrap().deferred_ownership().count(), 1);
+        assert_eq!(
+            owner.complete_known().unwrap().deferred_ownership().count(),
+            1
+        );
     }
 
     #[test]
@@ -2263,20 +2505,20 @@ mod effect_lifecycle_tests {
             .unwrap();
         expression_lifecycle.enter(&inner).unwrap();
         expression_lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut inner,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 child_effects(4),
             )
             .unwrap();
         expression_lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut outer,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 child_effects(3),
             )
             .unwrap();
-        let effects = expression_lifecycle.finish_root().unwrap();
+        let effects = expression_lifecycle.complete_known().unwrap();
         let applications = effects
             .deferred_ownership()
             .map(|gate| gate.application.clone().unwrap())
@@ -2297,20 +2539,20 @@ mod effect_lifecycle_tests {
             .unwrap();
         structured_lifecycle.enter(&inner).unwrap();
         structured_lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut inner,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 child_effects(4),
             )
             .unwrap();
         structured_lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut outer,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 child_effects(3),
             )
             .unwrap();
-        let effects = structured_lifecycle.finish_root().unwrap();
+        let effects = structured_lifecycle.complete_known().unwrap();
         let mut applications = effects
             .deferred_ownership()
             .map(|gate| gate.application.clone());
@@ -2336,14 +2578,14 @@ mod effect_lifecycle_tests {
             .unwrap();
         structured_nested_lifecycle.enter(&inner).unwrap();
         structured_nested_lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut inner,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 child_effects(4),
             )
             .unwrap();
         structured_nested_lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut outer,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 child_effects(3),
@@ -2351,7 +2593,7 @@ mod effect_lifecycle_tests {
             .unwrap();
         assert!(
             structured_nested_lifecycle
-                .finish_root()
+                .complete_known()
                 .unwrap()
                 .deferred_ownership()
                 .all(|gate| gate.application.is_none())
@@ -2368,20 +2610,20 @@ mod effect_lifecycle_tests {
             .unwrap();
         lifecycle.enter(&inner).unwrap();
         lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut inner,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 child_effects(4),
             )
             .unwrap();
         lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut outer,
                 &rue_air::ComptimeOutcome::<(), ()>::RuntimeDependent,
                 child_effects(3),
             )
             .unwrap();
-        assert!(lifecycle.finish_root().unwrap().is_empty());
+        assert!(lifecycle.complete_known().unwrap().is_empty());
     }
 
     #[test]
@@ -2395,16 +2637,16 @@ mod effect_lifecycle_tests {
                 .unwrap();
             lifecycle.enter(&inner).unwrap();
             lifecycle
-                .finish(
+                .finish_with_effects(
                     &mut inner,
                     &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                     child_effects(4),
                 )
                 .unwrap();
             lifecycle
-                .finish(&mut outer, &outcome, child_effects(3))
+                .finish_with_effects(&mut outer, &outcome, child_effects(3))
                 .unwrap();
-            assert!(lifecycle.finish_root().unwrap().is_empty());
+            assert!(lifecycle.complete_known().unwrap().is_empty());
         }
 
         assert_dropped(rue_air::ComptimeOutcome::RuntimeDependent);
@@ -2425,7 +2667,7 @@ mod effect_lifecycle_tests {
             let mut ticket = lifecycle.prepare(context(ordinal)).unwrap();
             lifecycle.enter(&ticket).unwrap();
             lifecycle
-                .finish(
+                .finish_with_effects(
                     &mut ticket,
                     &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                     child_effects(ordinal),
@@ -2433,7 +2675,7 @@ mod effect_lifecycle_tests {
                 .unwrap();
         }
         let applications = lifecycle
-            .finish_root()
+            .complete_known()
             .unwrap()
             .deferred_ownership()
             .map(|gate| gate.application.as_ref().unwrap().call_ordinal)
@@ -2451,20 +2693,20 @@ mod effect_lifecycle_tests {
             .unwrap();
         lifecycle.enter(&inner).unwrap();
         lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut inner,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 observed_effects(),
             )
             .unwrap();
         lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut outer,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 observed_effects(),
             )
             .unwrap();
-        let effects = lifecycle.finish_root().unwrap();
+        let effects = lifecycle.complete_known().unwrap();
         assert_eq!(effects.anonymous_nominals().count(), 1);
         assert_eq!(effects.dependencies().count(), 1);
     }
@@ -2486,21 +2728,21 @@ mod effect_lifecycle_tests {
                 )
                 .unwrap();
             lifecycle
-                .finish(
+                .finish_with_effects(
                     &mut inner,
                     &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                     child_effects_with_application(4, application_declaration.clone(), 99),
                 )
                 .unwrap();
             lifecycle
-                .finish(
+                .finish_with_effects(
                     &mut outer,
                     &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                     child_effects_with_application(3, application_declaration, 99),
                 )
                 .unwrap();
             lifecycle
-                .finish_root()
+                .complete_known()
                 .unwrap()
                 .deferred_ownership()
                 .map(|gate| gate.application.clone())
@@ -2538,23 +2780,49 @@ mod effect_lifecycle_tests {
         let inner_context = context_with_parent(definition("child"), 2);
         let mut outer = lifecycle.prepare(outer_context).unwrap();
         lifecycle.enter(&outer).unwrap();
+        lifecycle.observe_deferred_ownership(gate(1));
         let mut inner = lifecycle.prepare(inner_context).unwrap();
         lifecycle.enter(&inner).unwrap();
         let outer_outcome = rue_air::ComptimeOutcome::<(), ()>::Known(());
         let inner_outcome = rue_air::ComptimeOutcome::<(), ()>::Known(());
-        let Err((error, returned_child)) =
-            lifecycle.finish(&mut outer, &outer_outcome, child_effects(1))
-        else {
+        let Err(error) = lifecycle.finish(&mut outer, &outer_outcome) else {
             panic!("out-of-order finish should return its inputs");
         };
         assert_eq!(error, DurableComptimeLifecycleError::OutOfOrder);
-        assert_eq!(lifecycle.effects().deferred_ownership().count(), 0);
+        assert_eq!(
+            lifecycle
+                .root_effects_for_test()
+                .deferred_ownership()
+                .count(),
+            0
+        );
         lifecycle
-            .finish(&mut inner, &inner_outcome, child_effects(2))
+            .finish_with_effects(&mut inner, &inner_outcome, child_effects(2))
             .unwrap();
-        lifecycle
-            .finish(&mut outer, &outer_outcome, returned_child)
+        lifecycle.finish(&mut outer, &outer_outcome).unwrap();
+
+        let parent_declaration =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&definition(
+                "parent",
+            ))
             .unwrap();
+        let child_declaration =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&definition(
+                "child",
+            ))
+            .unwrap();
+        let effects = lifecycle.complete_known().unwrap();
+        let applications = effects
+            .deferred_ownership()
+            .map(|gate| {
+                let application = gate.application.as_ref().unwrap();
+                (application.declaration.clone(), application.call_ordinal)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            applications,
+            vec![(parent_declaration, 1), (child_declaration, 2)]
+        );
     }
 
     #[test]
@@ -2566,8 +2834,7 @@ mod effect_lifecycle_tests {
         let prepared_context = context(0);
         let mut prepared = lifecycle.prepare(prepared_context).unwrap();
         let prepared_outcome = rue_air::ComptimeOutcome::<(), ()>::Known(());
-        let Err((error, _)) = lifecycle.finish(&mut prepared, &prepared_outcome, child_effects(0))
-        else {
+        let Err(error) = lifecycle.finish(&mut prepared, &prepared_outcome) else {
             panic!("prepared finish should be rejected");
         };
         assert_eq!(error, DurableComptimeLifecycleError::NotEntered);
@@ -2581,9 +2848,15 @@ mod effect_lifecycle_tests {
         );
         let abort_outcome = rue_air::ComptimeOutcome::<(), ()>::Abort(());
         lifecycle
-            .finish(&mut ticket, &abort_outcome, child_effects(1))
+            .finish_with_effects(&mut ticket, &abort_outcome, child_effects(1))
             .unwrap();
-        assert_eq!(lifecycle.effects().deferred_ownership().count(), 0);
+        assert_eq!(
+            lifecycle
+                .root_effects_for_test()
+                .deferred_ownership()
+                .count(),
+            0
+        );
     }
 
     #[test]
@@ -2600,22 +2873,28 @@ mod effect_lifecycle_tests {
         let mut ticket = lifecycle.prepare(context(8)).unwrap();
         lifecycle.enter(&ticket).unwrap();
         let outcome = rue_air::ComptimeOutcome::<(), ()>::Known(());
-        let Err((error, returned_child)) = other.finish(&mut ticket, &outcome, child_effects(8))
-        else {
+        let Err(error) = other.finish(&mut ticket, &outcome) else {
             panic!("cross-owner finish should be rejected");
         };
         assert_eq!(error, DurableComptimeLifecycleError::TicketMismatch);
-        let Err((returned_lifecycle, error)) = lifecycle.finish_root() else {
+        let active_outcome = rue_air::ComptimeOutcome::<(), &str>::Abort("active-root");
+        let Err((returned_lifecycle, returned_outcome, error)) =
+            lifecycle.complete_root(active_outcome)
+        else {
             panic!("active lifecycle must not finish as a root");
         };
         lifecycle = returned_lifecycle;
         assert_eq!(error, DurableComptimeLifecycleError::OutOfOrder);
+        assert!(matches!(
+            returned_outcome,
+            rue_air::ComptimeOutcome::Abort("active-root")
+        ));
         lifecycle
-            .finish(&mut ticket, &outcome, returned_child)
+            .finish_with_effects(&mut ticket, &outcome, child_effects(8))
             .unwrap();
         assert_eq!(
             lifecycle
-                .finish_root()
+                .complete_known()
                 .unwrap()
                 .deferred_ownership()
                 .count(),
@@ -2646,7 +2925,7 @@ mod effect_lifecycle_tests {
             Err(DurableComptimeLifecycleError::InvalidContext)
         );
         lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut second,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 DurableComptimeEffects::default(),
@@ -2654,13 +2933,13 @@ mod effect_lifecycle_tests {
             .unwrap();
         lifecycle.enter(&first).unwrap();
         lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut first,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 DurableComptimeEffects::default(),
             )
             .unwrap();
-        assert!(lifecycle.finish_root().unwrap().is_empty());
+        assert!(lifecycle.complete_known().unwrap().is_empty());
     }
 
     #[test]
@@ -2670,9 +2949,9 @@ mod effect_lifecycle_tests {
             let mut ticket = lifecycle.prepare(context(20)).unwrap();
             lifecycle.enter(&ticket).unwrap();
             lifecycle
-                .finish(&mut ticket, &outcome, child_effects(20))
+                .finish_with_effects(&mut ticket, &outcome, child_effects(20))
                 .unwrap();
-            assert!(lifecycle.finish_root().unwrap().is_empty());
+            assert!(lifecycle.complete_known().unwrap().is_empty());
         }
 
         assert_not_published(rue_air::ComptimeOutcome::RuntimeDependent);
@@ -2705,13 +2984,13 @@ mod effect_lifecycle_tests {
         );
         effects.observe_deferred_ownership(gate);
         lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut ticket,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 effects,
             )
             .unwrap();
-        let effects = lifecycle.finish_root().unwrap();
+        let effects = lifecycle.complete_known().unwrap();
         assert_eq!(
             effects
                 .deferred_ownership()
@@ -2743,18 +3022,25 @@ mod effect_lifecycle_tests {
         let context = context(0);
         let mut ticket = lifecycle.prepare(context).unwrap();
         lifecycle.enter(&ticket).unwrap();
-        let Err((returned_lifecycle, error)) = lifecycle.finish_root() else {
+        let active_outcome = rue_air::ComptimeOutcome::<(), &str>::HostFailure("active-root");
+        let Err((returned_lifecycle, returned_outcome, error)) =
+            lifecycle.complete_root(active_outcome)
+        else {
             panic!("active lifecycle must not finish as a root");
         };
         lifecycle = returned_lifecycle;
         assert_eq!(error, DurableComptimeLifecycleError::OutOfOrder);
+        assert!(matches!(
+            returned_outcome,
+            rue_air::ComptimeOutcome::HostFailure("active-root")
+        ));
         lifecycle
-            .finish(
+            .finish_with_effects(
                 &mut ticket,
                 &rue_air::ComptimeOutcome::<(), ()>::Known(()),
                 DurableComptimeEffects::default(),
             )
             .unwrap();
-        assert!(lifecycle.finish_root().unwrap().is_empty());
+        assert!(lifecycle.complete_known().unwrap().is_empty());
     }
 }
