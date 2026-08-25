@@ -20,7 +20,7 @@ use super::analysis::FirstClassStrSite;
 use super::anon_structs::{
     IssuedCanonicalArguments, IssuedFunctionInstanceKey, IssuedStableProducerId,
 };
-use super::context::{AnalysisContext, ParamIndex, ParamInfo};
+use super::context::{AnalysisContext, DivergenceKinds, ParamIndex, ParamInfo};
 use super::fact_mode::{
     ArrayLengthRequest, BodyAnalysisReadHost, ModulePrefixRequest, StructuredTypeSyntax,
     StructuredTypeSyntaxRequest, TypeSyntaxResult,
@@ -2007,6 +2007,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             comptime_type_scope_stack: Vec::new(),
             resolved_types: &resolved_types,
             resolved_continues: &resolved_continues,
+            divergence_kinds: DivergenceKinds::NONE,
             moved_vars: AHashMap::new(),
             warnings: Vec::new(),
             allow_unused_variables: allow_unused_variable,
@@ -2073,7 +2074,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // every path — exactly like a linear local (RUE-176). Inout/borrow
         // parameters stay owned by the caller and comptime parameters are
         // substituted away; destructors are exempt (see the doc comment).
-        if !is_destructor {
+        let no_unchecked_divergence_body =
+            !body_result.continues && !ctx.divergence_kinds.has_other();
+        if !is_destructor && !no_unchecked_divergence_body {
             for p in &param_vec {
                 let state = self.moved_state(&ctx, &p.name);
                 self.check_linear_param_consumed(p, state, self.body_rir_ref().get(body).span)?;

@@ -15,9 +15,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let reachable_edges = ctx.loop_break_stack.clone();
+        let divergence_before = ctx.divergence_kinds;
         let result = self.analyze_inst(air, operand, ctx)?;
         if !reachable {
             Self::restore_reachable_loop_edges(ctx, &reachable_edges);
+            ctx.divergence_kinds = divergence_before;
         }
         Ok(result)
     }
@@ -170,6 +172,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // range check keeps `@ptr_write(p_u8, 300)` an honest E0800.
         let value_inst = self.body_rir_ref().get(args[1].value);
         let reachable_edges_before_value = ctx.loop_break_stack.clone();
+        let divergence_before_value = ctx.divergence_kinds;
         let value_result = match &value_inst.data {
             InstData::IntConst(value) if pointee_type.is_integer() => {
                 if !pointee_type.literal_fits(*value) {
@@ -194,6 +197,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         if !ptr_result.continues {
             Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_value);
+            ctx.divergence_kinds = divergence_before_value;
         }
         let value_type = value_result.ty;
 
@@ -1011,9 +1015,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut continues = true;
         for (i, arg) in args.iter().enumerate() {
             let reachable_edges_before_arg = ctx.loop_break_stack.clone();
+            let divergence_before_arg = ctx.divergence_kinds;
             let arg_result = self.analyze_inst(air, arg.value, ctx)?;
             if !continues {
                 Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_arg);
+                ctx.divergence_kinds = divergence_before_arg;
             }
             continues &= arg_result.continues;
             let arg_type = arg_result.ty;

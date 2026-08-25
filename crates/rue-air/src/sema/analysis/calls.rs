@@ -9,6 +9,7 @@
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 use crate::sema::NamedConstDependencyTargetEvent;
+use crate::sema::context::DivergenceKind;
 use crate::sema::info::FunctionCallInfo;
 use ahash::AHashMap;
 
@@ -62,6 +63,20 @@ fn check_module_member_access(
     }
 
     Ok(())
+}
+
+/// Record the conservative edge of an ordinary runtime call whose declared
+/// result is `!`. This edge is reachable whenever the call's receiver and all
+/// arguments have a continuing path; it remains generic divergence even when
+/// another alternative operand path already contributed panic provenance.
+fn record_reachable_never_call(
+    ctx: &mut AnalysisContext,
+    call_operands_continue: bool,
+    return_type: Type,
+) {
+    if call_operands_continue && return_type.is_never() {
+        ctx.divergence_kinds.insert(DivergenceKind::Other);
+    }
 }
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
@@ -782,6 +797,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             )?;
             let air_ref =
                 self.wrap_value_with_temp_scope(air, air_ref, return_type, span, temp_scope)?;
+            record_reachable_never_call(ctx, continues, return_type);
             let result = AnalysisResult::with_continues(
                 air_ref,
                 return_type,
@@ -803,6 +819,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 continues && !return_type.is_never(),
                 span,
             )?;
+            record_reachable_never_call(ctx, continues, return_type);
             if !result.continues {
                 ctx.rollback_expression_ledgers(expression_ledgers_before_call);
             }
@@ -1311,6 +1328,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             receiver_continues && args_result.continues && !return_type.is_never(),
             span,
         )?;
+        record_reachable_never_call(
+            ctx,
+            receiver_continues && args_result.continues,
+            return_type,
+        );
         if call.continues
             && receiver_mode == AirArgMode::Inout
             && let Some(root) = self.extract_root_variable(receiver)
@@ -1473,6 +1495,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             continues && !fn_info.return_type.is_never(),
             span,
         )?;
+        record_reachable_never_call(ctx, continues, fn_info.return_type);
         if !result.continues {
             ctx.rollback_expression_ledgers(expression_ledgers_before_call);
         }
@@ -1655,6 +1678,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             continues && !return_type.is_never(),
             span,
         )?;
+        record_reachable_never_call(ctx, continues, return_type);
         if !result.continues {
             ctx.rollback_expression_ledgers(expression_ledgers_before_call);
         }

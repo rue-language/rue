@@ -1092,6 +1092,601 @@ exit_code = 101
 stderr_contains = "panic: typed tail"
 
 [[case]]
+name = "linear_live_at_straight_line_panic_is_not_unwound"
+spec = ["3.4:2", "3.8:51"]
+description = "An explicit panic aborts without requiring a live linear binding to be consumed or dropped"
+source = """
+linear struct Token { value: i32 }
+fn main() -> i32 {
+    let token = Token { value: 1 };
+    @panic("linear panic");
+    0
+}
+"""
+exit_code = 101
+stderr_contains = "panic: linear panic"
+
+[[case]]
+name = "linear_live_in_panic_let_initializer_is_not_unwound"
+spec = ["3.4:2", "3.8:51"]
+description = "A panic nested in a typed let initializer propagates its aborting edge through the value position"
+source = """
+linear struct Token { value: i32 }
+fn main() -> i32 {
+    let token = Token { value: 1 };
+    let result: i32 = @panic("initializer panic");
+    result
+}
+"""
+exit_code = 101
+stderr_contains = "panic: initializer panic"
+
+[[case]]
+name = "linear_panic_and_return_edges_still_check_unwind"
+spec = ["3.8:51"]
+description = "A return edge remains subject to must-consume even when another branch explicitly panics"
+source = """
+linear struct Token { value: i32 }
+fn run(early: bool) -> i32 {
+    let token = Token { value: 1 };
+    if early {
+        return 0;
+    } else {
+        @panic("abort");
+    }
+}
+fn main() -> i32 { run(true) }
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value"]
+
+[[case]]
+name = "linear_by_value_parameter_at_panic_is_not_unwound"
+spec = ["3.4:2", "3.8:51", "3.8:62"]
+description = "A by-value linear parameter may remain live on an explicit panic edge"
+source = """
+linear struct Token { value: i32 }
+
+fn abort_with_token(token: Token) -> i32 {
+    @panic("parameter panic");
+}
+
+fn main() -> i32 {
+    abort_with_token(Token { value: 1 })
+}
+"""
+exit_code = 101
+stderr_contains = "panic: parameter panic"
+
+[[case]]
+name = "linear_conditional_panic_edge_is_not_unwound"
+spec = ["3.4:2", "3.8:50", "3.8:51"]
+description = "A continuing conditional arm consumes the linear value while the explicit panic arm needs no consumption"
+source = """
+linear struct Token { value: i32 }
+fn consume(token: Token) { @drop(token); }
+fn run(continue_path: bool) -> i32 {
+    let token = Token { value: 1 };
+    if continue_path { consume(token); } else { @panic("conditional panic"); }
+    0
+}
+fn main() -> i32 { run(false) }
+"""
+exit_code = 101
+stderr_contains = "panic: conditional panic"
+
+[[case]]
+name = "linear_match_panic_arm_is_not_unwound"
+spec = ["3.4:2", "3.8:50", "3.8:51"]
+description = "A match panic arm is exempt while its continuing arm consumes the linear value"
+source = """
+linear struct Token { value: i32 }
+fn consume(token: Token) { @drop(token); }
+fn run(panic_path: bool) -> i32 {
+    let token = Token { value: 1 };
+    match panic_path {
+        true => @panic("match panic"),
+        false => consume(token),
+    }
+    0
+}
+fn main() -> i32 { run(true) }
+"""
+exit_code = 101
+stderr_contains = "panic: match panic"
+
+[[case]]
+name = "linear_all_panic_arms_are_not_unwound"
+spec = ["3.4:2", "3.8:50", "3.8:51"]
+description = "When every conditional arm explicitly panics, a live linear value needs no consumption"
+source = """
+linear struct Token { value: i32 }
+fn run(path: bool) -> i32 {
+    let token = Token { value: 1 };
+    if path { @panic("then panic"); } else { @panic("else panic"); }
+}
+fn main() -> i32 { run(true) }
+"""
+exit_code = 101
+stderr_contains = "panic: then panic"
+
+[[case]]
+name = "linear_loop_panic_edge_is_not_unwound"
+spec = ["3.4:2", "3.8:51", "3.8:80"]
+description = "A loop body with an explicit panic does not consume an outer live linear value"
+source = """
+linear struct Token { value: i32 }
+fn main() -> i32 {
+    let token = Token { value: 1 };
+    loop { @panic("loop panic"); }
+    0
+}
+"""
+exit_code = 101
+stderr_contains = "panic: loop panic"
+
+[[case]]
+name = "linear_mixed_panic_return_order_is_independent"
+spec = ["3.4:2", "3.8:50", "3.8:51"]
+description = "A consuming return edge and an explicit panic edge accept in either if-arm order"
+source = """
+linear struct Token { value: i32 }
+fn consume(token: Token) { @drop(token); }
+fn run(panic_first: bool) -> i32 {
+    let token = Token { value: 1 };
+    if panic_first {
+        @panic("panic first");
+    } else {
+        consume(token);
+        return 0;
+    }
+}
+fn main() -> i32 { run(true) }
+"""
+exit_code = 101
+stderr_contains = "panic: panic first"
+
+[[case]]
+name = "linear_mixed_return_panic_order_is_independent"
+spec = ["3.4:2", "3.8:50", "3.8:51"]
+description = "The inverse if-arm order preserves the same mixed-edge ownership result"
+source = """
+linear struct Token { value: i32 }
+fn consume(token: Token) { @drop(token); }
+fn run(panic_first: bool) -> i32 {
+    let token = Token { value: 1 };
+    if panic_first {
+        consume(token);
+        return 0;
+    } else {
+        @panic("panic second");
+    }
+}
+fn main() -> i32 { run(false) }
+"""
+exit_code = 101
+stderr_contains = "panic: panic second"
+
+[[case]]
+name = "linear_mixed_match_panic_return_order_is_independent"
+spec = ["3.4:2", "3.8:50", "3.8:51"]
+description = "Match arms apply the same mixed panic and consuming-return rule"
+source = """
+linear struct Token { value: i32 }
+fn consume(token: Token) { @drop(token); }
+fn run(panic_first: bool) -> i32 {
+    let token = Token { value: 1 };
+    match panic_first {
+        true => @panic("match panic"),
+        false => { consume(token); return 0; },
+    }
+}
+fn main() -> i32 { run(true) }
+"""
+exit_code = 101
+stderr_contains = "panic: match panic"
+
+[[case]]
+name = "linear_mixed_return_panic_match_order_is_independent"
+spec = ["3.4:2", "3.8:50", "3.8:51"]
+description = "The inverse match-arm order remains independent of source ordering"
+source = """
+linear struct Token { value: i32 }
+fn consume(token: Token) { @drop(token); }
+fn run(panic_first: bool) -> i32 {
+    let token = Token { value: 1 };
+    match panic_first {
+        true => { consume(token); return 0; },
+        false => @panic("match panic inverse"),
+    }
+}
+fn main() -> i32 { run(false) }
+"""
+exit_code = 101
+stderr_contains = "panic: match panic inverse"
+
+[[case]]
+name = "linear_consuming_return_then_panic_without_else_is_exempt"
+spec = ["3.4:2", "3.8:50", "3.8:51"]
+description = "A consuming return branch followed by an explicit panic has no live unwind edge"
+source = """
+linear struct Token { value: i32 }
+fn consume(token: Token) { @drop(token); }
+fn run(early: bool) -> i32 {
+    let token = Token { value: 1 };
+    if early { consume(token); return 0; }
+    @panic("fallthrough panic");
+}
+fn main() -> i32 { run(false) }
+"""
+exit_code = 101
+stderr_contains = "panic: fallthrough panic"
+
+[[case]]
+name = "linear_match_consuming_return_then_panic_without_else_is_exempt"
+spec = ["3.4:2", "3.8:50", "3.8:51"]
+description = "A match branch that consumes before returning may join a later explicit panic"
+source = """
+linear struct Token { value: i32 }
+fn consume(token: Token) { @drop(token); }
+fn run(early: bool) -> i32 {
+    let token = Token { value: 1 };
+    match early {
+        true => { consume(token); return 0; },
+        false => { }
+    }
+    @panic("match fallthrough panic");
+}
+fn main() -> i32 { run(false) }
+"""
+exit_code = 101
+stderr_contains = "panic: match fallthrough panic"
+
+[[case]]
+name = "linear_nonpanic_divergence_not_hidden_by_later_panic"
+spec = ["3.8:51"]
+description = "A non-panic divergent branch that also has a continuing arm remains an obligation when a later panic is reached"
+source = """
+linear struct Token { value: i32 }
+fn stop() -> ! { loop {} }
+fn run(choice: bool) -> i32 {
+    let token = Token { value: 1 };
+    let value: i32 = if choice { stop() } else { 1 };
+    @panic("later panic");
+    value
+}
+fn main() -> i32 { run(false) }
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value"]
+
+[[case]]
+name = "linear_nonpanic_divergence_not_hidden_by_later_array_panic"
+spec = ["3.8:51"]
+description = "An unreachable later array element cannot overwrite an earlier non-panic divergence"
+source = """
+linear struct Token { value: i32 }
+fn stop() -> ! { loop {} }
+fn main() -> i32 {
+    let token = Token { value: 1 };
+    let values: [i32; 2] = [stop(), @panic("later array panic")];
+    values[0]
+}
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value"]
+
+[[case]]
+name = "linear_nonpanic_divergence_not_hidden_by_later_call_panic"
+spec = ["3.8:51"]
+description = "An unreachable later call argument cannot overwrite an earlier non-panic divergence"
+source = """
+linear struct Token { value: i32 }
+fn stop() -> ! { loop {} }
+fn pair(a: i32, b: i32) -> i32 { a + b }
+fn main() -> i32 {
+    let token = Token { value: 1 };
+    pair(stop(), @panic("later call panic"))
+}
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value"]
+
+[[case]]
+name = "linear_never_call_mixed_panic_argument_still_checks"
+spec = ["3.8:51"]
+description = "A normally reached ordinary never-returning call remains a conservative non-panic edge despite another argument path panicking"
+source = """
+linear struct Token { value: i32 }
+fn stop(value: i32) -> ! { loop {} }
+fn run(choice: bool) -> i32 {
+    let token = Token { value: 1 };
+    stop(if choice { @panic("argument panic") } else { 1 })
+}
+fn main() -> i32 { run(true) }
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value"]
+
+[[case]]
+name = "linear_never_call_unreached_after_panic_argument_is_exempt"
+spec = ["3.8:51"]
+description = "An ordinary never-returning call contributes no generic edge when a panic argument prevents reaching it"
+source = """
+linear struct Token { value: i32 }
+fn stop(value: i32) -> ! { loop {} }
+fn main() -> i32 {
+    let token = Token { value: 1 };
+    stop(@panic("argument-only panic"))
+}
+"""
+exit_code = 101
+stderr_contains = "panic: argument-only panic"
+
+[[case]]
+name = "linear_generic_divergence_arm_still_checks"
+spec = ["3.8:50", "3.8:51"]
+description = "A generic-diverging if arm must consume live outer linears even when its sibling consumes"
+source = """
+linear struct Token { value: i32 }
+fn consume(token: Token) { @drop(token); }
+fn stop() -> ! { loop {} }
+fn run(choice: bool) -> i32 {
+    let token = Token { value: 1 };
+    if choice { stop(); } else { consume(token); }
+    0
+}
+fn main() -> i32 { run(false) }
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value"]
+
+[[case]]
+name = "linear_generic_divergence_match_arm_still_checks"
+spec = ["3.8:50", "3.8:51"]
+description = "A generic-diverging match arm must consume live outer linears even when its sibling consumes"
+source = """
+linear struct Token { value: i32 }
+fn consume(token: Token) { @drop(token); }
+fn stop() -> ! { loop {} }
+fn run(choice: bool) -> i32 {
+    let token = Token { value: 1 };
+    match choice {
+        true => { stop(); },
+        false => { consume(token); },
+    }
+    0
+}
+fn main() -> i32 { run(false) }
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value"]
+
+[[case]]
+name = "linear_generic_divergence_match_value_arm_still_checks"
+spec = ["3.8:50", "3.8:51"]
+description = "A generic-diverging value-position match arm must check outer live linears"
+source = """
+linear struct Token { value: i32 }
+fn consume(token: Token) { @drop(token); }
+fn stop() -> ! { loop {} }
+fn run(choice: bool) -> i32 {
+    let token = Token { value: 1 };
+    let value: i32 = match choice {
+        true => stop(),
+        false => { consume(token); 0 },
+    };
+    value
+}
+fn main() -> i32 { run(false) }
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value"]
+
+[[case]]
+name = "linear_short_circuit_and_generic_divergence_still_checks"
+spec = ["3.8:50", "3.8:51"]
+description = "A reachable generic-diverging && RHS remains subject to must-consume"
+source = """
+linear struct Token { value: i32 }
+fn consume(token: Token) { @drop(token); }
+fn stop() -> ! { loop {} }
+fn run(choice: bool) -> i32 {
+    let token = Token { value: 1 };
+    let flag: bool = choice && stop();
+    consume(token);
+    if flag { 1 } else { 0 }
+}
+fn main() -> i32 { run(false) }
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value"]
+
+[[case]]
+name = "linear_short_circuit_or_generic_divergence_still_checks"
+spec = ["3.8:50", "3.8:51"]
+description = "A reachable generic-diverging || RHS remains subject to must-consume"
+source = """
+linear struct Token { value: i32 }
+fn consume(token: Token) { @drop(token); }
+fn stop() -> ! { loop {} }
+fn run(choice: bool) -> i32 {
+    let token = Token { value: 1 };
+    let flag: bool = choice || stop();
+    consume(token);
+    if flag { 1 } else { 0 }
+}
+fn main() -> i32 { run(false) }
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value"]
+
+[[case]]
+name = "linear_short_circuit_and_consuming_generic_rhs_then_panic_is_exempt"
+spec = ["3.8:50", "3.8:51"]
+description = "A consuming generic && RHS is checked while the skipped path may reach panic live"
+source = """
+linear struct Token { value: i32 }
+fn stop(token: Token) -> ! { @drop(token); loop {} }
+fn run(choice: bool) -> i32 {
+    let token = Token { value: 1 };
+    let flag: bool = choice && stop(token);
+    @panic("short-circuit panic");
+}
+fn main() -> i32 { run(false) }
+"""
+exit_code = 101
+stderr_contains = "panic: short-circuit panic"
+
+[[case]]
+name = "linear_short_circuit_or_consuming_generic_rhs_then_panic_is_exempt"
+spec = ["3.8:50", "3.8:51"]
+description = "A consuming generic || RHS is checked while the skipped path may reach panic live"
+source = """
+linear struct Token { value: i32 }
+fn stop(token: Token) -> ! { @drop(token); loop {} }
+fn run(choice: bool) -> i32 {
+    let token = Token { value: 1 };
+    let flag: bool = choice || stop(token);
+    @panic("short-circuit panic");
+}
+fn main() -> i32 { run(true) }
+"""
+exit_code = 101
+stderr_contains = "panic: short-circuit panic"
+
+[[case]]
+name = "linear_checked_generic_edge_then_panic_is_exempt"
+spec = ["3.8:50", "3.8:51"]
+description = "A consumed generic-divergence edge does not contaminate a later live panic path"
+source = """
+linear struct Token { value: i32 }
+fn consume(token: Token) { @drop(token); }
+fn stop() -> ! { loop {} }
+fn run(choice: bool) -> i32 {
+    let token = Token { value: 1 };
+    if choice { consume(token); stop(); } else { }
+    @panic("final panic");
+}
+fn main() -> i32 { run(false) }
+"""
+exit_code = 101
+stderr_contains = "panic: final panic"
+
+[[case]]
+name = "linear_checked_generic_edge_inside_panic_is_exempt"
+spec = ["3.8:50", "3.8:51"]
+description = "A consumed generic edge inside a panic operand does not make the panic path unwind"
+source = """
+linear struct Token { value: i32 }
+fn stop(token: Token) -> ! { @drop(token); loop {} }
+fn run(choice: bool) -> i32 {
+    let token = Token { value: 1 };
+    @panic(if choice { stop(token) } else { "final panic" });
+}
+fn main() -> i32 { run(false) }
+"""
+exit_code = 101
+stderr_contains = "panic: final panic"
+
+[[case]]
+name = "linear_checked_generic_match_edge_inside_panic_is_exempt"
+spec = ["3.8:50", "3.8:51"]
+description = "A consumed generic match edge inside a panic operand does not make the panic path unwind"
+source = """
+linear struct Token { value: i32 }
+fn stop(token: Token) -> ! { @drop(token); loop {} }
+fn run(choice: bool) -> i32 {
+    let token = Token { value: 1 };
+    @panic(match choice {
+        true => stop(token),
+        false => "final panic",
+    });
+}
+fn main() -> i32 { run(false) }
+"""
+exit_code = 101
+stderr_contains = "panic: final panic"
+
+[[case]]
+name = "linear_nonpanic_divergence_not_hidden_by_later_operator_panic"
+spec = ["3.8:51"]
+description = "An unreachable later operator operand cannot overwrite an earlier non-panic divergence"
+source = """
+linear struct Token { value: i32 }
+fn stop() -> ! { loop {} }
+fn main() -> i32 {
+    let token = Token { value: 1 };
+    let value: i32 = stop() + @panic("later operator panic");
+    value
+}
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value"]
+
+[[case]]
+name = "linear_panic_operand_nonpanic_divergence_still_checks"
+spec = ["3.8:51"]
+description = "A non-panic-diverging panic message operand does not become an explicit panic edge"
+source = """
+linear struct Token { value: i32 }
+fn stop() -> ! { loop {} }
+fn main() -> i32 {
+    let token = Token { value: 1 };
+    @panic(stop());
+}
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value"]
+
+[[case]]
+name = "linear_panic_assert_message_is_unreachable"
+spec = ["3.8:51"]
+description = "A panic in an assert condition remains panic-only when its unreachable message diverges generically"
+source = """
+linear struct Token { value: i32 }
+fn stop() -> ! { loop {} }
+fn main() -> i32 {
+    let token = Token { value: 1 };
+    @assert(@panic("assert condition panic"), stop());
+}
+"""
+exit_code = 101
+stderr_contains = "panic: assert condition panic"
+
+[[case]]
+name = "linear_return_panic_operand_is_not_unwound"
+spec = ["3.8:51"]
+description = "A panic nested in a return operand propagates the aborting edge without adding a return unwind"
+source = """
+linear struct Token { value: i32 }
+fn run() -> i32 {
+    let token = Token { value: 1 };
+    return @panic("return panic");
+}
+fn main() -> i32 { run() }
+"""
+exit_code = 101
+stderr_contains = "panic: return panic"
+
+[[case]]
+name = "linear_loop_mixed_panic_and_backedge_still_checks"
+spec = ["3.8:51", "3.8:80"]
+description = "An infinite loop with both a panic path and a continuing back-edge remains non-panic divergence"
+source = """
+linear struct Token { value: i32 }
+fn run(choice: bool) -> i32 {
+    let token = Token { value: 1 };
+    loop {
+        if choice { @panic("loop panic"); } else { @dbg(1); }
+    }
+}
+fn main() -> i32 { run(false) }
+"""
+compile_fail = true
+error_contains = ["E0406", "linear value"]
+
+[[case]]
 name = "linear_consumed_one_match_arm_error"
 spec = ["3.8:50"]
 description = "Linear value consumed in only one match arm is an error"

@@ -6,6 +6,7 @@
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 use crate::sema::comptime::{ComptimeEngine, ComptimeMethodType, ComptimeOutcome};
+use crate::sema::context::{DivergenceKind, DivergenceKinds};
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Analyze an RIR instruction, producing AIR instructions.
@@ -80,6 +81,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         if let Some(continues) = ctx.resolved_continues_of(inst_ref) {
             result.continues = continues;
+        }
+        // Most expression adapters rebuild their result after analyzing one
+        // or more operands, so the explicit panic classification is carried
+        // by the context while the normal-continuation bit is propagated by
+        // the adapter. Preserve an already-observed child edge; otherwise a
+        // newly non-continuing result is an ordinary unwinding divergence.
+        if !result.continues && ctx.divergence_kinds.is_empty() {
+            ctx.divergence_kinds = DivergenceKinds::from_kind(DivergenceKind::Other);
         }
         Ok(result)
     }

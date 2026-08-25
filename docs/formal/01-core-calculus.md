@@ -478,10 +478,13 @@ discipline determined by the signature:
   g : fn (m1 x1:T1, ..., mm xm:Tm) -> Tr { e_body }
   Γ0 = [x1↦T1, ..., xm↦Tm]
   Σ0 = [xi↦Owned for every parameter xi]
-  Γ0;Σ0;∅ ⊢ e_body ⇒ Tr ⊣ Σf
-  for every by-value parameter xi (mi = ∅), the §5.6 scope-exit obligation at every exit of the body:
-    ¬ residual-linear(Σf, xi, Ti)              if Σf ≠ ⊥          -- the fall-through exit
-    ¬ residual-linear(Σ_r, xi, Ti)             at each `return` in e_body, in the state Σ_r in force there
+  D_body = (Γ0;Σ0;∅ ⊢ e_body ⇒ Tr ⊣ Ωf)
+  Edge(D_body) = edge-observations(D_body) records each reachable normal state
+    or divergent edge state (Σ_edge, κ), where κ ∈ {normal, ⊥_exit, ⊥_diverge, ⊥_panic}
+  for every by-value parameter xi (mi = ∅) and each (Σ_edge, κ) ∈ Edge(D_body):
+    κ = ⊥_panic  ⇒  no residual-linear premise (the process aborts)
+    κ ∈ {normal, ⊥_exit, ⊥_diverge}  ⇒  ¬ residual-linear(Σ_edge, xi, Ti)
+      -- §5.6 at this edge
   for every parameter xi:
     mi = borrow  ⇒ xi and every path under xi is read-only, never moved out, and may be re-lent only as borrow
     mi = inout   ⇒ xi may be read, written, and forwarded, but never moved out
@@ -490,7 +493,10 @@ discipline determined by the signature:
   g is well-formed
 ```
 
-The `residual-linear` premise is §5.6's scope-exit obligation stated *in* the
+`Ωf` carries only the normal ownership state (if one exists) and the
+provenance set; `Edge(D_body)` is derivation metadata for the individual edge
+snapshots and is not claimed to be reconstructible from one `Σ` alone. The
+`residual-linear` premise is §5.6's scope-exit obligation stated *in* the
 judgment rather than beside it (RUE-1600). The body's end is where the
 by-value parameters' scopes end, so a parameter still carrying linear content
 in `Σf` is a leak, exactly as a `let` binding would be; body-local bindings
@@ -503,8 +509,8 @@ body never consumes is E0406 ("parameter 't' is passed by value, so this
 function owns it and must consume it"), as is a body-local `let` binding of
 one.
 
-Its second clause covers the paths that never reach `Σf`. A body ending in
-`return` has `Σf = ⊥` (§5.7), which discharges nothing: the function's scopes
+Its second clause covers the paths that never reach a normal state. A body
+ending in `return` has `Ωf = ⊥;δ` (§5.7), which discharges nothing: the function's scopes
 end at the `return` instead, so the obligation must hold in the state in force
 *there* — the same "consumed on only some paths" discipline §5.5's join applies
 to branches (`3.8:50`). **Compiler agreement (RUE-1614, resolved).** The
@@ -586,18 +592,21 @@ one is always rejected.
 
 ### 5.3 Sequencing, discard, and the linear leak check
 
-Expression evaluation carries an outgoing state `Ω`, whose domain is the live
-ownership state or the distinguished bottom state:
+Expression evaluation carries an outgoing result `Ω`: an optional normal
+ownership state together with the set of reachable divergent edge provenances:
 
 ```
-  Ω ::= Σ | ⊥
+  Ω ::= Σ;δ | ⊥;δ
+  δ ::= finite subset of {⊥_exit, ⊥_diverge, ⊥_panic}
 ```
 
-`Σ` means that evaluation can reach the next expression normally; `⊥` means
-that evaluation has no normal outgoing path. This is separate from the surface
-result type: a call with a diverging argument may retain its declared result
-type while producing `⊥`. The dead-source checker may still visit unreachable
-syntax for diagnostics, but those visits do not derive a reachable `Σ`.
+`Σ;δ` means that evaluation can reach the next expression normally with state
+`Σ` and may also have the divergent alternatives in `δ`; `⊥;δ` means there is
+no normal outgoing path. We abbreviate `Σ;∅` as `Σ` and `⊥;δ` as `⊥_δ` when
+the normal state is irrelevant. This is separate from the surface result type:
+a call with a diverging argument may retain its declared result type while
+producing that argument's provenance. The dead-source checker may still visit
+unreachable syntax for diagnostics, but those visits do not derive a reachable `Σ`.
 
 Strict evaluation contexts evaluate their hole before the surrounding
 construct can produce its value. Let `E_strict` range over the operand,
@@ -607,9 +616,9 @@ Short-circuit `&&` and `||` are derived as conditionals (§2.4) and are not
 strict in their right operand. The generic propagation rule is:
 
 ```
-  Γ ; Σ ; Λ ⊢ e ⇒ T ⊣ ⊥
+  Γ ; Σ ; Λ ⊢ e ⇒ T ⊣ ⊥;δ_e       δ_e ⊆ {⊥_exit, ⊥_diverge, ⊥_panic}
   ─────────────────────────────────────────────── (Strict-Bottom)
-  Γ ; Σ ; Λ ⊢ E_strict[e] ⇒ T_E ⊣ ⊥
+  Γ ; Σ ; Λ ⊢ E_strict[e] ⇒ T_E ⊣ ⊥;δ_e
 ```
 
 `T_E` is the construct's ordinary surface result type (for example `unit` for
@@ -626,17 +635,17 @@ rule per syntax form.
   ─────────────────────────────────────────────────────────────────── (Seq)
   Γ ; Σ ; Λ ⊢ (e1 ; e2) ⇒ T2 ⊣ Σ2
 
-  Γ ; Σ ; Λ ⊢ e1 ⇒ T1 ⊣ ⊥
+  Γ ; Σ ; Λ ⊢ e1 ⇒ T1 ⊣ ⊥;δ_1
   ─────────────────────────────────────────────────────────────────── (Seq-Bottom)
-  Γ ; Σ ; Λ ⊢ (e1 ; e2) ⇒ never ⊣ ⊥
+  Γ ; Σ ; Λ ⊢ (e1 ; e2) ⇒ never ⊣ ⊥;δ_1
 
   Γ ; Σ ; Λ ⊢ e1 ⇒ T1 ⊣ Σ1       Γ, x:T1 ; Σ1[x ↦ Owned] ; Λ ⊢ e2 ⇒ T2 ⊣ Σ2
   ───────────────────────────────────────────────────────────────────────────── (Let)
   Γ ; Σ ; Λ ⊢ (let x = e1 ; e2) ⇒ T2 ⊣ Σ2
 
-  Γ ; Σ ; Λ ⊢ e1 ⇒ T1 ⊣ ⊥
+  Γ ; Σ ; Λ ⊢ e1 ⇒ T1 ⊣ ⊥;δ_1
   ─────────────────────────────────────────────────────────────────── (Let-Bottom)
-  Γ ; Σ ; Λ ⊢ (let x = e1 ; e2) ⇒ never ⊣ ⊥
+  Γ ; Σ ; Λ ⊢ (let x = e1 ; e2) ⇒ never ⊣ ⊥;δ_1
 ```
 
 Discarding a value whose type *carries a linear value* is ill-formed (`3.8:64` —
@@ -800,10 +809,10 @@ not move their places, so Copy branches never produce `MovedOut` and a Copy
 place remains `Owned` at the join. The dynamic state retains the path-specific
 move state; the array-element drop behavior of `3.8:73` is the separate rule
 that says how a joined array's elements are dropped on paths where they remain.
-A branch ending in `return`/`break` has outgoing state `⊥` (diverged)
-and is excluded from the join (`3.8:51`); its *type* is `never`, which
-(Sub-Never), §5.7, coerces to the sibling arm's type `T`, so a diverging arm
-still satisfies the (If)/(Match) same-type premise.
+A branch ending in any never-typed divergence has a divergent outgoing state
+(`⊥_exit`, `⊥_diverge`, or `⊥_panic`) and is excluded from the join (`3.8:51`);
+its *type* is `never`, which (Sub-Never), §5.7, coerces to the sibling arm's
+type `T`, so a diverging arm still satisfies the (If)/(Match) same-type premise.
 
 `match` is the elimination form for enums, and its arms join exactly as `if`'s do.
 Typing the scrutinee is a value-context **use** of it (§4.2): a move-typed enum is
@@ -828,8 +837,9 @@ bindings and are governed by §5.6 at the arm's end: a `Linear`-carrying payload
 that an arm neither moves nor consumes is a leak error, and an `Affine` payload it
 drops (once) — this is the formal content of "binding a variant's payload moves it
 out; a moved-out payload runs its destructor exactly once when its binding leaves
-scope" (`6.3:17`). Diverging arms (`return`/`break`) contribute `⊥` and are
-excluded from the join, as with `if`.
+scope" (`6.3:17`). Diverging arms contribute their provenance (`⊥_exit`,
+`⊥_diverge`, or `⊥_panic`) and are excluded from the join, as with `if`; only
+the first two retain the conservative non-panic residual check.
 
 The core `match` is deliberately the **canonical form only**: an enum
 scrutinee, exactly one arm per variant, no wildcards, no guards. Everything
@@ -945,6 +955,19 @@ glue) owns them.
 > scope": end-of-scope is where drop *and* the linear leak check happen, driven by
 > the ownership state Σ, not by syntax.
 
+An explicit statically-known `@panic` is a distinct aborting divergence, not a
+scope exit. It transfers to the process panic outcome without evaluating any
+scope-end action: the residual-linear premise is not applied on that edge and
+no destructor or synthesized drop glue runs. The `⊥_exit` state carried by
+ordinary unwinding exits (`return`, `break`, `continue`, and `?` failure)
+retains the §5.6 obligation at the edge. `⊥_diverge` does not assert that a
+scope dynamically unwinds (an infinite loop does not run drop glue), but the
+current conservative ownership check retains the non-panic residual condition
+for such an edge; only `⊥_panic` is exempt. A branch may therefore exclude all
+divergent states from its ownership join while checking every non-panic
+contributor; a branch with both panic and non-panic provenance is governed by
+the latter.
+
 ### 5.7 Divergence and never-coercion
 
 Prose `3.4` gives Rue its **single** type coercion: the never type `!`
@@ -968,22 +991,51 @@ favour of `!`-typing: `@panic` participates in never-coercion (Sub-Never)
 exactly like `return`, so it may inhabit any value context. `@assert` is **not**
 a never form — it returns on the success path and is typed `unit`.)
 
+For ownership provenance, write `⊥_exit` for a diverging edge that ends one or
+more language scopes, `⊥_diverge` for divergence with no reachable scope exit
+(such as an infinite loop), and `⊥_panic` for the explicit process-aborting
+edge. All are type-level `never` and contribute no state to a branch join.
+`⊥_exit` carries the §5.6 scope-exit/drop obligation. `⊥_diverge` does not
+assert that any scope is unwound; its non-returning control flow is handled by
+the surrounding reachability rules, with the compiler's conservative
+non-panic residual check retained. Only `⊥_panic` is exempt from that static
+check.
+
+For wrapper forms, let `δ(e)` be the set of reachable divergence proven while
+checking `e`. A wrapper adds its own edge provenance only when its operand or
+body has a continuing path; when that subexpression is already divergent, the
+wrapper propagates `δ(e)` instead. Sequenced siblings contribute only when the
+preceding sibling continues, while a branch preserves the union of all
+reachable arm provenance even when the branch itself has a continuing arm.
+This is the provenance discipline used by the rules below and prevents an
+unreachable later `@panic` from rewriting an earlier non-panic divergence.
+
 ```
-  Γ;Σ;Λ ⊢ e ⇒ T_ret ⊣ _        T_ret = the enclosing function's declared return type
-  ─────────────────────────────────────────────────────── (Return)
-  Γ;Σ;Λ ⊢ return e ⇒ never ⊣ ⊥
+  Γ;Σ;Λ ⊢ e ⇒ T_ret ⊣ Σ_e;δ_e  T_ret = the enclosing function's declared return type
+  e continues
+  ─────────────────────────────────────────────── (Return-Value)
+  Γ;Σ;Λ ⊢ return e ⇒ never ⊣ ⊥; (δ_e ∪ {⊥_exit})
+
+  Γ;Σ;Λ ⊢ e ⇒ T_ret ⊣ ⊥;δ_e
+  ─────────────────────────────────────────────── (Return-Bottom)
+  Γ;Σ;Λ ⊢ return e ⇒ never ⊣ ⊥;δ_e
 
   ───────────────────────── (Break)      -- well-formed only inside a loop; hands unit to the loop
-  Γ;Σ;Λ ⊢ break ⇒ never ⊣ ⊥
+  Γ;Σ;Λ ⊢ break ⇒ never ⊣ ⊥;{⊥_exit}
 
-  Γ;Σ;Λ ⊢ e ⇒ unit ⊣ _        e contains no `break` targeting this loop (syntactic — 4.8:21)
+  Γ;Σ;Λ ⊢ e ⇒ unit ⊣ Σ_e;δ_e  e contains no `break` targeting this loop (syntactic — 4.8:21)
+  e continues
+  ─────────────────────────────────────────────────────── (Loop-Div-Backedge)
+  Γ;Σ;Λ ⊢ loop { e } ⇒ never ⊣ ⊥; (δ_e ∪ {⊥_diverge})
+
+  Γ;Σ;Λ ⊢ e ⇒ unit ⊣ ⊥;δ_e  e contains no `break` targeting this loop
   ─────────────────────────────────────────────────────── (Loop-Div)
-  Γ;Σ;Λ ⊢ loop { e } ⇒ never ⊣ ⊥
+  Γ;Σ;Λ ⊢ loop { e } ⇒ never ⊣ ⊥;δ_e
 ```
 
 `break` yields no value to its *own* context, so its type is `never`; the "value
 unit" of the grammar (§2) is what it hands to the enclosing loop, not the type of
-the `break` expression. The outgoing state `⊥` ("diverged") is exactly the `⊥`
+the `break` expression. The outgoing state of each form is a divergent state
 that §5.5's join excludes: a branch ending in one of these forms contributes no
 ownership state to the merge.
 
@@ -995,7 +1047,7 @@ halves: the **back edge**, which re-enters the body, and the **break edges**,
 which exit it.
 
 ```
-  Γ;Σ;Λ ⊢ e ⇒ unit ⊣ Ω                  Ω ::= Σ | ⊥
+  Γ;Σ;Λ ⊢ e ⇒ unit ⊣ Ω                  Ω ::= Σ;δ | ⊥;δ
   e contains a break targeting this loop (syntactic — 4.8:21)
   (B, X) = edge-observations(Γ;Σ;Λ ⊢ e ⇒ unit ⊣ Ω)
   ∀Σ_b ∈ B: Σ_b = outside_loop(Σ)                 -- back-edge invariance (3.8:79)
@@ -1043,7 +1095,7 @@ the order of its drops, which remains outside this rule's scope.
 - **The reachable exit states.** Each reachable targeting `break` contributes
   the ownership state in force where it fires, restricted to paths rooted
   outside the loop — read (Break) as *delivering* `unit` at that state to its
-  innermost enclosing loop while its own context sees `never ⊣ ⊥`. In the
+  innermost enclosing loop while its own context sees `never ⊣ ⊥_exit`. In the
   existing `while` desugaring, the initial and later false-condition edges are
   represented by targeting `break` states in `X`. `for` iterator exhaustion is
   required by 3.8:80 but has no representation in this core until §2 gives
@@ -1089,7 +1141,8 @@ untouched.
 premises still demand a single common type `T`. In
 `if c { 5 } else { return 0 }` the `else` arm has type `never`, which
 (Sub-Never) re-types to `i32` to meet the `then` arm; the whole `if` is `i32`,
-and since the `else` arm's outgoing state is `⊥` the branch join is just the
+and since the `else` arm's outgoing state is divergent provenance (and is
+excluded) the branch join is just the
 `then` arm's state. When *every* arm diverges (`3.4:6`, e.g.
 `if c { return 1 } else { return 0 }`), the principal type is `never`, which
 (Sub-Never) then coerces to whatever the surrounding context needs (there, the
@@ -1259,9 +1312,13 @@ and leave Σ unchanged, per §5.4.
   Γ;Σ;Λ ⊢ g ( a1, ..., am ) ⇒ Tr ⊣ Σm
 
   Γ ⊢ g : (T₁, ..., Tₘ) → Tr       m = |a₁, ..., aₘ|       Tr = never
-  Γ;Σᵢ₋₁;Λᵢ₋₁ ⊢ aᵢ ⇒ Uᵢ ⊣ Σᵢ    (1 ≤ i ≤ m), with Σ₀ = Σ and Λ₀ = Λ
+  Γ;Σᵢ₋₁;Λᵢ₋₁ ⊢ aᵢ ⇒ Uᵢ ⊣ Ωᵢ       (1 ≤ i ≤ m), with Σ₀ = Σ and Λ₀ = Λ
+  δ_args = union of the δ components of arguments reached before the first
+            non-continuing argument
+  δ_call = δ_args ∪ {⊥_diverge}  if every argument continues
+            δ_args              otherwise
   ─────────────────────────────────────────────────────────────────────────────── (Call-Bottom)
-  Γ;Σ;Λ ⊢ g ( a1, ..., am ) ⇒ never ⊣ ⊥
+  Γ;Σ;Λ ⊢ g ( a1, ..., am ) ⇒ never ⊣ ⊥;δ_call
 ```
 
 The result type is the callee's return type `Tr` (`4.10:5`); the argument count
@@ -1274,7 +1331,12 @@ syntactic point where their argument forms are checked, so the final `Σm` must
 still fully own every loaned root. This rejects a same-argument-list loan plus
 consuming or partial move of the same root while preserving access-point
 evaluation patterns where a read finishes before the `inout` access begins.
-The three views agree on this rule (the RUE-523 reconciliation recorded by
+For a normally reached call whose declared return type is `never`, the callee's
+body is not re-analyzed at the call site: the call contributes conservative
+`⊥_diverge` provenance. If an earlier argument diverges, the call is never
+reached and only that argument's provenance is propagated; a callee that happens
+to panic internally therefore does not turn an ordinary call into an exempt
+panic edge. The three views agree on this rule (the RUE-523 reconciliation recorded by
 RUE-526): the entry recheck here is prose `6.1:36`, which the compiler
 enforces as E0208 — the core stated the rule first, the prose and compiler
 followed. The
@@ -1285,24 +1347,33 @@ overload or generic instantiation to resolve at the call.
 
 **Intrinsic forms `@panic` / `@dbg`.** `@panic` transfers control away instead
 of yielding a value, so it is typed exactly like the §5.7 diverging forms —
-`never`, with outgoing state `⊥` — and (Sub-Never) then admits it wherever a
-value of any type is expected. `@dbg` is an ordinary `unit`-typed expression
-whose operand is a value-context use.
+`never` — and (Sub-Never) then admits it wherever a value of any type is
+expected. Its outgoing provenance is `⊥_panic` only when its message evaluates
+normally; if the message diverges, the intrinsic propagates that operand
+provenance. `@dbg` is an ordinary `unit`-typed expression whose operand is a
+value-context use.
 
 ```
-  Γ;Σ;Λ ⊢ s ⇒ (a string type) ⊣ _        -- the string types are deferred (§5.7's ⊳ note, §6.13.4)
+  Γ;Σ;Λ ⊢ s ⇒ (a string type) ⊣ Σ_s;δ_s
+  s continues
   ─────────────────────────────────────── (Panic)        -- dynamics: §6.12, (D-Panic)
-  Γ;Σ;Λ ⊢ @panic(s) ⇒ never ⊣ ⊥
+  Γ;Σ;Λ ⊢ @panic(s) ⇒ never ⊣ ⊥;(δ_s ∪ {⊥_panic})
+
+  Γ;Σ;Λ ⊢ s ⇒ (a string type) ⊣ ⊥;δ_s
+  ─────────────────────────────────────── (Panic-Operand)
+  Γ;Σ;Λ ⊢ @panic(s) ⇒ never ⊣ ⊥;δ_s
 
   Γ;Σ;Λ ⊢ e ⇒ T ⊣ Σ'        T ∈ { int(w,s), bool }      -- plus the surface's String, with the slice statics
   ─────────────────────────────────────── (Dbg)          -- dynamics: §6.9's intrinsic note
   Γ;Σ;Λ ⊢ @dbg(e) ⇒ unit ⊣ Σ'
 ```
 
-`(Panic)`'s `⊥` is what makes a panicking branch contribute nothing to §5.5's
-join, exactly as `return`/`break` do — verified against the compiler: an `if`
-arm that moves a value and then panics leaves that value usable after the `if`,
-and it drops exactly once. `(Dbg)`'s operand restriction is the compiler's
+`(Panic)`'s `⊥_panic` is what makes a panicking branch contribute nothing to
+§5.5's join, exactly as `return`/`break` do, while its provenance means that
+§5.6 performs no scope-exit check or drop on that edge — verified against the
+compiler: an `if` arm that moves a value and then panics leaves that value
+usable after the `if`, and it drops exactly once on the continuing arm.
+`(Dbg)`'s operand restriction is the compiler's
 (E0702); its dynamics append the operand's rendering to the observable output,
 which is why `@dbg` is part of the `Outcome` the differential harness compares
 (§6.12).

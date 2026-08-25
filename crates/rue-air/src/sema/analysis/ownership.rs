@@ -1079,9 +1079,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         // (in `f(inout a[take(x)])` the call `take(x)` moves
                         // x normally, even if x happens to be the root).
                         let saved_byref_root = ctx.byref_arg_root.take();
+                        let divergence_before_index = ctx.divergence_kinds;
+                        let base_continues = trace.continues;
                         let index_result = self.analyze_inst(air, *index, ctx);
                         ctx.byref_arg_root = saved_byref_root;
                         let index_result = index_result?;
+                        if !base_continues {
+                            ctx.divergence_kinds = divergence_before_index;
+                        }
                         trace.continues &= index_result.continues;
 
                         // A place trace can be built before the outer read or
@@ -1304,6 +1309,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let param_types = param_data.types().to_vec();
         let param_modes = param_data.modes().to_vec();
         self.validate_call_contract_for_accessor(args_range, &param_types, &param_modes, span)?;
+        let divergence_before_receiver = ctx.divergence_kinds;
         let operands = self.analyze_call_operands(
             air,
             args_range,
@@ -1313,6 +1319,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             true,
             ctx,
         )?;
+        if !receiver_trace.continues {
+            // Guard operands are unreachable after a diverging receiver. Do
+            // not let their provenance replace the receiver's edge summary.
+            ctx.divergence_kinds = divergence_before_receiver;
+        }
         let accessor_continues = receiver_trace.continues && operands.continues;
         if !accessor_continues {
             ctx.rollback_expression_ledgers(expression_ledgers_before_call);
@@ -3496,7 +3507,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             );
         }
 
+        let divergence_before_index = ctx.divergence_kinds;
         let index_result = self.analyze_inst(air, index, ctx)?;
+        if !base_result.continues {
+            ctx.divergence_kinds = divergence_before_index;
+        }
 
         // Verify base is an array
         let (_array_type_id, elem_type, array_len) = match base_type.as_array() {
@@ -3640,7 +3655,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // The index is an ordinary rvalue. Analyze it and require an integer
         // type (signed or unsigned), matching array indexing (spec 7.1:7).
+        let divergence_before_index = ctx.divergence_kinds;
         let index_result = self.analyze_inst(air, index, ctx)?;
+        if !base_result.continues {
+            ctx.divergence_kinds = divergence_before_index;
+        }
         if !index_result.ty.is_integer() && !index_result.ty.is_error() {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
@@ -3748,7 +3767,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         air.cancel_move_marker(base_result.air_ref);
 
         // The index is an ordinary rvalue; require an integer (spec 7.1:7).
+        let divergence_before_index = ctx.divergence_kinds;
         let index_result = self.analyze_inst(air, index, ctx)?;
+        if !base_result.continues {
+            ctx.divergence_kinds = divergence_before_index;
+        }
         if !index_result.ty.is_integer() && !index_result.ty.is_error() {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
@@ -3836,7 +3859,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let ptr_ty = self.body_type_pool().struct_def(slice_struct_id).fields[0].ty;
 
         // The index is an ordinary rvalue; require an integer (spec 7.1:7).
+        let divergence_before_index = ctx.divergence_kinds;
         let index_result = self.analyze_inst(air, index, ctx)?;
+        if !base_result.continues {
+            ctx.divergence_kinds = divergence_before_index;
+        }
         if !index_result.ty.is_integer() && !index_result.ty.is_error() {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
@@ -4068,6 +4095,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let value_result = value_result?;
         self.reject_accessor_result_escape(value, AccessorEscapeSite::Store, span, ctx)?;
         let reachable_edges_after_rhs = ctx.loop_break_stack.clone();
+        let divergence_before_place = ctx.divergence_kinds;
         // A plain assignment's RHS is complete before the LHS place is
         // evaluated. Ordinary shared-read markers are expression-order
         // bookkeeping and can be truncated before the target is traced;
@@ -4095,6 +4123,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     .ok_or_else(|| CompileError::new(ErrorKind::InvalidAssignmentTarget, span))?;
                 if !value_result.continues {
                     Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_rhs);
+                    ctx.divergence_kinds = divergence_before_place;
                 }
                 if !trace.via_accessor || !trace.is_root_mutable {
                     return Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span));
@@ -4150,9 +4179,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let value_result = self.analyze_inst(air, value, ctx)?;
         self.reject_accessor_result_escape(value, AccessorEscapeSite::Store, span, ctx)?;
         let reachable_edges_after_value = ctx.loop_break_stack.clone();
+        let divergence_before_place = ctx.divergence_kinds;
         let traced = self.try_trace_place(base, air, ctx)?;
         if !value_result.continues {
             Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_value);
+            ctx.divergence_kinds = divergence_before_place;
         }
 
         if let Some(mut trace) = traced {
@@ -4345,9 +4376,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let value_result = self.analyze_inst(air, value, ctx)?;
         self.reject_accessor_result_escape(value, AccessorEscapeSite::Store, span, ctx)?;
         let reachable_edges_after_rhs = ctx.loop_break_stack.clone();
+        let divergence_before_place = ctx.divergence_kinds;
         let traced = self.try_trace_place(base, air, ctx)?;
         if !value_result.continues {
             Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_rhs);
+            ctx.divergence_kinds = divergence_before_place;
         }
 
         if let Some(mut trace) = traced {
@@ -4427,9 +4460,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // unsigned) per spec 7.1:7; negative/out-of-range runtime indices
             // trap at runtime via the bounds check (RUE-81).
             let reachable_edges_before_index = ctx.loop_break_stack.clone();
+            let divergence_before_index = ctx.divergence_kinds;
             let index_result = self.analyze_inst(air, index, ctx)?;
             if !(value_result.continues && trace.continues) {
                 Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_index);
+                ctx.divergence_kinds = divergence_before_index;
             }
             if !index_result.ty.is_integer() && !index_result.ty.is_error() {
                 return Err(CompileError::new(
@@ -4857,6 +4892,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         Ok(())
+    }
+
+    /// Check every live linear binding at an unchecked divergent edge.
+    ///
+    /// Generic divergence (`loop {}` and ordinary calls returning `!`) is not
+    /// an explicit panic exemption.  Its ownership state therefore has to be
+    /// validated while the edge is still visible, including bindings in
+    /// enclosing scopes.  This reuses the virtual unwind walk only as a
+    /// conservative must-consume check; it does not synthesize cleanup or
+    /// claim that generic divergence executes drop glue.
+    pub(crate) fn check_linear_values_at_unchecked_divergence(
+        &self,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<()> {
+        self.check_linear_values_at_exit_edge(ctx, 0, true)
     }
 
     /// Core §5.6 `residual-linear(Σ, p, T)`: the path (relative to the root
@@ -6406,6 +6456,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut continues = true;
         for (i, arg) in args.enumerate() {
             let reachable_edges_before_arg = ctx.loop_break_stack.clone();
+            let divergence_before_arg = ctx.divergence_kinds;
             // A `str` parameter (ADR-0043 Phase 3, RUE-324) is a first-class
             // 2-word value, not a `borrow`-materialized fat pointer. A string
             // literal argument materializes as a `str` under the expected type;
@@ -6454,6 +6505,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let arg_result = arg_result?;
                 if !continues {
                     Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_arg);
+                    ctx.divergence_kinds = divergence_before_arg;
                 }
                 continues &= arg_result.continues;
                 // `Str(N)` is a nominal fixed-capacity value, not a bare
@@ -6578,6 +6630,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let mut arg_result = arg_result?;
             if !continues {
                 Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_arg);
+                ctx.divergence_kinds = divergence_before_arg;
             }
             continues &= arg_result.continues;
             if elaborates_borrow {
