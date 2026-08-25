@@ -325,6 +325,39 @@ mod tests {
             1,
             "the instruction dispatcher must have one implementation"
         );
+        assert_eq!(
+            engine
+                .matches("host_value!(self.host.check_canceled());")
+                .count(),
+            1,
+            "each evaluation node must have exactly one cancellation checkpoint"
+        );
+        let eval = engine
+            .split("    fn eval(\n")
+            .nth(1)
+            .and_then(|source| {
+                source
+                    .split("\n    #[inline(never)]\n    fn eval_block")
+                    .next()
+            })
+            .expect("canonical eval source");
+        let eval_body = eval
+            .split_once("    ) -> ComptimeOutcome<H::Value, H::Failure> {")
+            .map(|(_, body)| body.trim_start())
+            .expect("canonical eval body");
+        assert!(
+            eval_body.starts_with("host_value!(self.host.check_canceled());"),
+            "cancellation must precede the first RIR read"
+        );
+        let dispatch = engine
+            .split("    fn eval_dispatch(\n")
+            .nth(1)
+            .and_then(|source| source.split("\n    fn evaluate_method_call").next())
+            .expect("canonical dispatch source");
+        assert!(
+            !dispatch.contains("check_canceled"),
+            "cancellation must not be duplicated in the lower dispatcher"
+        );
         assert!(
             engine.contains("InstData::Comptime { .. }\n            | InstData::Block { .. }")
                 && engine.contains("InstData::Call { .. } => unreachable!"),
