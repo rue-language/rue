@@ -408,3 +408,40 @@ fn main() -> i32 { (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
 """
 compile_fail = true
 error_contains = "nests too deeply"
+
+# =============================================================================
+# ABI-slot ceiling (C.4:3)
+# =============================================================================
+# C.4:3 publishes the 268,435,455-slot object ceiling and states that a type
+# needing more slots is rejected with E0906 wherever a value of it would be
+# materialized — including a `@size_of` query. RUE-1768 gave the paragraph an
+# explicit category; these are the cases that category requires.
+#
+# The boundary is checked from both sides, because a one-sided case would pass
+# against a ceiling set anywhere below the published number. The check is on
+# the layout, not on allocated storage, so neither case materializes an array.
+
+[[case]]
+name = "object_at_the_abi_slot_ceiling_is_accepted"
+spec = ["C.4:3"]
+description = "A type of exactly 268,435,455 ABI slots is within the ceiling and reports its size"
+source = """
+fn main() -> i32 {
+    let n: i32 = @size_of([i8; 268435455]);
+    if n == 268435455 { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "object_one_slot_over_the_ceiling_is_rejected"
+spec = ["C.4:3"]
+description = "One element more than the ceiling is rejected with E0906, and the diagnostic names the slot ceiling as C.1:2 requires"
+source = """
+fn main() -> i32 {
+    let n: i32 = @size_of([i8; 268435456]);
+    if n > 0 { 1 } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = ["E0906", "268435455 ABI slots"]

@@ -187,3 +187,36 @@ pub fn f() -> i32 { 1 }
 """ }
 compile_fail = true
 error_contains = "cannot find module"
+
+# =============================================================================
+# The two module forms coexist for one name (10.1:5)
+# =============================================================================
+# 10.1:5 states that a file module `shape.rue` and a directory module
+# `shape/_shape.rue` may both exist for the same name without ambiguity: the
+# extensionless path names the directory module alone, and the file module is
+# reached only by its extensioned spelling. The former ambiguity rejection
+# (E0708) is retired, so the absence of a diagnostic is itself the rule.
+#
+# RUE-1768 gave the paragraph an explicit category — it had none, so nothing
+# tracked it. This case builds both forms at once and distinguishes them by
+# return value, which is what makes it evidence for the rule rather than for
+# directory resolution alone: a case importing only one form would pass even if
+# the two spellings collapsed onto the same module.
+
+[[case]]
+name = "file_and_directory_forms_coexist_for_one_name"
+spec = ["10.1:5"]
+description = "With both shape.rue and shape/_shape.rue present, the extensionless import names the directory module and the extensioned one names the file module"
+source = """
+fn main() -> i32 {
+    let dir = @import("shape");
+    let file = @import("shape.rue");
+    dir.tag() * 10 + file.tag()
+}
+"""
+aux_files = { "shape.rue" = """
+pub fn tag() -> i32 { 1 }
+""", "shape/_shape.rue" = """
+pub fn tag() -> i32 { 2 }
+""" }
+exit_code = 21

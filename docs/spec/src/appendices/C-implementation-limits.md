@@ -41,7 +41,7 @@ The following integer types have the specified ranges:
 
 ## Source File Limits
 
-{{ rule(id="C.3:1") }}
+{{ rule(id="C.3:1", cat="normative") }}
 
 A single source file is limited to 4,294,967,295 bytes — one byte short of 4 GiB. Source positions are byte offsets stored as 32-bit unsigned integers, so this is the largest length whose end-of-file position is still representable. The compiler checks the length of every source it accepts and rejects an oversized one with a resource-limit diagnostic (E1401) before lexing, so no span can be formed from a truncated offset.
 
@@ -59,7 +59,7 @@ An array length is a compile-time value of type `u64`, so the language itself ad
 
 An array whose element count is legal for the type system may still be rejected: the binding constraint is the number of ABI slots the array type's layout occupies (C.4:3), not available memory. A layout spends one 8-byte slot per scalar, per struct field, and per array element, *whatever the element's own width* — so for an array the slot count is exactly the element count times the element type's own slot count, and for an array of scalars it is exactly the element count. A narrow element type therefore buys no extra headroom: `[i8; N]` and `[i64; N]` reach the ceiling at the same `N`.
 
-{{ rule(id="C.4:3") }}
+{{ rule(id="C.4:3", cat="normative") }}
 
 The current implementation limits any single object (including an array type) to 268,435,455 ABI slots. That ceiling is the code generator's frame-offset addressing range (`i32::MAX`, 2,147,483,647 bytes) divided by the 8-byte slot width, so a layout that fits it is always addressable by a signed 32-bit displacement. A type whose layout needs more slots is rejected with a diagnostic (E0906) wherever a value of the type would be materialized — a variable, a parameter, or a `@size_of`/`@align_of` query — and the diagnostic names the slot ceiling, as C.1:2 requires.
 

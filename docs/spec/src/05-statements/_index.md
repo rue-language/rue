@@ -15,6 +15,6 @@ This chapter describes statements in Rue.
 > is the normative grammar; where a fragment here differs from it, Appendix A
 > governs.
 
-{{ rule(id="5.0:1") }}
+{{ rule(id="5.0:1", cat="normative") }}
 
 A statement is a construct evaluated for its effect rather than for a value delivered to its context; every statement has type `()` (unit). The three statement forms — `let` bindings, assignments, and expression statements — elaborate in the core calculus (`docs/formal/01-core-calculus.md`) to a binding sequence `let x = e1 ; e2`, an `assign p = e`, and a discarding sequence `e1 ; e2` respectively, and none of these delivers a value to the block that contains it (core §6.7, §6.8).

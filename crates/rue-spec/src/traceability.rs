@@ -241,11 +241,18 @@ impl ResponsibilityCensus {
 pub const FOCUSED_CASE_MAX_SOURCE_LINES: usize = 40;
 
 /// Normative paragraphs that currently have no *running* test, tracked as known
-/// gaps pending compiler-feature implementation.
+/// gaps — either pending compiler-feature implementation, or not reachable by a
+/// test at all.
 ///
-/// Each entry is `(paragraph_id, reason)`. These are rules whose only spec tests
+/// Each entry is `(paragraph_id, reason)`. Most are rules whose only spec tests
 /// are `skip = true` because the behavior they pin isn't implemented yet — the
-/// tests are written and ready to un-skip the moment the feature lands. Before
+/// tests are written and ready to un-skip the moment the feature lands. A few
+/// pin something no test can positively exercise: undefined behavior, a
+/// boundary that needs a harness the spec corpus cannot build, or a limit whose
+/// counterexample is too large to construct. Both kinds belong here for the
+/// same reason — the gate stays green while the report names the gap instead of
+/// counting it as covered. Neither kind is a place to park a rule that is
+/// merely inconvenient to test. Before
 /// RUE-132, such a skipped test silently *counted* as coverage, so the report
 /// falsely claimed 100%. Now skipped tests don't count, and these genuine gaps
 /// are listed here explicitly: the gate stays green while the report tells the
@@ -262,6 +269,18 @@ pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[
     // linked to a Rue export (a harness only the preview-gated `c_ffi` CLI suite
     // provides), and the other two describe undefined / programmer-responsibility
     // behavior that is not positively testable.
+    // C.3:1's counterexample is a source file one byte under 4 GiB. Constructing
+    // it is not a feature gap — the check is implemented and rejects with E1401
+    // — but a 4 GiB fixture cannot live in the corpus or run in a CI lane.
+    (
+        "C.3:1",
+        "Maximum source-file length (4,294,967,295 bytes, rejected with E1401 \
+         before lexing): positively testing the rejection needs a source file of \
+         that size, which cannot be committed to the corpus or generated within a \
+         test lane's time and disk budget. The sibling limit C.3:2 (file count) \
+         has the same shape. The check itself is implemented and runs on every \
+         source the compiler accepts.",
+    ),
     (
         "9.3:2",
         "Abort-at-boundary for a trapping `pub extern \"C\" fn` export: verified by \
@@ -796,7 +815,11 @@ impl TraceabilityReport {
 /// Parse a spec marker from a line.
 /// Format: {{ rule(id="X.Y:Z") }} or {{ rule(id="X.Y:Z", cat="category") }} (Zola shortcode)
 /// Category can be: normative, informative, syntax, example
-/// Default category (no cat) is informative.
+/// Default category (no cat) is informative — this is the spec's own rule
+/// (1.3:2, restated by B.1:5), not a tooling convention: normativity is opted
+/// into explicitly. Before RUE-1768, 1.3:2 said the opposite of B.1:5 and this
+/// default silently picked the winner, so 239 uncategorised paragraphs sat
+/// outside the coverage gate while the report claimed full coverage.
 /// Returns (id, category) if found.
 fn parse_spec_comment(line: &str) -> Result<Option<(String, String)>, String> {
     let line = line.trim();

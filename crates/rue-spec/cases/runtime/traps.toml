@@ -1,0 +1,83 @@
+[section]
+id = "runtime.traps"
+spec_chapter = "8.0"
+name = "Trap Discipline"
+description = "The shared discipline every trap category obeys: a trap abandons the evaluation and halts with exit code 101 (spec 8.0:1, B.2:5)."
+
+# =============================================================================
+# The shared trap discipline (8.0:1, B.2:5)
+# =============================================================================
+# The individual categories are pinned by their own sections — overflow.toml,
+# division.toml, bounds.toml. What 8.0:1 and B.2:5 state is the property those
+# sections have in *common*: whichever category fires, the program halts with
+# exit code 101, and no surrounding expression can consume the trap as a value.
+#
+# Both paragraphs carried no `cat=` marker until RUE-1768, so neither was
+# tracked by the coverage gate even though a normative MUST in 8.2:9 grounds
+# itself on 8.0:1. These cases are the coverage their categories now require.
+#
+# One case per category rather than one representative case: the claim is that
+# the exit code is uniform *across* categories, and a single case cannot be
+# evidence for uniformity.
+
+[[case]]
+name = "overflow_trap_halts_with_101"
+spec = ["8.0:1", "B.2:5"]
+description = "An integer overflow trap halts the program with the panic exit code"
+source = """
+fn main() -> i32 {
+    let a: i32 = 2147483647;
+    let b: i32 = 1;
+    a + b
+}
+"""
+runtime_error = "integer overflow"
+runtime_exit_code = 101
+
+[[case]]
+name = "division_by_zero_trap_halts_with_101"
+spec = ["8.0:1", "B.2:5"]
+description = "A division-by-zero trap halts the program with the same exit code as every other category"
+source = """
+fn main() -> i32 {
+    let a: i32 = 1;
+    let b: i32 = 0;
+    a / b
+}
+"""
+runtime_error = "division by zero"
+runtime_exit_code = 101
+
+[[case]]
+name = "bounds_trap_halts_with_101"
+spec = ["8.0:1", "B.2:5"]
+description = "An out-of-range array index traps with the same exit code as every other category"
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i: u64 = 7;
+    arr[i]
+}
+"""
+runtime_error = "index out of bounds"
+runtime_exit_code = 101
+
+# `user` is the category 8.0:1 omitted before RUE-1776: the prose claimed the
+# core fixes "exactly" four categories while the core states five. An explicit
+# @panic is the fifth, and it obeys the same discipline as the other four.
+[[case]]
+name = "user_panic_trap_halts_with_101"
+spec = ["8.0:1", "B.2:5"]
+description = "An explicit @panic is the core's fifth trap category and halts with the same exit code"
+source = """
+fn main() -> i32 {
+    @panic("boom");
+}
+"""
+# Asserted as a plain exit code rather than `runtime_error`, matching how every
+# other @panic case in the corpus is written. A `runtime_error` expectation on
+# an explicit panic classifies in rue-oracle-diff as an unmodeled "runtime trap
+# expectation", which is harness coverage rather than typed oracle model debt
+# and cannot be registered as a model gap. The three modeled trap categories
+# above keep their `runtime_error` assertions.
+exit_code = 101

@@ -139,7 +139,7 @@ Accessing an array element with an index outside the valid range `[0, length)`
 | Division by zero | 101 |
 | Array out of bounds | 101 |
 
-{{ rule(id="B.2:5") }}
+{{ rule(id="B.2:5", cat="dynamic-semantics") }}
 
 All runtime panics produce exit code 101, matching Rust's convention for
 unwinding panics.

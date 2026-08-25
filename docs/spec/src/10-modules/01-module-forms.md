@@ -35,7 +35,7 @@ A file `_{name}.rue` is a facade only when its enclosing directory is named
 file named `{name}` — it is an ordinary source file with no special meaning,
 and it does not make `{name}` importable.
 
-{{ rule(id="10.1:5") }}
+{{ rule(id="10.1:5", cat="normative") }}
 
 Both module forms may coexist for the same name: an extensionless import
 path names the directory module `{path}/_{basename}.rue` alone, and the
