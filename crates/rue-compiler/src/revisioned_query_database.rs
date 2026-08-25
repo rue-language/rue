@@ -6755,6 +6755,7 @@ fn collect_durable_anonymous_nominal_dependencies(
 
 struct SemanticConstEvaluator<'a, 'provider> {
     authority: &'provider mut DurableComptimeRootAuthority<'a>,
+    program: crate::body_query::DurableComptimeProgramKey,
     declaration: &'a crate::semantic_query_nucleus::DeclarationSemanticQueryKey,
     rir: &'a rue_rir::ValidatedRir,
     symbols: &'a [&'a str],
@@ -7030,6 +7031,36 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
 {
     fn check_canceled(&self) -> Result<(), QueryAbort> {
         self.provider.context.check_canceled()
+    }
+
+    fn resolve_type_syntax(
+        &mut self,
+        program: &crate::body_query::DurableComptimeProgramKey,
+        syntax: rue_rir::RirTypeSyntaxRef,
+    ) -> Result<
+        crate::durable_semantics::DurableType,
+        rue_air::SemanticTypeSyntaxError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+            StableDefinitionKey,
+            Arc<str>,
+        >,
+    > {
+        let Some(registered) = self.session.registered_program(program) else {
+            return Err(rue_air::SemanticResolutionError::ProviderFailure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(Arc::from(
+                    "durable comptime type syntax references an unregistered program",
+                )),
+            ));
+        };
+        let module = program.declaration.module();
+        rue_air::resolve_structured_semantic_type_syntax_with(
+            &mut self.provider,
+            module,
+            registered.rir.type_syntax(),
+            syntax,
+            |symbol| registered.symbols[symbol.into_usize()].as_ref(),
+        )
     }
 
     fn begin_comptime_call_admission(
@@ -7357,6 +7388,25 @@ impl SemanticConstEvaluator<'_, '_> {
         Arc::from(self.symbols[symbol.into_usize()])
     }
 
+    fn resolve_type_syntax(
+        &mut self,
+        syntax: rue_rir::RirTypeSyntaxRef,
+    ) -> Result<crate::durable_semantics::DurableType, EvaluateSemanticConstError> {
+        let mut services =
+            crate::durable_comptime::DurableComptimeServices::new(&mut *self.authority);
+        services
+            .resolve_type_syntax(&self.program, syntax)
+            .map_err(|error| match error {
+                rue_air::SemanticTypeSyntaxError::ProviderAbort(abort) => {
+                    EvaluateSemanticConstError::Abort(abort)
+                }
+                rue_air::SemanticTypeSyntaxError::ProviderFailure(failure) => {
+                    EvaluateSemanticConstError::failure(failure)
+                }
+                other => Self::failure_value(format!("{other:?}")),
+            })
+    }
+
     fn value(
         &self,
         value: EvaluatedSemanticConst,
@@ -7373,26 +7423,25 @@ impl SemanticConstEvaluator<'_, '_> {
     }
 
     fn target_intrinsic(
-        &self,
+        &mut self,
         name: lasso::Spur,
         args: &rue_rir::RirIntrinsicArgsRange,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
-        let services = crate::durable_comptime::DurableComptimeServices::new(&*self.authority);
+        let name = self.symbol(&name);
+        let argument_count = self.rir.intrinsic_args(args).len();
+        let services = crate::durable_comptime::DurableComptimeServices::new(&mut *self.authority);
         services
-            .resolve_target_intrinsic(
-                self.symbol(&name).as_ref(),
-                self.rir.intrinsic_args(args).len(),
-            )
+            .resolve_target_intrinsic(name.as_ref(), argument_count)
             .map(|value| EvaluatedSemanticConst::TargetEnum(value))
             .map_err(Self::provider_error)
     }
 
     fn target_enum_variant(
-        &self,
+        &mut self,
         type_name: &str,
         variant: &str,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
-        let services = crate::durable_comptime::DurableComptimeServices::new(&*self.authority);
+        let services = crate::durable_comptime::DurableComptimeServices::new(&mut *self.authority);
         services
             .resolve_target_enum_variant(type_name, variant)
             .map(|value| EvaluatedSemanticConst::TargetEnum(value))
@@ -7657,22 +7706,7 @@ impl SemanticConstEvaluator<'_, '_> {
                 rue_rir::InstData::Alloc { name, ty, init, .. } => {
                     let mut value = self.eval(*init)?;
                     if let Some(annotation) = ty {
-                        let expected = resolve_semantic_candidate_type(
-                            &mut self.authority.provider,
-                            &self.declaration.declaration.module,
-                            self.rir,
-                            self.symbols,
-                            *annotation,
-                        )
-                        .map_err(|error| match error {
-                            rue_air::SemanticResolutionError::ProviderAbort(abort) => {
-                                EvaluateSemanticConstError::Abort(abort)
-                            }
-                            rue_air::SemanticResolutionError::ProviderFailure(failure) => {
-                                EvaluateSemanticConstError::failure(failure)
-                            }
-                            other => Self::failure_value(format!("{other:?}")),
-                        })?;
+                        let expected = self.resolve_type_syntax(*annotation)?;
                         if matches!(
                             expected,
                             crate::durable_semantics::DurableType::Slice { .. }
@@ -7780,7 +7814,7 @@ impl SemanticConstEvaluator<'_, '_> {
     }
 
     fn eval_import(
-        &self,
+        &mut self,
         instruction: rue_rir::InstRef,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
         let Some((occurrence, specifier)) = self.import_occurrences.get(&instruction) else {
@@ -7788,7 +7822,7 @@ impl SemanticConstEvaluator<'_, '_> {
                 "exact const import is absent from its candidate RIR occurrence index",
             );
         };
-        let services = crate::durable_comptime::DurableComptimeServices::new(&*self.authority);
+        let services = crate::durable_comptime::DurableComptimeServices::new(&mut *self.authority);
         let site = crate::durable_comptime::DurableImportSite {
             declaration: self.declaration.declaration.clone(),
             occurrence: *occurrence,
@@ -7830,13 +7864,10 @@ impl SemanticConstEvaluator<'_, '_> {
         if let Some(value) = self.locals.get(&name) {
             return Ok(value.clone());
         }
-        let services = crate::durable_comptime::DurableComptimeServices::new(&*self.authority);
+        let source = self.authority.provider.dependency_source.clone();
+        let services = crate::durable_comptime::DurableComptimeServices::new(&mut *self.authority);
         let Some(projection) = services
-            .resolve_named_value(
-                &self.authority.provider.dependency_source,
-                &self.declaration.declaration.module,
-                &name,
-            )
+            .resolve_named_value(&source, &self.declaration.declaration.module, &name)
             .map_err(Self::provider_error)?
         else {
             return Self::failure(format!("undefined constant `{name}`"));
@@ -7882,20 +7913,19 @@ impl SemanticConstEvaluator<'_, '_> {
             })
             .collect::<Vec<_>>();
         let admission_start = {
-            let services = crate::durable_comptime::DurableComptimeServices::new(&*self.authority);
+            let source = self.authority.provider.dependency_source.clone();
+            let services =
+                crate::durable_comptime::DurableComptimeServices::new(&mut *self.authority);
             services
-                .begin_comptime_call_admission(
-                    &self.authority.provider.dependency_source,
-                    module,
-                    &name,
-                )
+                .begin_comptime_call_admission(&source, module, &name)
                 .map_err(Self::provider_error)?
         };
         self.authority
             .legacy_effects
             .observe_dependency(admission_start.dependency.clone());
         let admission = {
-            let services = crate::durable_comptime::DurableComptimeServices::new(&*self.authority);
+            let services =
+                crate::durable_comptime::DurableComptimeServices::new(&mut *self.authority);
             services
                 .finish_comptime_call_admission(admission_start, &argument_modes)
                 .map_err(Self::provider_error)?
@@ -7994,87 +8024,174 @@ impl SemanticConstEvaluator<'_, '_> {
         use rue_air::{
             ComptimeField, ComptimeMethodDescriptor, ComptimeMethodParameter, ComptimeMethodType,
         };
-        let module = &self.declaration.declaration.module;
         let producer = self.declaration.declaration.clone();
-        let symbols = self.symbols;
-        let rir = self.rir;
-        let provider = &mut self.authority.provider;
-        let resolve = |provider: &mut SemanticNucleusTypeProvider<'_>,
-                       syntax: rue_rir::RirTypeSyntaxRef| {
-            resolve_semantic_candidate_type(provider, module, rir, symbols, syntax).map_err(
-                |error| match error {
-                    rue_air::SemanticResolutionError::ProviderAbort(abort) => {
-                        EvaluateSemanticConstError::Abort(abort)
+        struct MethodInput {
+            name: Arc<str>,
+            has_self: bool,
+            self_mode: rue_rir::RirParamMode,
+            returns_borrow: bool,
+            returns_inout: bool,
+            parameters: Vec<(
+                Arc<str>,
+                rue_rir::RirTypeSyntaxRef,
+                rue_rir::RirParamMode,
+                bool,
+            )>,
+            return_type: rue_rir::RirTypeSyntaxRef,
+            declaration_span: rue_span::Span,
+            has_own_comptime_type: bool,
+        }
+        enum TypeLiteralInput {
+            Struct {
+                fields: Vec<(Arc<str>, rue_rir::RirTypeSyntaxRef)>,
+                methods: Vec<Result<MethodInput, rue_span::Span>>,
+                anchor: rue_rir::RirStructuralAnchor,
+            },
+            Enum {
+                variants: Vec<(Arc<str>, Vec<rue_rir::RirTypeSyntaxRef>)>,
+                anchor: rue_rir::RirStructuralAnchor,
+            },
+            TypeConst(rue_rir::RirTypeSyntaxRef),
+        }
+
+        // Decode only names, spans, and syntax references while the RIR borrow
+        // is active.  Actual type resolution below goes through the keyed
+        // service, so no loose (module, arena, symbols) tuple can be paired by
+        // this evaluator.
+        let input = {
+            let rir = self.rir;
+            let symbols = self.symbols;
+            match &rir.get(expression).data {
+                rue_rir::InstData::AnonStructType {
+                    fields,
+                    methods,
+                    anchor,
+                } => {
+                    let fields = rir
+                        .anon_struct_fields(fields)
+                        .iter()
+                        .map(|field| {
+                            let (name, ty) = *field;
+                            (Arc::from(semantic_candidate_spelling(symbols, &name)), ty)
+                        })
+                        .collect();
+                    let methods = rir
+                        .anon_struct_methods(methods)
+                        .iter()
+                        .map(|method_ref| {
+                            let method = rir.get(*method_ref);
+                            let rue_rir::InstData::FnDecl {
+                                name,
+                                params,
+                                return_type,
+                                has_self,
+                                self_mode,
+                                returns_borrow,
+                                returns_inout,
+                                ..
+                            } = &method.data
+                            else {
+                                return Err(method.span);
+                            };
+                            let parameters = rir.params(params);
+                            Ok(MethodInput {
+                                name: Arc::from(semantic_candidate_spelling(symbols, name)),
+                                has_self: *has_self,
+                                self_mode: *self_mode,
+                                returns_borrow: *returns_borrow,
+                                returns_inout: *returns_inout,
+                                has_own_comptime_type: parameters.iter().any(|parameter| {
+                                    parameter.is_comptime
+                                        && semantic_candidate_type_is_named(
+                                            rir,
+                                            symbols,
+                                            parameter.ty,
+                                            "type",
+                                        )
+                                }),
+                                parameters: parameters
+                                    .iter()
+                                    .map(|parameter| {
+                                        (
+                                            Arc::from(semantic_candidate_spelling(
+                                                symbols,
+                                                &parameter.name,
+                                            )),
+                                            parameter.ty,
+                                            parameter.mode,
+                                            parameter.is_comptime,
+                                        )
+                                    })
+                                    .collect(),
+                                return_type: *return_type,
+                                declaration_span: method.span,
+                            })
+                        })
+                        .collect();
+                    TypeLiteralInput::Struct {
+                        fields,
+                        methods,
+                        anchor: anchor.clone(),
                     }
-                    rue_air::SemanticResolutionError::ProviderFailure(failure) => {
-                        EvaluateSemanticConstError::failure(failure)
+                }
+                rue_rir::InstData::AnonEnumType {
+                    variants,
+                    payloads,
+                    anchor,
+                } => {
+                    let variants = rir
+                        .anon_enum_variants(variants)
+                        .iter()
+                        .zip(rir.anon_enum_payloads(payloads, variants))
+                        .map(|(name, payload)| {
+                            (
+                                Arc::from(semantic_candidate_spelling(symbols, &name)),
+                                payload.to_vec(),
+                            )
+                        })
+                        .collect();
+                    TypeLiteralInput::Enum {
+                        variants,
+                        anchor: anchor.clone(),
                     }
-                    other => Self::failure_value(format!("{other:?}")),
-                },
-            )
+                }
+                rue_rir::InstData::TypeConst { type_name } => {
+                    TypeLiteralInput::TypeConst(*type_name)
+                }
+                _ => return Self::failure("instruction is not a comptime type literal"),
+            }
         };
-        let instruction = rir.get(expression);
-        let (kind, shape, anchor) = match &instruction.data {
-            rue_rir::InstData::AnonStructType {
+        let (kind, shape, anchor) = match input {
+            TypeLiteralInput::Struct {
                 fields,
                 methods,
                 anchor,
             } => {
-                let fields = rir
-                    .anon_struct_fields(fields)
-                    .iter()
-                    .map(|field| {
-                        let (name, ty) = *field;
+                let fields = fields
+                    .into_iter()
+                    .map(|(name, ty)| {
                         Ok(ComptimeField {
-                            name: Arc::from(semantic_candidate_spelling(symbols, &name)),
-                            ty: resolve(provider, ty)?,
+                            name,
+                            ty: self.resolve_type_syntax(ty)?,
                         })
                     })
                     .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
-                let method_type =
-                    |provider: &mut SemanticNucleusTypeProvider<'_>,
-                     ty: rue_rir::RirTypeSyntaxRef| {
-                        Ok(
-                            if semantic_candidate_type_is_named(rir, symbols, ty, "Self") {
-                                ComptimeMethodType::SelfType
-                            } else {
-                                ComptimeMethodType::Concrete(resolve(provider, ty)?)
-                            },
-                        )
-                    };
-                let methods = rir
-                    .anon_struct_methods(methods)
-                    .iter()
-                    .map(|method_ref| {
-                        let method = rir.get(*method_ref);
-                        let rue_rir::InstData::FnDecl {
-                            name,
-                            params,
-                            return_type,
-                            has_self,
-                            self_mode,
-                            returns_borrow,
-                            returns_inout,
-                            ..
-                        } = &method.data
-                        else {
-                            return Self::failure(
-                                "anonymous type carries a non-function method instruction",
-                            );
+                let methods = methods
+                    .into_iter()
+                    .map(|method| {
+                        let method = match method {
+                            Ok(method) => method,
+                            Err(_) => {
+                                return Self::failure(
+                                    "anonymous type carries a non-function method instruction",
+                                );
+                            }
                         };
-                        if rir.params(params).iter().any(|parameter| {
-                            parameter.is_comptime
-                                && semantic_candidate_type_is_named(
-                                    rir,
-                                    symbols,
-                                    parameter.ty,
-                                    "type",
-                                )
-                        }) {
+                        if method.has_own_comptime_type {
                             let site = crate::durable_comptime::DurableComptimeDiagnosticSite::new(
                                 producer.clone(),
-                                method.span.start,
-                                method.span.end,
+                                method.declaration_span.start,
+                                method.declaration_span.end,
                             );
                             return Err(EvaluateSemanticConstError::comptime_failure_at(
                                 &site,
@@ -8084,39 +8201,45 @@ impl SemanticConstEvaluator<'_, '_> {
                                          monomorphized over its own type parameter); \
                                          move the type parameter to the enclosing type \
                                          constructor instead",
-                                    semantic_candidate_spelling(symbols, name)
+                                    method.name
                                 ),
                             ));
                         }
-                        let parameters = rir
-                            .params(params)
+                        let method_type = |this: &mut Self, ty| {
+                            if semantic_candidate_type_is_named(this.rir, this.symbols, ty, "Self")
+                            {
+                                Ok(ComptimeMethodType::SelfType)
+                            } else {
+                                Ok(ComptimeMethodType::Concrete(this.resolve_type_syntax(ty)?))
+                            }
+                        };
+                        let parameters = method
+                            .parameters
                             .iter()
-                            .map(|parameter| {
+                            .map(|(_name, ty, mode, is_comptime)| {
                                 Ok(ComptimeMethodParameter {
-                                    ty: method_type(provider, parameter.ty)?,
-                                    mode: parameter.mode,
-                                    is_comptime: parameter.is_comptime,
+                                    ty: method_type(self, *ty)?,
+                                    mode: *mode,
+                                    is_comptime: *is_comptime,
                                     is_comptime_type: false,
                                 })
                             })
                             .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
-                        let result = method_type(provider, *return_type)?;
+                        let result = method_type(self, method.return_type)?;
                         Ok(ComptimeMethodDescriptor {
-                            name: Arc::from(semantic_candidate_spelling(symbols, name)),
-                            has_self: *has_self,
-                            self_mode: *self_mode,
-                            returns_borrow: *returns_borrow,
-                            returns_inout: *returns_inout,
+                            name: method.name,
+                            has_self: method.has_self,
+                            self_mode: method.self_mode,
+                            returns_borrow: method.returns_borrow,
+                            returns_inout: method.returns_inout,
                             parameters: parameters.into(),
-                            parameter_names: rir
-                                .params(params)
-                                .iter()
-                                .map(|parameter| {
-                                    Arc::from(semantic_candidate_spelling(symbols, &parameter.name))
-                                })
+                            parameter_names: method
+                                .parameters
+                                .into_iter()
+                                .map(|(name, _, _, _)| name)
                                 .collect(),
                             result,
-                            declaration_span: method.span,
+                            declaration_span: method.declaration_span,
                         })
                     })
                     .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
@@ -8126,27 +8249,18 @@ impl SemanticConstEvaluator<'_, '_> {
                         fields: fields.into(),
                         methods: methods.into(),
                     },
-                    anchor.clone(),
+                    anchor,
                 )
             }
-            rue_rir::InstData::AnonEnumType {
-                variants,
-                payloads,
-                anchor,
-            } => {
-                let variants = rir
-                    .anon_enum_variants(variants)
-                    .iter()
-                    .zip(rir.anon_enum_payloads(payloads, variants))
+            TypeLiteralInput::Enum { variants, anchor } => {
+                let variants = variants
+                    .into_iter()
                     .map(|(name, payload)| {
                         let payload = payload
-                            .iter()
-                            .map(|ty| resolve(provider, *ty))
+                            .into_iter()
+                            .map(|ty| self.resolve_type_syntax(ty))
                             .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
-                        Ok((
-                            Arc::from(semantic_candidate_spelling(symbols, &name)),
-                            Arc::from(payload),
-                        ))
+                        Ok((name, Arc::from(payload)))
                     })
                     .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
                 (
@@ -8154,16 +8268,15 @@ impl SemanticConstEvaluator<'_, '_> {
                     DurableAnonymousNominalDescriptorShape::Enum {
                         variants: variants.into(),
                     },
-                    anchor.clone(),
+                    anchor,
                 )
             }
-            rue_rir::InstData::TypeConst { type_name } => {
+            TypeLiteralInput::TypeConst(type_name) => {
                 return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
-                    V::Type(resolve(provider, *type_name)?),
+                    V::Type(self.resolve_type_syntax(type_name)?),
                     DurableType::ComptimeType,
                 )));
             }
-            _ => return Self::failure("instruction is not a comptime type literal"),
         };
         let identity = crate::AnonymousNominalKey {
             kind,
@@ -8205,7 +8318,7 @@ impl SemanticConstEvaluator<'_, '_> {
         &mut self,
         expression: rue_rir::InstRef,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
-        crate::durable_comptime::DurableComptimeServices::new(&*self.authority)
+        crate::durable_comptime::DurableComptimeServices::new(&mut *self.authority)
             .check_canceled()
             .map_err(Self::abort)?;
         use crate::durable_semantics::DurableConstValue as V;
@@ -8444,22 +8557,7 @@ impl SemanticConstEvaluator<'_, '_> {
                 ) =>
             {
                 let intrinsic_name = self.symbol(name);
-                let ty = resolve_semantic_candidate_type(
-                    &mut self.authority.provider,
-                    &self.declaration.declaration.module,
-                    self.rir,
-                    self.symbols,
-                    *type_arg,
-                )
-                .map_err(|error| match error {
-                    rue_air::SemanticResolutionError::ProviderAbort(abort) => {
-                        EvaluateSemanticConstError::Abort(abort)
-                    }
-                    rue_air::SemanticResolutionError::ProviderFailure(failure) => {
-                        EvaluateSemanticConstError::failure(failure)
-                    }
-                    other => Self::failure_value(format!("{other:?}")),
-                })?;
+                let ty = self.resolve_type_syntax(*type_arg)?;
                 // Ownership is a post-signature well-formedness fact. Publishing
                 // the gate instead of inspecting nominal signatures here lets a
                 // recursive but indirect type graph finish before the keyed
@@ -8495,22 +8593,7 @@ impl SemanticConstEvaluator<'_, '_> {
                 // never on layout. The numeric authority stays `Type::int_max`/
                 // `Type::int_min`; this arm only maps the durable scalar back.
                 let is_max = self.symbol(name).as_ref() == "int_max";
-                let ty = resolve_semantic_candidate_type(
-                    &mut self.authority.provider,
-                    &self.declaration.declaration.module,
-                    self.rir,
-                    self.symbols,
-                    *type_arg,
-                )
-                .map_err(|error| match error {
-                    rue_air::SemanticResolutionError::ProviderAbort(abort) => {
-                        EvaluateSemanticConstError::Abort(abort)
-                    }
-                    rue_air::SemanticResolutionError::ProviderFailure(failure) => {
-                        EvaluateSemanticConstError::failure(failure)
-                    }
-                    other => Self::failure_value(format!("{other:?}")),
-                })?;
+                let ty = self.resolve_type_syntax(*type_arg)?;
                 use crate::durable_semantics::DurableType as T;
                 let scalar = match ty {
                     T::I8 => Some(rue_air::Type::I8),
@@ -8581,14 +8664,11 @@ impl SemanticConstEvaluator<'_, '_> {
                     return Self::failure("member access on a non-module const value");
                 };
                 let name = self.symbol(field);
+                let source = self.authority.provider.dependency_source.clone();
                 let services =
-                    crate::durable_comptime::DurableComptimeServices::new(&*self.authority);
+                    crate::durable_comptime::DurableComptimeServices::new(&mut *self.authority);
                 let projection = services
-                    .resolve_module_member(
-                        &self.authority.provider.dependency_source,
-                        &module,
-                        &name,
-                    )
+                    .resolve_module_member(&source, &module, &name)
                     .map_err(Self::provider_error)?;
                 let (value, dependency) = projection.into_parts();
                 self.authority.legacy_effects.observe_dependency(dependency);
@@ -13553,29 +13633,54 @@ impl RevisionedQueryDatabase {
                                     Value::Failure(candidate_rir_semantic_failure(failure))
                                 }
                                 DeclarationBodyPlanArtifactsValue::Available(artifact) => {
-                                    match artifact.plan.materialize_semantic_candidate_rir(|| {
-                                        context.check_canceled()
-                                    }) {
-                                        Err(failure) => match semantic_materialization_failure(failure) {
-                                            Ok(failure) => Value::Failure(failure),
-                                            Err(abort) => return Err(abort),
+                                    let const_identity = crate::semantic_query_nucleus::classified_const_identity(shell, false);
+                                    let program_key = crate::body_query::DurableComptimeProgramKey {
+                                        declaration: const_identity.key.clone(),
+                                        configuration: query.configuration.clone(),
+                                    };
+                                    let core = match crate::body_query::OwnedComptimeProgramCore::from_const_body_plan_without_imports(
+                                        crate::body_query::DurableComptimeProgramPlan {
+                                            key: program_key.clone(),
+                                            candidate: query.declaration.clone(),
                                         },
-                                        Ok((rir, symbols, declaration)) => {
-                                            let rue_rir::InstData::ConstDecl {
-                                                ty: declared_type,
-                                                init,
-                                                ..
-                                            } = &rir.get(declaration).data
-                                            else {
+                                        artifact,
+                                        || context.check_canceled(),
+                                    ) {
+                                        Ok(core) => core,
+                                        Err(crate::body_query::ComptimeProgramProjectionFailure::NotConst { .. }) => {
                                                 return Ok(QueryOutput::success(Value::Failure(
                                                     Failure::Resolution(Arc::from(
                                                         "constant candidate artifact has a non-constant root",
                                                     )),
                                                 ))
                                                 .with_terminal_kind(QueryTerminalKind::Failure));
+                                        }
+                                        Err(crate::body_query::ComptimeProgramProjectionFailure::Materialization(
+                                            failure,
+                                        )) => match semantic_materialization_failure(failure) {
+                                            Ok(failure) => {
+                                                return Ok(QueryOutput::success(
+                                                    Value::Failure(failure),
+                                                )
+                                                .with_terminal_kind(QueryTerminalKind::Failure));
+                                            }
+                                            Err(abort) => return Err(abort),
+                                        },
+                                        Err(failure) => {
+                                            return Ok(QueryOutput::success(Value::Failure(
+                                                Failure::Resolution(Arc::from(format!(
+                                                    "{failure:?}"
+                                                ))),
+                                            ))
+                                            .with_terminal_kind(QueryTerminalKind::Failure));
+                                        }
                                             };
-                                            let const_identity = crate::semantic_query_nucleus::classified_const_identity(shell, false);
-                                            let mut provider = SemanticNucleusTypeProvider {
+                                    let Some((init, declared_type, _root)) =
+                                        core.const_root()
+                                    else {
+                                        unreachable!("const core validated its root kind");
+                                    };
+                                    let provider = SemanticNucleusTypeProvider {
                                                 context,
                                                 family,
                                                 shells: &shells_for_semantic_nucleus,
@@ -13591,18 +13696,30 @@ impl RevisionedQueryDatabase {
                                                 deferred_ownership: BTreeSet::new(),
                                                 ownership_properties: BTreeMap::new(),
                                             };
-                                            let expected_type = declared_type.as_ref().and_then(
-                                                |syntax| {
-                                                    resolve_semantic_candidate_type(
-                                                        &mut provider,
-                                                        &query.declaration.module,
-                                                        &rir,
-                                                        &symbols,
-                                                        *syntax,
+                                    let session = crate::durable_comptime::DurableComptimeSession::new(
+                                        const_identity.key.clone(),
+                                        query.declaration.clone(),
                                                     )
-                                                    .ok()
-                                                },
+                                    .expect("validated durable const session identity");
+                                    let mut authority = DurableComptimeRootAuthority {
+                                        provider,
+                                        imports: imports_for_semantic_nucleus.clone(),
+                                        session,
+                                        legacy_effects: Default::default(),
+                                    };
+                                    authority
+                                        .session
+                                        .register_program(&core)
+                                        .expect("const root program must register once");
+                                    let expected_type = declared_type.as_ref().and_then(|syntax| {
+                                        let mut services =
+                                            crate::durable_comptime::DurableComptimeServices::new(
+                                                &mut authority,
                                             );
+                                        services
+                                            .resolve_type_syntax(&program_key, *syntax)
+                                            .ok()
+                                    });
                                             if matches!(
                                                 expected_type,
                                                 Some(crate::durable_semantics::DurableType::Slice { .. })
@@ -13614,39 +13731,72 @@ impl RevisionedQueryDatabase {
                                                 ))
                                                 .with_terminal_kind(QueryTerminalKind::Failure));
                                             }
+                                    let core = match crate::body_query::OwnedComptimeProgramCore::finalize_imports(
+                                        core,
+                                        || context.check_canceled(),
+                                    ) {
+                                        Ok(core) => core,
+                                        Err(crate::body_query::ComptimeProgramProjectionFailure::Materialization(
+                                            failure,
+                                        )) => match semantic_materialization_failure(failure) {
+                                            Ok(failure) => {
+                                                return Ok(QueryOutput::success(
+                                                    Value::Failure(failure),
+                                                )
+                                                .with_terminal_kind(QueryTerminalKind::Failure));
+                                            }
+                                            Err(abort) => return Err(abort),
+                                        },
+                                        Err(failure) => {
+                                            return Ok(QueryOutput::success(Value::Failure(
+                                                Failure::Resolution(Arc::from(format!(
+                                                    "{failure:?}"
+                                                ))),
+                                            ))
+                                            .with_terminal_kind(QueryTerminalKind::Failure));
+                                        }
+                                    };
+                                    authority
+                                        .session
+                                        .finalize_registered_imports(&core)
+                                        .expect("const root registry must retain the finalized core authority");
+                                    let rir = core.rir.as_ref();
+                                    let symbols = core
+                                        .symbols
+                                        .iter()
+                                        .map(AsRef::as_ref)
+                                        .collect::<Vec<_>>();
                                             let const_producer =
                                                 crate::StableProducerId::Definition(
                                                     const_identity.key.clone(),
                                                 );
-                                            let session = crate::durable_comptime::DurableComptimeSession::new(
-                                                const_identity.key.clone(),
-                                                query.declaration.clone(),
-                                            )
-                                            .expect("validated durable const session identity");
                                             let import_occurrences =
-                                                semantic_candidate_import_occurrences(
-                                                    &rir,
-                                                    &symbols,
-                                                    || context.check_canceled(),
-                                                )?;
+                                        core.imports
+                                            .imports
+                                            .iter()
+                                            .map(|occurrence| {
+                                                (
+                                                    occurrence.inst,
+                                                    (
+                                                        occurrence.occurrence,
+                                                        occurrence.specifier.clone(),
+                                                    ),
+                                                )
+                                            })
+                                            .collect::<BTreeMap<_, _>>();
                                             let (result, mut provider) = {
-                                                let mut authority = DurableComptimeRootAuthority {
-                                                    provider,
-                                                    imports: imports_for_semantic_nucleus.clone(),
-                                                    session,
-                                                    legacy_effects: Default::default(),
-                                                };
                                                 let mut evaluator = SemanticConstEvaluator {
                                                     authority: &mut authority,
+                                            program: program_key.clone(),
                                                     declaration: query,
-                                                    rir: &rir,
+                                            rir,
                                                     symbols: &symbols,
                                                     import_occurrences,
                                                     locals: BTreeMap::new(),
                                                     producer: const_producer.clone(),
                                                     expected_type,
                                                 };
-                                                let result = evaluator.eval(*init);
+                                        let result = evaluator.eval(init);
                                                 drop(evaluator);
                                                 let provider = authority.finish_legacy();
                                                 (result, provider)
@@ -13676,7 +13826,7 @@ impl RevisionedQueryDatabase {
                                                         Some(type_syntax) => resolve_semantic_candidate_type(
                                                             &mut provider,
                                                             &query.declaration.module,
-                                                            &rir,
+                                                            rir,
                                                             &symbols,
                                                             *type_syntax,
                                                         ),
@@ -13807,8 +13957,6 @@ impl RevisionedQueryDatabase {
                                         }
                                     }
                                 }
-                            }
-                        }
                         Key::AnonymousNominal(query) => {
                             let projected: Result<
                                 Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
@@ -13925,24 +14073,52 @@ impl RevisionedQueryDatabase {
                                     Value::Failure(candidate_rir_semantic_failure(failure))
                                 }
                                 DeclarationBodyPlanArtifactsValue::Available(artifact) => {
-                                    match artifact.plan.materialize_semantic_candidate_rir(|| {
-                                        context.check_canceled()
-                                    }) {
-                                        Err(failure) => match semantic_materialization_failure(failure) {
-                                            Ok(failure) => Value::Failure(failure),
-                                            Err(abort) => return Err(abort),
+                                    let producer_key = crate::semantic_query_nucleus::direct_identity(shell)
+                                        .expect("comptime call shell is callable")
+                                        .key;
+                                    let program_key = crate::body_query::DurableComptimeProgramKey {
+                                        declaration: producer_key.clone(),
+                                        configuration: call.declaration.configuration.clone(),
+                                    };
+                                    let core = match crate::body_query::OwnedComptimeProgramCore::from_callable_body_plan_without_imports(
+                                        crate::body_query::DurableComptimeProgramPlan {
+                                            key: program_key.clone(),
+                                            candidate: call.declaration.declaration.clone(),
                                         },
-                                        Ok((rir, symbols, declaration)) => {
-                                            let rue_rir::InstData::FnDecl { body, .. } =
-                                                &rir.get(declaration).data
-                                            else {
+                                        artifact,
+                                        || context.check_canceled(),
+                                    ) {
+                                        Ok(core) => core,
+                                        Err(crate::body_query::ComptimeProgramProjectionFailure::NotFunction { .. }) => {
                                                 return Ok(QueryOutput::success(Value::Failure(
                                                     Failure::Resolution(Arc::from(
                                                         "comptime candidate artifact has a non-function root",
                                                     )),
                                                 ))
                                                 .with_terminal_kind(QueryTerminalKind::Failure));
+                                        }
+                                        Err(crate::body_query::ComptimeProgramProjectionFailure::Materialization(
+                                            failure,
+                                        )) => match semantic_materialization_failure(failure) {
+                                            Ok(failure) => {
+                                                return Ok(QueryOutput::success(Value::Failure(
+                                                    failure,
+                                                ))
+                                                .with_terminal_kind(QueryTerminalKind::Failure));
+                                            }
+                                            Err(abort) => return Err(abort),
+                                        },
+                                        Err(failure) => {
+                                            return Ok(QueryOutput::success(Value::Failure(
+                                                Failure::Resolution(Arc::from(format!("{failure:?}"))),
+                                            ))
+                                            .with_terminal_kind(QueryTerminalKind::Failure));
+                                        }
+                                    };
+                                    let Some(callable) = core.callable() else {
+                                        unreachable!("callable core validated its root kind");
                                             };
+                                    let body = callable.body;
                                             let signature = context.query_registered(
                                                 family,
                                                 Key::Signature(call.declaration.clone()),
@@ -14004,9 +14180,6 @@ impl RevisionedQueryDatabase {
                                                 .iter()
                                                 .cloned()
                                                 .collect::<BTreeMap<_, _>>();
-                                            let producer_key = crate::semantic_query_nucleus::direct_identity(shell)
-                                                .expect("comptime call shell is callable")
-                                                .key;
                                             let mut anonymous_dependencies = BTreeSet::new();
                                             for (_, ty) in call.type_arguments.iter() {
                                                 collect_anonymous_nominal_type_dependencies(
@@ -14147,12 +14320,51 @@ impl RevisionedQueryDatabase {
                                                     )
                                                 },
                                             ));
-                                            let import_occurrences =
-                                                semantic_candidate_import_occurrences(
-                                                    &rir,
-                                                    &symbols,
-                                                    || context.check_canceled(),
-                                                )?;
+                                    let core = match crate::body_query::OwnedComptimeProgramCore::finalize_imports(
+                                        core,
+                                        || context.check_canceled(),
+                                    ) {
+                                        Ok(core) => core,
+                                        Err(crate::body_query::ComptimeProgramProjectionFailure::Materialization(
+                                            failure,
+                                        )) => match semantic_materialization_failure(failure) {
+                                            Ok(failure) => {
+                                                return Ok(QueryOutput::success(
+                                                    Value::Failure(failure),
+                                                )
+                                                .with_terminal_kind(QueryTerminalKind::Failure));
+                                            }
+                                            Err(abort) => return Err(abort),
+                                        },
+                                        Err(failure) => {
+                                            return Ok(QueryOutput::success(Value::Failure(
+                                                Failure::Resolution(Arc::from(format!(
+                                                    "{failure:?}"
+                                                ))),
+                                            ))
+                                            .with_terminal_kind(QueryTerminalKind::Failure));
+                                        }
+                                    };
+                                    let rir = core.rir.as_ref();
+                                    let symbols = core
+                                        .symbols
+                                        .iter()
+                                        .map(AsRef::as_ref)
+                                        .collect::<Vec<_>>();
+                                    let import_occurrences = core
+                                        .imports
+                                        .imports
+                                        .iter()
+                                        .map(|occurrence| {
+                                            (
+                                                occurrence.inst,
+                                                (
+                                                    occurrence.occurrence,
+                                                    occurrence.specifier.clone(),
+                                                ),
+                                            )
+                                        })
+                                        .collect::<BTreeMap<_, _>>();
                                             let (result, provider) = {
                                                 let mut authority = DurableComptimeRootAuthority {
                                                     provider,
@@ -14160,17 +14372,22 @@ impl RevisionedQueryDatabase {
                                                     session,
                                                     legacy_effects: Default::default(),
                                                 };
+                                        authority
+                                            .session
+                                            .register_program(&core)
+                                            .expect("callable program must register once");
                                                 let mut evaluator = SemanticConstEvaluator {
                                                     authority: &mut authority,
+                                            program: program_key.clone(),
                                                     declaration: &call.declaration,
-                                                    rir: &rir,
+                                            rir,
                                                     symbols: &symbols,
                                                     import_occurrences,
                                                     locals,
                                                     producer: producer.clone(),
                                                     expected_type: Some(expected_type),
                                                 };
-                                                let result = evaluator.eval(*body);
+                                        let result = evaluator.eval(body);
                                                 drop(evaluator);
                                                 let provider = authority.finish_legacy();
                                                 (result, provider)
@@ -14257,8 +14474,6 @@ impl RevisionedQueryDatabase {
                                         }
                                     }
                                 }
-                            }
-                        }
                     };
                     let kind = if matches!(value, Value::Failure(_)) {
                         QueryTerminalKind::Failure
@@ -23656,13 +23871,13 @@ impl CompilerBodyFactProvider<'_> {
         type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
         value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
     ) -> Result<crate::body_query::ForeignComptimeCallLookup, QueryAbort> {
-        let authority = DurableComptimeForeignQueryAuthority {
+        let mut authority = DurableComptimeForeignQueryAuthority {
             context: self.queries.context,
             semantic_nucleus: &self.queries.semantic_nucleus,
             declaration_body_plan_artifacts: &self.queries.declaration_body_plan_artifacts,
             configuration: &self.queries.configuration,
         };
-        crate::durable_comptime::DurableComptimeServices::new(&authority).probe_comptime_call(
+        crate::durable_comptime::DurableComptimeServices::new(&mut authority).probe_comptime_call(
             producer,
             type_arguments,
             value_arguments,

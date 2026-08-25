@@ -84,6 +84,14 @@ where
         self.programs.get(key)
     }
 
+    /// Mutably access only the metadata of one already-registered program
+    /// without exposing its RIR, symbols, or keyed identity.
+    pub fn metadata_mut(&mut self, key: &ComptimeProgramKey<D, C>) -> Option<&mut I> {
+        self.programs
+            .get_mut(key)
+            .map(|program| &mut program.imports)
+    }
+
     pub fn contains_key(&self, key: &ComptimeProgramKey<D, C>) -> bool {
         self.programs.contains_key(key)
     }
