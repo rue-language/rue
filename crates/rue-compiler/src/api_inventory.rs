@@ -3481,7 +3481,9 @@ fn durable_comptime_services_are_named_authority_operations() {
     assert!(!foreign_adapter.contains("SemanticConstEvaluator"));
     assert!(!foreign_adapter.contains("ComptimeEngine"));
     let comptime_probe = database
-        .split("struct DurableComptimeForeignQueryAuthority<'a> {")
+        .split(
+            "impl crate::durable_comptime::DurableComptimeForeignCallAuthority\n    for DurableComptimeForeignQueryAuthority<'_>",
+        )
         .nth(1)
         .and_then(|source| source.split("impl CompilerBodyFactProvider").next())
         .expect("canonical compiler comptime probe authority");
@@ -3490,7 +3492,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         .nth(1)
         .and_then(|source| {
             source
-                .split("}\n\n#[allow(dead_code)] // activated by the staged durable AIR host\nimpl")
+                .split("}\n\n/// Keep the non-computing probe decision")
                 .next()
         })
         .expect("foreign probe authority fields");
@@ -3581,11 +3583,8 @@ fn durable_comptime_services_are_named_authority_operations() {
         );
     }
     for required in [
-        "context: &'a QueryContext",
-        "semantic_nucleus: &'a SemanticNucleusFamily",
-        "declaration_body_plan_artifacts:",
-        "configuration: &'a crate::semantic_query_nucleus::SemanticQueryConfiguration",
-        "ReadyQueryProbe::Miss | rue_query::ReadyQueryProbe::NotReady",
+        "probe @ (rue_query::ReadyQueryProbe::NotReady | rue_query::ReadyQueryProbe::Miss) =>",
+        "foreign_comptime_miss_or_not_ready(probe",
         "OwnedForeignComptimeProgram::from_body_plan",
     ] {
         assert!(
@@ -3593,6 +3592,26 @@ fn durable_comptime_services_are_named_authority_operations() {
             "foreign probe authority lost an exact query-side operation: {required}"
         );
     }
+    for required in [
+        "context: &'a QueryContext",
+        "semantic_nucleus: &'a SemanticNucleusFamily",
+        "declaration_body_plan_artifacts:",
+        "configuration: &'a crate::semantic_query_nucleus::SemanticQueryConfiguration",
+    ] {
+        assert!(
+            probe_fields.contains(required),
+            "foreign probe authority lost an exact query-side field: {required}"
+        );
+    }
+    let lazy_probe = database
+        .split("fn foreign_comptime_miss_or_not_ready<T>(")
+        .nth(1)
+        .and_then(|source| source.split("#[allow(dead_code)]").next())
+        .expect("lazy foreign probe adapter");
+    assert_eq!(lazy_probe.matches("ReadyQueryProbe::NotReady").count(), 1);
+    assert_eq!(lazy_probe.matches("ReadyQueryProbe::Miss").count(), 1);
+    assert!(lazy_probe.contains("ForeignComptimeCallLookup::NotReady"));
+    assert!(lazy_probe.contains("on_miss()"));
     assert!(database.contains("DurableComptimeServices::new(&mut authority).probe_comptime_call("));
     assert!(production_facade.contains("pub(crate) fn registered_program("));
     let registry_accessor = production_facade
