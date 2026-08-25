@@ -253,11 +253,11 @@ fn main() -> i32 {
 
 {{ rule(id="3.9:37", cat="normative") }}
 
-The `@drop(x)` intrinsic runs the drop glue of its operand `x` — the operand's destructor, if any, followed by the recursive drop of its fields and array elements — at the point of the call, and consumes `x`. It is the deliberate, visible discard of a value: "the drop that would otherwise run at scope exit, invoked by hand." `@drop` is memory-safe and requires no `checked` context.
+The `@drop(x)` intrinsic runs the drop glue of its operand `x` — the operand's destructor, if any, followed by the recursive drop of its still-owned fields and array elements — at the point of the call, and consumes `x`. If `x` is partially moved, moved-out sub-places are skipped and only the owned residue is destroyed. It is the deliberate, visible discard of a value: "the drop that would otherwise run at scope exit, invoked by hand." `@drop` is memory-safe and requires no `checked` context.
 
 {{ rule(id="3.9:38", cat="dynamic-semantics") }}
 
-`@drop(x)` consumes `x`: after it, `x` is moved-from, so using `x` again is a use-after-move error (E0205), and the scope-exit drop that would otherwise run for `x` is suppressed. Together these preserve the "dropped exactly once" invariant — the glue runs once, at the `@drop` site, and not again at scope exit.
+`@drop(x)` consumes `x`: after it, `x` is moved-from, so using `x` again is a use-after-move error (E0205), and the scope-exit drop that would otherwise run for `x` is suppressed. For a partially moved `x`, this applies to the residue as a whole: each still-owned sub-place is dropped once at the `@drop` site, while each moved-out sub-place remains suppressed. Together these preserve the "dropped exactly once" invariant.
 
 {{ rule(id="3.9:39", cat="dynamic-semantics") }}
 

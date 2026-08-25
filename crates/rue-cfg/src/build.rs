@@ -2443,6 +2443,91 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Drop { value } => {
+                // An explicit `@drop(root)` may consume a root whose owned
+                // fields were already partially moved. In that case the
+                // ordinary MarkMoved wrapper must not turn the residual into
+                // a whole-value drop: reuse the same path-granular residue
+                // walk as scope exit, then mark the slot fully moved so the
+                // slot is not visited again. The marker is specific to the
+                // intrinsic's by-value operand; implicit drops never wrap
+                // their value in a whole-slot MarkMoved.
+                let explicit_partial = match self.air.get(*value).data {
+                    AirInstData::MarkMoved {
+                        value: inner,
+                        slot,
+                        is_param,
+                        place: None,
+                    } => Some((
+                        inner,
+                        if is_param {
+                            MovedSlot::Param(slot)
+                        } else {
+                            MovedSlot::Local(slot)
+                        },
+                        None,
+                    )),
+                    AirInstData::MarkMoved {
+                        value: inner,
+                        slot,
+                        is_param,
+                        place: Some(place),
+                    } => Some((
+                        inner,
+                        if is_param {
+                            MovedSlot::Param(slot)
+                        } else {
+                            MovedSlot::Local(slot)
+                        },
+                        Some((
+                            self.moved_field_path(place),
+                            self.air.get_place(place).base_type,
+                        )),
+                    )),
+                    _ => None,
+                };
+                if let Some((inner, key, projected)) = explicit_partial {
+                    let prefix = projected.as_ref().map(|(path, _)| path.as_slice());
+                    let is_residual = match prefix {
+                        None => !self.moved.maybe_moved_paths_of(key).is_empty(),
+                        Some(prefix) => self
+                            .moved
+                            .maybe_moved_paths_of(key)
+                            .iter()
+                            .any(|path| path.len() > prefix.len() && path.starts_with(prefix)),
+                    };
+                    if !is_residual {
+                        // Fall through to the ordinary whole-value drop below.
+                    } else {
+                        let Some(_val) = self.lower_inst(inner).value else {
+                            return Self::diverged();
+                        };
+                        let val_ty = self.air.get(*value).ty;
+                        self.emit_guarded(key, span, |b| {
+                            let emitted = match projected.as_ref() {
+                                None => b.emit_partial_drop(key, val_ty, span),
+                                Some((prefix, root_type)) => {
+                                    b.emit_partial_drop_at(key, *root_type, prefix, span)
+                                }
+                            };
+                            assert!(emitted, "explicit partial drop must emit owned residue");
+                        });
+                        match projected {
+                            None => {
+                                self.moved.mark_slot(key);
+                                self.update_drop_flag(key, false, span);
+                            }
+                            Some((prefix, _)) => {
+                                self.moved.mark_path(key, prefix.clone());
+                                self.update_field_drop_flag(key, &prefix, false, span);
+                            }
+                        }
+                        return ExprResult {
+                            value: None,
+                            continuation: Continuation::Continues,
+                        };
+                    }
+                }
+
                 // Lower the value to drop
                 let Some(val) = self.lower_value(*value) else {
                     return Self::diverged();
@@ -3223,6 +3308,76 @@ impl<'a> CfgBuilder<'a> {
                 // back to the whole-value drop.
                 false
             }
+        }
+    }
+
+    /// Emit the residue below a moved projected place. `prefix` identifies
+    /// the place inside `root_type`; the caller has not yet recorded the
+    /// projected whole-value marker, so the existing descendant paths remain
+    /// visible to the same recursive walker used for a root drop.
+    fn emit_partial_drop_at(
+        &mut self,
+        key: MovedSlot,
+        root_type: Type,
+        prefix: &[u32],
+        span: rue_span::Span,
+    ) -> bool {
+        let definite = self.moved.moved_paths_of(key);
+        let maybe = self.moved.maybe_moved_paths_of(key);
+        if maybe.is_empty() && definite.is_empty() {
+            return false;
+        }
+        let mut ty = root_type;
+        let mut path = Vec::with_capacity(prefix.len());
+        let mut projs = Vec::with_capacity(prefix.len());
+        for &segment in prefix {
+            match ty.kind() {
+                TypeKind::Struct(struct_id) => {
+                    let Some(field) = self
+                        .type_pool
+                        .struct_def(struct_id)
+                        .fields
+                        .get(segment as usize)
+                    else {
+                        return false;
+                    };
+                    path.push(segment);
+                    projs.push(Projection::Field {
+                        struct_id,
+                        field_index: segment,
+                    });
+                    ty = field.ty;
+                }
+                TypeKind::Array(array_id) => {
+                    let (elem_ty, len) = self.type_pool.array_def(array_id);
+                    if segment as usize >= len as usize {
+                        return false;
+                    }
+                    let index = self.emit(CfgInstData::Const(segment as u64), Type::U64, span);
+                    path.push(segment);
+                    projs.push(Projection::Index {
+                        array_type: ty,
+                        index,
+                    });
+                    ty = elem_ty;
+                }
+                _ => return false,
+            }
+        }
+        match ty.kind() {
+            TypeKind::Struct(struct_id) => {
+                self.emit_partial_struct_drop_level(
+                    key, root_type, struct_id, ty, &mut path, &mut projs, &definite, &maybe, span,
+                );
+                true
+            }
+            TypeKind::Array(_) => {
+                self.emit_partial_array_drop_level(
+                    key, root_type, ty, &mut path, &mut projs, &definite, &maybe, span,
+                );
+                true
+            }
+            _ => false,
         }
     }
 

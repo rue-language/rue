@@ -7,6 +7,7 @@
 
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
+use crate::sema::context::FieldPath;
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     // ========================================================================
@@ -956,8 +957,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Analyze the `@drop(x)` intentional-destroy intrinsic (RUE-187,
     /// ADR-0039).
     ///
-    /// `@drop(x)` runs `x`'s full drop glue (destructor + recursive field
-    /// drops) at this site AND discharges `x`'s consumption obligation:
+    /// `@drop(x)` runs `x`'s drop glue (or the path-granular residue walk for a
+    /// partially moved place) at this site AND discharges `x`'s consumption
+    /// obligation:
     ///
     /// - *linear* — the operand is consumed like any move, so the
     ///   must-consume check (E0406) is satisfied and reusing `x` afterwards is
@@ -991,12 +993,37 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
-        // Analyze the operand as an ordinary by-value use: for a variable this
-        // emits a `MarkMoved`-wrapped load, which both records the move (later
-        // use -> E0205, and the linear must-consume obligation is satisfied)
-        // and tells drop elaboration to skip the slot's scope-exit drop.
-        let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
+        // Analyze the operand as an ordinary by-value use. The drop operand is
+        // the one exception to the usual whole-value-use rule: when a place
+        // already has moved-out subplaces, its move marker is still accepted
+        // and CFG drop elaboration destroys only the owned residue. Capture
+        // the pre-use state so the linear residue check below observes the
+        // state before the whole-value marker clears it.
+        let drop_path = self.drop_operand_path(args[0].value)?;
+        let root = root_variable_of(self.body_rir_ref(), args[0].value);
+        let before_state = root.and_then(|root| self.drop_operand_move_state(ctx, root));
+        let previous_drop_operand = ctx.drop_intrinsic_operand;
+        // Only a statically recognized place gets the partial-residue
+        // exception. A non-place operand (for example `@drop(make(x))`) is
+        // an ordinary expression: nested by-value uses must still diagnose a
+        // moved value, and there is no direct MarkMoved place for CFG to
+        // elaborate as residue.
+        ctx.drop_intrinsic_operand = drop_path.as_ref().and(root);
+        let arg_result = self.analyze_inst(air, args[0].value, ctx);
+        ctx.drop_intrinsic_operand = previous_drop_operand;
+        let arg_result = arg_result?;
         let arg_type = arg_result.ty;
+
+        if let Some(drop_path) = drop_path.as_deref()
+            && let Some(root) = root
+            && let Some(state) = before_state.as_ref()
+            && state
+                .partial_moves
+                .iter()
+                .any(|(path, _)| path.len() > drop_path.len() && path.starts_with(drop_path))
+        {
+            self.check_drop_partial_linear_residue(root, arg_type, state, drop_path, span)?;
+        }
 
         // An `<error>`-typed operand reaching here via `Ok` means inference
         // failed silently with no diagnostic; report it rather than letting a
@@ -1023,6 +1050,38 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
+    /// Return the statically tracked move path named by a drop operand. A
+    /// dynamic index cannot name a residual path, and is rejected by the
+    /// ordinary projection rules for non-Copy values before it can reach
+    /// residual-drop elaboration.
+    fn drop_operand_path(&mut self, inst_ref: InstRef) -> CompileResult<Option<FieldPath>> {
+        let data = self.body_rir_ref().get(inst_ref).data.clone();
+        match data {
+            InstData::VarRef { .. } => Ok(Some(Vec::new())),
+            InstData::FieldGet { base, field } => {
+                let Some(mut path) = self.drop_operand_path(base)? else {
+                    return Ok(None);
+                };
+                path.push(field);
+                Ok(Some(path))
+            }
+            InstData::IndexGet { base, index } => {
+                let Some(mut path) = self.drop_operand_path(base)? else {
+                    return Ok(None);
+                };
+                let Some(index) = self.try_get_const_index(index) else {
+                    return Ok(None);
+                };
+                if index < 0 {
+                    return Ok(None);
+                }
+                path.push(self.intern_index_path_segment(index as u64)?);
+                Ok(Some(path))
+            }
+            _ => Ok(None),
+        }
     }
 
     pub(super) fn analyze_cast_intrinsic(

@@ -2019,6 +2019,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             referenced_functions: AHashSet::new(),
             referenced_methods: std::collections::HashSet::new(),
             byref_arg_root: None,
+            drop_intrinsic_operand: None,
             call_loaned_roots: Vec::new(),
             in_loop_move_recheck: false,
             iter_borrows: Vec::new(),

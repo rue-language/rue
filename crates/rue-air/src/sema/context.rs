@@ -655,6 +655,12 @@ pub(crate) struct AnalysisContext<'a> {
     /// reject forwarding a by-ref parameter to another function's by-ref
     /// parameter (RUE-143).
     pub byref_arg_root: Option<Spur>,
+    /// The exact root place whose `@drop` operand is being analyzed. This is
+    /// the one by-value consumer that may accept an already-moved descendant:
+    /// the drop elaborator destroys the owned residue immediately. Keeping the
+    /// root here prevents nested operand work from relaxing checks for another
+    /// moved value.
+    pub drop_intrinsic_operand: Option<Spur>,
     /// Stack of loan frames, one per call whose argument list is currently
     /// being analyzed (outermost first): the ROOT variables that call passes
     /// `inout`/`borrow`, plus a by-ref method receiver's root. A loan spans
@@ -1095,6 +1101,7 @@ impl<'a> AnalysisContext<'a> {
             // while this is set; the fork starts between whole-expression
             // analyses.
             byref_arg_root: None,
+            drop_intrinsic_operand: None,
             // The recheck re-analyzes the loop body's moves, and an argument
             // value may contain a loop (`f(inout x, { while … })`), so the
             // enclosing calls' loan frames must stay visible.

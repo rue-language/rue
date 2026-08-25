@@ -60,6 +60,229 @@ fn main() -> i32 {
 stdout = "1\n2\n42\n"
 exit_code = 0
 
+# (b') A partially moved place can be explicitly dropped: only the owned
+# residue is destroyed at the @drop site, and no second scope-exit drop runs.
+[[case]]
+name = "affine_partial_drop_runs_owned_residue"
+description = "@drop of a partially moved aggregate destroys only its remaining fields immediately."
+files = [{ path = "main.rue", source = """
+struct Leaf { v: i32 }
+
+drop fn Leaf(self) { @dbg(self.v); }
+
+struct Pair { left: Leaf, right: Leaf }
+
+fn take(leaf: Leaf) -> i32 {
+    @dbg(800);
+    0
+}
+
+fn main() -> i32 {
+    let pair = Pair { left: Leaf { v: 1 }, right: Leaf { v: 2 } };
+    take(pair.left);
+    @dbg(777);
+    @drop(pair);
+    @dbg(888);
+    0
+}
+""" }]
+stdout = "800\n1\n777\n2\n888\n"
+exit_code = 0
+
+[[case]]
+name = "affine_nested_partial_drop_runs_owned_residue"
+description = "@drop of a partially moved root destroys only its nested owned residue."
+files = [{ path = "main.rue", source = """
+struct Leaf { v: i32 }
+drop fn Leaf(self) { @dbg(self.v); }
+struct Inner { first: Leaf, second: Leaf }
+struct Outer { head: Leaf, inner: Inner, tail: Leaf }
+
+fn take(leaf: Leaf) -> i32 {
+    @dbg(800);
+    0
+}
+
+fn main() -> i32 {
+    let outer = Outer {
+        head: Leaf { v: 9 },
+        inner: Inner { first: Leaf { v: 1 }, second: Leaf { v: 2 } },
+        tail: Leaf { v: 3 },
+    };
+    take(outer.inner.first);
+    @dbg(777);
+    @drop(outer);
+    @dbg(888);
+    0
+}
+""" }]
+stdout = "800\n1\n777\n9\n2\n3\n888\n"
+exit_code = 0
+
+[[case]]
+name = "affine_projected_partial_drop_runs_owned_residue"
+description = "@drop of a partially moved projection destroys only that projection's remaining residue."
+files = [{ path = "main.rue", source = """
+struct Leaf { v: i32 }
+drop fn Leaf(self) { @dbg(self.v); }
+struct Inner { first: Leaf, second: Leaf }
+struct Outer { head: Leaf, inner: Inner, tail: Leaf }
+
+fn take(leaf: Leaf) -> i32 {
+    @dbg(800);
+    0
+}
+
+fn main() -> i32 {
+    let outer = Outer {
+        head: Leaf { v: 9 },
+        inner: Inner { first: Leaf { v: 1 }, second: Leaf { v: 2 } },
+        tail: Leaf { v: 3 },
+    };
+    take(outer.inner.first);
+    @dbg(777);
+    @drop(outer.inner);
+    @dbg(888);
+    0
+}
+""" }]
+stdout = "800\n1\n777\n2\n888\n9\n3\n"
+exit_code = 0
+
+[[case]]
+name = "projected_array_element_partial_drop_runs_owned_residue"
+description = "@drop of a partially moved constant-index element destroys that element's residue and leaves sibling elements for scope exit."
+files = [{ path = "main.rue", source = """
+struct Leaf { v: i32 }
+drop fn Leaf(self) { @dbg(self.v); }
+struct Pair { first: Leaf, second: Leaf }
+
+fn take(leaf: Leaf) -> i32 {
+    @dbg(800);
+    0
+}
+
+fn main() -> i32 {
+    let pairs: [Pair; 2] = [
+        Pair { first: Leaf { v: 1 }, second: Leaf { v: 2 } },
+        Pair { first: Leaf { v: 3 }, second: Leaf { v: 4 } },
+    ];
+    take(pairs[0].first);
+    @dbg(777);
+    @drop(pairs[0]);
+    @dbg(888);
+    0
+}
+""" }]
+stdout = "800\n1\n777\n2\n888\n3\n4\n"
+exit_code = 0
+
+[[case]]
+name = "array_partial_drop_skips_moved_element_in_order"
+description = "A constant-index partial array move followed by @drop skips the moved element and drops the rest in ascending order."
+files = [{ path = "main.rue", source = """
+struct Leaf { v: i32 }
+drop fn Leaf(self) { @dbg(self.v); }
+
+fn take(leaf: Leaf) -> i32 {
+    @dbg(800);
+    0
+}
+
+fn main() -> i32 {
+    let leaves: [Leaf; 3] = [
+        Leaf { v: 0 },
+        Leaf { v: 1 },
+        Leaf { v: 2 },
+    ];
+    take(leaves[1]);
+    @dbg(777);
+    @drop(leaves);
+    @dbg(888);
+    0
+}
+""" }]
+stdout = "800\n1\n777\n0\n2\n888\n"
+exit_code = 0
+
+[[case]]
+name = "conditional_partial_drop_runs_residue_once_on_each_path"
+description = "A branch-conditional partial move followed by @drop uses drop flags to destroy each residue exactly once."
+files = [{ path = "main.rue", source = """
+struct Leaf { v: i32 }
+drop fn Leaf(self) { @dbg(self.v); }
+struct Pair { first: Leaf, second: Leaf }
+
+fn take(leaf: Leaf) -> i32 { 0 }
+
+fn run(move_first: bool) -> i32 {
+    let pair = Pair { first: Leaf { v: 1 }, second: Leaf { v: 2 } };
+    if move_first { take(pair.first); }
+    @drop(pair);
+    0
+}
+
+fn main() -> i32 {
+    run(true);
+    @dbg(100);
+    run(false);
+    @dbg(200);
+    0
+}
+""" }]
+stdout = "1\n2\n100\n1\n2\n200\n"
+exit_code = 0
+
+[[case]]
+name = "non_place_drop_operand_preserves_nested_use_after_move"
+description = "A nested by-value use inside a non-place @drop operand remains an E0205 after a partial move."
+files = [{ path = "main.rue", source = """
+struct Leaf { v: i32 }
+struct Pair { first: Leaf, second: Leaf }
+
+fn identity(pair: Pair) -> Pair { pair }
+fn take(leaf: Leaf) -> i32 { 0 }
+
+fn main() -> i32 {
+    let pair = Pair { first: Leaf { v: 1 }, second: Leaf { v: 2 } };
+    take(pair.first);
+    @drop(identity(pair));
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "use of moved value"]
+
+[[case]]
+name = "projected_drop_rejects_exact_or_descendant_branch_join"
+description = "@drop rejects a projected place that is wholly moved on one branch and partially moved on another."
+files = [{ path = "main.rue", source = """
+struct Leaf { v: i32 }
+struct Inner { first: Leaf, second: Leaf }
+struct Outer { inner: Inner, tail: Leaf }
+
+fn take_inner(inner: Inner) -> i32 { 0 }
+fn take_leaf(leaf: Leaf) -> i32 { 0 }
+
+fn run(c: bool) -> i32 {
+    let outer = Outer {
+        inner: Inner { first: Leaf { v: 1 }, second: Leaf { v: 2 } },
+        tail: Leaf { v: 3 },
+    };
+    if c {
+        take_inner(outer.inner);
+    } else {
+        take_leaf(outer.inner.first);
+    }
+    @drop(outer.inner);
+    0
+}
+
+fn main() -> i32 { run(true) }
+""" }]
+compile_fail = true
+error_contains = ["E0205", "use of moved value"]
+
 # (a) Linear discharge: a linear value @drop'ped is no longer E0406 and runs.
 [[case]]
 name = "linear_discharged_by_drop"
@@ -75,6 +298,52 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["E0205", "use of moved value"]
+
+# A partial @drop may destroy affine residue, but it cannot silently discard a
+# still-live linear sub-place.
+[[case]]
+name = "partial_drop_rejects_linear_residue"
+description = "@drop of a partially moved aggregate rejects an unconsumed linear sibling."
+files = [{ path = "main.rue", source = """
+struct Leaf { v: i32 }
+linear struct Token { v: i32 }
+struct Pair { left: Leaf, right: Token }
+
+fn take(leaf: Leaf) -> i32 { 0 }
+
+fn main() -> i32 {
+    let pair = Pair { left: Leaf { v: 1 }, right: Token { v: 2 } };
+    take(pair.left);
+    @drop(pair);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0406", "must be consumed"]
+
+[[case]]
+name = "projected_partial_drop_rejects_linear_residue"
+description = "@drop of a partially moved projection rejects an unconsumed linear sibling."
+files = [{ path = "main.rue", source = """
+struct Leaf { v: i32 }
+linear struct Token { v: i32 }
+struct Inner { left: Leaf, right: Token }
+struct Outer { inner: Inner, tail: Leaf }
+
+fn take(leaf: Leaf) -> i32 { 0 }
+
+fn main() -> i32 {
+    let outer = Outer {
+        inner: Inner { left: Leaf { v: 1 }, right: Token { v: 2 } },
+        tail: Leaf { v: 3 },
+    };
+    take(outer.inner.left);
+    @drop(outer.inner);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0406", "must be consumed"]
 
 # (a') Linear discharge that actually runs: @drop is the ONLY consumer, so no
 # E0406, and a linear struct WITH a destructor runs it exactly once.

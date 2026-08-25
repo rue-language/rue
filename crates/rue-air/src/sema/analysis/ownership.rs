@@ -1917,7 +1917,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
                 // Check if this parameter has been moved
                 if let Some(move_state) = ctx.moved_vars.get(&name) {
-                    if let Some(moved_span) = move_state.is_any_part_moved() {
+                    if move_state.full_move.is_some()
+                        || (ctx.drop_intrinsic_operand != Some(name)
+                            && move_state.is_any_part_moved().is_some())
+                    {
+                        let moved_span = move_state
+                            .full_move
+                            .or_else(|| move_state.is_any_part_moved())
+                            .expect("move-state guard has a recorded move");
                         return Err(CompileError::new(
                             ErrorKind::UseAfterMove(name_str.to_string()),
                             span,
@@ -2013,7 +2020,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             // Check if this variable has been moved
             if let Some(move_state) = ctx.moved_vars.get(&name) {
-                if let Some(moved_span) = move_state.is_any_part_moved() {
+                if move_state.full_move.is_some()
+                    || (ctx.drop_intrinsic_operand != Some(name)
+                        && move_state.is_any_part_moved().is_some())
+                {
+                    let moved_span = move_state
+                        .full_move
+                        .or_else(|| move_state.is_any_part_moved())
+                        .expect("move-state guard has a recorded move");
                     return Err(CompileError::new(
                         ErrorKind::UseAfterMove(name_str.to_string()),
                         span,
@@ -3236,7 +3250,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // spec 3.8, RUE-279), so check both directions here, unlike a
                 // Copy leaf read below which only cares about ancestors.
                 if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
-                    if let Some(moved_span) = state.is_path_or_descendant_moved(&field_path) {
+                    // An exact or ancestor move always makes this place dead.
+                    // The @drop exception waives only the descendant half of
+                    // the ordinary check; at a branch join an exact move and
+                    // a descendant move can both be present on different
+                    // incoming paths.
+                    if let Some(moved_span) = state.is_path_moved(&field_path) {
                         return Err(super::use_after_move_path_error(
                             self.body_interner(),
                             trace.root_var,
@@ -3244,6 +3263,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             span,
                             moved_span,
                         ));
+                    }
+                    let has_strict_descendant = state.partial_moves.iter().any(|(path, _)| {
+                        path.len() > field_path.len() && path.starts_with(&field_path)
+                    });
+                    if ctx.drop_intrinsic_operand != Some(trace.root_var) || !has_strict_descendant
+                    {
+                        if let Some(moved_span) = state.is_path_or_descendant_moved(&field_path) {
+                            return Err(super::use_after_move_path_error(
+                                self.body_interner(),
+                                trace.root_var,
+                                &field_path,
+                                span,
+                                moved_span,
+                            ));
+                        }
                     }
                 }
 
@@ -5076,6 +5110,45 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
+    /// Check the residue that an explicit `@drop` would destroy after a
+    /// partial move. Unlike an ordinary scope-exit drop, this operation is a
+    /// deliberate discard, but it must not silently discard a still-live
+    /// linear sub-place. The same residual walk used by the end-of-scope
+    /// obligation check is the authority here.
+    pub(crate) fn check_drop_partial_linear_residue(
+        &self,
+        symbol: Spur,
+        ty: Type,
+        state: &VariableMoveState,
+        path: &[Spur],
+        span: Span,
+    ) -> CompileResult<()> {
+        if !self.type_requires_consumption(ty) {
+            return Ok(());
+        }
+        let Some(residue) = self.residual_linear_place(ty, Some(state), &mut path.to_vec())? else {
+            return Ok(());
+        };
+        let name = self.body_interner().resolve(&symbol);
+        let err = linear_not_consumed_error(
+            name,
+            span,
+            Self::residue_consumed_on_some_path(Some(state), &residue),
+        );
+        let err = self.note_residual_linear_place(err, symbol, &residue);
+        Err(self.attach_infectious_linear_note(err, ty))
+    }
+
+    /// Snapshot one root's move state for the explicit-drop elaborator before
+    /// its whole-value marker records the final move.
+    pub(crate) fn drop_operand_move_state(
+        &self,
+        ctx: &AnalysisContext,
+        root: Spur,
+    ) -> Option<VariableMoveState> {
+        ctx.moved_vars.get(&root).cloned()
+    }
+
     /// The must-consume obligation for one binding against one move state —
     /// the shared kernel of the scope-exit walk above and the early-exit edge
     /// walk below ([`Self::check_linear_values_at_exit_edge`]).
@@ -5760,10 +5833,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
         let elem_path = vec![self.intern_index_path_segment(k as u64)?];
         if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
-            // Whole-element move: reject if the element itself, an ancestor, or
-            // any descendant subfield was already moved (`arr[0]` can't be
-            // moved once `arr[0].s` moved — spec 3.8, RUE-279).
-            if let Some(moved_span) = state.is_path_or_descendant_moved(&elem_path) {
+            // Whole-element move: reject if the element itself or an ancestor
+            // was already moved. A descendant move is also rejected except
+            // for the matching explicit-@drop residue walk.
+            if let Some(moved_span) = state.is_path_moved(&elem_path) {
+                return Err(use_after_move_path_error(
+                    self.body_interner(),
+                    trace.root_var,
+                    &elem_path,
+                    span,
+                    moved_span,
+                ));
+            }
+            let has_strict_descendant = state
+                .partial_moves
+                .iter()
+                .any(|(path, _)| path.len() > elem_path.len() && path.starts_with(&elem_path));
+            if (ctx.drop_intrinsic_operand != Some(trace.root_var) || !has_strict_descendant)
+                && let Some(moved_span) = state.is_path_or_descendant_moved(&elem_path)
+            {
                 return Err(use_after_move_path_error(
                     self.body_interner(),
                     trace.root_var,
