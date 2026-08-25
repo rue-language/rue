@@ -7938,18 +7938,18 @@ impl SemanticConstEvaluator<'_, '_> {
             value_arguments: value_arguments.into(),
         });
         let _depth = SemanticComptimeCallDepthGuard::enter(&name)?;
+        let mut edge = self
+            .session
+            .prepare_expression_edge(call_ordinal)
+            .map_err(|error| Self::failure_value(format!("durable call lifecycle: {error:?}")))?;
         let queried = self.provider.query(query).map_err(Self::provider_error)?;
         match queried {
             SemanticNucleusValue::ComptimeCall(value) => {
-                self.effects.merge_projection(
-                    &value.anonymous_nominals,
-                    &value.dependencies,
-                    &value.deferred_ownership,
-                    &crate::durable_comptime::DurableComptimeApplicationPolicy::apply_at_parent_call(
-                        self.declaration.declaration.clone(),
-                        call_ordinal,
-                    ),
-                );
+                self.session
+                    .finish_ready_expression_edge(&mut edge, &value)
+                    .map_err(|error| {
+                        Self::failure_value(format!("durable call lifecycle: {error:?}"))
+                    })?;
                 Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
                     match value.result {
                         ComptimeCallResultProjection::Type(value) => {
@@ -13625,6 +13625,14 @@ impl RevisionedQueryDatabase {
                                                     effects: Default::default(),
                                                 };
                                                 let result = evaluator.eval(*init);
+                                                let session_effects = evaluator
+                                                    .session
+                                                    .drain_root_effects()
+                                                    .expect("durable evaluator must unwind lifecycle edges");
+                                                evaluator.effects.merge_child(
+                                                    session_effects,
+                                                    &crate::durable_comptime::DurableComptimeApplicationPolicy::preserve(),
+                                                );
                                                 let effects = std::mem::take(&mut evaluator.effects);
                                                 (result, effects)
                                             };
@@ -14150,6 +14158,14 @@ impl RevisionedQueryDatabase {
                                                     effects: Default::default(),
                                                 };
                                                 let result = evaluator.eval(*body);
+                                                let session_effects = evaluator
+                                                    .session
+                                                    .drain_root_effects()
+                                                    .expect("durable evaluator must unwind lifecycle edges");
+                                                evaluator.effects.merge_child(
+                                                    session_effects,
+                                                    &crate::durable_comptime::DurableComptimeApplicationPolicy::preserve(),
+                                                );
                                                 let effects = std::mem::take(&mut evaluator.effects);
                                                 (result, effects)
                                             };

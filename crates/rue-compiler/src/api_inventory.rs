@@ -3214,6 +3214,8 @@ fn durable_comptime_services_are_named_authority_operations() {
         1
     );
     assert!(production_facade.contains("pub(crate) fn lifecycle_mut("));
+    assert!(production_facade.contains("pub(crate) fn prepare_expression_edge("));
+    assert!(production_facade.contains("pub(crate) fn finish_ready_expression_edge("));
     let failure_carrier = production_facade
         .split("pub(crate) enum DurableComptimeFailure {")
         .nth(1)
@@ -3500,7 +3502,19 @@ fn durable_comptime_services_are_named_authority_operations() {
     assert_eq!(evaluator_roots.len(), 2);
     for root in evaluator_roots {
         assert!(root.contains("effects:"));
+        assert!(root.contains("drain_root_effects()"));
+        assert!(root.contains("evaluator.effects.merge_child("));
         assert!(root.contains("std::mem::take(&mut evaluator.effects)"));
+        let drain = root
+            .find("drain_root_effects()")
+            .expect("root session drain");
+        let merge = root
+            .find("evaluator.effects.merge_child(")
+            .expect("root lifecycle effects merge");
+        let extract = root
+            .find("std::mem::take(&mut evaluator.effects)")
+            .expect("legacy effects extraction");
+        assert!(drain < merge && merge < extract);
         assert!(root.contains("session,"));
         assert!(!root.contains("next_call:"));
         assert!(root.contains("provider.merge_comptime_effects("));
@@ -3658,6 +3672,31 @@ fn durable_comptime_services_are_named_authority_operations() {
     assert!(
         named_call.contains("let call_ordinal = self.session.next_call_ordinal();"),
         "durable call ordinals must be allocated before admission"
+    );
+    assert!(
+        named_call.contains("prepare_expression_edge(call_ordinal)"),
+        "durable named calls must issue the lifecycle edge before query lookup"
+    );
+    assert!(
+        named_call.contains("finish_ready_expression_edge(&mut edge, &value)"),
+        "ready comptime projections must publish through the lifecycle edge"
+    );
+    assert!(
+        !named_call.contains("self.effects.merge_projection("),
+        "named calls must not bypass lifecycle-owned ready projection effects"
+    );
+    let edge = named_call
+        .find("prepare_expression_edge(call_ordinal)")
+        .expect("named-call expression edge issuance");
+    let query = named_call
+        .find("self.provider.query(query)")
+        .expect("named-call semantic query");
+    let finish_edge = named_call
+        .find("finish_ready_expression_edge(&mut edge, &value)")
+        .expect("named-call ready edge completion");
+    assert!(
+        edge < query && query < finish_edge,
+        "named-call edge must surround query lookup and ready projection completion"
     );
     let binding_header = production_facade
         .find("pub(crate) struct DurableComptimeBinding {")
@@ -3995,7 +4034,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         );
     }
     assert!(evaluator.contains("self.effects.observe_dependency("));
-    assert!(evaluator.contains("self.effects.merge_projection("));
+    assert!(!evaluator.contains("self.effects.merge_projection("));
     for forbidden in [
         "self.provider.dependencies",
         "self.provider.anonymous_nominals",
