@@ -6820,6 +6820,171 @@ where
         Ok(ReadyQueryProbe::Ready(terminal))
     }
 
+    /// Observe a registered query without ever creating an incarnation or
+    /// claiming an attempt. A current-revision computation may be joined, but
+    /// a cold key, stale-only key, wait-graph contention, or an owner that
+    /// aborts remains a non-ready result for this observer.
+    fn join_task_registered_noncomputing(
+        &self,
+        task: &Arc<Task>,
+        key: &K,
+        origin_request: u64,
+    ) -> Result<ReadyQueryProbe<V>, QueryAbort> {
+        if task.cancellation.is_canceled() {
+            self.core
+                .metrics
+                .cancellations
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(QueryAbort::Canceled);
+        }
+
+        if let Some(terminal) = task.cached_query(self.inner.token, key) {
+            let exact_node = ExactNodeIdentity {
+                display: terminal.node.clone(),
+                incarnation: terminal.node_incarnation,
+            };
+            if let Some(cycle) = task.stack_cycle(&exact_node) {
+                self.core.metrics.cycles.fetch_add(1, Ordering::Relaxed);
+                return Err(QueryAbort::Cycle(cycle));
+            }
+            if task.cancellation.is_canceled() {
+                self.core
+                    .metrics
+                    .cancellations
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(QueryAbort::Canceled);
+            }
+            self.core.metrics.reuses.fetch_add(1, Ordering::Relaxed);
+            task.observe(&terminal);
+            let result = TaskQueryResult::Terminal {
+                terminal: terminal.clone(),
+                execution: RequestExecution::Reused,
+                work: Vec::new(),
+            };
+            task.record_nested(origin_request, || terminal.node.clone(), &result);
+            return Ok(ReadyQueryProbe::Ready(terminal));
+        }
+
+        let Some(node_lease) = self.existing_node(key) else {
+            return Ok(ReadyQueryProbe::Miss);
+        };
+        let node = &node_lease.node;
+        let exact_node = ExactNodeIdentity {
+            display: node.identity.clone(),
+            incarnation: node.incarnation,
+        };
+        if let Some(cycle) = task.stack_cycle(&exact_node) {
+            self.core.metrics.cycles.fetch_add(1, Ordering::Relaxed);
+            return Err(QueryAbort::Cycle(cycle));
+        }
+
+        loop {
+            if task.cancellation.is_canceled() {
+                self.core
+                    .metrics
+                    .cancellations
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(QueryAbort::Canceled);
+            }
+
+            let mut join_candidate = None;
+            let mut ready_candidate = None;
+            let mut ready_pin = None;
+            {
+                let mut state = lock(&node.state);
+                for attempt in state.attempts.iter_mut().rev() {
+                    if attempt.revision != task.revision {
+                        continue;
+                    }
+                    match &mut attempt.state {
+                        AttemptState::Computing { owner, waiters } if join_candidate.is_none() => {
+                            *waiters += 1;
+                            join_candidate = Some((attempt.id, *owner));
+                        }
+                        AttemptState::Terminal {
+                            terminal, handoffs, ..
+                        } if ready_candidate.is_none() => {
+                            ready_candidate = Some((terminal.clone(), handoffs.clone()));
+                        }
+                        _ => {}
+                    }
+                }
+
+                if join_candidate.is_none() {
+                    if let Some((terminal, handoffs)) = ready_candidate.take() {
+                        let pin = self
+                            .pin_terminal(&terminal)
+                            .expect("a family pins its own retained terminal");
+                        ready_pin = Some((terminal, handoffs, pin));
+                    }
+                }
+            }
+
+            if let Some((attempt, owner)) = join_candidate {
+                self.core.metrics.joins.fetch_add(1, Ordering::Relaxed);
+                #[cfg(test)]
+                self.core.test_changed();
+                match self.join(task, node, attempt, owner) {
+                    Err(abort) => return Err(abort),
+                    Ok(JoinOutcome::Retry) => continue,
+                    Ok(JoinOutcome::Contended) => return Ok(ReadyQueryProbe::NotReady),
+                    Ok(JoinOutcome::Joined(_joined_attempt, handoffs, pin)) => {
+                        let terminal = pin.terminal().clone();
+                        if !task.observe_handoff(handoffs) {
+                            drop(pin);
+                            return Ok(ReadyQueryProbe::NotReady);
+                        }
+                        if task.cancellation.is_canceled() {
+                            drop(pin);
+                            self.core
+                                .metrics
+                                .cancellations
+                                .fetch_add(1, Ordering::Relaxed);
+                            return Err(QueryAbort::Canceled);
+                        }
+                        task.observe(&terminal);
+                        self.lease_observed_pin(task, pin);
+                        task.cache_query(self.inner.token, key, &terminal);
+                        let result = TaskQueryResult::Terminal {
+                            terminal: terminal.clone(),
+                            execution: RequestExecution::Joined,
+                            work: Vec::new(),
+                        };
+                        task.record_nested(origin_request, || terminal.node.clone(), &result);
+                        return Ok(ReadyQueryProbe::Ready(terminal));
+                    }
+                }
+            }
+
+            let Some((terminal, handoffs, pin)) = ready_pin else {
+                return Ok(ReadyQueryProbe::Miss);
+            };
+            if !task.observe_handoff(handoffs) {
+                drop(pin);
+                return Ok(ReadyQueryProbe::NotReady);
+            }
+            if task.cancellation.is_canceled() {
+                drop(pin);
+                self.core
+                    .metrics
+                    .cancellations
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(QueryAbort::Canceled);
+            }
+            self.core.metrics.reuses.fetch_add(1, Ordering::Relaxed);
+            task.observe(&terminal);
+            self.lease_observed_pin(task, pin);
+            task.cache_query(self.inner.token, key, &terminal);
+            let result = TaskQueryResult::Terminal {
+                terminal: terminal.clone(),
+                execution: RequestExecution::Reused,
+                work: Vec::new(),
+            };
+            task.record_nested(origin_request, || terminal.node.clone(), &result);
+            return Ok(ReadyQueryProbe::Ready(terminal));
+        }
+    }
+
     fn query_task_registered_for_validation(
         &self,
         task: Arc<Task>,
@@ -8618,6 +8783,31 @@ impl QueryContext {
         }
         let request_id = self.task.next_nested_request();
         family.probe_task_registered_ready(&self.task, &key, request_id)
+    }
+
+    /// Reuses or joins an exact-current-revision registered query without
+    /// creating an incarnation or invoking its evaluator. A cold or stale
+    /// key is [`ReadyQueryProbe::Miss`]; an in-flight handoff that cannot be
+    /// safely reused is [`ReadyQueryProbe::NotReady`]. If the owner aborts,
+    /// this observer does not claim the key and rescans for a current attempt.
+    pub fn join_registered_noncomputing<K, V>(
+        &self,
+        family: &QueryFamily<K, V>,
+        key: K,
+    ) -> Result<ReadyQueryProbe<V>, QueryAbort>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        assert!(
+            family.inner.evaluator.is_some(),
+            "non-computing joins require a registered evaluator"
+        );
+        if !Arc::ptr_eq(&self.task_runtime(), &family.core) {
+            return Err(QueryAbort::ForeignRuntime);
+        }
+        let request_id = self.task.next_nested_request();
+        family.join_task_registered_noncomputing(&self.task, &key, request_id)
     }
 
     fn query_registered_ref<K, V>(
@@ -13760,6 +13950,575 @@ mod tests {
 
         release.wait();
         owner.join().unwrap();
+    }
+
+    #[test]
+    fn noncomputing_join_reuses_current_owner_without_claiming_or_revalidating() {
+        let runtime = QueryRuntime::new(2);
+        let current = revision(1);
+        publish_empty(&runtime, [current]);
+        let claimed = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let target_runs = Arc::new(AtomicUsize::new(0));
+        let dependency_runs = Arc::new(AtomicUsize::new(0));
+        let dependency = runtime
+            .family_with_evaluator::<Key, u64, _>("noncomputing-dependency", 8, {
+                let dependency_runs = dependency_runs.clone();
+                move |_, _, _| {
+                    dependency_runs.fetch_add(1, Ordering::SeqCst);
+                    Ok(QueryOutput::success(4))
+                }
+            })
+            .unwrap();
+        let target = runtime
+            .family_with_evaluator::<Key, u64, _>("noncomputing-target", 8, {
+                let target_runs = target_runs.clone();
+                let dependency = dependency.clone();
+                let claimed = claimed.clone();
+                let release = release.clone();
+                move |context, _, _| {
+                    target_runs.fetch_add(1, Ordering::SeqCst);
+                    context.query_registered(&dependency, Key("dep"))?;
+                    claimed.wait();
+                    release.wait();
+                    Ok(QueryOutput::success(9))
+                }
+            })
+            .unwrap();
+        let owner = thread::spawn({
+            let target = target.clone();
+            let runtime = runtime.clone();
+            move || {
+                runtime
+                    .request_registered(&target, current, Key("busy"), CancellationToken::new())
+                    .into_result()
+                    .unwrap()
+            }
+        });
+        claimed.wait();
+
+        let parked = Arc::new(Barrier::new(2));
+        runtime.set_interpose({
+            let parked = parked.clone();
+            Arc::new(move |site| {
+                if site == InterposeSite::NodeJoinPark {
+                    parked.wait();
+                }
+            })
+        });
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>("noncomputing-root", 8, {
+                let target = target.clone();
+                move |context, _, _| {
+                    let ReadyQueryProbe::Ready(terminal) =
+                        context.join_registered_noncomputing(&target, Key("busy"))?
+                    else {
+                        unreachable!("the owner publishes a current terminal")
+                    };
+                    assert_eq!(terminal.outcome(), &QueryOutcome::Success(9));
+                    Ok(QueryOutput::success(10))
+                }
+            })
+            .unwrap();
+        // The root request runs concurrently so the owner can be released
+        // after the non-computing join parks.
+        let root_thread = thread::spawn({
+            let root = root.clone();
+            let runtime = runtime.clone();
+            move || {
+                runtime.request_registered(&root, current, Key("root"), CancellationToken::new())
+            }
+        });
+        parked.wait();
+        release.wait();
+        let root_attempt = root_thread.join().unwrap();
+        assert_eq!(root_attempt.execution(), RequestExecution::Computed);
+        let owner_terminal = owner.join().unwrap();
+        runtime.clear_interpose();
+        assert_eq!(target_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(dependency_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            root_attempt.dependencies(),
+            &[Observation {
+                node: owner_terminal.node().clone(),
+                incarnation: owner_terminal.node_incarnation(),
+                stamp: owner_terminal.stamp(),
+            }]
+        );
+        let joined = root_attempt
+            .nested_attempts()
+            .iter()
+            .find(|attempt| attempt.node().family() == "noncomputing-target")
+            .expect("joined target must be recorded in the nested ledger");
+        assert_eq!(joined.node().key(), "busy");
+        assert_eq!(joined.execution(), RequestExecution::Joined);
+    }
+
+    #[test]
+    fn noncomputing_join_returns_not_ready_on_wait_graph_contention() {
+        let runtime = QueryRuntime::new(2);
+        let current = revision(1);
+        publish_empty(&runtime, [current]);
+        let left_slot = Arc::new(OnceLock::new());
+        let right_slot = Arc::new(OnceLock::new());
+        let left_started = Arc::new(Barrier::new(2));
+        let continue_left = Arc::new(Barrier::new(2));
+        let parked = Arc::new(Barrier::new(2));
+        runtime.set_interpose({
+            let parked = parked.clone();
+            Arc::new(move |site| {
+                if site == InterposeSite::NodeJoinPark {
+                    parked.wait();
+                }
+            })
+        });
+
+        let left_slot_for_right = left_slot.clone();
+        let right_slot_for_left = right_slot.clone();
+        let left_started_for_body = left_started.clone();
+        let continue_left_for_body = continue_left.clone();
+        let left = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "noncomputing-contended-left",
+                8,
+                move |context, _, _| {
+                    left_started_for_body.wait();
+                    continue_left_for_body.wait();
+                    let right = right_slot_for_left.get().expect("right family initialized");
+                    assert!(matches!(
+                        context.join_registered_noncomputing(right, Key("right"))?,
+                        ReadyQueryProbe::NotReady
+                    ));
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let right = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "noncomputing-contended-right",
+                8,
+                move |context, _, _| {
+                    let left = left_slot_for_right.get().expect("left family initialized");
+                    let ReadyQueryProbe::Ready(terminal) =
+                        context.join_registered_noncomputing(left, Key("left"))?
+                    else {
+                        unreachable!("left publishes after the contended join declines");
+                    };
+                    assert_eq!(terminal.outcome(), &QueryOutcome::Success(1));
+                    Ok(QueryOutput::success(2))
+                },
+            )
+            .unwrap();
+        left_slot.set(left.clone()).unwrap();
+        right_slot.set(right.clone()).unwrap();
+
+        let left_task = thread::spawn({
+            let runtime = runtime.clone();
+            let left = left.clone();
+            move || {
+                runtime
+                    .request_registered(&left, current, Key("left"), CancellationToken::new())
+                    .into_result()
+                    .unwrap()
+            }
+        });
+        left_started.wait();
+        let right_task = thread::spawn({
+            let runtime = runtime.clone();
+            let right = right.clone();
+            move || {
+                runtime
+                    .request_registered(&right, current, Key("right"), CancellationToken::new())
+                    .into_result()
+                    .unwrap()
+            }
+        });
+        // The right owner is now parked waiting for the left owner. The left
+        // owner can therefore attempt the reverse edge and deterministically
+        // receive Contended/NotReady instead of claiming a second attempt.
+        parked.wait();
+        continue_left.wait();
+        assert_eq!(
+            left_task.join().unwrap().outcome(),
+            &QueryOutcome::Success(1)
+        );
+        assert_eq!(
+            right_task.join().unwrap().outcome(),
+            &QueryOutcome::Success(2)
+        );
+        runtime.clear_interpose();
+        assert_eq!(runtime.metrics().claims, 2);
+        assert_eq!(runtime.metrics().joins, 2);
+        assert_eq!(runtime.metrics().declined_joins, 1);
+    }
+
+    #[test]
+    fn noncomputing_join_observes_pending_handoff_without_recomputation() {
+        let runtime = QueryRuntime::new(2);
+        let current = revision(1);
+        publish_empty(&runtime, [current]);
+        let child_runs = Arc::new(AtomicUsize::new(0));
+        let commits = Arc::new(AtomicUsize::new(0));
+        let aborts = Arc::new(AtomicUsize::new(0));
+        let child = runtime
+            .family_with_evaluator::<Key, u64, _>("noncomputing-pending-child", 8, {
+                let child_runs = child_runs.clone();
+                let commits = commits.clone();
+                let aborts = aborts.clone();
+                move |context, _, _| {
+                    child_runs.fetch_add(1, Ordering::SeqCst);
+                    context.register_attempt_handoff(CountingHandoff {
+                        commits: commits.clone(),
+                        aborts: aborts.clone(),
+                    });
+                    Ok(QueryOutput::success(1))
+                }
+            })
+            .unwrap();
+        let outer = runtime
+            .family::<Key, u64>("noncomputing-pending-outer", 8)
+            .unwrap();
+        let child_for_outer = child.clone();
+        assert_eq!(
+            runtime
+                .query(
+                    &outer,
+                    current,
+                    Key("outer"),
+                    CancellationToken::new(),
+                    move |context| {
+                        context.query_registered(&child_for_outer, Key("child"))?;
+                        Err(QueryAbort::Canceled)
+                    },
+                )
+                .unwrap_err(),
+            QueryAbort::Canceled
+        );
+        assert_eq!(child_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(commits.load(Ordering::SeqCst), 0);
+
+        let observer = runtime
+            .family_with_evaluator::<Key, u64, _>("noncomputing-pending-observer", 8, {
+                let child = child.clone();
+                move |context, _, _| {
+                    let ReadyQueryProbe::Ready(terminal) =
+                        context.join_registered_noncomputing(&child, Key("child"))?
+                    else {
+                        unreachable!("pending handoff is safely observed by the lifecycle");
+                    };
+                    assert_eq!(terminal.outcome(), &QueryOutcome::Success(1));
+                    Ok(QueryOutput::success(2))
+                }
+            })
+            .unwrap();
+        runtime
+            .request_registered(
+                &observer,
+                current,
+                Key("observer"),
+                CancellationToken::new(),
+            )
+            .into_result()
+            .unwrap();
+        assert!(child.contains_retained_key(&Key("child")));
+        assert_eq!(child_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            commits.load(Ordering::SeqCst),
+            1,
+            "the observing root may complete the pending handoff exactly once"
+        );
+    }
+
+    #[test]
+    fn noncomputing_join_cancellation_unwinds_waiter_and_leaves_owner_usable() {
+        let runtime = QueryRuntime::new(2);
+        let current = revision(1);
+        publish_empty(&runtime, [current]);
+        let claimed = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let target_runs = Arc::new(AtomicUsize::new(0));
+        let target = runtime
+            .family_with_evaluator::<Key, u64, _>("noncomputing-cancel-target", 8, {
+                let claimed = claimed.clone();
+                let release = release.clone();
+                let target_runs = target_runs.clone();
+                move |_, _, _| {
+                    target_runs.fetch_add(1, Ordering::SeqCst);
+                    claimed.wait();
+                    release.wait();
+                    Ok(QueryOutput::success(7))
+                }
+            })
+            .unwrap();
+        let owner = thread::spawn({
+            let runtime = runtime.clone();
+            let target = target.clone();
+            move || {
+                runtime
+                    .request_registered(&target, current, Key("busy"), CancellationToken::new())
+                    .into_result()
+                    .unwrap()
+            }
+        });
+        claimed.wait();
+
+        let parked = Arc::new(Barrier::new(2));
+        runtime.set_interpose({
+            let parked = parked.clone();
+            Arc::new(move |site| {
+                if site == InterposeSite::NodeJoinPark {
+                    parked.wait();
+                }
+            })
+        });
+        let observer = runtime
+            .family_with_evaluator::<Key, u64, _>("noncomputing-cancel-observer", 8, {
+                let target = target.clone();
+                move |context, _, _| {
+                    context.join_registered_noncomputing(&target, Key("busy"))?;
+                    Ok(QueryOutput::success(1))
+                }
+            })
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let observer_task = thread::spawn({
+            let runtime = runtime.clone();
+            let observer = observer.clone();
+            let cancellation = cancellation.clone();
+            move || runtime.request_registered(&observer, current, Key("observer"), cancellation)
+        });
+        parked.wait();
+        cancellation.cancel();
+        release.wait();
+        assert_eq!(
+            observer_task.join().unwrap().abort(),
+            Some(&QueryAbort::Canceled)
+        );
+        assert_eq!(owner.join().unwrap().outcome(), &QueryOutcome::Success(7));
+        runtime.clear_interpose();
+        assert_eq!(target_runs.load(Ordering::SeqCst), 1);
+        let reused =
+            runtime.request_registered(&target, current, Key("busy"), CancellationToken::new());
+        assert_eq!(reused.execution(), RequestExecution::Reused);
+        assert_eq!(target_runs.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn noncomputing_join_keeps_cold_stale_and_aborted_owners_noncomputing() {
+        let runtime = QueryRuntime::new(2);
+        let first = revision(1);
+        let second = revision(2);
+        publish_empty(&runtime, [first, second]);
+        let target_runs = Arc::new(AtomicUsize::new(0));
+        let dependency_runs = Arc::new(AtomicUsize::new(0));
+        let dependency = runtime
+            .family_with_evaluator::<Key, u64, _>("noncomputing-negative-dependency", 8, {
+                let dependency_runs = dependency_runs.clone();
+                move |_, _, _| {
+                    dependency_runs.fetch_add(1, Ordering::SeqCst);
+                    Ok(QueryOutput::success(1))
+                }
+            })
+            .unwrap();
+        let target = runtime
+            .family_with_evaluator::<Key, u64, _>("noncomputing-negative-target", 8, {
+                let target_runs = target_runs.clone();
+                let dependency = dependency.clone();
+                move |context, _, key| {
+                    target_runs.fetch_add(1, Ordering::SeqCst);
+                    if key.0 == "stale" {
+                        context.query_registered(&dependency, Key("dep"))?;
+                    }
+                    if key.0 == "abort" {
+                        return Err(QueryAbort::Canceled);
+                    }
+                    Ok(QueryOutput::success(2))
+                }
+            })
+            .unwrap();
+
+        let cold_root = runtime
+            .family_with_evaluator::<Key, u64, _>("noncomputing-cold-root", 8, {
+                let target = target.clone();
+                move |context, _, _| {
+                    assert!(matches!(
+                        context.join_registered_noncomputing(&target, Key("cold"))?,
+                        ReadyQueryProbe::Miss
+                    ));
+                    Ok(QueryOutput::success(0))
+                }
+            })
+            .unwrap();
+        runtime
+            .request_registered(&cold_root, first, Key("root"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        assert_eq!(target_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(dependency_runs.load(Ordering::SeqCst), 0);
+
+        runtime
+            .request_registered(&target, first, Key("stale"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        assert_eq!(target_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(dependency_runs.load(Ordering::SeqCst), 1);
+        let stale_root = runtime
+            .family_with_evaluator::<Key, u64, _>("noncomputing-stale-root", 8, {
+                let target = target.clone();
+                move |context, _, _| {
+                    assert!(matches!(
+                        context.join_registered_noncomputing(&target, Key("stale"))?,
+                        ReadyQueryProbe::Miss
+                    ));
+                    Ok(QueryOutput::success(0))
+                }
+            })
+            .unwrap();
+        runtime
+            .request_registered(&stale_root, second, Key("root"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        assert_eq!(target_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(dependency_runs.load(Ordering::SeqCst), 1);
+
+        let claimed = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let abort_target = runtime
+            .family_with_evaluator::<Key, u64, _>("noncomputing-abort-target", 8, {
+                let target_runs = target_runs.clone();
+                let claimed = claimed.clone();
+                let release = release.clone();
+                move |_, _, _| {
+                    target_runs.fetch_add(1, Ordering::SeqCst);
+                    claimed.wait();
+                    release.wait();
+                    Err(QueryAbort::Canceled)
+                }
+            })
+            .unwrap();
+        let owner = thread::spawn({
+            let abort_target = abort_target.clone();
+            let runtime = runtime.clone();
+            move || {
+                runtime
+                    .request_registered(
+                        &abort_target,
+                        second,
+                        Key("abort"),
+                        CancellationToken::new(),
+                    )
+                    .into_result()
+            }
+        });
+        claimed.wait();
+        let abort_root = runtime
+            .family_with_evaluator::<Key, u64, _>("noncomputing-abort-root", 8, {
+                let abort_target = abort_target.clone();
+                move |context, _, _| {
+                    assert!(matches!(
+                        context.join_registered_noncomputing(&abort_target, Key("abort"))?,
+                        ReadyQueryProbe::Miss
+                    ));
+                    Ok(QueryOutput::success(0))
+                }
+            })
+            .unwrap();
+        let parked = Arc::new(Barrier::new(2));
+        runtime.set_interpose({
+            let parked = parked.clone();
+            Arc::new(move |site| {
+                if site == InterposeSite::NodeJoinPark {
+                    parked.wait();
+                }
+            })
+        });
+        let root_thread = thread::spawn({
+            let abort_root = abort_root.clone();
+            let runtime = runtime.clone();
+            move || {
+                runtime
+                    .request_registered(&abort_root, second, Key("root"), CancellationToken::new())
+                    .into_result()
+                    .unwrap()
+            }
+        });
+        parked.wait();
+        release.wait();
+        root_thread.join().unwrap();
+        runtime.clear_interpose();
+        assert!(matches!(owner.join().unwrap(), Err(QueryAbort::Canceled)));
+        assert_eq!(
+            target_runs.load(Ordering::SeqCst),
+            2,
+            "owner abort runs once; the non-computing observer never retries it"
+        );
+    }
+
+    #[test]
+    fn noncomputing_join_reports_an_exact_same_request_cycle() {
+        let runtime = QueryRuntime::new(1);
+        let current = revision(1);
+        publish_empty(&runtime, [current]);
+        let slot = Arc::new(OnceLock::new());
+        let slot_for_body = slot.clone();
+        let family = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "noncomputing-cycle",
+                8,
+                move |context, _, key| {
+                    let family = slot_for_body.get().expect("family initialized");
+                    assert!(matches!(
+                        context.join_registered_noncomputing(family, key.clone()),
+                        Err(QueryAbort::Cycle(_))
+                    ));
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        slot.set(family.clone()).unwrap();
+        runtime
+            .request_registered(&family, current, Key("cycle"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+    }
+
+    #[test]
+    fn noncomputing_join_primitive_has_no_claim_or_evaluator_authority() {
+        let source = include_str!("lib.rs");
+        let primitive = source
+            .split("fn join_task_registered_noncomputing(")
+            .nth(1)
+            .and_then(|source| {
+                source
+                    .split("fn query_task_registered_for_validation(")
+                    .next()
+            })
+            .expect("non-computing registered join primitive");
+        for required in [
+            "existing_node(key)",
+            "attempt.revision != task.revision",
+            "self.join(task, node, attempt, owner)",
+            "ReadyQueryProbe::NotReady",
+        ] {
+            assert!(
+                primitive.contains(required),
+                "non-computing join must retain its exact-current safety gate: {required}"
+            );
+        }
+        for forbidden in [
+            "self.node(",
+            "valid_for_revision",
+            "Some(evaluator",
+            "Action::Compute",
+            "publish(",
+            "detach_terminal_attempt",
+            "metrics.claims",
+        ] {
+            assert!(
+                !primitive.contains(forbidden),
+                "non-computing join regained evaluator/claim authority: {forbidden}"
+            );
+        }
     }
 
     fn publish_empty(runtime: &QueryRuntime, revisions: impl IntoIterator<Item = Revision>) {
