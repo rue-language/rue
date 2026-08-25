@@ -3237,7 +3237,9 @@ fn durable_comptime_services_are_named_authority_operations() {
         "OwnedComptimeProgramCore",
         "OwnedComptimeProgramRoot",
         "type DurableComptimeProgramKey = rue_air::ComptimeProgramKey",
-        "rue_air::ComptimeProgram<Arc<str>",
+        "DurableComptimeProgramMetadata",
+        "rue_air::ComptimeProgram<Arc<str>, DurableComptimeProgramMetadata>",
+        "type DurableComptimeProgramRegistry = rue_air::ComptimeProgramRegistry",
         "impl Deref for OwnedForeignComptimeProgram",
         "from_const_body_plan",
     ] {
@@ -3252,6 +3254,31 @@ fn durable_comptime_services_are_named_authority_operations() {
         .and_then(|source| source.split("}\n\n/// Owned compiler/query-side").next())
         .expect("shared durable program core");
     assert!(core.contains("program: DurableComptimeProgram,"));
+    assert!(!core.contains("root:"));
+    let metadata = body_query
+        .split("pub(crate) struct DurableComptimeProgramMetadata {")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("}\n\npub(crate) type DurableComptimeProgram")
+                .next()
+        })
+        .expect("single owning durable program metadata entry");
+    let metadata_fields = metadata
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.ends_with(','))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        metadata_fields,
+        [
+            "pub(crate) imports: Arc<[DurableComptimeImportOccurrence]>,",
+            "pub(crate) root: OwnedComptimeProgramRoot,",
+        ],
+        "durable program metadata owns exactly imports and root authority"
+    );
+    assert!(!body_query.contains("struct DurableComptimeProgramRegistry {"));
+    assert!(!body_query.contains("let mut registry = rue_air::ComptimeProgramRegistry"));
     for forbidden in [
         "ValidatedRir",
         "symbols:",
@@ -3330,9 +3357,9 @@ fn durable_comptime_services_are_named_authority_operations() {
         [
             "lifecycle: DurableComptimeCallLifecycle,",
             "next_call: u32,",
-            "programs: crate::body_query::DurableComptimeProgramRegistry,"
+            "programs: crate::body_query::DurableComptimeProgramRegistry,",
         ],
-        "durable session owns one root-local AIR program registry beside lifecycle state"
+        "durable session retains its lifecycle and keyed AIR registry"
     );
     assert!(!session.contains("pub(crate)"));
     for forbidden in ["InstData", "InstRef", "ComptimeEngine"] {
@@ -3491,6 +3518,41 @@ fn durable_comptime_services_are_named_authority_operations() {
     assert!(!registry_accessor.contains("ComptimeEngine"));
     assert!(!registry_accessor.contains("InstData"));
     assert!(!registry_accessor.contains("InstRef"));
+    let foreign_frame_admission = production_facade
+        .split("pub(crate) fn admit_foreign_frame(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn observe_anonymous_nominal").next())
+        .expect("single atomic foreign frame admission funnel");
+    for required in [
+        "registered.imports.root",
+        "context.program == *key",
+        "bound.type_arguments",
+        "bound.typed_value_arguments",
+        "expected_result: Some(bound.expected_result.into())",
+        "call_identity: None",
+        "function_span",
+    ] {
+        assert!(
+            foreign_frame_admission.contains(required),
+            "foreign frame admission lost keyed invariant: {required}"
+        );
+    }
+    for forbidden in ["ComptimeEngine", "InstData", "self.lifecycle.enter("] {
+        assert!(
+            !foreign_frame_admission.contains(forbidden),
+            "foreign frame admission activated or walked AIR directly: {forbidden}"
+        );
+    }
+    assert!(!foreign_frame_admission.contains("prepared_value_bindings"));
+    assert!(!foreign_frame_admission.contains("expected_result: Option"));
+    assert!(!production_facade.contains("program_roots"));
+    assert_eq!(
+        foreign_frame_admission
+            .matches("rue_air::ComptimeFrame {")
+            .count(),
+        1,
+        "foreign frame construction has one canonical atomic funnel"
+    );
     assert!(!production_facade.contains("impl Clone for DurableComptimeForeignCall"));
     assert!(!production_facade.contains("impl Clone for DurableComptimeCallTicket"));
     for (kind, non_replayable) in [
@@ -4156,10 +4218,17 @@ fn durable_comptime_services_are_named_authority_operations() {
         .expect("durable value-fit kernel");
     assert!(
         !binding_kernel.contains("Clone")
-            && !production_facade.contains("impl Clone for DurableComptimeBinding"),
+            && !production_facade.contains("impl Clone for DurableComptimeBinding")
+            && !production_facade.contains("impl Clone for DurableComptimeBoundCall"),
         "durable binding state must remain non-Clone"
     );
-    for required in ["type_arguments", "value_arguments"] {
+    for required in [
+        "type_arguments",
+        "value_arguments",
+        "typed_value_arguments",
+        "pub(crate) fn finish(self, result: DurableType)",
+        "pub(crate) struct DurableComptimeBoundCall",
+    ] {
         assert!(
             binding_kernel.contains(required),
             "durable binding kernel missing {required}"
