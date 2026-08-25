@@ -7081,6 +7081,145 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
         self.provider.context.check_canceled()
     }
 
+    fn begin_comptime_call_admission(
+        &self,
+        accessing_source: &crate::StableDefinitionKey,
+        module: &ModuleId,
+        name: &str,
+    ) -> Result<
+        crate::durable_comptime::DurableComptimeCallableAdmissionStart,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        type Failure = crate::semantic_query_nucleus::SemanticNucleusFailure;
+
+        let candidate = self.provider.candidate_from(
+            accessing_source,
+            module,
+            name,
+            DefinitionKind::Function,
+        )?;
+        let Some(candidate) = candidate else {
+            return Err(rue_air::SemanticProviderError::Failure(
+                Failure::Resolution(Arc::from(format!("undefined comptime function `{name}`"))),
+            ));
+        };
+        let identity = self.provider.identity(candidate.clone())?;
+        Ok(crate::durable_comptime::DurableComptimeCallableAdmissionStart {
+            candidate,
+            identity: identity.clone(),
+            name: Arc::from(name),
+            dependency: crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                source: accessing_source.clone(),
+                kind: rue_air::DeclarationTypeDependencyKind::Body,
+                target:
+                    crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                        identity.key,
+                    ),
+            },
+        })
+    }
+
+    fn finish_comptime_call_admission(
+        &self,
+        start: crate::durable_comptime::DurableComptimeCallableAdmissionStart,
+        argument_modes: &[crate::durable_semantics::DurableParameterMode],
+    ) -> Result<
+        crate::durable_comptime::DurableComptimeCallableAdmission,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        type Failure = crate::semantic_query_nucleus::SemanticNucleusFailure;
+        let crate::durable_comptime::DurableComptimeCallableAdmissionStart {
+            candidate,
+            identity,
+            name,
+            dependency: _,
+        } = start;
+        let signature = self.provider.signature(candidate.clone())?;
+        let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+            parameters,
+            result,
+            ..
+        } = signature
+        else {
+            return Err(rue_air::SemanticProviderError::Failure(
+                Failure::Resolution(Arc::from(format!("`{name}` is not callable"))),
+            ));
+        };
+        let shell = self
+            .provider
+            .context
+            .query_registered(
+                self.provider.shells,
+                DeclarationShellQueryKey(candidate.clone()),
+            )
+            .map_err(rue_air::SemanticProviderError::Abort)?;
+        let rue_query::QueryOutcome::Success(DeclarationShellQueryValue::Available(shell)) =
+            shell.outcome()
+        else {
+            return Err(rue_air::SemanticProviderError::Failure(
+                Failure::Resolution(Arc::from("comptime call shell became unavailable")),
+            ));
+        };
+        if shell.parameters.len() != argument_modes.len()
+            || parameters.len() != argument_modes.len()
+        {
+            return Err(rue_air::SemanticProviderError::Failure(
+                Failure::Resolution(Arc::from(format!(
+                    "comptime call `{name}` has the wrong arity"
+                ))),
+            ));
+        }
+        for (parameter, argument_mode) in parameters.iter().zip(argument_modes.iter().copied()) {
+            use crate::durable_semantics::DurableParameterMode as ParameterMode;
+            let failure = match (parameter.mode, argument_mode) {
+                (ParameterMode::Value, ParameterMode::Value)
+                | (ParameterMode::Borrow, ParameterMode::Borrow)
+                | (ParameterMode::Inout, ParameterMode::Inout) => None,
+                (ParameterMode::Inout, _) => Some(rue_error::ErrorKind::InoutKeywordMissing),
+                (ParameterMode::Borrow, _) => Some(rue_error::ErrorKind::BorrowKeywordMissing),
+                (ParameterMode::Value, ParameterMode::Borrow) => {
+                    Some(rue_error::ErrorKind::UnexpectedCallArgumentMode { mode: "borrow" })
+                }
+                (ParameterMode::Value, ParameterMode::Inout) => {
+                    Some(rue_error::ErrorKind::UnexpectedCallArgumentMode { mode: "inout" })
+                }
+            };
+            if let Some(kind) = failure {
+                return Err(rue_air::SemanticProviderError::Failure(
+                    Failure::Diagnostic(kind),
+                ));
+            }
+        }
+        let all_parameters_comptime =
+            !parameters.is_empty() && parameters.iter().all(|parameter| parameter.is_comptime);
+        let is_type_function = result == crate::durable_semantics::DurableType::ComptimeType;
+        let eligible = if is_type_function {
+            parameters.is_empty() || all_parameters_comptime
+        } else {
+            all_parameters_comptime
+        };
+        if !eligible {
+            return Err(rue_air::SemanticProviderError::Failure(
+                Failure::Diagnostic(rue_error::ErrorKind::ConstExprNotSupported {
+                    expr_kind: format!("call to `{name}`"),
+                }),
+            ));
+        }
+        Ok(crate::durable_comptime::DurableComptimeCallableAdmission {
+            candidate,
+            identity,
+            parameters,
+            result,
+            shell_parameters: shell.parameters.clone(),
+        })
+    }
+
     fn resolve_candidate(
         &self,
         module: &ModuleId,
@@ -7898,104 +8037,41 @@ impl SemanticConstEvaluator<'_, '_> {
         };
         let call_ordinal = self.next_call;
         self.next_call += 1;
-        let Some(candidate) = self
-            .provider
-            .candidate(module, &name, DefinitionKind::Function)
-            .map_err(Self::provider_error)?
-        else {
-            return Self::failure(format!("undefined comptime function `{name}`"));
-        };
-        let identity = self
-            .provider
-            .identity(candidate.clone())
-            .map_err(Self::provider_error)?;
-        self.effects.observe_dependency(
-            crate::semantic_query_nucleus::SemanticDeclarationDependency {
-                source: self.provider.dependency_source.clone(),
-                kind: rue_air::DeclarationTypeDependencyKind::Body,
-                target:
-                    crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
-                        identity.key,
-                    ),
-            },
-        );
-        let signature = self
-            .provider
-            .signature(candidate.clone())
-            .map_err(Self::provider_error)?;
-        let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
-            parameters,
-            result,
-            ..
-        } = signature
-        else {
-            return Self::failure(format!("`{name}` is not callable"));
-        };
-        let shell = self
-            .provider
-            .context
-            .query_registered(
-                self.provider.shells,
-                DeclarationShellQueryKey(candidate.clone()),
-            )
-            .map_err(EvaluateSemanticConstError::Abort)?;
-        let rue_query::QueryOutcome::Success(DeclarationShellQueryValue::Available(shell)) =
-            shell.outcome()
-        else {
-            return Self::failure("comptime call shell became unavailable");
-        };
-        let argument_count = self.rir.call_args(arguments).len();
-        if shell.parameters.len() != argument_count || parameters.len() != argument_count {
-            return Self::failure(format!("comptime call `{name}` has the wrong arity"));
-        }
-        for (index, parameter) in parameters.iter().enumerate() {
-            use crate::durable_semantics::DurableParameterMode as ParameterMode;
-            use rue_rir::RirArgMode as ArgMode;
-            let argument = self
-                .rir
-                .call_args(arguments)
-                .get(index)
-                .expect("validated call argument index");
-            let failure = match (parameter.mode, argument.mode) {
-                (ParameterMode::Value, ArgMode::Normal)
-                | (ParameterMode::Borrow, ArgMode::Borrow)
-                | (ParameterMode::Inout, ArgMode::Inout) => None,
-                (ParameterMode::Inout, _) => Some(rue_error::ErrorKind::InoutKeywordMissing),
-                (ParameterMode::Borrow, _) => Some(rue_error::ErrorKind::BorrowKeywordMissing),
-                (ParameterMode::Value, ArgMode::Borrow) => {
-                    Some(rue_error::ErrorKind::UnexpectedCallArgumentMode { mode: "borrow" })
+        let argument_modes = self
+            .rir
+            .call_args(arguments)
+            .iter()
+            .map(|argument| match argument.mode {
+                rue_rir::RirArgMode::Normal => {
+                    crate::durable_semantics::DurableParameterMode::Value
                 }
-                (ParameterMode::Value, ArgMode::Inout) => {
-                    Some(rue_error::ErrorKind::UnexpectedCallArgumentMode { mode: "inout" })
+                rue_rir::RirArgMode::Borrow => {
+                    crate::durable_semantics::DurableParameterMode::Borrow
                 }
-            };
-            if let Some(kind) = failure {
-                return Err(EvaluateSemanticConstError::failure(
-                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(kind),
-                ));
-            }
-        }
-        let all_parameters_comptime =
-            !parameters.is_empty() && parameters.iter().all(|parameter| parameter.is_comptime);
-        let is_type_function = result == crate::durable_semantics::DurableType::ComptimeType;
-        let eligible = if is_type_function {
-            parameters.is_empty() || all_parameters_comptime
-        } else {
-            all_parameters_comptime
+                rue_rir::RirArgMode::Inout => crate::durable_semantics::DurableParameterMode::Inout,
+            })
+            .collect::<Vec<_>>();
+        let authority = SemanticComptimeAuthority {
+            provider: &*self.provider,
+            imports: self.imports,
         };
-        if !eligible {
-            return Err(EvaluateSemanticConstError::failure(
-                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                    rue_error::ErrorKind::ConstExprNotSupported {
-                        expr_kind: format!("call to `{name}`"),
-                    },
-                ),
-            ));
-        }
+        let services = crate::durable_comptime::DurableComptimeServices::new(&authority);
+        let admission_start = services
+            .begin_comptime_call_admission(&self.provider.dependency_source, module, &name)
+            .map_err(Self::provider_error)?;
+        self.effects
+            .observe_dependency(admission_start.dependency.clone());
+        let admission = services
+            .finish_comptime_call_admission(admission_start, &argument_modes)
+            .map_err(Self::provider_error)?;
+        let candidate = admission.candidate;
+        let parameters = admission.parameters;
+        let result = admission.result;
+        let shell_parameters = admission.shell_parameters;
         let mut type_arguments = Vec::new();
         let mut value_arguments = Vec::new();
         for (index, (header, parameter)) in
-            shell.parameters.iter().zip(parameters.iter()).enumerate()
+            shell_parameters.iter().zip(parameters.iter()).enumerate()
         {
             let argument = self
                 .rir
@@ -9594,6 +9670,22 @@ impl SemanticNucleusTypeProvider<'_> {
             crate::semantic_query_nucleus::SemanticNucleusFailure,
         >,
     > {
+        self.candidate_from(&self.dependency_source, module, name, kind)
+    }
+
+    fn candidate_from(
+        &self,
+        accessing_source: &crate::StableDefinitionKey,
+        module: &ModuleId,
+        name: &str,
+        kind: DefinitionKind,
+    ) -> Result<
+        Option<crate::declaration_candidate::DeclarationCandidateKey>,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
         let terminal = self
             .context
             .query_registered(
@@ -9626,7 +9718,7 @@ impl SemanticNucleusTypeProvider<'_> {
         }
         let defining = rue_air::SemanticVisibilityDomain::from_file_path(Some(module.as_str()));
         let accessing = rue_air::SemanticVisibilityDomain::from_file_path(Some(
-            self.dependency_source.module().as_str(),
+            accessing_source.module().as_str(),
         ));
         let is_public = entry.visibility == Some(rue_parser::ast::Visibility::Public);
         if !defining.is_visible_from(&accessing, is_public) {
@@ -29319,6 +29411,196 @@ fn main() -> i32 {
                 ..
             }) if matches!(*value, crate::durable_semantics::DurableConstValue::Bool(true))
         ));
+    }
+
+    #[test]
+    fn durable_callable_admission_pipeline_preserves_policy_table() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            ComptimeCallQueryKey, SemanticNucleusKey as Key, SemanticNucleusValue as Value,
+        };
+
+        let cases = [
+            (
+                "undefined",
+                "fn outer() -> i32 { missing() }",
+                "undefined comptime function `missing`",
+            ),
+            (
+                "arity",
+                "fn target(comptime x: i32) -> i32 { x } fn outer() -> i32 { target(1 / 0, 2) }",
+                "wrong arity",
+            ),
+            (
+                "borrow mode",
+                "fn target(borrow x: i32) -> i32 { x } fn outer() -> i32 { target(1) }",
+                "BorrowKeywordMissing",
+            ),
+            (
+                "inout mode",
+                "fn target(inout x: i32) -> i32 { x } fn outer() -> i32 { target(1) }",
+                "InoutKeywordMissing",
+            ),
+            (
+                "unexpected borrow",
+                "fn target(x: i32) -> i32 { x } fn outer() -> i32 { target(borrow 1) }",
+                "UnexpectedCallArgumentMode",
+            ),
+            (
+                "unexpected inout",
+                "fn target(x: i32) -> i32 { x } fn outer() -> i32 { target(inout 1) }",
+                "UnexpectedCallArgumentMode",
+            ),
+            (
+                "nullary value",
+                "fn target() -> i32 { 1 } fn outer() -> i32 { target() }",
+                "ConstExprNotSupported",
+            ),
+            (
+                "mixed comptime/runtime",
+                "fn target(comptime x: i32, y: i32) -> i32 { x + y } fn outer() -> i32 { target(1, 2) }",
+                "ConstExprNotSupported",
+            ),
+        ];
+
+        for (label, source_text, expected) in cases {
+            let source = source_snapshot(&[(1, "/main.rue", "main.rue", source_text)], 1);
+            let module = ModuleId::from_logical_path("main.rue").unwrap();
+            let mut database = RevisionedQueryDatabase::default();
+            let revision = database.source_revision(
+                &super::super::session::ExactSourceInput::new(&source),
+                &source,
+            );
+            let declaration =
+                declaration_candidate(&database, revision, &module, Category::Function, "outer");
+            let value = request_semantic_nucleus(
+                &database,
+                revision,
+                Key::ComptimeCall(ComptimeCallQueryKey {
+                    declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                        declaration,
+                        configuration: semantic_configuration(),
+                    },
+                    type_arguments: Arc::from([]),
+                    value_arguments: Arc::from([]),
+                }),
+            );
+            let diagnostic = format!("{value:?}");
+            assert!(
+                diagnostic.contains(expected),
+                "{label} lost its canonical admission diagnostic: {diagnostic}"
+            );
+        }
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn target() -> type { i32 } fn outer() -> type { target() }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let declaration =
+            declaration_candidate(&database, revision, &module, Category::Function, "outer");
+        let value = request_semantic_nucleus(
+            &database,
+            revision,
+            Key::ComptimeCall(ComptimeCallQueryKey {
+                declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration,
+                    configuration: semantic_configuration(),
+                },
+                type_arguments: Arc::from([]),
+                value_arguments: Arc::from([]),
+            }),
+        );
+        assert!(
+            matches!(
+                value,
+                Value::ComptimeCall(crate::semantic_query_nucleus::ComptimeCallProjection {
+                    result: crate::semantic_query_nucleus::ComptimeCallResultProjection::Type(
+                        crate::durable_semantics::DurableType::I32
+                    ),
+                    ..
+                })
+            ),
+            "nullary type function should remain an admitted callable: {value:?}"
+        );
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn target(comptime x: i32, comptime y: i32) -> i32 { x * 10 + y } fn outer() -> i32 { target(1, 2) }",
+            )],
+            1,
+        );
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let declaration =
+            declaration_candidate(&database, revision, &module, Category::Function, "outer");
+        let target =
+            declaration_candidate(&database, revision, &module, Category::Function, "target");
+        let identity = |candidate: crate::declaration_candidate::DeclarationCandidateKey| {
+            let value = request_semantic_nucleus(
+                &database,
+                revision,
+                Key::Identity(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration: candidate,
+                    configuration: semantic_configuration(),
+                }),
+            );
+            let Value::Identity(identity) = value else {
+                panic!("expected callable identity, got {value:?}")
+            };
+            identity.key
+        };
+        let outer_identity = identity(declaration.clone());
+        let target_identity = identity(target);
+        let value = request_semantic_nucleus(
+            &database,
+            revision,
+            Key::ComptimeCall(ComptimeCallQueryKey {
+                declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration,
+                    configuration: semantic_configuration(),
+                },
+                type_arguments: Arc::from([]),
+                value_arguments: Arc::from([]),
+            }),
+        );
+        assert!(
+            matches!(
+                value,
+                Value::ComptimeCall(crate::semantic_query_nucleus::ComptimeCallProjection {
+                    result: crate::semantic_query_nucleus::ComptimeCallResultProjection::Value(
+                        crate::durable_semantics::DurableConstValue::Integer(12)
+                    ),
+                    ref dependencies,
+                    ..
+                })
+                if dependencies.as_ref()
+                    == [crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                        source: outer_identity,
+                        kind: rue_air::DeclarationTypeDependencyKind::Body,
+                        target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                            target_identity,
+                        ),
+                    }]
+            ),
+            "ordered parameters and exact published dependency should survive admission: {value:?}"
+        );
     }
 
     #[test]

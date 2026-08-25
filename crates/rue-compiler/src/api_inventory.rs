@@ -3117,9 +3117,14 @@ fn durable_comptime_services_are_named_authority_operations() {
         "DurableComptimeEffects",
         "DurableComptimeCallLifecycle",
         "DurableComptimeCallEdge",
+        "accessing_source",
         "DurableComptimeCallTicket",
         "DurableComptimeLifecycleError",
         "DurableComptimeApplicationPolicy",
+        "DurableComptimeCallableAdmission",
+        "DurableComptimeCallableAdmissionStart",
+        "begin_comptime_call_admission",
+        "finish_comptime_call_admission",
         "resolve_candidate",
         "resolve_identity",
         "resolve_const",
@@ -3179,11 +3184,7 @@ fn durable_comptime_services_are_named_authority_operations() {
     let edge_fields = facade
         .split("pub(crate) struct DurableComptimeCallEdge {")
         .nth(1)
-        .and_then(|source| {
-            source
-                .split("}\n\n/// Non-clone lifecycle capability")
-                .next()
-        })
+        .and_then(|source| source.split("}\n\nimpl DurableComptimeCallEdge").next())
         .expect("durable call edge block");
     assert!(!edge_fields.contains("pub(crate)"));
     assert!(!edge_fields.contains("context:"));
@@ -3227,6 +3228,30 @@ fn durable_comptime_services_are_named_authority_operations() {
         );
     }
     assert!(facade.contains("ticket_from_admitted_edge"));
+    let callable_authority = facade
+        .split("pub(crate) struct DurableComptimeCallableAdmission {")
+        .nth(1)
+        .and_then(|source| source.split("}\n\n/// Canonical semantic services").next())
+        .expect("durable callable admission projection");
+    for forbidden in ["InstData", "InstRef", "Rir", "callback", "evaluate"] {
+        assert!(
+            !callable_authority.contains(forbidden),
+            "callable admission projection leaked evaluator authority: {forbidden}"
+        );
+    }
+    let callable_start = facade
+        .split("pub(crate) struct DurableComptimeCallableAdmissionStart {")
+        .nth(1)
+        .and_then(|source| source.split("}\n\n/// The immutable").next())
+        .expect("durable callable admission start projection");
+    assert!(!callable_start.contains("Clone"));
+    assert!(facade.contains(
+        "#[derive(Debug, PartialEq, Eq)]\npub(crate) struct DurableComptimeCallableAdmissionStart"
+    ));
+    assert!(!facade.contains(
+        "#[derive(Debug, Clone, PartialEq, Eq)]\npub(crate) struct DurableComptimeCallableAdmissionStart"
+    ));
+    assert!(!facade.contains("impl Clone for DurableComptimeCallableAdmissionStart"));
     assert_eq!(
         production_facade
             .matches("gate.application.is_none()")
@@ -3346,12 +3371,74 @@ fn durable_comptime_services_are_named_authority_operations() {
         );
     }
     assert!(evaluator.contains("DurableComptimeServices::new(&authority)"));
+    let named_call = evaluator
+        .split("fn eval_named_call(")
+        .nth(1)
+        .and_then(|source| source.split("fn eval_type_literal(").next())
+        .expect("durable named-call evaluator");
+    assert!(
+        named_call.contains("begin_comptime_call_admission("),
+        "durable named calls must consume the canonical admission projection"
+    );
+    let begin = named_call
+        .find("begin_comptime_call_admission(")
+        .expect("named-call begin admission");
+    let observed = named_call
+        .find("observe_dependency(admission_start.dependency.clone())")
+        .expect("named-call dependency observation");
+    let finish = named_call
+        .find("finish_comptime_call_admission(admission_start")
+        .expect("named-call finish admission");
+    assert!(begin < observed && observed < finish);
+    for forbidden in [
+        ".provider.candidate(",
+        ".provider.identity(",
+        ".provider.signature(",
+        "DeclarationShellQueryKey",
+        "query_registered(",
+        "DeclarationSignatureProjection::Callable",
+        "ConstExprNotSupported",
+        "BorrowKeywordMissing",
+        "InoutKeywordMissing",
+        "UnexpectedCallArgumentMode",
+    ] {
+        assert!(
+            !named_call.contains(forbidden),
+            "durable named-call evaluator regained admission policy: {forbidden}"
+        );
+    }
+    assert!(
+        named_call.contains("let call_ordinal = self.next_call;"),
+        "durable call ordinals must be allocated before admission"
+    );
     assert!(evaluator.contains(".resolve_import(&site)"));
     assert!(evaluator.contains(".resolve_candidate("));
     assert!(evaluator.contains(".resolve_identity("));
     assert!(evaluator.contains(".resolve_const("));
     assert!(evaluator.contains(".resolve_target_intrinsic("));
     assert!(evaluator.contains(".resolve_target_enum_variant("));
+    let admission_authority = target_authority
+        .split("fn begin_comptime_call_admission(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n    fn finish_comptime_call_admission(")
+                .next()
+        })
+        .expect("call admission authority source");
+    assert!(admission_authority.contains("candidate_from("));
+    assert!(admission_authority.contains("accessing_source"));
+    assert!(admission_authority.contains("source: accessing_source.clone()"));
+    assert!(
+        !admission_authority.contains("provider.dependency_source"),
+        "call admission must not use root-fixed provider source"
+    );
+    let admission_finish_authority = target_authority
+        .split("fn finish_comptime_call_admission(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn resolve_candidate(").next())
+        .expect("call admission completion authority source");
+    assert!(!admission_finish_authority.contains("provider.dependency_source"));
     for forbidden in [
         "self.provider.configuration.target",
         "rue_target::Arch",
