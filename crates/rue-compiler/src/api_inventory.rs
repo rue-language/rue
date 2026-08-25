@@ -3132,11 +3132,14 @@ fn durable_comptime_services_are_named_authority_operations() {
         "DurableComptimeCallableAdmission",
         "DurableComptimeCallableAdmissionStart",
         "DurableComptimeNamedValueKind",
+        "DurableComptimeNamedValueOrder",
         "resolve_named_value_in_order",
+        "resolve_module_member_in_order",
         "begin_comptime_call_admission",
         "finish_comptime_call_admission",
         "DurableComptimeNamedValueProjection",
         "resolve_named_value",
+        "resolve_module_member",
         "resolve_target_intrinsic",
         "resolve_target_enum_variant",
         "probe_comptime_call",
@@ -3458,6 +3461,52 @@ fn durable_comptime_services_are_named_authority_operations() {
     }
     assert!(evaluator.contains(".resolve_target_intrinsic("));
     assert!(evaluator.contains(".resolve_target_enum_variant("));
+    let field_get = evaluator
+        .split("E::FieldGet { base, field }")
+        .nth(1)
+        .and_then(|source| source.split("E::StructInit").next())
+        .expect("durable field-get evaluator");
+    assert_eq!(field_get.matches("resolve_module_member(").count(), 1);
+    let target_special = field_get
+        .find("if let E::VarRef { name, .. }")
+        .expect("field-get target descriptor special case");
+    let base_eval = field_get
+        .find("let EvaluatedSemanticConst::Module(module) = self.eval(*base)?")
+        .expect("field-get evaluates its base after target descriptors");
+    let non_module = field_get
+        .find("member access on a non-module const value")
+        .expect("field-get non-module rejection");
+    let service = field_get
+        .find("resolve_module_member(")
+        .expect("field-get module-member service");
+    let field_projection = field_get
+        .find("projection.into_parts()")
+        .expect("field-get destructures projection");
+    let field_observation = field_get
+        .find("self.effects.observe_dependency(dependency)")
+        .expect("field-get observes direct dependency");
+    assert!(
+        target_special < base_eval
+            && base_eval < non_module
+            && non_module < service
+            && service < field_projection
+            && field_projection < field_observation
+    );
+    for forbidden in [
+        ".provider.candidate(",
+        ".provider.identity(",
+        ".provider.const_resolution(",
+        "DefinitionKind::Const",
+        "DefinitionKind::Struct",
+        "DefinitionKind::Enum",
+        "DefinitionKind::Function",
+        "SemanticDeclarationDependency {",
+    ] {
+        assert!(
+            !field_get.contains(forbidden),
+            "field-get evaluator retained module-member policy: {forbidden}"
+        );
+    }
     let admission_authority = target_authority
         .split("fn begin_comptime_call_admission(")
         .nth(1)
@@ -3480,13 +3529,27 @@ fn durable_comptime_services_are_named_authority_operations() {
         .and_then(|source| source.split("\n    fn resolve_named_value(").next())
         .expect("call admission completion authority source");
     assert!(!admission_finish_authority.contains("provider.dependency_source"));
-    let named_value_authority = target_authority
-        .split("fn resolve_named_value(")
-        .nth(1)
-        .and_then(|source| source.split("\n    fn resolve_import(").next())
-        .expect("named-value authority source");
+    let named_value_authority = format!(
+        "{}{}",
+        target_authority
+            .split("fn resolve_named_value(")
+            .nth(1)
+            .and_then(|source| source.split("\n    fn resolve_import(").next())
+            .expect("named-value authority source"),
+        database
+            .split("fn project_named_value_candidate(")
+            .nth(1)
+            .and_then(|source| {
+                source
+                    .split("\nimpl crate::durable_comptime::DurableComptimeSemanticAuthority")
+                    .next()
+            })
+            .expect("named-value projection kernel source")
+    );
     for required in [
         "resolve_named_value_in_order",
+        "resolve_module_member_in_order",
+        "UnknownModuleMember",
         "DefinitionKind::Const",
         "DefinitionKind::Function",
         "DefinitionKind::Struct",
@@ -3515,7 +3578,7 @@ fn durable_comptime_services_are_named_authority_operations() {
     assert!(named_value_authority.contains("DurableComptimeNamedValueKind::Struct"));
     assert!(named_value_authority.contains("DurableComptimeNamedValueKind::Enum"));
     let named_value_kernel = production_facade
-        .split("const DURABLE_COMPTIME_NAMED_VALUE_KINDS")
+        .split("const DURABLE_COMPTIME_UNQUALIFIED_VALUE_KINDS")
         .nth(1)
         .and_then(|source| {
             source
@@ -3535,6 +3598,31 @@ fn durable_comptime_services_are_named_authority_operations() {
             .unwrap_or_else(|| panic!("named-value kernel missing {kind}"))
     });
     assert!(kind_positions.windows(2).all(|pair| pair[0] < pair[1]));
+    let module_value_kernel = production_facade
+        .split("const DURABLE_COMPTIME_MODULE_MEMBER_KINDS")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("/// Run the canonical named-value candidate order")
+                .next()
+        })
+        .expect("module-member ordering kernel");
+    let module_kind_positions = [
+        "DurableComptimeNamedValueKind::Const",
+        "DurableComptimeNamedValueKind::Struct",
+        "DurableComptimeNamedValueKind::Enum",
+        "DurableComptimeNamedValueKind::Function",
+    ]
+    .map(|kind| {
+        module_value_kernel
+            .find(kind)
+            .unwrap_or_else(|| panic!("module-member kernel missing {kind}"))
+    });
+    assert!(
+        module_kind_positions
+            .windows(2)
+            .all(|pair| pair[0] < pair[1])
+    );
     for forbidden in [
         "InstData",
         "InstRef",

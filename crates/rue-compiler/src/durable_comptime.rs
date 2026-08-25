@@ -816,11 +816,23 @@ pub(crate) enum DurableComptimeNamedValueKind {
     Enum,
 }
 
-const DURABLE_COMPTIME_NAMED_VALUE_KINDS: [DurableComptimeNamedValueKind; 4] = [
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DurableComptimeNamedValueOrder {
+    Unqualified,
+    ModuleMember,
+}
+
+const DURABLE_COMPTIME_UNQUALIFIED_VALUE_KINDS: [DurableComptimeNamedValueKind; 4] = [
     DurableComptimeNamedValueKind::Const,
     DurableComptimeNamedValueKind::Function,
     DurableComptimeNamedValueKind::Struct,
     DurableComptimeNamedValueKind::Enum,
+];
+const DURABLE_COMPTIME_MODULE_MEMBER_KINDS: [DurableComptimeNamedValueKind; 4] = [
+    DurableComptimeNamedValueKind::Const,
+    DurableComptimeNamedValueKind::Struct,
+    DurableComptimeNamedValueKind::Enum,
+    DurableComptimeNamedValueKind::Function,
 ];
 
 /// Run the canonical named-value candidate order.  The probe is semantic
@@ -828,10 +840,27 @@ const DURABLE_COMPTIME_NAMED_VALUE_KINDS: [DurableComptimeNamedValueKind; 4] = [
 /// a child query.  Errors stop the order immediately, and the first value
 /// stops it without probing later declaration kinds.
 pub(crate) fn resolve_named_value_in_order<T, E>(
+    probe: impl FnMut(DurableComptimeNamedValueKind) -> Result<Option<T>, E>,
+) -> Result<Option<T>, E> {
+    resolve_named_value_with_order(DurableComptimeNamedValueOrder::Unqualified, probe)
+}
+
+pub(crate) fn resolve_module_member_in_order<T, E>(
     mut probe: impl FnMut(DurableComptimeNamedValueKind) -> Result<Option<T>, E>,
 ) -> Result<Option<T>, E> {
-    for kind in DURABLE_COMPTIME_NAMED_VALUE_KINDS {
-        if let Some(value) = probe(kind)? {
+    resolve_named_value_with_order(DurableComptimeNamedValueOrder::ModuleMember, &mut probe)
+}
+
+fn resolve_named_value_with_order<T, E>(
+    order: DurableComptimeNamedValueOrder,
+    mut probe: impl FnMut(DurableComptimeNamedValueKind) -> Result<Option<T>, E>,
+) -> Result<Option<T>, E> {
+    let kinds = match order {
+        DurableComptimeNamedValueOrder::Unqualified => &DURABLE_COMPTIME_UNQUALIFIED_VALUE_KINDS,
+        DurableComptimeNamedValueOrder::ModuleMember => &DURABLE_COMPTIME_MODULE_MEMBER_KINDS,
+    };
+    for kind in kinds {
+        if let Some(value) = probe(*kind)? {
             return Ok(Some(value));
         }
     }
@@ -887,6 +916,16 @@ pub(crate) trait DurableComptimeSemanticAuthority {
         name: &str,
     ) -> Result<
         Option<DurableComptimeNamedValueProjection>,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    >;
+
+    fn resolve_module_member(
+        &self,
+        accessing_source: &crate::StableDefinitionKey,
+        module: &ModuleId,
+        member: &str,
+    ) -> Result<
+        DurableComptimeNamedValueProjection,
         rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
     >;
 
@@ -973,6 +1012,19 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
     > {
         self.authority
             .resolve_named_value(accessing_source, module, name)
+    }
+
+    pub(crate) fn resolve_module_member(
+        &self,
+        accessing_source: &crate::StableDefinitionKey,
+        module: &ModuleId,
+        member: &str,
+    ) -> Result<
+        DurableComptimeNamedValueProjection,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        self.authority
+            .resolve_module_member(accessing_source, module, member)
     }
 
     pub(crate) fn resolve_import(
@@ -1430,6 +1482,65 @@ mod tests {
             vec![
                 DurableComptimeNamedValueKind::Const,
                 DurableComptimeNamedValueKind::Function,
+                DurableComptimeNamedValueKind::Struct,
+            ]
+        );
+
+        let mut module_missing = Vec::new();
+        assert_eq!(
+            resolve_module_member_in_order(|kind| {
+                module_missing.push(kind);
+                Ok::<Option<()>, ()>(None)
+            })
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            module_missing,
+            vec![
+                DurableComptimeNamedValueKind::Const,
+                DurableComptimeNamedValueKind::Struct,
+                DurableComptimeNamedValueKind::Enum,
+                DurableComptimeNamedValueKind::Function,
+            ]
+        );
+
+        let mut module_success = Vec::new();
+        assert_eq!(
+            resolve_module_member_in_order(|kind| {
+                module_success.push(kind);
+                Ok::<Option<&str>, ()>(
+                    (kind == DurableComptimeNamedValueKind::Enum).then_some("enum"),
+                )
+            })
+            .unwrap(),
+            Some("enum")
+        );
+        assert_eq!(
+            module_success,
+            vec![
+                DurableComptimeNamedValueKind::Const,
+                DurableComptimeNamedValueKind::Struct,
+                DurableComptimeNamedValueKind::Enum,
+            ]
+        );
+
+        let mut module_failure = Vec::new();
+        assert_eq!(
+            resolve_module_member_in_order(|kind| {
+                module_failure.push(kind);
+                if kind == DurableComptimeNamedValueKind::Struct {
+                    Err::<Option<()>, _>("module struct failure")
+                } else {
+                    Ok(None)
+                }
+            }),
+            Err("module struct failure")
+        );
+        assert_eq!(
+            module_failure,
+            vec![
+                DurableComptimeNamedValueKind::Const,
                 DurableComptimeNamedValueKind::Struct,
             ]
         );
