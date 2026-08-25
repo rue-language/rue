@@ -515,6 +515,8 @@ mod value_domain_tests {
         static NAMED_VALUE_CALLS: Cell<usize> = const { Cell::new(0) };
         static REJECT_VISIBILITY: Cell<bool> = const { Cell::new(false) };
         static NAMED_TYPE_MISSING: Cell<bool> = const { Cell::new(false) };
+        static KEYED_FILE_RESOLUTION: Cell<bool> = const { Cell::new(false) };
+        static FILE_RESOLUTION_CALLS: RefCell<Vec<(usize, u32)>> = const { RefCell::new(Vec::new()) };
     }
 
     #[test]
@@ -766,7 +768,14 @@ mod value_domain_tests {
                 format!("fake-name-{}", name.ordinal)
             }
         }
-        fn file_from_span(&self, span: &Span) -> Self::File {
+        fn file_for_program_span(&self, program: &Self::ProgramKey, span: &Span) -> Self::File {
+            if KEYED_FILE_RESOLUTION.with(Cell::get) {
+                let file = span.file_id.index() + (*program as u32) * 100;
+                FILE_RESOLUTION_CALLS.with(|calls| {
+                    calls.borrow_mut().push((*program, file));
+                });
+                return FakeFile { index: file };
+            }
             FakeFile {
                 index: span.file_id.index(),
             }
@@ -2608,6 +2617,52 @@ mod value_domain_tests {
             .unwrap();
         assert_eq!(value, None);
         assert_eq!(NAMED_VALUE_CALLS.with(Cell::get), 0);
+    }
+
+    #[test]
+    fn file_resolution_is_keyed_by_the_active_program() {
+        let interner = lasso::ThreadedRodeo::new();
+        let name = interner.get_or_intern("value");
+        let mut first = rue_rir::RirEditor::new();
+        let first_reference = first.add_inst(rue_rir::Inst {
+            data: InstData::VarRef { name, anchor: None },
+            span: Span::with_file(rue_span::FileId::new(7), 0, 1),
+        });
+        let mut second = rue_rir::RirEditor::new();
+        let second_reference = second.add_inst(rue_rir::Inst {
+            data: InstData::VarRef { name, anchor: None },
+            span: Span::with_file(rue_span::FileId::new(7), 0, 1),
+        });
+        let mut host = FakeHost {
+            programs: vec![first.finish(), second.finish()],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        KEYED_FILE_RESOLUTION.with(|enabled| enabled.set(true));
+        NAMED_TYPE_MISSING.with(|missing| missing.set(true));
+        FILE_RESOLUTION_CALLS.with(|calls| calls.borrow_mut().clear());
+        let mut engine = ComptimeEngine::new(&mut host);
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        assert!(matches!(
+            engine.evaluate(ComptimeFrame::expression(0, first_reference), &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+        assert!(matches!(
+            engine.evaluate(ComptimeFrame::expression(1, second_reference), &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+        FILE_RESOLUTION_CALLS.with(|calls| {
+            assert_eq!(*calls.borrow(), vec![(0, 7), (1, 107)]);
+        });
+        KEYED_FILE_RESOLUTION.with(|enabled| enabled.set(false));
+        NAMED_TYPE_MISSING.with(|missing| missing.set(false));
     }
 
     #[test]
@@ -4571,7 +4626,7 @@ pub trait ComptimeHost {
     fn program_rir(&self, program: &Self::ProgramKey) -> &Rir;
     fn name_from_symbol(&self, program: &Self::ProgramKey, symbol: SymbolHandle) -> Self::Name;
     fn display_name(&self, name: &Self::Name) -> String;
-    fn file_from_span(&self, span: &Span) -> Self::File;
+    fn file_for_program_span(&self, program: &Self::ProgramKey, span: &Span) -> Self::File;
     fn resolve_comptime_named_value(
         &mut self,
         file: Self::File,
@@ -6676,7 +6731,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 //    semantic lookup. The host owns direct dependency
                 //    observation and visibility so durable adapters cannot
                 //    split those effects across side channels.
-                let file = self.host.file_from_span(&span);
+                let program = self.program_key();
+                let file = self.host.file_for_program_span(&program, &span);
                 match host_value!(self.host.resolve_comptime_named_value(file, name, span)) {
                     ComptimeNamedValueResolution::Known(value) => ComptimeOutcome::Known(value),
                     ComptimeNamedValueResolution::RuntimeDependent
