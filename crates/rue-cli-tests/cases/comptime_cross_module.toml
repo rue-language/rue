@@ -21,6 +21,26 @@ id = "cli.comptime_cross_module"
 name = "Cross-module comptime type functions"
 description = "Module-qualified comptime type-function references (RUE-511) and composite type arguments (RUE-565)."
 
+[[case]]
+name = "cross_module_const_direct_unit_type_value"
+description = "A module-qualified durable const initializer accepts the direct Unit type-value spelling."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn Id(comptime T: type) -> type { T }
+""" },
+  { path = "main.rue", source = """
+const lib = @import("lib.rue");
+const U = lib.Id(());
+fn use(value: U) -> U { value }
+fn main() -> i32 {
+    use(());
+    0
+}
+""" },
+]
+exit_code = 0
+
 # --- RUE-511: field-type position ---
 [[case]]
 name = "cross_module_ctor_field_type"

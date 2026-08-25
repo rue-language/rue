@@ -35,11 +35,13 @@ fn integer_consumers_use_one_representation_independent_kernel() {
 #[test]
 fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     let comptime = include_str!("sema/comptime.rs");
+    let ordinary = include_str!("sema/comptime_eval.rs");
     let facade = include_str!("lib.rs");
     for export in [
         "ComptimeAnonymousKind",
         "ComptimeArgMode",
         "ComptimeCallAdmission",
+        "ComptimeCallArgument",
         "ComptimeCallKey",
         "ComptimeCallMemoLookup",
         "ComptimeConstInfo",
@@ -180,6 +182,43 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .expect("canonical host contract");
     let host_contract = &production[host_start..engine_start];
     assert!(host_contract.contains("fn program_rir(&self, program:"));
+    let argument_start = production
+        .find("pub struct ComptimeCallArgument<")
+        .expect("engine-owned call argument provenance wrapper");
+    let argument_end = production[argument_start..]
+        .find("\n}\n\nimpl<V> ComptimeCallArgument")
+        .map(|offset| argument_start + offset + 2)
+        .expect("call argument provenance wrapper body");
+    let argument_wrapper = &production[argument_start..argument_end];
+    assert!(argument_wrapper.contains("value: V"));
+    assert!(argument_wrapper.contains("direct_unit_literal: bool"));
+    for forbidden in [
+        "pub value",
+        "pub direct_unit_literal",
+        "InstRef",
+        "Rir",
+        "ProgramKey",
+        "Span",
+        "Deref",
+        "pub fn new",
+    ] {
+        assert!(
+            !argument_wrapper.contains(forbidden),
+            "call argument provenance leaked source authority: {forbidden}"
+        );
+    }
+    let argument_impl_start = production[argument_end..]
+        .find("impl<V> ComptimeCallArgument")
+        .map(|offset| argument_end + offset)
+        .expect("call argument provenance impl");
+    let argument_impl_end = production[argument_impl_start..]
+        .find("\n}\n")
+        .map(|offset| argument_impl_start + offset + 3)
+        .expect("call argument provenance impl end");
+    let argument_impl = &production[argument_impl_start..argument_impl_end];
+    assert!(argument_impl.contains("fn new("));
+    assert!(!argument_impl.contains("pub fn new("));
+    assert!(production.contains("values: &[ComptimeCallArgument<Self::Value>]"));
     let producer_hook = host_contract
         .split("fn canonical_function_producer(")
         .nth(1)
@@ -267,6 +306,54 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         1,
         "the AIR instruction dispatcher must have one implementation"
     );
+    assert_eq!(
+        production.matches("fn evaluate_call_arguments(").count(),
+        1,
+        "call argument provenance must have one engine-owned helper"
+    );
+    assert_eq!(
+        production
+            .matches("self.evaluate_call_arguments(&args, env)")
+            .count(),
+        2,
+        "direct and qualified calls must share argument provenance"
+    );
+    let provenance_helper_start = production
+        .find("fn evaluate_call_arguments(")
+        .expect("argument provenance helper");
+    let provenance_helper_end = production[provenance_helper_start..]
+        .find("\n    fn ")
+        .map(|offset| provenance_helper_start + offset)
+        .unwrap_or(production.len());
+    let provenance_helper = &production[provenance_helper_start..provenance_helper_end];
+    let eval_offset = provenance_helper
+        .find("self.eval(arg.value, env)")
+        .expect("argument evaluation in provenance helper");
+    let provenance_offset = provenance_helper
+        .find("self.host.program_rir(&program)")
+        .expect("parent-program provenance lookup");
+    assert!(
+        provenance_helper.contains("let program = self.program_key()"),
+        "argument provenance must capture the parent program before recursion"
+    );
+    assert!(
+        eval_offset < provenance_offset,
+        "argument provenance must classify only after a Known child evaluation"
+    );
+    assert!(
+        !ordinary.contains("is_direct_unit_literal"),
+        "ordinary hosts must consume provenance, never recover it from RIR"
+    );
+    let ordinary_bind_start = ordinary
+        .find("fn bind_comptime_call(")
+        .expect("ordinary call binding implementation");
+    let ordinary_bind_end = ordinary[ordinary_bind_start..]
+        .find("\n    fn ")
+        .map(|offset| ordinary_bind_start + offset)
+        .unwrap_or(ordinary.len());
+    let ordinary_bind = &ordinary[ordinary_bind_start..ordinary_bind_end];
+    assert!(ordinary_bind.contains("argument.value()"));
+    assert!(!ordinary_bind.contains("program_rir"));
     assert!(production.contains("self.frames.push(frame)"));
     assert!(production.contains("self.frames.pop()"));
     assert!(production.contains("ComptimeCallPreparation::Memoized(outcome)"));

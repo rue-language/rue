@@ -505,6 +505,9 @@ mod value_domain_tests {
         static TYPE_RESOLUTION_CALLS: Cell<usize> = const { Cell::new(0) };
         static CHECKPOINTS: Cell<usize> = const { Cell::new(0) };
         static ABORT_AT_CHECKPOINT: Cell<Option<usize>> = const { Cell::new(None) };
+        static CALL_ARGUMENTS: RefCell<Vec<(FakeValue, bool)>> = const { RefCell::new(Vec::new()) };
+        static ALLOW_MODULE_CALLS: Cell<bool> = const { Cell::new(false) };
+        static REJECT_ADMISSION: Cell<bool> = const { Cell::new(false) };
     }
 
     #[derive(Clone, Debug, PartialEq)]
@@ -673,6 +676,12 @@ mod value_domain_tests {
 
     fn checkpoint_count() -> usize {
         CHECKPOINTS.with(Cell::get)
+    }
+
+    fn clear_call_argument_observations() {
+        CALL_ARGUMENTS.with(|arguments| arguments.borrow_mut().clear());
+        ALLOW_MODULE_CALLS.with(|allowed| allowed.set(false));
+        REJECT_ADMISSION.with(|rejected| rejected.set(false));
     }
 
     impl ComptimeHost for FakeHost {
@@ -926,10 +935,12 @@ mod value_domain_tests {
             &mut self,
             _file_id: Self::File,
             _segments: &[Self::Name],
-            _method: Self::Name,
+            method: Self::Name,
             _span: Span,
         ) -> ComptimeHostResult<Option<Self::Name>, Self::Failure> {
-            Ok(None)
+            Ok(ALLOW_MODULE_CALLS
+                .with(|allowed| allowed.get())
+                .then_some(method))
         }
         fn admit_comptime_call(
             &mut self,
@@ -949,12 +960,15 @@ mod value_domain_tests {
             Option<ComptimeCallAdmission<Self::CallAdmission, Self::Name>>,
             Self::Failure,
         > {
+            if REJECT_ADMISSION.with(|rejected| rejected.get()) {
+                return Ok(None);
+            }
             Ok(Some(ComptimeCallAdmission { name, payload: () }))
         }
         fn bind_comptime_call(
             &self,
             _admission: &ComptimeCallAdmission<Self::CallAdmission, Self::Name>,
-            _values: &[Self::Value],
+            values: &[ComptimeCallArgument<Self::Value>],
             _span: Span,
         ) -> ComptimeHostResult<
             Option<(
@@ -963,6 +977,13 @@ mod value_domain_tests {
             )>,
             Self::Failure,
         > {
+            CALL_ARGUMENTS.with(|observed| {
+                observed.borrow_mut().extend(
+                    values.iter().map(|argument| {
+                        (argument.value().clone(), argument.is_direct_unit_literal())
+                    }),
+                );
+            });
             Ok(Some((AHashMap::new(), AHashMap::new())))
         }
         fn prepare_comptime_call(
@@ -2663,6 +2684,403 @@ mod value_domain_tests {
     }
 
     #[test]
+    fn call_argument_provenance_is_left_to_right_and_engine_owned() {
+        let interner = lasso::ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("f");
+        let symbol_handle = SymbolHandle::new(symbol);
+        let mut editor = rue_rir::RirEditor::new();
+        let direct_unit = editor.add_inst(rue_rir::Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 2),
+        });
+        let wrapped_unit = editor.add_inst(rue_rir::Inst {
+            data: InstData::Comptime { expr: direct_unit },
+            span: Span::new(0, 2),
+        });
+        let call = editor
+            .add_call(
+                symbol,
+                &[
+                    rue_rir::RirCallArg {
+                        value: direct_unit,
+                        mode: rue_rir::RirArgMode::Normal,
+                    },
+                    rue_rir::RirCallArg {
+                        value: wrapped_unit,
+                        mode: rue_rir::RirArgMode::Normal,
+                    },
+                ],
+                Span::new(0, 2),
+            )
+            .unwrap();
+        let mut child = rue_rir::RirEditor::new();
+        let child_body = child.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 0),
+        });
+        let base = symbol_handle.issuing_interner_ordinal() as u32;
+        let mut call_plans = AHashMap::new();
+        call_plans.insert(
+            base,
+            FakePreparedCall::Enter {
+                program: 1,
+                body: child_body,
+                expected: None,
+                name_bindings: AHashMap::new(),
+            },
+        );
+        let mut host = FakeHost {
+            programs: vec![editor.finish(), child.finish()],
+            type_symbol: symbol_handle,
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans,
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        clear_call_argument_observations();
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result =
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, call), &mut env);
+        assert!(matches!(
+            result,
+            ComptimeOutcome::Known(FakeValue::Integer(1))
+        ));
+        CALL_ARGUMENTS.with(|observed| {
+            assert_eq!(
+                *observed.borrow(),
+                vec![(FakeValue::Unit, true), (FakeValue::Unit, false)]
+            );
+        });
+    }
+
+    #[test]
+    fn qualified_call_uses_the_same_argument_provenance_helper() {
+        let interner = lasso::ThreadedRodeo::new();
+        let method = interner.get_or_intern("Id");
+        let method_handle = SymbolHandle::new(method);
+        let mut editor = rue_rir::RirEditor::new();
+        let receiver = editor.add_inst(rue_rir::Inst {
+            data: InstData::VarRef {
+                name: interner.get_or_intern("lib"),
+                anchor: None,
+            },
+            span: Span::new(0, 3),
+        });
+        let direct_unit = editor.add_inst(rue_rir::Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 2),
+        });
+        let call = editor
+            .add_method_call(
+                receiver,
+                method,
+                &[rue_rir::RirCallArg {
+                    value: direct_unit,
+                    mode: rue_rir::RirArgMode::Normal,
+                }],
+                Span::new(0, 3),
+            )
+            .unwrap();
+        let mut child = rue_rir::RirEditor::new();
+        let child_body = child.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(0, 0),
+        });
+        let method_ordinal = method_handle.issuing_interner_ordinal() as u32;
+        let mut call_plans = AHashMap::new();
+        call_plans.insert(
+            method_ordinal,
+            FakePreparedCall::Enter {
+                program: 1,
+                body: child_body,
+                expected: None,
+                name_bindings: AHashMap::new(),
+            },
+        );
+        let mut host = FakeHost {
+            programs: vec![editor.finish(), child.finish()],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans,
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        clear_call_argument_observations();
+        ALLOW_MODULE_CALLS.with(|allowed| allowed.set(true));
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        env.defining_file = Some(FakeFile { index: 0 });
+        let result =
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, call), &mut env);
+        assert!(matches!(
+            result,
+            ComptimeOutcome::Known(FakeValue::Integer(2))
+        ));
+        CALL_ARGUMENTS.with(|observed| {
+            assert_eq!(*observed.borrow(), vec![(FakeValue::Unit, true)]);
+        });
+        clear_call_argument_observations();
+    }
+
+    #[test]
+    fn argument_provenance_restores_parent_program_after_a_foreign_argument() {
+        let interner = lasso::ThreadedRodeo::new();
+        let outer_symbol = interner.get_or_intern("outer");
+        let inner_symbol = interner.get_or_intern("inner");
+        let outer_handle = SymbolHandle::new(outer_symbol);
+        let inner_handle = SymbolHandle::new(inner_symbol);
+        let mut parent = rue_rir::RirEditor::new();
+        let inner_call = parent.add_call(inner_symbol, &[], Span::new(0, 0)).unwrap();
+        let direct_unit = parent.add_inst(rue_rir::Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 0),
+        });
+        let outer_call = parent
+            .add_call(
+                outer_symbol,
+                &[
+                    rue_rir::RirCallArg {
+                        value: inner_call,
+                        mode: rue_rir::RirArgMode::Normal,
+                    },
+                    rue_rir::RirCallArg {
+                        value: direct_unit,
+                        mode: rue_rir::RirArgMode::Normal,
+                    },
+                ],
+                Span::new(0, 0),
+            )
+            .unwrap();
+        let mut inner_program = rue_rir::RirEditor::new();
+        let inner_body = inner_program.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 0),
+        });
+        let mut outer_program = rue_rir::RirEditor::new();
+        let outer_body = outer_program.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(0, 0),
+        });
+        let outer_ordinal = outer_handle.issuing_interner_ordinal() as u32;
+        let inner_ordinal = inner_handle.issuing_interner_ordinal() as u32;
+        let mut call_plans = AHashMap::new();
+        call_plans.insert(
+            outer_ordinal,
+            FakePreparedCall::Enter {
+                program: 2,
+                body: outer_body,
+                expected: None,
+                name_bindings: AHashMap::new(),
+            },
+        );
+        call_plans.insert(
+            inner_ordinal,
+            FakePreparedCall::Enter {
+                program: 1,
+                body: inner_body,
+                expected: None,
+                name_bindings: AHashMap::new(),
+            },
+        );
+        let mut host = FakeHost {
+            programs: vec![
+                parent.finish(),
+                inner_program.finish(),
+                outer_program.finish(),
+            ],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans,
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        clear_call_argument_observations();
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result = ComptimeEngine::new(&mut host)
+            .evaluate(ComptimeFrame::expression(0, outer_call), &mut env);
+        assert!(matches!(
+            result,
+            ComptimeOutcome::Known(FakeValue::Integer(2))
+        ));
+        CALL_ARGUMENTS.with(|observed| {
+            assert_eq!(
+                *observed.borrow(),
+                vec![(FakeValue::Integer(1), false), (FakeValue::Unit, true)]
+            );
+        });
+    }
+
+    #[test]
+    fn argument_checkpoint_abort_precedes_provenance_and_binding() {
+        let interner = lasso::ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("f");
+        let mut editor = rue_rir::RirEditor::new();
+        let first = editor.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 0),
+        });
+        let later = editor.add_inst(rue_rir::Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 0),
+        });
+        let call = editor
+            .add_call(
+                symbol,
+                &[
+                    rue_rir::RirCallArg {
+                        value: first,
+                        mode: rue_rir::RirArgMode::Normal,
+                    },
+                    rue_rir::RirCallArg {
+                        value: later,
+                        mode: rue_rir::RirArgMode::Normal,
+                    },
+                ],
+                Span::new(0, 0),
+            )
+            .unwrap();
+        let mut host = FakeHost {
+            programs: vec![editor.finish()],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        clear_call_argument_observations();
+        // Checkpoint 1 enters the call; checkpoint 2 is the first argument.
+        // The abort must happen before that argument's provenance lookup,
+        // binding, or the later argument's evaluation.
+        configure_checkpoint_abort(Some(2));
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let mut engine = ComptimeEngine::new(&mut host);
+        let result = engine.evaluate(ComptimeFrame::expression(0, call), &mut env);
+        assert!(matches!(
+            result,
+            ComptimeOutcome::Abort(FakeFailure::Canceled)
+        ));
+        assert_eq!(checkpoint_count(), 2);
+        assert_eq!(engine.provenance_classification_count(), 0);
+        CALL_ARGUMENTS.with(|observed| assert!(observed.borrow().is_empty()));
+        configure_checkpoint_abort(None);
+    }
+
+    #[test]
+    fn admission_rejection_and_argument_terminal_stop_before_binding_or_later_args() {
+        let interner = lasso::ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("f");
+        let mut rejected_editor = rue_rir::RirEditor::new();
+        let trapped = rejected_editor.add_inst(rue_rir::Inst {
+            data: InstData::FloatConst {
+                text: interner.get_or_intern("1.0"),
+            },
+            span: Span::new(0, 3),
+        });
+        let rejected_call = rejected_editor
+            .add_call(
+                symbol,
+                &[rue_rir::RirCallArg {
+                    value: trapped,
+                    mode: rue_rir::RirArgMode::Normal,
+                }],
+                Span::new(0, 3),
+            )
+            .unwrap();
+        let mut rejected_host = FakeHost {
+            programs: vec![rejected_editor.finish()],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        clear_call_argument_observations();
+        REJECT_ADMISSION.with(|rejected| rejected.set(true));
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result = ComptimeEngine::new(&mut rejected_host)
+            .evaluate(ComptimeFrame::expression(0, rejected_call), &mut env);
+        assert!(matches!(result, ComptimeOutcome::RuntimeDependent));
+        assert_eq!(rejected_host.float_evaluations.get(), 0);
+        CALL_ARGUMENTS.with(|observed| assert!(observed.borrow().is_empty()));
+
+        let mut terminal_editor = rue_rir::RirEditor::new();
+        let first = terminal_editor.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 0),
+        });
+        let terminal = terminal_editor.add_inst(rue_rir::Inst {
+            data: InstData::FloatConst {
+                text: interner.get_or_intern("2.0"),
+            },
+            span: Span::new(0, 3),
+        });
+        let later = terminal_editor.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(3),
+            span: Span::new(0, 0),
+        });
+        let terminal_call = terminal_editor
+            .add_call(
+                symbol,
+                &[
+                    rue_rir::RirCallArg {
+                        value: first,
+                        mode: rue_rir::RirArgMode::Normal,
+                    },
+                    rue_rir::RirCallArg {
+                        value: terminal,
+                        mode: rue_rir::RirArgMode::Normal,
+                    },
+                    rue_rir::RirCallArg {
+                        value: later,
+                        mode: rue_rir::RirArgMode::Normal,
+                    },
+                ],
+                Span::new(0, 3),
+            )
+            .unwrap();
+        let mut terminal_host = FakeHost {
+            programs: vec![terminal_editor.finish()],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T2")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        clear_call_argument_observations();
+        configure_checkpoint_abort(None);
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result = ComptimeEngine::new(&mut terminal_host)
+            .evaluate(ComptimeFrame::expression(0, terminal_call), &mut env);
+        assert!(matches!(result, ComptimeOutcome::HostFailure(FAKE_FAILURE)));
+        assert_eq!(terminal_host.float_evaluations.get(), 1);
+        assert_eq!(checkpoint_count(), 3);
+        CALL_ARGUMENTS.with(|observed| assert!(observed.borrow().is_empty()));
+    }
+
+    #[test]
     fn entered_programs_switch_on_colliding_refs_and_resume_the_parent() {
         let (mut host, root, rhs, base) = call_fixture();
         PRODUCER_CALLS.with(|calls| calls.borrow_mut().clear());
@@ -3707,6 +4125,33 @@ pub struct ComptimeTrap {
 
 pub type ComptimeArgMode = (rue_rir::RirArgMode, Span);
 
+/// An already-evaluated call argument together with the engine-derived fact
+/// that its source node was an immediate `UnitConst`. The source instruction
+/// and owning program remain engine-private; hosts receive only this semantic
+/// provenance alongside the reduced value.
+#[derive(Debug, Clone)]
+pub struct ComptimeCallArgument<V> {
+    value: V,
+    direct_unit_literal: bool,
+}
+
+impl<V> ComptimeCallArgument<V> {
+    pub fn value(&self) -> &V {
+        &self.value
+    }
+
+    pub fn is_direct_unit_literal(&self) -> bool {
+        self.direct_unit_literal
+    }
+
+    fn new(value: V, direct_unit_literal: bool) -> Self {
+        Self {
+            value,
+            direct_unit_literal,
+        }
+    }
+}
+
 pub struct ComptimeCallAdmission<A, N> {
     pub name: N,
     pub payload: A,
@@ -3976,7 +4421,7 @@ pub trait ComptimeHost {
     fn bind_comptime_call(
         &self,
         admission: &ComptimeCallAdmission<Self::CallAdmission, Self::Name>,
-        values: &[Self::Value],
+        values: &[ComptimeCallArgument<Self::Value>],
         span: Span,
     ) -> ComptimeHostResult<
         Option<(
@@ -4253,6 +4698,8 @@ pub struct ComptimeEngine<'e, H: ComptimeHost> {
     frames: Vec<
         ComptimeFrame<H::Value, H::Type, H::Name, H::File, H::ProgramKey, H::CanonicalIdentity>,
     >,
+    #[cfg(test)]
+    provenance_classifications: usize,
 }
 
 impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
@@ -4260,7 +4707,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         Self {
             host,
             frames: Vec::new(),
+            #[cfg(test)]
+            provenance_classifications: 0,
         }
+    }
+
+    #[cfg(test)]
+    fn provenance_classification_count(&self) -> usize {
+        self.provenance_classifications
     }
 
     /// Drive one opaque structured-type suspension on this engine's existing
@@ -4618,11 +5072,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let Some(admission) = admission else {
             return ComptimeOutcome::RuntimeDependent;
         };
-        let mut values = Vec::with_capacity(args.len());
-        for arg in &args {
-            let value = outcome_value!(self.eval(arg.value, env));
-            values.push(value);
-        }
+        let values = outcome_value!(self.evaluate_call_arguments(&args, env));
         let bound = host_value!(self.host.bind_comptime_call(&admission, &values, span));
         let Some((callee_types, callee_values)) = bound else {
             return ComptimeOutcome::RuntimeDependent;
@@ -4642,6 +5092,33 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 self.enter_prepared_call(frame, ticket, span)
             }
         }
+    }
+
+    /// Reduce call arguments in source order while retaining only the
+    /// engine-derived provenance needed by semantic binding. Each child is
+    /// reduced before its source node is inspected, while the owning program
+    /// key is retained across foreign-frame evaluation.
+    #[inline(never)]
+    fn evaluate_call_arguments(
+        &mut self,
+        args: &[rue_rir::RirCallArg],
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<Vec<ComptimeCallArgument<H::Value>>, H::Failure> {
+        let mut values = Vec::with_capacity(args.len());
+        for arg in args {
+            let program = self.program_key();
+            let value = outcome_value!(self.eval(arg.value, env));
+            let direct_unit_literal = matches!(
+                &self.host.program_rir(&program).get(arg.value).data,
+                InstData::UnitConst
+            );
+            #[cfg(test)]
+            {
+                self.provenance_classifications += 1;
+            }
+            values.push(ComptimeCallArgument::new(value, direct_unit_literal));
+        }
+        ComptimeOutcome::Known(values)
     }
 
     #[inline(never)]
@@ -4811,11 +5288,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let Some(admission) = admission else {
             return ComptimeOutcome::RuntimeDependent;
         };
-        let mut values = Vec::with_capacity(args.len());
-        for arg in &args {
-            let value = outcome_value!(self.eval(arg.value, env));
-            values.push(value);
-        }
+        let values = outcome_value!(self.evaluate_call_arguments(&args, env));
         let bound = host_value!(self.host.bind_comptime_call(&admission, &values, span));
         let Some((callee_types, callee_values)) = bound else {
             return ComptimeOutcome::RuntimeDependent;

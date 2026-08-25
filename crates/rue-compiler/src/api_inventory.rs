@@ -9,11 +9,12 @@
 #[cfg(test)]
 mod comptime_public_contract_tests {
     use rue_air::{
-        ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallKey,
-        ComptimeCallMemoLookup, ComptimeCompletedCallMemo, ComptimeConstInfo, ComptimeEngine,
-        ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame, ComptimeHost, ComptimeHostResult,
-        ComptimeIdentity, ComptimeMemoizedOutcome, ComptimeName, ComptimeOutcome, ComptimeProgram,
-        ComptimeProgramKey, ComptimeProgramRegistry, ComptimeType, ComptimeValue,
+        ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallArgument,
+        ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCompletedCallMemo, ComptimeConstInfo,
+        ComptimeEngine, ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame, ComptimeHost,
+        ComptimeHostResult, ComptimeIdentity, ComptimeMemoizedOutcome, ComptimeName,
+        ComptimeOutcome, ComptimeProgram, ComptimeProgramKey, ComptimeProgramRegistry,
+        ComptimeType, ComptimeValue,
     };
     use rue_rir::{Inst, InstData, InstRef, RirEditor, RirValidationContext, ValidatedRir};
     use rue_span::Span;
@@ -97,6 +98,12 @@ mod comptime_public_contract_tests {
         let mut env =
             ComptimeEnv::<H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>::new();
         ComptimeEngine::new(host).evaluate(ComptimeFrame::expression(program, root), &mut env)
+    }
+
+    #[allow(dead_code)]
+    fn generic_call_argument_contract<V>(argument: &ComptimeCallArgument<V>) {
+        let _value = argument.value();
+        let _direct_unit_literal = argument.is_direct_unit_literal();
     }
 
     #[test]

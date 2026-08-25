@@ -61,7 +61,9 @@ fn Box(comptime T: type) -> type { struct { value: T } }
 fn main() -> i32 {
     let C = Box(());
     let c: C = C { value: () };
-    if c.value == () { 42 } else { 0 }
+    let Computed = Box(comptime { () });
+    let computed: Computed = Computed { value: () };
+    if c.value == () && computed.value == () { 42 } else { 0 }
 }
 """ }]
 exit_code = 42

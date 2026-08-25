@@ -111,3 +111,29 @@ fn main() -> i32 {
 """ }]
 stdout = "40\n"
 exit_code = 0
+
+# A direct Unit literal is the legacy type-value spelling accepted by the
+# durable const initializer. A computed Unit retains the existing E1200
+# rejection because it is a value, not a direct type literal.
+[[case]]
+name = "durable_const_direct_unit_type_value"
+files = [{ path = "main.rue", source = """
+fn Id(comptime T: type) -> type { T }
+const U = Id(());
+fn use(value: U) -> U { value }
+fn main() -> i32 {
+    use(());
+    0
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "durable_const_computed_unit_keeps_type_diagnostic"
+files = [{ path = "main.rue", source = """
+fn Id(comptime T: type) -> type { T }
+const U = Id(comptime { () });
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+compile_stderr_contains = ["E1200", "must be a type"]
