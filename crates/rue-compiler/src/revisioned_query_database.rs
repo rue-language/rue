@@ -6885,6 +6885,7 @@ struct DurableComptimeRootAuthority<'db> {
     imports: QueryFamily<DeclarationImportQueryKey, DeclarationImportQueryValue>,
     session: crate::durable_comptime::DurableComptimeSession,
     legacy_effects: crate::durable_comptime::DurableComptimeEffects,
+    foreign: DurableComptimeForeignQueryAuthority<'db>,
 }
 
 impl<'db> DurableComptimeRootAuthority<'db> {
@@ -6902,6 +6903,20 @@ impl<'db> DurableComptimeRootAuthority<'db> {
             &crate::durable_comptime::DurableComptimeApplicationPolicy::preserve(),
         );
         self.provider
+    }
+}
+
+impl crate::durable_comptime::DurableComptimeForeignCallAuthority
+    for DurableComptimeRootAuthority<'_>
+{
+    fn probe_comptime_call(
+        &self,
+        producer: &crate::StableDefinitionKey,
+        type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
+        value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
+    ) -> Result<crate::body_query::ForeignComptimeCallLookup, QueryAbort> {
+        self.foreign
+            .probe_comptime_call(producer, type_arguments, value_arguments)
     }
 }
 
@@ -13630,6 +13645,13 @@ impl RevisionedQueryDatabase {
                                         imports: imports_for_semantic_nucleus.clone(),
                                         session,
                                         legacy_effects: Default::default(),
+                                        foreign: DurableComptimeForeignQueryAuthority {
+                                            context,
+                                            semantic_nucleus: family,
+                                            declaration_body_plan_artifacts:
+                                                &artifacts_for_semantic_nucleus,
+                                            configuration: &query.configuration,
+                                        },
                                     };
                                     authority
                                         .session
@@ -14297,6 +14319,13 @@ impl RevisionedQueryDatabase {
                                                     imports: imports_for_semantic_nucleus.clone(),
                                                     session,
                                                     legacy_effects: Default::default(),
+                                                    foreign: DurableComptimeForeignQueryAuthority {
+                                                        context,
+                                                        semantic_nucleus: family,
+                                                        declaration_body_plan_artifacts:
+                                                            &artifacts_for_semantic_nucleus,
+                                                        configuration: &call.declaration.configuration,
+                                                    },
                                                 };
                                         authority
                                             .session

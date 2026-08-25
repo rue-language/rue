@@ -4005,8 +4005,9 @@ fn durable_comptime_services_are_named_authority_operations() {
             "imports: QueryFamily<DeclarationImportQueryKey, DeclarationImportQueryValue>,",
             "session: crate::durable_comptime::DurableComptimeSession,",
             "legacy_effects: crate::durable_comptime::DurableComptimeEffects,",
+            "foreign: DurableComptimeForeignQueryAuthority<'db>,",
         ],
-        "durable root authority must own exactly the four canonical service fields"
+        "durable root authority must own exactly the five canonical service fields"
     );
     assert_eq!(
         database
@@ -4015,6 +4016,41 @@ fn durable_comptime_services_are_named_authority_operations() {
         1,
         "one root authority must own the durable semantic service implementation"
     );
+    assert_eq!(
+        database
+            .matches(
+                "impl crate::durable_comptime::DurableComptimeForeignCallAuthority\n    for DurableComptimeRootAuthority"
+            )
+            .count(),
+        1,
+        "the root must delegate foreign calls through one owned authority"
+    );
+    let root_foreign_impl = database
+        .split(
+            "impl crate::durable_comptime::DurableComptimeForeignCallAuthority\n    for DurableComptimeRootAuthority<'_>\n{",
+        )
+        .nth(1)
+        .and_then(|source| source.split("\n}\n\nfn project_named_value_candidate").next())
+        .expect("bounded root foreign authority implementation");
+    assert_eq!(root_foreign_impl.matches("self.foreign").count(), 1);
+    assert_eq!(
+        root_foreign_impl.matches(".probe_comptime_call(").count(),
+        1
+    );
+    for forbidden in [
+        "query_registered(",
+        "ReadyQueryProbe",
+        "OwnedForeignComptimeProgram",
+        "ComptimeEngine",
+        "SemanticConstEvaluator",
+        "InstData",
+        "InstRef",
+    ] {
+        assert!(
+            !root_foreign_impl.contains(forbidden),
+            "root foreign delegation gained policy or walker authority: {forbidden}"
+        );
+    }
     assert!(
         !database.contains("struct SemanticComptimeAuthority"),
         "the ephemeral durable semantic authority must stay deleted"
@@ -4026,6 +4062,27 @@ fn durable_comptime_services_are_named_authority_operations() {
         2,
         "both durable evaluator roots must construct the root authority"
     );
+    let root_constructions = database
+        .split("let mut authority = DurableComptimeRootAuthority {")
+        .skip(1)
+        .take(2)
+        .map(|source| {
+            source
+                .split("};")
+                .next()
+                .expect("bounded root authority construction")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(root_constructions.len(), 2);
+    for root in &root_constructions {
+        assert!(root.contains("foreign: DurableComptimeForeignQueryAuthority {"));
+        assert!(root.contains("context,"));
+        assert!(root.contains("semantic_nucleus: family"));
+        assert!(root.contains("declaration_body_plan_artifacts:"));
+        assert!(root.contains("&artifacts_for_semantic_nucleus"));
+    }
+    assert!(root_constructions[0].contains("configuration: &query.configuration"));
+    assert!(root_constructions[1].contains("configuration: &call.declaration.configuration"));
     let root_authority_impl = database
         .split("impl<'db> DurableComptimeRootAuthority<'db> {")
         .nth(1)
