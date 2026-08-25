@@ -4193,12 +4193,12 @@ fn durable_literal_array_length_failure(
 /// what `<<` and `~` mean at a given width (RUE-1698, RUE-1750).
 ///
 /// Returns `None` for a non-integer type. The durable evaluator only reaches
-/// the truncating arms after [`SemanticConstEvaluator::require_integer_fits`]
+/// the truncating arms after `DurableComptimeScalarPolicy::require_integer_fits`
 /// has admitted the operands at `ty`, which no non-integer type survives.
 fn durable_int_width(
     ty: &crate::durable_semantics::DurableType,
 ) -> Option<rue_air::integer_semantics::IntegerType> {
-    crate::durable_comptime::durable_int_width(ty)
+    crate::durable_comptime::DurableComptimeScalarPolicy::type_integer_semantics(ty)
 }
 
 fn semantic_nucleus_declaration_name(identity: &str) -> Option<Arc<str>> {
@@ -7475,74 +7475,11 @@ impl SemanticConstEvaluator<'_, '_> {
         left: Option<crate::durable_semantics::DurableType>,
         right: Option<crate::durable_semantics::DurableType>,
     ) -> Result<crate::durable_semantics::DurableType, EvaluateSemanticConstError> {
-        use crate::durable_semantics::DurableType as T;
-        let fallback = self
-            .expected_type
-            .clone()
-            .filter(|ty| {
-                matches!(
-                    ty,
-                    T::I8 | T::I16 | T::I32 | T::I64 | T::U8 | T::U16 | T::U32 | T::U64
-                )
-            })
-            .unwrap_or(T::I32);
-        match (left, right) {
-            (Some(left), Some(right)) if left != right => Err(EvaluateSemanticConstError::failure(
-                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                    rue_error::ErrorKind::TypeMismatch {
-                        expected: durable_type_diagnostic_name(&left),
-                        found: durable_type_diagnostic_name(&right),
-                    },
-                ),
-            )),
-            (Some(ty), _) | (_, Some(ty)) => Ok(ty),
-            (None, None) => Ok(fallback),
-        }
-    }
-
-    fn require_integer_fits(
-        ty: &crate::durable_semantics::DurableType,
-        value: i128,
-    ) -> Result<(), EvaluateSemanticConstError> {
-        let value = crate::durable_semantics::DurableConstValue::Integer(value);
-        if durable_const_fits_type(&value, ty) {
-            Ok(())
-        } else {
-            let value = match value {
-                crate::durable_semantics::DurableConstValue::Integer(value) => value,
-                _ => unreachable!(),
-            };
-            let type_name = durable_type_diagnostic_name(ty);
-            Err(
-                crate::durable_comptime::DurableComptimeFailure::integer_literal_overflow(
-                    &type_name, value,
-                ),
-            )
-        }
-    }
-
-    fn checked_integer_result(
-        ty: &crate::durable_semantics::DurableType,
-        result: rue_air::integer_semantics::CheckedIntegerResult,
-        operation: &str,
-    ) -> Result<i128, EvaluateSemanticConstError> {
-        let Some(value) = result.checked() else {
-            let type_name = durable_type_diagnostic_name(ty);
-            let detail = result.raw().map_or_else(
-                || format!("the result does not fit in {type_name}"),
-                |value| {
-                    format!(
-                        "value {value} is out of range for type {type_name}; {value} does not fit in {type_name}"
-                    )
-                },
-            );
-            return Err(
-                crate::durable_comptime::DurableComptimeFailure::arithmetic_overflow(
-                    &type_name, operation, &detail,
-                ),
-            );
-        };
-        Ok(value)
+        crate::durable_comptime::DurableComptimeScalarPolicy::integer_operation_type(
+            self.expected_type.as_ref(),
+            left.as_ref(),
+            right.as_ref(),
+        )
     }
 
     fn eval_binary(
@@ -7607,43 +7544,59 @@ impl SemanticConstEvaluator<'_, '_> {
             return Self::failure("comptime arithmetic operand is not an integer");
         };
         let operand_ty = self.integer_type(left_ty, right_ty)?;
-        Self::require_integer_fits(&operand_ty, left)?;
-        Self::require_integer_fits(&operand_ty, right)?;
+        crate::durable_comptime::DurableComptimeScalarPolicy::require_integer_fits(
+            &operand_ty,
+            left,
+        )?;
+        crate::durable_comptime::DurableComptimeScalarPolicy::require_integer_fits(
+            &operand_ty,
+            right,
+        )?;
         let Some(integer) = durable_int_width(&operand_ty) else {
             return Self::failure("comptime arithmetic operand is not an integer");
         };
         let value = match op {
-            O::Add => V::Integer(Self::checked_integer_result(
-                &operand_ty,
-                integer.checked_add_report_i128(left, right),
-                "addition",
-            )?),
-            O::Sub => V::Integer(Self::checked_integer_result(
-                &operand_ty,
-                integer.checked_sub_report_i128(left, right),
-                "subtraction",
-            )?),
-            O::Mul => V::Integer(Self::checked_integer_result(
-                &operand_ty,
-                integer.checked_mul_report_i128(left, right),
-                "multiplication",
-            )?),
+            O::Add => V::Integer(
+                crate::durable_comptime::DurableComptimeScalarPolicy::checked_integer_result(
+                    &operand_ty,
+                    integer.checked_add_report_i128(left, right),
+                    "addition",
+                )?,
+            ),
+            O::Sub => V::Integer(
+                crate::durable_comptime::DurableComptimeScalarPolicy::checked_integer_result(
+                    &operand_ty,
+                    integer.checked_sub_report_i128(left, right),
+                    "subtraction",
+                )?,
+            ),
+            O::Mul => V::Integer(
+                crate::durable_comptime::DurableComptimeScalarPolicy::checked_integer_result(
+                    &operand_ty,
+                    integer.checked_mul_report_i128(left, right),
+                    "multiplication",
+                )?,
+            ),
             O::Div if right == 0 => {
                 return Err(crate::durable_comptime::DurableComptimeFailure::division_by_zero());
             }
             O::Mod if right == 0 => {
                 return Err(crate::durable_comptime::DurableComptimeFailure::remainder_by_zero());
             }
-            O::Div => V::Integer(Self::checked_integer_result(
-                &operand_ty,
-                integer.checked_div_report_i128(left, right),
-                "division",
-            )?),
-            O::Mod => V::Integer(Self::checked_integer_result(
-                &operand_ty,
-                integer.checked_rem_report_i128(left, right),
-                "remainder",
-            )?),
+            O::Div => V::Integer(
+                crate::durable_comptime::DurableComptimeScalarPolicy::checked_integer_result(
+                    &operand_ty,
+                    integer.checked_div_report_i128(left, right),
+                    "division",
+                )?,
+            ),
+            O::Mod => V::Integer(
+                crate::durable_comptime::DurableComptimeScalarPolicy::checked_integer_result(
+                    &operand_ty,
+                    integer.checked_rem_report_i128(left, right),
+                    "remainder",
+                )?,
+            ),
             O::Eq => V::Bool(integer.compare_i128(left, right) == std::cmp::Ordering::Equal),
             O::Ne => V::Bool(integer.compare_i128(left, right) != std::cmp::Ordering::Equal),
             O::Lt => V::Bool(integer.compare_i128(left, right) == std::cmp::Ordering::Less),
@@ -8378,7 +8331,10 @@ impl SemanticConstEvaluator<'_, '_> {
             ))),
             E::Neg { operand } | E::BitNot { operand } => {
                 let (operand_value, ty) = self.int_value(*operand)?;
-                let ty = self.integer_type(ty, None)?;
+                let ty = crate::durable_comptime::DurableComptimeScalarPolicy::unary_integer_type(
+                    self.expected_type.as_ref(),
+                    ty.as_ref(),
+                )?;
                 let result = if matches!(&instruction.data, E::Neg { .. }) {
                     let Some(integer) = durable_int_width(&ty) else {
                         return Self::failure("comptime negation operand is not an integer");
@@ -8388,7 +8344,9 @@ impl SemanticConstEvaluator<'_, '_> {
                     } else {
                         integer.checked_neg_report_i128(operand_value)
                     };
-                    Self::checked_integer_result(&ty, report, "negation")?
+                    crate::durable_comptime::DurableComptimeScalarPolicy::checked_integer_result(
+                        &ty, report, "negation",
+                    )?
                 } else {
                     // `~` is closed over the operand width and cannot trap:
                     // `~0u8` is 255, not the i128 -1 this used to compute and
