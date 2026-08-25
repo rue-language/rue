@@ -16,7 +16,8 @@ use rue_span::Span;
 use super::analysis::FirstClassStrSite;
 use super::anon_structs::TrustedTryProducer;
 use super::context::{
-    AnalysisContext, AnalysisResult, ConstValue, LocalVar, LoopEdgeStates, union_move_maps,
+    AnalysisContext, AnalysisResult, ConstValue, DivergenceKind, DivergenceKinds, LocalVar,
+    LoopEdgeStates, union_move_maps,
 };
 use crate::declaration_validation::{
     AccessorExitForm, AccessorMethodLink, AccessorYieldRootForm, accessor_method_link_error,
@@ -101,6 +102,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if let Some(record) = ctx.loop_break_stack.last() {
                     self.check_linear_values_at_exit_edge(ctx, record.first_unwound_frame, false)?;
                 }
+                ctx.divergence_kinds.insert(DivergenceKind::Exit);
 
                 // Record the break against the innermost enclosing loop: it
                 // is now `()`-typed instead of `!` (spec 4.8:17), and the
@@ -137,6 +139,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if let Some(record) = ctx.loop_break_stack.last() {
                     self.check_linear_values_at_exit_edge(ctx, record.first_unwound_frame, false)?;
                 }
+                ctx.divergence_kinds.insert(DivergenceKind::Exit);
 
                 // The move state in force HERE rides the back edge into the
                 // next iteration: record it so the loop's back-edge recheck
@@ -189,6 +192,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        // Keep divergence classification local to this branch. A condition
+        // or arm may contain an explicit panic, but an if with a continuing
+        // alternative itself continues and must not leak that arm's
+        // exemption into its enclosing expression.
+        let prior_divergence = ctx.divergence_kinds;
+        ctx.divergence_kinds = DivergenceKinds::NONE;
         // Comptime-known branch selection (RUE-166, spec 4.14:17): inside a
         // body with comptime value parameters in scope (a value-specialized
         // function or an anonymous-struct method capturing comptime values),
@@ -209,7 +218,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         let loans = ctx.nested_expression_loans(&boundary);
                         ctx.exit_full_expression(boundary);
                         let result = result?;
+                        let branch_divergence = ctx.divergence_kinds;
                         ctx.pop_scope();
+                        ctx.divergence_kinds = prior_divergence.union(branch_divergence);
                         // With an `else`, the selected branch is this `if`'s
                         // value, so loans surviving its tail belong to the
                         // enclosing full expression (RUE-1678), exactly as on
@@ -261,6 +272,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let cond_result = ctx.with_expected_type(None, |ctx| self.analyze_inst(air, cond, ctx));
         ctx.exit_full_expression(boundary);
         let cond_result = cond_result?;
+        let cond_divergence = ctx.divergence_kinds;
+        ctx.divergence_kinds = DivergenceKinds::NONE;
         let reachable_edges_after_condition = ctx.loop_break_stack.clone();
 
         if let Some(else_b) = else_block {
@@ -277,9 +290,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let then_loans = ctx.nested_expression_loans(&boundary);
             ctx.exit_full_expression(boundary);
             let then_result = then_result?;
+            let mut then_divergence = ctx.divergence_kinds;
+            ctx.divergence_kinds = DivergenceKinds::NONE;
             let then_type = then_result.ty;
             let then_continues = then_result.continues;
             let then_span = self.body_rir_ref().get(then_block).span;
+            if then_divergence.has_other()
+                && (then_continues
+                    || !matches!(
+                        self.body_rir_ref().get(then_block).data,
+                        InstData::Block { .. }
+                    ))
+            {
+                self.check_linear_values_at_unchecked_divergence(ctx)?;
+                then_divergence = then_divergence.without_other();
+                ctx.divergence_kinds = ctx.divergence_kinds.without_other();
+            }
             ctx.pop_scope();
 
             // Capture then-branch's move state
@@ -295,9 +321,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let else_loans = ctx.nested_expression_loans(&boundary);
             ctx.exit_full_expression(boundary);
             let else_result = else_result?;
+            let mut else_divergence = ctx.divergence_kinds;
+            ctx.divergence_kinds = DivergenceKinds::NONE;
             let else_type = else_result.ty;
             let else_continues = else_result.continues;
             let else_span = self.body_rir_ref().get(else_b).span;
+            if else_divergence.has_other()
+                && (else_continues
+                    || !matches!(self.body_rir_ref().get(else_b).data, InstData::Block { .. }))
+            {
+                self.check_linear_values_at_unchecked_divergence(ctx)?;
+                else_divergence = else_divergence.without_other();
+                ctx.divergence_kinds = ctx.divergence_kinds.without_other();
+            }
             ctx.pop_scope();
 
             // Both arms are analyzed, so one arm's loan cannot be mistaken for
@@ -322,7 +358,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
 
             // Merge move states from both branches.
-            ctx.merge_branch_moves(then_moves, else_moves, !then_continues, !else_continues);
+            ctx.merge_branch_moves(
+                then_moves,
+                else_moves,
+                !then_continues,
+                !else_continues,
+                then_divergence,
+                else_divergence,
+            );
 
             // Compute the unified result type using never type coercion
             let result_type = match (then_continues, else_continues) {
@@ -365,6 +408,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ty: result_type,
                 span,
             });
+            // Preserve every reachable terminating alternative. In
+            // particular, a continuing arm can still have an internal panic
+            // or return edge, and a later sibling must not erase it.
+            let branch_divergence = if cond_result.continues {
+                cond_divergence
+                    .union(then_divergence)
+                    .union(else_divergence)
+            } else {
+                cond_divergence
+            };
+            ctx.divergence_kinds = prior_divergence.union(branch_divergence);
             Ok(AnalysisResult::with_continues(
                 air_ref,
                 result_type,
@@ -382,6 +436,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let then_result = self.analyze_inst(air, then_block, ctx);
             ctx.exit_full_expression(boundary);
             let then_result = then_result?;
+            let then_divergence = ctx.divergence_kinds;
+            ctx.divergence_kinds = DivergenceKinds::NONE;
             ctx.pop_scope();
 
             // Check that the then branch has unit type (or Never/Error)
@@ -418,6 +474,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     saved_moves,
                     false, // then doesn't diverge
                     false, // "else" (empty) doesn't diverge
+                    then_divergence,
+                    DivergenceKinds::NONE,
                 );
             }
 
@@ -430,6 +488,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ty: Type::UNIT,
                 span,
             });
+            let branch_divergence = if cond_result.continues {
+                cond_divergence.union(then_divergence)
+            } else {
+                cond_divergence
+            };
+            ctx.divergence_kinds = prior_divergence.union(branch_divergence);
             Ok(AnalysisResult::with_continues(
                 air_ref,
                 Type::UNIT,
@@ -457,6 +521,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let cond_result = self.analyze_inst(air, cond, ctx);
         ctx.exit_full_expression(boundary);
         let cond_result = cond_result?;
+        let cond_divergence = ctx.divergence_kinds;
+        ctx.divergence_kinds = DivergenceKinds::NONE;
         // The condition-false path exits the while before its body runs.
         // Keep its ownership state separate from the body's fall-through:
         // a body that always diverges must not overwrite this zero-iteration
@@ -475,6 +541,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let body_result = self.analyze_inst(air, body, ctx);
         ctx.exit_full_expression(boundary);
         let body_result = body_result?;
+        let body_divergence = ctx.divergence_kinds;
+        ctx.divergence_kinds = DivergenceKinds::NONE;
         ctx.loop_depth -= 1;
         // pop_scope replays this scope's RUE-522 restoration onto the
         // break-site snapshots still on the stack, so the record popped
@@ -581,6 +649,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: Type::UNIT,
             span,
         });
+        let mut loop_divergence = cond_divergence;
+        if cond_result.continues {
+            loop_divergence = loop_divergence.union(body_divergence);
+        }
+        if !cond_result.continues && loop_divergence.is_empty() {
+            loop_divergence.insert(DivergenceKind::Other);
+        }
+        ctx.divergence_kinds = loop_divergence;
         Ok(AnalysisResult::with_continues(
             air_ref,
             Type::UNIT,
@@ -618,6 +694,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let body_result = self.analyze_inst(air, body, ctx);
         ctx.exit_full_expression(boundary);
         let body_result = body_result?;
+        let body_divergence = ctx.divergence_kinds;
+        ctx.divergence_kinds = DivergenceKinds::NONE;
         if iter_borrow.is_some() {
             ctx.iter_borrows.pop();
         }
@@ -716,6 +794,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: loop_ty,
             span,
         });
+        let mut loop_divergence = body_divergence;
+        if !has_reachable_break && (body_result.continues || loop_divergence.is_empty()) {
+            // A continuing body reaches the loop back-edge, which is an
+            // ordinary non-panic divergence even when another body path
+            // explicitly panics. A body with only exempt panic provenance
+            // retains that provenance and does not acquire a generic edge.
+            loop_divergence.insert(DivergenceKind::Other);
+        }
+        ctx.divergence_kinds = loop_divergence;
         Ok(AnalysisResult::with_continues(
             air_ref,
             loop_ty,
@@ -916,6 +1003,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        let prior_divergence = ctx.divergence_kinds;
+        ctx.divergence_kinds = DivergenceKinds::NONE;
         // Comptime-known arm selection (RUE-191, spec 4.14:19): inside a body
         // with comptime value parameters in scope, a `match` whose scrutinee
         // is compile-time evaluable selects its arm during analysis — only
@@ -1040,7 +1129,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         let loans = ctx.nested_expression_loans(&boundary);
                         ctx.exit_full_expression(boundary);
                         let result = result?;
+                        let selected_divergence = ctx.divergence_kinds;
                         ctx.pop_scope();
+                        ctx.divergence_kinds = prior_divergence.union(selected_divergence);
                         // The selected arm is this `match`'s value, so loans
                         // surviving its tail belong to the enclosing full
                         // expression (RUE-1678).
@@ -1080,6 +1171,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         });
         ctx.exit_full_expression(boundary);
         let scrutinee_result = scrutinee_result?;
+        let scrutinee_divergence = ctx.divergence_kinds;
+        ctx.divergence_kinds = DivergenceKinds::NONE;
         let scrutinee_type = scrutinee_result.ty;
         let reachable_edges_after_scrutinee = ctx.loop_break_stack.clone();
 
@@ -1132,6 +1225,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut air_arms = Vec::new();
         let mut result_type: Option<Type> = None;
         let mut result_continues: Option<bool> = None;
+        let mut arm_divergence_kinds: Vec<DivergenceKinds> = Vec::with_capacity(arms.len());
 
         // Move state before any arm runs (after the scrutinee, whose moves
         // happen on every path). Arms are alternatives, not a sequence:
@@ -1424,6 +1518,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let body_loans = ctx.nested_expression_loans(&boundary);
             ctx.exit_full_expression(boundary);
             let body_result = body_result?;
+            let mut body_divergence = ctx.divergence_kinds;
+            ctx.divergence_kinds = DivergenceKinds::NONE;
             let body_type = body_result.ty;
             arm_accessor_loans.push((*body, body_loans, body_result.continues));
 
@@ -1437,10 +1533,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // below). Unnameable positions (RUE-1592) are registered in no
             // scope and were already rejected up front when linear (E0486),
             // so this visits exactly the named bindings.
-            self.check_unconsumed_linear_values(ctx)?;
+            if body_result.continues {
+                self.check_unconsumed_linear_values(ctx)?;
+            } else if body_divergence.has_other()
+                && !matches!(self.body_rir_ref().get(*body).data, InstData::Block { .. })
+            {
+                // A value-position arm has no nested block whose edge check
+                // can see the match's enclosing bindings. Validate an
+                // unchecked generic divergence against every live scope at
+                // this arm edge; block-shaped arms already perform that walk
+                // at their own terminal edge.
+                self.check_linear_values_at_unchecked_divergence(ctx)?;
+                body_divergence = body_divergence.without_other();
+                ctx.divergence_kinds = ctx.divergence_kinds.without_other();
+            }
+            arm_divergence_kinds.push(body_divergence);
 
             ctx.pop_scope();
-            arm_move_states.push((std::mem::take(&mut ctx.moved_vars), !body_result.continues));
+            arm_move_states.push((
+                std::mem::take(&mut ctx.moved_vars),
+                !body_result.continues,
+                body_divergence,
+            ));
 
             // Update result type (handle Never type coercion)
             result_type = Some(match result_type {
@@ -1596,6 +1710,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let final_type = result_type.unwrap_or(Type::UNIT);
 
         let air_ref = air.add_match(scrutinee_result.air_ref, &air_arms, final_type, span)?;
+        let match_divergence = if scrutinee_result.continues {
+            arm_divergence_kinds
+                .iter()
+                .copied()
+                .fold(scrutinee_divergence, DivergenceKinds::union)
+        } else {
+            scrutinee_divergence
+        };
+        ctx.divergence_kinds = prior_divergence.union(match_divergence);
         Ok(AnalysisResult::with_continues(
             air_ref,
             final_type,
@@ -1724,6 +1847,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // this edge.
         if trusted_producer.is_some() && operand_result.continues {
             self.check_linear_values_at_exit_edge(ctx, 0, true)?;
+            ctx.divergence_kinds.insert(DivergenceKind::Exit);
         }
 
         match trusted_producer {
@@ -2447,6 +2571,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // its obligation sites report instead (no double-report).
         if edge_reachable {
             self.check_linear_values_at_exit_edge(ctx, 0, true)?;
+            ctx.divergence_kinds.insert(DivergenceKind::Exit);
         }
 
         let air_ref = air.add_inst(AirInst {
@@ -2465,6 +2590,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        let prior_divergence = ctx.divergence_kinds;
+        ctx.divergence_kinds = DivergenceKinds::NONE;
         // Get the instruction refs from extra data
         let inst_refs = self.body_rir_ref().block_insts(instructions).to_vec();
         // Push a new scope for this block.
@@ -2474,6 +2601,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut statements = Vec::new();
         let mut last_result: Option<AnalysisResult> = None;
         let mut diverged = false;
+        let mut reachable_divergence = DivergenceKinds::NONE;
         let mut diverged_context: Option<AnalysisContext> = None;
         let num_insts = inst_refs.len();
         for (i, inst_ref) in inst_refs.iter().copied().enumerate() {
@@ -2482,6 +2610,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // succeeded. Inference failures use the exact selections observed
             // during constraint generation instead; substitution-dependent
             // selections make that transaction non-terminal.
+            // Each statement is its own sequencing boundary. Clear the
+            // transient edge classification so a dead suffix cannot change
+            // the kind captured at the first reachable divergence.
+            ctx.divergence_kinds = DivergenceKinds::NONE;
             let recovery_checkpoint = self
                 .body_analysis_error_recovery()
                 .then(|| (air.checkpoint(), ctx.clone()));
@@ -2517,6 +2649,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 Err(error) => return Err(error),
             };
 
+            let mut statement_divergence = ctx.divergence_kinds;
+            if !diverged && !result.continues && statement_divergence.has_other() {
+                // Validate the generic edge before any enclosing join can
+                // replace its ownership state, then keep only provenance that
+                // still needs downstream handling. A checked generic edge is
+                // not allowed to contaminate a later explicit panic path.
+                self.check_linear_values_at_unchecked_divergence(ctx)?;
+                statement_divergence = statement_divergence.without_other();
+                ctx.divergence_kinds = ctx.divergence_kinds.without_other();
+            }
+            if !diverged {
+                reachable_divergence = reachable_divergence.union(statement_divergence);
+            }
+
             if is_last {
                 last_result = Some(result);
                 if !result.continues && !diverged {
@@ -2551,13 +2697,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let reachable_moves = diverged_context
             .as_ref()
             .map(|reachable| reachable.moved_vars.clone());
-        if let Some(reachable_context) = diverged_context.as_ref() {
-            self.check_unconsumed_linear_values(reachable_context)?;
-            // Keep the current context for diagnostics from declarations in
-            // the unreachable suffix. This is deliberately a second check:
-            // the snapshot proves reachable obligations, while the live
-            // context retains dead-suffix locals and their diagnostics.
-            self.check_unconsumed_linear_values(ctx)?;
+        if diverged_context.is_some() {
+            // Unchecked divergent edges were validated at the edge, while an
+            // explicit panic edge has no scope-exit obligation. Keep only the
+            // reachable ownership snapshot for the enclosing join.
         } else {
             self.check_unconsumed_linear_values(ctx)?;
         }
@@ -2602,6 +2745,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 AnalysisResult::new(air_ref, Type::UNIT)
             }
         };
+
+        ctx.divergence_kinds = prior_divergence.union(reachable_divergence);
 
         // Only create a Block instruction if there are statements;
         // otherwise just return the value directly (optimization)

@@ -848,9 +848,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let reachable_edges = ctx.loop_break_stack.clone();
+        let divergence_before = ctx.divergence_kinds;
         let result = self.analyze_inst(air, operand, ctx)?;
         if !reachable {
             Self::restore_reachable_loop_edges(ctx, &reachable_edges);
+            ctx.divergence_kinds = divergence_before;
         }
         Ok(result)
     }
@@ -1080,6 +1082,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 Type::NEVER,
                 span,
             )?;
+            ctx.divergence_kinds
+                .insert(super::super::context::DivergenceKind::Panic);
             return Ok(AnalysisResult::diverged(air_ref, Type::NEVER));
         }
 
@@ -1112,6 +1116,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         )?;
         let air_ref =
             self.wrap_value_with_temp_scope(air, intrinsic_ref, Type::NEVER, span, temp_scope)?;
+        // An operand that diverges prevents the explicit panic call from
+        // being reached; the context already records that operand's edge.
+        // Only a normally evaluated message establishes the panic exemption.
+        if arg_result.continues {
+            ctx.divergence_kinds
+                .insert(super::super::context::DivergenceKind::Panic);
+        }
         Ok(AnalysisResult::diverged(air_ref, Type::NEVER))
     }
 
@@ -1154,9 +1165,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut temp_scope = Vec::new();
         if args.len() > 1 {
             let reachable_edges_before_message = ctx.loop_break_stack.clone();
+            let divergence_before_message = ctx.divergence_kinds;
             let msg_result = self.analyze_inst_for_projection(air, args[1].value, ctx)?;
             if !cond_result.continues {
                 Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_message);
+                ctx.divergence_kinds = divergence_before_message;
             }
             self.validate_abort_message_type(
                 "assert",

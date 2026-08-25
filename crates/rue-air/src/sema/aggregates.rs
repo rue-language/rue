@@ -132,12 +132,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut continues = true;
         for (i, arg) in args.iter().enumerate() {
             let reachable_edges_before_arg = ctx.loop_break_stack.clone();
+            let divergence_before_arg = ctx.divergence_kinds;
             let expected = payload_types[i];
             let arg_result = ctx
                 .with_expected_type(Some(expected), |ctx| self.analyze_inst(air, arg.value, ctx))?;
             let actual = arg_result.ty;
             if !continues {
                 Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_arg);
+                ctx.divergence_kinds = divergence_before_arg;
             }
             continues &= arg_result.continues;
             if !self.types_compatible(actual, expected) && actual != Type::ERROR {
@@ -499,6 +501,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         for &(init_field_name, field_value) in &field_inits {
             let reachable_edges_before_field = ctx.loop_break_stack.clone();
+            let divergence_before_field = ctx.divergence_kinds;
             let init_name = self.body_interner().resolve(&init_field_name).to_owned();
             let field_idx = field_index_map[init_name.as_str()];
             let expected_field_type = struct_def.fields[field_idx].ty;
@@ -544,6 +547,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             };
             if !continues {
                 Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_field);
+                ctx.divergence_kinds = divergence_before_field;
             }
             continues &= field_result.continues;
 
@@ -1201,9 +1205,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut continues = true;
         for elem_ref in elem_refs {
             let reachable_edges_before_elem = ctx.loop_break_stack.clone();
+            let divergence_before_elem = ctx.divergence_kinds;
             let elem_result = self.analyze_inst(air, elem_ref, ctx)?;
             if !continues {
                 Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_elem);
+                ctx.divergence_kinds = divergence_before_elem;
             }
             continues &= elem_result.continues;
             // An accessor result cannot be captured as an array element

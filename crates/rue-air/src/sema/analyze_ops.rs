@@ -330,9 +330,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             InstData::And { lhs, rhs } => {
                 let lhs_result = self.analyze_inst(air, *lhs, ctx)?;
                 let reachable_edges_after_lhs = ctx.loop_break_stack.clone();
+                let divergence_before_rhs = ctx.divergence_kinds;
                 let rhs_result = self.analyze_inst(air, *rhs, ctx)?;
                 if !lhs_result.continues {
                     Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_lhs);
+                    ctx.divergence_kinds = divergence_before_rhs;
+                } else if ctx.divergence_kinds.has_other() {
+                    // The RHS is reachable on the lhs-true path. Validate an
+                    // unchecked generic divergence against the ownership
+                    // state at that short-circuit edge, then keep it from
+                    // contaminating the later normal-path join or panic.
+                    self.check_linear_values_at_unchecked_divergence(ctx)?;
+                    ctx.divergence_kinds = ctx.divergence_kinds.without_other();
                 }
 
                 if !lhs_result.continues || !rhs_result.continues {
@@ -355,9 +364,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             InstData::Or { lhs, rhs } => {
                 let lhs_result = self.analyze_inst(air, *lhs, ctx)?;
                 let reachable_edges_after_lhs = ctx.loop_break_stack.clone();
+                let divergence_before_rhs = ctx.divergence_kinds;
                 let rhs_result = self.analyze_inst(air, *rhs, ctx)?;
                 if !lhs_result.continues {
                     Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_lhs);
+                    ctx.divergence_kinds = divergence_before_rhs;
+                } else if ctx.divergence_kinds.has_other() {
+                    // The RHS is reachable on the lhs-false path. Validate
+                    // its generic divergence before short-circuit joining.
+                    self.check_linear_values_at_unchecked_divergence(ctx)?;
+                    ctx.divergence_kinds = ctx.divergence_kinds.without_other();
                 }
 
                 if !lhs_result.continues || !rhs_result.continues {

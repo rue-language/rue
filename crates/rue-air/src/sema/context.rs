@@ -606,6 +606,11 @@ pub(crate) struct AnalysisContext<'a> {
     /// as `resolved_types`. Semantic consumers use these facts rather than
     /// rediscovering divergence from a construct's surface result type.
     pub resolved_continues: &'a AHashMap<InstRef, bool>,
+    /// Statically reachable divergence observed while analyzing the current
+    /// expression. Multiple provenance bits may be present when different
+    /// paths terminate in different ways; retaining that set prevents a later unreachable
+    /// operand or a branch-order choice from changing ownership semantics.
+    pub divergence_kinds: DivergenceKinds,
     /// Variables that have been moved (for affine type checking).
     /// Maps variable symbol to move state (supports partial/field-level moves).
     pub moved_vars: AHashMap<Spur, VariableMoveState>,
@@ -743,6 +748,61 @@ pub(crate) struct AnalysisContext<'a> {
     /// early-exit edge walk (RUE-1614) must skip the by-value parameter
     /// obligation exactly as the end-of-body parameter check does.
     pub is_destructor: bool,
+}
+
+/// Classification of a non-continuing edge for linear scope checking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DivergenceKind {
+    /// The edge is the explicit, statically known process abort `@panic`.
+    Panic,
+    /// A scope exit whose linear obligation was checked at the edge.
+    Exit,
+    /// The edge unwinds or otherwise terminates without the panic exemption.
+    Other,
+}
+
+/// Reachable divergence provenance accumulated for one expression.
+///
+/// This is intentionally a tiny set rather than a single "last edge" value:
+/// a conditional or sequenced expression can have both an aborting panic edge
+/// and an unwinding/other edge, and both remain relevant to its enclosing
+/// ownership join.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct DivergenceKinds(u8);
+
+impl DivergenceKinds {
+    pub const NONE: Self = Self(0);
+    pub const PANIC: Self = Self(1);
+    pub const OTHER: Self = Self(2);
+    pub const EXIT: Self = Self(4);
+
+    pub const fn from_kind(kind: DivergenceKind) -> Self {
+        match kind {
+            DivergenceKind::Panic => Self::PANIC,
+            DivergenceKind::Other => Self::OTHER,
+            DivergenceKind::Exit => Self::EXIT,
+        }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub const fn has_other(self) -> bool {
+        self.0 & Self::OTHER.0 != 0
+    }
+
+    pub const fn without_other(self) -> Self {
+        Self(self.0 & !Self::OTHER.0)
+    }
+
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub fn insert(&mut self, kind: DivergenceKind) {
+        *self = self.union(Self::from_kind(kind));
+    }
 }
 
 pub(crate) struct FullExpressionBoundary {
@@ -1017,6 +1077,7 @@ impl<'a> AnalysisContext<'a> {
             comptime_type_scope_stack: self.comptime_type_scope_stack.clone(),
             resolved_types: self.resolved_types,
             resolved_continues: self.resolved_continues,
+            divergence_kinds: self.divergence_kinds,
             moved_vars: self.moved_vars.clone(),
             warnings: Vec::new(),
             allow_unused_variables: self.allow_unused_variables,
@@ -1087,13 +1148,16 @@ impl<'a> AnalysisContext<'a> {
     /// When one branch diverges (returns Never), only the other branch's moves matter:
     /// - If then-branch diverges, else-branch's moves are used (then never returns)
     /// - If else-branch diverges, then-branch's moves are used (else never returns)
-    /// - If both diverge, the whole if-else diverges and moves don't matter
+    /// - If both diverge, explicit-panic edges are exempt; unchecked edge
+    ///   state is retained for the enclosing conservative check
     pub fn merge_branch_moves(
         &mut self,
         then_moves: AHashMap<Spur, VariableMoveState>,
         else_moves: AHashMap<Spur, VariableMoveState>,
         then_diverges: bool,
         else_diverges: bool,
+        then_divergence: DivergenceKinds,
+        else_divergence: DivergenceKinds,
     ) {
         // If then-branch diverges, use else-branch's moves
         // If else-branch diverges, use then-branch's moves
@@ -1101,9 +1165,21 @@ impl<'a> AnalysisContext<'a> {
         // If neither diverges, merge the moves (union - moved in either = moved after)
         match (then_diverges, else_diverges) {
             (true, true) => {
-                // Both branches diverge - no need to merge, the code after
-                // the if-else is unreachable. Use then_moves arbitrarily.
-                self.moved_vars = then_moves;
+                // Both branches diverge, but the enclosing block may still
+                // inspect this state when the edges have different
+                // provenance (for example panic plus a checked return).
+                // A sole unchecked edge supplies the state checked by the
+                // enclosing block; otherwise unioning is independent of arm
+                // order, and exempt-only blocks skip the check altogether.
+                self.moved_vars = if then_divergence.has_other() && !else_divergence.has_other() {
+                    then_moves
+                } else if else_divergence.has_other() && !then_divergence.has_other() {
+                    else_moves
+                } else if !then_divergence.has_other() && !else_divergence.has_other() {
+                    then_moves
+                } else {
+                    union_move_maps(&then_moves, &else_moves)
+                };
             }
             (true, false) => {
                 // Then-branch diverges, else-branch continues.
@@ -1131,25 +1207,45 @@ impl<'a> AnalysisContext<'a> {
     /// moved in ANY non-diverging arm (union), and a linear value counts as
     /// consumed on all paths only if EVERY non-diverging arm consumed it
     /// (`full_move_on_all_paths` intersects in `merge_union`). Diverging arms
-    /// never reach the join, so they are excluded; if every arm diverges the
-    /// match itself diverges and any arm's state will do (code after the
-    /// match is unreachable).
+    /// never reach the join, so they are excluded; if every arm diverges, a
+    /// explicit-panic arm is excluded from the conservative residual state;
+    /// unchecked non-panic arms remain available for conservative validation,
+    /// while checked exits do not contaminate it.
     ///
     /// Each entry is the `moved_vars` snapshot after analyzing one arm
     /// (starting from the same pre-match state), paired with whether that
-    /// arm's body diverges.
-    pub fn merge_arm_moves(&mut self, arm_moves: Vec<(AHashMap<Spur, VariableMoveState>, bool)>) {
+    /// arm's body diverges and its reachable provenance.
+    pub fn merge_arm_moves(
+        &mut self,
+        arm_moves: Vec<(AHashMap<Spur, VariableMoveState>, bool, DivergenceKinds)>,
+    ) {
         let mut live = arm_moves
             .iter()
-            .filter(|(_, diverges)| !diverges)
-            .map(|(moves, _)| moves);
+            .filter(|(_, diverges, _)| !diverges)
+            .map(|(moves, _, _)| moves);
 
         let Some(first) = live.next() else {
             // Every arm diverges. (A zero-arm match on a zero-variant enum
             // returns early in analyze_match and never reaches this merge.)
-            if let Some((moves, _)) = arm_moves.into_iter().next() {
-                self.moved_vars = moves;
+            let nonpanic: Vec<_> = arm_moves
+                .iter()
+                .filter(|(_, _, kinds)| kinds.has_other())
+                .map(|(moves, _, _)| moves)
+                .collect();
+            let source: Vec<_> = if !nonpanic.is_empty() {
+                nonpanic
+            } else {
+                arm_moves.iter().map(|(moves, _, _)| moves).collect()
+            };
+            let Some(first) = source.first() else {
+                self.moved_vars = AHashMap::new();
+                return;
+            };
+            let mut merged = (*first).clone();
+            for moves in source.into_iter().skip(1) {
+                merged = union_move_maps(&merged, moves);
             }
+            self.moved_vars = merged;
             return;
         };
 

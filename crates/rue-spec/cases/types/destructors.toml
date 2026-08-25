@@ -334,6 +334,26 @@ exit_code = 42
 expected_stdout = "1\n"
 
 [[case]]
+name = "panic_does_not_run_scope_drop_glue"
+spec = ["3.4:2", "3.8:51", "3.9:28"]
+description = "An explicit panic aborts without running the destructor of a live binding"
+source = """
+struct Guard { value: i32 }
+
+drop fn Guard(self) {
+    @dbg(self.value);
+}
+
+fn main() -> i32 {
+    let guard = Guard { value: 7 };
+    @panic("no drop");
+}
+"""
+exit_code = 101
+stderr_contains = "panic: no drop"
+expected_stdout = ""
+
+[[case]]
 name = "drop_in_each_branch"
 spec = ["3.9:19", "3.9:20"]
 description = "Each branch independently drops its bindings; expected_stdout pins LIFO order (b before a) on the taken branch"
