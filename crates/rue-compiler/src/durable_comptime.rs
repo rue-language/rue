@@ -1954,6 +1954,34 @@ impl DurableComptimeScalarPolicy {
     }
 }
 
+/// Integer-bound policy consumed after AIR has classified the intrinsic. It
+/// owns durable diagnostics and integer semantics but no spelling table or
+/// instruction/RIR authority.
+pub(crate) struct DurableComptimeTypeIntrinsicPolicy;
+
+impl DurableComptimeTypeIntrinsicPolicy {
+    pub(crate) fn integer_bound(
+        bound: rue_air::ComptimeIntegerBound,
+        ty: &DurableType,
+    ) -> Result<i128, DurableComptimeFailure> {
+        let Some(integer) = DurableComptimeScalarPolicy::type_integer_semantics(ty) else {
+            return Err(DurableComptimeFailure::failure(
+                SemanticNucleusFailure::Diagnostic(rue_error::ErrorKind::IntrinsicTypeMismatch(
+                    Box::new(rue_error::IntrinsicTypeMismatchError {
+                        name: bound.as_str().to_owned(),
+                        expected: "an integer type".to_owned(),
+                        found: ty.kind().display_name().to_owned(),
+                    }),
+                )),
+            ));
+        };
+        Ok(match bound {
+            rue_air::ComptimeIntegerBound::Max => integer.max_i128(),
+            rue_air::ComptimeIntegerBound::Min => integer.min_i128(),
+        })
+    }
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct DurableComptimeBinding {
     type_arguments: Vec<(Arc<str>, DurableType)>,
@@ -6348,6 +6376,65 @@ mod terminal_adapter_tests {
                 if matches!(*value, SemanticNucleusFailure::Diagnostic(
                     rue_error::ErrorKind::ComptimeEvaluationFailed { ref reason }
                 ) if reason.contains("integer overflow evaluating addition"))
+        ));
+    }
+
+    #[test]
+    fn type_intrinsic_policy_preserves_all_bounds_gates_and_mismatch() {
+        use crate::durable_semantics::DurableType as T;
+        assert_eq!(
+            rue_air::ComptimeTypeIntrinsic::from_name("require_droppable"),
+            Some(rue_air::ComptimeTypeIntrinsic::RequireDroppable)
+        );
+        assert_eq!(
+            rue_air::ComptimeTypeIntrinsic::from_name("require_trivially_droppable"),
+            Some(rue_air::ComptimeTypeIntrinsic::RequireTriviallyDroppable)
+        );
+        assert_eq!(rue_air::ComptimeTypeIntrinsic::from_name("size_of"), None);
+
+        for (ty, min, max) in [
+            (T::I8, -128, 127),
+            (T::I16, -32_768, 32_767),
+            (T::I32, i32::MIN as i128, i32::MAX as i128),
+            (T::I64, i64::MIN as i128, i64::MAX as i128),
+            (T::U8, 0, 255),
+            (T::U16, 0, 65_535),
+            (T::U32, 0, u32::MAX as i128),
+            (T::U64, 0, u64::MAX as i128),
+        ] {
+            assert_eq!(
+                DurableComptimeTypeIntrinsicPolicy::integer_bound(
+                    rue_air::ComptimeIntegerBound::Min,
+                    &ty,
+                )
+                .unwrap(),
+                min
+            );
+            assert_eq!(
+                DurableComptimeTypeIntrinsicPolicy::integer_bound(
+                    rue_air::ComptimeIntegerBound::Max,
+                    &ty,
+                )
+                .unwrap(),
+                max
+            );
+        }
+
+        let Err(DurableComptimeFailure::Failure(failure)) =
+            DurableComptimeTypeIntrinsicPolicy::integer_bound(
+                rue_air::ComptimeIntegerBound::Min,
+                &T::Bool,
+            )
+        else {
+            panic!("non-integer bound must be a semantic failure");
+        };
+        assert!(matches!(
+            *failure,
+            SemanticNucleusFailure::Diagnostic(
+                rue_error::ErrorKind::IntrinsicTypeMismatch(ref mismatch)
+            ) if mismatch.name == "int_min"
+                && mismatch.expected == "an integer type"
+                && mismatch.found == "bool"
         ));
     }
 }

@@ -3043,7 +3043,7 @@ fn durable_const_integer_semantics_use_the_shared_kernel() {
         .nth(1)
         .and_then(|source| {
             source
-                .split("#[derive(Debug, Clone, PartialEq, Eq)]\npub(crate) enum DurableComptimeValueFitFailure")
+                .split("pub(crate) struct DurableComptimeBinding")
                 .next()
         })
         .expect("durable scalar policy");
@@ -3098,6 +3098,44 @@ fn durable_const_integer_semantics_use_the_shared_kernel() {
             "legacy evaluator bypassed durable scalar policy: {required}"
         );
     }
+    for required in [
+        "DurableComptimeTypeIntrinsicPolicy",
+        "fn integer_bound(",
+        "rue_air::ComptimeTypeIntrinsic::from_name(",
+        "rue_air::ComptimeIntegerBound",
+    ] {
+        assert!(
+            scalar_policy.contains(required) || evaluator.contains(required),
+            "durable type-intrinsic policy missing {required}"
+        );
+    }
+    assert!(
+        evaluator.contains("rue_air::ComptimeTypeIntrinsic::from_name(")
+            && evaluator.contains("DurableComptimeTypeIntrinsicPolicy::integer_bound(")
+    );
+    assert!(
+        scalar_policy.contains("name: bound.as_str().to_owned()"),
+        "durable diagnostics must use AIR-owned canonical intrinsic names"
+    );
+    for spelling in [
+        "\"require_droppable\"",
+        "\"require_trivially_droppable\"",
+        "\"int_min\"",
+        "\"int_max\"",
+    ] {
+        assert!(
+            !evaluator.contains(spelling),
+            "legacy evaluator regained a compiler-owned intrinsic spelling table: {spelling}"
+        );
+        assert!(
+            !scalar_policy.contains(spelling),
+            "durable policy regained a compiler-owned intrinsic spelling table: {spelling}"
+        );
+    }
+    assert!(
+        !evaluator.contains("let scalar = match ty"),
+        "legacy evaluator regained a local integer-bound mapping table"
+    );
     assert!(
         source.contains("DurableComptimeScalarPolicy::type_integer_semantics(ty)"),
         "durable width adapter must route through scalar policy"

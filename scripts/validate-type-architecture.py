@@ -100,6 +100,7 @@ PUBLIC_TYPE_DECLARATION_ALLOWLIST = {
     ("rue-air", "semantic_type_resolution.rs", "ComptimeStructuredTypeJob"): "consuming structured-type resolver continuation",
     ("rue-air", "semantic_type_resolution.rs", "ComptimeStructuredTypePoll"): "structured-type resolver protocol state",
     ("rue-air", "semantic_identity.rs", "TypeInstanceKey"): "canonical cross-boundary type identity",
+    ("rue-air", "sema/comptime.rs", "ComptimeTypeIntrinsic"): "finite comptime operation classification, not a live type identity",
     ("rue-air", "sema/comptime.rs", "ComptimeMethodType"): "engine-resolved anonymous-method type descriptor, not a live type identity",
     ("rue-air", "sema/comptime.rs", "ComptimeStructuredTypeResolution"): "engine structured-type suspension protocol state",
     ("rue-air", "sema/aggregate_resolution.rs", "ProviderQualifiedType"): "provider-side qualified-type selection result",

@@ -1169,7 +1169,7 @@ mod tests {
             COMPTIME_ENGINE_SOURCE
                 .matches("self.evaluate_comptime_type_syntax(")
                 .count(),
-            7,
+            6,
             "all type-bearing RIR arms and anonymous method descriptors must use the engine helper"
         );
         for forbidden in [
