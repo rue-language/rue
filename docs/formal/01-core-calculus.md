@@ -684,6 +684,7 @@ glue and no ownership effect.
   Γ ⊢ p : T        class(T)∈{Affine,Linear}        Σ(p)=Owned        p not loaned in Λ
   no proper prefix of p has a type that declares a destructor       -- 3.9:34 (E0456); @drop of the WHOLE value is fine
   any index step in p is a constant [c] applied directly to the root binding    -- 3.8:68 (E0904)
+  if p has a MovedOut descendant, no still-owned linear sub-place remains below p
   ─────────────────────────────────────────────────────── (@Drop)
   Γ;Σ;Λ ⊢ @drop(p) ⇒ unit ⊣ Σ[ p ↦ MovedOut, and every path strictly under p removed ]
 ```
@@ -706,11 +707,11 @@ ownership effect.
 `Σ(p) = Owned`, not `fully-owned(Σ, p)`, is the right strength here: `@drop`
 hands the value to no new owner, and §6.11's `⊘`-skip drops a partially moved
 value correctly — the very walk §5.6 schedules when that value merely leaves
-scope. **Compiler divergence** (observed 2026-08-23 while verifying the
-premises above; not yet filed): the compiler demands the stronger predicate —
-after `eat(o.a)`, `@drop(o)` is E0205 "use of moved value", although letting
-that same `o` leave scope is accepted and drops the residue. The core states
-the weaker premise, which is the one its own drop relation supports.
+scope. The added residual-linear side condition applies only when such a
+partial state exists: a still-owned linear sub-place cannot be silently
+discarded, while the root's own linear obligation is discharged by `@drop` as
+usual. Thus after `eat(o.a)`, `@drop(o)` drops the owned residue of `o` and
+marks the whole place moved; it does not revisit the already moved `o.a`.
 
 ### 5.4 Borrows and the law of exclusivity
 
@@ -2088,10 +2089,12 @@ sequenced, not atomic; `endscope`/`return`/`break`/overwrite all expand to `drop
 applications in the orders fixed above.
 
 The surface intrinsic `@drop(p)` is the explicit version of the same relation.
-For a non-`Copy` place resolving to `ℓ@π`, it runs `drop(H, H(ℓ)@π)`, writes `⊘`
-back to `ℓ@π`, and returns `⟨⟩`; for a `Copy` place it returns `⟨⟩` without
-changing the store. Thus an explicit drop consumes a linear value exactly once
-and suppresses the later scope-exit drop through the original place.
+For a non-`Copy` place resolving to `ℓ@π`, it runs `drop(H, H(ℓ)@π)` — whose
+recursive walk skips every already-`⊘` sub-place — writes `⊘` back to `ℓ@π`,
+and returns `⟨⟩`; for a `Copy` place it returns `⟨⟩` without changing the
+store. Thus an explicit drop consumes a linear value exactly once, destroys a
+partially moved place's owned residue in the same order as scope exit, and
+suppresses the later scope-exit drop through the original place.
 
 ### 6.12 Traps and the top-level result
 

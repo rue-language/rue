@@ -67,7 +67,7 @@ Expression intrinsics (usable in any expression position):
 | `@wrapping_sub` | Wrapping (modular) subtraction (§4.13:97) | 2 expressions (same integer type) | that integer type |
 | `@wrapping_mul` | Wrapping (modular) multiplication (§4.13:97) | 2 expressions (same integer type) | that integer type |
 | `@to_string` | Format an integer as its decimal `StrBuf` (requires a lexical `@import("std")` in the file; §3.7:22) | 1 expression (any integer) | `StrBuf` |
-| `@drop` | Run a value's drop glue and consume it (RUE-187) | 1 expression (any type) | `()` |
+| `@drop` | Run a value's drop glue (skipping moved-out sub-places) and consume it (RUE-187) | 1 expression (any type) | `()` |
 | `@read_line` | Read line from stdin | none | `Option(StrBuf)` |
 | `@parse_i32` | Parse text to i32 | 1 expression (any text rung) | `Option(i32)` |
 | `@parse_i64` | Parse text to i64 | 1 expression (any text rung) | `Option(i64)` |

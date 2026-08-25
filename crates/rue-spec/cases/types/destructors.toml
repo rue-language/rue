@@ -1200,6 +1200,34 @@ exit_code = 0
 expected_stdout = "1\n42\n2\n"
 
 [[case]]
+name = "drop_intrinsic_drops_partial_residue"
+spec = ["3.9:37", "3.9:38"]
+description = "@drop of a partially moved place destroys only its owned residue at the explicit site."
+source = """
+struct Leaf { v: i32 }
+
+drop fn Leaf(self) { @dbg(self.v); }
+
+struct Pair { left: Leaf, right: Leaf }
+
+fn take(leaf: Leaf) -> i32 {
+    @dbg(800);
+    0
+}
+
+fn main() -> i32 {
+    let pair = Pair { left: Leaf { v: 1 }, right: Leaf { v: 2 } };
+    take(pair.left);
+    @dbg(777);
+    @drop(pair);
+    @dbg(888);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "800\n1\n777\n2\n888\n"
+
+[[case]]
 name = "drop_intrinsic_dropped_exactly_once"
 spec = ["3.9:38"]
 description = "The scope-exit drop is suppressed after @drop, so the destructor runs exactly once (42 prints once)"

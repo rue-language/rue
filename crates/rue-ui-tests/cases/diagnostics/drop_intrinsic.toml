@@ -1,0 +1,48 @@
+[section]
+id = "diagnostics.drop_intrinsic"
+name = "Explicit partial-drop diagnostics"
+description = "Explicit @drop reports residual linear ownership and preserves use-after-move diagnostics."
+
+[[case]]
+name = "partial_drop_reports_linear_residue"
+description = "Dropping an infectious carrier after moving an affine sibling reports its remaining linear field."
+source = """
+struct Leaf { v: i32 }
+linear struct Token { v: i32 }
+struct Pair { left: Leaf, right: Token }
+
+fn take(leaf: Leaf) -> i32 { 0 }
+
+fn main() -> i32 {
+    let pair = Pair { left: Leaf { v: 1 }, right: Token { v: 2 } };
+    take(pair.left);
+    @drop(pair);
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0406",
+    "linear value 'pair' must be consumed",
+    "still holds a linear value",
+]
+
+[[case]]
+name = "nested_non_place_drop_preserves_use_after_move"
+description = "A by-value call nested inside @drop still reports use-after-move after a partial move."
+source = """
+struct Leaf { v: i32 }
+struct Pair { first: Leaf, second: Leaf }
+
+fn identity(pair: Pair) -> Pair { pair }
+fn take(leaf: Leaf) -> i32 { 0 }
+
+fn main() -> i32 {
+    let pair = Pair { first: Leaf { v: 1 }, second: Leaf { v: 2 } };
+    take(pair.first);
+    @drop(identity(pair));
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0205", "use of moved value"]
