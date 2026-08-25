@@ -8,11 +8,14 @@
 //! the retired whole-program `Sema` drivers by name.
 
 use rue_error::ErrorKind;
+use std::sync::Arc;
 
 use super::provider_fixture::{
     MethodShape, ProviderFixture, StructShape, error_source_slice, mode_param, value_param,
 };
-use crate::{SemanticImportConstValue, SemanticImportType, StableDefinitionKind};
+use crate::{
+    SemanticImportConstValue, SemanticImportNominalKind, SemanticImportType, StableDefinitionKind,
+};
 
 // Migrated from `tests::test_analyze_addition`: ordinary expression typing on
 // the production provider path.
@@ -197,6 +200,107 @@ fn provider_body_reads_durable_const_value() {
     assert!(
         body.referenced_values.contains(&limit),
         "the consulted const is recorded as a referenced value"
+    );
+}
+
+/// The production provider body path must fall through from a missing value
+/// constant to a same-named nominal. The resulting type identity is the exact
+/// durable nominal key, rather than an invented local type.
+#[test]
+fn provider_body_named_type_fallback_keeps_exact_nominal_identity() {
+    let mut fixture = ProviderFixture::new();
+    let nominal = fixture.declare_struct("Thing", vec![("value", SemanticImportType::I32)], true);
+    fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    let body = fixture
+        .analyze(
+            "fn main() -> i32 {
+    let T = Thing;
+    let value: T = Thing { value: 42 };
+    value.value
+}",
+            "main",
+        )
+        .expect("a missing const falls through to the named nominal");
+
+    assert_eq!(body.function.air.return_type(), crate::types::Type::I32);
+    let nominal_tokens = body
+        .definition_tokens
+        .iter()
+        .filter(|(_, key)| *key == nominal)
+        .count();
+    assert_eq!(
+        nominal_tokens, 1,
+        "the exact nominal identity is registered once"
+    );
+    assert!(
+        body.referenced_values.is_empty(),
+        "a nominal fallback is not misreported as a value-constant dependency"
+    );
+}
+
+/// A string constant wins over a same-named nominal. The provider path keeps
+/// the value-constant observation and does not fall through to the nominal
+/// type branch when the constant is present but not comptime-representable.
+#[test]
+fn provider_body_string_const_shadows_same_named_nominal() {
+    let mut fixture = ProviderFixture::new();
+    let nominal = fixture.declare_struct("Thing", vec![("value", SemanticImportType::I32)], true);
+    let string_const = fixture.declare_const(
+        "Thing",
+        SemanticImportType::BuiltinNominal {
+            name: Arc::from("str"),
+            kind: SemanticImportNominalKind::Struct,
+        },
+        SemanticImportConstValue::String(Arc::from("runtime")),
+    );
+    fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    let body = fixture
+        .analyze(
+            "fn main() -> i32 {
+    let value = Thing;
+    42
+}",
+            "main",
+        )
+        .expect("a string constant remains a runtime value in body analysis");
+
+    assert_eq!(body.function.air.return_type(), crate::types::Type::I32);
+    assert_eq!(body.referenced_values, vec![string_const]);
+    assert!(
+        body.definition_tokens
+            .iter()
+            .all(|(_, key)| key != &nominal),
+        "the present string constant must not fall through to the nominal"
+    );
+}
+
+#[test]
+fn provider_body_string_const_blocks_same_named_type_alias() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_struct("Thing", vec![("value", SemanticImportType::I32)], true);
+    fixture.declare_const(
+        "Thing",
+        SemanticImportType::BuiltinNominal {
+            name: Arc::from("str"),
+            kind: SemanticImportNominalKind::Struct,
+        },
+        SemanticImportConstValue::String(Arc::from("runtime")),
+    );
+    fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    let error = match fixture.analyze(
+        "fn main() -> i32 {
+    let T = Thing;
+    let value: T = Thing { value: 42 };
+    value.value
+}",
+        "main",
+    ) {
+        Ok(_) => panic!("a runtime-dependent string constant cannot become a type alias"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(&error.kind, ErrorKind::UnknownType(name) if name == "T"),
+        "unexpected diagnostic: {error:?}"
     );
 }
 

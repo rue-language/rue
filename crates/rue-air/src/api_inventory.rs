@@ -44,7 +44,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "ComptimeCallArgument",
         "ComptimeCallKey",
         "ComptimeCallMemoLookup",
-        "ComptimeConstInfo",
+        "ComptimeNamedValueResolution",
         "ComptimeCallPreparation",
         "ComptimeCompletedCallMemo",
         "ComptimeEngine",
@@ -194,6 +194,23 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .expect("canonical host contract");
     let host_contract = &production[host_start..engine_start];
     assert!(host_contract.contains("fn program_rir(&self, program:"));
+    assert_eq!(
+        host_contract
+            .matches("fn resolve_comptime_named_value(")
+            .count(),
+        1,
+        "VarRef semantic lookup must have one atomic host hook"
+    );
+    let atomic_named_value_hook = host_contract
+        .split("fn resolve_comptime_named_value(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn ").next())
+        .expect("atomic named-value host hook");
+    assert!(atomic_named_value_hook.contains("&mut self"));
+    assert!(atomic_named_value_hook.contains("ComptimeNamedValueResolution"));
+    assert!(!host_contract.contains("fn value_const("));
+    assert!(!host_contract.contains("fn record_value_const_dependency("));
+    assert!(!host_contract.contains("fn record_named_type_dependency("));
     let argument_start = production
         .find("pub struct ComptimeCallArgument<")
         .expect("engine-owned call argument provenance wrapper");
@@ -366,8 +383,56 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .expect("ordinary argument binding implementation");
     assert!(ordinary_argument_binding.contains("argument.value()"));
     assert!(!ordinary_argument_binding.contains("program_rir"));
+    let ordinary_named_value_start = ordinary
+        .find("fn resolve_comptime_named_value(")
+        .expect("ordinary atomic named-value adapter");
+    let ordinary_named_value_end = ordinary[ordinary_named_value_start..]
+        .find("\n    fn ")
+        .map(|offset| ordinary_named_value_start + offset)
+        .unwrap_or(ordinary.len());
+    let ordinary_named_value = &ordinary[ordinary_named_value_start..ordinary_named_value_end];
+    assert!(ordinary_named_value.contains("&mut self"));
+    assert!(ordinary_named_value.contains("ComptimeNamedValueResolution"));
+    let value_lookup = ordinary_named_value
+        .find("OrdinaryBodyEngine::value_const(self")
+        .expect("ordinary value-constant lookup");
+    let value_dependency = ordinary_named_value
+        .find("NamedConstDependencyTargetEvent::ValueConst")
+        .expect("ordinary value-constant dependency observation");
+    let visibility_check = ordinary_named_value
+        .find("OrdinaryBodyEngine::check_unqualified_visibility")
+        .expect("ordinary value-constant visibility check");
+    let value_classification = ordinary_named_value
+        .find("let value = match info.value")
+        .expect("ordinary value classification");
+    let type_lookup = ordinary_named_value
+        .find("OrdinaryBodyEngine::resolve_named_type_value")
+        .expect("ordinary named-type fallback");
+    let type_dependency = ordinary_named_value
+        .find("NamedConstDependencyTargetEvent::NamedType")
+        .expect("ordinary named-type dependency observation");
+    let type_return = ordinary_named_value
+        .find("return Ok(ComptimeNamedValueResolution::Known(ConstValue::Type(ty)))")
+        .expect("ordinary named-type branch returns before const handling");
+    assert!(value_lookup < value_dependency);
+    assert!(value_dependency < visibility_check);
+    assert!(visibility_check < value_classification);
+    assert!(value_lookup < type_lookup);
+    assert!(type_lookup < type_dependency);
+    assert!(type_dependency < type_return);
+    assert!(type_return < value_dependency);
     assert!(ordinary.contains("type CallBinding = OrdinaryComptimeCallBinding"));
     assert!(ordinary.contains("type BoundCall = OrdinaryComptimeBoundCall"));
+    let var_ref_start = production
+        .find("InstData::VarRef { name, .. } => {")
+        .expect("canonical VarRef dispatch arm");
+    let var_ref = &production[var_ref_start..][..production[var_ref_start..]
+        .find("InstData::FieldGet { base, field }")
+        .expect("VarRef dispatch boundary")];
+    assert_eq!(var_ref.matches("resolve_comptime_named_value(").count(), 1);
+    assert!(!var_ref.contains("value_const("));
+    assert!(!var_ref.contains("record_value_const_dependency("));
+    assert!(!var_ref.contains("record_named_type_dependency("));
     let binding_state = ordinary
         .split("struct OrdinaryComptimeCallBinding")
         .nth(1)

@@ -10,11 +10,10 @@
 mod comptime_public_contract_tests {
     use rue_air::{
         ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallArgument,
-        ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCompletedCallMemo, ComptimeConstInfo,
-        ComptimeEngine, ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame, ComptimeHost,
-        ComptimeHostResult, ComptimeIdentity, ComptimeMemoizedOutcome, ComptimeName,
-        ComptimeOutcome, ComptimeProgram, ComptimeProgramKey, ComptimeProgramRegistry,
-        ComptimeType, ComptimeValue,
+        ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCompletedCallMemo, ComptimeEngine,
+        ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame, ComptimeHost, ComptimeHostResult,
+        ComptimeIdentity, ComptimeMemoizedOutcome, ComptimeName, ComptimeOutcome, ComptimeProgram,
+        ComptimeProgramKey, ComptimeProgramRegistry, ComptimeType, ComptimeValue,
     };
     use rue_rir::{Inst, InstData, InstRef, RirEditor, RirValidationContext, ValidatedRir};
     use rue_span::Span;
@@ -127,11 +126,7 @@ mod comptime_public_contract_tests {
             name: FakeName,
             ty: FakeType,
         };
-        let _const_info = ComptimeConstInfo {
-            is_pub: false,
-            span: Span::new(0, 0),
-            value: Some(FakeValue::Unit),
-        };
+        let _named_value_resolution = rue_air::ComptimeNamedValueResolution::Known(FakeValue::Unit);
         let _admission = ComptimeCallAdmission {
             name: FakeName,
             payload: (),

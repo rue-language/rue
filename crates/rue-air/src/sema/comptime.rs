@@ -316,14 +316,15 @@ pub struct ComptimeMethodDescriptor<N, T> {
     pub declaration_span: Span,
 }
 
-/// A declaration-level constant fact in the engine's value domain.  The
-/// adapter supplies only the metadata needed for dependency/privacy handling
-/// and a value when that declaration is representable by the current domain.
+/// Atomic result of resolving a bare semantic name after lexical and
+/// substitution shadows have been checked.  The host owns lookup,
+/// dependency observation, and visibility as one operation so a durable
+/// adapter cannot observe a value without recording its direct dependency.
 #[derive(Debug, Clone)]
-pub struct ComptimeConstInfo<V> {
-    pub is_pub: bool,
-    pub span: Span,
-    pub value: Option<V>,
+pub enum ComptimeNamedValueResolution<V> {
+    Known(V),
+    RuntimeDependent,
+    Missing,
 }
 
 /// An expression argument passed to a semantic intrinsic hook. String
@@ -511,6 +512,9 @@ mod value_domain_tests {
         static ALLOW_MODULE_CALLS: Cell<bool> = const { Cell::new(false) };
         static REJECT_ADMISSION: Cell<bool> = const { Cell::new(false) };
         static REJECT_BIND_AT: Cell<Option<usize>> = const { Cell::new(None) };
+        static NAMED_VALUE_CALLS: Cell<usize> = const { Cell::new(0) };
+        static REJECT_VISIBILITY: Cell<bool> = const { Cell::new(false) };
+        static NAMED_TYPE_MISSING: Cell<bool> = const { Cell::new(false) };
     }
 
     #[derive(Clone, Debug, PartialEq)]
@@ -664,7 +668,7 @@ mod value_domain_tests {
     struct FakeHost {
         programs: Vec<Rir>,
         type_symbol: SymbolHandle,
-        constant: Option<(FakeFile, FakeName, ComptimeConstInfo<FakeValue>)>,
+        constant: Option<(FakeFile, FakeName, FakeConstInfo)>,
         dependencies: Vec<(FakeFile, FakeName)>,
         call_plans: AHashMap<u32, FakePreparedCall>,
         recursive: Option<(usize, InstRef, InstRef, Option<usize>)>,
@@ -672,6 +676,13 @@ mod value_domain_tests {
         finish_outcome: FakeFinishOutcome,
         finished: Vec<(usize, Option<FakeType>)>,
         float_evaluations: Cell<usize>,
+    }
+
+    #[derive(Clone)]
+    struct FakeConstInfo {
+        is_pub: bool,
+        span: Span,
+        value: Option<FakeValue>,
     }
 
     impl FakeHost {
@@ -696,6 +707,12 @@ mod value_domain_tests {
         REJECT_BIND_AT.with(|rejected| rejected.set(None));
         BINDING_FINISHES.with(|count| count.set(0));
         PREPARE_CALLS.with(|count| count.set(0));
+    }
+
+    fn clear_named_value_observations() {
+        NAMED_VALUE_CALLS.with(|count| count.set(0));
+        REJECT_VISIBILITY.with(|reject| reject.set(false));
+        NAMED_TYPE_MISSING.with(|missing| missing.set(false));
     }
 
     impl ComptimeHost for FakeHost {
@@ -746,15 +763,43 @@ mod value_domain_tests {
                 index: span.file_id.index(),
             }
         }
-        fn value_const(
-            &self,
-            key: &(Self::File, Self::Name),
-        ) -> ComptimeHostResult<Option<ComptimeConstInfo<Self::Value>>, Self::Failure> {
-            Ok(self
+        fn resolve_comptime_named_value(
+            &mut self,
+            file: Self::File,
+            name: Self::Name,
+            span: Span,
+        ) -> ComptimeHostResult<ComptimeNamedValueResolution<Self::Value>, Self::Failure> {
+            NAMED_VALUE_CALLS.with(|count| count.set(count.get() + 1));
+            let info = self
                 .constant
                 .as_ref()
-                .filter(|(file, name, _)| *file == key.0 && *name == key.1)
-                .map(|(_, _, info)| info.clone()))
+                .filter(|(constant_file, constant_name, _)| {
+                    *constant_file == file && *constant_name == name
+                })
+                .map(|(_, _, info)| info.clone());
+            if let Some(info) = info {
+                let defining_file = FakeFile {
+                    index: info.span.file_id.index(),
+                };
+                self.dependencies
+                    .push((defining_file.clone(), name.clone()));
+                self.check_unqualified_visibility(
+                    "constant",
+                    &name,
+                    defining_file,
+                    info.is_pub,
+                    span,
+                )?;
+                return Ok(match info.value {
+                    Some(value) => ComptimeNamedValueResolution::Known(value),
+                    None => ComptimeNamedValueResolution::RuntimeDependent,
+                });
+            }
+            let resolved = self.resolve_named_type_value(name, span)?;
+            Ok(match resolved {
+                Some(ty) => ComptimeNamedValueResolution::Known(FakeValue::Type(ty)),
+                None => ComptimeNamedValueResolution::Missing,
+            })
         }
         fn match_pattern(
             &self,
@@ -804,9 +849,6 @@ mod value_domain_tests {
         fn non_function_anon_method(&self, _method_span: Span) -> Self::Failure {
             METHOD_FAILURES.with(|failures| failures.borrow_mut().push("non_function"));
             FakeFailure::NonFunctionMethod
-        }
-        fn record_value_const_dependency(&mut self, file: &Self::File, name: &Self::Name) {
-            self.dependencies.push((file.clone(), name.clone()));
         }
         fn resolve_named_array_length(
             &mut self,
@@ -868,6 +910,9 @@ mod value_domain_tests {
             _is_pub: bool,
             _span: Span,
         ) -> ComptimeHostResult<(), Self::Failure> {
+            if REJECT_VISIBILITY.with(Cell::get) {
+                return Err(FAKE_FAILURE.into());
+            }
             Ok(())
         }
         fn check_require_droppable(
@@ -931,13 +976,12 @@ mod value_domain_tests {
         fn type_integer_semantics(&self, ty: &Self::Type) -> Option<IntegerType> {
             (ty.0 != 99).then(|| IntegerType::new(8, true)).flatten()
         }
-        fn record_named_type_dependency(&mut self, _ty: &Self::Type) {}
         fn resolve_named_type_value(
             &mut self,
             _name: Self::Name,
             _span: Span,
         ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
-            Ok(Some(FakeType(7)))
+            Ok((!NAMED_TYPE_MISSING.with(Cell::get)).then_some(FakeType(7)))
         }
         fn resolve_comptime_type_path(
             &mut self,
@@ -2501,6 +2545,7 @@ mod value_domain_tests {
             finished: Vec::new(),
             float_evaluations: Cell::new(0),
         };
+        clear_named_value_observations();
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(ComptimeFrame::expression(0, type_const), &mut env)
@@ -2508,6 +2553,7 @@ mod value_domain_tests {
             .unwrap()
             .unwrap();
         assert_eq!(value, FakeValue::Type(FakeType(7)));
+        assert_eq!(NAMED_VALUE_CALLS.with(Cell::get), 0);
     }
 
     #[test]
@@ -2531,7 +2577,7 @@ mod value_domain_tests {
             constant: Some((
                 FakeFile { index: 0 },
                 name.clone(),
-                ComptimeConstInfo {
+                FakeConstInfo {
                     is_pub: true,
                     span: Span::new(10, 11),
                     value: Some(FakeValue::Integer(99)),
@@ -2546,12 +2592,14 @@ mod value_domain_tests {
             float_evaluations: Cell::new(0),
         };
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        clear_named_value_observations();
         env.runtime_binding_names.insert(name);
         let value = ComptimeEngine::new(&mut host)
             .evaluate(ComptimeFrame::expression(0, reference), &mut env)
             .into_result(|_| FAKE_FAILURE)
             .unwrap();
         assert_eq!(value, None);
+        assert_eq!(NAMED_VALUE_CALLS.with(Cell::get), 0);
     }
 
     #[test]
@@ -2575,7 +2623,7 @@ mod value_domain_tests {
             constant: Some((
                 FakeFile { index: 3 },
                 name,
-                ComptimeConstInfo {
+                FakeConstInfo {
                     is_pub: true,
                     span: Span::with_file(rue_span::FileId::new(9), 10, 11),
                     value: Some(FakeValue::Integer(42)),
@@ -2590,6 +2638,7 @@ mod value_domain_tests {
             float_evaluations: Cell::new(0),
         };
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        clear_named_value_observations();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(ComptimeFrame::expression(0, reference), &mut env)
             .into_result(|_| FAKE_FAILURE)
@@ -2599,6 +2648,123 @@ mod value_domain_tests {
             host.dependencies,
             vec![(FakeFile { index: 9 }, FakeName { ordinal: 0 })]
         );
+        assert_eq!(NAMED_VALUE_CALLS.with(Cell::get), 1);
+    }
+
+    #[test]
+    fn atomic_named_value_hook_preserves_states_dependency_order_and_visibility() {
+        let interner = lasso::ThreadedRodeo::new();
+        let name = FakeName { ordinal: 1 };
+        let mut host = FakeHost {
+            programs: Vec::new(),
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: Some((
+                FakeFile { index: 3 },
+                name.clone(),
+                FakeConstInfo {
+                    is_pub: true,
+                    span: Span::with_file(rue_span::FileId::new(9), 10, 11),
+                    value: Some(FakeValue::Integer(42)),
+                },
+            )),
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        clear_named_value_observations();
+        let file = FakeFile { index: 3 };
+        let known = host
+            .resolve_comptime_named_value(file.clone(), name.clone(), Span::new(0, 1))
+            .unwrap();
+        assert!(matches!(
+            known,
+            ComptimeNamedValueResolution::Known(FakeValue::Integer(42))
+        ));
+        host.constant.as_mut().unwrap().2.value = None;
+        let runtime_dependent = host
+            .resolve_comptime_named_value(file.clone(), name.clone(), Span::new(0, 1))
+            .unwrap();
+        assert!(matches!(
+            runtime_dependent,
+            ComptimeNamedValueResolution::RuntimeDependent
+        ));
+        host.constant = None;
+        NAMED_TYPE_MISSING.with(|missing| missing.set(true));
+        let missing = host
+            .resolve_comptime_named_value(file.clone(), name.clone(), Span::new(0, 1))
+            .unwrap();
+        assert!(matches!(missing, ComptimeNamedValueResolution::Missing));
+        assert_eq!(NAMED_VALUE_CALLS.with(Cell::get), 3);
+        assert_eq!(
+            host.dependencies,
+            vec![
+                (FakeFile { index: 9 }, name.clone()),
+                (FakeFile { index: 9 }, name.clone()),
+            ]
+        );
+
+        host.constant = Some((
+            file,
+            name.clone(),
+            FakeConstInfo {
+                is_pub: false,
+                span: Span::with_file(rue_span::FileId::new(9), 10, 11),
+                value: Some(FakeValue::Integer(7)),
+            },
+        ));
+        REJECT_VISIBILITY.with(|reject| reject.set(true));
+        assert!(
+            host.resolve_comptime_named_value(FakeFile { index: 3 }, name, Span::new(0, 1))
+                .is_err()
+        );
+        assert_eq!(NAMED_VALUE_CALLS.with(Cell::get), 4);
+        assert_eq!(host.dependencies.len(), 3);
+        clear_named_value_observations();
+    }
+
+    #[test]
+    fn earlier_terminal_skips_atomic_named_value_hook_and_later_sibling() {
+        let interner = lasso::ThreadedRodeo::new();
+        let mut editor = rue_rir::RirEditor::new();
+        let terminal = editor.add_inst(rue_rir::Inst {
+            data: InstData::FloatConst {
+                text: interner.get_or_intern("1.0"),
+            },
+            span: Span::new(0, 3),
+        });
+        let later = editor.add_inst(rue_rir::Inst {
+            data: InstData::VarRef {
+                name: interner.get_or_intern("later"),
+                anchor: None,
+            },
+            span: Span::new(0, 8),
+        });
+        let block = editor
+            .add_block(&[terminal, later], Span::new(0, 8))
+            .unwrap();
+        let mut host = FakeHost {
+            programs: vec![editor.finish()],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        clear_named_value_observations();
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result =
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, block), &mut env);
+        assert!(matches!(result, ComptimeOutcome::HostFailure(FAKE_FAILURE)));
+        assert_eq!(host.float_evaluations.get(), 1);
+        assert_eq!(NAMED_VALUE_CALLS.with(Cell::get), 0);
     }
 
     #[test]
@@ -4398,10 +4564,12 @@ pub trait ComptimeHost {
     fn name_from_symbol(&self, program: &Self::ProgramKey, symbol: SymbolHandle) -> Self::Name;
     fn display_name(&self, name: &Self::Name) -> String;
     fn file_from_span(&self, span: &Span) -> Self::File;
-    fn value_const(
-        &self,
-        key: &(Self::File, Self::Name),
-    ) -> ComptimeHostResult<Option<ComptimeConstInfo<Self::Value>>, Self::Failure>;
+    fn resolve_comptime_named_value(
+        &mut self,
+        file: Self::File,
+        name: Self::Name,
+        span: Span,
+    ) -> ComptimeHostResult<ComptimeNamedValueResolution<Self::Value>, Self::Failure>;
     fn match_pattern(
         &self,
         program: &Self::ProgramKey,
@@ -4425,7 +4593,6 @@ pub trait ComptimeHost {
         method_name: &str,
     ) -> Self::Failure;
     fn non_function_anon_method(&self, method_span: Span) -> Self::Failure;
-    fn record_value_const_dependency(&mut self, file: &Self::File, name: &Self::Name);
     fn resolve_named_array_length(
         &mut self,
         name: &Self::Name,
@@ -4482,7 +4649,6 @@ pub trait ComptimeHost {
     fn type_name(&self, ty: &Self::Type) -> String;
     fn type_is_unsigned(&self, ty: &Self::Type) -> bool;
     fn type_integer_semantics(&self, ty: &Self::Type) -> Option<IntegerType>;
-    fn record_named_type_dependency(&mut self, ty: &Self::Type);
     fn const_expr_type(
         &self,
         program: &Self::ProgramKey,
@@ -6494,53 +6660,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 if env.runtime_binding_names.contains(&name) {
                     return ComptimeOutcome::RuntimeDependent;
                 }
-                // 6. File-level constants: the value was evaluated once
-                //    (and range-checked against the declared type) during
-                //    declaration gathering — use it directly. Re-evaluating
-                //    the initializer here would fail for forms only the
-                //    declaration collector can resolve (module member
-                //    access, RUE-160) and was exponential for const chains.
-                //    Module-typed constants never appear in this table
-                //    (module bindings are a distinct tagged resolution).
-                //    Privacy applies here too (E0460, RUE-183): the table is
-                //    global, so a const initializer in one directory could
-                //    otherwise read a private constant from another. The
-                //    VarRef's own span locates the referencing file;
-                //    speculative callers (`try_evaluate_const*`) swallow the
-                //    error and defer to runtime analysis, which re-checks.
+                // 6. File-level constants and named types are one atomic
+                //    semantic lookup. The host owns direct dependency
+                //    observation and visibility so durable adapters cannot
+                //    split those effects across side channels.
                 let file = self.host.file_from_span(&span);
-                let info = host_value!(self.host.value_const(&(file.clone(), name.clone())));
-                if let Some(info) = info {
-                    let defining_file = self.host.file_from_span(&info.span);
-                    self.host
-                        .record_value_const_dependency(&defining_file, &name);
-                    host_value!(self.host.check_unqualified_visibility(
-                        "constant",
-                        &name,
-                        defining_file,
-                        info.is_pub,
-                        span,
-                    ));
-                    // String constants stay out of the comptime engine: no
-                    // engine operation consumes them (no comptime string
-                    // params or string arithmetic), so treat a reference as
-                    // non-evaluable instead of leaking a value the arms
-                    // below would mis-type (RUE-957). Use sites materialize
-                    // string constants through the runtime path instead.
-                    return match info.value {
-                        Some(value) => ComptimeOutcome::Known(value),
-                        None => ComptimeOutcome::RuntimeDependent,
-                    };
-                }
-                // 7. Type names used as values (e.g. `Point` in
-                //    `fn make_type() -> type { Point }`)
-                let resolved = host_value!(self.host.resolve_named_type_value(name, span));
-                if let Some(ref ty) = resolved {
-                    self.host.record_named_type_dependency(ty);
-                }
-                match resolved {
-                    Some(value) => ComptimeOutcome::Known(H::Value::type_value(value)),
-                    None => ComptimeOutcome::RuntimeDependent,
+                match host_value!(self.host.resolve_comptime_named_value(file, name, span)) {
+                    ComptimeNamedValueResolution::Known(value) => ComptimeOutcome::Known(value),
+                    ComptimeNamedValueResolution::RuntimeDependent
+                    | ComptimeNamedValueResolution::Missing => ComptimeOutcome::RuntimeDependent,
                 }
             }
 
