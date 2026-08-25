@@ -134,13 +134,21 @@ pub(crate) type DurableComptimeProgramKey = rue_air::ComptimeProgramKey<
     crate::semantic_query_nucleus::SemanticQueryConfiguration,
 >;
 
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct DurableComptimeProgramMetadata {
+    pub(crate) imports: Arc<[DurableComptimeImportOccurrence]>,
+    pub(crate) root: OwnedComptimeProgramRoot,
+}
+
 pub(crate) type DurableComptimeProgram =
-    rue_air::ComptimeProgram<Arc<str>, Arc<[DurableComptimeImportOccurrence]>>;
+    rue_air::ComptimeProgram<Arc<str>, DurableComptimeProgramMetadata>;
+
 pub(crate) type DurableComptimeProgramRegistry = rue_air::ComptimeProgramRegistry<
     crate::StableDefinitionKey,
     crate::semantic_query_nucleus::SemanticQueryConfiguration,
     Arc<str>,
-    Arc<[DurableComptimeImportOccurrence]>,
+    DurableComptimeProgramMetadata,
 >;
 
 #[allow(dead_code)]
@@ -215,7 +223,6 @@ pub(crate) struct ForeignComptimeCallSeed {
 pub(crate) struct OwnedComptimeProgramCore {
     pub(crate) plan: DurableComptimeProgramPlan,
     program: DurableComptimeProgram,
-    pub(crate) root: OwnedComptimeProgramRoot,
 }
 
 /// Owned compiler/query-side admission payload for a durable comptime call.
@@ -245,8 +252,12 @@ impl Deref for OwnedComptimeProgramCore {
 }
 
 impl OwnedComptimeProgramCore {
+    pub(crate) fn root(&self) -> &OwnedComptimeProgramRoot {
+        &self.program.imports.root
+    }
+
     pub(crate) fn callable(&self) -> Option<&ForeignComptimeCallable> {
-        match &self.root {
+        match &self.program.imports.root {
             OwnedComptimeProgramRoot::Callable(callable) => Some(callable),
             OwnedComptimeProgramRoot::Const { .. } => None,
         }
@@ -260,7 +271,7 @@ impl OwnedComptimeProgramCore {
         Option<rue_rir::RirTypeSyntaxRef>,
         rue_rir::InstRef,
     )> {
-        match self.root {
+        match self.program.imports.root {
             OwnedComptimeProgramRoot::Const {
                 init,
                 declared_type,
@@ -385,9 +396,11 @@ impl OwnedComptimeProgramCore {
             program: DurableComptimeProgram {
                 rir: Arc::new(rir),
                 symbols: spellings.into_iter().map(Arc::from).collect(),
-                imports: imports.into(),
+                imports: DurableComptimeProgramMetadata {
+                    imports: imports.into(),
+                    root: program_root,
+                },
             },
-            root: program_root,
         }))
     }
 
@@ -1370,8 +1383,8 @@ mod tests {
             panic!("the admitted callable root must remain a function declaration");
         };
         assert_eq!(program.callable().expect("callable root").body, *body);
-        assert_eq!(program.imports.len(), 1);
-        let import = &program.imports[0];
+        assert_eq!(program.imports.imports.len(), 1);
+        let import = &program.imports.imports[0];
         assert_eq!(import.specifier.as_ref(), "dep");
         assert!(matches!(
             &program.rir.get(import.inst).data,

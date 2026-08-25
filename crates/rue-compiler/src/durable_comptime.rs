@@ -867,6 +867,17 @@ pub(crate) enum DurableComptimeConstRootAdmissionError {
     DuplicateProgram,
 }
 
+/// Failure before a foreign AIR frame is handed to the engine.  Admission is
+/// intentionally separate from lifecycle activation: the engine still owns
+/// the depth check, `enter`, and cleanup after it receives this frame.
+#[allow(dead_code)] // consumed by the staged durable AIR host
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DurableComptimeForeignFrameAdmissionError {
+    NotCallable,
+    TicketMismatch,
+    RegistryMismatch,
+}
+
 impl DurableComptimeSession {
     pub(crate) fn new(
         parent_producer: crate::StableDefinitionKey,
@@ -934,6 +945,110 @@ impl DurableComptimeSession {
         key: &crate::body_query::DurableComptimeProgramKey,
     ) -> Option<&crate::body_query::DurableComptimeProgram> {
         self.programs.get(key)
+    }
+
+    /// Atomically admit an already-prepared foreign callable into the keyed
+    /// AIR program registry and construct its frame.  The ticket is only a
+    /// capability here: this method validates its exact call identity but
+    /// never enters a lifecycle scope.  The canonical AIR engine performs
+    /// depth admission and calls `enter` after producer issuance.
+    #[allow(dead_code)] // consumed by the staged durable AIR host
+    pub(crate) fn admit_foreign_frame(
+        &mut self,
+        admitted: crate::body_query::OwnedForeignComptimeProgram,
+        ticket: Box<DurableComptimeCallTicket>,
+        call_span: rue_span::Span,
+        bound: DurableComptimeBoundCall,
+    ) -> Result<
+        (DurableComptimeForeignFrame, Box<DurableComptimeCallTicket>),
+        DurableComptimeForeignFrameAdmissionError,
+    > {
+        let Some(callable) = admitted.callable() else {
+            return Err(DurableComptimeForeignFrameAdmissionError::NotCallable);
+        };
+        let key = &admitted.plan.key;
+        let context = &ticket.context;
+        let ticket_matches = ticket.owner == self.lifecycle.owner
+            && !ticket.consumed
+            && ticket.serial < self.lifecycle.next_serial
+            && self.lifecycle.active.last().copied() == ticket.expected_parent
+            && !self
+                .lifecycle
+                .states
+                .contains_key(&(ticket.owner, ticket.serial))
+            && context.program == *key
+            && context.child_producer == key.declaration
+            && context.query.declaration.configuration == key.configuration
+            && context.query.declaration.declaration == admitted.plan.candidate
+            && context.query.type_arguments == admitted.seed.type_arguments
+            && context.query.value_arguments == admitted.seed.value_arguments
+            && callable.context == admitted.plan.candidate.module;
+        if !ticket_matches {
+            return Err(DurableComptimeForeignFrameAdmissionError::TicketMismatch);
+        }
+
+        if bound.type_arguments.as_slice() != admitted.seed.type_arguments.as_ref()
+            || bound.value_arguments.as_slice() != admitted.seed.value_arguments.as_ref()
+            || bound.typed_value_arguments.len() != admitted.seed.value_arguments.len()
+            || !bound
+                .typed_value_arguments
+                .iter()
+                .zip(admitted.seed.value_arguments.iter())
+                .all(|((bound_name, bound_value), (seed_name, seed))| {
+                    bound_name == seed_name
+                        && matches!(
+                            bound_value,
+                            EvaluatedSemanticConst::Value(value)
+                                if value.value == *seed && value.ty.is_some()
+                        )
+                })
+        {
+            return Err(DurableComptimeForeignFrameAdmissionError::TicketMismatch);
+        }
+
+        // Registry keys are first-wins.  A repeated admission is valid only
+        // when it carries the same immutable symbol/import/root authority; a
+        // colliding authority can never replace the first registration.
+        if let Some(existing) = self.programs.get(key) {
+            if !same_registered_program(existing, &admitted) {
+                return Err(DurableComptimeForeignFrameAdmissionError::RegistryMismatch);
+            }
+        } else if admitted.core.register_into(&mut self.programs).is_err() {
+            return Err(DurableComptimeForeignFrameAdmissionError::RegistryMismatch);
+        }
+        let Some(registered) = self.programs.get(key) else {
+            return Err(DurableComptimeForeignFrameAdmissionError::RegistryMismatch);
+        };
+        let crate::body_query::OwnedComptimeProgramRoot::Callable(callable) =
+            &registered.imports.root
+        else {
+            return Err(DurableComptimeForeignFrameAdmissionError::NotCallable);
+        };
+
+        let mut type_bindings = AHashMap::new();
+        for (name, ty) in bound.type_arguments.iter() {
+            type_bindings.insert(DurableComptimeName::from(name.clone()), ty.clone().into());
+        }
+        let mut value_bindings = AHashMap::new();
+        for (name, value) in bound.typed_value_arguments.iter() {
+            value_bindings.insert(DurableComptimeName::from(name.clone()), value.clone());
+        }
+        Ok((
+            rue_air::ComptimeFrame {
+                program: key.clone(),
+                body: callable.body,
+                name: Some(DurableComptimeName::from(key.declaration.name())),
+                context: Some(callable.context.clone()),
+                span: call_span,
+                function_span: registered.rir.get(callable.root).span,
+                type_bindings,
+                value_bindings,
+                name_bindings: AHashMap::new(),
+                call_identity: None,
+                expected_result: Some(bound.expected_result.into()),
+            },
+            ticket,
+        ))
     }
 
     fn observe_anonymous_nominal(&mut self, nominal: DurableAnonymousNominal) {
@@ -1035,6 +1150,19 @@ impl DurableComptimeSession {
     pub(crate) fn lifecycle_mut(&mut self) -> &mut DurableComptimeCallLifecycle {
         &mut self.lifecycle
     }
+}
+
+/// Compare the immutable metadata retained by the keyed registry, rather than
+/// allocation identity. Body-plan materialization can produce a fresh
+/// equivalent `Arc`; the first registered RIR remains authoritative for the
+/// returned frame and a different root/symbol/import authority is rejected.
+fn same_registered_program(
+    existing: &crate::body_query::DurableComptimeProgram,
+    admitted: &crate::body_query::OwnedForeignComptimeProgram,
+) -> bool {
+    existing.symbols == admitted.symbols
+        && existing.imports.imports == admitted.imports.imports
+        && &existing.imports.root == admitted.root()
 }
 
 /// Root-local call/effect authority for a durable comptime host.
@@ -1704,10 +1832,44 @@ pub(crate) fn durable_int_width(
 pub(crate) struct DurableComptimeBinding {
     type_arguments: Vec<(Arc<str>, DurableType)>,
     value_arguments: Vec<(Arc<str>, DurableConstValue)>,
+    typed_value_arguments: Vec<(Arc<str>, EvaluatedSemanticConst)>,
 }
 
 impl DurableComptimeBinding {
-    pub(crate) fn into_parts(
+    /// Finish binding only after every argument has passed the canonical
+    /// parameter fit policy.  The resulting payload owns the substituted
+    /// frame metadata; callers cannot reconstruct it from raw query values.
+    pub(crate) fn finish(self, result: DurableType) -> DurableComptimeBoundCall {
+        let expected_result = substitute_durable_generics(
+            &result,
+            &self
+                .type_arguments
+                .iter()
+                .map(|(_, ty)| ty.clone())
+                .collect::<Vec<_>>(),
+        );
+        DurableComptimeBoundCall {
+            type_arguments: self.type_arguments,
+            value_arguments: self.value_arguments,
+            typed_value_arguments: self.typed_value_arguments,
+            expected_result,
+        }
+    }
+}
+
+/// Opaque ordered call facts produced by the durable binding kernel.  The
+/// typed values and substituted result are private so a future host cannot
+/// manufacture arbitrary frame metadata beside the binding policy.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct DurableComptimeBoundCall {
+    type_arguments: Vec<(Arc<str>, DurableType)>,
+    value_arguments: Vec<(Arc<str>, DurableConstValue)>,
+    typed_value_arguments: Vec<(Arc<str>, EvaluatedSemanticConst)>,
+    expected_result: DurableType,
+}
+
+impl DurableComptimeBoundCall {
+    pub(crate) fn into_query_parts(
         self,
     ) -> (
         Vec<(Arc<str>, DurableType)>,
@@ -1781,9 +1943,14 @@ pub(crate) fn bind_durable_comptime_argument(
             }
         });
     }
+    let parameter_name: Arc<str> = Arc::from(parameter_name);
     binding
         .value_arguments
-        .push((Arc::from(parameter_name), value));
+        .push((parameter_name.clone(), value.clone()));
+    binding.typed_value_arguments.push((
+        parameter_name,
+        EvaluatedSemanticConst::Value(TypedSemanticConst::typed(value, expected)),
+    ));
     Ok(())
 }
 
@@ -2259,6 +2426,12 @@ pub(crate) type DurableComptimeConstFrame = rue_air::ComptimeFrame<
     DurableComptimeIdentity,
 >;
 
+/// The keyed frame handed to AIR for an admitted foreign callable.  It uses
+/// the same compiler-owned value/type/name/file/identity domains as a const
+/// root; only the call fields differ.
+#[allow(dead_code)]
+pub(crate) type DurableComptimeForeignFrame = DurableComptimeConstFrame;
+
 impl From<DurableType> for DurableComptimeType {
     fn from(value: DurableType) -> Self {
         Self(value)
@@ -2605,7 +2778,9 @@ mod tests {
             false,
         )
         .unwrap();
-        let (types, values) = binding.into_parts();
+        let bound = binding.finish(DurableType::GenericParameter(0));
+        assert_eq!(bound.expected_result, DurableType::I16);
+        let (types, values) = bound.into_query_parts();
         assert_eq!(types, vec![(Arc::from("T"), DurableType::I16)]);
         assert_eq!(
             values,
@@ -2667,7 +2842,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            direct.into_parts().0,
+            direct
+                .finish(DurableType::ComptimeType)
+                .into_query_parts()
+                .0,
             vec![(Arc::from("T"), DurableType::Unit)]
         );
 
@@ -5235,6 +5413,45 @@ mod structured_type_adapter_tests {
         DurableComptimeSession::new(producer, declaration).unwrap()
     }
 
+    fn bound_call(value: Option<i128>, result: DurableType) -> DurableComptimeBoundCall {
+        let mut binding = DurableComptimeBinding::default();
+        if let Some(value) = value {
+            bind_durable_comptime_argument(
+                &mut binding,
+                "T",
+                &crate::durable_semantics::DurableSemanticParameter {
+                    name: Arc::from("T"),
+                    ty: DurableType::ComptimeType,
+                    mode: crate::durable_semantics::DurableParameterMode::Value,
+                    is_comptime: true,
+                },
+                TypedSemanticConst {
+                    value: DurableConstValue::Type(DurableType::I32),
+                    ty: Some(DurableType::ComptimeType),
+                },
+                false,
+            )
+            .unwrap();
+            bind_durable_comptime_argument(
+                &mut binding,
+                "x",
+                &crate::durable_semantics::DurableSemanticParameter {
+                    name: Arc::from("x"),
+                    ty: DurableType::I32,
+                    mode: crate::durable_semantics::DurableParameterMode::Value,
+                    is_comptime: true,
+                },
+                TypedSemanticConst {
+                    value: DurableConstValue::Integer(value),
+                    ty: Some(DurableType::I32),
+                },
+                false,
+            )
+            .unwrap();
+        }
+        binding.finish(result)
+    }
+
     #[test]
     fn durable_registry_owns_structured_jobs_across_colliding_programs() {
         let first = const_program("first.rue", "i32");
@@ -5260,14 +5477,14 @@ mod structured_type_adapter_tests {
         assert!(std::sync::Arc::ptr_eq(&first_registered.rir, &first.rir));
         assert!(std::sync::Arc::ptr_eq(&second_registered.rir, &second.rir));
         assert_ne!(first_registered.symbols, second_registered.symbols);
-        assert_eq!(first_registered.imports.len(), 1);
-        assert_eq!(second_registered.imports.len(), 1);
+        assert_eq!(first_registered.imports.imports.len(), 1);
+        assert_eq!(second_registered.imports.imports.len(), 1);
         assert_eq!(
-            first_registered.imports[0].specifier,
+            first_registered.imports.imports[0].specifier,
             Arc::<str>::from("first.rue")
         );
         assert_eq!(
-            second_registered.imports[0].specifier,
+            second_registered.imports.imports[0].specifier,
             Arc::<str>::from("second.rue")
         );
         let mut wrong_configuration = first.plan.key.configuration.clone();
@@ -5351,6 +5568,174 @@ mod structured_type_adapter_tests {
             ),
             Err(DurableStructuredTypeBeginError::InvalidProgramAuthority)
         ));
+    }
+
+    #[test]
+    fn foreign_frame_admission_is_keyed_atomic_and_keeps_ticket_unentered() {
+        let core = callable_program("foreign-frame.rue");
+        let seed = crate::body_query::ForeignComptimeCallSeed {
+            type_arguments: Arc::from([(Arc::from("T"), DurableType::I32)]),
+            value_arguments: Arc::from([(
+                Arc::from("x"),
+                crate::durable_semantics::DurableConstValue::Integer(9),
+            )]),
+        };
+        let admitted = crate::body_query::OwnedForeignComptimeProgram {
+            core: core.clone(),
+            seed: seed.clone(),
+        };
+        let mut session = session();
+        let edge = session.prepare_expression_edge(7).unwrap();
+        let ticket = session
+            .lifecycle
+            .ticket_from_admitted_edge(edge, &admitted)
+            .unwrap();
+        let (frame, _ticket) = session
+            .admit_foreign_frame(
+                admitted,
+                Box::new(ticket),
+                rue_span::Span::new(17, 23),
+                bound_call(Some(9), DurableType::I32),
+            )
+            .unwrap();
+        assert_eq!(frame.program, core.plan.key);
+        assert_eq!(frame.body, core.callable().unwrap().body);
+        assert_eq!(frame.name.as_ref().unwrap().as_str(), "target");
+        assert_eq!(frame.context, Some(core.plan.candidate.module.clone()));
+        assert_eq!(frame.span, rue_span::Span::new(17, 23));
+        assert_eq!(
+            frame.function_span,
+            core.rir.get(core.callable().unwrap().root).span
+        );
+        assert!(frame.call_identity.is_none());
+        assert_eq!(
+            frame.type_bindings.get(&DurableComptimeName::from("T")),
+            Some(&DurableComptimeType(DurableType::I32))
+        );
+        assert_eq!(
+            frame.value_bindings.get(&DurableComptimeName::from("x")),
+            Some(&EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                DurableConstValue::Integer(9),
+                DurableType::I32,
+            )))
+        );
+        assert_eq!(
+            frame.expected_result,
+            Some(DurableComptimeType(DurableType::I32))
+        );
+        assert!(session.lifecycle.active.is_empty());
+        assert!(session.registered_program(&core.plan.key).is_some());
+
+        // Binding validation happens before a cold program is inserted.
+        let invalid_core = callable_program("invalid-bindings.rue");
+        let invalid_admitted = crate::body_query::OwnedForeignComptimeProgram {
+            core: invalid_core.clone(),
+            seed: seed.clone(),
+        };
+        let invalid_edge = session.prepare_expression_edge(8).unwrap();
+        let invalid_ticket = session
+            .lifecycle
+            .ticket_from_admitted_edge(invalid_edge, &invalid_admitted)
+            .unwrap();
+        assert!(matches!(
+            session.admit_foreign_frame(
+                invalid_admitted,
+                Box::new(invalid_ticket),
+                rue_span::Span::new(24, 27),
+                bound_call(Some(10), DurableType::I32),
+            ),
+            Err(DurableComptimeForeignFrameAdmissionError::TicketMismatch)
+        ));
+        assert!(session.registered_program(&invalid_core.plan.key).is_none());
+
+        // A separately materialized equivalent core is valid, but it cannot
+        // replace the first authority in the keyed registry.
+        let equivalent = callable_program("foreign-frame.rue");
+        let repeat_seed = crate::body_query::ForeignComptimeCallSeed {
+            type_arguments: Arc::from([(Arc::from("T"), DurableType::I32)]),
+            value_arguments: Arc::from([(
+                Arc::from("x"),
+                crate::durable_semantics::DurableConstValue::Integer(10),
+            )]),
+        };
+        let equivalent_admitted = crate::body_query::OwnedForeignComptimeProgram {
+            core: equivalent,
+            seed: repeat_seed,
+        };
+        let edge = session.prepare_expression_edge(8).unwrap();
+        let ticket = session
+            .lifecycle
+            .ticket_from_admitted_edge(edge, &equivalent_admitted)
+            .unwrap();
+        let (second_frame, _) = session
+            .admit_foreign_frame(
+                equivalent_admitted,
+                Box::new(ticket),
+                rue_span::Span::new(24, 27),
+                bound_call(Some(10), DurableType::I32),
+            )
+            .unwrap();
+        assert_eq!(second_frame.program, core.plan.key);
+        assert_eq!(second_frame.body, core.callable().unwrap().body);
+        assert_eq!(
+            second_frame.context,
+            Some(core.plan.candidate.module.clone())
+        );
+        assert_eq!(
+            second_frame.function_span,
+            core.rir.get(core.callable().unwrap().root).span
+        );
+        assert_eq!(second_frame.span, rue_span::Span::new(24, 27));
+        assert!(second_frame.call_identity.is_none());
+        assert_eq!(
+            second_frame
+                .value_bindings
+                .get(&DurableComptimeName::from("x")),
+            Some(&EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                DurableConstValue::Integer(10),
+                DurableType::I32,
+            )))
+        );
+        assert!(session.lifecycle.active.is_empty());
+        let registered = session.registered_program(&core.plan.key).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&registered.rir, &core.rir));
+    }
+
+    #[test]
+    fn foreign_frame_admission_rejects_non_callable_without_registration() {
+        let core = const_program("foreign-const.rue", "i32");
+        let ticket_core = callable_program("foreign-const.rue");
+        let ticket_admitted = crate::body_query::OwnedForeignComptimeProgram {
+            core: ticket_core,
+            seed: crate::body_query::ForeignComptimeCallSeed {
+                type_arguments: Arc::from([]),
+                value_arguments: Arc::from([]),
+            },
+        };
+        let admitted = crate::body_query::OwnedForeignComptimeProgram {
+            core: core.clone(),
+            seed: crate::body_query::ForeignComptimeCallSeed {
+                type_arguments: Arc::from([]),
+                value_arguments: Arc::from([]),
+            },
+        };
+        let mut session = session();
+        let edge = session.prepare_expression_edge(0).unwrap();
+        let ticket = session
+            .lifecycle
+            .ticket_from_admitted_edge(edge, &ticket_admitted)
+            .unwrap();
+        assert!(matches!(
+            session.admit_foreign_frame(
+                admitted,
+                Box::new(ticket),
+                rue_span::Span::new(0, 1),
+                bound_call(None, DurableType::I32),
+            ),
+            Err(DurableComptimeForeignFrameAdmissionError::NotCallable)
+        ));
+        assert!(session.registered_program(&core.plan.key).is_none());
+        assert!(session.lifecycle.active.is_empty());
     }
 
     #[test]

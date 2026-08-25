@@ -7939,7 +7939,9 @@ impl SemanticConstEvaluator<'_, '_> {
                 )?;
             }
         }
-        let (type_arguments, value_arguments) = binding.into_parts();
+        let legacy_result = result.clone();
+        let bound = binding.finish(result);
+        let (type_arguments, value_arguments) = bound.into_query_parts();
         let query = SemanticNucleusKey::ComptimeCall(ComptimeCallQueryKey {
             declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
                 declaration: candidate,
@@ -7975,7 +7977,7 @@ impl SemanticConstEvaluator<'_, '_> {
                         }
                         ComptimeCallResultProjection::Value(value) => value,
                     },
-                    result,
+                    legacy_result,
                 )))
             }
             SemanticNucleusValue::Failure(failure) => Err(Self::domain_failure(failure)),
@@ -28247,7 +28249,7 @@ fn main() -> i32 {
             program.callable().expect("callable root").context.as_str(),
             "main.rue"
         );
-        assert_eq!(program.imports.len(), 1);
+        assert_eq!(program.imports.imports.len(), 1);
         assert_eq!(
             database
                 .declaration_body_plan_astgen_evaluations
