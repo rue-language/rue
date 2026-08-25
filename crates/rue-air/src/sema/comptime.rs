@@ -345,6 +345,43 @@ pub enum ComptimeIntrinsicArgument<V, N> {
     String(N),
 }
 
+/// The finite set of type intrinsics which can participate in declaration-time
+/// comptime evaluation. Classification is owned by AIR so compiler hosts do
+/// not maintain a second spelling table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeTypeIntrinsic {
+    RequireDroppable,
+    RequireTriviallyDroppable,
+    IntegerBound(ComptimeIntegerBound),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeIntegerBound {
+    Min,
+    Max,
+}
+
+impl ComptimeIntegerBound {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Min => "int_min",
+            Self::Max => "int_max",
+        }
+    }
+}
+
+impl ComptimeTypeIntrinsic {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "require_droppable" => Some(Self::RequireDroppable),
+            "require_trivially_droppable" => Some(Self::RequireTriviallyDroppable),
+            "int_min" => Some(Self::IntegerBound(ComptimeIntegerBound::Min)),
+            "int_max" => Some(Self::IntegerBound(ComptimeIntegerBound::Max)),
+            _ => None,
+        }
+    }
+}
+
 /// The semantic operation whose source occurrence is being resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComptimeSiteKind {
@@ -525,6 +562,11 @@ mod value_domain_tests {
         static NAMED_TYPE_MISSING: Cell<bool> = const { Cell::new(false) };
         static KEYED_FILE_RESOLUTION: Cell<bool> = const { Cell::new(false) };
         static FILE_RESOLUTION_CALLS: RefCell<Vec<(usize, u32)>> = const { RefCell::new(Vec::new()) };
+        static TYPE_INTRINSIC_EVENTS: RefCell<Vec<(ComptimeTypeIntrinsic, FakeType)>> =
+            const { RefCell::new(Vec::new()) };
+        static TYPE_INTRINSIC_FAILURE: Cell<bool> = const { Cell::new(false) };
+        static TYPE_INTRINSIC_ABORT: Cell<bool> = const { Cell::new(false) };
+        static TYPE_INTRINSIC_NAME: RefCell<Option<(u32, &'static str)>> = const { RefCell::new(None) };
     }
 
     #[test]
@@ -733,6 +775,13 @@ mod value_domain_tests {
         NAMED_TYPE_MISSING.with(|missing| missing.set(false));
     }
 
+    fn clear_type_intrinsic_observations() {
+        TYPE_INTRINSIC_EVENTS.with(|events| events.borrow_mut().clear());
+        TYPE_INTRINSIC_FAILURE.with(|failure| failure.set(false));
+        TYPE_INTRINSIC_ABORT.with(|abort| abort.set(false));
+        TYPE_INTRINSIC_NAME.with(|name| *name.borrow_mut() = None);
+    }
+
     impl ComptimeHost for FakeHost {
         type Type = FakeType;
         type Value = FakeValue;
@@ -768,6 +817,15 @@ mod value_domain_tests {
             }
         }
         fn display_name(&self, name: &Self::Name) -> String {
+            if let Some((_, intrinsic)) = TYPE_INTRINSIC_NAME.with(|configured| {
+                configured
+                    .borrow()
+                    .as_ref()
+                    .copied()
+                    .filter(|(ordinal, _)| *ordinal == name.ordinal)
+            }) {
+                return intrinsic.to_owned();
+            }
             if name.ordinal == self.type_symbol.issuing_interner_ordinal() as u32 {
                 "type".to_owned()
             } else if name.ordinal % 1000 == 0 {
@@ -1000,6 +1058,30 @@ mod value_domain_tests {
         }
         fn type_integer_semantics(&self, ty: &Self::Type) -> Option<IntegerType> {
             (ty.0 != 99).then(|| IntegerType::new(8, true)).flatten()
+        }
+        fn resolve_comptime_type_intrinsic(
+            &mut self,
+            intrinsic: ComptimeTypeIntrinsic,
+            ty: Self::Type,
+            _span: Span,
+        ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
+            TYPE_INTRINSIC_EVENTS.with(|events| events.borrow_mut().push((intrinsic, ty)));
+            if TYPE_INTRINSIC_ABORT.with(Cell::get) {
+                return Err(ComptimeHostError::Abort(FAKE_FAILURE));
+            }
+            if TYPE_INTRINSIC_FAILURE.with(Cell::get) {
+                return Err(ComptimeHostError::HostFailure(FAKE_FAILURE));
+            }
+            Ok(Some(match intrinsic {
+                ComptimeTypeIntrinsic::IntegerBound(ComptimeIntegerBound::Max) => {
+                    FakeValue::integer_typed(127, Some(ty))
+                }
+                ComptimeTypeIntrinsic::IntegerBound(ComptimeIntegerBound::Min) => {
+                    FakeValue::integer_typed(-128, Some(ty))
+                }
+                ComptimeTypeIntrinsic::RequireDroppable
+                | ComptimeTypeIntrinsic::RequireTriviallyDroppable => FakeValue::Unit,
+            }))
         }
         fn resolve_named_type_value(
             &mut self,
@@ -1282,7 +1364,9 @@ mod value_domain_tests {
             _span: Span,
         ) -> Option<Self::Type> {
             TYPE_RESOLUTION_CALLS.with(|calls| calls.set(calls.get() + 1));
-            None
+            TYPE_INTRINSIC_NAME
+                .with(|configured| configured.borrow().is_some())
+                .then_some(FakeType(7))
         }
         fn set_anon_struct_type_subst(
             &mut self,
@@ -1439,6 +1523,11 @@ mod value_domain_tests {
             ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
             Self::Failure,
         > {
+            if TYPE_INTRINSIC_NAME.with(|configured| configured.borrow().is_some()) {
+                return ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Ready(FakeType(
+                    7,
+                )));
+            }
             let FakeFinishOutcome::Structured(preparations) =
                 std::mem::replace(&mut self.finish_outcome, FakeFinishOutcome::Identity)
             else {
@@ -2019,6 +2108,77 @@ mod value_domain_tests {
             ComptimeOutcome::RuntimeDependent
         ));
         assert_eq!(host.float_evaluations.get(), 0);
+    }
+
+    #[test]
+    fn type_intrinsic_hook_receives_typed_bound_and_preserves_failure_channel() {
+        clear_type_intrinsic_observations();
+        let interner = lasso::ThreadedRodeo::new();
+        let intrinsic_name = interner.get_or_intern("int_max");
+        let mut editor = rue_rir::RirEditor::new();
+        let type_arg = editor.add_unit_type().expect("unit type syntax");
+        let root = editor.add_inst(rue_rir::Inst {
+            data: InstData::TypeIntrinsic {
+                name: intrinsic_name,
+                type_arg,
+            },
+            span: Span::new(0, 3),
+        });
+        let mut host = FakeHost {
+            programs: vec![editor.finish()],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        TYPE_INTRINSIC_NAME.with(|configured| {
+            *configured.borrow_mut() = Some((
+                SymbolHandle::new(intrinsic_name).issuing_interner_ordinal() as u32,
+                "int_max",
+            ));
+        });
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result =
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, root), &mut env);
+        assert!(
+            matches!(
+                result,
+                ComptimeOutcome::Known(FakeValue::TypedInteger(127, FakeType(7)))
+            ),
+            "unexpected type-intrinsic result: {result:?}"
+        );
+        assert_eq!(
+            TYPE_INTRINSIC_EVENTS.with(|events| events.borrow().clone()),
+            vec![(
+                ComptimeTypeIntrinsic::IntegerBound(ComptimeIntegerBound::Max),
+                FakeType(7),
+            )]
+        );
+
+        TYPE_INTRINSIC_FAILURE.with(|failure| failure.set(true));
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result =
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, root), &mut env);
+        assert!(matches!(
+            result,
+            ComptimeOutcome::HostFailure(FakeFailure::Generic)
+        ));
+
+        TYPE_INTRINSIC_FAILURE.with(|failure| failure.set(false));
+        TYPE_INTRINSIC_ABORT.with(|abort| abort.set(true));
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result =
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, root), &mut env);
+        assert!(matches!(
+            result,
+            ComptimeOutcome::Abort(FakeFailure::Generic)
+        ));
+        clear_type_intrinsic_observations();
     }
 
     #[test]
@@ -4720,6 +4880,37 @@ pub trait ComptimeHost {
     fn type_name(&self, ty: &Self::Type) -> String;
     fn type_is_unsigned(&self, ty: &Self::Type) -> bool;
     fn type_integer_semantics(&self, ty: &Self::Type) -> Option<IntegerType>;
+    /// Resolve a classified type intrinsic after its type argument has been
+    /// reduced. The default delegates to the ordinary ownership hooks and
+    /// integer-bound behavior; durable hosts can override this one typed seam
+    /// to preserve their immediate mismatch diagnostics.
+    fn resolve_comptime_type_intrinsic(
+        &mut self,
+        intrinsic: ComptimeTypeIntrinsic,
+        ty: Self::Type,
+        span: Span,
+    ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
+        match intrinsic {
+            ComptimeTypeIntrinsic::RequireDroppable => {
+                self.check_require_droppable(ty, span)?;
+                Ok(Some(Self::Value::unit()))
+            }
+            ComptimeTypeIntrinsic::RequireTriviallyDroppable => {
+                self.check_trivially_droppable(ty, span)?;
+                Ok(Some(Self::Value::unit()))
+            }
+            ComptimeTypeIntrinsic::IntegerBound(bound) => {
+                let Some(integer) = self.type_integer_semantics(&ty) else {
+                    return Ok(None);
+                };
+                let value = match bound {
+                    ComptimeIntegerBound::Max => integer.max_i128(),
+                    ComptimeIntegerBound::Min => integer.min_i128(),
+                };
+                Ok(Some(Self::Value::integer_typed(value, Some(ty))))
+            }
+        }
+    }
     fn const_expr_type(
         &self,
         program: &Self::ProgramKey,
@@ -6873,62 +7064,33 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let (name, type_arg) = (*name, *type_arg);
                 let gate_name = self.name_from_rir(name.into());
                 let gate = self.host.display_name(&gate_name);
+                let Some(intrinsic) = ComptimeTypeIntrinsic::from_name(&gate) else {
+                    return ComptimeOutcome::RuntimeDependent;
+                };
                 // Both well-formedness gates reduce to unit at comptime:
                 // `@require_droppable` (instantiation-time, rejects `linear`) and
                 // `@require_trivially_droppable` (read-time, rejects drop glue —
                 // RUE-651). Any other type intrinsic (`@size_of`/`@align_of`) is
                 // not comptime-foldable here.
-                let is_droppable_gate = gate == "require_droppable";
-                let is_trivial_gate = gate == "require_trivially_droppable";
-                let is_int_bound = gate == "int_max" || gate == "int_min";
-                if is_int_bound {
-                    let is_max = gate == "int_max";
-                    // A still-unresolved type parameter makes the intrinsic
-                    // non-evaluable here; it folds at a concrete instantiation.
-                    let int_ty = outcome_value!(self.evaluate_comptime_type_syntax(
-                        &self.program_key(),
-                        type_arg,
-                        &env.type_subst,
-                        &env.value_subst,
-                        span,
-                    ));
-                    let bound = self.host.type_integer_semantics(&int_ty).map(|integer| {
-                        if is_max {
-                            integer.max_i128()
-                        } else {
-                            integer.min_i128()
-                        }
-                    });
-                    // A non-integer argument is diagnosed by runtime analysis
-                    // (`analyze_type_intrinsic`, E0702); stay non-evaluable
-                    // rather than duplicating the diagnostic.
-                    return match bound {
-                        Some(value) => {
-                            ComptimeOutcome::Known(H::Value::integer_typed(value, Some(int_ty)))
-                        }
-                        None => ComptimeOutcome::RuntimeDependent,
-                    };
-                }
-                if !is_droppable_gate && !is_trivial_gate {
-                    return ComptimeOutcome::RuntimeDependent;
-                }
                 // Resolve the element type through the enclosing comptime
                 // substitutions (`T -> Inner` for `ArrayBuf(Inner)`); a
                 // still-unresolved type parameter makes the gate non-evaluable
                 // (it will be re-checked at a concrete instantiation).
-                let elem_ty = outcome_value!(self.evaluate_comptime_type_syntax(
+                let intrinsic_ty = outcome_value!(self.evaluate_comptime_type_syntax(
                     &self.program_key(),
                     type_arg,
                     &env.type_subst,
                     &env.value_subst,
                     span,
                 ));
-                if is_trivial_gate {
-                    host_value!(self.host.check_trivially_droppable(elem_ty, span));
-                } else {
-                    host_value!(self.host.check_require_droppable(elem_ty, span));
+                match host_value!(self.host.resolve_comptime_type_intrinsic(
+                    intrinsic,
+                    intrinsic_ty,
+                    span,
+                )) {
+                    Some(value) => ComptimeOutcome::Known(value),
+                    None => ComptimeOutcome::RuntimeDependent,
                 }
-                ComptimeOutcome::Known(H::Value::unit())
             }
 
             // Module-qualified comptime type-constructor call in value position,

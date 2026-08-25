@@ -8506,25 +8506,43 @@ impl SemanticConstEvaluator<'_, '_> {
             E::Intrinsic { name, args } if self.symbol(name).as_ref() == "target_data_model" => {
                 self.target_intrinsic(*name, args)
             }
-            E::TypeIntrinsic { name, type_arg }
-                if matches!(
-                    self.symbol(name).as_ref(),
-                    "require_droppable" | "require_trivially_droppable"
-                ) =>
-            {
+            E::TypeIntrinsic { name, type_arg } => {
                 let intrinsic_name = self.symbol(name);
+                let Some(intrinsic) =
+                    rue_air::ComptimeTypeIntrinsic::from_name(intrinsic_name.as_ref())
+                else {
+                    return Err(Self::domain_failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                            rue_error::ErrorKind::ConstExprNotSupported {
+                                expr_kind: format!(
+                                    "intrinsic `@{}`",
+                                    semantic_candidate_spelling(self.symbols, name)
+                                ),
+                            },
+                        ),
+                    ));
+                };
                 let ty = self.resolve_type_syntax(*type_arg)?;
-                // Ownership is a post-signature well-formedness fact. Publishing
-                // the gate instead of inspecting nominal signatures here lets a
-                // recursive but indirect type graph finish before the keyed
-                // ownership query validates it.
+                let ownership_kind = match intrinsic {
+                    rue_air::ComptimeTypeIntrinsic::RequireDroppable => {
+                        crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireDroppable
+                    }
+                    rue_air::ComptimeTypeIntrinsic::RequireTriviallyDroppable => {
+                        crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireTriviallyDroppable
+                    }
+                    rue_air::ComptimeTypeIntrinsic::IntegerBound(bound) => {
+                        let bound = crate::durable_comptime::DurableComptimeTypeIntrinsicPolicy::integer_bound(
+                            bound, &ty,
+                        )?;
+                        return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                            V::Integer(bound),
+                            ty,
+                        )));
+                    }
+                };
                 self.authority.legacy_effects.observe_deferred_ownership(
                     crate::semantic_query_nucleus::DeferredOwnershipGate {
-                        kind: if intrinsic_name.as_ref() == "require_droppable" {
-                            crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireDroppable
-                        } else {
-                            crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireTriviallyDroppable
-                        },
+                        kind: ownership_kind,
                         ty,
                         source: Arc::new(
                             crate::semantic_query_nucleus::DeferredOwnershipGateSource {
@@ -8539,56 +8557,6 @@ impl SemanticConstEvaluator<'_, '_> {
                 Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
                     V::Unit,
                     crate::durable_semantics::DurableType::Unit,
-                )))
-            }
-            E::TypeIntrinsic { name, type_arg }
-                if matches!(self.symbol(name).as_ref(), "int_max" | "int_min") =>
-            {
-                // `@int_max(T)` / `@int_min(T)` (RUE-694) fold in const context
-                // too: unlike `@size_of`, they depend only on the type identity,
-                // never on layout. The numeric authority stays `Type::int_max`/
-                // `Type::int_min`; this arm only maps the durable scalar back.
-                let is_max = self.symbol(name).as_ref() == "int_max";
-                let ty = self.resolve_type_syntax(*type_arg)?;
-                use crate::durable_semantics::DurableType as T;
-                let scalar = match ty {
-                    T::I8 => Some(rue_air::Type::I8),
-                    T::I16 => Some(rue_air::Type::I16),
-                    T::I32 => Some(rue_air::Type::I32),
-                    T::I64 => Some(rue_air::Type::I64),
-                    T::U8 => Some(rue_air::Type::U8),
-                    T::U16 => Some(rue_air::Type::U16),
-                    T::U32 => Some(rue_air::Type::U32),
-                    T::U64 => Some(rue_air::Type::U64),
-                    _ => None,
-                };
-                let bound = scalar.and_then(|scalar| {
-                    if is_max {
-                        scalar.int_max()
-                    } else {
-                        scalar.int_min()
-                    }
-                });
-                let Some(bound) = bound else {
-                    return Err(Self::domain_failure(
-                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                            rue_error::ErrorKind::IntrinsicTypeMismatch(Box::new(
-                                rue_error::IntrinsicTypeMismatchError {
-                                    name: if is_max {
-                                        "int_max".to_string()
-                                    } else {
-                                        "int_min".to_string()
-                                    },
-                                    expected: "an integer type".to_string(),
-                                    found: ty.kind().display_name().to_string(),
-                                },
-                            )),
-                        ),
-                    ));
-                };
-                Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
-                    V::Integer(bound),
-                    ty,
                 )))
             }
             E::EnumVariant {
@@ -8637,7 +8605,7 @@ impl SemanticConstEvaluator<'_, '_> {
                     },
                 ),
             )),
-            E::Intrinsic { name, .. } | E::TypeIntrinsic { name, .. } => Err(Self::domain_failure(
+            E::Intrinsic { name, .. } => Err(Self::domain_failure(
                 crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
                     rue_error::ErrorKind::ConstExprNotSupported {
                         expr_kind: format!(

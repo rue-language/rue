@@ -61,6 +61,8 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "ComptimeHostError",
         "ComptimeHostResult",
         "ComptimeIntrinsicArgument",
+        "ComptimeIntegerBound",
+        "ComptimeTypeIntrinsic",
         "ComptimeSite",
         "ComptimeSiteKind",
         "ComptimeIdentity",
@@ -86,6 +88,31 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
             "canonical comptime export missing: {export}"
         );
     }
+    let classifier = comptime
+        .split("impl ComptimeTypeIntrinsic {")
+        .nth(1)
+        .and_then(|source| source.split("\n}\n\n/// The semantic operation").next())
+        .expect("type intrinsic classifier");
+    assert_eq!(classifier.matches("fn from_name(").count(), 1);
+    assert_eq!(
+        comptime
+            .matches("ComptimeTypeIntrinsic::from_name(")
+            .count(),
+        1
+    );
+    assert!(comptime.contains("impl ComptimeIntegerBound {"));
+    assert!(comptime.contains("pub fn as_str(self) -> &'static str"));
+    assert_eq!(
+        comptime
+            .matches("fn resolve_comptime_type_intrinsic(")
+            .count(),
+        2,
+        "one trait seam and one fake-host override must cover type intrinsics"
+    );
+    assert!(
+        !comptime.contains("resolve_comptime_integer_bound("),
+        "integer bounds must not grow a competing host override seam"
+    );
     let test_start = comptime
         .find("#[cfg(test)]\nmod value_domain_tests")
         .expect("value-domain test module boundary");
