@@ -309,7 +309,6 @@ impl DurableComptimeEffects {
         self.deferred_ownership.insert(gate);
     }
 
-    #[allow(dead_code)] // used by the root-integrated AIR host in the next slice
     pub(crate) fn merge_child(
         &mut self,
         child: DurableComptimeEffects,
@@ -712,6 +711,33 @@ impl DurableComptimeSession {
         ordinal
     }
 
+    /// Issue the expression edge for an already-known call projection. The
+    /// lifecycle owns the edge policy and retains its root scope until the
+    /// evaluator has fully unwound.
+    pub(crate) fn prepare_expression_edge(
+        &mut self,
+        call_ordinal: u32,
+    ) -> Result<DurableComptimeCallEdge, DurableComptimeLifecycleError> {
+        self.lifecycle.prepare_expression_edge(call_ordinal)
+    }
+
+    pub(crate) fn finish_ready_expression_edge(
+        &mut self,
+        edge: &mut DurableComptimeCallEdge,
+        projection: &crate::semantic_query_nucleus::ComptimeCallProjection,
+    ) -> Result<(), DurableComptimeLifecycleError> {
+        self.lifecycle.merge_ready_projection(edge, projection)
+    }
+
+    /// Drain observations only after the evaluator has fully unwound. The
+    /// lifecycle validates that no entered frame remains before mutating its
+    /// root effects, so a premature drain is recoverable and non-destructive.
+    pub(crate) fn drain_root_effects(
+        &mut self,
+    ) -> Result<DurableComptimeEffects, DurableComptimeLifecycleError> {
+        self.lifecycle.take_root_effects()
+    }
+
     #[allow(dead_code)] // activated when the durable AIR host enters call edges
     pub(crate) fn lifecycle_mut(&mut self) -> &mut DurableComptimeCallLifecycle {
         &mut self.lifecycle
@@ -859,6 +885,15 @@ impl DurableComptimeCallLifecycle {
         } else {
             &mut self.effects
         }
+    }
+
+    fn take_root_effects(
+        &mut self,
+    ) -> Result<DurableComptimeEffects, DurableComptimeLifecycleError> {
+        if !self.active.is_empty() {
+            return Err(DurableComptimeLifecycleError::OutOfOrder);
+        }
+        Ok(std::mem::take(&mut self.effects))
     }
 
     pub(crate) fn observe_dependency(&mut self, dependency: SemanticDeclarationDependency) {
@@ -2484,6 +2519,32 @@ mod effect_lifecycle_tests {
         assert_eq!(sibling.next_call_ordinal(), 0);
     }
 
+    #[test]
+    fn durable_session_routes_ready_projection_through_expression_edge() {
+        let parent = definition("parent");
+        let declaration =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&parent)
+                .unwrap();
+        let mut session = DurableComptimeSession::new(parent, declaration).unwrap();
+        let mut edge = session.prepare_expression_edge(9).unwrap();
+        session
+            .finish_ready_expression_edge(&mut edge, &ready_projection(9))
+            .unwrap();
+        let effects = session.drain_root_effects().unwrap();
+        assert_eq!(
+            effects
+                .deferred_ownership()
+                .next()
+                .unwrap()
+                .application
+                .as_ref()
+                .unwrap()
+                .call_ordinal,
+            9
+        );
+        assert!(session.drain_root_effects().unwrap().is_empty());
+    }
+
     fn structured_context() -> DurableComptimeCallContext {
         structured_context_with_parent(definition("parent"))
     }
@@ -3142,6 +3203,42 @@ mod effect_lifecycle_tests {
             )
             .unwrap();
         assert!(lifecycle.complete_known().unwrap().is_empty());
+    }
+
+    #[test]
+    fn premature_root_drain_preserves_nested_ready_effects_until_parent_finishes() {
+        let mut lifecycle = lifecycle();
+        let mut outer = lifecycle.prepare(context(32)).unwrap();
+        lifecycle.enter(&outer).unwrap();
+        let mut inner = lifecycle.prepare_structured_edge().unwrap();
+        lifecycle
+            .merge_ready_projection(&mut inner, &ready_projection(33))
+            .unwrap();
+
+        assert_eq!(
+            lifecycle.take_root_effects(),
+            Err(DurableComptimeLifecycleError::OutOfOrder)
+        );
+        lifecycle
+            .finish_with_effects(
+                &mut outer,
+                &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+                DurableComptimeEffects::default(),
+            )
+            .unwrap();
+        let effects = lifecycle.complete_known().unwrap();
+        assert_eq!(effects.deferred_ownership().count(), 1);
+        assert_eq!(
+            effects
+                .deferred_ownership()
+                .next()
+                .unwrap()
+                .application
+                .as_ref()
+                .unwrap()
+                .call_ordinal,
+            32
+        );
     }
 
     #[test]
