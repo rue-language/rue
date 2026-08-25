@@ -9,8 +9,8 @@
 # direction, made every sibling element unreadable as a use-after-move of the
 # whole root.
 #
-# The obligation of the destructured value itself is the unresolved RUE-614
-# husk question and is deliberately not settled here; these cases pin the
+# Declared-linear residue is destroyed immediately when droppable and rejected
+# when it carries a linear obligation (RUE-614). These cases also pin the
 # SIBLINGS: sibling elements, sibling fields, sibling rows, and the rest of
 # the root keep their obligations and their drop glue.
 
@@ -340,8 +340,8 @@ stdout = """99
 # --- Boundaries the fix must NOT move -------------------------------------
 
 [[case]]
-name = "declared_linear_root_still_destructures_whole_value"
-description = "The declared-linear struct at the ROOT still destructures whole-value, array field and all: the husk stays droppable (RUE-614, unchanged by RUE-1632)."
+name = "declared_linear_root_projection_leaves_ancestor_obligation"
+description = "A declared-linear projection rejects residual linear array elements instead of silently discharging them (RUE-614)."
 files = [{ path = "main.rue", source = """
 linear struct L { v: i32 }
 linear struct H { arr: [L; 2] }
@@ -350,7 +350,8 @@ fn main() -> i32 {
     h.arr[0].v
 }
 """ }]
-exit_code = 1
+compile_fail = true
+error_contains = ["E0406", "linear value 'h' must be consumed"]
 
 [[case]]
 name = "declared_linear_root_still_rejects_dropping_a_linear_sibling"
@@ -368,6 +369,43 @@ error_contains = [
     "E0474",
     "would implicitly drop linear field 'arr'",
 ]
+
+[[case]]
+name = "smallest_nested_declared_linear_value_is_consumed"
+description = "With declared-linear nesting, the innermost enclosing value is destructured and the declared-linear ancestor keeps its own obligation."
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+drop fn D(self) { @dbg(self.value); }
+linear struct Inner { selected: i32, residue: D }
+linear struct Outer { inner: Inner, sibling: i32 }
+fn main() -> i32 {
+    let outer = Outer { inner: Inner { selected: 7, residue: D { value: 1 } }, sibling: 2 };
+    outer.inner.selected
+}
+""" }]
+compile_fail = true
+error_contains = ["E0406", "linear value 'outer' must be consumed"]
+
+[[case]]
+name = "nested_declared_linear_projection_drops_only_inner_residue"
+description = "A nested declared-linear projection consumes the inner value, drops its residue immediately, and leaves unrelated outer fields for ordinary scope-exit dropping."
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+drop fn D(self) { @dbg(self.value); }
+linear struct Inner { selected: i32, residue: D }
+struct Outer { inner: Inner, sibling: D }
+fn main() -> i32 {
+    let outer = Outer { inner: Inner { selected: 7, residue: D { value: 1 } }, sibling: D { value: 2 } };
+    let result = outer.inner.selected;
+    @dbg(99);
+    result
+}
+""" }]
+exit_code = 7
+stdout = """1
+99
+2
+"""
 
 [[case]]
 name = "infectious_element_carrier_boundary_unchanged"
@@ -428,3 +466,197 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 22
+
+[[case]]
+name = "declared_linear_copy_projection_drops_residue_immediately_in_order"
+description = "A Copy projection consumes the declared-linear value and drops droppable residue immediately, once each, in declaration order."
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+drop fn D(self) { @dbg(self.value); }
+linear struct Token { first: D, selected: i32, second: D }
+fn main() -> i32 {
+    let t = Token { first: D { value: 1 }, selected: 7, second: D { value: 2 } };
+    let result = t.selected;
+    @dbg(99);
+    result
+}
+""" }]
+exit_code = 7
+stdout = """1
+2
+99
+"""
+
+[[case]]
+name = "declared_linear_projection_extracts_before_residue_drop"
+description = "The selected value is materialized before a residue destructor mutates its source storage."
+files = [{ path = "main.rue", source = """
+struct Mutator { target: ptr mut i32 }
+drop fn Mutator(self) {
+    checked {
+        @ptr_write(self.target, 99);
+        @dbg(@ptr_read(self.target));
+    };
+}
+linear struct Token { selected: i32, residue: Mutator }
+fn main() -> i32 {
+    let mut dummy = 0;
+    let mut token = Token { selected: 7, residue: Mutator { target: checked { @raw_mut(dummy) } } };
+    let target: ptr mut i32 = checked { @raw_mut(token.selected) };
+    token.residue.target = target;
+    let result = token.selected;
+    @dbg(result);
+    result
+}
+"""}]
+stdout = """99
+7
+"""
+exit_code = 7
+
+[[case]]
+name = "declared_linear_non_copy_projection_preserves_selected_owner"
+description = "A non-Copy selected field is produced while only the droppable residue is destroyed immediately."
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+drop fn D(self) { @dbg(self.value); }
+linear struct Token { selected: D, residue: D }
+fn main() -> i32 {
+    let t = Token { selected: D { value: 7 }, residue: D { value: 1 } };
+    let selected = t.selected;
+    @dbg(99);
+    @drop(selected);
+    0
+}
+""" }]
+exit_code = 0
+stdout = """1
+99
+7
+"""
+
+[[case]]
+name = "declared_linear_constant_array_projection_drops_residue_immediately"
+description = "A constant-index projection through a declared-linear array field drops only the other elements immediately."
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+drop fn D(self) { @dbg(self.value); }
+linear struct Token { values: [D; 2], selected: i32 }
+fn main() -> i32 {
+    let t = Token { values: [D { value: 1 }, D { value: 2 }], selected: 7 };
+    let result = t.values[1];
+    @dbg(99);
+    @drop(result);
+    0
+}
+""" }]
+exit_code = 0
+stdout = """1
+99
+2
+"""
+
+[[case]]
+name = "declared_linear_empty_marker_still_requires_whole_consumption"
+description = "A fieldless declared-linear marker cannot be silently dropped; it requires whole-value consumption."
+files = [{ path = "main.rue", source = """
+linear struct Marker {}
+fn main() -> i32 {
+    let marker = Marker {};
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0406", "linear value 'marker' must be consumed"]
+
+[[case]]
+name = "declared_linear_whole_value_destructor_rejects_projection"
+description = "A declared-linear type with a whole-value custom destructor rejects field projection, including Copy fields."
+files = [{ path = "main.rue", source = """
+linear struct Token { value: i32 }
+drop fn Token(self) { @dbg(self.value); }
+fn main() -> i32 {
+    let token = Token { value: 7 };
+    token.value
+}
+""" }]
+compile_fail = true
+error_contains = ["E0456", "cannot move field `value` out of a value of type 'Token'"]
+
+[[case]]
+name = "declared_linear_destructor_rejects_dynamic_copy_projection"
+description = "A dynamic-index Copy projection cannot bypass whole-value destructor safety on a declared-linear container (RUE-1755 fallback preserved)."
+files = [{ path = "main.rue", source = """
+linear struct Token { values: [i32; 2] }
+drop fn Token(self) { @dbg(self.values[0]); }
+fn pick() -> u64 { 0 }
+fn main() -> i32 {
+    let token = Token { values: [7, 9] };
+    let index = pick();
+    token.values[index]
+}
+""" }]
+compile_fail = true
+error_contains = ["E0456", "cannot move field `values` out of a value of type 'Token'"]
+
+[[case]]
+name = "declared_linear_field_borrow_does_not_destructure"
+description = "Borrowing a field of a declared-linear value remains a borrow and does not invoke declared-linear residue planning."
+files = [{ path = "main.rue", source = """
+linear struct Token { selected: i32, residue: i32 }
+fn read(borrow value: i32) -> i32 { value }
+fn consume(value: Token) -> i32 { value.selected }
+fn main() -> i32 {
+    let token = Token { selected: 7, residue: 11 };
+    read(borrow token.selected);
+    consume(token)
+}
+""" }]
+exit_code = 7
+
+[[case]]
+name = "declared_linear_field_inout_does_not_destructure"
+description = "An inout projection of a declared-linear field remains a by-reference mutation."
+files = [{ path = "main.rue", source = """
+linear struct Token { selected: i32, residue: i32 }
+fn bump(inout value: i32) { value = value + 1; }
+fn main() -> i32 {
+    let mut token = Token { selected: 7, residue: 11 };
+    bump(inout token.selected);
+    token.selected
+}
+""" }]
+exit_code = 8
+
+[[case]]
+name = "declared_linear_field_raw_mut_does_not_destructure"
+description = "Taking a mutable raw pointer to a declared-linear field does not consume or drop the enclosing value."
+files = [{ path = "main.rue", source = """
+linear struct Token { selected: i32, residue: i32 }
+fn main() -> i32 {
+    let mut token = Token { selected: 7, residue: 11 };
+    checked {
+        let pointer: ptr mut i32 = @raw_mut(token.selected);
+        @ptr_write(pointer, 8);
+    };
+    token.selected
+}
+""" }]
+exit_code = 8
+
+[[case]]
+name = "declared_linear_dynamic_copy_field_read_keeps_root_live"
+description = "A dynamic Copy field read through a declared-linear ancestor retains the transitional RUE-1755 behavior and does not consume the root."
+files = [{ path = "main.rue", source = """
+struct Cell { value: i32 }
+linear struct Token { entries: [Cell; 2] }
+fn pick() -> u64 { 0 }
+fn consume(token: Token) -> i32 { token.entries[0].value }
+fn main() -> i32 {
+    let token = Token { entries: [Cell { value: 7 }, Cell { value: 9 }] };
+    let index = pick();
+    token.entries[index].value;
+    consume(token)
+}
+""" }]
+exit_code = 7
