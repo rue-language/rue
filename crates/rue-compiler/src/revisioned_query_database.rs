@@ -23525,10 +23525,11 @@ impl<'a> CompilerBodyFactProvider<'a> {
             .query_registered(&self.queries.semantic_nucleus, key)
     }
 
-    /// Probe the already-published comptime-call fact without demanding the
-    /// semantic nucleus. A true miss admits the canonical body plan into an
-    /// owned foreign-program payload; an in-progress semantic handoff remains
-    /// NotReady and never competes with the active evaluator.
+    /// Reuse or join the exact-current comptime-call fact without claiming a
+    /// semantic-nucleus attempt. A cold miss or a non-ready handoff admits the
+    /// canonical body plan into an owned foreign-program payload without
+    /// claiming or publishing a SemanticNucleus attempt; a current owner is
+    /// still joined whenever it can safely publish.
     #[allow(dead_code)]
     fn probe_comptime_call_inner(
         &self,
@@ -23557,7 +23558,7 @@ impl<'a> CompilerBodyFactProvider<'a> {
             },
             candidate: declaration,
         };
-        match self.queries.context.probe_registered_ready(
+        match self.queries.context.join_registered_noncomputing(
             &self.queries.semantic_nucleus,
             crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(key.clone()),
         )? {
@@ -23579,7 +23580,7 @@ impl<'a> CompilerBodyFactProvider<'a> {
                 ),
                 _ => Ok(crate::body_query::ForeignComptimeCallLookup::UnexpectedReadyProjection),
             },
-            rue_query::ReadyQueryProbe::Miss => {
+            rue_query::ReadyQueryProbe::Miss | rue_query::ReadyQueryProbe::NotReady => {
                 let artifacts = self.queries.context.query_registered(
                     &self.queries.declaration_body_plan_artifacts,
                     DeclarationBodyPlanQueryKey(foreign_plan.candidate.clone()),
@@ -23627,9 +23628,6 @@ impl<'a> CompilerBodyFactProvider<'a> {
                         Ok(crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(error))
                     }
                 }
-            }
-            rue_query::ReadyQueryProbe::NotReady => {
-                Ok(crate::body_query::ForeignComptimeCallLookup::NotReady)
             }
         }
     }
@@ -28352,28 +28350,34 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn not_ready_foreign_probe_arm_is_unit_and_non_admitting() {
+    fn not_ready_foreign_probe_uses_owned_plan_admission() {
         assert!(matches!(
             crate::body_query::ForeignComptimeCallLookup::NotReady,
             crate::body_query::ForeignComptimeCallLookup::NotReady
         ));
         let source = include_str!("revisioned_query_database.rs");
-        let not_ready = source
-            .find("ReadyQueryProbe::NotReady =>")
+        let probe = source
+            .split("fn probe_comptime_call_inner(")
+            .nth(1)
+            .and_then(|source| source.split("pub(crate) fn probe_comptime_call(").next())
+            .expect("the canonical comptime probe");
+        let not_ready = probe
+            .find("rue_query::ReadyQueryProbe::Miss | rue_query::ReadyQueryProbe::NotReady =>")
             .expect("the canonical provider must handle NotReady");
-        let arm_end = source[not_ready..]
+        let arm_end = probe[not_ready..]
             .find("\n            }")
             .map(|offset| not_ready + offset)
-            .expect("the NotReady arm must have a bounded match body");
-        let arm = &source[not_ready..arm_end];
+            .expect("the Miss/NotReady arm must have a bounded match body");
+        let arm = &probe[not_ready..arm_end];
         assert!(
-            arm.contains("ForeignComptimeCallLookup::NotReady"),
-            "NotReady must return its non-admissible unit variant"
+            arm.contains("declaration_body_plan_artifacts")
+                && arm.contains("OwnedForeignComptimeProgram::from_body_plan"),
+            "Miss and NotReady must use the owned foreign-plan admission path"
         );
         assert!(
-            !arm.contains("declaration_body_plan_artifacts")
-                && !arm.contains("materialize_semantic_candidate_rir"),
-            "the NotReady arm must not query or materialize a body plan"
+            !arm.contains("query_registered(&self.queries.semantic_nucleus")
+                && !arm.contains("probe_registered_ready("),
+            "owned-plan admission must not demand or evaluate the semantic nucleus"
         );
     }
 

@@ -3240,6 +3240,21 @@ fn durable_comptime_services_are_named_authority_operations() {
     assert!(!foreign_adapter.contains("Lookup(ForeignComptimeCallLookup)"));
     assert!(!foreign_adapter.contains("SemanticConstEvaluator"));
     assert!(!foreign_adapter.contains("ComptimeEngine"));
+    let comptime_probe = database
+        .split("fn probe_comptime_call_inner(")
+        .nth(1)
+        .and_then(|source| source.split("pub(crate) fn probe_comptime_call(").next())
+        .expect("compiler comptime probe adapter");
+    assert!(
+        comptime_probe.contains("join_registered_noncomputing(")
+            && !comptime_probe.contains("probe_registered_ready("),
+        "comptime probe must join or reuse exact current registered work through the non-computing query seam"
+    );
+    assert!(
+        !comptime_probe.contains("valid_for_revision")
+            && !comptime_probe.contains("query_task_registered"),
+        "comptime probe must not validate retained candidates or demand a peer query body"
+    );
     assert!(!production_facade.contains("impl Clone for DurableComptimeForeignCall"));
     assert!(!production_facade.contains("impl Clone for DurableComptimeCallTicket"));
     for (kind, non_replayable) in [
