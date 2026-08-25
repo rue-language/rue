@@ -924,6 +924,18 @@ impl DurableComptimeSession {
         ordinal
     }
 
+    /// Read one already-registered program by its complete stable key. Dense
+    /// instruction references remain meaningful only through the returned
+    /// owning program, so callers cannot accidentally pair a reference with a
+    /// colliding program.
+    #[allow(dead_code)] // consumed by the staged durable AIR host
+    pub(crate) fn registered_program(
+        &self,
+        key: &crate::body_query::DurableComptimeProgramKey,
+    ) -> Option<&crate::body_query::DurableComptimeProgram> {
+        self.programs.get(key)
+    }
+
     fn observe_anonymous_nominal(&mut self, nominal: DurableAnonymousNominal) {
         self.lifecycle.observe_anonymous_nominal(nominal);
     }
@@ -1931,6 +1943,7 @@ pub(crate) trait DurableComptimeSemanticAuthority {
     ) -> Result<TargetEnumValue, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>;
 }
 
+#[allow(dead_code)] // activated by the staged durable AIR host
 pub(crate) trait DurableComptimeForeignCallAuthority {
     fn probe_comptime_call(
         &self,
@@ -2034,10 +2047,12 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
     }
 }
 
+#[allow(dead_code)] // activated by the staged durable AIR host
 impl<A: DurableComptimeForeignCallAuthority + ?Sized> DurableComptimeServices<'_, A> {
     /// Probe only an already-published foreign fact or admit its owned body
     /// frame. The authority owns dependency observation and cancellation; this
     /// method never demands a child comptime query.
+    #[allow(dead_code)] // activated by the staged durable AIR host
     pub(crate) fn probe_comptime_call(
         &self,
         producer: &crate::StableDefinitionKey,
@@ -5114,9 +5129,11 @@ mod structured_type_adapter_tests {
         path: &str,
         argument: &str,
     ) -> Arc<crate::body_query::OwnedComptimeProgramCore> {
-        let snapshot =
-            crate::SourceSnapshot::single(path, format!("const target: Wrap({argument}) = 1;"))
-                .unwrap();
+        let snapshot = crate::SourceSnapshot::single(
+            path,
+            format!("const target: Wrap({argument}) = @import(\"{path}\");"),
+        )
+        .unwrap();
         let module = crate::parsed_modules::parse_source_snapshot_modules(&snapshot)
             .unwrap()
             .modules()[0]
@@ -5237,6 +5254,29 @@ mod structured_type_adapter_tests {
             panic!("second const retains its declared type root");
         };
         assert_eq!(first_root, second_root, "fixture uses colliding dense refs");
+
+        let first_registered = session.registered_program(&first.plan.key).unwrap();
+        let second_registered = session.registered_program(&second.plan.key).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first_registered.rir, &first.rir));
+        assert!(std::sync::Arc::ptr_eq(&second_registered.rir, &second.rir));
+        assert_ne!(first_registered.symbols, second_registered.symbols);
+        assert_eq!(first_registered.imports.len(), 1);
+        assert_eq!(second_registered.imports.len(), 1);
+        assert_eq!(
+            first_registered.imports[0].specifier,
+            Arc::<str>::from("first.rue")
+        );
+        assert_eq!(
+            second_registered.imports[0].specifier,
+            Arc::<str>::from("second.rue")
+        );
+        let mut wrong_configuration = first.plan.key.configuration.clone();
+        wrong_configuration.target = rue_target::Target::Aarch64Linux;
+        let wrong_key = rue_air::ComptimeProgramKey {
+            declaration: first.plan.key.declaration.clone(),
+            configuration: wrong_configuration,
+        };
+        assert!(session.registered_program(&wrong_key).is_none());
 
         let mut first_provider = Provider {
             scope: first.plan.candidate.module.clone(),

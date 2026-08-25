@@ -21478,6 +21478,7 @@ pub(crate) struct CompilerBodyProviderQueries<'a> {
     module_source_bases: QueryFamily<ModuleQueryKey, Option<rue_air::DurableBodySourceLocator>>,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
     lookup_imports: QueryFamily<LookupImportKey, LookupImportValue>,
+    #[allow(dead_code)] // consumed by the staged durable AIR probe authority
     declaration_body_plan_artifacts:
         QueryFamily<DeclarationBodyPlanQueryKey, DeclarationBodyPlanArtifactsValue>,
     semantic_nucleus: QueryFamily<
@@ -23522,14 +23523,25 @@ impl<'a> CompilerBodyFactProvider<'a> {
             .context
             .query_registered(&self.queries.semantic_nucleus, key)
     }
+}
 
-    /// Reuse or join the exact-current comptime-call fact without claiming a
-    /// semantic-nucleus attempt. A cold miss or a non-ready handoff admits the
-    /// canonical body plan into an owned foreign-program payload without
-    /// claiming or publishing a SemanticNucleus attempt; a current owner is
-    /// still joined whenever it can safely publish.
-    #[allow(dead_code)]
-    fn probe_comptime_call_inner(
+/// The single query-side authority for non-computing foreign comptime
+/// admission. Every caller supplies the exact query context and registered
+/// families; this authority never owns a database or invokes a query body.
+#[allow(dead_code)] // activated by the staged durable AIR host
+struct DurableComptimeForeignQueryAuthority<'a> {
+    context: &'a QueryContext,
+    semantic_nucleus: &'a SemanticNucleusFamily,
+    declaration_body_plan_artifacts:
+        &'a QueryFamily<DeclarationBodyPlanQueryKey, DeclarationBodyPlanArtifactsValue>,
+    configuration: &'a crate::semantic_query_nucleus::SemanticQueryConfiguration,
+}
+
+#[allow(dead_code)] // activated by the staged durable AIR host
+impl crate::durable_comptime::DurableComptimeForeignCallAuthority
+    for DurableComptimeForeignQueryAuthority<'_>
+{
+    fn probe_comptime_call(
         &self,
         producer: &crate::StableDefinitionKey,
         type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
@@ -23545,19 +23557,22 @@ impl<'a> CompilerBodyFactProvider<'a> {
             );
         };
         let key = crate::semantic_query_nucleus::ComptimeCallQueryKey {
-            declaration: self.declaration_query_key(&declaration),
+            declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration: declaration.clone(),
+                configuration: self.configuration.clone(),
+            },
             type_arguments: type_arguments.to_vec().into(),
             value_arguments: value_arguments.to_vec().into(),
         };
         let foreign_plan = crate::body_query::DurableComptimeProgramPlan {
             key: crate::body_query::DurableComptimeProgramKey {
                 declaration: producer.clone(),
-                configuration: self.queries.configuration.clone(),
+                configuration: self.configuration.clone(),
             },
             candidate: declaration,
         };
-        match self.queries.context.join_registered_noncomputing(
-            &self.queries.semantic_nucleus,
+        match self.context.join_registered_noncomputing(
+            self.semantic_nucleus,
             crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(key.clone()),
         )? {
             rue_query::ReadyQueryProbe::Ready(terminal) => match terminal.outcome() {
@@ -23579,8 +23594,8 @@ impl<'a> CompilerBodyFactProvider<'a> {
                 _ => Ok(crate::body_query::ForeignComptimeCallLookup::UnexpectedReadyProjection),
             },
             rue_query::ReadyQueryProbe::Miss | rue_query::ReadyQueryProbe::NotReady => {
-                let artifacts = self.queries.context.query_registered(
-                    &self.queries.declaration_body_plan_artifacts,
+                let artifacts = self.context.query_registered(
+                    self.declaration_body_plan_artifacts,
                     DeclarationBodyPlanQueryKey(foreign_plan.candidate.clone()),
                 )?;
                 let artifacts = match artifacts.outcome() {
@@ -23614,7 +23629,7 @@ impl<'a> CompilerBodyFactProvider<'a> {
                     foreign_plan,
                     artifacts,
                     seed,
-                    || self.queries.context.check_canceled(),
+                    || self.context.check_canceled(),
                 ) {
                     Ok(program) => Ok(crate::body_query::ForeignComptimeCallLookup::Admitted(
                         program,
@@ -23629,14 +23644,23 @@ impl<'a> CompilerBodyFactProvider<'a> {
             }
         }
     }
+}
 
+impl CompilerBodyFactProvider<'_> {
+    #[allow(dead_code)] // activated by the staged durable AIR host
     pub(crate) fn probe_comptime_call(
         &self,
         producer: &crate::StableDefinitionKey,
         type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
         value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
     ) -> Result<crate::body_query::ForeignComptimeCallLookup, QueryAbort> {
-        crate::durable_comptime::DurableComptimeServices::new(self).probe_comptime_call(
+        let authority = DurableComptimeForeignQueryAuthority {
+            context: self.queries.context,
+            semantic_nucleus: &self.queries.semantic_nucleus,
+            declaration_body_plan_artifacts: &self.queries.declaration_body_plan_artifacts,
+            configuration: &self.queries.configuration,
+        };
+        crate::durable_comptime::DurableComptimeServices::new(&authority).probe_comptime_call(
             producer,
             type_arguments,
             value_arguments,
@@ -23796,17 +23820,6 @@ impl<'a> CompilerBodyFactProvider<'a> {
             });
         }
         found
-    }
-}
-
-impl crate::durable_comptime::DurableComptimeForeignCallAuthority for CompilerBodyFactProvider<'_> {
-    fn probe_comptime_call(
-        &self,
-        producer: &crate::StableDefinitionKey,
-        type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
-        value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
-    ) -> Result<crate::body_query::ForeignComptimeCallLookup, QueryAbort> {
-        self.probe_comptime_call_inner(producer, type_arguments, value_arguments)
     }
 }
 
@@ -28226,6 +28239,11 @@ fn main() -> i32 {
         };
         assert_eq!(program.plan.key.declaration, producer);
         assert_eq!(
+            program.plan.key.configuration,
+            semantic_configuration(),
+            "owned admission must retain the exact requested configuration"
+        );
+        assert_eq!(
             program.callable().expect("callable root").context.as_str(),
             "main.rue"
         );
@@ -28358,9 +28376,9 @@ fn main() -> i32 {
         ));
         let source = include_str!("revisioned_query_database.rs");
         let probe = source
-            .split("fn probe_comptime_call_inner(")
+            .split("struct DurableComptimeForeignQueryAuthority<'a> {")
             .nth(1)
-            .and_then(|source| source.split("pub(crate) fn probe_comptime_call(").next())
+            .and_then(|source| source.split("impl CompilerBodyFactProvider").next())
             .expect("the canonical comptime probe");
         let not_ready = probe
             .find("rue_query::ReadyQueryProbe::Miss | rue_query::ReadyQueryProbe::NotReady =>")
@@ -28376,7 +28394,7 @@ fn main() -> i32 {
             "Miss and NotReady must use the owned foreign-plan admission path"
         );
         assert!(
-            !arm.contains("query_registered(&self.queries.semantic_nucleus")
+            !arm.contains("query_registered(&self.semantic_nucleus")
                 && !arm.contains("probe_registered_ready("),
             "owned-plan admission must not demand or evaluate the semantic nucleus"
         );
