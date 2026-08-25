@@ -1677,7 +1677,7 @@ pub(crate) fn durable_type_from_instance_key(
     })
 }
 
-pub(crate) fn durable_type_diagnostic_name(ty: &DurableType) -> String {
+fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
     use crate::durable_semantics::DurableType as T;
 
     fn function_name(function: &crate::FunctionInstanceKey) -> Option<&str> {
@@ -1755,6 +1755,10 @@ pub(crate) fn durable_type_diagnostic_name(ty: &DurableType) -> String {
         T::Module(module) => module.to_string(),
         T::GenericParameter(index) => format!("T{index}"),
     }
+}
+
+pub(crate) fn durable_type_diagnostic_name(ty: &DurableType) -> String {
+    DurableComptimeScalarPolicy::type_name(ty)
 }
 
 pub(crate) fn inferred_durable_const_type_name(value: &DurableConstValue) -> &'static str {
@@ -1862,6 +1866,92 @@ pub(crate) fn durable_int_width(
         _ => return None,
     };
     IntegerType::new(bits, signed)
+}
+
+/// Stateless scalar policy shared by declaration-time evaluation and the
+/// future AIR durable host.  It owns no query or RIR state; all inputs are
+/// already-reduced durable values and types.
+pub(crate) struct DurableComptimeScalarPolicy;
+
+impl DurableComptimeScalarPolicy {
+    pub(crate) fn type_name(ty: &DurableType) -> String {
+        durable_type_diagnostic_name_kernel(ty)
+    }
+
+    #[allow(dead_code)] // activated by the staged durable AIR host
+    pub(crate) fn type_is_unsigned(ty: &DurableType) -> bool {
+        Self::type_integer_semantics(ty).is_some_and(|integer| integer.is_unsigned())
+    }
+
+    pub(crate) fn type_integer_semantics(
+        ty: &DurableType,
+    ) -> Option<rue_air::integer_semantics::IntegerType> {
+        durable_int_width(ty)
+    }
+
+    pub(crate) fn integer_operation_type(
+        expected: Option<&DurableType>,
+        left: Option<&DurableType>,
+        right: Option<&DurableType>,
+    ) -> Result<DurableType, DurableComptimeFailure> {
+        let fallback = expected
+            .filter(|ty| durable_int_width(ty).is_some())
+            .cloned()
+            .unwrap_or(DurableType::I32);
+        match (left, right) {
+            (Some(left), Some(right)) if left != right => Err(DurableComptimeFailure::failure(
+                SemanticNucleusFailure::Diagnostic(rue_error::ErrorKind::TypeMismatch {
+                    expected: durable_type_diagnostic_name(left),
+                    found: durable_type_diagnostic_name(right),
+                }),
+            )),
+            (Some(ty), _) | (_, Some(ty)) => Ok(ty.clone()),
+            (None, None) => Ok(fallback),
+        }
+    }
+
+    pub(crate) fn unary_integer_type(
+        expected: Option<&DurableType>,
+        operand: Option<&DurableType>,
+    ) -> Result<DurableType, DurableComptimeFailure> {
+        Self::integer_operation_type(expected, operand, None)
+    }
+
+    pub(crate) fn require_integer_fits(
+        ty: &DurableType,
+        value: i128,
+    ) -> Result<(), DurableComptimeFailure> {
+        let integer = DurableConstValue::Integer(value);
+        if durable_const_fits_type(&integer, ty) {
+            return Ok(());
+        }
+        Err(DurableComptimeFailure::integer_literal_overflow(
+            &durable_type_diagnostic_name(ty),
+            value,
+        ))
+    }
+
+    pub(crate) fn checked_integer_result(
+        ty: &DurableType,
+        result: rue_air::integer_semantics::CheckedIntegerResult,
+        operation: &str,
+    ) -> Result<i128, DurableComptimeFailure> {
+        let Some(value) = result.checked() else {
+            let type_name = durable_type_diagnostic_name(ty);
+            let detail = result.raw().map_or_else(
+                || format!("the result does not fit in {type_name}"),
+                |value| {
+                    format!(
+                        "value {value} is out of range for type {type_name}; {value} does not fit in {type_name}"
+                    )
+                },
+            );
+            return Err(DurableComptimeFailure::arithmetic_overflow(
+                &type_name, operation, &detail,
+            ));
+        };
+        Ok(value)
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -6173,6 +6263,91 @@ mod terminal_adapter_tests {
                 if matches!(*value, SemanticNucleusFailure::DiagnosticAtProducerRange {
                     ref producer, start: 100, end: 120, ..
                 } if producer == &nested.producer)
+        ));
+    }
+
+    #[test]
+    fn scalar_policy_preserves_integer_precedence_and_fallbacks() {
+        use crate::durable_semantics::DurableType as T;
+
+        assert_eq!(DurableComptimeScalarPolicy::type_name(&T::U16), "u16");
+        for ty in [T::U8, T::U16, T::U32, T::U64] {
+            assert!(DurableComptimeScalarPolicy::type_is_unsigned(&ty));
+        }
+        for ty in [T::I8, T::I16, T::I32, T::I64, T::Bool] {
+            assert!(!DurableComptimeScalarPolicy::type_is_unsigned(&ty));
+        }
+        assert_eq!(
+            DurableComptimeScalarPolicy::type_integer_semantics(&T::I32)
+                .expect("i32 has integer semantics")
+                .bits(),
+            32
+        );
+
+        // A reduced operand type wins over the frame expected type, matching
+        // the legacy evaluator's integer_type(left, right) precedence.
+        assert_eq!(
+            DurableComptimeScalarPolicy::integer_operation_type(Some(&T::U16), Some(&T::I8), None,)
+                .unwrap(),
+            T::I8
+        );
+        assert_eq!(
+            DurableComptimeScalarPolicy::unary_integer_type(Some(&T::U16), Some(&T::I8)).unwrap(),
+            T::I8
+        );
+        assert_eq!(
+            DurableComptimeScalarPolicy::integer_operation_type(Some(&T::U8), None, None).unwrap(),
+            T::U8
+        );
+        assert_eq!(
+            DurableComptimeScalarPolicy::unary_integer_type(None, None).unwrap(),
+            T::I32
+        );
+        assert!(matches!(
+            DurableComptimeScalarPolicy::integer_operation_type(
+                None,
+                Some(&T::I8),
+                Some(&T::U8),
+            ),
+            Err(DurableComptimeFailure::Failure(value))
+                if matches!(*value, SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::TypeMismatch { .. }
+                ))
+        ));
+    }
+
+    #[test]
+    fn scalar_policy_preserves_fit_and_arithmetic_diagnostics() {
+        use crate::durable_semantics::DurableType as T;
+
+        DurableComptimeScalarPolicy::require_integer_fits(&T::U8, 255).unwrap();
+        assert!(matches!(
+            DurableComptimeScalarPolicy::require_integer_fits(&T::U8, 256),
+            Err(DurableComptimeFailure::Failure(value))
+                if matches!(*value, SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::ComptimeEvaluationFailed { ref reason }
+                ) if reason.contains("does not fit in u8"))
+        ));
+        let integer = rue_air::integer_semantics::IntegerType::new(8, true).unwrap();
+        assert_eq!(
+            DurableComptimeScalarPolicy::checked_integer_result(
+                &T::I8,
+                integer.checked_add_report_i128(1, 2),
+                "addition",
+            )
+            .unwrap(),
+            3
+        );
+        assert!(matches!(
+            DurableComptimeScalarPolicy::checked_integer_result(
+                &T::I8,
+                integer.checked_add_report_i128(127, 1),
+                "addition",
+            ),
+            Err(DurableComptimeFailure::Failure(value))
+                if matches!(*value, SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::ComptimeEvaluationFailed { ref reason }
+                ) if reason.contains("integer overflow evaluating addition"))
         ));
     }
 }

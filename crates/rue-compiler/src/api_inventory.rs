@@ -3038,6 +3038,15 @@ fn durable_const_integer_semantics_use_the_shared_kernel() {
         .and_then(|source| source.split("fn durable_int_width(").next())
         .expect("durable integer fit adapter");
     let durable = include_str!("durable_comptime.rs");
+    let scalar_policy = durable
+        .split("pub(crate) struct DurableComptimeScalarPolicy;")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("#[derive(Debug, Clone, PartialEq, Eq)]\npub(crate) enum DurableComptimeValueFitFailure")
+                .next()
+        })
+        .expect("durable scalar policy");
     let canonical_fits = durable
         .split("pub(crate) fn durable_const_fits_type(")
         .nth(1)
@@ -3059,9 +3068,40 @@ fn durable_const_integer_semantics_use_the_shared_kernel() {
         .and_then(|source| source.split("E::Block { instructions }").next())
         .expect("durable unary evaluator");
     let arithmetic_policy = format!("{arithmetic}{unary}");
+    let integer_selector = evaluator
+        .split("fn integer_type(")
+        .nth(1)
+        .and_then(|source| source.split("fn eval_binary(").next())
+        .expect("durable integer selector");
 
     assert!(fits.contains("durable_const_fits_type"));
     assert!(canonical_fits.contains("integer.fits_i128"));
+    for required in [
+        "type_name",
+        "type_is_unsigned",
+        "type_integer_semantics",
+        "integer_operation_type",
+        "unary_integer_type",
+        "require_integer_fits",
+        "checked_integer_result",
+    ] {
+        assert!(
+            scalar_policy.contains(required),
+            "durable scalar policy missing {required}"
+        );
+        assert!(
+            arithmetic_policy.contains(&format!("DurableComptimeScalarPolicy::{required}"))
+                || integer_selector.contains(&format!("DurableComptimeScalarPolicy::{required}"))
+                || required == "type_name"
+                || required == "type_is_unsigned"
+                || required == "type_integer_semantics",
+            "legacy evaluator bypassed durable scalar policy: {required}"
+        );
+    }
+    assert!(
+        source.contains("DurableComptimeScalarPolicy::type_integer_semantics(ty)"),
+        "durable width adapter must route through scalar policy"
+    );
     for duplicated_fit in [
         "i8::try_from",
         "i16::try_from",
@@ -3653,8 +3693,6 @@ fn durable_comptime_services_are_named_authority_operations() {
     assert!(!database.contains("enum EvaluateSemanticConstError {"));
     for routed in [
         "DurableComptimeFailure::maximum_depth(",
-        "DurableComptimeFailure::integer_literal_overflow(",
-        "DurableComptimeFailure::arithmetic_overflow(",
         "DurableComptimeFailure::division_by_zero()",
         "DurableComptimeFailure::remainder_by_zero()",
         "DurableComptimeFailure::provider_error(error)",
@@ -3663,6 +3701,15 @@ fn durable_comptime_services_are_named_authority_operations() {
         assert!(
             database.contains(routed),
             "legacy durable evaluator no longer routes {routed} through the canonical bridge"
+        );
+    }
+    for routed in [
+        "DurableComptimeScalarPolicy::require_integer_fits(",
+        "DurableComptimeScalarPolicy::checked_integer_result(",
+    ] {
+        assert!(
+            database.contains(routed),
+            "legacy durable evaluator no longer routes {routed} through scalar policy"
         );
     }
     assert!(facade.contains("query: crate::semantic_query_nucleus::ComptimeCallQueryKey"));
