@@ -796,6 +796,61 @@ pub(crate) struct DurableComptimeCallableAdmission {
     pub(crate) shell_parameters: Arc<[crate::declaration_candidate::DeclarationParameterHeader]>,
 }
 
+/// The exact durable projection of one named value lookup.  The dependency is
+/// deliberately direct: resolving a const, callable, or nominal observes the
+/// resolved declaration only, while any transitive const effects remain owned
+/// by the const query that produced its value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DurableComptimeNamedValueProjection {
+    value: EvaluatedSemanticConst,
+    dependency: SemanticDeclarationDependency,
+}
+
+/// The only declaration kinds considered by durable named-value lookup, in
+/// the same order as the legacy evaluator's semantic lookup policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DurableComptimeNamedValueKind {
+    Const,
+    Function,
+    Struct,
+    Enum,
+}
+
+const DURABLE_COMPTIME_NAMED_VALUE_KINDS: [DurableComptimeNamedValueKind; 4] = [
+    DurableComptimeNamedValueKind::Const,
+    DurableComptimeNamedValueKind::Function,
+    DurableComptimeNamedValueKind::Struct,
+    DurableComptimeNamedValueKind::Enum,
+];
+
+/// Run the canonical named-value candidate order.  The probe is semantic
+/// candidate/identity work only; it cannot evaluate an instruction or demand
+/// a child query.  Errors stop the order immediately, and the first value
+/// stops it without probing later declaration kinds.
+pub(crate) fn resolve_named_value_in_order<T, E>(
+    mut probe: impl FnMut(DurableComptimeNamedValueKind) -> Result<Option<T>, E>,
+) -> Result<Option<T>, E> {
+    for kind in DURABLE_COMPTIME_NAMED_VALUE_KINDS {
+        if let Some(value) = probe(kind)? {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
+impl DurableComptimeNamedValueProjection {
+    pub(crate) fn new(
+        value: EvaluatedSemanticConst,
+        dependency: SemanticDeclarationDependency,
+    ) -> Self {
+        Self { value, dependency }
+    }
+
+    pub(crate) fn into_parts(self) -> (EvaluatedSemanticConst, SemanticDeclarationDependency) {
+        (self.value, self.dependency)
+    }
+}
+
 /// Canonical semantic services needed by durable comptime entry points.
 ///
 /// Implementations live beside the query authorities. This facade is an
@@ -823,32 +878,15 @@ pub(crate) trait DurableComptimeSemanticAuthority {
         rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
     >;
 
-    /// Resolve a declaration through the canonical name/shell authority.
-    /// Visibility and shell disagreement diagnostics are produced by the
-    /// authority; the facade only carries the semantic request and result.
-    fn resolve_candidate(
+    /// Resolve a named const, module binding, callable, or nominal in the
+    /// canonical order used by durable identifier evaluation.
+    fn resolve_named_value(
         &self,
+        accessing_source: &crate::StableDefinitionKey,
         module: &ModuleId,
         name: &str,
-        kind: crate::DefinitionKind,
     ) -> Result<
-        Option<DeclarationCandidateKey>,
-        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
-    >;
-
-    fn resolve_identity(
-        &self,
-        declaration: DeclarationCandidateKey,
-    ) -> Result<
-        crate::semantic_query_nucleus::DeclarationIdentityProjection,
-        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
-    >;
-
-    fn resolve_const(
-        &self,
-        declaration: DeclarationCandidateKey,
-    ) -> Result<
-        crate::semantic_query_nucleus::ConstResolutionProjection,
+        Option<DurableComptimeNamedValueProjection>,
         rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
     >;
 
@@ -924,36 +962,17 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
             .finish_comptime_call_admission(start, argument_modes)
     }
 
-    pub(crate) fn resolve_candidate(
+    pub(crate) fn resolve_named_value(
         &self,
+        accessing_source: &crate::StableDefinitionKey,
         module: &ModuleId,
         name: &str,
-        kind: crate::DefinitionKind,
     ) -> Result<
-        Option<DeclarationCandidateKey>,
+        Option<DurableComptimeNamedValueProjection>,
         rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
     > {
-        self.authority.resolve_candidate(module, name, kind)
-    }
-
-    pub(crate) fn resolve_identity(
-        &self,
-        declaration: DeclarationCandidateKey,
-    ) -> Result<
-        crate::semantic_query_nucleus::DeclarationIdentityProjection,
-        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
-    > {
-        self.authority.resolve_identity(declaration)
-    }
-
-    pub(crate) fn resolve_const(
-        &self,
-        declaration: DeclarationCandidateKey,
-    ) -> Result<
-        crate::semantic_query_nucleus::ConstResolutionProjection,
-        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
-    > {
-        self.authority.resolve_const(declaration)
+        self.authority
+            .resolve_named_value(accessing_source, module, name)
     }
 
     pub(crate) fn resolve_import(
@@ -1337,6 +1356,83 @@ mod tests {
             EvaluatedSemanticConst::integer_typed(-12, Some(DurableComptimeType(ty.clone())));
         assert_eq!(original.clone(), original);
         assert_eq!(original.as_integer_type(), Some(DurableComptimeType(ty)));
+    }
+
+    #[test]
+    fn named_value_kernel_is_ordered_and_short_circuits() {
+        let mut all_missing = Vec::new();
+        assert_eq!(
+            resolve_named_value_in_order(|kind| {
+                all_missing.push(kind);
+                Ok::<Option<()>, ()>(None)
+            })
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            all_missing,
+            vec![
+                DurableComptimeNamedValueKind::Const,
+                DurableComptimeNamedValueKind::Function,
+                DurableComptimeNamedValueKind::Struct,
+                DurableComptimeNamedValueKind::Enum,
+            ]
+        );
+
+        let mut early_success = Vec::new();
+        assert_eq!(
+            resolve_named_value_in_order(|kind| {
+                early_success.push(kind);
+                Ok::<Option<&str>, ()>(
+                    (kind == DurableComptimeNamedValueKind::Struct).then_some("struct"),
+                )
+            })
+            .unwrap(),
+            Some("struct")
+        );
+        assert_eq!(
+            early_success,
+            vec![
+                DurableComptimeNamedValueKind::Const,
+                DurableComptimeNamedValueKind::Function,
+                DurableComptimeNamedValueKind::Struct,
+            ]
+        );
+
+        let mut const_failure = Vec::new();
+        assert_eq!(
+            resolve_named_value_in_order(|kind| {
+                const_failure.push(kind);
+                if kind == DurableComptimeNamedValueKind::Const {
+                    Err::<Option<()>, _>("const failure")
+                } else {
+                    Ok(None)
+                }
+            }),
+            Err("const failure")
+        );
+        assert_eq!(const_failure, vec![DurableComptimeNamedValueKind::Const]);
+
+        let mut middle_failure = Vec::new();
+        assert_eq!(
+            resolve_named_value_in_order(|kind| {
+                middle_failure.push(kind);
+                if kind == DurableComptimeNamedValueKind::Struct {
+                    Err::<Option<()>, _>("struct failure")
+                } else {
+                    Ok(None)
+                }
+            }),
+            Err("struct failure")
+        );
+        assert_eq!(
+            middle_failure,
+            vec![
+                DurableComptimeNamedValueKind::Const,
+                DurableComptimeNamedValueKind::Function,
+                DurableComptimeNamedValueKind::Struct,
+            ]
+        );
     }
 
     #[test]

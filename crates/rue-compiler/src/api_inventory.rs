@@ -3131,11 +3131,12 @@ fn durable_comptime_services_are_named_authority_operations() {
         "DurableComptimeApplicationPolicy",
         "DurableComptimeCallableAdmission",
         "DurableComptimeCallableAdmissionStart",
+        "DurableComptimeNamedValueKind",
+        "resolve_named_value_in_order",
         "begin_comptime_call_admission",
         "finish_comptime_call_admission",
-        "resolve_candidate",
-        "resolve_identity",
-        "resolve_const",
+        "DurableComptimeNamedValueProjection",
+        "resolve_named_value",
         "resolve_target_intrinsic",
         "resolve_target_enum_variant",
         "probe_comptime_call",
@@ -3239,7 +3240,7 @@ fn durable_comptime_services_are_named_authority_operations() {
     let callable_authority = facade
         .split("pub(crate) struct DurableComptimeCallableAdmission {")
         .nth(1)
-        .and_then(|source| source.split("}\n\n/// Canonical semantic services").next())
+        .and_then(|source| source.split("}\n\n/// The exact durable projection").next())
         .expect("durable callable admission projection");
     for forbidden in ["InstData", "InstRef", "Rir", "callback", "evaluate"] {
         assert!(
@@ -3420,9 +3421,41 @@ fn durable_comptime_services_are_named_authority_operations() {
         "durable call ordinals must be allocated before admission"
     );
     assert!(evaluator.contains(".resolve_import(&site)"));
-    assert!(evaluator.contains(".resolve_candidate("));
-    assert!(evaluator.contains(".resolve_identity("));
-    assert!(evaluator.contains(".resolve_const("));
+    let named_value = evaluator
+        .split("fn eval_identifier(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn eval_call(").next())
+        .expect("durable identifier evaluator");
+    assert_eq!(named_value.matches("resolve_named_value(").count(), 1);
+    let locals = named_value
+        .find("self.locals.get(")
+        .expect("identifier lookup keeps locals-first behavior");
+    let service = named_value
+        .find("resolve_named_value(")
+        .expect("identifier lookup uses the named-value service");
+    let parts = named_value
+        .find("projection.into_parts()")
+        .expect("identifier lookup destructures a successful projection");
+    let observed = named_value
+        .find("self.effects.observe_dependency(dependency)")
+        .expect("identifier lookup observes its direct dependency");
+    assert!(locals < service && service < parts && parts < observed);
+    assert!(named_value.contains("&self.provider.dependency_source"));
+    for forbidden in [
+        "DefinitionKind::Const",
+        "DefinitionKind::Function",
+        "DefinitionKind::Struct",
+        "DefinitionKind::Enum",
+        "SemanticDeclarationDependency {",
+        "fn resolve_candidate(",
+        "fn resolve_identity(",
+        "fn resolve_const(",
+    ] {
+        assert!(
+            !named_value.contains(forbidden),
+            "named-value evaluator retained local lookup policy: {forbidden}"
+        );
+    }
     assert!(evaluator.contains(".resolve_target_intrinsic("));
     assert!(evaluator.contains(".resolve_target_enum_variant("));
     let admission_authority = target_authority
@@ -3444,9 +3477,78 @@ fn durable_comptime_services_are_named_authority_operations() {
     let admission_finish_authority = target_authority
         .split("fn finish_comptime_call_admission(")
         .nth(1)
-        .and_then(|source| source.split("\n    fn resolve_candidate(").next())
+        .and_then(|source| source.split("\n    fn resolve_named_value(").next())
         .expect("call admission completion authority source");
     assert!(!admission_finish_authority.contains("provider.dependency_source"));
+    let named_value_authority = target_authority
+        .split("fn resolve_named_value(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn resolve_import(").next())
+        .expect("named-value authority source");
+    for required in [
+        "resolve_named_value_in_order",
+        "DefinitionKind::Const",
+        "DefinitionKind::Function",
+        "DefinitionKind::Struct",
+        "DefinitionKind::Enum",
+        "candidate_from(",
+        "const_resolution(",
+        "identity(",
+        "source: accessing_source.clone()",
+        "DurableComptimeNamedValueProjection::new",
+    ] {
+        assert!(
+            named_value_authority.contains(required),
+            "named-value policy missing from authority: {required}"
+        );
+    }
+    assert_eq!(named_value_authority.matches("candidate_from(").count(), 3);
+    assert_eq!(
+        named_value_authority
+            .matches("identity(candidate)?")
+            .count(),
+        2
+    );
+    assert!(named_value_authority.contains("const_resolution(candidate)?"));
+    assert!(named_value_authority.contains("DurableComptimeNamedValueKind::Const"));
+    assert!(named_value_authority.contains("DurableComptimeNamedValueKind::Function"));
+    assert!(named_value_authority.contains("DurableComptimeNamedValueKind::Struct"));
+    assert!(named_value_authority.contains("DurableComptimeNamedValueKind::Enum"));
+    let named_value_kernel = production_facade
+        .split("const DURABLE_COMPTIME_NAMED_VALUE_KINDS")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("impl DurableComptimeNamedValueProjection")
+                .next()
+        })
+        .expect("named-value ordering kernel");
+    let kind_positions = [
+        "DurableComptimeNamedValueKind::Const",
+        "DurableComptimeNamedValueKind::Function",
+        "DurableComptimeNamedValueKind::Struct",
+        "DurableComptimeNamedValueKind::Enum",
+    ]
+    .map(|kind| {
+        named_value_kernel
+            .find(kind)
+            .unwrap_or_else(|| panic!("named-value kernel missing {kind}"))
+    });
+    assert!(kind_positions.windows(2).all(|pair| pair[0] < pair[1]));
+    for forbidden in [
+        "InstData",
+        "InstRef",
+        "ComptimeEngine",
+        "SemanticConstEvaluator",
+        "callback",
+        "query_demand",
+        ".eval(",
+    ] {
+        assert!(
+            !named_value_authority.contains(forbidden),
+            "named-value authority leaked evaluator surface: {forbidden}"
+        );
+    }
     for forbidden in [
         "self.provider.configuration.target",
         "rue_target::Arch",
