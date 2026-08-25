@@ -56,10 +56,10 @@ use rue_span::{FileId, Span};
 
 use super::comptime::{
     ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallArgument,
-    ComptimeCallPreparation, ComptimeConstInfo, ComptimeEngine, ComptimeEnv as GenericComptimeEnv,
-    ComptimeFile, ComptimeFrame, ComptimeHost, ComptimeHostResult, ComptimeIdentity,
-    ComptimeMethodDescriptor, ComptimeName, ComptimeOutcome, ComptimeStructuredTypeResolution,
-    ComptimeTrap, ComptimeType,
+    ComptimeCallPreparation, ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile,
+    ComptimeFrame, ComptimeHost, ComptimeHostError, ComptimeHostResult, ComptimeIdentity,
+    ComptimeMethodDescriptor, ComptimeName, ComptimeNamedValueResolution, ComptimeOutcome,
+    ComptimeStructuredTypeResolution, ComptimeTrap, ComptimeType,
 };
 use super::context::{AnalysisContext, ConstValue};
 use super::info::FunctionCallInfo;
@@ -1869,13 +1869,62 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     fn file_from_span(&self, span: &Span) -> Self::File {
         span.file_id
     }
-    fn value_const(
-        &self,
-        key: &(Self::File, Self::Name),
-    ) -> ComptimeHostResult<Option<ComptimeConstInfo<Self::Value>>, Self::Failure> {
-        let Some(info) = OrdinaryBodyEngine::value_const(self, key) else {
-            return Ok(None);
+    fn resolve_comptime_named_value(
+        &mut self,
+        file: Self::File,
+        name: Self::Name,
+        span: Span,
+    ) -> ComptimeHostResult<ComptimeNamedValueResolution<Self::Value>, Self::Failure> {
+        let Some(info) = OrdinaryBodyEngine::value_const(self, &(file, name)) else {
+            let resolved = OrdinaryBodyEngine::resolve_named_type_value(self, name, span)
+                .map_err(ComptimeHostError::HostFailure)?;
+            if let Some(ty) = resolved {
+                let dependency = match ty.kind() {
+                    TypeKind::Struct(id) => {
+                        let def = self
+                            .body_type_pool()
+                            .struct_metadata(id)
+                            .expect("struct type must have declaration metadata");
+                        Some(super::NamedConstDependencyTargetEvent::NamedType {
+                            file: def.file_id.index(),
+                            name: def.name.to_string(),
+                            kind: super::DeclarationTypeDependencyTargetKind::Struct,
+                        })
+                    }
+                    TypeKind::Enum(id) => {
+                        let def = self
+                            .body_type_pool()
+                            .enum_metadata(id)
+                            .expect("enum type must have declaration metadata");
+                        Some(super::NamedConstDependencyTargetEvent::NamedType {
+                            file: def.file_id.index(),
+                            name: def.name.to_string(),
+                            kind: super::DeclarationTypeDependencyTargetKind::Enum,
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some(dependency) = dependency {
+                    self.record_body_named_dependency(dependency);
+                }
+                return Ok(ComptimeNamedValueResolution::Known(ConstValue::Type(ty)));
+            }
+            return Ok(ComptimeNamedValueResolution::Missing);
         };
+        let defining_file = info.span.file_id;
+        let name_text = self.body_interner().resolve(&name).to_owned();
+        self.record_body_named_dependency(super::NamedConstDependencyTargetEvent::ValueConst {
+            file: defining_file.index(),
+            name: name_text.clone(),
+        });
+        OrdinaryBodyEngine::check_unqualified_visibility(
+            self,
+            "constant",
+            &name_text,
+            defining_file,
+            info.is_pub,
+            span,
+        )?;
         let value = match info.value {
             ConstValue::Integer(value) => Some(ConstValue::Integer(value)),
             ConstValue::Bool(value) => Some(ConstValue::Bool(value)),
@@ -1883,11 +1932,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
             ConstValue::Type(value) => Some(ConstValue::Type(value)),
             _ => None,
         };
-        Ok(Some(ComptimeConstInfo {
-            is_pub: info.is_pub,
-            span: info.span,
-            value,
-        }))
+        Ok(match value {
+            Some(value) => ComptimeNamedValueResolution::Known(value),
+            None => ComptimeNamedValueResolution::RuntimeDependent,
+        })
     }
     fn match_pattern(
         &self,
@@ -1963,16 +2011,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
                 reason: "anonymous type carries a non-function method instruction".to_owned(),
             },
             method_span,
-        )
-    }
-    fn record_value_const_dependency(&mut self, file: &Self::File, name: &Self::Name) {
-        let name = self.body_interner().resolve(name).to_owned();
-        OrdinaryBodyEngine::record_body_named_dependency(
-            self,
-            super::NamedConstDependencyTargetEvent::ValueConst {
-                file: file.index(),
-                name,
-            },
         )
     }
     fn resolve_named_array_length(
@@ -2124,37 +2162,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn type_integer_semantics(&self, ty: &Type) -> Option<crate::integer_semantics::IntegerType> {
         ty.integer_semantics()
-    }
-    fn record_named_type_dependency(&mut self, ty: &Type) {
-        match ty.kind() {
-            TypeKind::Struct(id) => {
-                let def = self
-                    .body_type_pool()
-                    .struct_metadata(id)
-                    .expect("struct type must have declaration metadata");
-                self.record_body_named_dependency(
-                    super::NamedConstDependencyTargetEvent::NamedType {
-                        file: def.file_id.index(),
-                        name: def.name.to_string(),
-                        kind: super::DeclarationTypeDependencyTargetKind::Struct,
-                    },
-                );
-            }
-            TypeKind::Enum(id) => {
-                let def = self
-                    .body_type_pool()
-                    .enum_metadata(id)
-                    .expect("enum type must have declaration metadata");
-                self.record_body_named_dependency(
-                    super::NamedConstDependencyTargetEvent::NamedType {
-                        file: def.file_id.index(),
-                        name: def.name.to_string(),
-                        kind: super::DeclarationTypeDependencyTargetKind::Enum,
-                    },
-                );
-            }
-            _ => {}
-        }
     }
     fn finish_arith(
         &self,
