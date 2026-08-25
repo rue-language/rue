@@ -826,7 +826,7 @@ impl From<CompileError> for PipelineRequestControl {
     }
 }
 
-fn pipeline_abort_errors(context: &str, abort: rue_query::QueryAbort) -> CompileErrors {
+pub(crate) fn pipeline_abort_errors(context: &str, abort: rue_query::QueryAbort) -> CompileErrors {
     CompileError::without_span(ErrorKind::InternalError(format!(
         "{context} query aborted: {abort:?}"
     )))
@@ -981,6 +981,7 @@ impl RootedCfgUnit {
 }
 
 pub(crate) struct RootedCodegenOutput {
+    pub(crate) input: RootedCodegenInput,
     pub(crate) units: Vec<crate::codegen_query::CollectedCodegenUnit>,
     pub(crate) objects: Vec<crate::object_query::CollectedObjectProjection>,
     #[allow(dead_code)]
@@ -991,6 +992,11 @@ pub(crate) struct RootedCodegenOutput {
     pub(crate) cfg_work: BackendQueryWork,
     pub(crate) codegen_work: BackendQueryWork,
     pub(crate) object_projection_work: BackendQueryWork,
+}
+
+pub(crate) enum RootedCodegenInput {
+    Structured,
+    Projected,
 }
 
 /// Opaque in-crate continuation between the canonical codegen-ready and
@@ -1022,6 +1028,43 @@ struct RootedBodyGraph {
     main: crate::StableDefinitionKey,
     closure: crate::body_query::BodyClosureOutput,
     work: crate::CanonicalSemanticWork,
+}
+
+fn collect_rooted_exports(
+    graph: &RootedBodyGraph,
+    cfgs: &[RootedCfgUnit],
+) -> Vec<crate::program_image_plan::RootedExportThunk> {
+    let export_roots = graph
+        .c_export_roots
+        .iter()
+        .cloned()
+        .map(crate::FunctionInstanceKey::Definition)
+        .collect::<BTreeSet<_>>();
+    cfgs.iter()
+        .filter(|cfg| export_roots.contains(&cfg.function))
+        .map(|cfg| {
+            let mut param_types = vec![rue_air::Type::I64; cfg.record.cfg.num_params() as usize];
+            for block in cfg.record.cfg.blocks() {
+                for &value in &block.insts {
+                    let instruction = cfg.record.cfg.get_inst(value);
+                    if let rue_cfg::CfgInstData::Param { index } = instruction.data
+                        && let Some(slot) = param_types.get_mut(index as usize)
+                    {
+                        *slot = instruction.ty;
+                    }
+                }
+            }
+            crate::program_image_plan::RootedExportThunk {
+                function: cfg.function.clone(),
+                exported_symbol: match &cfg.function {
+                    crate::FunctionInstanceKey::Definition(key) => key.name().to_owned(),
+                    _ => unreachable!("C export roots are source definitions"),
+                },
+                native_symbol: cfg.record.codegen.defined_symbol.to_string(),
+                param_types,
+            }
+        })
+        .collect()
 }
 
 /// An opaque, single-use continuation issued ONLY from a successful close of
@@ -5660,6 +5703,59 @@ impl CompilerSession {
         self.rooted_objects_ready_with_cancellation(ready, cancellation)
     }
 
+    /// Complete the retained codegen boundary for an ordinary internal link.
+    /// ObjectProjectionBatch is intentionally not requested: the linker
+    /// consumes the retained CodegenUnits directly. Byte consumers continue
+    /// through `rooted_objects_ready_with_cancellation` below.
+    pub(crate) fn rooted_codegen_internal_with_cancellation(
+        &mut self,
+        options: &CompileOptions,
+        request: rue_codegen::BackendArtifactRequest,
+        cancellation: rue_query::CancellationToken,
+    ) -> Result<RootedCodegenOutput, PipelineRequestControl> {
+        let ready =
+            self.rooted_codegen_ready_with_cancellation(options, request, cancellation.clone())?;
+        let RootedCodegenReadyOutput {
+            graph,
+            units,
+            cfgs,
+            warnings,
+            work,
+            cfg_work,
+            codegen_work,
+            backend_root,
+            codegen_batch_key,
+        } = ready;
+        let exports = collect_rooted_exports(&graph, &cfgs);
+        if cancellation.is_canceled() {
+            return Err(PipelineRequestControl::Abort(
+                rue_query::QueryAbort::Canceled,
+            ));
+        }
+        self.queries
+            .revisioned
+            .publish_backend_root(
+                graph.revision,
+                backend_root,
+                crate::revisioned_query_database::BackendRootPublicationInput::Codegen(
+                    codegen_batch_key,
+                ),
+            )
+            .map_err(PipelineRequestControl::Abort)?;
+        Ok(RootedCodegenOutput {
+            input: RootedCodegenInput::Structured,
+            units,
+            objects: Vec::new(),
+            cfgs,
+            exports,
+            warnings,
+            work,
+            cfg_work,
+            codegen_work,
+            object_projection_work: BackendQueryWork::default(),
+        })
+    }
+
     /// Collect the rooted reached set's canonical CodegenUnits while retaining
     /// the exact unpublished backend-root candidate for object projection.
     pub(crate) fn rooted_codegen_ready(
@@ -5929,39 +6025,7 @@ impl CompilerSession {
                 }
             }
         }
-        let export_roots = graph
-            .c_export_roots
-            .iter()
-            .cloned()
-            .map(crate::FunctionInstanceKey::Definition)
-            .collect::<BTreeSet<_>>();
-        let exports = cfgs
-            .iter()
-            .filter(|cfg| export_roots.contains(&cfg.function))
-            .map(|cfg| {
-                let mut param_types =
-                    vec![rue_air::Type::I64; cfg.record.cfg.num_params() as usize];
-                for block in cfg.record.cfg.blocks() {
-                    for &value in &block.insts {
-                        let instruction = cfg.record.cfg.get_inst(value);
-                        if let rue_cfg::CfgInstData::Param { index } = instruction.data
-                            && let Some(slot) = param_types.get_mut(index as usize)
-                        {
-                            *slot = instruction.ty;
-                        }
-                    }
-                }
-                crate::program_image_plan::RootedExportThunk {
-                    function: cfg.function.clone(),
-                    exported_symbol: match &cfg.function {
-                        crate::FunctionInstanceKey::Definition(key) => key.name().to_owned(),
-                        _ => unreachable!("C export roots are source definitions"),
-                    },
-                    native_symbol: cfg.record.codegen.defined_symbol.to_string(),
-                    param_types,
-                }
-            })
-            .collect();
+        let exports = collect_rooted_exports(&graph, &cfgs);
         if cancellation.is_canceled() {
             return Err(PipelineRequestControl::Abort(
                 rue_query::QueryAbort::Canceled,
@@ -5969,9 +6033,16 @@ impl CompilerSession {
         }
         self.queries
             .revisioned
-            .publish_backend_root(graph.revision, backend_root, object_batch_key)
+            .publish_backend_root(
+                graph.revision,
+                backend_root,
+                crate::revisioned_query_database::BackendRootPublicationInput::Objects(
+                    object_batch_key,
+                ),
+            )
             .map_err(PipelineRequestControl::Abort)?;
         Ok(RootedCodegenOutput {
+            input: RootedCodegenInput::Projected,
             units,
             objects,
             cfgs,

@@ -1598,9 +1598,17 @@ impl RetainedCharge for ObjectProjectionBatchOutput {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct BackendRootPublicationKey {
     epoch: u64,
-    objects: ObjectProjectionBatchKey,
+    input: BackendRootPublicationInput,
     functions: Arc<[crate::FunctionInstanceKey]>,
     cfg_terminals: usize,
+    optimized_cfg_terminals: usize,
+    codegen_unit_terminals: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum BackendRootPublicationInput {
+    Codegen(CodegenUnitBatchKey),
+    Objects(ObjectProjectionBatchKey),
 }
 
 #[derive(Debug, Default)]
@@ -1619,15 +1627,29 @@ impl QueryKey for BackendRootPublicationKey {
         format!(
             "backend-root;epoch={};units={}",
             self.epoch,
-            self.objects.keys.len()
+            match &self.input {
+                BackendRootPublicationInput::Codegen(key) => key.keys.len(),
+                BackendRootPublicationInput::Objects(key) => key.keys.len(),
+            }
         )
     }
 
     fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
         self.epoch.hash(hasher);
-        self.objects.stable_hash(hasher);
+        match &self.input {
+            BackendRootPublicationInput::Codegen(key) => {
+                0_u8.hash(hasher);
+                key.stable_hash(hasher);
+            }
+            BackendRootPublicationInput::Objects(key) => {
+                1_u8.hash(hasher);
+                key.stable_hash(hasher);
+            }
+        }
         self.functions.hash(hasher);
         self.cfg_terminals.hash(hasher);
+        self.optimized_cfg_terminals.hash(hasher);
+        self.codegen_unit_terminals.hash(hasher);
     }
 }
 
@@ -14843,6 +14865,7 @@ impl RevisionedQueryDatabase {
         let provider_observation_meter = Arc::new(ProviderObservationCounters::default());
         let lookup_root_lease = Arc::new(Mutex::new(PublishedRootLookupLease::default()));
         let object_projections_for_backend_publication = object_projections.clone();
+        let codegen_units_for_backend_publication = codegen_units.clone();
         let backend_root_for_publication = backend_root.clone();
         let cfg_collection_root_for_backend_publication = cfg_collection_root.clone();
         let codegen_collection_root_for_backend_publication = codegen_collection_root.clone();
@@ -14864,34 +14887,58 @@ impl RevisionedQueryDatabase {
                     let _validated_registered = context
                         .endorse_registered_validations_from(&fallbacks)
                         .expect("backend retention roots belong to this query runtime");
-                    let terminals = context.query_registered_adaptive_batch_refs(
-                        &object_projections_for_backend_publication,
-                        key.objects.keys.iter(),
-                    )?;
-                    if terminals.iter().any(|terminal| {
-                        matches!(
-                            terminal.outcome(),
-                            rue_query::QueryOutcome::Success(
-                                crate::object_query::ObjectProjectionValue::Failure(_)
-                            )
-                        )
-                    }) {
-                        return Ok(QueryOutput::success(false)
-                            .with_terminal_kind(QueryTerminalKind::Failure));
-                    }
-                    let pending = context
-                        .retain_observed_terminal_cones_from(&terminals, &fallbacks)
-                        .expect(
-                            "registered backend-root validation observes every final ObjectProjection dependency cone",
-                        );
+                    let (pending, object_projection_terminals) = match &key.input {
+                        BackendRootPublicationInput::Codegen(batch) => {
+                            let terminals = context.query_registered_adaptive_batch_refs(
+                                &codegen_units_for_backend_publication,
+                                batch.keys.iter(),
+                            )?;
+                            if terminals.iter().any(|terminal| {
+                                matches!(
+                                    terminal.outcome(),
+                                    rue_query::QueryOutcome::Success(
+                                        crate::codegen_query::CodegenUnitValue::Failure(_)
+                                    )
+                                )
+                            }) {
+                                return Ok(QueryOutput::success(false)
+                                    .with_terminal_kind(QueryTerminalKind::Failure));
+                            }
+                            let pending = context
+                                .retain_observed_terminal_cones_from(&terminals, &fallbacks)
+                                .expect("backend-root validation observes CodegenUnit cones");
+                            (pending, 0)
+                        }
+                        BackendRootPublicationInput::Objects(batch) => {
+                            let terminals = context.query_registered_adaptive_batch_refs(
+                                &object_projections_for_backend_publication,
+                                batch.keys.iter(),
+                            )?;
+                            if terminals.iter().any(|terminal| {
+                                matches!(
+                                    terminal.outcome(),
+                                    rue_query::QueryOutcome::Success(
+                                        crate::object_query::ObjectProjectionValue::Failure(_)
+                                    )
+                                )
+                            }) {
+                                return Ok(QueryOutput::success(false)
+                                    .with_terminal_kind(QueryTerminalKind::Failure));
+                            }
+                            let pending = context
+                                .retain_observed_terminal_cones_from(&terminals, &fallbacks)
+                                .expect("backend-root validation observes ObjectProjection cones");
+                            (pending, batch.keys.len())
+                        }
+                    };
                     context.register_attempt_handoff(PublishedBackendRootHandoff {
                         root: backend_root_for_publication.clone(),
                         pending: Some(Arc::new(pending)),
                         functions: Some(key.functions.iter().cloned().collect()),
                         cfg_terminals: key.cfg_terminals,
-                        optimized_cfg_terminals: key.objects.keys.len(),
-                        codegen_unit_terminals: key.objects.keys.len(),
-                        object_projection_terminals: key.objects.keys.len(),
+                        optimized_cfg_terminals: key.optimized_cfg_terminals,
+                        codegen_unit_terminals: key.codegen_unit_terminals,
+                        object_projection_terminals,
                         previous: None,
                         installed: false,
                     });
@@ -16945,7 +16992,7 @@ impl RevisionedQueryDatabase {
         &self,
         revision: Revision,
         candidate: BackendRootCandidate,
-        objects: ObjectProjectionBatchKey,
+        input: BackendRootPublicationInput,
     ) -> Result<(), QueryAbort> {
         // A root-publication request is transactional through its handoff
         // callbacks. Serialize only these short, whole-program swaps so a
@@ -16957,9 +17004,11 @@ impl RevisionedQueryDatabase {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let key = BackendRootPublicationKey {
             epoch,
-            objects,
+            input,
             functions: candidate.functions.iter().cloned().collect(),
             cfg_terminals: candidate.cfg_keys.len(),
+            optimized_cfg_terminals: candidate.optimized_cfg_terminals,
+            codegen_unit_terminals: candidate.codegen_unit_terminals,
         };
         let attempt = self.runtime.request_registered(
             &self.backend_root_publications,

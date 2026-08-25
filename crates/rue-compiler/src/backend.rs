@@ -61,85 +61,7 @@ pub(crate) fn project_backend_object(
     // Object serialization runs after code generation, so it is a sibling leaf
     // of `codegen` rather than one of its subphases (RUE-786).
     let _span = info_span!("object_serialization", phase = "object_generation").entered();
-    use crate::codegen_query::{CodegenSection, SectionKind};
-    let mut text: Option<&CodegenSection> = None;
-    let mut rodata: Option<&CodegenSection> = None;
-    let mut data: Option<&CodegenSection> = None;
-    let mut bss: Option<&CodegenSection> = None;
-    for section in unit.sections.iter() {
-        let slot = match section.kind {
-            SectionKind::Text => &mut text,
-            SectionKind::Rodata => &mut rodata,
-            SectionKind::Data => &mut data,
-            SectionKind::Bss => &mut bss,
-        };
-        if slot.replace(section).is_some() {
-            return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
-                format!(
-                    "object projection requires exactly one {:?} section, found multiple",
-                    section.kind
-                ),
-            )));
-        }
-    }
-    let text = text.ok_or_else(|| {
-        CompileError::without_span(ErrorKind::InternalCodegenError(
-            "object projection requires exactly one Text section, found 0".into(),
-        ))
-    })?;
-    if (text.alignment, text.executable, text.writable) != (16, true, false) {
-        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
-            "object projection found non-canonical Text metadata".into(),
-        )));
-    }
-    if text.atoms.len() != 1 {
-        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
-            format!(
-                "object projection requires exactly one text atom, found {}",
-                text.atoms.len()
-            ),
-        )));
-    }
-    let rodata = rodata.ok_or_else(|| {
-        CompileError::without_span(ErrorKind::InternalCodegenError(
-            "object projection requires exactly one Rodata section, found 0".into(),
-        ))
-    })?;
-    if (rodata.alignment, rodata.executable, rodata.writable) != (1, false, false) {
-        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
-            "object projection found non-canonical Rodata metadata".into(),
-        )));
-    }
-    let data = data.ok_or_else(|| {
-        CompileError::without_span(ErrorKind::InternalCodegenError(
-            "object projection requires exactly one Data section, found 0".into(),
-        ))
-    })?;
-    if (data.alignment, data.executable, data.writable) != (1, false, true) {
-        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
-            "object projection found non-canonical Data metadata".into(),
-        )));
-    }
-    if !data.atoms.is_empty() {
-        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
-            "object projection does not support Data atoms".into(),
-        )));
-    }
-    let bss = bss.ok_or_else(|| {
-        CompileError::without_span(ErrorKind::InternalCodegenError(
-            "object projection requires exactly one Bss section, found 0".into(),
-        ))
-    })?;
-    if (bss.alignment, bss.executable, bss.writable) != (1, false, true) {
-        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
-            "object projection found non-canonical Bss metadata".into(),
-        )));
-    }
-    if !bss.atoms.is_empty() {
-        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
-            "object projection does not support Bss atoms".into(),
-        )));
-    }
+    let [text, rodata, _data, _bss] = canonical_codegen_sections(unit)?;
     let strings = rodata
         .atoms
         .iter()
@@ -156,18 +78,7 @@ pub(crate) fn project_backend_object(
         .strings(strings);
 
     for reloc in unit.relocations.iter() {
-        let rel_type = match (target.arch(), reloc.kind) {
-            (Arch::X86_64, RelocationKind::X86Pc32) => RelocationType::Pc32,
-            (Arch::X86_64, RelocationKind::X86Plt32) => RelocationType::Plt32,
-            (Arch::Aarch64, RelocationKind::Aarch64AdrpPage21) => RelocationType::AdrpPage21,
-            (Arch::Aarch64, RelocationKind::Aarch64AddLo12) => RelocationType::AddLo12,
-            (Arch::Aarch64, RelocationKind::Aarch64Call26) => RelocationType::Call26,
-            (arch, kind) => {
-                return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
-                    format!("{arch:?} codegen emitted incompatible relocation {kind:?}"),
-                )));
-            }
-        };
+        let rel_type = map_linker_relocation(target, reloc.kind)?;
         obj_builder = obj_builder.relocation(CodeRelocation {
             offset: reloc.offset,
             symbol: reloc.symbol.to_string(),
@@ -176,6 +87,136 @@ pub(crate) fn project_backend_object(
         });
     }
     Ok(obj_builder.build())
+}
+
+fn map_linker_relocation(
+    target: Target,
+    kind: RelocationKind,
+) -> CompileResult<rue_linker::RelocationType> {
+    match (target.arch(), kind) {
+        (Arch::X86_64, RelocationKind::X86Pc32) => Ok(rue_linker::RelocationType::Pc32),
+        (Arch::X86_64, RelocationKind::X86Plt32) => Ok(rue_linker::RelocationType::Plt32),
+        (Arch::Aarch64, RelocationKind::Aarch64AdrpPage21) => {
+            Ok(rue_linker::RelocationType::AdrpPage21)
+        }
+        (Arch::Aarch64, RelocationKind::Aarch64AddLo12) => Ok(rue_linker::RelocationType::AddLo12),
+        (Arch::Aarch64, RelocationKind::Aarch64Call26) => Ok(rue_linker::RelocationType::Call26),
+        (arch, kind) => Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            format!("{arch:?} codegen emitted incompatible relocation {kind:?}"),
+        ))),
+    }
+}
+
+fn canonical_codegen_sections(
+    unit: &crate::codegen_query::CodegenUnit,
+) -> CompileResult<[&crate::codegen_query::CodegenSection; 4]> {
+    use crate::codegen_query::{CodegenSection, SectionKind};
+    let mut sections: [Option<&CodegenSection>; 4] = [None, None, None, None];
+    for section in unit.sections.iter() {
+        let index = match section.kind {
+            SectionKind::Text => 0,
+            SectionKind::Rodata => 1,
+            SectionKind::Data => 2,
+            SectionKind::Bss => 3,
+        };
+        if sections[index].replace(section).is_some() {
+            return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+                format!(
+                    "object projection requires exactly one {:?} section, found multiple",
+                    section.kind
+                ),
+            )));
+        }
+    }
+    let text = sections[0].ok_or_else(|| {
+        CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection requires exactly one Text section, found 0".into(),
+        ))
+    })?;
+    let rodata = sections[1].ok_or_else(|| {
+        CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection requires exactly one Rodata section, found 0".into(),
+        ))
+    })?;
+    let data = sections[2].ok_or_else(|| {
+        CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection requires exactly one Data section, found 0".into(),
+        ))
+    })?;
+    let bss = sections[3].ok_or_else(|| {
+        CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection requires exactly one Bss section, found 0".into(),
+        ))
+    })?;
+    if (text.alignment, text.executable, text.writable) != (16, true, false) {
+        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection found non-canonical Text metadata".into(),
+        )));
+    }
+    if text.atoms.len() != 1 {
+        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            format!(
+                "object projection requires exactly one text atom, found {}",
+                text.atoms.len()
+            ),
+        )));
+    }
+    if (rodata.alignment, rodata.executable, rodata.writable) != (1, false, false) {
+        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection found non-canonical Rodata metadata".into(),
+        )));
+    }
+    if (data.alignment, data.executable, data.writable) != (1, false, true) {
+        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection found non-canonical Data metadata".into(),
+        )));
+    }
+    if !data.atoms.is_empty() {
+        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection does not support Data atoms".into(),
+        )));
+    }
+    if (bss.alignment, bss.executable, bss.writable) != (1, false, true) {
+        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection found non-canonical Bss metadata".into(),
+        )));
+    }
+    if !bss.atoms.is_empty() {
+        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection does not support Bss atoms".into(),
+        )));
+    }
+    Ok([text, rodata, data, bss])
+}
+
+/// Adapt one retained codegen terminal directly to the linker's structured
+/// input. Atom `Arc`s are passed through unchanged; only the final merged
+/// executable receives a contiguous copy.
+pub(crate) fn project_backend_structured_object(
+    unit: &crate::codegen_query::CodegenUnit,
+    target: Target,
+) -> CompileResult<rue_linker::StructuredObject> {
+    let [text, rodata, data, bss] = canonical_codegen_sections(unit)?;
+    let _ = (data, bss);
+    let relocations = unit
+        .relocations
+        .iter()
+        .map(|relocation| {
+            Ok(rue_linker::StructuredRelocation {
+                offset: relocation.offset,
+                symbol: relocation.symbol.to_string(),
+                rel_type: map_linker_relocation(target, relocation.kind)?,
+                addend: relocation.addend,
+            })
+        })
+        .collect::<CompileResult<Vec<_>>>()?;
+    Ok(rue_linker::StructuredObject::function(
+        target,
+        unit.defined_symbol.to_string(),
+        text.atoms.clone(),
+        rodata.atoms.clone(),
+        relocations,
+    ))
 }
 
 /// Emit the C-ABI entry thunk objects for every `pub extern "C" fn` export
@@ -417,11 +458,20 @@ fn main() -> i32 {
         ])
     }
 
-    fn assert_projection_rejects(unit: CodegenUnit, expected: &str) {
-        let error = project_backend_object(&unit, Target::X86_64Linux).unwrap_err();
+    fn assert_byte_projection_rejects(unit: &CodegenUnit, expected: &str) {
+        let error = project_backend_object(unit, Target::X86_64Linux).unwrap_err();
         assert!(
             matches!(&error.kind, ErrorKind::InternalCodegenError(message) if message.contains(expected)),
             "unexpected projection error: {error}"
+        );
+    }
+
+    fn assert_projection_rejects(unit: CodegenUnit, expected: &str) {
+        assert_byte_projection_rejects(&unit, expected);
+        let error = project_backend_structured_object(&unit, Target::X86_64Linux).unwrap_err();
+        assert!(
+            matches!(&error.kind, ErrorKind::InternalCodegenError(message) if message.contains(expected)),
+            "unexpected structured projection error: {error}"
         );
     }
 
@@ -455,8 +505,8 @@ fn main() -> i32 {
                 &format!("exactly one {kind:?} section"),
             );
         }
-        assert_projection_rejects(
-            canonical_projection_unit(b"text", &[&[0xff]]),
+        assert_byte_projection_rejects(
+            &canonical_projection_unit(b"text", &[&[0xff]]),
             "non-UTF-8 rodata",
         );
         for kind in [SectionKind::Data, SectionKind::Bss] {
@@ -604,6 +654,32 @@ fn main() -> i32 {
             }
             assert_eq!(actual, expected.build(), "{target:?}");
         }
+    }
+
+    #[test]
+    fn structured_projection_reuses_codegen_atoms() {
+        let unit = canonical_projection_unit(b"\xC3", &[b"literal"]);
+        let object = project_backend_structured_object(&unit, Target::X86_64Linux).unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &object.section_atoms(0).unwrap()[0],
+            &unit.sections[0].atoms[0]
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &object.section_atoms(1).unwrap()[0],
+            &unit.sections[1].atoms[0]
+        ));
+        let serialized = project_backend_object(&unit, Target::X86_64Linux).unwrap();
+        let parsed = ObjectFile::parse(&serialized).unwrap();
+        assert_eq!(
+            parsed.sections[parsed.section_map[".text"]].data.as_slice(),
+            b"\xC3"
+        );
+        assert_eq!(
+            parsed.sections[parsed.section_map[".rodata"]]
+                .data
+                .as_slice(),
+            b"literal"
+        );
     }
 
     fn frontend() -> SourceSnapshot {
