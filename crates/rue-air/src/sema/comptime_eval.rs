@@ -79,6 +79,63 @@ pub(crate) type ComptimeEnv<'a> = GenericComptimeEnv<
     super::anon_structs::IssuedStableProducerId,
 >;
 
+/// Incremental ordinary-body binding state. It is intentionally not Clone:
+/// each admitted call owns one source-order binding transaction, and the
+/// engine must not replay already validated arguments.
+pub struct OrdinaryComptimeCallBinding {
+    parameter_names: Vec<Spur>,
+    parameter_is_type: Vec<bool>,
+    arguments: Vec<ConstValue>,
+}
+
+/// Completed ordinary binding kept opaque until call preparation. The maps
+/// remain an ordinary-body detail; the AIR engine never reconstructs them.
+pub struct OrdinaryComptimeBoundCall {
+    pub(crate) callee_types: AHashMap<Spur, Type>,
+    pub(crate) callee_values: AHashMap<Spur, ConstValue>,
+}
+
+fn push_ordinary_comptime_call_argument(
+    binding: &mut OrdinaryComptimeCallBinding,
+    value: ConstValue,
+) -> bool {
+    binding.arguments.push(value);
+    true
+}
+
+fn finish_ordinary_comptime_call_binding(
+    binding: OrdinaryComptimeCallBinding,
+) -> Option<OrdinaryComptimeBoundCall> {
+    let mut callee_types = AHashMap::new();
+    let mut callee_values = AHashMap::new();
+    for (index, value) in binding.arguments.into_iter().enumerate() {
+        let is_comptime_type = binding
+            .parameter_is_type
+            .get(index)
+            .copied()
+            .unwrap_or(matches!(value, ConstValue::Type(_)));
+        let parameter_name = binding.parameter_names.get(index).copied()?;
+        match (is_comptime_type, value) {
+            (true, ConstValue::Type(ty)) => {
+                callee_types.insert(parameter_name, ty);
+            }
+            // Ordinary body semantics deliberately ignore direct-unit
+            // provenance: computed Unit remains a valid body type argument.
+            (true, ConstValue::Unit) => {
+                callee_types.insert(parameter_name, Type::UNIT);
+            }
+            (true, _) => return None,
+            (false, value) => {
+                callee_values.insert(parameter_name, value);
+            }
+        }
+    }
+    Some(OrdinaryComptimeBoundCall {
+        callee_types,
+        callee_values,
+    })
+}
+
 impl super::comptime::ComptimeValue for ConstValue {
     type Type = Type;
     fn integer(value: i128) -> Self {
@@ -890,42 +947,43 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
-    /// Bind already-evaluated values to an admitted call. This has no body
-    /// lookup or substitution validation, allowing external/provider results
-    /// to remain authoritative before local-only checks run.
-    fn bind_comptime_call(
+    /// Start an incremental binding transaction immediately after admission.
+    fn begin_comptime_call_binding(
         &self,
         admission: &ComptimeCallAdmission<FunctionCallInfo, Spur>,
-        values: &[ComptimeCallArgument<ConstValue>],
+        _argument_count: usize,
         _span: Span,
-    ) -> CompileResult<Option<(AHashMap<Spur, Type>, AHashMap<Spur, ConstValue>)>> {
+    ) -> CompileResult<OrdinaryComptimeCallBinding> {
         let param_data = self.body_param_data(admission.payload.params);
-        let param_names = param_data.names().to_vec();
-        let param_comptime_type = self.comptime_type_param_flags(&admission.payload);
-        let mut callee_types: AHashMap<Spur, Type> = AHashMap::new();
-        let mut callee_values: AHashMap<Spur, ConstValue> = AHashMap::new();
-        for (i, argument) in values.iter().enumerate() {
-            let v = *argument.value();
-            let is_comptime_type = param_comptime_type
-                .get(i)
-                .copied()
-                .unwrap_or(matches!(v, ConstValue::Type(_)));
-            match (is_comptime_type, v) {
-                (true, ConstValue::Type(t)) => {
-                    callee_types.insert(param_names[i], t);
-                }
-                (true, ConstValue::Unit) => {
-                    callee_types.insert(param_names[i], Type::UNIT);
-                }
-                (true, _) => {
-                    return Ok(None);
-                }
-                (false, value) => {
-                    callee_values.insert(param_names[i], value);
-                }
-            }
-        }
-        Ok(Some((callee_types, callee_values)))
+        Ok(OrdinaryComptimeCallBinding {
+            parameter_names: param_data.names().to_vec(),
+            parameter_is_type: self.comptime_type_param_flags(&admission.payload),
+            arguments: Vec::with_capacity(_argument_count),
+        })
+    }
+
+    fn bind_comptime_call_argument(
+        &self,
+        binding: &mut OrdinaryComptimeCallBinding,
+        argument: ComptimeCallArgument<ConstValue>,
+        _index: usize,
+        _span: Span,
+    ) -> CompileResult<bool> {
+        // Ordinary semantics validate the complete batch only at finish. This
+        // owned transaction therefore cannot publish an early mismatch or
+        // let it mask a later child trap/abort.
+        Ok(push_ordinary_comptime_call_argument(
+            binding,
+            *argument.value(),
+        ))
+    }
+
+    fn finish_comptime_call_binding(
+        &mut self,
+        binding: OrdinaryComptimeCallBinding,
+        _span: Span,
+    ) -> CompileResult<Option<OrdinaryComptimeBoundCall>> {
+        Ok(finish_ordinary_comptime_call_binding(binding))
     }
 
     /// Finish an admitted local call after its arguments have been evaluated.
@@ -1107,14 +1165,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             name,
             payload: info,
         };
-        let preparation = <Self as ComptimeHost>::prepare_comptime_call(
-            self,
-            admission,
-            callee_types.clone(),
-            callee_values.clone(),
-            span,
-        )
-        .map_err(super::comptime::ComptimeHostError::into_failure)?;
+        let bound = OrdinaryComptimeBoundCall {
+            callee_types: callee_types.clone(),
+            callee_values: callee_values.clone(),
+        };
+        let preparation =
+            <Self as ComptimeHost>::prepare_comptime_call(self, admission, bound, span)
+                .map_err(super::comptime::ComptimeHostError::into_failure)?;
         let Some(preparation) = preparation else {
             return Ok(None);
         };
@@ -1748,6 +1805,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     type ProgramKey = ();
     type Failure = CompileError;
     type CallAdmission = super::info::FunctionCallInfo;
+    type CallBinding = OrdinaryComptimeCallBinding;
+    type BoundCall = OrdinaryComptimeBoundCall;
     type CompletionTicket = ();
     type AnonymousStructId = crate::types::StructId;
     type StructuredTypeSuspension = crate::semantic_type_resolution::ComptimeStructuredTypeJob<
@@ -2144,20 +2203,36 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         OrdinaryBodyEngine::admit_comptime_call(self, name, count, modes, env, resolved)
             .map_err(Into::into)
     }
-    fn bind_comptime_call(
+    fn begin_comptime_call_binding(
         &self,
         admission: &ComptimeCallAdmission<FunctionCallInfo, Spur>,
-        values: &[ComptimeCallArgument<ConstValue>],
+        argument_count: usize,
         span: Span,
-    ) -> ComptimeHostResult<Option<(AHashMap<Spur, Type>, AHashMap<Spur, ConstValue>)>, Self::Failure>
-    {
-        OrdinaryBodyEngine::bind_comptime_call(self, admission, values, span).map_err(Into::into)
+    ) -> ComptimeHostResult<Self::CallBinding, Self::Failure> {
+        OrdinaryBodyEngine::begin_comptime_call_binding(self, admission, argument_count, span)
+            .map_err(Into::into)
+    }
+    fn bind_comptime_call_argument(
+        &self,
+        binding: &mut Self::CallBinding,
+        argument: ComptimeCallArgument<ConstValue>,
+        index: usize,
+        span: Span,
+    ) -> ComptimeHostResult<bool, Self::Failure> {
+        OrdinaryBodyEngine::bind_comptime_call_argument(self, binding, argument, index, span)
+            .map_err(Into::into)
+    }
+    fn finish_comptime_call_binding(
+        &mut self,
+        binding: Self::CallBinding,
+        span: Span,
+    ) -> ComptimeHostResult<Option<Self::BoundCall>, Self::Failure> {
+        OrdinaryBodyEngine::finish_comptime_call_binding(self, binding, span).map_err(Into::into)
     }
     fn prepare_comptime_call(
         &mut self,
         admission: ComptimeCallAdmission<FunctionCallInfo, Spur>,
-        types: AHashMap<Spur, Type>,
-        values: AHashMap<Spur, ConstValue>,
+        bound: Self::BoundCall,
         span: Span,
     ) -> ComptimeHostResult<
         Option<
@@ -2177,8 +2252,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         if let Some(result) = OrdinaryBodyEngine::reduce_external_comptime_call(
             self,
             admission.name,
-            &types,
-            &values,
+            &bound.callee_types,
+            &bound.callee_values,
             span,
         ) {
             return result
@@ -2190,8 +2265,14 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
                 })
                 .map_err(Into::into);
         }
-        OrdinaryBodyEngine::prepare_comptime_call(self, admission, types, values, span)
-            .map_err(Into::into)
+        OrdinaryBodyEngine::prepare_comptime_call(
+            self,
+            admission,
+            bound.callee_types,
+            bound.callee_values,
+            span,
+        )
+        .map_err(Into::into)
     }
     fn finish_comptime_call(
         &mut self,
@@ -2265,5 +2346,36 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         subst: AHashMap<Spur, Type>,
     ) {
         OrdinaryBodyEngine::set_anon_struct_type_subst(self, *id, subst)
+    }
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_binding_stores_invalid_shape_then_rejects_only_at_finish() {
+        let interner = lasso::ThreadedRodeo::new();
+        let value_name = interner.get_or_intern("value");
+        let later_name = interner.get_or_intern("later");
+        let mut binding = OrdinaryComptimeCallBinding {
+            parameter_names: vec![value_name, later_name],
+            parameter_is_type: vec![true, false],
+            arguments: Vec::new(),
+        };
+
+        // Push is the ordinary host's transactional operation: it records
+        // the shape without publishing an early mismatch. The whole batch
+        // policy is applied exactly once by finish.
+        assert!(push_ordinary_comptime_call_argument(
+            &mut binding,
+            ConstValue::Integer(7),
+        ));
+        assert!(push_ordinary_comptime_call_argument(
+            &mut binding,
+            ConstValue::Integer(7),
+        ));
+        assert_eq!(binding.arguments.len(), 2);
+        assert!(finish_ordinary_comptime_call_binding(binding).is_none());
     }
 }

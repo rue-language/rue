@@ -1084,6 +1084,334 @@ pub(crate) struct DurableComptimeCallableAdmission {
     pub(crate) shell_parameters: Arc<[crate::declaration_candidate::DeclarationParameterHeader]>,
 }
 
+/// Convert the canonical type-instance representation into the durable type
+/// domain used by call binding. This is kept beside the binding policy so
+/// diagnostics and substitution never acquire a second local conversion.
+pub(crate) fn durable_type_from_instance_key(
+    value: &crate::TypeInstanceKey,
+) -> Option<DurableType> {
+    use crate::TypeInstanceKey as T;
+    use crate::durable_semantics::DurableType as D;
+    Some(match value {
+        T::I8 => D::I8,
+        T::I16 => D::I16,
+        T::I32 => D::I32,
+        T::I64 => D::I64,
+        T::U8 => D::U8,
+        T::U16 => D::U16,
+        T::U32 => D::U32,
+        T::U64 => D::U64,
+        T::Bool => D::Bool,
+        T::Unit => D::Unit,
+        T::Never => D::Never,
+        T::ComptimeType => D::ComptimeType,
+        T::BuiltinNominal { kind, name } => D::BuiltinNominal {
+            name: name.clone(),
+            kind: match kind {
+                crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
+                crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
+            },
+        },
+        T::Nominal(crate::NominalInstanceKey::Builtin { kind, name }) => D::BuiltinNominal {
+            name: name.clone(),
+            kind: match kind {
+                crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
+                crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
+            },
+        },
+        T::Nominal(crate::NominalInstanceKey::Named(key)) => D::Nominal(key.clone()),
+        T::Nominal(crate::NominalInstanceKey::Anonymous(key)) => {
+            D::AnonymousNominal((**key).clone())
+        }
+        T::Array { element, len } => D::Array {
+            element: Arc::new(durable_type_from_instance_key(element)?),
+            len: *len,
+        },
+        T::Slice { element, name } => D::Slice {
+            element: Arc::new(durable_type_from_instance_key(element)?),
+            name: name.clone(),
+        },
+        T::PtrConst(value) => D::PtrConst(Arc::new(durable_type_from_instance_key(value)?)),
+        T::PtrMut(value) => D::PtrMut(Arc::new(durable_type_from_instance_key(value)?)),
+        T::Module(value) => D::Module(value.clone()),
+        T::GenericParameter(index) => D::GenericParameter(*index),
+    })
+}
+
+pub(crate) fn durable_type_diagnostic_name(ty: &DurableType) -> String {
+    use crate::durable_semantics::DurableType as T;
+
+    fn function_name(function: &crate::FunctionInstanceKey) -> Option<&str> {
+        match function {
+            crate::FunctionInstanceKey::Definition(key) => Some(key.name()),
+            crate::FunctionInstanceKey::Specialization { base, .. } => function_name(base),
+            crate::FunctionInstanceKey::AnonymousMember { .. }
+            | crate::FunctionInstanceKey::DropGlue(_) => None,
+        }
+    }
+
+    match ty {
+        T::I8 => "i8".to_owned(),
+        T::I16 => "i16".to_owned(),
+        T::I32 => "i32".to_owned(),
+        T::I64 => "i64".to_owned(),
+        T::U8 => "u8".to_owned(),
+        T::U16 => "u16".to_owned(),
+        T::U32 => "u32".to_owned(),
+        T::U64 => "u64".to_owned(),
+        T::Bool => "bool".to_owned(),
+        T::Unit => "()".to_owned(),
+        T::Never => "!".to_owned(),
+        T::ComptimeType => "type".to_owned(),
+        T::BuiltinNominal { name, .. } => name.to_string(),
+        T::Nominal(key) => key.name().to_owned(),
+        T::AnonymousNominal(key) => match &key.producer {
+            crate::StableProducerId::Definition(key) => key.name().to_owned(),
+            crate::StableProducerId::Function(function) => {
+                let name = function_name(function).unwrap_or("anonymous");
+                let applied = key.producer_arguments();
+                let mut arguments = applied
+                    .map(|applied| {
+                        applied
+                            .types
+                            .iter()
+                            .filter_map(durable_type_from_instance_key)
+                            .map(|ty| durable_type_diagnostic_name(&ty))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                arguments.extend(
+                    applied
+                        .into_iter()
+                        .flat_map(|applied| applied.values.iter())
+                        .map(|value| match value {
+                            crate::CanonicalArgumentValue::Integer(value) => value.to_string(),
+                            crate::CanonicalArgumentValue::Bool(value) => value.to_string(),
+                            crate::CanonicalArgumentValue::Type(value) => {
+                                durable_type_from_instance_key(value.as_ref()).map_or_else(
+                                    || "type".to_owned(),
+                                    |ty| durable_type_diagnostic_name(&ty),
+                                )
+                            }
+                            crate::CanonicalArgumentValue::Function(_) => "function".to_owned(),
+                            crate::CanonicalArgumentValue::Unit => "()".to_owned(),
+                            crate::CanonicalArgumentValue::String(value) => format!("\"{value}\""),
+                        }),
+                );
+                if arguments.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{name}({})", arguments.join(", "))
+                }
+            }
+        },
+        T::Array { element, len } => {
+            format!("[{}; {len}]", durable_type_diagnostic_name(element))
+        }
+        T::Slice { name, .. } => name.to_string(),
+        T::PtrConst(pointee) => {
+            format!("ptr const {}", durable_type_diagnostic_name(pointee))
+        }
+        T::PtrMut(pointee) => format!("ptr mut {}", durable_type_diagnostic_name(pointee)),
+        T::Module(module) => module.to_string(),
+        T::GenericParameter(index) => format!("T{index}"),
+    }
+}
+
+pub(crate) fn inferred_durable_const_type_name(value: &DurableConstValue) -> &'static str {
+    match value {
+        DurableConstValue::Integer(value) if i32::try_from(*value).is_ok() => "i32",
+        DurableConstValue::Integer(value) if i64::try_from(*value).is_ok() => "i64",
+        DurableConstValue::Integer(_) => "u64",
+        DurableConstValue::Bool(_) => "bool",
+        DurableConstValue::Unit => "()",
+        DurableConstValue::String(_) => "str",
+        DurableConstValue::Type(_) | DurableConstValue::Function(_) => "type",
+    }
+}
+
+pub(crate) fn substitute_durable_generics(
+    ty: &DurableType,
+    type_arguments: &[DurableType],
+) -> DurableType {
+    use crate::durable_semantics::DurableType as T;
+    match ty {
+        T::GenericParameter(index) => type_arguments
+            .get(*index as usize)
+            .cloned()
+            .unwrap_or_else(|| ty.clone()),
+        T::Array { element, len } => T::Array {
+            element: Arc::new(substitute_durable_generics(element, type_arguments)),
+            len: *len,
+        },
+        T::Slice { element, name } => T::Slice {
+            element: Arc::new(substitute_durable_generics(element, type_arguments)),
+            name: name.clone(),
+        },
+        T::PtrConst(pointee) => T::PtrConst(Arc::new(substitute_durable_generics(
+            pointee,
+            type_arguments,
+        ))),
+        T::PtrMut(pointee) => T::PtrMut(Arc::new(substitute_durable_generics(
+            pointee,
+            type_arguments,
+        ))),
+        _ => ty.clone(),
+    }
+}
+
+pub(crate) fn durable_const_fits_type(value: &DurableConstValue, ty: &DurableType) -> bool {
+    use crate::durable_semantics::{DurableConstValue as V, DurableType as T};
+    match (ty, value) {
+        (_, V::Integer(value)) => {
+            durable_int_width(ty).is_some_and(|integer| integer.fits_i128(*value))
+        }
+        (T::Bool, V::Bool(_)) | (T::Unit, V::Unit) => true,
+        (T::ComptimeType, V::Type(_)) => true,
+        _ => false,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DurableComptimeValueFitFailure {
+    CallableAlias,
+    IntegerOutOfRange { value: i128, type_name: String },
+    TypeMismatch { expected: String, found: String },
+}
+
+/// Return the canonical durable value-fit classification, if a reduced value
+/// cannot satisfy its declared comptime parameter type. Both expression
+/// binding and structured type-constructor reduction consume this policy so
+/// callable aliases, integer ranges, and mismatch diagnostics cannot drift.
+pub(crate) fn durable_value_fit_failure(
+    value: &DurableConstValue,
+    expected: &DurableType,
+) -> Option<DurableComptimeValueFitFailure> {
+    if durable_const_fits_type(value, expected) {
+        return None;
+    }
+    if matches!(value, DurableConstValue::Function(_)) {
+        return Some(DurableComptimeValueFitFailure::CallableAlias);
+    }
+    if let DurableConstValue::Integer(value) = value
+        && durable_int_width(expected).is_some()
+    {
+        return Some(DurableComptimeValueFitFailure::IntegerOutOfRange {
+            value: *value,
+            type_name: durable_type_diagnostic_name(expected),
+        });
+    }
+    Some(DurableComptimeValueFitFailure::TypeMismatch {
+        expected: durable_type_diagnostic_name(expected),
+        found: inferred_durable_const_type_name(value).to_owned(),
+    })
+}
+
+pub(crate) fn durable_int_width(
+    ty: &DurableType,
+) -> Option<rue_air::integer_semantics::IntegerType> {
+    use rue_air::integer_semantics::IntegerType;
+    let (bits, signed) = match ty {
+        DurableType::I8 => (8, true),
+        DurableType::I16 => (16, true),
+        DurableType::I32 => (32, true),
+        DurableType::I64 => (64, true),
+        DurableType::U8 => (8, false),
+        DurableType::U16 => (16, false),
+        DurableType::U32 => (32, false),
+        DurableType::U64 => (64, false),
+        _ => return None,
+    };
+    IntegerType::new(bits, signed)
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct DurableComptimeBinding {
+    type_arguments: Vec<(Arc<str>, DurableType)>,
+    value_arguments: Vec<(Arc<str>, DurableConstValue)>,
+}
+
+impl DurableComptimeBinding {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Vec<(Arc<str>, DurableType)>,
+        Vec<(Arc<str>, DurableConstValue)>,
+    ) {
+        (self.type_arguments, self.value_arguments)
+    }
+}
+
+/// Match one already-evaluated durable argument immediately. The binding is
+/// mutated in source order, so a later value parameter sees all preceding
+/// concrete type substitutions and no earlier argument is replayed.
+pub(crate) fn bind_durable_comptime_argument(
+    binding: &mut DurableComptimeBinding,
+    parameter_name: &str,
+    parameter: &crate::durable_semantics::DurableSemanticParameter,
+    argument: TypedSemanticConst,
+    direct_unit_literal: bool,
+) -> Result<(), DurableComptimeFailure> {
+    let TypedSemanticConst { value, ty } = argument;
+    if parameter.ty == DurableType::ComptimeType {
+        let value = match value {
+            DurableConstValue::Type(ty) => ty,
+            DurableConstValue::Unit if direct_unit_literal => DurableType::Unit,
+            _ => {
+                return Err(DurableComptimeFailure::comptime_failure(format!(
+                    "argument for comptime parameter `{parameter_name}` must be a type"
+                )));
+            }
+        };
+        binding
+            .type_arguments
+            .push((Arc::from(parameter_name), value));
+        return Ok(());
+    }
+
+    let expected = substitute_durable_generics(
+        &parameter.ty,
+        &binding
+            .type_arguments
+            .iter()
+            .map(|(_, ty)| ty.clone())
+            .collect::<Vec<_>>(),
+    );
+    if let Some(found) = ty
+        && found != expected
+    {
+        return Err(DurableComptimeFailure::failure(
+            SemanticNucleusFailure::Diagnostic(rue_error::ErrorKind::TypeMismatch {
+                expected: durable_type_diagnostic_name(&expected),
+                found: durable_type_diagnostic_name(&found),
+            }),
+        ));
+    }
+    if let Some(failure) = durable_value_fit_failure(&value, &expected) {
+        return Err(match failure {
+            DurableComptimeValueFitFailure::CallableAlias => {
+                DurableComptimeFailure::comptime_failure(
+                    "a callable alias cannot be passed as a comptime value argument",
+                )
+            }
+            DurableComptimeValueFitFailure::IntegerOutOfRange { value, type_name } => {
+                DurableComptimeFailure::comptime_failure(format!(
+                    "value {value} is outside the range of type {type_name}"
+                ))
+            }
+            DurableComptimeValueFitFailure::TypeMismatch { expected, found } => {
+                DurableComptimeFailure::failure(SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::TypeMismatch { expected, found },
+                ))
+            }
+        });
+    }
+    binding
+        .value_arguments
+        .push((Arc::from(parameter_name), value));
+    Ok(())
+}
+
 /// The exact durable projection of one named value lookup.  The dependency is
 /// deliberately direct: resolving a const, callable, or nominal observes the
 /// resolved declaration only, while any transitive const effects remain owned
@@ -1606,9 +1934,26 @@ impl ComptimeValue for EvaluatedSemanticConst {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::durable_semantics::{DurableParameterMode, DurableSemanticParameter};
 
     fn value(value: DurableConstValue, ty: Option<DurableType>) -> EvaluatedSemanticConst {
         EvaluatedSemanticConst::Value(Arc::new(TypedSemanticConst { value, ty }))
+    }
+
+    fn typed(value: DurableConstValue, ty: DurableType) -> TypedSemanticConst {
+        TypedSemanticConst {
+            value,
+            ty: Some(ty),
+        }
+    }
+
+    fn parameter(name: &str, ty: DurableType) -> DurableSemanticParameter {
+        DurableSemanticParameter {
+            name: Arc::from(name),
+            ty,
+            mode: DurableParameterMode::Value,
+            is_comptime: true,
+        }
     }
 
     #[test]
@@ -1696,6 +2041,114 @@ mod tests {
             EvaluatedSemanticConst::integer_typed(-12, Some(DurableComptimeType(ty.clone())));
         assert_eq!(original.clone(), original);
         assert_eq!(original.as_integer_type(), Some(DurableComptimeType(ty)));
+    }
+
+    #[test]
+    fn incremental_binding_preserves_type_then_value_order_and_substitution() {
+        let mut binding = DurableComptimeBinding::default();
+        bind_durable_comptime_argument(
+            &mut binding,
+            "T",
+            &parameter("T", DurableType::ComptimeType),
+            typed(
+                DurableConstValue::Type(DurableType::I16),
+                DurableType::ComptimeType,
+            ),
+            false,
+        )
+        .unwrap();
+        bind_durable_comptime_argument(
+            &mut binding,
+            "value",
+            &parameter("value", DurableType::GenericParameter(0)),
+            typed(DurableConstValue::Integer(12), DurableType::I16),
+            false,
+        )
+        .unwrap();
+        let (types, values) = binding.into_parts();
+        assert_eq!(types, vec![(Arc::from("T"), DurableType::I16)]);
+        assert_eq!(
+            values,
+            vec![(Arc::from("value"), DurableConstValue::Integer(12))]
+        );
+    }
+
+    #[test]
+    fn incremental_binding_preserves_early_type_and_range_failures() {
+        let mut mismatch = DurableComptimeBinding::default();
+        let failure = bind_durable_comptime_argument(
+            &mut mismatch,
+            "value",
+            &parameter("value", DurableType::I16),
+            typed(DurableConstValue::Bool(true), DurableType::Bool),
+            false,
+        )
+        .unwrap_err();
+        match failure {
+            DurableComptimeFailure::Failure(failure) => assert!(matches!(
+                failure.as_ref(),
+                SemanticNucleusFailure::Diagnostic(rue_error::ErrorKind::TypeMismatch { .. })
+            )),
+            other => panic!("unexpected binding failure: {other:?}"),
+        }
+
+        let mut range = DurableComptimeBinding::default();
+        let failure = bind_durable_comptime_argument(
+            &mut range,
+            "value",
+            &parameter("value", DurableType::I8),
+            TypedSemanticConst {
+                value: DurableConstValue::Integer(300),
+                ty: None,
+            },
+            false,
+        )
+        .unwrap_err();
+        match failure {
+            DurableComptimeFailure::Failure(failure) => match failure.as_ref() {
+                SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::ComptimeEvaluationFailed { reason },
+                ) => assert_eq!(reason, "value 300 is outside the range of type i8"),
+                other => panic!("unexpected range failure: {other:?}"),
+            },
+            other => panic!("unexpected binding failure: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn incremental_binding_requires_direct_unit_for_type_arguments() {
+        let mut direct = DurableComptimeBinding::default();
+        bind_durable_comptime_argument(
+            &mut direct,
+            "T",
+            &parameter("T", DurableType::ComptimeType),
+            typed(DurableConstValue::Unit, DurableType::Unit),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            direct.into_parts().0,
+            vec![(Arc::from("T"), DurableType::Unit)]
+        );
+
+        let mut computed = DurableComptimeBinding::default();
+        let failure = bind_durable_comptime_argument(
+            &mut computed,
+            "T",
+            &parameter("T", DurableType::ComptimeType),
+            typed(DurableConstValue::Unit, DurableType::Unit),
+            false,
+        )
+        .unwrap_err();
+        match failure {
+            DurableComptimeFailure::Failure(failure) => match failure.as_ref() {
+                SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::ComptimeEvaluationFailed { reason },
+                ) => assert_eq!(reason, "argument for comptime parameter `T` must be a type"),
+                other => panic!("unexpected type failure: {other:?}"),
+            },
+            other => panic!("unexpected binding failure: {other:?}"),
+        }
     }
 
     #[test]

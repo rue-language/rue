@@ -4051,85 +4051,7 @@ impl LinearOwnershipFact {
 type EvaluateSemanticConstError = crate::durable_comptime::DurableComptimeFailure;
 
 fn durable_type_diagnostic_name(ty: &crate::durable_semantics::DurableType) -> String {
-    use crate::durable_semantics::DurableType as T;
-
-    fn function_name(function: &crate::FunctionInstanceKey) -> Option<&str> {
-        match function {
-            crate::FunctionInstanceKey::Definition(key) => Some(key.name()),
-            crate::FunctionInstanceKey::Specialization { base, .. } => function_name(base),
-            crate::FunctionInstanceKey::AnonymousMember { .. }
-            | crate::FunctionInstanceKey::DropGlue(_) => None,
-        }
-    }
-
-    match ty {
-        T::I8 => "i8".to_owned(),
-        T::I16 => "i16".to_owned(),
-        T::I32 => "i32".to_owned(),
-        T::I64 => "i64".to_owned(),
-        T::U8 => "u8".to_owned(),
-        T::U16 => "u16".to_owned(),
-        T::U32 => "u32".to_owned(),
-        T::U64 => "u64".to_owned(),
-        T::Bool => "bool".to_owned(),
-        T::Unit => "()".to_owned(),
-        T::Never => "!".to_owned(),
-        T::ComptimeType => "type".to_owned(),
-        T::BuiltinNominal { name, .. } => name.to_string(),
-        T::Nominal(key) => key.name().to_owned(),
-        T::AnonymousNominal(key) => match &key.producer {
-            crate::StableProducerId::Definition(key) => key.name().to_owned(),
-            crate::StableProducerId::Function(function) => {
-                let name = function_name(function).unwrap_or("anonymous");
-                // The comptime arguments live inside the producer
-                // specialization; the key carries no second copy (RUE-1699).
-                let applied = key.producer_arguments();
-                let mut arguments = applied
-                    .map(|applied| {
-                        applied
-                            .types
-                            .iter()
-                            .filter_map(durable_type_from_instance_key)
-                            .map(|ty| durable_type_diagnostic_name(&ty))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                arguments.extend(
-                    applied
-                        .into_iter()
-                        .flat_map(|applied| applied.values.iter())
-                        .map(|value| match value {
-                            crate::CanonicalArgumentValue::Integer(value) => value.to_string(),
-                            crate::CanonicalArgumentValue::Bool(value) => value.to_string(),
-                            crate::CanonicalArgumentValue::Type(value) => {
-                                durable_type_from_instance_key(value.as_ref()).map_or_else(
-                                    || "type".to_owned(),
-                                    |ty| durable_type_diagnostic_name(&ty),
-                                )
-                            }
-                            crate::CanonicalArgumentValue::Function(_) => "function".to_owned(),
-                            crate::CanonicalArgumentValue::Unit => "()".to_owned(),
-                            crate::CanonicalArgumentValue::String(value) => format!("\"{value}\""),
-                        }),
-                );
-                if arguments.is_empty() {
-                    name.to_owned()
-                } else {
-                    format!("{name}({})", arguments.join(", "))
-                }
-            }
-        },
-        T::Array { element, len } => {
-            format!("[{}; {len}]", durable_type_diagnostic_name(element))
-        }
-        T::Slice { name, .. } => name.to_string(),
-        T::PtrConst(pointee) => {
-            format!("ptr const {}", durable_type_diagnostic_name(pointee))
-        }
-        T::PtrMut(pointee) => format!("ptr mut {}", durable_type_diagnostic_name(pointee)),
-        T::Module(module) => module.to_string(),
-        T::GenericParameter(index) => format!("T{index}"),
-    }
+    crate::durable_comptime::durable_type_diagnostic_name(ty)
 }
 
 fn foreign_signature_display(
@@ -4184,61 +4106,21 @@ fn foreign_signatures_agree(
 }
 
 fn inferred_const_type_name(value: &crate::durable_semantics::DurableConstValue) -> &'static str {
-    use crate::durable_semantics::DurableConstValue as V;
-    match value {
-        V::Integer(value) if i32::try_from(*value).is_ok() => "i32",
-        V::Integer(value) if i64::try_from(*value).is_ok() => "i64",
-        V::Integer(_) => "u64",
-        V::Bool(_) => "bool",
-        V::Unit => "()",
-        V::String(_) => "str",
-        V::Type(_) | V::Function(_) => "type",
-    }
+    crate::durable_comptime::inferred_durable_const_type_name(value)
 }
 
 fn substitute_durable_generics(
     ty: &crate::durable_semantics::DurableType,
     type_arguments: &[crate::durable_semantics::DurableType],
 ) -> crate::durable_semantics::DurableType {
-    use crate::durable_semantics::DurableType as T;
-    match ty {
-        T::GenericParameter(index) => type_arguments
-            .get(*index as usize)
-            .cloned()
-            .unwrap_or_else(|| ty.clone()),
-        T::Array { element, len } => T::Array {
-            element: Arc::new(substitute_durable_generics(element, type_arguments)),
-            len: *len,
-        },
-        T::Slice { element, name } => T::Slice {
-            element: Arc::new(substitute_durable_generics(element, type_arguments)),
-            name: name.clone(),
-        },
-        T::PtrConst(pointee) => T::PtrConst(Arc::new(substitute_durable_generics(
-            pointee,
-            type_arguments,
-        ))),
-        T::PtrMut(pointee) => T::PtrMut(Arc::new(substitute_durable_generics(
-            pointee,
-            type_arguments,
-        ))),
-        _ => ty.clone(),
-    }
+    crate::durable_comptime::substitute_durable_generics(ty, type_arguments)
 }
 
 fn durable_const_fits_type(
     value: &crate::durable_semantics::DurableConstValue,
     ty: &crate::durable_semantics::DurableType,
 ) -> bool {
-    use crate::durable_semantics::{DurableConstValue as V, DurableType as T};
-    match (ty, value) {
-        (_, V::Integer(value)) => {
-            durable_int_width(ty).is_some_and(|integer| integer.fits_i128(*value))
-        }
-        (T::Bool, V::Bool(_)) | (T::Unit, V::Unit) => true,
-        (T::ComptimeType, V::Type(_)) => true,
-        _ => false,
-    }
+    crate::durable_comptime::durable_const_fits_type(value, ty)
 }
 
 /// Build the E0481 for an array length that is already *fully concrete* and
@@ -4294,20 +4176,7 @@ fn durable_literal_array_length_failure(
 fn durable_int_width(
     ty: &crate::durable_semantics::DurableType,
 ) -> Option<rue_air::integer_semantics::IntegerType> {
-    use crate::durable_semantics::DurableType as T;
-    use rue_air::integer_semantics::IntegerType;
-    let (bits, signed) = match ty {
-        T::I8 => (8, true),
-        T::I16 => (16, true),
-        T::I32 => (32, true),
-        T::I64 => (64, true),
-        T::U8 => (8, false),
-        T::U16 => (16, false),
-        T::U32 => (32, false),
-        T::U64 => (64, false),
-        _ => return None,
-    };
-    IntegerType::new(bits, signed)
+    crate::durable_comptime::durable_int_width(ty)
 }
 
 fn semantic_nucleus_declaration_name(identity: &str) -> Option<Arc<str>> {
@@ -6567,52 +6436,7 @@ fn schedule_body_instance<V>(
 pub(crate) fn durable_type_from_instance_key(
     value: &crate::TypeInstanceKey,
 ) -> Option<crate::durable_semantics::DurableType> {
-    use crate::TypeInstanceKey as T;
-    use crate::durable_semantics::DurableType as D;
-    Some(match value {
-        T::I8 => D::I8,
-        T::I16 => D::I16,
-        T::I32 => D::I32,
-        T::I64 => D::I64,
-        T::U8 => D::U8,
-        T::U16 => D::U16,
-        T::U32 => D::U32,
-        T::U64 => D::U64,
-        T::Bool => D::Bool,
-        T::Unit => D::Unit,
-        T::Never => D::Never,
-        T::ComptimeType => D::ComptimeType,
-        T::BuiltinNominal { kind, name } => D::BuiltinNominal {
-            name: name.clone(),
-            kind: match kind {
-                crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
-                crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
-            },
-        },
-        T::Nominal(crate::NominalInstanceKey::Builtin { kind, name }) => D::BuiltinNominal {
-            name: name.clone(),
-            kind: match kind {
-                crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
-                crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
-            },
-        },
-        T::Nominal(crate::NominalInstanceKey::Named(key)) => D::Nominal(key.clone()),
-        T::Nominal(crate::NominalInstanceKey::Anonymous(key)) => {
-            D::AnonymousNominal((**key).clone())
-        }
-        T::Array { element, len } => D::Array {
-            element: Arc::new(durable_type_from_instance_key(element)?),
-            len: *len,
-        },
-        T::Slice { element, name } => D::Slice {
-            element: Arc::new(durable_type_from_instance_key(element)?),
-            name: name.clone(),
-        },
-        T::PtrConst(value) => D::PtrConst(Arc::new(durable_type_from_instance_key(value)?)),
-        T::PtrMut(value) => D::PtrMut(Arc::new(durable_type_from_instance_key(value)?)),
-        T::Module(value) => D::Module(value.clone()),
-        T::GenericParameter(index) => D::GenericParameter(*index),
-    })
+    crate::durable_comptime::durable_type_from_instance_key(value)
 }
 
 pub(crate) fn durable_value_from_argument(
@@ -8070,8 +7894,7 @@ impl SemanticConstEvaluator<'_, '_> {
         let parameters = admission.parameters;
         let result = admission.result;
         let shell_parameters = admission.shell_parameters;
-        let mut type_arguments = Vec::new();
-        let mut value_arguments = Vec::new();
+        let mut binding = crate::durable_comptime::DurableComptimeBinding::default();
         for (index, (header, parameter)) in
             shell_parameters.iter().zip(parameters.iter()).enumerate()
         {
@@ -8083,93 +7906,30 @@ impl SemanticConstEvaluator<'_, '_> {
             if parameter.ty == crate::durable_semantics::DurableType::ComptimeType {
                 let evaluated = self.eval(argument.value)?;
                 let evaluated = self.value(evaluated)?;
-                let ty = match evaluated.value {
-                    crate::durable_semantics::DurableConstValue::Type(ty) => ty,
-                    // `()` is the one surface spelling shared by a unit value
-                    // and the unit type. The parameter's `type` expectation is
-                    // therefore the canonical disambiguating context.
-                    crate::durable_semantics::DurableConstValue::Unit
-                        if matches!(
-                            &self.rir.get(argument.value).data,
-                            rue_rir::InstData::UnitConst
-                        ) =>
-                    {
-                        crate::durable_semantics::DurableType::Unit
-                    }
-                    _ => {
-                        return Self::failure(format!(
-                            "argument for comptime parameter `{}` must be a type",
-                            header.name
-                        ));
-                    }
-                };
-                type_arguments.push((header.name.clone(), ty));
+                let direct_unit_literal = matches!(
+                    &self.rir.get(argument.value).data,
+                    rue_rir::InstData::UnitConst
+                );
+                crate::durable_comptime::bind_durable_comptime_argument(
+                    &mut binding,
+                    &header.name,
+                    parameter,
+                    evaluated,
+                    direct_unit_literal,
+                )?;
             } else {
                 let evaluated = self.eval(argument.value)?;
                 let typed = self.value(evaluated)?;
-                let value = typed.value;
-                let concrete_type_arguments = type_arguments
-                    .iter()
-                    .map(|(_, ty)| ty.clone())
-                    .collect::<Vec<_>>();
-                let expected = substitute_durable_generics(&parameter.ty, &concrete_type_arguments);
-                if let Some(found) = typed.ty
-                    && found != expected
-                {
-                    return Err(EvaluateSemanticConstError::failure(
-                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                            rue_error::ErrorKind::TypeMismatch {
-                                expected: durable_type_diagnostic_name(&expected),
-                                found: durable_type_diagnostic_name(&found),
-                            },
-                        ),
-                    ));
-                }
-                if !durable_const_fits_type(&value, &expected) {
-                    if matches!(
-                        &value,
-                        crate::durable_semantics::DurableConstValue::Function(_)
-                    ) {
-                        return Self::failure(
-                            "a callable alias cannot be passed as a comptime value argument",
-                        );
-                    }
-                    if matches!(
-                        &value,
-                        crate::durable_semantics::DurableConstValue::Integer(_)
-                    ) && matches!(
-                        &expected,
-                        crate::durable_semantics::DurableType::I8
-                            | crate::durable_semantics::DurableType::I16
-                            | crate::durable_semantics::DurableType::I32
-                            | crate::durable_semantics::DurableType::I64
-                            | crate::durable_semantics::DurableType::U8
-                            | crate::durable_semantics::DurableType::U16
-                            | crate::durable_semantics::DurableType::U32
-                            | crate::durable_semantics::DurableType::U64
-                    ) {
-                        return Self::failure(format!(
-                            "value {} is outside the range of type {}",
-                            match &value {
-                                crate::durable_semantics::DurableConstValue::Integer(value) =>
-                                    value,
-                                _ => unreachable!(),
-                            },
-                            durable_type_diagnostic_name(&expected),
-                        ));
-                    }
-                    return Err(EvaluateSemanticConstError::failure(
-                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                            rue_error::ErrorKind::TypeMismatch {
-                                expected: durable_type_diagnostic_name(&expected),
-                                found: inferred_const_type_name(&value).to_owned(),
-                            },
-                        ),
-                    ));
-                }
-                value_arguments.push((header.name.clone(), value));
+                crate::durable_comptime::bind_durable_comptime_argument(
+                    &mut binding,
+                    &header.name,
+                    parameter,
+                    typed,
+                    false,
+                )?;
             }
         }
+        let (type_arguments, value_arguments) = binding.into_parts();
         let query = SemanticNucleusKey::ComptimeCall(ComptimeCallQueryKey {
             declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
                 declaration: candidate,
@@ -10810,41 +10570,25 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                 return Self::provider_failure("comptime value argument has no parameter");
             };
             let expected = substitute_durable_generics(&parameter.ty, &concrete_type_arguments);
-            if !durable_const_fits_type(value, &expected) {
-                if matches!(
-                    value,
-                    crate::durable_semantics::DurableConstValue::Function(_)
-                ) {
-                    return Self::provider_failure(
+            if let Some(failure) = crate::durable_comptime::durable_value_fit_failure(
+                value, &expected,
+            ) {
+                use crate::durable_comptime::DurableComptimeValueFitFailure as Fit;
+                return match failure {
+                    Fit::CallableAlias => Self::provider_failure(
                         "a callable alias cannot be passed as a comptime value argument",
-                    );
-                }
-                if let crate::durable_semantics::DurableConstValue::Integer(value) = value
-                    && matches!(
-                        &expected,
-                        crate::durable_semantics::DurableType::I8
-                            | crate::durable_semantics::DurableType::I16
-                            | crate::durable_semantics::DurableType::I32
-                            | crate::durable_semantics::DurableType::I64
-                            | crate::durable_semantics::DurableType::U8
-                            | crate::durable_semantics::DurableType::U16
-                            | crate::durable_semantics::DurableType::U32
-                            | crate::durable_semantics::DurableType::U64
-                    )
-                {
-                    return Self::provider_failure(format!(
-                        "value {value} is outside the range of type {}",
-                        durable_type_diagnostic_name(&expected),
-                    ));
-                }
-                return Self::provider_domain_failure(
-                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                        rue_error::ErrorKind::TypeMismatch {
-                            expected: durable_type_diagnostic_name(&expected),
-                            found: inferred_const_type_name(value).to_owned(),
-                        },
                     ),
-                );
+                    Fit::IntegerOutOfRange { value, type_name } => {
+                        Self::provider_failure(format!(
+                            "value {value} is outside the range of type {type_name}"
+                        ))
+                    }
+                    Fit::TypeMismatch { expected, found } => Self::provider_domain_failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                            rue_error::ErrorKind::TypeMismatch { expected, found },
+                        ),
+                    ),
+                };
             }
         }
         let query = K::ComptimeCall(ComptimeCallQueryKey {
