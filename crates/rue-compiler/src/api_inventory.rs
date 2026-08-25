@@ -3701,6 +3701,75 @@ fn durable_comptime_services_are_named_authority_operations() {
     assert!(consume_at < pop_at && pop_at < context_at && context_at < scope_at);
     assert!(scope_at < known_at && known_at < merge_at);
 
+    let root_authority = database
+        .split("struct DurableComptimeRootAuthority<'db> {")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("}\n\nimpl<'db> DurableComptimeRootAuthority")
+                .next()
+        })
+        .expect("durable root authority definition");
+    let root_authority_fields = root_authority
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        root_authority_fields,
+        [
+            "provider: SemanticNucleusTypeProvider<'db>,",
+            "imports: QueryFamily<DeclarationImportQueryKey, DeclarationImportQueryValue>,",
+            "session: crate::durable_comptime::DurableComptimeSession,",
+            "legacy_effects: crate::durable_comptime::DurableComptimeEffects,",
+        ],
+        "durable root authority must own exactly the four canonical service fields"
+    );
+    assert_eq!(
+        database
+            .matches("impl crate::durable_comptime::DurableComptimeSemanticAuthority")
+            .count(),
+        1,
+        "one root authority must own the durable semantic service implementation"
+    );
+    assert!(
+        !database.contains("struct SemanticComptimeAuthority"),
+        "the ephemeral durable semantic authority must stay deleted"
+    );
+    assert_eq!(
+        database
+            .matches("let mut authority = DurableComptimeRootAuthority {")
+            .count(),
+        2,
+        "both durable evaluator roots must construct the root authority"
+    );
+    let root_authority_impl = database
+        .split("impl<'db> DurableComptimeRootAuthority<'db> {")
+        .nth(1)
+        .and_then(|source| source.split("fn project_named_value_candidate").next())
+        .expect("durable root authority implementation");
+    let drain_at = root_authority_impl
+        .find("drain_root_effects()")
+        .expect("root authority drains session effects");
+    let legacy_merge_at = root_authority_impl
+        .find("self.legacy_effects.merge_child(")
+        .expect("root authority merges session effects into legacy effects");
+    let provider_merge_at = root_authority_impl
+        .find("self.provider.merge_comptime_effects(")
+        .expect("root authority publishes legacy effects once");
+    for operation in [
+        "drain_root_effects()",
+        "self.legacy_effects.merge_child(",
+        "self.provider.merge_comptime_effects(",
+    ] {
+        assert_eq!(
+            root_authority_impl.matches(operation).count(),
+            1,
+            "root authority finalization must perform `{operation}` exactly once"
+        );
+    }
+    assert!(drain_at < legacy_merge_at && legacy_merge_at < provider_merge_at);
+
     assert_eq!(
         database.matches("SemanticConstEvaluator {").count(),
         2,
@@ -3718,23 +3787,29 @@ fn durable_comptime_services_are_named_authority_operations() {
         .collect::<Vec<_>>();
     assert_eq!(evaluator_roots.len(), 2);
     for root in evaluator_roots {
-        assert!(root.contains("effects:"));
-        assert!(root.contains("drain_root_effects()"));
-        assert!(root.contains("evaluator.effects.merge_child("));
-        assert!(root.contains("std::mem::take(&mut evaluator.effects)"));
-        let drain = root
-            .find("drain_root_effects()")
-            .expect("root session drain");
-        let merge = root
-            .find("evaluator.effects.merge_child(")
-            .expect("root lifecycle effects merge");
-        let extract = root
-            .find("std::mem::take(&mut evaluator.effects)")
-            .expect("legacy effects extraction");
-        assert!(drain < merge && merge < extract);
-        assert!(root.contains("session,"));
+        assert!(root.contains("authority: &mut authority"));
+        for operation in [
+            "let result = evaluator.eval(",
+            "drop(evaluator)",
+            "authority.finish_legacy()",
+        ] {
+            assert_eq!(
+                root.matches(operation).count(),
+                1,
+                "each legacy root must perform `{operation}` exactly once"
+            );
+        }
+        let eval_at = root.find("let result = evaluator.eval(").unwrap();
+        let drop_at = root.find("drop(evaluator)").unwrap();
+        let finish_at = root.find("authority.finish_legacy()").unwrap();
+        assert!(
+            eval_at < drop_at && drop_at < finish_at,
+            "each legacy root must evaluate, release its authority borrow, then finalize"
+        );
+        assert!(!root.contains("evaluator.effects"));
+        assert!(!root.contains("drain_root_effects()"));
+        assert!(!root.contains("DurableComptimeRootAuthority::new"));
         assert!(!root.contains("next_call:"));
-        assert!(root.contains("provider.merge_comptime_effects("));
         for forbidden in [
             "DurableComptimeCallLifecycle",
             "DurableComptimeCompletion",
@@ -3842,7 +3917,7 @@ fn durable_comptime_services_are_named_authority_operations() {
     ] {
         assert!(
             target_authority.contains(required),
-            "target policy must remain in SemanticComptimeAuthority: {required}"
+            "target policy must remain in DurableComptimeRootAuthority: {required}"
         );
     }
     for forbidden in [
@@ -3880,7 +3955,7 @@ fn durable_comptime_services_are_named_authority_operations() {
             "target policy must occur only in the canonical kernel: {policy}"
         );
     }
-    assert!(evaluator.contains("DurableComptimeServices::new(&authority)"));
+    assert!(evaluator.contains("DurableComptimeServices::new(&*self.authority)"));
     let named_call = evaluator
         .split("fn eval_named_call(")
         .nth(1)
@@ -3918,7 +3993,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         );
     }
     assert!(
-        named_call.contains("let call_ordinal = self.session.next_call_ordinal();"),
+        named_call.contains("let call_ordinal = self.authority.session.next_call_ordinal();"),
         "durable call ordinals must be allocated before admission"
     );
     assert!(
@@ -3930,14 +4005,14 @@ fn durable_comptime_services_are_named_authority_operations() {
         "ready comptime projections must publish through the lifecycle edge"
     );
     assert!(
-        !named_call.contains("self.effects.merge_projection("),
+        !named_call.contains("self.authority.legacy_effects.merge_projection("),
         "named calls must not bypass lifecycle-owned ready projection effects"
     );
     let edge = named_call
         .find("prepare_expression_edge(call_ordinal)")
         .expect("named-call expression edge issuance");
     let query = named_call
-        .find("self.provider.query(query)")
+        .find(".provider\n            .query(query)")
         .expect("named-call semantic query");
     let finish_edge = named_call
         .find("finish_ready_expression_edge(edge, value)")
@@ -4069,10 +4144,10 @@ fn durable_comptime_services_are_named_authority_operations() {
         .find("projection.into_parts()")
         .expect("identifier lookup destructures a successful projection");
     let observed = named_value
-        .find("self.effects.observe_dependency(dependency)")
+        .find("self.authority.legacy_effects.observe_dependency(dependency)")
         .expect("identifier lookup observes its direct dependency");
     assert!(locals < service && service < parts && parts < observed);
-    assert!(named_value.contains("&self.provider.dependency_source"));
+    assert!(named_value.contains("&self.authority.provider.dependency_source"));
     for forbidden in [
         "DefinitionKind::Const",
         "DefinitionKind::Function",
@@ -4112,7 +4187,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         .find("projection.into_parts()")
         .expect("field-get destructures projection");
     let field_observation = field_get
-        .find("self.effects.observe_dependency(dependency)")
+        .find("self.authority.legacy_effects.observe_dependency(dependency)")
         .expect("field-get observes direct dependency");
     assert!(
         target_special < base_eval
@@ -4267,7 +4342,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         );
     }
     for forbidden in [
-        "self.provider.configuration.target",
+        "self.authority.provider.configuration.target",
         "rue_target::Arch",
         "rue_target::Os",
         "rue_target::DataModel",
@@ -4281,12 +4356,12 @@ fn durable_comptime_services_are_named_authority_operations() {
             "durable evaluator regained target policy beside service calls: {forbidden}"
         );
     }
-    assert!(evaluator.contains("self.effects.observe_dependency("));
-    assert!(!evaluator.contains("self.effects.merge_projection("));
+    assert!(evaluator.contains("self.authority.legacy_effects.observe_dependency("));
+    assert!(!evaluator.contains("self.authority.legacy_effects.merge_projection("));
     for forbidden in [
-        "self.provider.dependencies",
-        "self.provider.anonymous_nominals",
-        "self.provider.deferred_ownership",
+        "self.authority.provider.dependencies",
+        "self.authority.provider.anonymous_nominals",
+        "self.authority.provider.deferred_ownership",
         "value.anonymous_nominals.iter().cloned().map",
         "value.dependencies.iter().cloned().map",
         "value.deferred_ownership.iter().cloned().map",
