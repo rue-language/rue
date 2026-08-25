@@ -7074,6 +7074,125 @@ struct SemanticComptimeAuthority<'provider, 'db> {
     imports: &'db QueryFamily<DeclarationImportQueryKey, DeclarationImportQueryValue>,
 }
 
+fn project_named_value_candidate(
+    provider: &SemanticNucleusTypeProvider<'_>,
+    accessing_source: &crate::StableDefinitionKey,
+    module: &ModuleId,
+    name: &str,
+    kind: crate::durable_comptime::DurableComptimeNamedValueKind,
+) -> Result<
+    Option<crate::durable_comptime::DurableComptimeNamedValueProjection>,
+    rue_air::SemanticProviderError<
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    >,
+> {
+    let dependency = |key: crate::StableDefinitionKey| {
+        crate::semantic_query_nucleus::SemanticDeclarationDependency {
+            source: accessing_source.clone(),
+            kind: rue_air::DeclarationTypeDependencyKind::Body,
+            target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                key,
+            ),
+        }
+    };
+    match kind {
+        crate::durable_comptime::DurableComptimeNamedValueKind::Const => {
+            let Some(candidate) =
+                provider.candidate_from(accessing_source, module, name, DefinitionKind::Const)?
+            else {
+                return Ok(None);
+            };
+            let resolution = provider.const_resolution(candidate)?;
+            let (value, key) = match resolution {
+                crate::semantic_query_nucleus::ConstResolutionProjection::Value {
+                    key,
+                    ty,
+                    value,
+                    ..
+                } => (
+                    crate::durable_comptime::EvaluatedSemanticConst::Value(
+                        crate::durable_comptime::TypedSemanticConst::typed(*value, ty),
+                    ),
+                    key,
+                ),
+                crate::semantic_query_nucleus::ConstResolutionProjection::ModuleBinding {
+                    key,
+                    target,
+                } => (
+                    crate::durable_comptime::EvaluatedSemanticConst::Module(target),
+                    key,
+                ),
+            };
+            Ok(Some(
+                crate::durable_comptime::DurableComptimeNamedValueProjection::new(
+                    value,
+                    dependency(key),
+                ),
+            ))
+        }
+        crate::durable_comptime::DurableComptimeNamedValueKind::Function => {
+            let Some(candidate) = provider.candidate_from(
+                accessing_source,
+                module,
+                name,
+                DefinitionKind::Function,
+            )?
+            else {
+                return Ok(None);
+            };
+            let identity = provider.identity(candidate)?;
+            let key = identity.key.clone();
+            Ok(Some(
+                crate::durable_comptime::DurableComptimeNamedValueProjection::new(
+                    crate::durable_comptime::EvaluatedSemanticConst::Value(
+                        crate::durable_comptime::TypedSemanticConst::typed(
+                            crate::durable_semantics::DurableConstValue::Function(key),
+                            crate::durable_semantics::DurableType::ComptimeType,
+                        ),
+                    ),
+                    dependency(identity.key),
+                ),
+            ))
+        }
+        crate::durable_comptime::DurableComptimeNamedValueKind::Struct
+        | crate::durable_comptime::DurableComptimeNamedValueKind::Enum => {
+            let definition_kind = match kind {
+                crate::durable_comptime::DurableComptimeNamedValueKind::Struct => {
+                    DefinitionKind::Struct
+                }
+                crate::durable_comptime::DurableComptimeNamedValueKind::Enum => {
+                    DefinitionKind::Enum
+                }
+                crate::durable_comptime::DurableComptimeNamedValueKind::Const
+                | crate::durable_comptime::DurableComptimeNamedValueKind::Function => {
+                    unreachable!("scalar named-value kinds handled above")
+                }
+            };
+            let Some(candidate) =
+                provider.candidate_from(accessing_source, module, name, definition_kind)?
+            else {
+                return Ok(None);
+            };
+            let identity = provider.identity(candidate)?;
+            let key = identity.key.clone();
+            Ok(Some(
+                crate::durable_comptime::DurableComptimeNamedValueProjection::new(
+                    crate::durable_comptime::EvaluatedSemanticConst::Value(
+                        crate::durable_comptime::TypedSemanticConst::typed(
+                            crate::durable_semantics::DurableConstValue::Type(
+                                crate::durable_semantics::DurableType::Nominal(key),
+                            ),
+                            crate::durable_semantics::DurableType::ComptimeType,
+                        ),
+                    ),
+                    dependency(identity.key),
+                ),
+            ))
+        }
+    }
+}
+
 impl crate::durable_comptime::DurableComptimeSemanticAuthority
     for SemanticComptimeAuthority<'_, '_>
 {
@@ -7232,120 +7351,37 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
             crate::semantic_query_nucleus::SemanticNucleusFailure,
         >,
     > {
-        let dependency = |key: crate::StableDefinitionKey| {
-            crate::semantic_query_nucleus::SemanticDeclarationDependency {
-                source: accessing_source.clone(),
-                kind: rue_air::DeclarationTypeDependencyKind::Body,
-                target:
-                    crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
-                        key,
-                    ),
-            }
-        };
-
-        crate::durable_comptime::resolve_named_value_in_order(|kind| match kind {
-            crate::durable_comptime::DurableComptimeNamedValueKind::Const => {
-                let Some(candidate) = self.provider.candidate_from(
-                    accessing_source,
-                    module,
-                    name,
-                    DefinitionKind::Const,
-                )?
-                else {
-                    return Ok(None);
-                };
-                let resolution = self.provider.const_resolution(candidate)?;
-                let (value, key) = match resolution {
-                    crate::semantic_query_nucleus::ConstResolutionProjection::Value {
-                        key,
-                        ty,
-                        value,
-                        ..
-                    } => (
-                        crate::durable_comptime::EvaluatedSemanticConst::Value(
-                            crate::durable_comptime::TypedSemanticConst::typed(*value, ty),
-                        ),
-                        key,
-                    ),
-                    crate::semantic_query_nucleus::ConstResolutionProjection::ModuleBinding {
-                        key,
-                        target,
-                    } => (
-                        crate::durable_comptime::EvaluatedSemanticConst::Module(target),
-                        key,
-                    ),
-                };
-                Ok(Some(
-                    crate::durable_comptime::DurableComptimeNamedValueProjection::new(
-                        value,
-                        dependency(key),
-                    ),
-                ))
-            }
-            crate::durable_comptime::DurableComptimeNamedValueKind::Function => {
-                let Some(candidate) = self.provider.candidate_from(
-                    accessing_source,
-                    module,
-                    name,
-                    DefinitionKind::Function,
-                )?
-                else {
-                    return Ok(None);
-                };
-                let identity = self.provider.identity(candidate)?;
-                let key = identity.key.clone();
-                Ok(Some(
-                    crate::durable_comptime::DurableComptimeNamedValueProjection::new(
-                        crate::durable_comptime::EvaluatedSemanticConst::Value(
-                            crate::durable_comptime::TypedSemanticConst::typed(
-                                crate::durable_semantics::DurableConstValue::Function(key),
-                                crate::durable_semantics::DurableType::ComptimeType,
-                            ),
-                        ),
-                        dependency(identity.key),
-                    ),
-                ))
-            }
-            crate::durable_comptime::DurableComptimeNamedValueKind::Struct
-            | crate::durable_comptime::DurableComptimeNamedValueKind::Enum => {
-                let definition_kind = match kind {
-                    crate::durable_comptime::DurableComptimeNamedValueKind::Struct => {
-                        DefinitionKind::Struct
-                    }
-                    crate::durable_comptime::DurableComptimeNamedValueKind::Enum => {
-                        DefinitionKind::Enum
-                    }
-                    crate::durable_comptime::DurableComptimeNamedValueKind::Const
-                    | crate::durable_comptime::DurableComptimeNamedValueKind::Function => {
-                        unreachable!("scalar named-value kinds handled above")
-                    }
-                };
-                let Some(candidate) = self.provider.candidate_from(
-                    accessing_source,
-                    module,
-                    name,
-                    definition_kind,
-                )?
-                else {
-                    return Ok(None);
-                };
-                let identity = self.provider.identity(candidate)?;
-                let key = identity.key.clone();
-                Ok(Some(
-                    crate::durable_comptime::DurableComptimeNamedValueProjection::new(
-                        crate::durable_comptime::EvaluatedSemanticConst::Value(
-                            crate::durable_comptime::TypedSemanticConst::typed(
-                                crate::durable_semantics::DurableConstValue::Type(
-                                    crate::durable_semantics::DurableType::Nominal(key),
-                                ),
-                                crate::durable_semantics::DurableType::ComptimeType,
-                            ),
-                        ),
-                        dependency(identity.key),
-                    ),
-                ))
-            }
+        crate::durable_comptime::resolve_named_value_in_order(|kind| {
+            project_named_value_candidate(self.provider, accessing_source, module, name, kind)
         })
+    }
+
+    fn resolve_module_member(
+        &self,
+        accessing_source: &crate::StableDefinitionKey,
+        module: &ModuleId,
+        member: &str,
+    ) -> Result<
+        crate::durable_comptime::DurableComptimeNamedValueProjection,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let Some(projection) = crate::durable_comptime::resolve_module_member_in_order(|kind| {
+            project_named_value_candidate(self.provider, accessing_source, module, member, kind)
+        })?
+        else {
+            return Err(rue_air::SemanticProviderError::Failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::UnknownModuleMember {
+                        module_name: module.to_string(),
+                        member_name: member.to_owned(),
+                    },
+                ),
+            ));
+        };
+        Ok(projection)
     }
 
     fn resolve_import(
@@ -8791,92 +8827,17 @@ impl SemanticConstEvaluator<'_, '_> {
                     return Self::failure("member access on a non-module const value");
                 };
                 let name = self.symbol(field);
-                if let Some(candidate) = self
-                    .provider
-                    .candidate(&module, &name, DefinitionKind::Const)
-                    .map_err(Self::provider_error)?
-                {
-                    let resolution = self
-                        .provider
-                        .const_resolution(candidate)
-                        .map_err(Self::provider_error)?;
-                    let key = match &resolution {
-                        crate::semantic_query_nucleus::ConstResolutionProjection::Value { key, .. }
-                        | crate::semantic_query_nucleus::ConstResolutionProjection::ModuleBinding {
-                            key,
-                            ..
-                        } => key.clone(),
-                    };
-                    self.effects.observe_dependency(
-                        crate::semantic_query_nucleus::SemanticDeclarationDependency {
-                            source: self.provider.dependency_source.clone(),
-                            kind: rue_air::DeclarationTypeDependencyKind::Body,
-                            target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
-                                key,
-                            ),
-                        },
-                    );
-                    return Ok(match resolution {
-                        crate::semantic_query_nucleus::ConstResolutionProjection::Value { value, ty, .. } => EvaluatedSemanticConst::Value(TypedSemanticConst::typed(*value, ty)),
-                        crate::semantic_query_nucleus::ConstResolutionProjection::ModuleBinding { target, .. } => EvaluatedSemanticConst::Module(target),
-                    });
-                }
-                for kind in [DefinitionKind::Struct, DefinitionKind::Enum] {
-                    if let Some(candidate) = self
-                        .provider
-                        .candidate(&module, &name, kind)
-                        .map_err(Self::provider_error)?
-                    {
-                        let identity = self
-                            .provider
-                            .identity(candidate)
-                            .map_err(Self::provider_error)?;
-                        self.effects.observe_dependency(
-                            crate::semantic_query_nucleus::SemanticDeclarationDependency {
-                                source: self.provider.dependency_source.clone(),
-                                kind: rue_air::DeclarationTypeDependencyKind::Body,
-                                target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
-                                    identity.key.clone(),
-                                ),
-                            },
-                        );
-                        return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
-                            V::Type(crate::durable_semantics::DurableType::Nominal(identity.key)),
-                            crate::durable_semantics::DurableType::ComptimeType,
-                        )));
-                    }
-                }
-                if let Some(candidate) = self
-                    .provider
-                    .candidate(&module, &name, DefinitionKind::Function)
-                    .map_err(Self::provider_error)?
-                {
-                    let identity = self
-                        .provider
-                        .identity(candidate)
-                        .map_err(Self::provider_error)?;
-                    self.effects.observe_dependency(
-                        crate::semantic_query_nucleus::SemanticDeclarationDependency {
-                            source: self.provider.dependency_source.clone(),
-                            kind: rue_air::DeclarationTypeDependencyKind::Body,
-                            target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
-                                identity.key.clone(),
-                            ),
-                        },
-                    );
-                    return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
-                        V::Function(identity.key),
-                        crate::durable_semantics::DurableType::ComptimeType,
-                    )));
-                }
-                Err(EvaluateSemanticConstError::failure(
-                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                        rue_error::ErrorKind::UnknownModuleMember {
-                            module_name: module.to_string(),
-                            member_name: name.to_string(),
-                        },
-                    ),
-                ))
+                let authority = SemanticComptimeAuthority {
+                    provider: &*self.provider,
+                    imports: self.imports,
+                };
+                let services = crate::durable_comptime::DurableComptimeServices::new(&authority);
+                let projection = services
+                    .resolve_module_member(&self.provider.dependency_source, &module, &name)
+                    .map_err(Self::provider_error)?;
+                let (value, dependency) = projection.into_parts();
+                self.effects.observe_dependency(dependency);
+                Ok(value)
             }
             E::StructInit { .. } | E::ArrayInit { .. } => Err(Self::domain_failure(
                 crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
@@ -29857,6 +29818,219 @@ fn main() -> i32 {
             )
         );
         assert_eq!(target, ModuleId::from_logical_path("dep.rue").unwrap());
+    }
+
+    #[test]
+    fn durable_module_member_projection_preserves_order_types_and_dependencies() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            ConstResolutionProjection, SemanticDeclarationDependencyTarget,
+            SemanticNucleusFailure as Failure, SemanticNucleusKey as Key,
+            SemanticNucleusValue as Value,
+        };
+
+        let context =
+            ImportDiscoveryContext::new(903, "/project", Some("/sdk"), "test-policy").unwrap();
+        let mut assembler = DiscoverySourceAssembler::new(
+            context.clone(),
+            "/project/main.rue",
+            "/project/main.rue",
+            PhysicalFileIdentity::new(11, 1),
+            FileMetadataFingerprint::new(11, 2, 3),
+            Arc::new(
+                "const M = @import(\"dep.rue\");\
+                 const OUT_SCALAR: i32 = M.SCALAR;\
+                 const OUT_CALLABLE = M.Callable;\
+                 const OUT_STRUCT = M.StructValue;\
+                 const OUT_ENUM = M.EnumValue;\
+                 const OUT_NESTED = M.NESTED;\
+                 const OUT_UNKNOWN: i32 = M.MISSING;\
+                 const OUT_NONMODULE: i32 = OUT_SCALAR.missing;"
+                    .to_owned(),
+            ),
+        )
+        .unwrap();
+        assembler
+            .add_explicit(
+                "/project/dep.rue",
+                "/project/dep.rue",
+                PhysicalFileIdentity::new(12, 1),
+                FileMetadataFingerprint::new(14, 5, 6),
+                Arc::new(
+                    "pub const INNER: i32 = 2;\
+                     pub const SCALAR: i32 = INNER + 5;\
+                     pub fn Callable() -> i32 { 1 }\
+                     pub struct StructValue { field: i32 }\
+                     pub enum EnumValue { One }\
+                     pub const NESTED = @import(\"nested.rue\");"
+                        .to_owned(),
+                ),
+            )
+            .unwrap();
+        assembler
+            .add_explicit(
+                "/project/nested.rue",
+                "/project/nested.rue",
+                PhysicalFileIdentity::new(13, 1),
+                FileMetadataFingerprint::new(17, 8, 9),
+                Arc::new("const LEAF: i32 = 1;".to_owned()),
+            )
+            .unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let (snapshot, reads, import_revision, plan) =
+            begin_database_plan(&mut database, &mut assembler, context);
+        let import_revision =
+            publish_manifest_observations(&mut database, &snapshot, reads, &plan, import_revision);
+        let revision = Revision::new(
+            import_revision.revision_id,
+            import_revision.compatibility_token,
+        );
+        let root = ModuleId::from_logical_path("main.rue").unwrap();
+        let dep = ModuleId::from_logical_path("dep.rue").unwrap();
+        let nested = ModuleId::from_logical_path("nested.rue").unwrap();
+        let query = |name: &str| {
+            let declaration =
+                declaration_candidate(&database, revision, &root, Category::ConstCandidate, name);
+            request_semantic_nucleus(
+                &database,
+                revision,
+                Key::ConstResolution(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration,
+                    configuration: semantic_configuration(),
+                }),
+            )
+        };
+        let stable_key = |module: ModuleId, namespace, kind, name: &str| {
+            crate::StableDefinitionKey::from_stable_parts(module, namespace, kind, name, None)
+        };
+        let direct_target = |name: &str, module: ModuleId, namespace, kind| {
+            stable_key(module, namespace, kind, name)
+        };
+        let expected_dependencies = |name: &str, target: crate::StableDefinitionKey| {
+            vec![
+                crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                    source: stable_key(
+                        root.clone(),
+                        crate::StableDefinitionNamespace::Value,
+                        crate::StableDefinitionKind::ValueConst,
+                        name,
+                    ),
+                    kind: rue_air::DeclarationTypeDependencyKind::Body,
+                    target: SemanticDeclarationDependencyTarget::NamedValue(stable_key(
+                        root.clone(),
+                        crate::StableDefinitionNamespace::Value,
+                        crate::StableDefinitionKind::ModuleBinding,
+                        "M",
+                    )),
+                },
+                crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                    source: stable_key(
+                        root.clone(),
+                        crate::StableDefinitionNamespace::Value,
+                        crate::StableDefinitionKind::ValueConst,
+                        name,
+                    ),
+                    kind: rue_air::DeclarationTypeDependencyKind::Body,
+                    target: SemanticDeclarationDependencyTarget::NamedValue(target),
+                },
+            ]
+        };
+        let assert_direct_value = |name: &str, value, ty, target: crate::StableDefinitionKey| {
+            let Value::ConstResolution(ConstResolutionProjection::Value {
+                value: actual,
+                ty: actual_ty,
+                dependencies,
+                ..
+            }) = query(name)
+            else {
+                panic!("expected a value projection for {name}");
+            };
+            assert_eq!(*actual, value);
+            assert_eq!(actual_ty, ty);
+            assert_eq!(
+                dependencies.as_ref(),
+                expected_dependencies(name, target).as_slice()
+            );
+        };
+        assert_direct_value(
+            "OUT_SCALAR",
+            crate::durable_semantics::DurableConstValue::Integer(7),
+            crate::durable_semantics::DurableType::I32,
+            direct_target(
+                "SCALAR",
+                dep.clone(),
+                crate::StableDefinitionNamespace::Value,
+                crate::StableDefinitionKind::ValueConst,
+            ),
+        );
+        assert_direct_value(
+            "OUT_CALLABLE",
+            crate::durable_semantics::DurableConstValue::Function(direct_target(
+                "Callable",
+                dep.clone(),
+                crate::StableDefinitionNamespace::Value,
+                crate::StableDefinitionKind::Function,
+            )),
+            crate::durable_semantics::DurableType::ComptimeType,
+            direct_target(
+                "Callable",
+                dep.clone(),
+                crate::StableDefinitionNamespace::Value,
+                crate::StableDefinitionKind::Function,
+            ),
+        );
+        for (name, kind, member) in [
+            (
+                "OUT_STRUCT",
+                crate::StableDefinitionKind::Struct,
+                "StructValue",
+            ),
+            ("OUT_ENUM", crate::StableDefinitionKind::Enum, "EnumValue"),
+        ] {
+            let target = direct_target(
+                member,
+                dep.clone(),
+                crate::StableDefinitionNamespace::Type,
+                kind,
+            );
+            assert_direct_value(
+                name,
+                crate::durable_semantics::DurableConstValue::Type(
+                    crate::durable_semantics::DurableType::Nominal(target.clone()),
+                ),
+                crate::durable_semantics::DurableType::ComptimeType,
+                target,
+            );
+        }
+        let Value::ConstResolution(ConstResolutionProjection::ModuleBinding { key, target }) =
+            query("OUT_NESTED")
+        else {
+            panic!("expected a nested module binding projection");
+        };
+        assert_eq!(
+            key,
+            stable_key(
+                root.clone(),
+                crate::StableDefinitionNamespace::Value,
+                crate::StableDefinitionKind::ModuleBinding,
+                "OUT_NESTED",
+            )
+        );
+        assert_eq!(target, nested);
+        assert!(matches!(
+            query("OUT_UNKNOWN"),
+            Value::Failure(Failure::Diagnostic(
+                rue_error::ErrorKind::UnknownModuleMember {
+                    ref module_name,
+                    ref member_name,
+                }
+            )) if module_name == "dep.rue" && member_name == "MISSING"
+        ));
+        assert!(matches!(
+            query("OUT_NONMODULE"),
+            Value::Failure(Failure::Resolution(message))
+                if message.as_ref() == "member access on a non-module const value"
+        ));
     }
 
     #[test]
