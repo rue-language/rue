@@ -694,6 +694,143 @@ pub(crate) struct DurableComptimeSession {
     next_call: u32,
 }
 
+/// Engine-shaped semantic input for one anonymous nominal.
+///
+/// The legacy evaluator is still responsible for decoding RIR into this
+/// descriptor. Keeping the descriptor independent of RIR lets the durable
+/// AIR host reuse the exact identity, shape, mode, capture, and effect policy
+/// without acquiring a second instruction dispatcher.
+#[derive(Debug, Clone)]
+pub(crate) struct DurableAnonymousNominalDescriptor {
+    /// The producer canonicalizes this key before crossing the boundary. The
+    /// kernel validates and preserves it verbatim.
+    pub(crate) identity: crate::AnonymousNominalKey,
+    pub(crate) shape: DurableAnonymousNominalDescriptorShape,
+    pub(crate) type_captures: Arc<[(Arc<str>, DurableType)]>,
+    pub(crate) value_captures: Arc<[(Arc<str>, DurableConstValue)]>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum DurableAnonymousNominalDescriptorShape {
+    Struct {
+        fields: Arc<[rue_air::ComptimeField<Arc<str>, DurableType>]>,
+        methods: Arc<[rue_air::ComptimeMethodDescriptor<Arc<str>, DurableType>]>,
+    },
+    Enum {
+        variants: Arc<[(Arc<str>, Arc<[DurableType]>)]>,
+    },
+}
+
+/// Construct and publish one anonymous nominal through the durable session's
+/// effect authority.  The returned type is the same nominal identity whose
+/// complete shape and captures are observed by the session.
+pub(crate) fn project_durable_anonymous_nominal(
+    session: &mut DurableComptimeSession,
+    descriptor: DurableAnonymousNominalDescriptor,
+) -> Result<DurableType, DurableComptimeFailure> {
+    let expected_kind = match &descriptor.shape {
+        DurableAnonymousNominalDescriptorShape::Struct { .. } => {
+            rue_air::AnonymousNominalKind::Struct
+        }
+        DurableAnonymousNominalDescriptorShape::Enum { .. } => rue_air::AnonymousNominalKind::Enum,
+    };
+    if descriptor.identity.kind != expected_kind {
+        return Err(DurableComptimeFailure::resolution(format!(
+            "anonymous nominal identity kind {:?} does not match {:?} descriptor shape",
+            descriptor.identity.kind, expected_kind
+        )));
+    }
+    let type_captures = canonicalize_captures(descriptor.type_captures, "type")?;
+    let value_captures = canonicalize_captures(descriptor.value_captures, "value")?;
+    let shape = match descriptor.shape {
+        DurableAnonymousNominalDescriptorShape::Struct { fields, methods } => {
+            let method_type = |ty: rue_air::ComptimeMethodType<DurableType>| match ty {
+                rue_air::ComptimeMethodType::SelfType => {
+                    Ok(crate::durable_semantics::DurableAnonymousMethodType::SelfType)
+                }
+                rue_air::ComptimeMethodType::Concrete(ty) => {
+                    Ok(crate::durable_semantics::DurableAnonymousMethodType::Concrete(ty))
+                }
+                rue_air::ComptimeMethodType::Unsupported(shape) => {
+                    Err(DurableComptimeFailure::resolution(format!(
+                        "unsupported anonymous method type: {shape}"
+                    )))
+                }
+            };
+            let methods = methods
+                .iter()
+                .map(|method| {
+                    let parameters = method
+                        .parameters
+                        .iter()
+                        .map(|parameter| {
+                            Ok((
+                                method_type(parameter.ty.clone())?,
+                                durable_parameter_mode(parameter.mode),
+                                parameter.is_comptime,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, DurableComptimeFailure>>()?;
+                    Ok(crate::durable_semantics::DurableAnonymousMethodSignature {
+                        name: method.name.clone(),
+                        has_self: method.has_self,
+                        self_mode: durable_parameter_mode(method.self_mode),
+                        returns_borrow: method.returns_borrow,
+                        returns_inout: method.returns_inout,
+                        parameters: parameters.into(),
+                        result: method_type(method.result.clone())?,
+                        has_body: true,
+                    })
+                })
+                .collect::<Result<Vec<_>, DurableComptimeFailure>>()?;
+            crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+                fields: fields
+                    .iter()
+                    .map(|field| (field.name.clone(), field.ty.clone()))
+                    .collect(),
+                methods: methods.into(),
+            }
+        }
+        DurableAnonymousNominalDescriptorShape::Enum { variants } => {
+            crate::durable_semantics::DurableAnonymousNominalShape::Enum { variants }
+        }
+    };
+    session.observe_anonymous_nominal(DurableAnonymousNominal::new(
+        descriptor.identity.clone(),
+        shape,
+        type_captures,
+        value_captures,
+    ));
+    Ok(DurableType::AnonymousNominal(descriptor.identity))
+}
+
+fn canonicalize_captures<T: Clone>(
+    captures: Arc<[(Arc<str>, T)]>,
+    kind: &str,
+) -> Result<Arc<[(Arc<str>, T)]>, DurableComptimeFailure> {
+    let mut captures = captures.iter().cloned().collect::<Vec<_>>();
+    captures.sort_by(|left, right| left.0.cmp(&right.0));
+    for pair in captures.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(DurableComptimeFailure::resolution(format!(
+                "duplicate {kind} capture `{}` in anonymous nominal",
+                pair[0].0
+            )));
+        }
+    }
+    Ok(captures.into())
+}
+
+fn durable_parameter_mode(
+    mode: rue_rir::RirParamMode,
+) -> crate::durable_semantics::DurableParameterMode {
+    match mode {
+        rue_rir::RirParamMode::Normal => crate::durable_semantics::DurableParameterMode::Value,
+        rue_rir::RirParamMode::Borrow => crate::durable_semantics::DurableParameterMode::Borrow,
+        rue_rir::RirParamMode::Inout => crate::durable_semantics::DurableParameterMode::Inout,
+    }
+}
+
 /// The result of consuming one pre-lookup foreign-call edge. A ready fact is
 /// merged into the lifecycle-owned scope, while an admitted body is returned
 /// with the exact ticket that the canonical AIR engine must later enter. The
@@ -734,6 +871,10 @@ impl DurableComptimeSession {
         let ordinal = self.next_call;
         self.next_call += 1;
         ordinal
+    }
+
+    fn observe_anonymous_nominal(&mut self, nominal: DurableAnonymousNominal) {
+        self.lifecycle.observe_anonymous_nominal(nominal);
     }
 
     /// Issue the expression edge for an already-known call projection. The
@@ -2644,6 +2785,356 @@ mod effect_lifecycle_tests {
             9
         );
         assert!(session.drain_root_effects().unwrap().is_empty());
+    }
+
+    #[test]
+    fn anonymous_nominal_projection_preserves_struct_shape_modes_captures_and_effects() {
+        let parent = definition("parent");
+        let declaration =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&parent)
+                .unwrap();
+        let mut session = DurableComptimeSession::new(parent.clone(), declaration).unwrap();
+        let identity_anchor = rue_rir::RirStructuralAnchor::new(Arc::from([
+            rue_rir::RirStructuralPathSegment::AnonymousType(3),
+            rue_rir::RirStructuralPathSegment::Method(7),
+        ]));
+        let identity = crate::AnonymousNominalKey {
+            kind: rue_air::AnonymousNominalKind::Struct,
+            producer: crate::StableProducerId::Definition(parent.clone()),
+            anchor: identity_anchor.clone(),
+        };
+        let ty = project_durable_anonymous_nominal(
+            &mut session,
+            DurableAnonymousNominalDescriptor {
+                identity: identity.clone(),
+                shape: DurableAnonymousNominalDescriptorShape::Struct {
+                    fields: Arc::from([rue_air::ComptimeField {
+                        name: Arc::from("value"),
+                        ty: DurableType::I32,
+                    }]),
+                    methods: Arc::from([rue_air::ComptimeMethodDescriptor {
+                        name: Arc::from("borrow_value"),
+                        has_self: true,
+                        self_mode: rue_rir::RirParamMode::Inout,
+                        returns_borrow: true,
+                        returns_inout: false,
+                        parameters: vec![rue_air::ComptimeMethodParameter {
+                            ty: rue_air::ComptimeMethodType::Concrete(DurableType::I32),
+                            mode: rue_rir::RirParamMode::Borrow,
+                            is_comptime: true,
+                            is_comptime_type: false,
+                        }],
+                        parameter_names: vec![Arc::from("value")],
+                        result: rue_air::ComptimeMethodType::SelfType,
+                        declaration_span: rue_span::Span::new(0, 0),
+                    }]),
+                },
+                type_captures: Arc::from([(Arc::from("T"), DurableType::U64)]),
+                value_captures: Arc::from([(Arc::from("n"), DurableConstValue::Integer(9))]),
+            },
+        )
+        .unwrap();
+        let DurableType::AnonymousNominal(identity) = ty else {
+            panic!("anonymous projection must return its nominal identity");
+        };
+        assert_eq!(identity.anchor, identity_anchor);
+        assert_eq!(identity.kind, rue_air::AnonymousNominalKind::Struct);
+        let effects = session.drain_root_effects().unwrap();
+        let nominal = effects
+            .anonymous_nominals()
+            .next()
+            .expect("projection publishes exactly one nominal effect");
+        assert_eq!(nominal.identity, identity);
+        assert_eq!(
+            nominal.type_captures.as_ref(),
+            &[(Arc::from("T"), DurableType::U64)]
+        );
+        assert_eq!(
+            nominal.value_captures.as_ref(),
+            &[(Arc::from("n"), DurableConstValue::Integer(9))]
+        );
+        let crate::durable_semantics::DurableAnonymousNominalShape::Struct { methods, .. } =
+            &nominal.shape
+        else {
+            panic!("projection changed the struct shape");
+        };
+        let crate::durable_semantics::DurableAnonymousNominalShape::Struct { fields, .. } =
+            &nominal.shape
+        else {
+            panic!("projection changed the struct shape");
+        };
+        assert_eq!(fields[0].0.as_ref(), "value");
+        assert_eq!(fields[0].1, DurableType::I32);
+        assert_eq!(methods[0].name.as_ref(), "borrow_value");
+        assert!(methods[0].has_self);
+        assert_eq!(
+            methods[0].self_mode,
+            crate::durable_semantics::DurableParameterMode::Inout
+        );
+        assert_eq!(
+            methods[0].parameters[0].1,
+            crate::durable_semantics::DurableParameterMode::Borrow
+        );
+        assert!(methods[0].parameters[0].2);
+        assert!(methods[0].returns_borrow);
+        assert!(!methods[0].returns_inout);
+        assert_eq!(
+            methods[0].result,
+            crate::durable_semantics::DurableAnonymousMethodType::SelfType
+        );
+        assert!(methods[0].has_body);
+    }
+
+    #[test]
+    fn anonymous_nominal_projection_preserves_enum_shape_and_identity_kind() {
+        let parent = definition("parent");
+        let declaration =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&parent)
+                .unwrap();
+        let mut session = DurableComptimeSession::new(parent.clone(), declaration).unwrap();
+        let anchor = rue_rir::RirStructuralAnchor::new(Arc::from([
+            rue_rir::RirStructuralPathSegment::AnonymousType(11),
+        ]));
+        let ty = project_durable_anonymous_nominal(
+            &mut session,
+            DurableAnonymousNominalDescriptor {
+                identity: crate::AnonymousNominalKey {
+                    kind: rue_air::AnonymousNominalKind::Enum,
+                    producer: crate::StableProducerId::Definition(parent),
+                    anchor,
+                },
+                shape: DurableAnonymousNominalDescriptorShape::Enum {
+                    variants: Arc::from([
+                        (Arc::from("None"), Arc::from([])),
+                        (Arc::from("Some"), Arc::from([DurableType::I32])),
+                    ]),
+                },
+                type_captures: Arc::from([]),
+                value_captures: Arc::from([]),
+            },
+        )
+        .unwrap();
+        let DurableType::AnonymousNominal(identity) = ty else {
+            panic!("anonymous projection must return its nominal identity");
+        };
+        assert_eq!(identity.kind, rue_air::AnonymousNominalKind::Enum);
+        let effects = session.drain_root_effects().unwrap();
+        let nominal = effects
+            .anonymous_nominals()
+            .next()
+            .expect("projection publishes the enum effect");
+        let crate::durable_semantics::DurableAnonymousNominalShape::Enum { variants } =
+            &nominal.shape
+        else {
+            panic!("projection changed the enum shape");
+        };
+        assert_eq!(variants.len(), 2);
+        assert_eq!(variants[0].0.as_ref(), "None");
+        assert!(variants[0].1.is_empty());
+        assert_eq!(variants[1].1.as_ref(), &[DurableType::I32]);
+    }
+
+    #[test]
+    fn anonymous_nominal_projection_canonicalizes_permuted_captures() {
+        let parent = definition("parent");
+        let declaration =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&parent)
+                .unwrap();
+        let identity = crate::AnonymousNominalKey {
+            kind: rue_air::AnonymousNominalKind::Enum,
+            producer: crate::StableProducerId::Definition(parent.clone()),
+            anchor: rue_rir::RirStructuralAnchor::new(Arc::from([
+                rue_rir::RirStructuralPathSegment::AnonymousType(12),
+            ])),
+        };
+        let project = |session: &mut DurableComptimeSession,
+                       type_captures: Arc<[(Arc<str>, DurableType)]>,
+                       value_captures: Arc<[(Arc<str>, DurableConstValue)]>| {
+            project_durable_anonymous_nominal(
+                session,
+                DurableAnonymousNominalDescriptor {
+                    identity: identity.clone(),
+                    shape: DurableAnonymousNominalDescriptorShape::Enum {
+                        variants: Arc::from([(Arc::from("None"), Arc::from([]))]),
+                    },
+                    type_captures,
+                    value_captures,
+                },
+            )
+            .unwrap()
+        };
+        let mut first = DurableComptimeSession::new(parent.clone(), declaration.clone()).unwrap();
+        let first_ty = project(
+            &mut first,
+            Arc::from([
+                (Arc::from("Z"), DurableType::U64),
+                (Arc::from("A"), DurableType::I32),
+            ]),
+            Arc::from([
+                (Arc::from("z"), DurableConstValue::Integer(2)),
+                (Arc::from("a"), DurableConstValue::Integer(1)),
+            ]),
+        );
+        let first_effects = first.drain_root_effects().unwrap();
+        let mut second = DurableComptimeSession::new(parent, declaration).unwrap();
+        let second_ty = project(
+            &mut second,
+            Arc::from([
+                (Arc::from("A"), DurableType::I32),
+                (Arc::from("Z"), DurableType::U64),
+            ]),
+            Arc::from([
+                (Arc::from("a"), DurableConstValue::Integer(1)),
+                (Arc::from("z"), DurableConstValue::Integer(2)),
+            ]),
+        );
+        let second_effects = second.drain_root_effects().unwrap();
+        assert_eq!(first_ty, second_ty);
+        assert_eq!(first_effects, second_effects);
+        let nominal = first_effects.anonymous_nominals().next().unwrap();
+        assert_eq!(
+            nominal.type_captures.as_ref(),
+            &[
+                (Arc::from("A"), DurableType::I32),
+                (Arc::from("Z"), DurableType::U64),
+            ]
+        );
+        assert_eq!(
+            nominal.value_captures.as_ref(),
+            &[
+                (Arc::from("a"), DurableConstValue::Integer(1)),
+                (Arc::from("z"), DurableConstValue::Integer(2)),
+            ]
+        );
+    }
+
+    #[test]
+    fn anonymous_nominal_projection_rejects_mismatched_identity_without_effect() {
+        let parent = definition("parent");
+        let declaration =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&parent)
+                .unwrap();
+        let mut session = DurableComptimeSession::new(parent.clone(), declaration).unwrap();
+        let result = project_durable_anonymous_nominal(
+            &mut session,
+            DurableAnonymousNominalDescriptor {
+                identity: crate::AnonymousNominalKey {
+                    kind: rue_air::AnonymousNominalKind::Enum,
+                    producer: crate::StableProducerId::Definition(parent),
+                    anchor: rue_rir::RirStructuralAnchor::new(Arc::from([
+                        rue_rir::RirStructuralPathSegment::AnonymousType(13),
+                    ])),
+                },
+                shape: DurableAnonymousNominalDescriptorShape::Struct {
+                    fields: Arc::from([]),
+                    methods: Arc::from([]),
+                },
+                type_captures: Arc::from([]),
+                value_captures: Arc::from([]),
+            },
+        );
+        assert!(result.is_err());
+        assert!(session.drain_root_effects().unwrap().is_empty());
+    }
+
+    #[test]
+    fn anonymous_nominal_projection_preserves_canonical_function_producer_identity() {
+        let parent = definition("parent");
+        let declaration =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&parent)
+                .unwrap();
+        let base = crate::FunctionInstanceKey::Definition(parent.clone());
+        let raw_identity = crate::AnonymousNominalKey {
+            kind: rue_air::AnonymousNominalKind::Enum,
+            producer: crate::StableProducerId::Function(rue_air::Node::new(
+                crate::FunctionInstanceKey::Specialization {
+                    base: rue_air::Node::new(base),
+                    arguments: Default::default(),
+                },
+            )),
+            anchor: rue_rir::RirStructuralAnchor::new(Arc::from([
+                rue_rir::RirStructuralPathSegment::AnonymousType(14),
+            ])),
+        };
+        let canonical_identity = raw_identity.with_canonical_producer().into_owned();
+        assert_ne!(raw_identity, canonical_identity);
+        let mut session = DurableComptimeSession::new(parent, declaration).unwrap();
+        let ty = project_durable_anonymous_nominal(
+            &mut session,
+            DurableAnonymousNominalDescriptor {
+                identity: canonical_identity.clone(),
+                shape: DurableAnonymousNominalDescriptorShape::Enum {
+                    variants: Arc::from([]),
+                },
+                type_captures: Arc::from([]),
+                value_captures: Arc::from([]),
+            },
+        )
+        .unwrap();
+        assert_eq!(ty, DurableType::AnonymousNominal(canonical_identity));
+    }
+
+    #[test]
+    fn anonymous_nominal_projection_uses_active_lifecycle_scope() {
+        let parent = definition("parent");
+        let declaration =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&parent)
+                .unwrap();
+        let make_descriptor = |kind| DurableAnonymousNominalDescriptor {
+            identity: crate::AnonymousNominalKey {
+                kind,
+                producer: crate::StableProducerId::Definition(parent.clone()),
+                anchor: rue_rir::RirStructuralAnchor::new(Arc::from([
+                    rue_rir::RirStructuralPathSegment::AnonymousType(15),
+                ])),
+            },
+            shape: DurableAnonymousNominalDescriptorShape::Enum {
+                variants: Arc::from([]),
+            },
+            type_captures: Arc::from([]),
+            value_captures: Arc::from([]),
+        };
+
+        let mut known = DurableComptimeSession::new(parent.clone(), declaration.clone()).unwrap();
+        let mut known_ticket = known.lifecycle_mut().prepare(context(0)).unwrap();
+        known.lifecycle_mut().enter(&known_ticket).unwrap();
+        project_durable_anonymous_nominal(
+            &mut known,
+            make_descriptor(rue_air::AnonymousNominalKind::Enum),
+        )
+        .unwrap();
+        known
+            .lifecycle_mut()
+            .finish(
+                &mut known_ticket,
+                &rue_air::ComptimeOutcome::<(), ()>::Known(()),
+            )
+            .unwrap();
+        assert_eq!(
+            known
+                .drain_root_effects()
+                .unwrap()
+                .anonymous_nominals()
+                .count(),
+            1
+        );
+
+        let mut dropped = DurableComptimeSession::new(parent.clone(), declaration).unwrap();
+        let mut dropped_ticket = dropped.lifecycle_mut().prepare(context(1)).unwrap();
+        dropped.lifecycle_mut().enter(&dropped_ticket).unwrap();
+        project_durable_anonymous_nominal(
+            &mut dropped,
+            make_descriptor(rue_air::AnonymousNominalKind::Enum),
+        )
+        .unwrap();
+        dropped
+            .lifecycle_mut()
+            .finish(
+                &mut dropped_ticket,
+                &rue_air::ComptimeOutcome::<(), ()>::NotReady,
+            )
+            .unwrap();
+        assert!(dropped.drain_root_effects().unwrap().is_empty());
     }
 
     fn structured_context() -> DurableComptimeCallContext {

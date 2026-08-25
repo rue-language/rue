@@ -3139,6 +3139,10 @@ fn durable_comptime_services_are_named_authority_operations() {
         "DurableComptimeSession",
         "DurableComptimeForeignCall",
         "DurableComptimeForeignCallError",
+        "DurableAnonymousNominalDescriptor",
+        "DurableAnonymousNominalDescriptorShape",
+        "project_durable_anonymous_nominal",
+        "durable_parameter_mode",
         "consume_foreign_lookup",
         "into_host_error",
         "provider_error_as_host",
@@ -3188,7 +3192,7 @@ fn durable_comptime_services_are_named_authority_operations() {
     let session = production_facade
         .split("pub(crate) struct DurableComptimeSession {")
         .nth(1)
-        .and_then(|source| source.split("}\n\n/// The result of consuming").next())
+        .and_then(|source| source.split("}\n\n/// Engine-shaped semantic input").next())
         .expect("durable root session");
     let session_fields = session
         .lines()
@@ -3485,11 +3489,7 @@ fn durable_comptime_services_are_named_authority_operations() {
     let completion = facade
         .split("pub(crate) struct DurableComptimeCompletion")
         .nth(1)
-        .and_then(|source| {
-            source
-                .split("\n\n#[allow(dead_code)]\nimpl DurableComptimeCallLifecycle")
-                .next()
-        })
+        .and_then(|source| source.split("\n\n/// Engine-shaped semantic input").next())
         .expect("durable root completion");
     assert!(completion.contains("ComptimeOutcome<V, F>"));
     assert!(completion.contains("DurableComptimeEffects"));
@@ -3656,6 +3656,37 @@ fn durable_comptime_services_are_named_authority_operations() {
         .nth(1)
         .and_then(|source| source.split("impl SemanticNucleusTypeProvider<'_>").next())
         .expect("durable evaluator source");
+    assert_eq!(
+        evaluator
+            .matches("project_durable_anonymous_nominal(")
+            .count(),
+        1,
+        "anonymous nominal construction must use the canonical projection kernel"
+    );
+    assert!(
+        !evaluator.contains("DurableAnonymousNominal::new("),
+        "the durable evaluator must not duplicate anonymous nominal construction"
+    );
+    let anonymous_nominal_kernel = production_facade
+        .split("pub(crate) fn project_durable_anonymous_nominal(")
+        .nth(1)
+        .and_then(|source| source.split("fn durable_parameter_mode(").next())
+        .expect("canonical anonymous nominal projection kernel");
+    for forbidden in [
+        "InstData",
+        "InstRef",
+        "ValidatedRir",
+        "SemanticConstEvaluator",
+        "program_rir",
+        "callback",
+        "provider.",
+        "self.effects",
+    ] {
+        assert!(
+            !anonymous_nominal_kernel.contains(forbidden),
+            "anonymous nominal kernel must not decode RIR, evaluate, or publish effects directly: {forbidden}"
+        );
+    }
     assert!(evaluator.contains("EvaluateSemanticConstError::comptime_failure_at("));
     let target_authority = database
         .split("impl crate::durable_comptime::DurableComptimeSemanticAuthority")
