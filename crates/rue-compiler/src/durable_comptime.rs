@@ -369,6 +369,18 @@ pub(crate) struct DurableComptimeCallEdge {
     consumed: bool,
 }
 
+impl DurableComptimeCallEdge {
+    /// The exact declaration source captured when this edge was issued.
+    ///
+    /// Future hosts use this opaque identity for lookup visibility and
+    /// dependency attribution; they do not reconstruct it from call
+    /// bindings or ambient provider state.
+    #[allow(dead_code)] // consumed by the root-integrated durable host
+    pub(crate) fn accessing_source(&self) -> &crate::StableDefinitionKey {
+        &self.parent_producer
+    }
+}
+
 /// Non-clone lifecycle capability issued only after an edge is admitted.
 /// Its fields remain private so a host cannot reconstruct a ticket from an
 /// unordered binding map or use a ticket for another call.
@@ -756,6 +768,34 @@ pub(crate) enum DurableImportResolution {
     Failure(DeclarationImportFailure),
 }
 
+/// The identity and dependency facts established before signature admission.
+///
+/// Callers observe `dependency` immediately after this phase succeeds, before
+/// any signature, shell, arity, or mode work can fail.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct DurableComptimeCallableAdmissionStart {
+    pub(crate) candidate: DeclarationCandidateKey,
+    pub(crate) identity: crate::semantic_query_nucleus::DeclarationIdentityProjection,
+    pub(crate) name: Arc<str>,
+    pub(crate) dependency: SemanticDeclarationDependency,
+}
+
+/// The immutable, ordered facts admitted for one durable comptime callable.
+///
+/// The projection contains both the keyed signature and the declaration-shell
+/// headers because argument binding must preserve their canonical order and
+/// names. It deliberately carries no RIR handles or evaluation callback; the
+/// caller remains responsible for evaluating argument expressions and fitting
+/// their resulting values to these descriptors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DurableComptimeCallableAdmission {
+    pub(crate) candidate: DeclarationCandidateKey,
+    pub(crate) identity: crate::semantic_query_nucleus::DeclarationIdentityProjection,
+    pub(crate) parameters: Arc<[crate::durable_semantics::DurableSemanticParameter]>,
+    pub(crate) result: DurableType,
+    pub(crate) shell_parameters: Arc<[crate::declaration_candidate::DeclarationParameterHeader]>,
+}
+
 /// Canonical semantic services needed by durable comptime entry points.
 ///
 /// Implementations live beside the query authorities. This facade is an
@@ -763,6 +803,25 @@ pub(crate) enum DurableImportResolution {
 /// reference, instruction data, or callback capable of evaluating a child.
 pub(crate) trait DurableComptimeSemanticAuthority {
     fn check_canceled(&self) -> Result<(), QueryAbort>;
+
+    fn begin_comptime_call_admission(
+        &self,
+        accessing_source: &crate::StableDefinitionKey,
+        module: &ModuleId,
+        name: &str,
+    ) -> Result<
+        DurableComptimeCallableAdmissionStart,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    >;
+
+    fn finish_comptime_call_admission(
+        &self,
+        start: DurableComptimeCallableAdmissionStart,
+        argument_modes: &[crate::durable_semantics::DurableParameterMode],
+    ) -> Result<
+        DurableComptimeCallableAdmission,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    >;
 
     /// Resolve a declaration through the canonical name/shell authority.
     /// Visibility and shell disagreement diagnostics are produced by the
@@ -838,6 +897,31 @@ impl<'a, A: ?Sized> DurableComptimeServices<'a, A> {
 impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A> {
     pub(crate) fn check_canceled(&self) -> Result<(), QueryAbort> {
         self.authority.check_canceled()
+    }
+
+    pub(crate) fn begin_comptime_call_admission(
+        &self,
+        accessing_source: &crate::StableDefinitionKey,
+        module: &ModuleId,
+        name: &str,
+    ) -> Result<
+        DurableComptimeCallableAdmissionStart,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        self.authority
+            .begin_comptime_call_admission(accessing_source, module, name)
+    }
+
+    pub(crate) fn finish_comptime_call_admission(
+        &self,
+        start: DurableComptimeCallableAdmissionStart,
+        argument_modes: &[crate::durable_semantics::DurableParameterMode],
+    ) -> Result<
+        DurableComptimeCallableAdmission,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        self.authority
+            .finish_comptime_call_admission(start, argument_modes)
     }
 
     pub(crate) fn resolve_candidate(
@@ -1663,6 +1747,7 @@ mod effect_lifecycle_tests {
         // the child query only from the owned program payload.
         let mut lifecycle = lifecycle();
         let edge = lifecycle.prepare_expression_edge(42).unwrap();
+        assert_eq!(edge.accessing_source(), &definition("parent"));
         let mut ticket = lifecycle
             .ticket_from_admitted_edge(edge, &admitted)
             .unwrap();
@@ -1811,6 +1896,7 @@ mod effect_lifecycle_tests {
         let mut outer = expression_outer.prepare(context(20)).unwrap();
         expression_outer.enter(&outer).unwrap();
         let mut inner_edge = expression_outer.prepare_structured_edge().unwrap();
+        assert_eq!(inner_edge.accessing_source(), &definition("child"));
         expression_outer
             .merge_ready_projection(&mut inner_edge, &ready_projection(21))
             .unwrap();
@@ -1838,6 +1924,7 @@ mod effect_lifecycle_tests {
         let mut outer = structured_outer.prepare(structured_context()).unwrap();
         structured_outer.enter(&outer).unwrap();
         let mut inner_edge = structured_outer.prepare_expression_edge(22).unwrap();
+        assert_eq!(inner_edge.accessing_source(), &definition("child"));
         structured_outer
             .merge_ready_projection(&mut inner_edge, &ready_projection(22))
             .unwrap();
