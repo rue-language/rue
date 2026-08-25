@@ -867,6 +867,12 @@ pub(crate) enum DurableComptimeConstRootAdmissionError {
     DuplicateProgram,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DurableComptimeProgramFinalizationError {
+    MissingProgram,
+    AuthorityMismatch,
+}
+
 /// Failure before a foreign AIR frame is handed to the engine.  Admission is
 /// intentionally separate from lifecycle activation: the engine still owns
 /// the depth check, `enter`, and cleanup after it receives this frame.
@@ -896,6 +902,27 @@ impl DurableComptimeSession {
         core: &crate::body_query::OwnedComptimeProgramCore,
     ) -> Result<(), rue_air::ComptimeProgramRegistrationError> {
         core.register_into(&mut self.programs)
+    }
+
+    /// Finalize import metadata on the exact program already registered for a
+    /// root.  The RIR, symbols, and root authority must be the same immutable
+    /// payload that was admitted; only the discovered import index is updated.
+    pub(crate) fn finalize_registered_imports(
+        &mut self,
+        core: &crate::body_query::OwnedComptimeProgramCore,
+    ) -> Result<(), DurableComptimeProgramFinalizationError> {
+        let key = &core.plan.key;
+        let Some(registered) = self.programs.get(key) else {
+            return Err(DurableComptimeProgramFinalizationError::MissingProgram);
+        };
+        if !same_registered_program_authority(registered, core) {
+            return Err(DurableComptimeProgramFinalizationError::AuthorityMismatch);
+        }
+        let Some(metadata) = self.programs.metadata_mut(key) else {
+            return Err(DurableComptimeProgramFinalizationError::MissingProgram);
+        };
+        metadata.imports = core.imports.imports.clone();
+        Ok(())
     }
 
     /// Atomically register and frame one declaration root.  A callable core
@@ -1163,6 +1190,15 @@ fn same_registered_program(
     existing.symbols == admitted.symbols
         && existing.imports.imports == admitted.imports.imports
         && &existing.imports.root == admitted.root()
+}
+
+fn same_registered_program_authority(
+    existing: &crate::body_query::DurableComptimeProgram,
+    core: &crate::body_query::OwnedComptimeProgramCore,
+) -> bool {
+    std::sync::Arc::ptr_eq(&existing.rir, &core.rir)
+        && std::sync::Arc::ptr_eq(&existing.symbols, &core.symbols)
+        && existing.imports.root == *core.root()
 }
 
 /// Root-local call/effect authority for a durable comptime host.
@@ -2046,6 +2082,25 @@ impl DurableComptimeNamedValueProjection {
 pub(crate) trait DurableComptimeSemanticAuthority {
     fn check_canceled(&self) -> Result<(), QueryAbort>;
 
+    /// Resolve one declaration-owned type syntax through the canonical AIR
+    /// structured resolver. The program key selects one registered owning
+    /// arena, symbol table, and module; callers cannot mix dense syntax refs
+    /// with another program. This operation never walks expression
+    /// instructions or evaluates a child.
+    fn resolve_type_syntax(
+        &mut self,
+        program: &crate::body_query::DurableComptimeProgramKey,
+        syntax: rue_rir::RirTypeSyntaxRef,
+    ) -> Result<
+        DurableType,
+        rue_air::SemanticTypeSyntaxError<
+            QueryAbort,
+            SemanticNucleusFailure,
+            crate::StableDefinitionKey,
+            Arc<str>,
+        >,
+    >;
+
     fn begin_comptime_call_admission(
         &self,
         accessing_source: &crate::StableDefinitionKey,
@@ -2121,16 +2176,32 @@ pub(crate) trait DurableComptimeForeignCallAuthority {
 }
 
 pub(crate) struct DurableComptimeServices<'a, A: ?Sized> {
-    authority: &'a A,
+    authority: &'a mut A,
 }
 
 impl<'a, A: ?Sized> DurableComptimeServices<'a, A> {
-    pub(crate) fn new(authority: &'a A) -> Self {
+    pub(crate) fn new(authority: &'a mut A) -> Self {
         Self { authority }
     }
 }
 
 impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A> {
+    pub(crate) fn resolve_type_syntax(
+        &mut self,
+        program: &crate::body_query::DurableComptimeProgramKey,
+        syntax: rue_rir::RirTypeSyntaxRef,
+    ) -> Result<
+        DurableType,
+        rue_air::SemanticTypeSyntaxError<
+            QueryAbort,
+            SemanticNucleusFailure,
+            crate::StableDefinitionKey,
+            Arc<str>,
+        >,
+    > {
+        self.authority.resolve_type_syntax(program, syntax)
+    }
+
     pub(crate) fn check_canceled(&self) -> Result<(), QueryAbort> {
         self.authority.check_canceled()
     }
@@ -5350,6 +5421,53 @@ mod structured_type_adapter_tests {
         .unwrap()
     }
 
+    fn const_program_without_imports(
+        path: &str,
+        argument: &str,
+    ) -> Arc<crate::body_query::OwnedComptimeProgramCore> {
+        let snapshot = crate::SourceSnapshot::single(
+            path,
+            format!("const target: Wrap({argument}) = @import(\"{path}\");"),
+        )
+        .unwrap();
+        let module = crate::parsed_modules::parse_source_snapshot_modules(&snapshot)
+            .unwrap()
+            .modules()[0]
+            .clone();
+        let candidate = module
+            .definitions()
+            .declaration_keys_in_source_order()
+            .find(|candidate| candidate.name.as_ref() == "target")
+            .unwrap()
+            .clone();
+        let artifacts =
+            crate::canonical_lower::lower_parsed_declaration_body_plan(&module, &candidate, || {
+                Ok(())
+            })
+            .unwrap();
+        let key = crate::body_query::DurableComptimeProgramKey {
+            declaration: crate::StableDefinitionKey::from_stable_parts(
+                candidate.module.clone(),
+                crate::StableDefinitionNamespace::Value,
+                crate::StableDefinitionKind::ValueConst,
+                "target",
+                None,
+            ),
+            configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                target: rue_target::Target::X86_64Linux,
+                preview_features: crate::StablePreviewFeatures::new(
+                    &crate::PreviewFeatures::default(),
+                ),
+            },
+        };
+        crate::body_query::OwnedComptimeProgramCore::from_const_body_plan_without_imports(
+            crate::body_query::DurableComptimeProgramPlan { key, candidate },
+            &artifacts,
+            || Ok(()),
+        )
+        .unwrap()
+    }
+
     fn callable_program(path: &str) -> Arc<crate::body_query::OwnedComptimeProgramCore> {
         let snapshot = crate::SourceSnapshot::single(path, "fn target() -> i32 { 1 }").unwrap();
         let module = crate::parsed_modules::parse_source_snapshot_modules(&snapshot)
@@ -5568,6 +5686,42 @@ mod structured_type_adapter_tests {
             ),
             Err(DurableStructuredTypeBeginError::InvalidProgramAuthority)
         ));
+    }
+
+    #[test]
+    fn registered_const_core_receives_finalized_imports_without_authority_replacement() {
+        let core = const_program_without_imports("finalize.rue", "i32");
+        let key = core.plan.key.clone();
+        let mut session = session();
+        session.register_program(&core).unwrap();
+        assert!(
+            session
+                .registered_program(&key)
+                .unwrap()
+                .imports
+                .imports
+                .is_empty()
+        );
+
+        let finalized =
+            crate::body_query::OwnedComptimeProgramCore::finalize_imports(core, || Ok(())).unwrap();
+        session.finalize_registered_imports(&finalized).unwrap();
+        let registered = session.registered_program(&key).unwrap();
+        assert_eq!(registered.imports.imports.len(), 1);
+        assert_eq!(
+            registered.imports.imports[0].specifier,
+            Arc::<str>::from("finalize.rue")
+        );
+
+        let mismatched = const_program("finalize.rue", "i64");
+        assert_eq!(
+            session.finalize_registered_imports(&mismatched),
+            Err(DurableComptimeProgramFinalizationError::AuthorityMismatch)
+        );
+        assert_eq!(
+            session.registered_program(&key).unwrap().imports.imports[0].specifier,
+            Arc::<str>::from("finalize.rue")
+        );
     }
 
     #[test]

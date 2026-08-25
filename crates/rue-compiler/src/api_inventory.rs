@@ -3361,6 +3361,14 @@ fn durable_comptime_services_are_named_authority_operations() {
         ],
         "durable session retains its lifecycle and keyed AIR registry"
     );
+    assert!(
+        production_facade.contains("metadata_mut(key)"),
+        "registry finalization must mutate metadata only"
+    );
+    assert!(
+        !production_facade.contains("programs.get_mut(key)"),
+        "durable session must not obtain whole-program mutable access"
+    );
     assert!(!session.contains("pub(crate)"));
     for forbidden in ["InstData", "InstRef", "ComptimeEngine"] {
         assert!(
@@ -3507,7 +3515,7 @@ fn durable_comptime_services_are_named_authority_operations() {
             "foreign probe authority lost an exact query-side operation: {required}"
         );
     }
-    assert!(database.contains("DurableComptimeServices::new(&authority).probe_comptime_call("));
+    assert!(database.contains("DurableComptimeServices::new(&mut authority).probe_comptime_call("));
     assert!(production_facade.contains("pub(crate) fn registered_program("));
     let registry_accessor = production_facade
         .split("pub(crate) fn registered_program(")
@@ -3946,6 +3954,27 @@ fn durable_comptime_services_are_named_authority_operations() {
         2,
         "durable roots must retain exactly two legacy evaluator constructions"
     );
+    assert_eq!(
+        database
+            .matches("from_const_body_plan_without_imports(")
+            .count(),
+        1,
+        "the const root must materialize one shared owning program core"
+    );
+    assert_eq!(
+        database
+            .matches("from_callable_body_plan_without_imports(")
+            .count(),
+        1,
+        "the callable root must materialize one shared owning program core"
+    );
+    assert_eq!(
+        database
+            .matches("materialize_semantic_candidate_rir")
+            .count(),
+        0,
+        "durable roots must not rematerialize a second legacy RIR authority"
+    );
     let evaluator_roots = database
         .split("let mut evaluator = SemanticConstEvaluator {")
         .skip(1)
@@ -3957,6 +3986,23 @@ fn durable_comptime_services_are_named_authority_operations() {
         })
         .collect::<Vec<_>>();
     assert_eq!(evaluator_roots.len(), 2);
+    assert_eq!(
+        database
+            .matches("finalize_registered_imports(&core)")
+            .count(),
+        1,
+        "const root must finalize its registered import metadata exactly once"
+    );
+    let finalize_imports_at = database
+        .find("finalize_registered_imports(&core)")
+        .expect("const root finalizes its registered import metadata");
+    let const_eval_at = database
+        .find("let result = evaluator.eval(")
+        .expect("const root evaluator");
+    assert!(
+        finalize_imports_at < const_eval_at,
+        "const registry must receive finalized imports before evaluation"
+    );
     for root in evaluator_roots {
         assert!(root.contains("authority: &mut authority"));
         for operation in [
@@ -4082,6 +4128,11 @@ fn durable_comptime_services_are_named_authority_operations() {
         .and_then(|source| source.split("thread_local! {").next())
         .expect("durable semantic authority source");
     for required in [
+        "fn resolve_type_syntax(",
+        "program: &crate::body_query::DurableComptimeProgramKey",
+        "registered_program(program)",
+        "program.declaration.module()",
+        "resolve_structured_semantic_type_syntax_with(",
         "resolve_target_intrinsic_facts",
         "resolve_target_enum_variant_facts",
         "map_err(rue_air::SemanticProviderError::Failure)",
@@ -4095,7 +4146,6 @@ fn durable_comptime_services_are_named_authority_operations() {
         "SemanticConstEvaluator",
         "SEMANTIC_COMPTIME",
         "ComptimeEngine",
-        "Rir",
         "ValidatedRir",
         "program_rir",
         "child_instructions",
@@ -4112,6 +4162,24 @@ fn durable_comptime_services_are_named_authority_operations() {
             "semantic authority must not become an evaluator: {forbidden}"
         );
     }
+    let keyed_type_resolver = target_authority
+        .split("fn resolve_type_syntax(")
+        .nth(1)
+        .and_then(|source| source.split("fn begin_comptime_call_admission(").next())
+        .expect("keyed durable type resolver");
+    for forbidden in [
+        "RirTypeSyntaxArena",
+        "arena: &",
+        "symbols: &[",
+        "module: &ModuleId",
+        "RirTypeSyntaxNode",
+        ".type_syntax().node",
+    ] {
+        assert!(
+            !keyed_type_resolver.contains(forbidden),
+            "keyed type resolver must not accept loose program authority: {forbidden}"
+        );
+    }
     for policy in [
         "\"target_arch\"",
         "\"target_os\"",
@@ -4126,7 +4194,44 @@ fn durable_comptime_services_are_named_authority_operations() {
             "target policy must occur only in the canonical kernel: {policy}"
         );
     }
-    assert!(evaluator.contains("DurableComptimeServices::new(&*self.authority)"));
+    assert!(evaluator.contains("DurableComptimeServices::new(&mut *self.authority)"));
+    assert!(evaluator.contains("let expected = self.resolve_type_syntax(*annotation)?;"));
+    let type_literal = evaluator
+        .split("fn eval_type_literal(")
+        .nth(1)
+        .and_then(|source| source.split("    fn eval(").next())
+        .expect("durable type-literal evaluator");
+    assert!(
+        !type_literal.contains("resolve_semantic_candidate_type("),
+        "type literals must not retain a loose module/arena/symbol resolver"
+    );
+    assert!(
+        type_literal.contains("let input =") && type_literal.contains("TypeLiteralInput"),
+        "type literals must decode syntax facts before invoking keyed resolution"
+    );
+    assert!(
+        type_literal.contains("ty: self.resolve_type_syntax(ty)?"),
+        "anonymous struct fields must use the keyed resolver"
+    );
+    let method_type = type_literal
+        .split("let method_type = |this: &mut Self, ty|")
+        .nth(1)
+        .and_then(|source| source.split("let parameters = method").next())
+        .expect("anonymous method type helper");
+    assert_eq!(
+        method_type.matches("this.resolve_type_syntax(ty)?").count(),
+        1,
+        "anonymous method parameters/results must share the keyed type helper"
+    );
+    assert!(
+        type_literal.contains(".map(|ty| self.resolve_type_syntax(ty))"),
+        "anonymous enum payloads must use the keyed resolver"
+    );
+    assert!(
+        type_literal.contains("TypeLiteralInput::TypeConst(type_name)")
+            && type_literal.contains("self.resolve_type_syntax(type_name)?"),
+        "type constants must use the keyed resolver"
+    );
     let named_call = evaluator
         .split("fn eval_named_call(")
         .nth(1)
@@ -4325,7 +4430,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         .find("self.authority.legacy_effects.observe_dependency(dependency)")
         .expect("identifier lookup observes its direct dependency");
     assert!(locals < service && service < parts && parts < observed);
-    assert!(named_value.contains("&self.authority.provider.dependency_source"));
+    assert!(named_value.contains("let source = self.authority.provider.dependency_source.clone()"));
     for forbidden in [
         "DefinitionKind::Const",
         "DefinitionKind::Function",
@@ -4562,7 +4667,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         .expect("broad provider probe adapter");
     assert!(provider_probe.contains("DurableComptimeForeignQueryAuthority {"));
     assert!(
-        provider_probe.contains("DurableComptimeServices::new(&authority).probe_comptime_call")
+        provider_probe.contains("DurableComptimeServices::new(&mut authority).probe_comptime_call")
     );
     for forbidden in [
         "join_registered_noncomputing(",
@@ -4574,7 +4679,7 @@ fn durable_comptime_services_are_named_authority_operations() {
             "broad provider must not retain foreign probe policy: {forbidden}"
         );
     }
-    assert!(provider.contains("DurableComptimeServices::new(&authority).probe_comptime_call"));
+    assert!(provider.contains("DurableComptimeServices::new(&mut authority).probe_comptime_call"));
 }
 
 #[test]

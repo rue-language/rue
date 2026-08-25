@@ -196,6 +196,7 @@ pub(crate) enum ComptimeProgramProjectionFailure {
     Artifact(crate::revisioned_query_database::DeclarationBodyPlanFailure),
     ArtifactQueryFailure(rue_query::QueryFailure),
     NotFunction { root: rue_rir::InstRef },
+    NotConst { root: rue_rir::InstRef },
     InvalidProducer(crate::StableDefinitionKey),
     IdentityMismatch,
 }
@@ -307,15 +308,30 @@ impl OwnedForeignComptimeProgram {
         plan: DurableComptimeProgramPlan,
         artifacts: &crate::canonical_lower::DeclarationBodyPlanArtifacts,
         seed: ForeignComptimeCallSeed,
-        checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+        mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
     ) -> Result<Self, ComptimeProgramProjectionFailure> {
         let core = OwnedComptimeProgramCore::from_body_plan(
             plan,
             artifacts,
             OwnedComptimeRootExpectation::Callable,
-            checkpoint,
+            &mut checkpoint,
         )?;
         Ok(Self { core, seed })
+    }
+}
+
+impl OwnedComptimeProgramCore {
+    pub(crate) fn from_callable_body_plan_without_imports(
+        plan: DurableComptimeProgramPlan,
+        artifacts: &crate::canonical_lower::DeclarationBodyPlanArtifacts,
+        mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+    ) -> Result<Arc<Self>, ComptimeProgramProjectionFailure> {
+        Self::from_body_plan_without_imports(
+            plan,
+            artifacts,
+            OwnedComptimeRootExpectation::Callable,
+            &mut checkpoint,
+        )
     }
 }
 
@@ -330,14 +346,24 @@ impl OwnedComptimeProgramCore {
         plan: DurableComptimeProgramPlan,
         artifacts: &crate::canonical_lower::DeclarationBodyPlanArtifacts,
         expectation: OwnedComptimeRootExpectation,
-        mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+        checkpoint: &mut impl FnMut() -> Result<(), rue_query::QueryAbort>,
+    ) -> Result<Arc<Self>, ComptimeProgramProjectionFailure> {
+        let core = Self::from_body_plan_without_imports(plan, artifacts, expectation, checkpoint)?;
+        Self::finalize_imports(core, || checkpoint())
+    }
+
+    fn from_body_plan_without_imports(
+        plan: DurableComptimeProgramPlan,
+        artifacts: &crate::canonical_lower::DeclarationBodyPlanArtifacts,
+        expectation: OwnedComptimeRootExpectation,
+        checkpoint: &mut impl FnMut() -> Result<(), rue_query::QueryAbort>,
     ) -> Result<Arc<Self>, ComptimeProgramProjectionFailure> {
         if artifacts.candidate != plan.candidate {
             return Err(ComptimeProgramProjectionFailure::IdentityMismatch);
         }
         let (rir, spellings, root) = artifacts
             .plan
-            .materialize_semantic_candidate_rir(&mut checkpoint)
+            .materialize_semantic_candidate_rir(checkpoint)
             .map_err(ComptimeProgramProjectionFailure::Materialization)?;
         let Some(expected_candidate) =
             crate::revisioned_query_database::declaration_candidate_for_stable_key(
@@ -369,12 +395,29 @@ impl OwnedComptimeProgramCore {
                 root,
             },
             (OwnedComptimeRootExpectation::Const, _) => {
-                return Err(ComptimeProgramProjectionFailure::IdentityMismatch);
+                return Err(ComptimeProgramProjectionFailure::NotConst { root });
             }
         };
+        Ok(Arc::new(Self {
+            plan,
+            program: DurableComptimeProgram {
+                rir: Arc::new(rir),
+                symbols: spellings.into_iter().map(Arc::from).collect(),
+                imports: DurableComptimeProgramMetadata {
+                    imports: Vec::new().into(),
+                    root: program_root,
+                },
+            },
+        }))
+    }
+
+    pub(crate) fn finalize_imports(
+        mut core: Arc<Self>,
+        mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+    ) -> Result<Arc<Self>, ComptimeProgramProjectionFailure> {
         let imports = crate::revisioned_query_database::semantic_candidate_import_occurrences(
-            &rir,
-            &spellings,
+            &core.rir,
+            &core.symbols.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
             &mut checkpoint,
         )
         .map_err(|error| {
@@ -391,17 +434,9 @@ impl OwnedComptimeProgramCore {
             },
         )
         .collect::<Vec<_>>();
-        Ok(Arc::new(Self {
-            plan,
-            program: DurableComptimeProgram {
-                rir: Arc::new(rir),
-                symbols: spellings.into_iter().map(Arc::from).collect(),
-                imports: DurableComptimeProgramMetadata {
-                    imports: imports.into(),
-                    root: program_root,
-                },
-            },
-        }))
+        let program = Arc::get_mut(&mut core).expect("unshared durable core before imports");
+        program.program.imports.imports = imports.into();
+        Ok(core)
     }
 
     /// Materialize a const declaration into the shared owning program core.
@@ -411,13 +446,26 @@ impl OwnedComptimeProgramCore {
     pub(crate) fn from_const_body_plan(
         plan: DurableComptimeProgramPlan,
         artifacts: &crate::canonical_lower::DeclarationBodyPlanArtifacts,
-        checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+        mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
     ) -> Result<Arc<Self>, ComptimeProgramProjectionFailure> {
         Self::from_body_plan(
             plan,
             artifacts,
             OwnedComptimeRootExpectation::Const,
-            checkpoint,
+            &mut checkpoint,
+        )
+    }
+
+    pub(crate) fn from_const_body_plan_without_imports(
+        plan: DurableComptimeProgramPlan,
+        artifacts: &crate::canonical_lower::DeclarationBodyPlanArtifacts,
+        mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+    ) -> Result<Arc<Self>, ComptimeProgramProjectionFailure> {
+        Self::from_body_plan_without_imports(
+            plan,
+            artifacts,
+            OwnedComptimeRootExpectation::Const,
+            &mut checkpoint,
         )
     }
 }
