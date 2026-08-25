@@ -1866,7 +1866,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     fn display_name(&self, name: &Self::Name) -> String {
         self.body_interner().resolve(name).to_owned()
     }
-    fn file_from_span(&self, span: &Span) -> Self::File {
+    fn file_for_program_span(&self, _program: &Self::ProgramKey, span: &Span) -> Self::File {
         span.file_id
     }
     fn resolve_comptime_named_value(

@@ -194,6 +194,9 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .expect("canonical host contract");
     let host_contract = &production[host_start..engine_start];
     assert!(host_contract.contains("fn program_rir(&self, program:"));
+    assert!(host_contract.contains("fn file_for_program_span("));
+    assert!(host_contract.contains("program: &Self::ProgramKey"));
+    assert!(!host_contract.contains("fn file_from_span("));
     assert_eq!(
         host_contract
             .matches("fn resolve_comptime_named_value(")
@@ -430,6 +433,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .find("InstData::FieldGet { base, field }")
         .expect("VarRef dispatch boundary")];
     assert_eq!(var_ref.matches("resolve_comptime_named_value(").count(), 1);
+    assert!(var_ref.contains("file_for_program_span(&program, &span)"));
     assert!(!var_ref.contains("value_const("));
     assert!(!var_ref.contains("record_value_const_dependency("));
     assert!(!var_ref.contains("record_named_type_dependency("));
