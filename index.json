@@ -19769,6 +19769,14 @@
       "platform": "x86_64-linux",
       "report": "1f297903e83113fae0237e07e13311d50e287f705a89bbc0c29c0a0dead2bbd6",
       "suite_revision": 5
+    },
+    {
+      "commit": "523e17af38b5ef10f56407d1100a92231d668b58",
+      "epoch": 5,
+      "finished_at": "2026-08-25T07:21:25Z",
+      "platform": "aarch64-macos",
+      "report": "a133a10e6115fa3a42011b87fb6cf8b7c661c7b2f4243bf085937a4bac081cd2",
+      "suite_revision": 5
     }
   ],
   "schema_version": 1
