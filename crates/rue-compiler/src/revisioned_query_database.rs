@@ -6863,30 +6863,6 @@ fn semantic_candidate_spelling<'a>(symbols: &'a [&'a str], symbol: &lasso::Spur)
     symbols[symbol.into_usize()]
 }
 
-fn resolve_semantic_candidate_type(
-    provider: &mut SemanticNucleusTypeProvider<'_>,
-    module: &ModuleId,
-    rir: &rue_rir::ValidatedRir,
-    symbols: &[&str],
-    syntax: rue_rir::RirTypeSyntaxRef,
-) -> Result<
-    crate::durable_semantics::DurableType,
-    rue_air::SemanticTypeSyntaxError<
-        QueryAbort,
-        crate::semantic_query_nucleus::SemanticNucleusFailure,
-        StableDefinitionKey,
-        Arc<str>,
-    >,
-> {
-    rue_air::resolve_structured_semantic_type_syntax_with(
-        provider,
-        module,
-        rir.type_syntax(),
-        syntax,
-        |symbol| symbols[symbol.into_usize()],
-    )
-}
-
 fn semantic_candidate_type_is_named(
     rir: &rue_rir::ValidatedRir,
     symbols: &[&str],
@@ -13733,15 +13709,22 @@ impl RevisionedQueryDatabase {
                                         .session
                                         .register_program(&core)
                                         .expect("const root program must register once");
-                                    let expected_type = declared_type.as_ref().and_then(|syntax| {
+                                    // Resolve the declaration annotation once through the keyed
+                                    // registered program.  The same owned result is used both as
+                                    // AIR's expected-result hint and for the post-evaluation
+                                    // declaration check; this avoids re-pairing a dense syntax
+                                    // reference with the legacy evaluator's ambient arena.
+                                    let declared_type_resolution = declared_type.as_ref().map(|syntax| {
                                         let mut services =
                                             crate::durable_comptime::DurableComptimeServices::new(
                                                 &mut authority,
                                             );
-                                        services
-                                            .resolve_type_syntax(&program_key, *syntax)
-                                            .ok()
+                                        services.resolve_type_syntax(&program_key, *syntax)
                                     });
+                                    let expected_type = declared_type_resolution
+                                        .as_ref()
+                                        .and_then(|result| result.as_ref().ok())
+                                        .cloned();
                                             if matches!(
                                                 expected_type,
                                                 Some(crate::durable_semantics::DurableType::Slice { .. })
@@ -13806,7 +13789,7 @@ impl RevisionedQueryDatabase {
                                                 )
                                             })
                                             .collect::<BTreeMap<_, _>>();
-                                            let (result, mut provider) = {
+                                            let (result, provider) = {
                                                 let mut evaluator = SemanticConstEvaluator {
                                                     authority: &mut authority,
                                             program: program_key.clone(),
@@ -13844,14 +13827,9 @@ impl RevisionedQueryDatabase {
                                                 Ok(EvaluatedSemanticConst::Value(typed)) => {
                                                     let typed = Arc::unwrap_or_clone(typed);
                                                     let value = typed.value;
-                                                    let resolved_type = match declared_type.as_ref() {
-                                                        Some(type_syntax) => resolve_semantic_candidate_type(
-                                                            &mut provider,
-                                                            &query.declaration.module,
-                                                            rir,
-                                                            &symbols,
-                                                            *type_syntax,
-                                                        ),
+                                                    let resolved_type = match declared_type_resolution {
+                                                        Some(Ok(ty)) => Ok(ty),
+                                                        Some(Err(error)) => Err(error),
                                                         None if matches!(
                                                             value,
                                                             crate::durable_semantics::DurableConstValue::Type(_)

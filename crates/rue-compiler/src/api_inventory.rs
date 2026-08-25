@@ -4003,6 +4003,34 @@ fn durable_comptime_services_are_named_authority_operations() {
         finalize_imports_at < const_eval_at,
         "const registry must receive finalized imports before evaluation"
     );
+    let const_root_start = database
+        .find("Key::ConstResolution(query) =>")
+        .expect("const evaluator root");
+    let const_root_end = database[const_root_start..]
+        .find("Key::AnonymousNominal(query) =>")
+        .map(|offset| const_root_start + offset)
+        .expect("end of const evaluator root");
+    assert!(const_root_start < const_root_end);
+    let const_root = &database[const_root_start..const_root_end];
+    assert!(
+        const_root.contains("let declared_type_resolution = declared_type.as_ref().map(|syntax|")
+            && const_root.contains("resolve_type_syntax(&program_key, *syntax)")
+            && const_root.contains("match declared_type_resolution"),
+        "const completion must validate its declared type from the keyed resolution"
+    );
+    assert_eq!(
+        const_root
+            .matches("resolve_type_syntax(&program_key, *syntax)")
+            .count(),
+        1,
+        "const completion must reuse one exact keyed declared-type resolution"
+    );
+    assert!(
+        !const_root.contains("resolve_semantic_candidate_type(")
+            && !const_root.contains("resolve_structured_semantic_type_syntax_with("),
+        "const completion must not re-pair declared syntax with loose evaluator authority"
+    );
+    assert!(!database.contains("fn resolve_semantic_candidate_type("));
     for root in evaluator_roots {
         assert!(root.contains("authority: &mut authority"));
         for operation in [
