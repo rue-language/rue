@@ -3042,6 +3042,12 @@ fn durable_const_integer_semantics_use_the_shared_kernel() {
         .nth(1)
         .and_then(|source| source.split("fn durable_int_width(").next())
         .expect("durable integer fit adapter");
+    let durable = include_str!("durable_comptime.rs");
+    let canonical_fits = durable
+        .split("pub(crate) fn durable_const_fits_type(")
+        .nth(1)
+        .and_then(|source| source.split("pub(crate) fn durable_int_width(").next())
+        .expect("canonical durable integer fit kernel");
     let evaluator = source
         .split("impl SemanticConstEvaluator<'_, '_> {")
         .nth(1)
@@ -3059,7 +3065,8 @@ fn durable_const_integer_semantics_use_the_shared_kernel() {
         .expect("durable unary evaluator");
     let arithmetic_policy = format!("{arithmetic}{unary}");
 
-    assert!(fits.contains("integer.fits_i128"));
+    assert!(fits.contains("durable_const_fits_type"));
+    assert!(canonical_fits.contains("integer.fits_i128"));
     for duplicated_fit in [
         "i8::try_from",
         "i16::try_from",
@@ -3336,7 +3343,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         .nth(1)
         .and_then(|source| source.split("}\n\n/// The exact durable projection").next())
         .expect("durable callable admission projection");
-    for forbidden in ["InstData", "InstRef", "Rir", "callback", "evaluate"] {
+    for forbidden in ["InstData", "InstRef", "Rir", "callback", "evaluate("] {
         assert!(
             !callable_authority.contains(forbidden),
             "callable admission projection leaked evaluator authority: {forbidden}"
@@ -3621,6 +3628,112 @@ fn durable_comptime_services_are_named_authority_operations() {
     assert!(
         named_call.contains("let call_ordinal = self.next_call;"),
         "durable call ordinals must be allocated before admission"
+    );
+    let binding_header = production_facade
+        .find("pub(crate) struct DurableComptimeBinding {")
+        .and_then(|start| production_facade[..start].rfind("#[derive("))
+        .expect("durable binding derive header");
+    let binding_kernel = production_facade
+        .get(binding_header..)
+        .and_then(|source| {
+            source
+                .split("/// Match one already-evaluated durable argument")
+                .next()
+        })
+        .expect("durable incremental binding kernel");
+    let binding_start = production_facade
+        .find("pub(crate) fn bind_durable_comptime_argument(")
+        .expect("durable binding function");
+    let binding_policy = production_facade
+        .get(binding_start..)
+        .and_then(|source| source.split("/// The exact durable projection").next())
+        .expect("durable incremental binding policy");
+    let value_fit_kernel = production_facade
+        .split("pub(crate) fn durable_value_fit_failure(")
+        .nth(1)
+        .and_then(|source| source.split("pub(crate) fn durable_int_width").next())
+        .expect("durable value-fit kernel");
+    assert!(
+        !binding_kernel.contains("Clone")
+            && !production_facade.contains("impl Clone for DurableComptimeBinding"),
+        "durable binding state must remain non-Clone"
+    );
+    for required in ["type_arguments", "value_arguments"] {
+        assert!(
+            binding_kernel.contains(required),
+            "durable binding kernel missing {required}"
+        );
+    }
+    for forbidden in ["InstData", "InstRef", "Rir", "ComptimeEngine", "callback"] {
+        assert!(
+            !binding_kernel.contains(forbidden),
+            "durable binding kernel leaked evaluator authority: {forbidden}"
+        );
+        assert!(
+            !binding_policy.contains(forbidden),
+            "durable binding policy leaked evaluator authority: {forbidden}"
+        );
+        assert!(
+            !value_fit_kernel.contains(forbidden),
+            "durable value-fit kernel leaked evaluator authority: {forbidden}"
+        );
+    }
+    for required in [
+        "direct_unit_literal",
+        "substitute_durable_generics",
+        "durable_type_diagnostic_name",
+    ] {
+        assert!(
+            binding_policy.contains(required),
+            "durable binding policy missing {required}"
+        );
+    }
+    for required in [
+        "DurableComptimeValueFitFailure",
+        "durable_const_fits_type",
+        "durable_type_diagnostic_name",
+    ] {
+        assert!(
+            value_fit_kernel.contains(required),
+            "durable value-fit kernel missing {required}"
+        );
+    }
+    for forbidden in [
+        "DurableComptimeCallLifecycle",
+        "DurableComptimeEffects",
+        "DurableComptimeServices",
+        "QueryAbort",
+        "SemanticConstEvaluator",
+    ] {
+        assert!(
+            !binding_policy.contains(forbidden),
+            "durable binding policy gained query/effect authority: {forbidden}"
+        );
+    }
+    let binding_calls = named_call
+        .matches("bind_durable_comptime_argument(")
+        .count();
+    assert_eq!(
+        binding_calls, 2,
+        "durable argument binding must route both parameter paths through one kernel"
+    );
+    let first_eval = named_call
+        .find("let evaluated = self.eval(argument.value)?")
+        .expect("durable call evaluates each argument before binding");
+    let first_bind = named_call
+        .find("bind_durable_comptime_argument(")
+        .expect("durable call uses incremental binding kernel");
+    assert!(first_eval < first_bind);
+    let structured_reducer = database
+        .split("fn reduce_comptime_call(")
+        .nth(1)
+        .and_then(|source| source.split("fn resolve_value_argument(").next())
+        .expect("durable structured comptime reducer");
+    assert!(structured_reducer.contains("durable_value_fit_failure("));
+    assert_eq!(
+        database.matches("durable_value_fit_failure(").count(),
+        1,
+        "durable value-fit policy must have one structured-reducer consumer"
     );
     assert!(evaluator.contains(".resolve_import(&site)"));
     let named_value = evaluator

@@ -506,8 +506,11 @@ mod value_domain_tests {
         static CHECKPOINTS: Cell<usize> = const { Cell::new(0) };
         static ABORT_AT_CHECKPOINT: Cell<Option<usize>> = const { Cell::new(None) };
         static CALL_ARGUMENTS: RefCell<Vec<(FakeValue, bool)>> = const { RefCell::new(Vec::new()) };
+        static BINDING_FINISHES: Cell<usize> = const { Cell::new(0) };
+        static PREPARE_CALLS: Cell<usize> = const { Cell::new(0) };
         static ALLOW_MODULE_CALLS: Cell<bool> = const { Cell::new(false) };
         static REJECT_ADMISSION: Cell<bool> = const { Cell::new(false) };
+        static REJECT_BIND_AT: Cell<Option<usize>> = const { Cell::new(None) };
     }
 
     #[derive(Clone, Debug, PartialEq)]
@@ -647,6 +650,14 @@ mod value_domain_tests {
         index: usize,
     }
 
+    struct FakeCallBinding {
+        arguments: Vec<(FakeValue, bool)>,
+    }
+
+    struct FakeBoundCall {
+        arguments: Vec<(FakeValue, bool)>,
+    }
+
     impl super::structured_type_seal::Sealed for FakeStructuredSuspension {}
     impl ComptimeStructuredTypeSuspension for FakeStructuredSuspension {}
 
@@ -682,6 +693,9 @@ mod value_domain_tests {
         CALL_ARGUMENTS.with(|arguments| arguments.borrow_mut().clear());
         ALLOW_MODULE_CALLS.with(|allowed| allowed.set(false));
         REJECT_ADMISSION.with(|rejected| rejected.set(false));
+        REJECT_BIND_AT.with(|rejected| rejected.set(None));
+        BINDING_FINISHES.with(|count| count.set(0));
+        PREPARE_CALLS.with(|count| count.set(0));
     }
 
     impl ComptimeHost for FakeHost {
@@ -694,6 +708,8 @@ mod value_domain_tests {
         type ProgramKey = usize;
         type Failure = FakeFailure;
         type CallAdmission = ();
+        type CallBinding = FakeCallBinding;
+        type BoundCall = FakeBoundCall;
         type CompletionTicket = usize;
         type AnonymousStructId = u32;
         type StructuredTypeSuspension = FakeStructuredSuspension;
@@ -965,32 +981,45 @@ mod value_domain_tests {
             }
             Ok(Some(ComptimeCallAdmission { name, payload: () }))
         }
-        fn bind_comptime_call(
+        fn begin_comptime_call_binding(
             &self,
             _admission: &ComptimeCallAdmission<Self::CallAdmission, Self::Name>,
-            values: &[ComptimeCallArgument<Self::Value>],
+            _argument_count: usize,
             _span: Span,
-        ) -> ComptimeHostResult<
-            Option<(
-                AHashMap<Self::Name, Self::Type>,
-                AHashMap<Self::Name, Self::Value>,
-            )>,
-            Self::Failure,
-        > {
-            CALL_ARGUMENTS.with(|observed| {
-                observed.borrow_mut().extend(
-                    values.iter().map(|argument| {
-                        (argument.value().clone(), argument.is_direct_unit_literal())
-                    }),
-                );
-            });
-            Ok(Some((AHashMap::new(), AHashMap::new())))
+        ) -> ComptimeHostResult<Self::CallBinding, Self::Failure> {
+            Ok(FakeCallBinding {
+                arguments: Vec::new(),
+            })
+        }
+        fn bind_comptime_call_argument(
+            &self,
+            binding: &mut Self::CallBinding,
+            argument: ComptimeCallArgument<Self::Value>,
+            index: usize,
+            _span: Span,
+        ) -> ComptimeHostResult<bool, Self::Failure> {
+            if REJECT_BIND_AT.with(|rejected| rejected.get() == Some(index)) {
+                return Ok(false);
+            }
+            binding
+                .arguments
+                .push((argument.value().clone(), argument.is_direct_unit_literal()));
+            Ok(true)
+        }
+        fn finish_comptime_call_binding(
+            &mut self,
+            _binding: Self::CallBinding,
+            _span: Span,
+        ) -> ComptimeHostResult<Option<Self::BoundCall>, Self::Failure> {
+            BINDING_FINISHES.with(|count| count.set(count.get() + 1));
+            let arguments = _binding.arguments;
+            CALL_ARGUMENTS.with(|observed| observed.borrow_mut().extend(arguments.iter().cloned()));
+            Ok(Some(FakeBoundCall { arguments }))
         }
         fn prepare_comptime_call(
             &mut self,
             admission: ComptimeCallAdmission<Self::CallAdmission, Self::Name>,
-            _types: AHashMap<Self::Name, Self::Type>,
-            _values: AHashMap<Self::Name, Self::Value>,
+            bound: Self::BoundCall,
             _span: Span,
         ) -> ComptimeHostResult<
             Option<
@@ -1007,6 +1036,8 @@ mod value_domain_tests {
             >,
             Self::Failure,
         > {
+            PREPARE_CALLS.with(|count| count.set(count.get() + 1));
+            let _bound_argument_count = bound.arguments.len();
             if matches!(self.finish_outcome, FakeFinishOutcome::AbortFromPrepare) {
                 return Err(ComptimeHostError::Abort(FAKE_FAILURE));
             }
@@ -2977,7 +3008,129 @@ mod value_domain_tests {
         assert_eq!(checkpoint_count(), 2);
         assert_eq!(engine.provenance_classification_count(), 0);
         CALL_ARGUMENTS.with(|observed| assert!(observed.borrow().is_empty()));
+        assert_eq!(BINDING_FINISHES.with(Cell::get), 0);
+        assert_eq!(PREPARE_CALLS.with(Cell::get), 0);
         configure_checkpoint_abort(None);
+    }
+
+    #[test]
+    fn incremental_binding_rejects_before_evaluating_later_arguments() {
+        let interner = lasso::ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("f");
+        let mut editor = rue_rir::RirEditor::new();
+        let first = editor.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(7),
+            span: Span::new(0, 0),
+        });
+        let later_trap = editor.add_inst(rue_rir::Inst {
+            data: InstData::FloatConst {
+                text: interner.get_or_intern("2.0"),
+            },
+            span: Span::new(0, 0),
+        });
+        let call = editor
+            .add_call(
+                symbol,
+                &[
+                    rue_rir::RirCallArg {
+                        value: first,
+                        mode: rue_rir::RirArgMode::Normal,
+                    },
+                    rue_rir::RirCallArg {
+                        value: later_trap,
+                        mode: rue_rir::RirArgMode::Normal,
+                    },
+                ],
+                Span::new(0, 0),
+            )
+            .unwrap();
+        let mut host = FakeHost {
+            programs: vec![editor.finish()],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        clear_call_argument_observations();
+        REJECT_BIND_AT.with(|rejected| rejected.set(Some(0)));
+        configure_checkpoint_abort(None);
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result =
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, call), &mut env);
+        assert!(matches!(result, ComptimeOutcome::RuntimeDependent));
+        assert_eq!(host.float_evaluations.get(), 0);
+        CALL_ARGUMENTS.with(|observed| assert!(observed.borrow().is_empty()));
+        assert_eq!(BINDING_FINISHES.with(Cell::get), 0);
+        assert_eq!(PREPARE_CALLS.with(Cell::get), 0);
+        clear_call_argument_observations();
+    }
+
+    #[test]
+    fn ordinary_binding_shape_mismatch_does_not_mask_later_terminal() {
+        let interner = lasso::ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("f");
+        let type_symbol = interner.get_or_intern("i32");
+        let mut editor = rue_rir::RirEditor::new();
+        let type_syntax = editor.add_named_type(type_symbol).unwrap();
+        // A type value is deliberately supplied where an ordinary value
+        // parameter would reject it. Ordinary binding stores that shape in
+        // its owned transaction; the later terminal must still win before
+        // finish performs whole-batch validation.
+        let invalid_for_value = editor.add_inst(rue_rir::Inst {
+            data: InstData::TypeConst {
+                type_name: type_syntax,
+            },
+            span: Span::new(0, 0),
+        });
+        let later_terminal = editor.add_inst(rue_rir::Inst {
+            data: InstData::FloatConst {
+                text: interner.get_or_intern("2.0"),
+            },
+            span: Span::new(0, 0),
+        });
+        let call = editor
+            .add_call(
+                symbol,
+                &[
+                    rue_rir::RirCallArg {
+                        value: invalid_for_value,
+                        mode: rue_rir::RirArgMode::Normal,
+                    },
+                    rue_rir::RirCallArg {
+                        value: later_terminal,
+                        mode: rue_rir::RirArgMode::Normal,
+                    },
+                ],
+                Span::new(0, 0),
+            )
+            .unwrap();
+        let mut host = FakeHost {
+            programs: vec![editor.finish()],
+            type_symbol: SymbolHandle::new(type_symbol),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        clear_call_argument_observations();
+        configure_checkpoint_abort(None);
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result =
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, call), &mut env);
+        assert!(matches!(result, ComptimeOutcome::HostFailure(FAKE_FAILURE)));
+        assert_eq!(host.float_evaluations.get(), 1);
+        CALL_ARGUMENTS.with(|observed| assert!(observed.borrow().is_empty()));
+        assert_eq!(BINDING_FINISHES.with(Cell::get), 0);
+        assert_eq!(PREPARE_CALLS.with(Cell::get), 0);
     }
 
     #[test]
@@ -3078,6 +3231,8 @@ mod value_domain_tests {
         assert_eq!(terminal_host.float_evaluations.get(), 1);
         assert_eq!(checkpoint_count(), 3);
         CALL_ARGUMENTS.with(|observed| assert!(observed.borrow().is_empty()));
+        assert_eq!(BINDING_FINISHES.with(Cell::get), 0);
+        assert_eq!(PREPARE_CALLS.with(Cell::get), 0);
     }
 
     #[test]
@@ -4220,6 +4375,13 @@ pub trait ComptimeHost {
     type ProgramKey: Clone;
     type Failure;
     type CallAdmission;
+    /// Host-owned, non-replayable binding state. The engine creates one state
+    /// immediately after admission and feeds it source-order arguments before
+    /// evaluating the next child.
+    type CallBinding;
+    /// Opaque, host-owned completed binding. The engine does not reconstruct
+    /// ordered arguments or couple preparation to a map representation.
+    type BoundCall;
     /// Opaque host-owned completion state issued during ordered preparation.
     type CompletionTicket;
     type AnonymousStructId: Clone;
@@ -4418,23 +4580,30 @@ pub trait ComptimeHost {
         Option<ComptimeCallAdmission<Self::CallAdmission, Self::Name>>,
         Self::Failure,
     >;
-    fn bind_comptime_call(
+    fn begin_comptime_call_binding(
         &self,
         admission: &ComptimeCallAdmission<Self::CallAdmission, Self::Name>,
-        values: &[ComptimeCallArgument<Self::Value>],
+        argument_count: usize,
         span: Span,
-    ) -> ComptimeHostResult<
-        Option<(
-            AHashMap<Self::Name, Self::Type>,
-            AHashMap<Self::Name, Self::Value>,
-        )>,
-        Self::Failure,
-    >;
+    ) -> ComptimeHostResult<Self::CallBinding, Self::Failure>;
+    /// Push one already-evaluated argument. `false` rejects the call as
+    /// runtime-dependent and stops the engine before the next child runs.
+    fn bind_comptime_call_argument(
+        &self,
+        binding: &mut Self::CallBinding,
+        argument: ComptimeCallArgument<Self::Value>,
+        index: usize,
+        span: Span,
+    ) -> ComptimeHostResult<bool, Self::Failure>;
+    fn finish_comptime_call_binding(
+        &mut self,
+        binding: Self::CallBinding,
+        span: Span,
+    ) -> ComptimeHostResult<Option<Self::BoundCall>, Self::Failure>;
     fn prepare_comptime_call(
         &mut self,
         admission: ComptimeCallAdmission<Self::CallAdmission, Self::Name>,
-        types: AHashMap<Self::Name, Self::Type>,
-        values: AHashMap<Self::Name, Self::Value>,
+        bound: Self::BoundCall,
         span: Span,
     ) -> ComptimeHostResult<
         Option<
@@ -5072,17 +5241,17 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let Some(admission) = admission else {
             return ComptimeOutcome::RuntimeDependent;
         };
-        let values = outcome_value!(self.evaluate_call_arguments(&args, env));
-        let bound = host_value!(self.host.bind_comptime_call(&admission, &values, span));
-        let Some((callee_types, callee_values)) = bound else {
+        let mut binding = host_value!(self.host.begin_comptime_call_binding(
+            &admission,
+            args.len(),
+            span,
+        ));
+        outcome_value!(self.evaluate_call_arguments(&args, env, &mut binding, span));
+        let bound = host_value!(self.host.finish_comptime_call_binding(binding, span));
+        let Some(bound) = bound else {
             return ComptimeOutcome::RuntimeDependent;
         };
-        let preparation = host_value!(self.host.prepare_comptime_call(
-            admission,
-            callee_types,
-            callee_values,
-            span
-        ));
+        let preparation = host_value!(self.host.prepare_comptime_call(admission, bound, span));
         let Some(preparation) = preparation else {
             return ComptimeOutcome::RuntimeDependent;
         };
@@ -5103,9 +5272,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         &mut self,
         args: &[rue_rir::RirCallArg],
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
-    ) -> ComptimeOutcome<Vec<ComptimeCallArgument<H::Value>>, H::Failure> {
-        let mut values = Vec::with_capacity(args.len());
-        for arg in args {
+        binding: &mut H::CallBinding,
+        span: Span,
+    ) -> ComptimeOutcome<(), H::Failure> {
+        for (index, arg) in args.iter().enumerate() {
             let program = self.program_key();
             let value = outcome_value!(self.eval(arg.value, env));
             let direct_unit_literal = matches!(
@@ -5116,9 +5286,17 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             {
                 self.provenance_classifications += 1;
             }
-            values.push(ComptimeCallArgument::new(value, direct_unit_literal));
+            let accepted = host_value!(self.host.bind_comptime_call_argument(
+                binding,
+                ComptimeCallArgument::new(value, direct_unit_literal),
+                index,
+                span,
+            ));
+            if !accepted {
+                return ComptimeOutcome::RuntimeDependent;
+            }
         }
-        ComptimeOutcome::Known(values)
+        ComptimeOutcome::Known(())
     }
 
     #[inline(never)]
@@ -5288,17 +5466,17 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let Some(admission) = admission else {
             return ComptimeOutcome::RuntimeDependent;
         };
-        let values = outcome_value!(self.evaluate_call_arguments(&args, env));
-        let bound = host_value!(self.host.bind_comptime_call(&admission, &values, span));
-        let Some((callee_types, callee_values)) = bound else {
+        let mut binding = host_value!(self.host.begin_comptime_call_binding(
+            &admission,
+            args.len(),
+            span,
+        ));
+        outcome_value!(self.evaluate_call_arguments(&args, env, &mut binding, span));
+        let bound = host_value!(self.host.finish_comptime_call_binding(binding, span));
+        let Some(bound) = bound else {
             return ComptimeOutcome::RuntimeDependent;
         };
-        let preparation = host_value!(self.host.prepare_comptime_call(
-            admission,
-            callee_types,
-            callee_values,
-            span
-        ));
+        let preparation = host_value!(self.host.prepare_comptime_call(admission, bound, span));
         let Some(preparation) = preparation else {
             return ComptimeOutcome::RuntimeDependent;
         };

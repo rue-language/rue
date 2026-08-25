@@ -148,6 +148,18 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         );
     }
     assert!(contract.contains("type CallAdmission;"));
+    assert!(contract.contains("type CallBinding;"));
+    assert!(contract.contains("type BoundCall;"));
+    assert!(contract.contains("fn begin_comptime_call_binding("));
+    assert!(contract.contains("fn bind_comptime_call_argument("));
+    assert!(contract.contains("fn finish_comptime_call_binding("));
+    let binding_contract = contract
+        .split("fn begin_comptime_call_binding(")
+        .nth(1)
+        .and_then(|source| source.split("fn finish_comptime_call_binding(").next())
+        .expect("incremental binding contract");
+    assert!(binding_contract.contains("&self"));
+    assert!(!binding_contract.contains("&mut self"));
     assert!(contract.contains("type CompletionTicket;"));
     assert!(!contract.contains("type CompletionTicket: Clone"));
     assert!(!contract.contains("pub completion_ticket"));
@@ -218,7 +230,9 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     let argument_impl = &production[argument_impl_start..argument_impl_end];
     assert!(argument_impl.contains("fn new("));
     assert!(!argument_impl.contains("pub fn new("));
-    assert!(production.contains("values: &[ComptimeCallArgument<Self::Value>]"));
+    assert!(production.contains("argument: ComptimeCallArgument<Self::Value>"));
+    assert!(production.contains("fn begin_comptime_call_binding("));
+    assert!(production.contains("fn finish_comptime_call_binding("));
     let producer_hook = host_contract
         .split("fn canonical_function_producer(")
         .nth(1)
@@ -313,7 +327,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     );
     assert_eq!(
         production
-            .matches("self.evaluate_call_arguments(&args, env)")
+            .matches("self.evaluate_call_arguments(&args, env, &mut binding, span)")
             .count(),
         2,
         "direct and qualified calls must share argument provenance"
@@ -344,16 +358,30 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         !ordinary.contains("is_direct_unit_literal"),
         "ordinary hosts must consume provenance, never recover it from RIR"
     );
-    let ordinary_bind_start = ordinary
-        .find("fn bind_comptime_call(")
-        .expect("ordinary call binding implementation");
-    let ordinary_bind_end = ordinary[ordinary_bind_start..]
-        .find("\n    fn ")
-        .map(|offset| ordinary_bind_start + offset)
-        .unwrap_or(ordinary.len());
-    let ordinary_bind = &ordinary[ordinary_bind_start..ordinary_bind_end];
-    assert!(ordinary_bind.contains("argument.value()"));
-    assert!(!ordinary_bind.contains("program_rir"));
+    assert!(ordinary.contains("fn bind_comptime_call_argument("));
+    let ordinary_argument_binding = ordinary
+        .split("fn bind_comptime_call_argument(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn ").next())
+        .expect("ordinary argument binding implementation");
+    assert!(ordinary_argument_binding.contains("argument.value()"));
+    assert!(!ordinary_argument_binding.contains("program_rir"));
+    assert!(ordinary.contains("type CallBinding = OrdinaryComptimeCallBinding"));
+    assert!(ordinary.contains("type BoundCall = OrdinaryComptimeBoundCall"));
+    let binding_state = ordinary
+        .split("struct OrdinaryComptimeCallBinding")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost")
+                .next()
+        })
+        .expect("ordinary binding state");
+    assert!(!binding_state.contains("derive(Clone"));
+    assert!(!binding_state.contains("impl Clone"));
+    assert!(production.contains("begin_comptime_call_binding"));
+    assert!(production.contains("bind_comptime_call_argument"));
+    assert!(production.contains("finish_comptime_call_binding"));
     assert!(production.contains("self.frames.push(frame)"));
     assert!(production.contains("self.frames.pop()"));
     assert!(production.contains("ComptimeCallPreparation::Memoized(outcome)"));

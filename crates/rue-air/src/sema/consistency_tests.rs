@@ -374,7 +374,11 @@ mod tests {
         );
         assert!(
             source.contains("fn admit_comptime_call")
-                && source.contains("fn bind_comptime_call")
+                && source.contains("type CallBinding")
+                && source.contains("type BoundCall")
+                && source.contains("fn begin_comptime_call_binding")
+                && source.contains("fn bind_comptime_call_argument")
+                && source.contains("fn finish_comptime_call_binding")
                 && source.contains("fn prepare_comptime_call")
                 && source.contains("fn finish_comptime_call"),
             "call admission, binding, preparation, and completion must be named hooks"
@@ -400,7 +404,9 @@ mod tests {
         }
         for signature in [
             "fn admit_comptime_call(",
-            "fn bind_comptime_call(",
+            "fn begin_comptime_call_binding(",
+            "fn bind_comptime_call_argument(",
+            "fn finish_comptime_call_binding(",
             "fn prepare_comptime_call(",
             "fn resolve_comptime_type_path(",
             "fn resolve_module_comptime_callable(",
