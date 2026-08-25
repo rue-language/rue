@@ -7970,9 +7970,10 @@ impl SemanticConstEvaluator<'_, '_> {
         &mut self,
         expression: rue_rir::InstRef,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
-        use crate::durable_semantics::{
-            DurableAnonymousNominal, DurableAnonymousNominalShape, DurableConstValue as V,
-            DurableType,
+        use crate::durable_comptime::DurableAnonymousNominalDescriptorShape;
+        use crate::durable_semantics::{DurableConstValue as V, DurableType};
+        use rue_air::{
+            ComptimeField, ComptimeMethodDescriptor, ComptimeMethodParameter, ComptimeMethodType,
         };
         let module = &self.declaration.declaration.module;
         let producer = self.declaration.declaration.clone();
@@ -8005,10 +8006,10 @@ impl SemanticConstEvaluator<'_, '_> {
                     .iter()
                     .map(|field| {
                         let (name, ty) = *field;
-                        Ok((
-                            Arc::from(semantic_candidate_spelling(symbols, &name)),
-                            resolve(provider, ty)?,
-                        ))
+                        Ok(ComptimeField {
+                            name: Arc::from(semantic_candidate_spelling(symbols, &name)),
+                            ty: resolve(provider, ty)?,
+                        })
                     })
                     .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
                 let method_type =
@@ -8016,25 +8017,12 @@ impl SemanticConstEvaluator<'_, '_> {
                      ty: rue_rir::RirTypeSyntaxRef| {
                         Ok(
                             if semantic_candidate_type_is_named(rir, symbols, ty, "Self") {
-                                crate::durable_semantics::DurableAnonymousMethodType::SelfType
+                                ComptimeMethodType::SelfType
                             } else {
-                                crate::durable_semantics::DurableAnonymousMethodType::Concrete(
-                                    resolve(provider, ty)?,
-                                )
+                                ComptimeMethodType::Concrete(resolve(provider, ty)?)
                             },
                         )
                     };
-                let mode = |mode: rue_rir::RirParamMode| match mode {
-                    rue_rir::RirParamMode::Normal => {
-                        crate::durable_semantics::DurableParameterMode::Value
-                    }
-                    rue_rir::RirParamMode::Borrow => {
-                        crate::durable_semantics::DurableParameterMode::Borrow
-                    }
-                    rue_rir::RirParamMode::Inout => {
-                        crate::durable_semantics::DurableParameterMode::Inout
-                    }
-                };
                 let methods = rir
                     .anon_struct_methods(methods)
                     .iter()
@@ -8085,29 +8073,37 @@ impl SemanticConstEvaluator<'_, '_> {
                             .params(params)
                             .iter()
                             .map(|parameter| {
-                                Ok((
-                                    method_type(provider, parameter.ty)?,
-                                    mode(parameter.mode),
-                                    parameter.is_comptime,
-                                ))
+                                Ok(ComptimeMethodParameter {
+                                    ty: method_type(provider, parameter.ty)?,
+                                    mode: parameter.mode,
+                                    is_comptime: parameter.is_comptime,
+                                    is_comptime_type: false,
+                                })
                             })
                             .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
                         let result = method_type(provider, *return_type)?;
-                        Ok(crate::durable_semantics::DurableAnonymousMethodSignature {
+                        Ok(ComptimeMethodDescriptor {
                             name: Arc::from(semantic_candidate_spelling(symbols, name)),
                             has_self: *has_self,
-                            self_mode: mode(*self_mode),
+                            self_mode: *self_mode,
                             returns_borrow: *returns_borrow,
                             returns_inout: *returns_inout,
                             parameters: parameters.into(),
+                            parameter_names: rir
+                                .params(params)
+                                .iter()
+                                .map(|parameter| {
+                                    Arc::from(semantic_candidate_spelling(symbols, &parameter.name))
+                                })
+                                .collect(),
                             result,
-                            has_body: true,
+                            declaration_span: method.span,
                         })
                     })
                     .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
                 (
                     rue_air::AnonymousNominalKind::Struct,
-                    DurableAnonymousNominalShape::Struct {
+                    DurableAnonymousNominalDescriptorShape::Struct {
                         fields: fields.into(),
                         methods: methods.into(),
                     },
@@ -8136,7 +8132,7 @@ impl SemanticConstEvaluator<'_, '_> {
                     .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
                 (
                     rue_air::AnonymousNominalKind::Enum,
-                    DurableAnonymousNominalShape::Enum {
+                    DurableAnonymousNominalDescriptorShape::Enum {
                         variants: variants.into(),
                     },
                     anchor.clone(),
@@ -8157,25 +8153,29 @@ impl SemanticConstEvaluator<'_, '_> {
         }
         .with_canonical_producer()
         .into_owned();
-        self.effects
-            .observe_anonymous_nominal(DurableAnonymousNominal::new(
-                identity.clone(),
+        let ty = crate::durable_comptime::project_durable_anonymous_nominal(
+            &mut self.session,
+            crate::durable_comptime::DurableAnonymousNominalDescriptor {
+                identity,
                 shape,
-                self.provider
+                type_captures: self
+                    .provider
                     .substitutions
                     .iter()
                     .map(|(name, ty)| (name.clone(), ty.clone()))
                     .collect::<Vec<_>>()
                     .into(),
-                self.provider
+                value_captures: self
+                    .provider
                     .value_substitutions
                     .iter()
                     .map(|(name, value)| (name.clone(), value.clone()))
                     .collect::<Vec<_>>()
                     .into(),
-            ));
+            },
+        )?;
         Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
-            V::Type(DurableType::AnonymousNominal(identity)),
+            V::Type(ty),
             DurableType::ComptimeType,
         )))
     }
