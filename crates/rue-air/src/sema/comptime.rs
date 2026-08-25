@@ -517,6 +517,14 @@ mod value_domain_tests {
         static NAMED_TYPE_MISSING: Cell<bool> = const { Cell::new(false) };
     }
 
+    #[test]
+    fn entered_frame_runner_remains_engine_private() {
+        let source = include_str!("comptime.rs");
+        assert!(source.contains("pub(crate) fn evaluate_entered_frame("));
+        let public_signature = ["pub", " fn evaluate_entered_frame("].concat();
+        assert!(!source.contains(&public_signature));
+    }
+
     #[derive(Clone, Debug, PartialEq)]
     enum FakeValue {
         Integer(i128),
@@ -5520,6 +5528,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         self.evaluate(frame, &mut env)
     }
 
+    /// Evaluate an owned frame admitted by this engine's host on the current
+    /// engine stack. The caller must pass the exact non-replayable completion
+    /// ticket returned with the frame by `prepare_comptime_call`; this entry
+    /// point never creates a child engine or dispatches a peer RIR walker.
     pub(crate) fn evaluate_entered_frame(
         &mut self,
         frame: ComptimeFrame<

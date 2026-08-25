@@ -3137,6 +3137,9 @@ fn durable_comptime_services_are_named_authority_operations() {
         "DurableComptimeFailure",
         "DurableComptimeHostFailure",
         "DurableComptimeSession",
+        "DurableComptimeForeignCall",
+        "DurableComptimeForeignCallError",
+        "consume_foreign_lookup",
         "into_host_error",
         "provider_error_as_host",
         "maximum_depth",
@@ -3185,7 +3188,7 @@ fn durable_comptime_services_are_named_authority_operations() {
     let session = production_facade
         .split("pub(crate) struct DurableComptimeSession {")
         .nth(1)
-        .and_then(|source| source.split("}\n\nimpl DurableComptimeSession").next())
+        .and_then(|source| source.split("}\n\n/// The result of consuming").next())
         .expect("durable root session");
     let session_fields = session
         .lines()
@@ -3205,6 +3208,49 @@ fn durable_comptime_services_are_named_authority_operations() {
         assert!(
             !session.contains(forbidden),
             "durable session duplicated AIR frame authority: {forbidden}"
+        );
+    }
+    let foreign_adapter = production_facade
+        .split("pub(crate) enum DurableComptimeForeignCall {")
+        .nth(1)
+        .and_then(|source| source.split("impl DurableComptimeSession").next())
+        .expect("foreign lookup adapter");
+    assert!(
+        foreign_adapter
+            .contains("Ready(crate::semantic_query_nucleus::ComptimeCallResultProjection)")
+    );
+    assert!(foreign_adapter.contains("Enter {"));
+    assert!(foreign_adapter.contains("ticket: Box<DurableComptimeCallTicket>"));
+    assert!(foreign_adapter.contains("NotReady"));
+    for required in [
+        "ReadyFailure(crate::semantic_query_nucleus::SemanticNucleusFailure)",
+        "ReadyQueryFailure(rue_query::QueryFailure)",
+        "AdmissionFailure(crate::body_query::ForeignComptimeProgramProjectionFailure)",
+        "UnexpectedReadyProjection",
+    ] {
+        assert!(
+            foreign_adapter.contains(required),
+            "missing explicit lookup error: {required}"
+        );
+    }
+    assert!(!foreign_adapter.contains("Lookup(ForeignComptimeCallLookup)"));
+    assert!(!foreign_adapter.contains("SemanticConstEvaluator"));
+    assert!(!foreign_adapter.contains("ComptimeEngine"));
+    assert!(!production_facade.contains("impl Clone for DurableComptimeForeignCall"));
+    assert!(!production_facade.contains("impl Clone for DurableComptimeCallTicket"));
+    for (kind, non_replayable) in [
+        ("struct", "DurableComptimeCallTicket"),
+        ("enum", "DurableComptimeForeignCall"),
+    ] {
+        let derive = production_facade
+            .split(&format!("pub(crate) {kind} {non_replayable}"))
+            .next()
+            .and_then(|source| source.rsplit("#[derive(").next())
+            .and_then(|source| source.split(")]").next())
+            .expect("non-replayable durable handoff derive");
+        assert!(
+            !derive.split(',').any(|item| item.trim() == "Clone"),
+            "durable handoff capability became replayable: {non_replayable}"
         );
     }
     assert_eq!(
@@ -3341,6 +3387,35 @@ fn durable_comptime_services_are_named_authority_operations() {
     assert!(ready_projection.contains("edge: &mut DurableComptimeCallEdge"));
     assert!(!ready_projection.contains("policy:"));
     assert!(ready_projection.contains("edge.application_policy"));
+    assert_eq!(
+        production_facade
+            .matches("self.validate_ready_edge(edge)?;")
+            .count(),
+        1,
+        "ready-edge validation must have one canonical implementation"
+    );
+    assert_eq!(
+        production_facade.matches("ready.merge_projection(").count(),
+        1,
+        "ready projection observation merging must have one canonical implementation"
+    );
+    assert_eq!(
+        production_facade
+            .matches(".merge_child(ready, &edge.application_policy);")
+            .count(),
+        1,
+        "ready edge policy application must have one canonical implementation"
+    );
+    let owned_ready = production_facade
+        .split("pub(crate) fn merge_ready_projection_owned(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n    /// Consume a foreign-call lookup")
+                .next()
+        })
+        .expect("owned ready projection lifecycle operation");
+    assert!(owned_ready.contains("self.merge_ready_projection(edge, &projection)?;"));
     assert!(facade.contains("pub(crate) fn prepare_expression_edge("));
     assert!(facade.contains("pub(crate) fn prepare_structured_edge("));
     let direct_prepare_prefix = facade
@@ -3678,7 +3753,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         "durable named calls must issue the lifecycle edge before query lookup"
     );
     assert!(
-        named_call.contains("finish_ready_expression_edge(&mut edge, &value)"),
+        named_call.contains("finish_ready_expression_edge(edge, value)"),
         "ready comptime projections must publish through the lifecycle edge"
     );
     assert!(
@@ -3692,7 +3767,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         .find("self.provider.query(query)")
         .expect("named-call semantic query");
     let finish_edge = named_call
-        .find("finish_ready_expression_edge(&mut edge, &value)")
+        .find("finish_ready_expression_edge(edge, value)")
         .expect("named-call ready edge completion");
     assert!(
         edge < query && query < finish_edge,

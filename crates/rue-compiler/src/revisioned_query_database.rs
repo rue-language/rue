@@ -7938,20 +7938,21 @@ impl SemanticConstEvaluator<'_, '_> {
             value_arguments: value_arguments.into(),
         });
         let _depth = SemanticComptimeCallDepthGuard::enter(&name)?;
-        let mut edge = self
+        let edge = self
             .session
             .prepare_expression_edge(call_ordinal)
             .map_err(|error| Self::failure_value(format!("durable call lifecycle: {error:?}")))?;
         let queried = self.provider.query(query).map_err(Self::provider_error)?;
         match queried {
             SemanticNucleusValue::ComptimeCall(value) => {
-                self.session
-                    .finish_ready_expression_edge(&mut edge, &value)
+                let value = self
+                    .session
+                    .finish_ready_expression_edge(edge, value)
                     .map_err(|error| {
                         Self::failure_value(format!("durable call lifecycle: {error:?}"))
                     })?;
                 Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
-                    match value.result {
+                    match value {
                         ComptimeCallResultProjection::Type(value) => {
                             crate::durable_semantics::DurableConstValue::Type(value)
                         }
