@@ -3368,10 +3368,80 @@ fn durable_comptime_services_are_named_authority_operations() {
     assert!(!foreign_adapter.contains("SemanticConstEvaluator"));
     assert!(!foreign_adapter.contains("ComptimeEngine"));
     let comptime_probe = database
-        .split("fn probe_comptime_call_inner(")
+        .split("struct DurableComptimeForeignQueryAuthority<'a> {")
         .nth(1)
-        .and_then(|source| source.split("pub(crate) fn probe_comptime_call(").next())
-        .expect("compiler comptime probe adapter");
+        .and_then(|source| source.split("impl CompilerBodyFactProvider").next())
+        .expect("canonical compiler comptime probe authority");
+    let probe_fields = database
+        .split("struct DurableComptimeForeignQueryAuthority<'a> {")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("}\n\n#[allow(dead_code)] // activated by the staged durable AIR host\nimpl")
+                .next()
+        })
+        .expect("foreign probe authority fields");
+    let probe_field_lines = probe_fields
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.ends_with(','))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        probe_field_lines,
+        [
+            "context: &'a QueryContext,",
+            "semantic_nucleus: &'a SemanticNucleusFamily,",
+            "&'a QueryFamily<DeclarationBodyPlanQueryKey, DeclarationBodyPlanArtifactsValue>,",
+            "configuration: &'a crate::semantic_query_nucleus::SemanticQueryConfiguration,",
+        ],
+        "foreign probe authority must retain exactly four narrow query authorities"
+    );
+    assert!(probe_fields.contains(
+        "declaration_body_plan_artifacts:\n        &'a QueryFamily<DeclarationBodyPlanQueryKey, DeclarationBodyPlanArtifactsValue>,"
+    ));
+    assert_eq!(
+        comptime_probe
+            .matches("join_registered_noncomputing(")
+            .count(),
+        1
+    );
+    assert_eq!(comptime_probe.matches("query_registered(").count(), 1);
+    assert_eq!(
+        comptime_probe
+            .matches("OwnedForeignComptimeProgram::from_body_plan")
+            .count(),
+        1
+    );
+    let join_at = comptime_probe
+        .find("join_registered_noncomputing(")
+        .expect("foreign probe begins with a non-computing semantic lookup");
+    let artifact_at = comptime_probe
+        .find("query_registered(")
+        .expect("foreign probe may query only the declaration body-plan family");
+    let admission_at = comptime_probe
+        .find("OwnedForeignComptimeProgram::from_body_plan")
+        .expect("a cold foreign probe admits the owned body plan");
+    assert!(join_at < artifact_at && artifact_at < admission_at);
+    assert!(comptime_probe.contains("self.declaration_body_plan_artifacts"));
+    assert!(!comptime_probe.contains("query_registered(self.semantic_nucleus"));
+    assert_eq!(
+        database
+            .matches(
+                "impl crate::durable_comptime::DurableComptimeForeignCallAuthority\n    for DurableComptimeForeignQueryAuthority"
+            )
+            .count(),
+        1,
+        "one narrow query authority must own foreign-call probe policy"
+    );
+    assert_eq!(
+        database
+            .matches(
+                "impl crate::durable_comptime::DurableComptimeForeignCallAuthority for CompilerBodyFactProvider"
+            )
+            .count(),
+        0,
+        "the broad body provider must not implement foreign-call policy"
+    );
     assert!(
         comptime_probe.contains("join_registered_noncomputing(")
             && !comptime_probe.contains("probe_registered_ready("),
@@ -3382,6 +3452,45 @@ fn durable_comptime_services_are_named_authority_operations() {
             && !comptime_probe.contains("query_task_registered"),
         "comptime probe must not validate retained candidates or demand a peer query body"
     );
+    for forbidden in [
+        "SemanticConstEvaluator",
+        "ComptimeEngine",
+        "InstData",
+        "InstRef",
+        "query(&self.queries.semantic_nucleus",
+        "query(&self.semantic_nucleus",
+        "query_task_registered",
+        "valid_for_revision",
+    ] {
+        assert!(
+            !comptime_probe.contains(forbidden),
+            "foreign probe authority gained forbidden computation authority: {forbidden}"
+        );
+    }
+    for required in [
+        "context: &'a QueryContext",
+        "semantic_nucleus: &'a SemanticNucleusFamily",
+        "declaration_body_plan_artifacts:",
+        "configuration: &'a crate::semantic_query_nucleus::SemanticQueryConfiguration",
+        "ReadyQueryProbe::Miss | rue_query::ReadyQueryProbe::NotReady",
+        "OwnedForeignComptimeProgram::from_body_plan",
+    ] {
+        assert!(
+            comptime_probe.contains(required),
+            "foreign probe authority lost an exact query-side operation: {required}"
+        );
+    }
+    assert!(database.contains("DurableComptimeServices::new(&authority).probe_comptime_call("));
+    assert!(production_facade.contains("pub(crate) fn registered_program("));
+    let registry_accessor = production_facade
+        .split("pub(crate) fn registered_program(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn observe_anonymous_nominal").next())
+        .expect("keyed durable program registry accessor");
+    assert!(registry_accessor.contains("self.programs.get(key)"));
+    assert!(!registry_accessor.contains("ComptimeEngine"));
+    assert!(!registry_accessor.contains("InstData"));
+    assert!(!registry_accessor.contains("InstRef"));
     assert!(!production_facade.contains("impl Clone for DurableComptimeForeignCall"));
     assert!(!production_facade.contains("impl Clone for DurableComptimeCallTicket"));
     for (kind, non_replayable) in [
@@ -4377,7 +4486,26 @@ fn durable_comptime_services_are_named_authority_operations() {
         .nth(1)
         .and_then(|source| source.split("impl rue_air::BodyFactProvider").next())
         .expect("body fact provider source");
-    assert!(provider.contains("DurableComptimeServices::new(self).probe_comptime_call"));
+    let provider_probe = provider
+        .split("pub(crate) fn probe_comptime_call(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn nucleus(").next())
+        .expect("broad provider probe adapter");
+    assert!(provider_probe.contains("DurableComptimeForeignQueryAuthority {"));
+    assert!(
+        provider_probe.contains("DurableComptimeServices::new(&authority).probe_comptime_call")
+    );
+    for forbidden in [
+        "join_registered_noncomputing(",
+        "query_registered(",
+        "OwnedForeignComptimeProgram::from_body_plan",
+    ] {
+        assert!(
+            !provider_probe.contains(forbidden),
+            "broad provider must not retain foreign probe policy: {forbidden}"
+        );
+    }
+    assert!(provider.contains("DurableComptimeServices::new(&authority).probe_comptime_call"));
 }
 
 #[test]
