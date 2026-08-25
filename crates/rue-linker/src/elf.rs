@@ -82,6 +82,7 @@ use crate::constants::{
     STT_SECTION,
 };
 use ahash::AHashMap;
+use std::sync::Arc;
 
 /// Helper to read a u16 from a byte slice at a given offset.
 /// Panics if offset + 2 > slice.len(), so caller must ensure bounds.
@@ -159,6 +160,47 @@ pub struct ObjectFile {
     pub format: ObjectFormat,
 }
 
+/// A compiler-owned link input whose section atoms remain shared with the
+/// code-generation query.  Unlike [`ObjectFile`], this representation has no
+/// object-container bytes to parse and each atom can be consumed without a
+/// transient flattening allocation.
+#[derive(Debug, Clone)]
+pub struct StructuredObject {
+    /// Sections in object-local order.
+    pub(crate) sections: Vec<StructuredSection>,
+    /// Symbols use the section indices in `sections` and relocation symbol
+    /// indices use this vector, just like [`ObjectFile`].
+    pub(crate) symbols: Vec<Symbol>,
+    /// The machine architecture of this input.
+    pub(crate) machine: ElfMachine,
+    /// The logical object format selected by the target.
+    pub(crate) format: ObjectFormat,
+}
+
+/// One section of a [`StructuredObject`].  Atoms are deliberately retained as
+/// independent `Arc` byte containers so the linker only copies into its final
+/// merged image.
+#[derive(Debug, Clone)]
+pub(crate) struct StructuredSection {
+    pub(crate) name: String,
+    pub(crate) atoms: Arc<[Arc<[u8]>]>,
+    pub(crate) size: u64,
+    pub(crate) flags: SectionFlags,
+    pub(crate) relocations: Vec<Relocation>,
+    pub(crate) align: u64,
+}
+
+/// A relocation in a retained compiler function object. The compiler maps its
+/// backend relocation enum to this linker-owned enum before calling the
+/// function-object constructor; section and symbol conventions stay here.
+#[derive(Debug, Clone)]
+pub struct StructuredRelocation {
+    pub offset: u64,
+    pub symbol: String,
+    pub rel_type: RelocationType,
+    pub addend: i64,
+}
+
 /// Relocatable object container format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectFormat {
@@ -181,6 +223,141 @@ pub struct Section {
     pub relocations: Vec<Relocation>,
     /// Alignment requirement.
     pub align: u64,
+}
+
+impl StructuredObject {
+    /// Expose the retained atom containers for linker-owned consumers without
+    /// exposing the object-construction representation itself.
+    pub fn section_atoms(&self, index: usize) -> Option<&[Arc<[u8]>]> {
+        self.sections
+            .get(index)
+            .map(|section| section.atoms.as_ref())
+    }
+
+    /// Construct the canonical structured object emitted for one retained Rue
+    /// function. The linker owns section names, local string-symbol naming,
+    /// symbol indices, target format, and Mach-O alignment conventions.
+    #[must_use]
+    pub fn function(
+        target: rue_target::Target,
+        defined_symbol: impl Into<String>,
+        text_atoms: Arc<[Arc<[u8]>]>,
+        rodata_atoms: Arc<[Arc<[u8]>]>,
+        relocations: Vec<StructuredRelocation>,
+    ) -> Self {
+        let machine = match target {
+            rue_target::Target::X86_64Linux => ElfMachine::X86_64,
+            rue_target::Target::Aarch64Linux | rue_target::Target::Aarch64Macos => {
+                ElfMachine::Aarch64
+            }
+        };
+        let format = if target.is_macho() {
+            ObjectFormat::MachO
+        } else {
+            ObjectFormat::Elf
+        };
+        let text_size = atoms_size(&text_atoms);
+        let rodata_size = atoms_size(&rodata_atoms);
+        let mut symbols = vec![Symbol {
+            name: defined_symbol.into(),
+            section_index: Some(0),
+            value: 0,
+            size: text_size,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::Func,
+        }];
+        let mut symbol_indices = AHashMap::new();
+        let mut rodata_offset = 0_u64;
+        for (index, atom) in rodata_atoms.iter().enumerate() {
+            if !(target.is_macho() && atom.is_empty()) {
+                let name = format!(".rodata.str{index}");
+                symbol_indices.insert(name.clone(), symbols.len());
+                symbols.push(Symbol {
+                    name,
+                    section_index: Some(1),
+                    value: rodata_offset,
+                    size: 0,
+                    binding: SymbolBinding::Local,
+                    sym_type: SymbolType::None,
+                });
+            }
+            rodata_offset += atom.len() as u64;
+        }
+        let linker_relocations = relocations
+            .into_iter()
+            .filter_map(|relocation| {
+                if target.is_macho()
+                    && relocation.symbol.starts_with(".rodata.str")
+                    && relocation
+                        .symbol
+                        .strip_prefix(".rodata.str")
+                        .and_then(|index| index.parse::<usize>().ok())
+                        .and_then(|index| rodata_atoms.get(index))
+                        .is_some_and(|atom| atom.is_empty())
+                {
+                    return None;
+                }
+                let symbol_index = if relocation.symbol == symbols[0].name {
+                    0
+                } else if let Some(&index) = symbol_indices.get(&relocation.symbol) {
+                    index
+                } else {
+                    let index = symbols.len();
+                    symbol_indices.insert(relocation.symbol.clone(), index);
+                    symbols.push(Symbol {
+                        name: relocation.symbol,
+                        section_index: None,
+                        value: 0,
+                        size: 0,
+                        binding: SymbolBinding::Global,
+                        sym_type: SymbolType::None,
+                    });
+                    index
+                };
+                Some(Relocation {
+                    offset: relocation.offset,
+                    symbol_index,
+                    rel_type: relocation.rel_type,
+                    addend: relocation.addend,
+                })
+            })
+            .collect();
+        let mut sections = vec![StructuredSection {
+            name: ".text".into(),
+            atoms: text_atoms,
+            size: text_size,
+            flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+            relocations: linker_relocations,
+            align: if target.is_macho() { 4 } else { 16 },
+        }];
+        let has_rodata = if target.is_macho() {
+            rodata_size != 0
+        } else {
+            !rodata_atoms.is_empty()
+        };
+        if has_rodata {
+            sections.push(StructuredSection {
+                name: ".rodata".into(),
+                atoms: rodata_atoms,
+                size: rodata_size,
+                flags: SectionFlags::ALLOC,
+                relocations: Vec::new(),
+                // ObjectBuilder emits both ELF and Mach-O rodata at 8-byte
+                // alignment; structured admission must preserve that layout.
+                align: 8,
+            });
+        }
+        Self {
+            sections,
+            symbols,
+            machine,
+            format,
+        }
+    }
+}
+
+fn atoms_size(atoms: &[Arc<[u8]>]) -> u64 {
+    atoms.iter().map(|atom| atom.len() as u64).sum()
 }
 
 /// Section flags.
@@ -1398,6 +1575,26 @@ impl ObjectFile {
 mod tests {
     use super::*;
     use crate::constants::{EI_CLASS, EI_DATA, EI_VERSION, ELF64_SHDR_SIZE as TEST_SHDR_SIZE};
+
+    #[test]
+    fn structured_object_preserves_arc_atom_ownership() {
+        let text = Arc::<[u8]>::from(*b"ret");
+        let object = StructuredObject {
+            sections: vec![StructuredSection {
+                name: ".text".into(),
+                atoms: Arc::from([text.clone()]),
+                size: text.len() as u64,
+                flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+                relocations: Vec::new(),
+                align: 16,
+            }],
+            symbols: Vec::new(),
+            machine: ElfMachine::X86_64,
+            format: ObjectFormat::Elf,
+        };
+        assert!(Arc::ptr_eq(&object.sections[0].atoms[0], &text));
+        assert_eq!(object.sections[0].size, 3);
+    }
 
     #[test]
     fn test_parse_error_display() {

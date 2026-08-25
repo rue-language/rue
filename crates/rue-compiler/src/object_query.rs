@@ -1,9 +1,9 @@
 //! Retained target-object projections of canonical codegen terminals.
 //!
 //! Object serialization is a typed query downstream of one exact
-//! `CodegenUnit` key. The fresh linker remains deliberately stateless: it
-//! consumes these stable bytes on every link, while unchanged units reuse the
-//! retained projection owned by the compiler query graph.
+//! `CodegenUnit` key. The byte projection remains the canonical boundary for
+//! object emission and system linking; ordinary internal links consume the
+//! retained CodegenUnit beside it through the linker's structured adapter.
 
 use std::{
     hash::{Hash, Hasher},
@@ -122,9 +122,8 @@ impl QueryKey for ObjectProjectionQueryKey {
 }
 
 /// Retained object-container bytes and their stable content identity for one
-/// codegen unit. Fresh linking consumes only the immutable bytes, so the
-/// durable digest is computed once on demand if a later plan comparison needs
-/// it.
+/// codegen unit. The immutable projection is still used for public object
+/// output, system linking, and durable plan identity.
 #[derive(Debug, Clone)]
 pub(crate) struct ObjectProjection {
     pub(crate) bytes: Arc<[u8]>,

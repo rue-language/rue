@@ -2023,11 +2023,11 @@ mod tests {
             ("codegen_unit", "mir_lowering"),
             ("codegen_unit", "register_allocation"),
             ("codegen_unit", "machine_emission"),
-            // Object serialization runs after collecting the query units, so
-            // it remains a sibling of those backend leaves.
-            ("compile_pipeline", "object_serialization"),
+            // Object serialization remains a sibling of the backend leaves
+            // for object output and system linking. The ordinary internal
+            // link admits the retained units through the structured adapter.
             ("compile_pipeline", "linker"),
-            ("linker", "link_parse_objects"),
+            ("linker", "link_structured_admission"),
             ("linker", "link_layout"),
             ("linker", "link_emit"),
         ] {

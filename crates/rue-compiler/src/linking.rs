@@ -478,14 +478,13 @@ fn validate_runtime_archive(runtime_bytes: &[u8], target: Target) -> Result<Arch
     Ok(archive)
 }
 
+#[allow(dead_code)] // retained for byte-container linker callers and focused tests
 pub(crate) fn link_internal_with_warnings(
     options: &CompileOptions,
     object_files: &[Vec<u8>],
     warnings: &[CompileWarning],
 ) -> MultiErrorResult<CompileOutput> {
     let _span = info_span!("linker", mode = "internal", phase = "linking").entered();
-
-    let runtime_bytes = runtime_for_target(options.target);
 
     let mut linker = Linker::new(options.target);
 
@@ -503,24 +502,22 @@ pub(crate) fn link_internal_with_warnings(
         }
     }
 
-    // Determine the entry point symbol based on target.
-    // ELF: _start (runtime's entry point that calls main)
-    // Mach-O: __main (runtime's entry point that calls _main)
+    finish_internal_link(linker, options, object_files.len(), warnings)
+}
+
+fn finish_internal_link(
+    mut linker: Linker,
+    options: &CompileOptions,
+    object_count: usize,
+    warnings: &[CompileWarning],
+) -> MultiErrorResult<CompileOutput> {
+    let runtime_bytes = runtime_for_target(options.target);
     let entry_point = if options.target.is_macho() {
         "__main"
     } else {
         "_start"
     };
-
-    // Mark the entry point as required so it gets pulled from the archive.
-    // The entry point must be marked before adding the archive because
-    // archive linking only includes objects that define needed symbols.
     linker.require_symbol(entry_point);
-
-    // Add user-supplied static archives (`--link-archive`, ADR-0064 C FFI)
-    // before the runtime so a foreign member that itself depends on a runtime
-    // symbol can still be satisfied. Each archive resolves the undefined
-    // `extern "C"` symbols referenced by the compiled objects.
     {
         let _span = info_span!("link_archive_resolve").entered();
         for archive_path in &options.link_archives {
@@ -532,8 +529,6 @@ pub(crate) fn link_internal_with_warnings(
                 .map_err(link_error)
                 .map_err(CompileErrors::from)?;
         }
-
-        // Add the runtime library
         let runtime = validate_runtime_archive(runtime_bytes, options.target)
             .map_err(link_error)
             .map_err(CompileErrors::from)?;
@@ -542,10 +537,6 @@ pub(crate) fn link_internal_with_warnings(
             .map_err(link_error)
             .map_err(CompileErrors::from)?;
     }
-
-    // Link to executable. An undefined symbol at this point is an unresolved
-    // `extern "C"` import (or a runtime gap); name the symbol and the archives
-    // that were searched (ADR-0064 C FFI).
     let executable = linker
         .link(entry_point)
         .map_err(|err| match &err {
@@ -564,11 +555,10 @@ pub(crate) fn link_internal_with_warnings(
         })
         .map_err(CompileErrors::from)?;
     info!(
-        object_count = object_files.len(),
+        object_count,
         output_bytes = executable.len(),
         "linking complete"
     );
-
     Ok(CompileOutput {
         elf: executable,
         warnings: warnings.to_vec(),
@@ -579,6 +569,104 @@ pub(crate) fn link_internal_with_warnings(
         provider_observations: crate::unstable::ProviderObservationMetrics::default(),
         publication: crate::unstable::PublicationMetrics::default(),
     })
+}
+
+/// Link retained compiler units directly. Export thunks remain serialized
+/// because they are synthesized outside the retained CodegenUnit query.
+pub(crate) fn link_internal_structured_with_warnings(
+    options: &CompileOptions,
+    objects: &[crate::object_query::CollectedObjectProjection],
+    export_thunk_objects: &[Vec<u8>],
+    warnings: &[CompileWarning],
+) -> MultiErrorResult<CompileOutput> {
+    link_internal_structured_admission(
+        options,
+        objects.len(),
+        export_thunk_objects,
+        warnings,
+        |linker| {
+            objects.iter().try_for_each(|collected| {
+                admit_structured_unit(linker, &collected.unit, options.target)
+            })
+        },
+    )
+}
+
+pub(crate) fn link_internal_structured_units_with_warnings(
+    options: &CompileOptions,
+    units: &[crate::codegen_query::CollectedCodegenUnit],
+    export_thunk_objects: &[Vec<u8>],
+    warnings: &[CompileWarning],
+) -> MultiErrorResult<CompileOutput> {
+    link_internal_structured_admission(
+        options,
+        units.len(),
+        export_thunk_objects,
+        warnings,
+        |linker| {
+            units.iter().try_for_each(|collected| {
+                admit_structured_unit(linker, &collected.unit, options.target)
+            })
+        },
+    )
+}
+
+fn link_internal_structured_admission(
+    options: &CompileOptions,
+    object_count: usize,
+    export_thunk_objects: &[Vec<u8>],
+    warnings: &[CompileWarning],
+    mut admit: impl FnMut(&mut Linker) -> MultiErrorResult<()>,
+) -> MultiErrorResult<CompileOutput> {
+    let _span = info_span!("linker", mode = "internal", phase = "linking").entered();
+    let mut linker = Linker::new(options.target);
+    {
+        let _span = info_span!(
+            "link_structured_admission",
+            object_count = object_count,
+            export_thunk_count = export_thunk_objects.len()
+        )
+        .entered();
+        admit(&mut linker)?;
+        add_export_thunks(&mut linker, export_thunk_objects)?;
+    }
+    finish_internal_link(
+        linker,
+        options,
+        object_count + export_thunk_objects.len(),
+        warnings,
+    )
+}
+
+fn add_export_thunks(
+    linker: &mut Linker,
+    export_thunk_objects: &[Vec<u8>],
+) -> MultiErrorResult<()> {
+    // C-ABI entry thunks are not retained CodegenUnits; preserve their
+    // established byte-container path and diagnostics.
+    for bytes in export_thunk_objects {
+        let object = ObjectFile::parse(bytes)
+            .map_err(link_error)
+            .map_err(CompileErrors::from)?;
+        linker
+            .add_object(object)
+            .map_err(link_error)
+            .map_err(CompileErrors::from)?;
+    }
+    Ok(())
+}
+
+fn admit_structured_unit(
+    linker: &mut Linker,
+    unit: &crate::codegen_query::CodegenUnit,
+    target: Target,
+) -> MultiErrorResult<()> {
+    let object = crate::backend::project_backend_structured_object(unit, target)
+        .map_err(CompileErrors::from)?;
+    linker
+        .add_structured_object(object)
+        .map_err(link_error)
+        .map_err(CompileErrors::from)
 }
 
 /// Link using an external system linker.

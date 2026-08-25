@@ -11,9 +11,11 @@ use crate::constants::{
     ELF_MAGIC, ELF64_EHDR_SIZE, ELF64_PHDR_SIZE, ELFCLASS64, ELFDATA2LSB, ET_EXEC, EV_CURRENT,
     PF_R, PF_W, PF_X, PT_LOAD,
 };
-use crate::elf::Section;
-use crate::elf::{ObjectFile, RelocationType, SectionFlags, Symbol, SymbolBinding};
+use crate::elf::{ObjectFile, Relocation, RelocationType, SectionFlags, Symbol, SymbolBinding};
 use crate::util::align_up;
+
+#[cfg(test)]
+use crate::elf::Section;
 
 /// Which merged output buffer a relocation's patch site lives in.
 ///
@@ -212,7 +214,7 @@ fn checked_relocation_offset(
 /// A zero-size symbol may point exactly one byte past the final section byte
 /// (the conventional end-marker position). Any nonzero extent must remain
 /// wholly inside the defining section.
-fn validate_defined_symbols(obj: &ObjectFile) -> Result<(), LinkError> {
+fn validate_defined_symbols(obj: &LinkObject) -> Result<(), LinkError> {
     for sym in &obj.symbols {
         let Some(section_index) = sym.section_index else {
             continue;
@@ -704,8 +706,8 @@ struct PendingRelocation {
 /// indices and skipping null-symbol relocations and relocations against
 /// sections we don't link (debug/unwind).
 fn collect_section_relocations(
-    obj: &ObjectFile,
-    section: &Section,
+    obj: &LinkObject,
+    section: &LinkSection,
     merged_offset: u64,
     obj_idx: usize,
     home: PatchHome,
@@ -758,7 +760,12 @@ fn collect_section_relocations(
         }
 
         let patch_size = relocation_patch_size(reloc.rel_type)?;
-        checked_patch_range(reloc.offset, patch_size, section.data.len(), reloc.rel_type)?;
+        checked_patch_range(
+            reloc.offset,
+            patch_size,
+            section.content_len(),
+            reloc.rel_type,
+        )?;
         let offset = checked_relocation_offset(merged_offset, reloc.offset, reloc.rel_type)?;
 
         pending.push(PendingRelocation {
@@ -956,6 +963,94 @@ impl std::fmt::Display for LinkError {
 
 impl std::error::Error for LinkError {}
 
+#[derive(Debug, Clone)]
+enum LinkSectionContent {
+    Bytes(Vec<u8>),
+    Atoms(std::sync::Arc<[std::sync::Arc<[u8]>]>),
+}
+
+#[derive(Debug, Clone)]
+struct LinkSection {
+    name: String,
+    content: LinkSectionContent,
+    /// The number of initialized bytes represented by `content`.
+    ///
+    /// Structured sections are atom-backed, so calculating this by walking
+    /// every atom at each relocation site would turn admission into an
+    /// O(atoms * relocations) operation. Cache it at the normalized admission
+    /// boundary instead.
+    content_len: usize,
+    size: u64,
+    flags: SectionFlags,
+    relocations: Vec<Relocation>,
+    align: u64,
+}
+
+impl LinkSection {
+    fn content_len(&self) -> usize {
+        self.content_len
+    }
+
+    fn extend_contents(&self, output: &mut Vec<u8>) {
+        match &self.content {
+            LinkSectionContent::Bytes(bytes) => output.extend_from_slice(bytes),
+            LinkSectionContent::Atoms(atoms) => {
+                for atom in atoms.iter() {
+                    output.extend_from_slice(atom);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LinkObject {
+    sections: Vec<LinkSection>,
+    symbols: Vec<Symbol>,
+}
+
+impl From<ObjectFile> for LinkObject {
+    fn from(object: ObjectFile) -> Self {
+        Self {
+            sections: object
+                .sections
+                .into_iter()
+                .map(|section| LinkSection {
+                    name: section.name,
+                    content_len: section.data.len(),
+                    content: LinkSectionContent::Bytes(section.data),
+                    size: section.size,
+                    flags: section.flags,
+                    relocations: section.relocations,
+                    align: section.align,
+                })
+                .collect(),
+            symbols: object.symbols,
+        }
+    }
+}
+
+impl From<crate::elf::StructuredObject> for LinkObject {
+    fn from(object: crate::elf::StructuredObject) -> Self {
+        Self {
+            sections: object
+                .sections
+                .into_iter()
+                .map(|section| LinkSection {
+                    name: section.name,
+                    content_len: section.atoms.iter().map(|atom| atom.len()).sum(),
+                    content: LinkSectionContent::Atoms(section.atoms),
+                    size: section.size,
+                    flags: section.flags,
+                    relocations: section.relocations,
+                    align: section.align,
+                })
+                .collect(),
+            symbols: object.symbols,
+        }
+    }
+}
+
 /// The linker.
 pub struct Linker {
     /// The target architecture and OS.
@@ -967,7 +1062,7 @@ pub struct Linker {
     /// Symbol table: name -> (object_index, symbol).
     global_symbols: AHashMap<String, (usize, Symbol)>,
     /// All object files we're linking.
-    objects: Vec<ObjectFile>,
+    objects: Vec<LinkObject>,
     /// Symbols that must be resolved (e.g., entry point).
     /// These are treated as undefined during archive linking.
     required_symbols: Vec<String>,
@@ -1013,6 +1108,10 @@ impl Linker {
             });
         }
 
+        self.add_link_object(LinkObject::from(obj))
+    }
+
+    fn add_link_object(&mut self, obj: LinkObject) -> Result<(), LinkError> {
         validate_defined_symbols(&obj)?;
 
         let obj_index = self.objects.len();
@@ -1044,6 +1143,38 @@ impl Linker {
 
         self.objects.push(obj);
         Ok(())
+    }
+
+    /// Add a compiler-owned object without serializing it into an object
+    /// container first. The structured sections are converted into the same
+    /// stateless object table used by parsed inputs; their `Arc` atoms remain
+    /// shared until the final merged image is built.
+    pub fn add_structured_object(
+        &mut self,
+        obj: crate::elf::StructuredObject,
+    ) -> Result<(), LinkError> {
+        let expected = match self.target {
+            Target::X86_64Linux => crate::elf::ElfMachine::X86_64,
+            Target::Aarch64Linux | Target::Aarch64Macos => crate::elf::ElfMachine::Aarch64,
+        };
+        let expected_format = if self.target.is_macho() {
+            crate::elf::ObjectFormat::MachO
+        } else {
+            crate::elf::ObjectFormat::Elf
+        };
+        if obj.format != expected_format {
+            return Err(LinkError::ArchMismatch {
+                object_machine: format!("format {:?}", obj.format),
+                target: format!("format {:?}", expected_format),
+            });
+        }
+        if obj.machine != expected {
+            return Err(LinkError::ArchMismatch {
+                object_machine: format!("{:?}", obj.machine),
+                target: format!("{:?}", self.target),
+            });
+        }
+        self.add_link_object(LinkObject::from(obj))
     }
 
     /// Add objects from an ar archive selectively based on symbol resolution.
@@ -1214,7 +1345,7 @@ impl Linker {
         // Merge code sections (.text* / __text)
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if !is_text_section(&section.name) || section.data.is_empty() {
+                if !is_text_section(&section.name) || section.content_len() == 0 {
                     continue;
                 }
 
@@ -1234,7 +1365,7 @@ impl Linker {
 
                 let offset = merged_text.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
-                merged_text.extend_from_slice(&section.data);
+                section.extend_contents(&mut merged_text);
 
                 collect_section_relocations(
                     obj,
@@ -1267,7 +1398,7 @@ impl Linker {
 
                 let offset = merged_text.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
-                merged_text.extend_from_slice(&section.data);
+                section.extend_contents(&mut merged_text);
 
                 collect_section_relocations(
                     obj,
@@ -1285,7 +1416,7 @@ impl Linker {
         // RUE-131 item 8; the ELF side got the same fix via PatchHome in #928)
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if !is_data_section(&section.name) || section.data.is_empty() {
+                if !is_data_section(&section.name) || section.content_len() == 0 {
                     continue;
                 }
 
@@ -1295,7 +1426,7 @@ impl Linker {
 
                 let offset = merged_data.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
-                merged_data.extend_from_slice(&section.data);
+                section.extend_contents(&mut merged_data);
 
                 collect_section_relocations(
                     obj,
@@ -1643,7 +1774,9 @@ impl Linker {
         // Merge code sections (.text*)
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if classify_section(&section.name) != SectionKind::Text || section.data.is_empty() {
+                if classify_section(&section.name) != SectionKind::Text
+                    || section.content_len() == 0
+                {
                     continue;
                 }
 
@@ -1662,7 +1795,7 @@ impl Linker {
                 let offset = merged_text.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
 
-                merged_text.extend_from_slice(&section.data);
+                section.extend_contents(&mut merged_text);
 
                 collect_section_relocations(
                     obj,
@@ -1694,7 +1827,7 @@ impl Linker {
                 let offset = merged_rodata.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
 
-                merged_rodata.extend_from_slice(&section.data);
+                section.extend_contents(&mut merged_rodata);
 
                 collect_section_relocations(
                     obj,
@@ -1714,7 +1847,7 @@ impl Linker {
                     continue;
                 }
                 // Skip empty .data sections
-                if section.data.is_empty() {
+                if section.content_len() == 0 {
                     continue;
                 }
 
@@ -1725,7 +1858,7 @@ impl Linker {
                 let offset = merged_data.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
 
-                merged_data.extend_from_slice(&section.data);
+                section.extend_contents(&mut merged_data);
 
                 collect_section_relocations(
                     obj,
@@ -2166,6 +2299,7 @@ mod tests {
     };
     use crate::elf::{ObjectFile, ObjectFormat, SectionFlags};
     use crate::emit::{CodeRelocation, ObjectBuilder};
+    use std::sync::Arc;
 
     // Use X86_64Linux explicitly for ELF tests since ObjectFile only parses ELF
     // and the Linker produces ELF executables
@@ -2186,7 +2320,7 @@ mod tests {
         ObjectFile {
             sections: vec![Section {
                 name: ".text".into(),
-                data: vec![0xC3; section_size],
+                data: vec![0xC3; section_size].into(),
                 size: section_size as u64,
                 flags: crate::elf::SectionFlags::ALLOC | crate::elf::SectionFlags::EXEC,
                 relocations: vec![],
@@ -2197,6 +2331,190 @@ mod tests {
             machine: crate::elf::ElfMachine::X86_64,
             format: ObjectFormat::Elf,
         }
+    }
+
+    #[test]
+    fn structured_function_matches_serialized_executable_on_all_targets() {
+        for target in [
+            Target::X86_64Linux,
+            Target::Aarch64Linux,
+            Target::Aarch64Macos,
+        ] {
+            let serialized = ObjectBuilder::new(target, "main")
+                .code(match target {
+                    Target::X86_64Linux => vec![0xC3],
+                    Target::Aarch64Linux | Target::Aarch64Macos => vec![0xC0, 0x03, 0x5F, 0xD6],
+                })
+                .strings(vec!["literal".into(), String::new()])
+                .build();
+            let parsed = ObjectFile::parse(&serialized).unwrap();
+            let mut byte_linker = Linker::new(target);
+            byte_linker.add_object(parsed).unwrap();
+            let byte_output = byte_linker.link("main").unwrap();
+
+            let text = match target {
+                Target::X86_64Linux => Arc::<[u8]>::from(*b"\xC3"),
+                Target::Aarch64Linux | Target::Aarch64Macos => {
+                    Arc::<[u8]>::from(*b"\xC0\x03\x5F\xD6")
+                }
+            };
+            let structured = crate::StructuredObject::function(
+                target,
+                "main",
+                Arc::from([text]),
+                Arc::from([Arc::from(*b"literal"), Arc::from(*b"")]),
+                Vec::new(),
+            );
+            let mut structured_linker = Linker::new(target);
+            structured_linker.add_structured_object(structured).unwrap();
+            assert_eq!(
+                byte_output,
+                structured_linker.link("main").unwrap(),
+                "{target:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn structured_relocations_and_rodata_layout_match_serialized_objects() {
+        for target in [
+            Target::X86_64Linux,
+            Target::Aarch64Linux,
+            Target::Aarch64Macos,
+        ] {
+            let callee_code = match target {
+                Target::X86_64Linux => vec![0xC3],
+                Target::Aarch64Linux | Target::Aarch64Macos => {
+                    vec![0xC0, 0x03, 0x5F, 0xD6]
+                }
+            };
+            let (main_code, relocations) = match target {
+                Target::X86_64Linux => (
+                    vec![0xE8, 0, 0, 0, 0, 0, 0, 0, 0, 0xC3],
+                    vec![
+                        CodeRelocation {
+                            offset: 1,
+                            symbol: "callee".into(),
+                            rel_type: RelocationType::Plt32,
+                            addend: -4,
+                        },
+                        CodeRelocation {
+                            offset: 5,
+                            symbol: ".rodata.str0".into(),
+                            rel_type: RelocationType::Pc32,
+                            addend: -4,
+                        },
+                    ],
+                ),
+                Target::Aarch64Linux | Target::Aarch64Macos => (
+                    vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xC0, 0x03, 0x5F, 0xD6],
+                    vec![
+                        CodeRelocation {
+                            offset: 0,
+                            symbol: ".rodata.str0".into(),
+                            rel_type: RelocationType::AdrpPage21,
+                            addend: 0,
+                        },
+                        CodeRelocation {
+                            offset: 4,
+                            symbol: ".rodata.str0".into(),
+                            rel_type: RelocationType::AddLo12,
+                            addend: 0,
+                        },
+                        CodeRelocation {
+                            offset: 8,
+                            symbol: "callee".into(),
+                            rel_type: RelocationType::Call26,
+                            addend: 0,
+                        },
+                    ],
+                ),
+            };
+
+            let mut byte_linker = Linker::new(target);
+            for bytes in [
+                ObjectBuilder::new(target, "callee")
+                    .code(callee_code.clone())
+                    .strings(vec!["pad".into()])
+                    .build(),
+                {
+                    let mut builder = ObjectBuilder::new(target, "main")
+                        .code(main_code.clone())
+                        .strings(vec!["literal".into()]);
+                    for relocation in &relocations {
+                        builder = builder.relocation(relocation.clone());
+                    }
+                    builder.build()
+                },
+            ] {
+                byte_linker
+                    .add_object(ObjectFile::parse(&bytes).unwrap())
+                    .unwrap();
+            }
+            let byte_output = byte_linker.link("main").unwrap();
+
+            let mut structured_linker = Linker::new(target);
+            structured_linker
+                .add_structured_object(crate::StructuredObject::function(
+                    target,
+                    "callee",
+                    Arc::from([Arc::from(callee_code)]),
+                    Arc::from([Arc::from(*b"pad")]),
+                    Vec::new(),
+                ))
+                .unwrap();
+            structured_linker
+                .add_structured_object(crate::StructuredObject::function(
+                    target,
+                    "main",
+                    Arc::from([Arc::from(main_code)]),
+                    Arc::from([Arc::from(*b"literal")]),
+                    relocations
+                        .into_iter()
+                        .map(|relocation| crate::StructuredRelocation {
+                            offset: relocation.offset,
+                            symbol: relocation.symbol,
+                            rel_type: relocation.rel_type,
+                            addend: relocation.addend,
+                        })
+                        .collect(),
+                ))
+                .unwrap();
+            assert_eq!(
+                byte_output,
+                structured_linker.link("main").unwrap(),
+                "{target:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn structured_macho_all_empty_rodata_matches_serialized_object() {
+        let target = Target::Aarch64Macos;
+        let code = vec![0xC0, 0x03, 0x5F, 0xD6];
+        let serialized = ObjectBuilder::new(target, "main")
+            .code(code.clone())
+            .strings(vec![String::new(), String::new()])
+            .build();
+        let mut byte_linker = Linker::new(target);
+        byte_linker
+            .add_object(ObjectFile::parse(&serialized).unwrap())
+            .unwrap();
+
+        let structured = crate::StructuredObject::function(
+            target,
+            "main",
+            Arc::from([Arc::from(code)]),
+            Arc::from([Arc::from(*b""), Arc::from(*b"")]),
+            Vec::new(),
+        );
+        assert_eq!(structured.sections.len(), 1);
+        let mut structured_linker = Linker::new(target);
+        structured_linker.add_structured_object(structured).unwrap();
+        assert_eq!(
+            byte_linker.link("main").unwrap(),
+            structured_linker.link("main").unwrap()
+        );
     }
 
     #[test]
@@ -2301,13 +2619,13 @@ mod tests {
     fn defined_symbol_extents_accept_boundaries_and_reject_escape() {
         for (value, size) in [(0, 4), (3, 1), (4, 0)] {
             let obj = object_with_defined_symbols(4, vec![defined_symbol("valid", value, size)]);
-            validate_defined_symbols(&obj)
+            validate_defined_symbols(&LinkObject::from(obj))
                 .unwrap_or_else(|error| panic!("valid extent {value}+{size}: {error}"));
         }
 
         for (value, size) in [(5, 0), (4, 1), (3, 2), (u64::MAX, 2)] {
             let obj = object_with_defined_symbols(4, vec![defined_symbol("bad", value, size)]);
-            let error = validate_defined_symbols(&obj).unwrap_err();
+            let error = validate_defined_symbols(&LinkObject::from(obj)).unwrap_err();
             assert!(matches!(
                 error,
                 LinkError::SymbolOutsideSection {
@@ -2610,7 +2928,7 @@ mod tests {
 
         let text = Section {
             name: ".text".into(),
-            data: vec![0xC3], // ret
+            data: vec![0xC3].into(), // ret
             size: 1,
             flags: SectionFlags::ALLOC | SectionFlags::EXEC,
             relocations: vec![],
@@ -2619,7 +2937,7 @@ mod tests {
         let extra = Section {
             name: name.into(),
             // 8 zero bytes — the unrelocated pointer slot
-            data: vec![0u8; 8],
+            data: vec![0u8; 8].into(),
             size: 8,
             flags,
             relocations: vec![Relocation {
@@ -2813,7 +3131,7 @@ mod tests {
 
         let text = Section {
             name: ".text".into(),
-            data: vec![0xC3], // ret
+            data: vec![0xC3].into(), // ret
             size: 1,
             flags: SectionFlags::ALLOC | SectionFlags::EXEC,
             relocations: vec![],
@@ -2823,7 +3141,7 @@ mod tests {
         // at 8 mod 16.
         let data = Section {
             name: ".data".into(),
-            data: vec![0u8; 8],
+            data: vec![0u8; 8].into(),
             size: 8,
             flags: SectionFlags::ALLOC | SectionFlags::WRITE,
             relocations: vec![Relocation {
@@ -2837,7 +3155,7 @@ mod tests {
         // NOBITS: no bytes in the file, `size` is the memory it needs.
         let bss = Section {
             name: ".bss".into(),
-            data: vec![],
+            data: vec![].into(),
             size: 8,
             flags: SectionFlags::ALLOC | SectionFlags::WRITE,
             relocations: vec![],
@@ -3025,7 +3343,7 @@ mod tests {
         let make_obj = |name: &str, code: Vec<u8>, binding: SymbolBinding| ObjectFile {
             sections: vec![Section {
                 name: ".text".into(),
-                data: code,
+                data: code.into(),
                 size: 1,
                 flags: SectionFlags::ALLOC | SectionFlags::EXEC,
                 relocations: vec![],
@@ -3116,7 +3434,7 @@ mod tests {
         ObjectFile {
             sections: vec![Section {
                 name: ".text".into(),
-                data: vec![0xC3],
+                data: vec![0xC3].into(),
                 size: 1,
                 flags: SectionFlags::ALLOC | SectionFlags::EXEC,
                 relocations: vec![],
@@ -3455,7 +3773,7 @@ mod tests {
             sections: vec![Section {
                 name: ".text".into(),
                 // mov rax, imm64 (placeholder patched by Abs64); ret
-                data: vec![0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xC3],
+                data: vec![0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xC3].into(),
                 size: 11,
                 flags: SectionFlags::ALLOC | SectionFlags::EXEC,
                 relocations: vec![Relocation {
@@ -3804,7 +4122,8 @@ mod tests {
             data: vec![
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call <placeholder>
                 0xC3, // ret
-            ],
+            ]
+            .into(),
             size: 6,
             flags: SectionFlags::ALLOC | SectionFlags::EXEC,
             relocations: vec![Relocation {
@@ -3888,7 +4207,8 @@ mod tests {
             data: vec![
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call <placeholder>
                 0xC3, // ret
-            ],
+            ]
+            .into(),
             size: 6,
             flags: SectionFlags::ALLOC | SectionFlags::EXEC,
             relocations: vec![Relocation {
@@ -4813,7 +5133,7 @@ mod tests {
 
         let text_section = Section {
             name: "__text".to_string(),
-            data: code,
+            data: code.into(),
             size: 8,
             flags: SectionFlags::ALLOC | SectionFlags::EXEC,
             relocations: vec![],
@@ -4872,7 +5192,7 @@ mod tests {
 
         let text_section = Section {
             name: "__text".to_string(),
-            data: code,
+            data: code.into(),
             size: 4,
             flags: SectionFlags::ALLOC | SectionFlags::EXEC,
             relocations: vec![],
@@ -4913,7 +5233,7 @@ mod tests {
 
         let text_section = Section {
             name: "__text".to_string(),
-            data: code,
+            data: code.into(),
             size: 4,
             flags: SectionFlags::ALLOC | SectionFlags::EXEC,
             relocations: vec![],
@@ -4981,7 +5301,7 @@ mod tests {
         Section {
             name: name.into(),
             size: data.len() as u64,
-            data,
+            data: data.into(),
             flags: SectionFlags::ALLOC | SectionFlags::EXEC,
             relocations,
             align: 16,
@@ -5172,7 +5492,7 @@ mod tests {
         };
         let rodata = Section {
             name: "__TEXT,__const".into(),
-            data: vec![0u8; 8], // unrelocated pointer slot
+            data: vec![0u8; 8].into(), // unrelocated pointer slot
             size: 8,
             flags: SectionFlags::ALLOC,
             relocations: vec![Relocation {
@@ -5234,7 +5554,7 @@ mod tests {
         };
         let data = Section {
             name: "__DATA,__data".into(),
-            data: vec![0u8; 16],
+            data: vec![0u8; 16].into(),
             size: 16,
             flags: SectionFlags::ALLOC | SectionFlags::WRITE,
             relocations: vec![Relocation {
@@ -5414,7 +5734,7 @@ mod tests {
         };
         let data = Section {
             name: "__DATA,__data".into(),
-            data: vec![0u8; 16],
+            data: vec![0u8; 16].into(),
             size: 16,
             flags: SectionFlags::ALLOC | SectionFlags::WRITE,
             relocations: vec![],
@@ -5500,7 +5820,7 @@ mod tests {
         };
         let data = Section {
             name: "__DATA,__data".into(),
-            data: vec![0u8; 16],
+            data: vec![0u8; 16].into(),
             size: 16,
             flags: SectionFlags::ALLOC | SectionFlags::WRITE,
             relocations: vec![],
@@ -5571,7 +5891,7 @@ mod tests {
         };
         let data = Section {
             name: "__DATA,__data".into(),
-            data: vec![0u8; 16],
+            data: vec![0u8; 16].into(),
             size: 16,
             flags: SectionFlags::ALLOC | SectionFlags::WRITE,
             relocations: vec![],
@@ -5762,7 +6082,7 @@ mod tests {
             ".text",
             Section {
                 name: ".init_array".into(),
-                data: vec![0u8; 8],
+                data: vec![0u8; 8].into(),
                 size: 8,
                 flags: SectionFlags::ALLOC | SectionFlags::WRITE,
                 relocations: Vec::new(),
@@ -5791,7 +6111,7 @@ mod tests {
             ".text",
             Section {
                 name: ".debug_info".into(),
-                data: vec![0u8; 8],
+                data: vec![0u8; 8].into(),
                 size: 8,
                 flags: SectionFlags::empty(),
                 relocations: Vec::new(),
@@ -5832,7 +6152,7 @@ mod tests {
                 "__TEXT,__text",
                 Section {
                     name: name.into(),
-                    data: marker.to_vec(),
+                    data: marker.to_vec().into(),
                     size: marker.len() as u64,
                     flags: SectionFlags::ALLOC,
                     relocations: Vec::new(),
@@ -5883,7 +6203,7 @@ mod tests {
         };
         let data = Section {
             name: data_name.into(),
-            data: vec![0u8; 17],
+            data: vec![0u8; 17].into(),
             size: 17,
             flags: SectionFlags::ALLOC | SectionFlags::WRITE,
             relocations: vec![
@@ -5904,7 +6224,7 @@ mod tests {
         };
         let bss8 = Section {
             name: bss_name.into(),
-            data: Vec::new(),
+            data: Vec::new().into(),
             size: 4,
             flags: SectionFlags::ALLOC | SectionFlags::WRITE,
             relocations: Vec::new(),
@@ -5926,7 +6246,7 @@ mod tests {
 
         let bss16 = Section {
             name: bss_name.into(),
-            data: Vec::new(),
+            data: Vec::new().into(),
             size: 8,
             flags: SectionFlags::ALLOC | SectionFlags::WRITE,
             relocations: Vec::new(),
@@ -6006,7 +6326,7 @@ mod tests {
                     machine,
                     vec![Section {
                         name: ".text".into(),
-                        data: vec![byte, byte.wrapping_add(1), byte.wrapping_add(2)],
+                        data: vec![byte, byte.wrapping_add(1), byte.wrapping_add(2)].into(),
                         size: 3,
                         flags: SectionFlags::ALLOC | SectionFlags::EXEC,
                         relocations: Vec::new(),

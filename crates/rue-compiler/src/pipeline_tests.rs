@@ -1522,6 +1522,46 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_internal_compile_skips_object_projection() {
+        let snapshot = SourceSnapshot::single(
+            "<structured-compile>",
+            "fn helper() -> i32 { 41 } fn main() -> i32 { helper() + 1 }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let mut internal = CompilerSession::new();
+        crate::publish_test_snapshot(&mut internal, &snapshot).unwrap();
+        crate::queries::compile_with_session(&mut internal, &snapshot, &options).unwrap();
+        assert!(internal.object_projection_executions().is_empty());
+        assert_eq!(internal.object_projection_collections(), 0);
+
+        crate::queries::compile_with_session(&mut internal, &snapshot, &options).unwrap();
+        assert_eq!(internal.codegen_executions().len(), 2);
+        assert!(
+            internal
+                .codegen_executions()
+                .iter()
+                .all(|(_, execution)| *execution == rue_query::RequestExecution::Reused)
+        );
+        assert!(internal.object_projection_executions().is_empty());
+        assert_eq!(internal.object_projection_collections(), 0);
+
+        let mut byte_consumer = CompilerSession::new();
+        crate::publish_test_snapshot(&mut byte_consumer, &snapshot).unwrap();
+        let system_options = CompileOptions {
+            linker: LinkerMode::System("ld".into()),
+            ..options
+        };
+        byte_consumer
+            .rooted_codegen(
+                &system_options,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap();
+        assert_eq!(byte_consumer.object_projection_collections(), 2);
+    }
+
+    #[test]
     fn retained_endpoint_capabilities_reject_another_session_or_revision() {
         let snapshot =
             SourceSnapshot::single("<retained-endpoint-owner>", "fn main() -> i32 { 42 }").unwrap();

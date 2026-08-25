@@ -21,7 +21,7 @@ mod util;
 pub use archive::{Archive, ArchiveError};
 pub use elf::{
     ElfMachine, ObjectFile, ObjectFormat, Relocation, RelocationType, Section, SectionFlags,
-    Symbol, SymbolBinding, SymbolType,
+    StructuredObject, StructuredRelocation, Symbol, SymbolBinding, SymbolType,
 };
 pub use emit::{CodeRelocation, ObjectBuilder};
 pub use linker::{LinkError, Linker};

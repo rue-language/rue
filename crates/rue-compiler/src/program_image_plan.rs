@@ -11,6 +11,8 @@ use std::{
 use tracing::{info, info_span};
 
 #[cfg(test)]
+use crate::codegen_query::CollectedCodegenUnit;
+#[cfg(test)]
 use crate::session::RootedCfgUnit;
 
 use crate::{
@@ -20,9 +22,6 @@ use crate::{
     linking,
     object_query::CollectedObjectProjection,
 };
-
-#[cfg(test)]
-use crate::codegen_query::CollectedCodegenUnit;
 
 /// Stable, link-relevant identity for one reached codegen terminal.
 #[derive(Debug, Clone)]
@@ -172,9 +171,14 @@ impl ProgramImagePlan {
 /// lowering, allocation, or emission.
 pub(crate) struct ProgramImage {
     pub(crate) plan: ProgramImagePlan,
-    objects: Vec<CollectedObjectProjection>,
+    inputs: ProgramImageInputs,
     export_thunk_objects: Vec<Vec<u8>>,
 }
+
+/// The durable image remains byte-backed for object consumers and future
+/// stateful plans. Ordinary internal compilation links the rooted CodegenUnit
+/// collection directly before constructing this image.
+type ProgramImageInputs = Vec<CollectedObjectProjection>;
 
 impl ProgramImage {
     /// Construct the production image directly from rooted codegen terminals
@@ -209,7 +213,7 @@ impl ProgramImage {
         )?;
         Ok(Self {
             plan,
-            objects,
+            inputs: objects,
             export_thunk_objects,
         })
     }
@@ -268,14 +272,13 @@ impl ProgramImage {
         )?;
         Ok(Self {
             plan,
-            objects,
+            inputs: objects,
             export_thunk_objects,
         })
     }
 
-    /// Collect the already-projected per-unit bytes for the fresh linker.
-    /// Object serialization happened in the registered query graph; this
-    /// adapter only materializes the linker's existing owned byte-vector API.
+    /// Collect the already-projected per-unit bytes for system linking and
+    /// object-output consumers. Internal links use `units` directly.
     pub(crate) fn fresh_objects(&self, options: &CompileOptions) -> MultiErrorResult<Vec<Vec<u8>>> {
         let _span =
             info_span!("fresh_object_materialization", phase = "object_generation").entered();
@@ -287,12 +290,12 @@ impl ProgramImage {
             )));
         }
         let mut objects = self
-            .objects
+            .inputs
             .iter()
             .map(|collected| collected.object.bytes.to_vec())
             .collect::<Vec<_>>();
         info!(
-            function_count = self.objects.len(),
+            function_count = self.inputs.len(),
             object_bytes = objects.iter().map(Vec::len).sum::<usize>(),
             "codegen complete"
         );
@@ -307,12 +310,22 @@ impl ProgramImage {
         options: &CompileOptions,
         warnings: &[CompileWarning],
     ) -> MultiErrorResult<CompileOutput> {
-        let objects = self.fresh_objects(options)?;
+        if self.plan.target != options.target {
+            return Err(CompileErrors::from(CompileError::without_span(
+                ErrorKind::InvalidCompilerInput(
+                    "program image target differs from the fresh-link target".into(),
+                ),
+            )));
+        }
         match &options.linker {
-            LinkerMode::Internal => {
-                linking::link_internal_with_warnings(options, &objects, warnings)
-            }
+            LinkerMode::Internal => linking::link_internal_structured_with_warnings(
+                options,
+                &self.inputs,
+                &self.export_thunk_objects,
+                warnings,
+            ),
             LinkerMode::System(command) => {
+                let objects = self.fresh_objects(options)?;
                 linking::link_system_with_warnings(options, &objects, command, warnings)
             }
         }
@@ -970,6 +983,32 @@ mod tests {
         assert_eq!(
             image.plan.export_thunks[0].native_symbol,
             exported.record.codegen.defined_symbol.as_ref()
+        );
+
+        let byte_objects = image.fresh_objects(&options).unwrap();
+        let byte_link = linking::link_internal_with_warnings(&options, &byte_objects, &[])
+            .unwrap()
+            .elf;
+        let structured_link = image.fresh_link(&options, &[]).unwrap().elf;
+        assert_eq!(
+            structured_link, byte_link,
+            "retained units plus a serialized export thunk must match the byte-container link"
+        );
+    }
+
+    #[test]
+    fn structured_fresh_link_rejects_a_target_mismatch_before_admission() {
+        let (units, functions, options) = session_inputs("fn main() -> i32 { 0 }");
+        let image = ProgramImage::new(units, &functions, &options, &[]).unwrap();
+        let mismatched = CompileOptions {
+            target: Target::Aarch64Linux,
+            ..options
+        };
+        let error = image.fresh_link(&mismatched, &[]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("program image target differs from the fresh-link target")
         );
     }
 

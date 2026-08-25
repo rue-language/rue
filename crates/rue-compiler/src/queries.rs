@@ -243,7 +243,25 @@ pub(crate) fn compile_with_session(
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
     let _span = info_span!("compile_pipeline").entered();
-    let rooted = session.rooted_codegen(options, rue_codegen::BackendArtifactRequest::default())?;
+    let rooted = if matches!(options.linker, LinkerMode::Internal) {
+        session
+            .rooted_codegen_internal_with_cancellation(
+                options,
+                rue_codegen::BackendArtifactRequest::default(),
+                rue_query::CancellationToken::new(),
+            )
+            .map_err(|control| match control {
+                crate::session::PipelineRequestControl::Compile(errors) => errors,
+                crate::session::PipelineRequestControl::Abort(abort) => {
+                    crate::session::pipeline_abort_errors("internal codegen", abort)
+                }
+                crate::session::PipelineRequestControl::Parked(park) => {
+                    crate::session::unresolved_toolchain_park_errors(&park)
+                }
+            })?
+    } else {
+        session.rooted_codegen(options, rue_codegen::BackendArtifactRequest::default())?
+    };
     compile_rooted_with_session(session, snapshot, options, rooted)
 }
 
@@ -259,11 +277,19 @@ pub(crate) fn compile_with_session_with_cancellation(
             rue_query::QueryAbort::Canceled,
         ));
     }
-    let rooted = session.rooted_codegen_with_cancellation(
-        options,
-        rue_codegen::BackendArtifactRequest::default(),
-        cancellation.clone(),
-    )?;
+    let rooted = if matches!(options.linker, LinkerMode::Internal) {
+        session.rooted_codegen_internal_with_cancellation(
+            options,
+            rue_codegen::BackendArtifactRequest::default(),
+            cancellation.clone(),
+        )?
+    } else {
+        session.rooted_codegen_with_cancellation(
+            options,
+            rue_codegen::BackendArtifactRequest::default(),
+            cancellation.clone(),
+        )?
+    };
     if cancellation.is_canceled() {
         return Err(crate::session::PipelineRequestControl::Abort(
             rue_query::QueryAbort::Canceled,
@@ -304,12 +330,36 @@ pub(crate) fn compile_rooted_with_session(
     let query_runtime = metrics.query_runtime();
     let semantic_reachability = metrics.semantic_reachability();
     let provider_observations = crate::unstable::provider_observation_metrics(session);
-    let image = crate::program_image_plan::ProgramImage::from_rooted(
-        rooted.objects,
-        rooted.exports,
-        options,
-    )?;
-    let mut output = image.fresh_link(options, &rooted.warnings)?;
+    let mut output = match rooted.input {
+        crate::session::RootedCodegenInput::Structured => {
+            let export_thunk_objects = rooted
+                .exports
+                .iter()
+                .map(|export| {
+                    crate::backend::generate_export_thunk_object(
+                        options.target,
+                        &export.exported_symbol,
+                        &export.native_symbol,
+                        &export.param_types,
+                    )
+                })
+                .collect::<Vec<_>>();
+            crate::linking::link_internal_structured_units_with_warnings(
+                options,
+                &rooted.units,
+                &export_thunk_objects,
+                &rooted.warnings,
+            )?
+        }
+        crate::session::RootedCodegenInput::Projected => {
+            let image = crate::program_image_plan::ProgramImage::from_rooted(
+                rooted.objects,
+                rooted.exports,
+                options,
+            )?;
+            image.fresh_link(options, &rooted.warnings)?
+        }
+    };
     output.source_stats = SourceStats {
         files: snapshot.len(),
         bytes: total_source_bytes,
