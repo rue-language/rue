@@ -10,7 +10,7 @@ page_template = "spec/page.html"
 
 This chapter describes the lexical structure of Rue programs, including tokens, comments, and whitespace.
 
-{{ rule(id="2.0:1") }}
+{{ rule(id="2.0:1", cat="normative") }}
 
 The text of a source file is decomposed into a sequence of tokens. Comments and whitespace may separate tokens but are not themselves tokens.
 

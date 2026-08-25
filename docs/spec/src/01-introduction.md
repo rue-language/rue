@@ -46,15 +46,30 @@ This specification has a companion **formal core** (`docs/formal/`) that states 
 
 {{ rule(id="1.3:2") }}
 
-Paragraphs marked with rule categories are normative unless explicitly marked as informative. The following categories are used:
+A paragraph's `cat=` marker classifies it. A paragraph carrying **no** `cat=`
+marker is **informative**: normativity is opted into explicitly, never inherited
+by default. B.1:5 states the same default, and the traceability tooling
+(`crates/rue-spec/src/traceability.rs`) applies it when computing normative
+coverage.
 
-| Category | Description |
-|----------|-------------|
-| `legality-rule` | Compile-time requirements that must be enforced |
-| `syntax` | Grammar rules defining valid program structure |
-| `dynamic-semantics` | Runtime behavior requirements |
-| `informative` | Explanatory text that is not normative |
-| `example` | Code examples that are not normative |
+It follows that a paragraph stating a requirement **MUST** carry an explicit
+normative category. An uncategorised paragraph cannot be relied on by a
+normative rule elsewhere: it imposes no requirement and the coverage gate does
+not track it. Where a normative rule needs to ground itself on such a
+paragraph, the paragraph is given its own category rather than borrowing
+normativity from the rule that cites it.
+
+The following categories are used:
+
+| Category | Description | Normative? |
+|----------|-------------|------------|
+| `normative` | A general requirement on a conforming implementation | Yes |
+| `legality-rule` | Compile-time requirements that must be enforced | Yes |
+| `syntax` | Grammar rules defining valid program structure | Yes |
+| `dynamic-semantics` | Runtime behavior requirements | Yes |
+| `undefined-behavior` | A condition whose behavior is undefined (imposes no requirement, but identifies the hazard) | Yes |
+| `informative` | Explanatory text that is not normative | No |
+| `example` | Code examples that are not normative | No |
 
 ## Behavior Categories
 

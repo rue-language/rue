@@ -168,3 +168,42 @@ fn main() -> i32 {
 }
 """
 exit_code = 5
+
+# =============================================================================
+# Every statement has type () (5.0:1)
+# =============================================================================
+# 5.0:1 is the chapter's basis: a statement is evaluated for its effect, every
+# statement has type `()`, and none of the three forms delivers a value to the
+# block containing it. RUE-1768 gave the paragraph an explicit category — it
+# had none — and these are the cases that category requires.
+#
+# The negative case is the load-bearing one: it is what distinguishes "the
+# statement's value is unit" from "the statement has no value at all", and it
+# fails with the unit type named in the diagnostic.
+
+[[case]]
+name = "block_ending_in_a_statement_is_unit"
+spec = ["5.0:1"]
+description = "A function body whose final item is a `let` statement types as (), so a unit-returning function accepts it"
+source = """
+fn effect_only() { let x: i32 = 1; }
+
+fn main() -> i32 {
+    effect_only();
+    7
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "a_statement_delivers_no_value_to_its_block"
+spec = ["5.0:1"]
+description = "A block whose last item is a `let` statement has type (), not the type of the bound value: binding it to i32 is a type error naming ()"
+source = """
+fn main() -> i32 {
+    let y: i32 = { let x: i32 = 1; };
+    y
+}
+"""
+compile_fail = true
+error_contains = ["found ()"]

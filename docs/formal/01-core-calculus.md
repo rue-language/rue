@@ -913,12 +913,29 @@ dynamically. Note the `attr(T) = linear` case: a **declared**-`linear` struct's
 obligation belongs to the value itself, not its contents (`3.8:74` — "must be
 consumed regardless of what its fields hold"; the empty
 `linear struct MustUse` of `3.8:75` is the motivating case), so a husk whose
-linear field was moved out is still ill-formed to drop. The compiler currently
-diverges on exactly that husk case and accepts the drop (RUE-614): it models a
-field access on a declared-`linear` struct as a whole-value destructure, so the
-husk is `MovedOut` before this clause is ever consulted. The core states the
-prose rule. RUE-1591 confined that whole-value destructure to the declared case
-and left this divergence untouched.
+linear field was moved out is still ill-formed to drop.
+
+> **Open disagreement (RUE-614, RUE-1769).** This clause states a *different*
+> rule from the prose, and the disagreement is genuine rather than a matter of
+> precision. Prose `3.8:33` (`cat="normative"`) says that moving a field out of
+> a declared-`linear` value *destructures* it: "the field access consumes the
+> whole value, and the other fields are dropped with it". `3.8:60` repeats that
+> model independently. Under the prose the husk is consumed at the access, so
+> nothing is left unconsumed and the program is well-formed; under this clause
+> `Σ(husk) = Owned` with `attr = linear`, so `residual-linear` holds and the
+> leak check fires. The compiler implements the prose model — it treats the
+> field access as a whole-value destructure, leaving the husk `MovedOut` before
+> this clause is consulted — so it is the core, not the compiler, that stands
+> apart here. An earlier revision of this note described that as "the compiler
+> diverging" and claimed the core states the prose rule; both were wrong.
+>
+> Per `1.3:1a` the three views MUST agree where they overlap, so this is a
+> specification defect awaiting the RUE-614 ruling on what consumes a
+> declared-`linear` struct after a field access. Whichever way it rules, one of
+> the two must move: either this clause drops its `attr(T) = linear` case (the
+> prose model) or `3.8:33`/`3.8:60` change (this clause's model). RUE-1591
+> confined the whole-value destructure to the declared case and deliberately
+> left the divergence untouched.
 
 Parameters passed `inout`/`borrow`, and a destructor's own `self`, are exempt from
 the must-consume and drop obligations here (`3.8:62`): the caller (resp. the drop

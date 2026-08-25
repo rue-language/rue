@@ -763,3 +763,49 @@ fn main() -> i32 { ﻿42 }
 """
 compile_fail = true
 error_contains = ["E0001"]
+
+# =============================================================================
+# Decomposition into tokens (2.0:1)
+# =============================================================================
+# 2.0:1 states the basis of this chapter: source text is decomposed into a
+# sequence of tokens, and comments and whitespace may separate tokens without
+# being tokens themselves. RUE-1768 gave the paragraph an explicit category —
+# it had none, so nothing tracked it — and these cases are the coverage that
+# category now requires.
+#
+# "Separates but is not itself a token" has two observable halves, and both are
+# pinned below: a separator may stand between two tokens without becoming one,
+# and where a separator is the only thing between two tokens, removing it joins
+# them into a different token rather than leaving the sequence unchanged.
+
+[[case]]
+name = "line_comment_separates_two_tokens"
+spec = ["2.0:1"]
+description = "A line comment may stand between two tokens; it separates them without contributing a token of its own"
+source = """
+fn main() -> i32 {
+    let // a comment may stand between two tokens
+        x: i32 = 42;
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "whitespace_is_not_a_token"
+spec = ["2.0:1"]
+description = "Whitespace that is not needed as a separator may be removed entirely: it contributes no token, so the sequence is unchanged"
+source = """
+fn main()->i32{let x:i32=42;x}
+"""
+exit_code = 42
+
+[[case]]
+name = "whitespace_as_sole_separator_cannot_be_removed"
+spec = ["2.0:1"]
+description = "Where whitespace is the only separator between two tokens, removing it lexes one different token instead: 'let x' becomes the identifier 'letx'"
+source = """
+fn main() -> i32 { letx: i32 = 42; x }
+"""
+compile_fail = true
+error_contains = ["E0102", "expected semicolon after expression"]
