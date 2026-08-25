@@ -58,8 +58,8 @@ use super::comptime::{
     ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallArgument,
     ComptimeCallPreparation, ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile,
     ComptimeFrame, ComptimeHost, ComptimeHostError, ComptimeHostResult, ComptimeIdentity,
-    ComptimeMethodDescriptor, ComptimeName, ComptimeNamedValueResolution, ComptimeOutcome,
-    ComptimeStructuredTypeResolution, ComptimeTrap, ComptimeType,
+    ComptimeMatchPattern, ComptimeMethodDescriptor, ComptimeName, ComptimeNamedValueResolution,
+    ComptimeOutcome, ComptimeStructuredTypeResolution, ComptimeTrap, ComptimeType,
 };
 use super::context::{AnalysisContext, ConstValue};
 use super::info::FunctionCallInfo;
@@ -269,28 +269,20 @@ impl<'a>
 ///   `Path` pattern, or a scrutinee whose kind the pattern can't compare
 ///   against), so the caller treats the whole `match` as non-evaluable.
 pub(crate) fn const_pattern_matches(
-    pattern: &rue_rir::RirPatternView<'_>,
+    pattern: &ComptimeMatchPattern<impl ComptimeName>,
     scrut: ConstValue,
 ) -> Option<bool> {
     match pattern {
-        rue_rir::RirPatternView::Wildcard(_) => Some(true),
-        rue_rir::RirPatternView::Bool(b, _) => match scrut {
+        ComptimeMatchPattern::Wildcard => Some(true),
+        ComptimeMatchPattern::Bool(b) => match scrut {
             ConstValue::Bool(sb) => Some(sb == *b),
             _ => None,
         },
-        rue_rir::RirPatternView::Int {
-            value, negative, ..
-        } => match scrut {
-            ConstValue::Integer(n) => {
-                let pv = *value as i128;
-                let pv = if *negative { -pv } else { pv };
-                Some(n == pv)
-            }
+        ComptimeMatchPattern::Integer(pattern) => match scrut {
+            ConstValue::Integer(n) => Some(n == *pattern),
             _ => None,
         },
-        // Enum-variant patterns aren't representable as a `ConstValue` (there
-        // is no comptime enum-value form), so they can't be decided here.
-        rue_rir::RirPatternView::Path { .. } => None,
+        ComptimeMatchPattern::Path { .. } => None,
     }
 }
 
@@ -1939,8 +1931,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn match_pattern(
         &self,
-        _program: &Self::ProgramKey,
-        pattern: &rue_rir::RirPatternView<'_>,
+        pattern: &ComptimeMatchPattern<Spur>,
         value: &ConstValue,
     ) -> Option<bool> {
         const_pattern_matches(pattern, value.clone())
@@ -2359,6 +2350,42 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
 #[cfg(test)]
 mod binding_tests {
     use super::*;
+
+    #[test]
+    fn ordinary_pattern_policy_keeps_unknown_paths_undecidable() {
+        let interner = lasso::ThreadedRodeo::<lasso::Spur>::new();
+        let type_name = interner.get_or_intern("Os");
+        let variant = interner.get_or_intern("Macos");
+        let target = ComptimeMatchPattern::Path {
+            module_qualified: false,
+            ctor_qualified: false,
+            type_name,
+            variant,
+            binding_count: 0,
+        };
+        assert_eq!(
+            const_pattern_matches(
+                &ComptimeMatchPattern::<lasso::Spur>::Wildcard,
+                ConstValue::Unit
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            const_pattern_matches(
+                &ComptimeMatchPattern::<lasso::Spur>::Integer(-3),
+                ConstValue::Integer(-3)
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            const_pattern_matches(
+                &ComptimeMatchPattern::<lasso::Spur>::Bool(true),
+                ConstValue::Integer(1)
+            ),
+            None
+        );
+        assert_eq!(const_pattern_matches(&target, ConstValue::Unit), None);
+    }
 
     #[test]
     fn ordinary_binding_stores_invalid_shape_then_rejects_only_at_finish() {

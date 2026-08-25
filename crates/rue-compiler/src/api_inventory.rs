@@ -4872,6 +4872,42 @@ fn durable_comptime_services_are_named_authority_operations() {
 }
 
 #[test]
+fn match_patterns_have_one_air_decoder_and_one_durable_kernel() {
+    let database = include_str!("revisioned_query_database.rs");
+    let evaluator_match = database
+        .split("E::Match { scrutinee, arms } => {")
+        .nth(1)
+        .and_then(|source| source.split("E::Comptime { expr }").next())
+        .expect("bounded durable evaluator match arm");
+    assert!(evaluator_match.contains("decode_comptime_match_pattern"));
+    assert!(evaluator_match.contains("self.symbol(&symbol.spur())"));
+    assert!(evaluator_match.contains("durable_match_pattern_matches"));
+    assert!(!evaluator_match.contains("RirPatternView::"));
+    assert_eq!(
+        evaluator_match
+            .matches("decode_comptime_match_pattern")
+            .count(),
+        1,
+        "legacy evaluator must have one AIR decoder call"
+    );
+
+    let durable = include_str!("durable_comptime.rs");
+    let kernel = durable
+        .split("pub(crate) fn durable_match_pattern_matches(")
+        .nth(1)
+        .and_then(|source| source.split("\n}\n\n/// The canonical pure target").next())
+        .expect("durable match kernel");
+    assert!(kernel.contains("ComptimeMatchPattern::Path"));
+    assert!(kernel.contains("binding_count: 0"));
+    assert_eq!(
+        durable
+            .matches("pub(crate) fn durable_match_pattern_matches(")
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn import_resolution_remains_discovery_owned() {
     let production = PRODUCTION_MODULES
         .iter()

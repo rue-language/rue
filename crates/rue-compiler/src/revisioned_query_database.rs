@@ -8399,51 +8399,14 @@ impl SemanticConstEvaluator<'_, '_> {
             E::Match { scrutinee, arms } => {
                 let evaluated = self.eval(*scrutinee)?;
                 for (pattern, body) in self.rir.match_arms(arms).iter() {
-                    let matches = match (&pattern, &evaluated) {
-                        (rue_rir::RirPatternView::Wildcard(_), _) => true,
-                        (
-                            rue_rir::RirPatternView::Int {
-                                value: pattern,
-                                negative: false,
-                                ..
-                            },
-                            EvaluatedSemanticConst::Value(value),
-                        ) => {
-                            matches!(&value.value, V::Integer(value) if *value == *pattern as i128)
-                        }
-                        (
-                            rue_rir::RirPatternView::Int {
-                                value: pattern,
-                                negative: true,
-                                ..
-                            },
-                            EvaluatedSemanticConst::Value(value),
-                        ) => {
-                            matches!(&value.value, V::Integer(value) if *value == -(*pattern as i128))
-                        }
-                        (
-                            rue_rir::RirPatternView::Bool(pattern, _),
-                            EvaluatedSemanticConst::Value(value),
-                        ) => {
-                            matches!(&value.value, V::Bool(value) if *value == *pattern)
-                        }
-                        (
-                            rue_rir::RirPatternView::Path {
-                                module: None,
-                                ctor_head: None,
-                                type_name,
-                                variant,
-                                bindings,
-                                ..
-                            },
-                            EvaluatedSemanticConst::TargetEnum(target),
-                        ) if bindings.is_empty() => {
-                            semantic_candidate_spelling(self.symbols, type_name) == target.type_name
-                                && semantic_candidate_spelling(self.symbols, variant)
-                                    == target.variant
-                        }
-                        _ => false,
-                    };
+                    let semantic_pattern =
+                        rue_air::decode_comptime_match_pattern(&pattern, |symbol| {
+                            self.symbol(&symbol.spur())
+                        });
+                    let matches = crate::durable_comptime::durable_match_pattern_matches(
+                        &semantic_pattern,
+                        &evaluated,
+                    );
                     if matches {
                         return self.eval(body);
                     }

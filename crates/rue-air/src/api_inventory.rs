@@ -33,6 +33,71 @@ fn integer_consumers_use_one_representation_independent_kernel() {
 }
 
 #[test]
+fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
+    let comptime = include_str!("sema/comptime.rs");
+    let production = comptime
+        .split("#[derive(Debug)]\npub struct ComptimeFrame")
+        .nth(1)
+        .expect("bounded production comptime source");
+    let (before_decoder, decoder_and_after) = production
+        .split_once("pub fn decode_comptime_match_pattern")
+        .expect("canonical production decoder");
+    let (decoder_body, after_decoder) = decoder_and_after
+        .split_once("/// An already-evaluated call argument")
+        .expect("decoder body boundary");
+    let outside_decoder = format!("{before_decoder}{after_decoder}");
+    assert!(before_decoder.contains("pub enum ComptimeMatchPattern"));
+    for variant in [
+        "RirPatternView::Wildcard",
+        "RirPatternView::Bool",
+        "RirPatternView::Int",
+        "RirPatternView::Path",
+    ] {
+        assert!(decoder_body.contains(variant), "decoder misses {variant}");
+        assert!(
+            !outside_decoder.contains(variant),
+            "raw pattern decoding escaped the canonical decoder: {variant}"
+        );
+    }
+    assert_eq!(
+        comptime
+            .matches("pub fn decode_comptime_match_pattern")
+            .count(),
+        1,
+        "AIR must have one production pattern decoder"
+    );
+
+    let host = comptime
+        .split("pub trait ComptimeHost {")
+        .nth(1)
+        .and_then(|source| source.split("/// Opaque structured continuations").next())
+        .expect("bounded ComptimeHost trait");
+    let match_hook = host
+        .split("fn match_pattern(")
+        .nth(1)
+        .and_then(|source| source.split("fn require_preview(").next())
+        .expect("bounded ComptimeHost match hook");
+    assert!(match_hook.contains("ComptimeMatchPattern<Self::Name>"));
+    assert!(!match_hook.contains("ProgramKey"));
+    assert!(!match_hook.contains("RirPatternView"));
+
+    let engine_match = comptime
+        .rsplit("InstData::Match { scrutinee, arms } => {")
+        .next()
+        .and_then(|source| source.split("InstData::AnonStructType {").next())
+        .expect("bounded canonical match dispatch");
+    let decode = engine_match
+        .find("self.decode_match_pattern")
+        .expect("engine decodes reached patterns");
+    let host_match = engine_match
+        .find("self.host.match_pattern")
+        .expect("engine offers semantic patterns to host");
+    assert!(decode < host_match, "decode must precede the host hook");
+    assert!(engine_match.contains("for (pattern, body) in arms.iter()"));
+    assert!(!engine_match.contains("RirPatternView::"));
+}
+
+#[test]
 fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     let comptime = include_str!("sema/comptime.rs");
     let ordinary = include_str!("sema/comptime_eval.rs");

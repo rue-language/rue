@@ -71,6 +71,7 @@ pub use comptime::{
     ComptimeStructuredTypeResolution, ComptimeStructuredTypeSuspension, ComptimeTrap, ComptimeType,
     ComptimeTypeIntrinsic, ComptimeValue, MAX_COMPTIME_CALL_DEPTH,
 };
+pub use comptime::{ComptimeMatchPattern, decode_comptime_match_pattern};
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;
 pub(crate) use fact_mode::StructuredTypeSyntax;
