@@ -503,6 +503,8 @@ mod value_domain_tests {
         static INTEGER_HINTS: RefCell<Vec<Option<FakeType>>> = const { RefCell::new(Vec::new()) };
         static METHOD_FAILURES: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
         static TYPE_RESOLUTION_CALLS: Cell<usize> = const { Cell::new(0) };
+        static CHECKPOINTS: Cell<usize> = const { Cell::new(0) };
+        static ABORT_AT_CHECKPOINT: Cell<Option<usize>> = const { Cell::new(None) };
     }
 
     #[derive(Clone, Debug, PartialEq)]
@@ -587,6 +589,7 @@ mod value_domain_tests {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum FakeFailure {
         Generic,
+        Canceled,
         NonFunctionMethod,
         OwnComptimeTypeParameter,
     }
@@ -663,6 +666,15 @@ mod value_domain_tests {
         }
     }
 
+    fn configure_checkpoint_abort(abort_at: Option<usize>) {
+        CHECKPOINTS.with(|count| count.set(0));
+        ABORT_AT_CHECKPOINT.with(|configured| configured.set(abort_at));
+    }
+
+    fn checkpoint_count() -> usize {
+        CHECKPOINTS.with(Cell::get)
+    }
+
     impl ComptimeHost for FakeHost {
         type Type = FakeType;
         type Value = FakeValue;
@@ -676,6 +688,17 @@ mod value_domain_tests {
         type CompletionTicket = usize;
         type AnonymousStructId = u32;
         type StructuredTypeSuspension = FakeStructuredSuspension;
+        fn check_canceled(&self) -> ComptimeHostResult<(), Self::Failure> {
+            let checkpoint = CHECKPOINTS.with(|count| {
+                let next = count.get() + 1;
+                count.set(next);
+                next
+            });
+            if ABORT_AT_CHECKPOINT.with(|abort_at| abort_at.get() == Some(checkpoint)) {
+                return Err(ComptimeHostError::Abort(FakeFailure::Canceled));
+            }
+            Ok(())
+        }
         fn program_rir(&self, program: &Self::ProgramKey) -> &Rir {
             &self.programs[*program]
         }
@@ -2282,6 +2305,128 @@ mod value_domain_tests {
     }
 
     #[test]
+    fn cancellation_checkpoints_abort_only_entered_block_branch_nodes() {
+        let mut editor = rue_rir::RirEditor::new();
+        let condition = editor.add_inst(rue_rir::Inst {
+            data: InstData::BoolConst(true),
+            span: Span::new(0, 0),
+        });
+        let then_value = editor.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(7),
+            span: Span::new(0, 0),
+        });
+        let else_value = editor.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(9),
+            span: Span::new(0, 0),
+        });
+        let then_block = editor.add_block(&[then_value], Span::new(0, 0)).unwrap();
+        let else_block = editor.add_block(&[else_value], Span::new(0, 0)).unwrap();
+        let branch = editor.add_inst(rue_rir::Inst {
+            data: InstData::Branch {
+                cond: condition,
+                then_block,
+                else_block: Some(else_block),
+            },
+            span: Span::new(0, 0),
+        });
+        let sibling = editor.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(11),
+            span: Span::new(0, 0),
+        });
+        let root = editor
+            .add_block(&[branch, sibling], Span::new(0, 0))
+            .unwrap();
+        let mut host = FakeHost {
+            programs: vec![editor.finish()],
+            type_symbol: SymbolHandle::new(lasso::ThreadedRodeo::new().get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        // root block, branch, condition, and selected block are entered; the
+        // selected value is the first node rejected by this checkpoint.
+        configure_checkpoint_abort(Some(5));
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result =
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, root), &mut env);
+        assert!(matches!(
+            result,
+            ComptimeOutcome::Abort(FakeFailure::Canceled)
+        ));
+        assert_eq!(checkpoint_count(), 5);
+        configure_checkpoint_abort(None);
+    }
+
+    #[test]
+    fn cancellation_abort_in_entered_frame_finishes_and_cleans_up() {
+        let interner = lasso::ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("f");
+        let symbol_handle = SymbolHandle::new(symbol);
+        let mut root_editor = rue_rir::RirEditor::new();
+        let call = root_editor.add_call(symbol, &[], Span::new(0, 0)).unwrap();
+        let after = root_editor.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(20),
+            span: Span::new(0, 0),
+        });
+        let mut child_editor = rue_rir::RirEditor::new();
+        let child_body = child_editor.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 0),
+        });
+        let base = symbol_handle.issuing_interner_ordinal() as u32;
+        let mut call_plans = AHashMap::new();
+        call_plans.insert(
+            base,
+            FakePreparedCall::Enter {
+                program: 1,
+                body: child_body,
+                expected: None,
+                name_bindings: AHashMap::new(),
+            },
+        );
+        let mut host = FakeHost {
+            programs: vec![root_editor.finish(), child_editor.finish()],
+            type_symbol: symbol_handle,
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans,
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        LABEL_CALLS.with(|calls| calls.set(0));
+        TICKET_EVENTS.with(|events| events.borrow_mut().clear());
+        configure_checkpoint_abort(Some(2));
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let aborted =
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, call), &mut env);
+        assert!(matches!(
+            aborted,
+            ComptimeOutcome::Abort(FakeFailure::Canceled)
+        ));
+        assert_eq!(host.finished.len(), 1);
+        assert_eq!(host.finished[0].0, 1);
+        TICKET_EVENTS.with(|events| {
+            assert_eq!(*events.borrow(), vec![(1, true), (1, false)]);
+        });
+        assert_eq!(LABEL_CALLS.with(Cell::get), 0);
+        configure_checkpoint_abort(None);
+        let resumed =
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, after), &mut env);
+        assert!(matches!(
+            resumed,
+            ComptimeOutcome::Known(FakeValue::Integer(20))
+        ));
+    }
+
+    #[test]
     fn non_local_type_domain_runs_the_real_type_dispatcher() {
         let mut editor = rue_rir::RirEditor::new();
         let type_const = editor.add_inst(rue_rir::Inst {
@@ -3637,6 +3782,11 @@ pub trait ComptimeHost {
     /// structured type reduction. This is sealed below to prevent a peer
     /// resolver state machine from being hidden behind the host boundary.
     type StructuredTypeSuspension: ComptimeStructuredTypeSuspension;
+    /// Check the owning query's cancellation state before reading any RIR for
+    /// an evaluation node. This is deliberately required so every host makes
+    /// abort semantics explicit; the engine performs the checkpoint exactly
+    /// once at the entry to `eval`.
+    fn check_canceled(&self) -> ComptimeHostResult<(), Self::Failure>;
     fn program_rir(&self, program: &Self::ProgramKey) -> &Rir;
     fn name_from_symbol(&self, program: &Self::ProgramKey, symbol: SymbolHandle) -> Self::Name;
     fn display_name(&self, name: &Self::Name) -> String;
@@ -4854,6 +5004,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         inst_ref: InstRef,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
+        host_value!(self.host.check_canceled());
         let (data, span) = {
             let source = self.program_rir().get(inst_ref);
             (source.data.clone(), source.span)

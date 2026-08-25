@@ -11,8 +11,8 @@ mod comptime_public_contract_tests {
     use rue_air::{
         ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallKey,
         ComptimeCallMemoLookup, ComptimeCompletedCallMemo, ComptimeConstInfo, ComptimeEngine,
-        ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame, ComptimeHost, ComptimeIdentity,
-        ComptimeMemoizedOutcome, ComptimeName, ComptimeOutcome, ComptimeProgram,
+        ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame, ComptimeHost, ComptimeHostResult,
+        ComptimeIdentity, ComptimeMemoizedOutcome, ComptimeName, ComptimeOutcome, ComptimeProgram,
         ComptimeProgramKey, ComptimeProgramRegistry, ComptimeType, ComptimeValue,
     };
     use rue_rir::{Inst, InstData, InstRef, RirEditor, RirValidationContext, ValidatedRir};
@@ -93,6 +93,7 @@ mod comptime_public_contract_tests {
         program: H::ProgramKey,
         root: InstRef,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let _checkpoint: ComptimeHostResult<(), H::Failure> = host.check_canceled();
         let mut env =
             ComptimeEnv::<H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>::new();
         ComptimeEngine::new(host).evaluate(ComptimeFrame::expression(program, root), &mut env)

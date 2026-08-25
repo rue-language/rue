@@ -1789,6 +1789,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     > {
         unreachable!("ordinary comptime type resolution is synchronous")
     }
+    fn check_canceled(&self) -> ComptimeHostResult<(), Self::Failure> {
+        Ok(())
+    }
     fn program_rir(&self, _program: &Self::ProgramKey) -> &rue_rir::Rir {
         OrdinaryBodyEngine::body_rir_ref(self)
     }
