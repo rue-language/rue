@@ -6762,7 +6762,7 @@ struct SemanticConstEvaluator<'a, 'provider> {
     import_occurrences: BTreeMap<rue_rir::InstRef, (u32, Arc<str>)>,
     locals: BTreeMap<Arc<str>, EvaluatedSemanticConst>,
     producer: crate::StableProducerId,
-    next_call: u32,
+    session: crate::durable_comptime::DurableComptimeSession,
     expected_type: Option<crate::durable_semantics::DurableType>,
     effects: crate::durable_comptime::DurableComptimeEffects,
 }
@@ -7861,8 +7861,7 @@ impl SemanticConstEvaluator<'_, '_> {
             ComptimeCallQueryKey, ComptimeCallResultProjection, SemanticNucleusKey,
             SemanticNucleusValue,
         };
-        let call_ordinal = self.next_call;
-        self.next_call += 1;
+        let call_ordinal = self.session.next_call_ordinal();
         let argument_modes = self
             .rir
             .call_args(arguments)
@@ -13600,6 +13599,11 @@ impl RevisionedQueryDatabase {
                                                 crate::StableProducerId::Definition(
                                                     const_identity.key.clone(),
                                                 );
+                                            let session = crate::durable_comptime::DurableComptimeSession::new(
+                                                const_identity.key.clone(),
+                                                query.declaration.clone(),
+                                            )
+                                            .expect("validated durable const session identity");
                                             let import_occurrences =
                                                 semantic_candidate_import_occurrences(
                                                     &rir,
@@ -13616,7 +13620,7 @@ impl RevisionedQueryDatabase {
                                                     import_occurrences,
                                                     locals: BTreeMap::new(),
                                                     producer: const_producer.clone(),
-                                                    next_call: 0,
+                                                    session,
                                                     expected_type,
                                                     effects: Default::default(),
                                                 };
@@ -14091,11 +14095,16 @@ impl RevisionedQueryDatabase {
                                             let producer = crate::StableProducerId::Function(Node::new(
                                                 crate::FunctionInstanceKey::Specialization {
                                                     base: Node::new(crate::FunctionInstanceKey::Definition(
-                                                        producer_key,
+                                                        producer_key.clone(),
                                                     )),
                                                     arguments: canonical_arguments,
                                                 },
                                             ));
+                                            let session = crate::durable_comptime::DurableComptimeSession::new(
+                                                producer_key.clone(),
+                                                call.declaration.declaration.clone(),
+                                            )
+                                            .expect("validated durable call session identity");
                                             let mut locals = BTreeMap::new();
                                             locals.extend(call.type_arguments.iter().map(
                                                 |(name, value)| {
@@ -14136,7 +14145,7 @@ impl RevisionedQueryDatabase {
                                                     import_occurrences,
                                                     locals,
                                                     producer: producer.clone(),
-                                                    next_call: 0,
+                                                    session,
                                                     expected_type: Some(expected_type),
                                                     effects: Default::default(),
                                                 };
