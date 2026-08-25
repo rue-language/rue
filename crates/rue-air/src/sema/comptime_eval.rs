@@ -55,10 +55,11 @@ use rue_rir::{InstData, InstRef};
 use rue_span::{FileId, Span};
 
 use super::comptime::{
-    ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallPreparation,
-    ComptimeConstInfo, ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile,
-    ComptimeFrame, ComptimeHost, ComptimeHostResult, ComptimeIdentity, ComptimeMethodDescriptor,
-    ComptimeName, ComptimeOutcome, ComptimeStructuredTypeResolution, ComptimeTrap, ComptimeType,
+    ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallArgument,
+    ComptimeCallPreparation, ComptimeConstInfo, ComptimeEngine, ComptimeEnv as GenericComptimeEnv,
+    ComptimeFile, ComptimeFrame, ComptimeHost, ComptimeHostResult, ComptimeIdentity,
+    ComptimeMethodDescriptor, ComptimeName, ComptimeOutcome, ComptimeStructuredTypeResolution,
+    ComptimeTrap, ComptimeType,
 };
 use super::context::{AnalysisContext, ConstValue};
 use super::info::FunctionCallInfo;
@@ -895,7 +896,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     fn bind_comptime_call(
         &self,
         admission: &ComptimeCallAdmission<FunctionCallInfo, Spur>,
-        values: &[ConstValue],
+        values: &[ComptimeCallArgument<ConstValue>],
         _span: Span,
     ) -> CompileResult<Option<(AHashMap<Spur, Type>, AHashMap<Spur, ConstValue>)>> {
         let param_data = self.body_param_data(admission.payload.params);
@@ -903,7 +904,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let param_comptime_type = self.comptime_type_param_flags(&admission.payload);
         let mut callee_types: AHashMap<Spur, Type> = AHashMap::new();
         let mut callee_values: AHashMap<Spur, ConstValue> = AHashMap::new();
-        for (i, v) in values.iter().copied().enumerate() {
+        for (i, argument) in values.iter().enumerate() {
+            let v = *argument.value();
             let is_comptime_type = param_comptime_type
                 .get(i)
                 .copied()
@@ -2145,7 +2147,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     fn bind_comptime_call(
         &self,
         admission: &ComptimeCallAdmission<FunctionCallInfo, Spur>,
-        values: &[ConstValue],
+        values: &[ComptimeCallArgument<ConstValue>],
         span: Span,
     ) -> ComptimeHostResult<Option<(AHashMap<Spur, Type>, AHashMap<Spur, ConstValue>)>, Self::Failure>
     {

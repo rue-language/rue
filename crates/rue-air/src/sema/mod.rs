@@ -60,15 +60,16 @@ pub use binding_manifest::{
     SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
 };
 pub use comptime::{
-    ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallKey,
-    ComptimeCallMemoLookup, ComptimeCallPreparation, ComptimeCompletedCallMemo, ComptimeConstInfo,
-    ComptimeEngine, ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame, ComptimeHost,
-    ComptimeHostError, ComptimeHostResult, ComptimeIdentity, ComptimeIntrinsicArgument,
-    ComptimeMemoInsertError, ComptimeMemoizedOutcome, ComptimeMethodDescriptor,
-    ComptimeMethodParameter, ComptimeMethodType, ComptimeName, ComptimeOutcome, ComptimeProgram,
-    ComptimeProgramKey, ComptimeProgramRegistrationError, ComptimeProgramRegistry, ComptimeSite,
-    ComptimeSiteKind, ComptimeStructuredTypeResolution, ComptimeStructuredTypeSuspension,
-    ComptimeTrap, ComptimeType, ComptimeValue, MAX_COMPTIME_CALL_DEPTH,
+    ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallArgument,
+    ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCallPreparation, ComptimeCompletedCallMemo,
+    ComptimeConstInfo, ComptimeEngine, ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame,
+    ComptimeHost, ComptimeHostError, ComptimeHostResult, ComptimeIdentity,
+    ComptimeIntrinsicArgument, ComptimeMemoInsertError, ComptimeMemoizedOutcome,
+    ComptimeMethodDescriptor, ComptimeMethodParameter, ComptimeMethodType, ComptimeName,
+    ComptimeOutcome, ComptimeProgram, ComptimeProgramKey, ComptimeProgramRegistrationError,
+    ComptimeProgramRegistry, ComptimeSite, ComptimeSiteKind, ComptimeStructuredTypeResolution,
+    ComptimeStructuredTypeSuspension, ComptimeTrap, ComptimeType, ComptimeValue,
+    MAX_COMPTIME_CALL_DEPTH,
 };
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;
