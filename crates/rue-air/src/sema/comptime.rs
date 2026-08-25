@@ -567,6 +567,10 @@ mod value_domain_tests {
         static TYPE_INTRINSIC_FAILURE: Cell<bool> = const { Cell::new(false) };
         static TYPE_INTRINSIC_ABORT: Cell<bool> = const { Cell::new(false) };
         static TYPE_INTRINSIC_NAME: RefCell<Option<(u32, &'static str)>> = const { RefCell::new(None) };
+        static MATCH_PATTERN_MATCHES: Cell<bool> = const { Cell::new(false) };
+        static MATCH_PATTERN_EVENTS: RefCell<Vec<ComptimeMatchPattern<FakeName>>> =
+            const { RefCell::new(Vec::new()) };
+        static MATCH_SYMBOL_CALLS: Cell<usize> = const { Cell::new(0) };
     }
 
     #[test]
@@ -575,6 +579,139 @@ mod value_domain_tests {
         assert!(source.contains("pub(crate) fn evaluate_entered_frame("));
         let public_signature = ["pub", " fn evaluate_entered_frame("].concat();
         assert!(!source.contains(&public_signature));
+    }
+
+    #[test]
+    fn semantic_pattern_decoder_uses_the_supplied_program_name_authority() {
+        let mut editor = RirEditor::new();
+        let unit = editor.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 1),
+        });
+        let interner = lasso::ThreadedRodeo::new();
+        let type_name = interner.get_or_intern("Os");
+        let variant = interner.get_or_intern("Macos");
+        let matched = editor
+            .add_match(
+                unit,
+                &[(
+                    rue_rir::RirPattern::Path {
+                        module: None,
+                        ctor_head: None,
+                        type_name,
+                        variant,
+                        bindings: Vec::new(),
+                        span: Span::new(0, 1),
+                    },
+                    unit,
+                )],
+                Span::new(0, 1),
+            )
+            .unwrap();
+        let rir = editor.finish();
+        let InstData::Match { arms, .. } = &rir.get(matched).data else {
+            panic!("expected match instruction");
+        };
+        let (pattern, _) = rir.match_arms(arms).iter().next().unwrap();
+        let first = decode_comptime_match_pattern(&pattern, |symbol| {
+            format!("program-1-{}", symbol.issuing_interner_ordinal())
+        });
+        let second = decode_comptime_match_pattern(&pattern, |symbol| {
+            format!("program-2-{}", symbol.issuing_interner_ordinal())
+        });
+        assert_ne!(first, second);
+        assert!(matches!(
+            first,
+            ComptimeMatchPattern::Path {
+                module_qualified: false,
+                ctor_qualified: false,
+                binding_count: 0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn engine_decodes_match_patterns_lazily_per_active_program() {
+        let interner = lasso::ThreadedRodeo::new();
+        let type_name = interner.get_or_intern("Os");
+        let variant = interner.get_or_intern("Macos");
+        let later_type = interner.get_or_intern("Arch");
+        let later_variant = interner.get_or_intern("X86_64");
+        let make_program = || {
+            let mut editor = RirEditor::new();
+            let unit = editor.add_inst(Inst {
+                data: InstData::UnitConst,
+                span: Span::new(0, 1),
+            });
+            let root = editor
+                .add_match(
+                    unit,
+                    &[
+                        (
+                            rue_rir::RirPattern::Path {
+                                module: None,
+                                ctor_head: None,
+                                type_name,
+                                variant,
+                                bindings: Vec::new(),
+                                span: Span::new(0, 1),
+                            },
+                            unit,
+                        ),
+                        (
+                            rue_rir::RirPattern::Path {
+                                module: None,
+                                ctor_head: None,
+                                type_name: later_type,
+                                variant: later_variant,
+                                bindings: vec![type_name],
+                                span: Span::new(0, 1),
+                            },
+                            unit,
+                        ),
+                    ],
+                    Span::new(0, 1),
+                )
+                .unwrap();
+            (editor.finish(), root)
+        };
+        let (program0, root0) = make_program();
+        let (program1, root1) = make_program();
+        MATCH_PATTERN_MATCHES.with(|matches| matches.set(true));
+        MATCH_PATTERN_EVENTS.with(|events| events.borrow_mut().clear());
+        MATCH_SYMBOL_CALLS.with(|calls| calls.set(0));
+        let mut host = FakeHost {
+            programs: vec![program0, program1],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let mut engine = ComptimeEngine::new(&mut host);
+        assert!(matches!(
+            engine.evaluate(ComptimeFrame::expression(0, root0), &mut env),
+            ComptimeOutcome::Known(FakeValue::Unit)
+        ));
+        assert!(matches!(
+            engine.evaluate(ComptimeFrame::expression(1, root1), &mut env),
+            ComptimeOutcome::Known(FakeValue::Unit)
+        ));
+        let events = MATCH_PATTERN_EVENTS.with(|events| events.borrow().clone());
+        assert_eq!(
+            events.len(),
+            2,
+            "the later arm must not be decoded or offered"
+        );
+        assert_ne!(events[0], events[1], "active program must own symbol names");
+        assert_eq!(MATCH_SYMBOL_CALLS.with(Cell::get), 4);
+        MATCH_PATTERN_MATCHES.with(|matches| matches.set(false));
     }
 
     #[derive(Clone, Debug, PartialEq)]
@@ -812,6 +949,9 @@ mod value_domain_tests {
             &self.programs[*program]
         }
         fn name_from_symbol(&self, program: &Self::ProgramKey, symbol: SymbolHandle) -> Self::Name {
+            if MATCH_PATTERN_MATCHES.with(Cell::get) {
+                MATCH_SYMBOL_CALLS.with(|calls| calls.set(calls.get() + 1));
+            }
             FakeName {
                 ordinal: symbol.issuing_interner_ordinal() as u32 + (*program as u32) * 1000,
             }
@@ -886,11 +1026,14 @@ mod value_domain_tests {
         }
         fn match_pattern(
             &self,
-            _program: &Self::ProgramKey,
-            _pattern: &rue_rir::RirPatternView<'_>,
+            pattern: &ComptimeMatchPattern<Self::Name>,
             _value: &Self::Value,
         ) -> Option<bool> {
-            None
+            if !MATCH_PATTERN_MATCHES.with(Cell::get) {
+                return None;
+            }
+            MATCH_PATTERN_EVENTS.with(|events| events.borrow_mut().push(pattern.clone()));
+            Some(true)
         }
         fn require_preview(
             &self,
@@ -4677,6 +4820,57 @@ pub struct ComptimeTrap {
 
 pub type ComptimeArgMode = (rue_rir::RirArgMode, Span);
 
+/// A match pattern decoded by the canonical AIR engine into semantic facts.
+/// The compact RIR representation, including symbol handles and instruction
+/// references used by qualified paths, never crosses the host boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComptimeMatchPattern<N> {
+    Wildcard,
+    Bool(bool),
+    Integer(i128),
+    Path {
+        module_qualified: bool,
+        ctor_qualified: bool,
+        type_name: N,
+        variant: N,
+        binding_count: usize,
+    },
+}
+
+/// Decode one compact RIR pattern into semantic facts.  Callers supply the
+/// owning-program symbol mapping; the pattern itself is never exposed beyond
+/// this canonical decoder.
+pub fn decode_comptime_match_pattern<N>(
+    pattern: &rue_rir::RirPatternView<'_>,
+    mut name_from_symbol: impl FnMut(SymbolHandle) -> N,
+) -> ComptimeMatchPattern<N> {
+    match pattern {
+        rue_rir::RirPatternView::Wildcard(_) => ComptimeMatchPattern::Wildcard,
+        rue_rir::RirPatternView::Bool(value, _) => ComptimeMatchPattern::Bool(*value),
+        rue_rir::RirPatternView::Int {
+            value, negative, ..
+        } => ComptimeMatchPattern::Integer(if *negative {
+            -(*value as i128)
+        } else {
+            *value as i128
+        }),
+        rue_rir::RirPatternView::Path {
+            module,
+            ctor_head,
+            type_name,
+            variant,
+            bindings,
+            ..
+        } => ComptimeMatchPattern::Path {
+            module_qualified: module.is_some(),
+            ctor_qualified: ctor_head.is_some(),
+            type_name: name_from_symbol((*type_name).into()),
+            variant: name_from_symbol((*variant).into()),
+            binding_count: bindings.len(),
+        },
+    }
+}
+
 /// An already-evaluated call argument together with the engine-derived fact
 /// that its source node was an immediate `UnitConst`. The source instruction
 /// and owning program remain engine-private; hosts receive only this semantic
@@ -4803,8 +4997,7 @@ pub trait ComptimeHost {
     ) -> ComptimeHostResult<ComptimeNamedValueResolution<Self::Value>, Self::Failure>;
     fn match_pattern(
         &self,
-        program: &Self::ProgramKey,
-        pattern: &rue_rir::RirPatternView<'_>,
+        pattern: &ComptimeMatchPattern<Self::Name>,
         value: &Self::Value,
     ) -> Option<bool>;
     fn require_preview(
@@ -5307,6 +5500,16 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             #[cfg(test)]
             provenance_classifications: 0,
         }
+    }
+
+    fn decode_match_pattern(
+        &self,
+        program: &H::ProgramKey,
+        pattern: &rue_rir::RirPatternView<'_>,
+    ) -> ComptimeMatchPattern<H::Name> {
+        decode_comptime_match_pattern(pattern, |symbol| {
+            self.host.name_from_symbol(program, symbol)
+        })
     }
 
     #[cfg(test)]
@@ -6693,10 +6896,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let scrut = outcome_value!(self.eval(scrutinee, env));
                 let arms = self.program_rir().match_arms(arms).to_vec();
                 for (pattern, body) in arms.iter() {
-                    match self
-                        .host
-                        .match_pattern(&self.program_key(), pattern, &scrut)
-                    {
+                    let semantic_pattern = self.decode_match_pattern(&self.program_key(), pattern);
+                    match self.host.match_pattern(&semantic_pattern, &scrut) {
                         Some(true) => return self.eval(*body, env),
                         Some(false) => continue,
                         // Undecidable pattern (e.g. an enum-variant `Path`

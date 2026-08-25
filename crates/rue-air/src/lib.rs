@@ -112,6 +112,7 @@ pub use sema::{
     SemanticProducedAnonymousNominalShape, SourceParamAbi, analyze_provider_anonymous_body,
     analyze_provider_ordinary_body, analyze_provider_specialized_body,
 };
+pub use sema::{ComptimeMatchPattern, decode_comptime_match_pattern};
 pub use semantic_body::{
     SEMANTIC_BODY_INST_KINDS, SemanticAnonymousBodyExport, SemanticBody, SemanticBodyAnchor,
     SemanticBodyCallArg, SemanticBodyCandidate, SemanticBodyCandidateInstallWork,

@@ -11,7 +11,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ahash::AHashMap;
-use rue_air::{ComptimeFile, ComptimeIdentity, ComptimeName, ComptimeType, ComptimeValue};
+use rue_air::{
+    ComptimeFile, ComptimeIdentity, ComptimeMatchPattern, ComptimeName, ComptimeType, ComptimeValue,
+};
 use rue_query::QueryAbort;
 
 use crate::ModuleId;
@@ -2433,6 +2435,41 @@ pub(crate) struct TargetEnumValue {
     pub(crate) variant: &'static str,
 }
 
+/// Match semantics shared by the durable evaluator and its future AIR host.
+/// Durable values deliberately remain narrower than the language's runtime
+/// enum algebra: only an exact, unqualified, binding-free target descriptor
+/// path is decidable here.
+pub(crate) fn durable_match_pattern_matches(
+    pattern: &ComptimeMatchPattern<Arc<str>>,
+    value: &EvaluatedSemanticConst,
+) -> bool {
+    match pattern {
+        ComptimeMatchPattern::Wildcard => true,
+        ComptimeMatchPattern::Integer(pattern) => matches!(
+            value,
+            EvaluatedSemanticConst::Value(value)
+                if matches!(value.value, DurableConstValue::Integer(actual) if actual == *pattern)
+        ),
+        ComptimeMatchPattern::Bool(pattern) => matches!(
+            value,
+            EvaluatedSemanticConst::Value(value)
+                if matches!(value.value, DurableConstValue::Bool(actual) if actual == *pattern)
+        ),
+        ComptimeMatchPattern::Path {
+            module_qualified: false,
+            ctor_qualified: false,
+            type_name,
+            variant,
+            binding_count: 0,
+        } => matches!(
+            value,
+            EvaluatedSemanticConst::TargetEnum(target)
+                if type_name.as_ref() == target.type_name && variant.as_ref() == target.variant
+        ),
+        ComptimeMatchPattern::Path { .. } => false,
+    }
+}
+
 /// The canonical pure target-descriptor kernel used by durable semantic
 /// authorities.  It receives only decomposed target facts, so tests and
 /// future query adapters can cover data models not currently exposed by a
@@ -2943,6 +2980,63 @@ mod tests {
             EvaluatedSemanticConst::integer_typed(-12, Some(DurableComptimeType(ty.clone())));
         assert_eq!(original.clone(), original);
         assert_eq!(original.as_integer_type(), Some(DurableComptimeType(ty)));
+    }
+
+    #[test]
+    fn durable_match_kernel_preserves_scalar_and_target_pattern_policy() {
+        let integer = value(DurableConstValue::Integer(-7), Some(DurableType::I16));
+        let boolean = value(DurableConstValue::Bool(true), Some(DurableType::Bool));
+        let target = EvaluatedSemanticConst::TargetEnum(TargetEnumValue {
+            type_name: "Os",
+            variant: "Macos",
+        });
+        let path = |module_qualified, ctor_qualified, type_name, variant, binding_count| {
+            ComptimeMatchPattern::Path {
+                module_qualified,
+                ctor_qualified,
+                type_name: Arc::from(type_name),
+                variant: Arc::from(variant),
+                binding_count,
+            }
+        };
+
+        assert!(durable_match_pattern_matches(
+            &ComptimeMatchPattern::Wildcard,
+            &EvaluatedSemanticConst::Module(ModuleId::from_logical_path("m").unwrap()),
+        ));
+        assert!(durable_match_pattern_matches(
+            &ComptimeMatchPattern::Integer(-7),
+            &integer,
+        ));
+        assert!(!durable_match_pattern_matches(
+            &ComptimeMatchPattern::Integer(7),
+            &integer,
+        ));
+        assert!(durable_match_pattern_matches(
+            &ComptimeMatchPattern::Bool(true),
+            &boolean,
+        ));
+        assert!(!durable_match_pattern_matches(
+            &ComptimeMatchPattern::Bool(false),
+            &integer,
+        ));
+        assert!(!durable_match_pattern_matches(
+            &ComptimeMatchPattern::Integer(-7),
+            &boolean,
+        ));
+        assert!(durable_match_pattern_matches(
+            &path(false, false, "Os", "Macos", 0),
+            &target,
+        ));
+        for pattern in [
+            path(false, false, "Os", "Linux", 0),
+            path(false, false, "Arch", "Macos", 0),
+            path(true, false, "Os", "Macos", 0),
+            path(false, true, "Os", "Macos", 0),
+            path(false, false, "Os", "Macos", 1),
+        ] {
+            assert!(!durable_match_pattern_matches(&pattern, &target));
+        }
     }
 
     #[test]
