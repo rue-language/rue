@@ -10,7 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rue_air::{ComptimeType, ComptimeValue};
+use ahash::AHashMap;
+use rue_air::{ComptimeFile, ComptimeIdentity, ComptimeName, ComptimeType, ComptimeValue};
 use rue_query::QueryAbort;
 
 use crate::ModuleId;
@@ -859,6 +860,13 @@ pub(crate) enum DurableComptimeForeignCallError {
     Lifecycle(DurableComptimeLifecycleError),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum DurableComptimeConstRootAdmissionError {
+    NotConstRoot,
+    DuplicateProgram,
+}
+
 impl DurableComptimeSession {
     pub(crate) fn new(
         parent_producer: crate::StableDefinitionKey,
@@ -877,6 +885,37 @@ impl DurableComptimeSession {
         core: &crate::body_query::OwnedComptimeProgramCore,
     ) -> Result<(), rue_air::ComptimeProgramRegistrationError> {
         core.register_into(&mut self.programs)
+    }
+
+    /// Atomically register and frame one declaration root.  A callable core
+    /// is rejected before touching the keyed registry; a duplicate key is
+    /// rejected by the registry before a frame escapes.  The caller supplies
+    /// the already-canonical expected result, so this boundary never resolves
+    /// declared type syntax independently.
+    #[allow(dead_code)]
+    pub(crate) fn admit_const_root(
+        &mut self,
+        core: Arc<crate::body_query::OwnedComptimeProgramCore>,
+        expected_result: Option<DurableComptimeType>,
+    ) -> Result<DurableComptimeConstFrame, DurableComptimeConstRootAdmissionError> {
+        let Some((init, _, root)) = core.const_root() else {
+            return Err(DurableComptimeConstRootAdmissionError::NotConstRoot);
+        };
+        core.register_into(&mut self.programs)
+            .map_err(|_| DurableComptimeConstRootAdmissionError::DuplicateProgram)?;
+        Ok(rue_air::ComptimeFrame {
+            program: core.plan.key.clone(),
+            body: init,
+            name: None,
+            context: Some(core.plan.candidate.module.clone()),
+            span: core.rir.get(init).span,
+            function_span: core.rir.get(root).span,
+            type_bindings: AHashMap::new(),
+            value_bindings: AHashMap::new(),
+            name_bindings: AHashMap::new(),
+            call_identity: None,
+            expected_result,
+        })
     }
 
     pub(crate) fn next_call_ordinal(&mut self) -> u32 {
@@ -2143,6 +2182,67 @@ impl TypedSemanticConst {
 /// conversion is lossless and intentionally carries no behavior of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DurableComptimeType(pub(crate) DurableType);
+
+/// Compiler-owned name domain for AIR frames. `Arc<str>` itself is foreign to
+/// both crates, so the wrapper is the lossless orphan-rule boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct DurableComptimeName(pub(crate) Arc<str>);
+
+impl DurableComptimeName {
+    #[allow(dead_code)]
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<Arc<str>> for DurableComptimeName {
+    fn from(value: Arc<str>) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for DurableComptimeName {
+    fn from(value: &str) -> Self {
+        Self(Arc::from(value))
+    }
+}
+
+impl ComptimeName for DurableComptimeName {}
+impl ComptimeFile for ModuleId {}
+
+/// Lossless compiler-owned AIR identity domain. The wrapped producer retains
+/// definition and specialized-function identity; the newtype exists only to
+/// satisfy the cross-crate trait boundary without violating orphan rules.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct DurableComptimeIdentity(pub(crate) crate::StableProducerId);
+
+impl From<crate::StableProducerId> for DurableComptimeIdentity {
+    fn from(value: crate::StableProducerId) -> Self {
+        Self(value)
+    }
+}
+
+impl AsRef<crate::StableProducerId> for DurableComptimeIdentity {
+    fn as_ref(&self) -> &crate::StableProducerId {
+        &self.0
+    }
+}
+
+impl ComptimeIdentity for DurableComptimeIdentity {}
+
+/// The compiler's ticket-free declaration-root frame. `StableProducerId`
+/// preserves specialized function producers even though a declaration root
+/// leaves `call_identity` empty; the program key independently prevents dense
+/// instruction references from being interpreted against another arena.
+#[allow(dead_code)]
+pub(crate) type DurableComptimeConstFrame = rue_air::ComptimeFrame<
+    EvaluatedSemanticConst,
+    DurableComptimeType,
+    DurableComptimeName,
+    ModuleId,
+    crate::body_query::DurableComptimeProgramKey,
+    DurableComptimeIdentity,
+>;
 
 impl From<DurableType> for DurableComptimeType {
     fn from(value: DurableType) -> Self {
@@ -4692,6 +4792,18 @@ mod structured_type_adapter_tests {
     use super::*;
     use std::convert::Infallible;
 
+    fn assert_frame_domains<
+        V: rue_air::ComptimeValue<Type = T>,
+        T: rue_air::ComptimeType,
+        N: rue_air::ComptimeName,
+        F: rue_air::ComptimeFile,
+        P: Clone,
+        I: rue_air::ComptimeIdentity,
+    >(
+        _frame: Option<rue_air::ComptimeFrame<V, T, N, F, P, I>>,
+    ) {
+    }
+
     struct Provider {
         scope: ModuleId,
     }
@@ -5043,6 +5155,54 @@ mod structured_type_adapter_tests {
         .unwrap()
     }
 
+    fn callable_program(path: &str) -> Arc<crate::body_query::OwnedComptimeProgramCore> {
+        let snapshot = crate::SourceSnapshot::single(path, "fn target() -> i32 { 1 }").unwrap();
+        let module = crate::parsed_modules::parse_source_snapshot_modules(&snapshot)
+            .unwrap()
+            .modules()[0]
+            .clone();
+        let candidate = module
+            .definitions()
+            .declaration_keys_in_source_order()
+            .find(|candidate| candidate.name.as_ref() == "target")
+            .unwrap()
+            .clone();
+        let artifacts =
+            crate::canonical_lower::lower_parsed_declaration_body_plan(&module, &candidate, || {
+                Ok(())
+            })
+            .unwrap();
+        let producer = crate::StableDefinitionKey::from_stable_parts(
+            candidate.module.clone(),
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            "target",
+            None,
+        );
+        let program = crate::body_query::OwnedForeignComptimeProgram::from_body_plan(
+            crate::body_query::DurableComptimeProgramPlan {
+                key: crate::body_query::DurableComptimeProgramKey {
+                    declaration: producer,
+                    configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                        target: rue_target::Target::X86_64Linux,
+                        preview_features: crate::StablePreviewFeatures::new(
+                            &crate::PreviewFeatures::default(),
+                        ),
+                    },
+                },
+                candidate,
+            },
+            &artifacts,
+            crate::body_query::ForeignComptimeCallSeed {
+                type_arguments: Arc::from([]),
+                value_arguments: Arc::from([]),
+            },
+            || Ok(()),
+        )
+        .unwrap();
+        program.core
+    }
+
     fn session() -> DurableComptimeSession {
         let module = ModuleId::from_logical_path("structured-parent.rue").unwrap();
         let producer = crate::StableDefinitionKey::from_stable_parts(
@@ -5151,6 +5311,83 @@ mod structured_type_adapter_tests {
             ),
             Err(DurableStructuredTypeBeginError::InvalidProgramAuthority)
         ));
+    }
+
+    #[test]
+    fn const_root_admission_returns_keyed_ticket_free_frames_atomically() {
+        assert_frame_domains::<
+            EvaluatedSemanticConst,
+            DurableComptimeType,
+            DurableComptimeName,
+            ModuleId,
+            crate::body_query::DurableComptimeProgramKey,
+            DurableComptimeIdentity,
+        >(None);
+        let first = const_program("frame-first.rue", "i32");
+        let second = const_program("frame-second.rue", "i64");
+        let callable = callable_program("frame-callable.rue");
+        let mut session = session();
+
+        let specialized_producer = crate::StableProducerId::Function(rue_air::Node::new(
+            crate::FunctionInstanceKey::Specialization {
+                base: rue_air::Node::new(crate::FunctionInstanceKey::Definition(
+                    first.plan.key.declaration.clone(),
+                )),
+                arguments: Default::default(),
+            },
+        ));
+        let durable_identity = DurableComptimeIdentity::from(specialized_producer.clone());
+        assert_eq!(durable_identity.as_ref(), &specialized_producer);
+
+        let first_frame = session.admit_const_root(first.clone(), None).unwrap();
+        assert_eq!(first_frame.program, first.plan.key);
+        assert_eq!(first_frame.body, first.const_root().unwrap().0);
+        assert_eq!(
+            first_frame.context,
+            Some(first.plan.candidate.module.clone())
+        );
+        assert_eq!(first_frame.span, first.rir.get(first_frame.body).span);
+        assert_eq!(
+            first_frame.function_span,
+            first.rir.get(first.const_root().unwrap().2).span
+        );
+        assert!(first_frame.name.is_none());
+        assert!(first_frame.call_identity.is_none());
+        assert!(first_frame.type_bindings.is_empty());
+        assert!(first_frame.value_bindings.is_empty());
+        assert!(first_frame.name_bindings.is_empty());
+        assert!(first_frame.expected_result.is_none());
+
+        let second_frame = session
+            .admit_const_root(second.clone(), Some(DurableComptimeType(DurableType::I64)))
+            .unwrap();
+        assert_eq!(second_frame.program, second.plan.key);
+        assert_eq!(second_frame.body, second.const_root().unwrap().0);
+        assert_eq!(
+            second_frame.expected_result,
+            Some(DurableComptimeType(DurableType::I64))
+        );
+        assert_eq!(
+            first_frame.body, second_frame.body,
+            "dense refs intentionally collide"
+        );
+        assert_ne!(first_frame.program, second_frame.program);
+        assert_eq!(session.programs.len(), 2);
+        assert_ne!(
+            session.programs.get(&first_frame.program).unwrap().symbols,
+            session.programs.get(&second_frame.program).unwrap().symbols,
+            "colliding refs retain distinct owning symbol authorities"
+        );
+
+        assert!(matches!(
+            session.admit_const_root(first, None),
+            Err(DurableComptimeConstRootAdmissionError::DuplicateProgram)
+        ));
+        assert!(matches!(
+            session.admit_const_root(callable, None),
+            Err(DurableComptimeConstRootAdmissionError::NotConstRoot)
+        ));
+        assert_eq!(session.programs.len(), 2, "rejected admissions are atomic");
     }
 }
 

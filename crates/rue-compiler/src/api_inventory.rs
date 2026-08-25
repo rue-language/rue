@@ -3137,6 +3137,11 @@ fn durable_comptime_services_are_named_authority_operations() {
         "DurableComptimeFailure",
         "DurableComptimeHostFailure",
         "DurableComptimeSession",
+        "DurableComptimeName",
+        "DurableComptimeIdentity",
+        "DurableComptimeConstFrame",
+        "DurableComptimeConstRootAdmissionError",
+        "admit_const_root",
         "DurableComptimeForeignCall",
         "DurableComptimeForeignCallError",
         "DurableAnonymousNominalDescriptor",
@@ -3179,10 +3184,46 @@ fn durable_comptime_services_are_named_authority_operations() {
         "complete_root",
         "begin_durable_structured_type",
         "resume_durable_structured_type",
+        "impl ComptimeName for DurableComptimeName",
+        "impl ComptimeFile for ModuleId",
+        "impl ComptimeIdentity for DurableComptimeIdentity",
     ] {
         assert!(
             facade.contains(required),
             "durable facade missing {required}"
+        );
+    }
+    let frame_adapter = production_facade
+        .split("pub(crate) fn admit_const_root(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n    }\n\n    pub(crate) fn next_call_ordinal")
+                .next()
+        })
+        .expect("const frame adapter");
+    for required in [
+        "ComptimeFrame",
+        "core.plan.key.clone()",
+        "body: init",
+        "context: Some(core.plan.candidate.module.clone())",
+        "call_identity: None",
+        "expected_result",
+    ] {
+        assert!(
+            frame_adapter.contains(required),
+            "const frame adapter missing {required}"
+        );
+    }
+    for forbidden in [
+        "InstData",
+        "ComptimeEngine",
+        "SemanticConstEvaluator",
+        "eval(",
+    ] {
+        assert!(
+            !frame_adapter.contains(forbidden),
+            "const frame adapter gained evaluation authority: {forbidden}"
         );
     }
     for forbidden in ["InstData", "eval_const_expr", "ComptimeEngine", "InstRef"] {
