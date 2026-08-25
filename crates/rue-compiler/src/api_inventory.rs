@@ -3114,6 +3114,7 @@ fn durable_const_integer_semantics_use_the_shared_kernel() {
 #[test]
 fn durable_comptime_services_are_named_authority_operations() {
     let facade = include_str!("durable_comptime.rs");
+    let database = include_str!("revisioned_query_database.rs");
     let production_facade = facade
         .split("#[cfg(test)]\nmod tests")
         .next()
@@ -3130,6 +3131,16 @@ fn durable_comptime_services_are_named_authority_operations() {
         "DurableComptimeCallTicket",
         "DurableComptimeLifecycleError",
         "DurableComptimeApplicationPolicy",
+        "DurableComptimeDiagnosticSite",
+        "DurableComptimeFailure",
+        "DurableComptimeHostFailure",
+        "into_host_error",
+        "provider_error_as_host",
+        "maximum_depth",
+        "integer_literal_overflow",
+        "arithmetic_overflow",
+        "division_by_zero",
+        "remainder_by_zero",
         "DurableComptimeCallableAdmission",
         "DurableComptimeCallableAdmissionStart",
         "DurableComptimeNamedValueKind",
@@ -3166,6 +3177,84 @@ fn durable_comptime_services_are_named_authority_operations() {
         assert!(
             !facade.contains(forbidden),
             "durable service facade must not become an evaluator: {forbidden}"
+        );
+    }
+    let failure_carrier = production_facade
+        .split("pub(crate) enum DurableComptimeFailure {")
+        .nth(1)
+        .and_then(|source| source.split("}\n\nimpl DurableComptimeFailure").next())
+        .expect("durable failure carrier");
+    for forbidden in [
+        "InstData",
+        "InstRef",
+        "ComptimeFrame",
+        "ComptimeEngine",
+        "Span",
+    ] {
+        assert!(
+            !failure_carrier.contains(forbidden),
+            "durable failure carrier leaked revision/evaluator authority: {forbidden}"
+        );
+    }
+    assert!(failure_carrier.contains("Abort(QueryAbort)"));
+    assert!(failure_carrier.contains("Failure(Box<SemanticNucleusFailure>)"));
+    let terminal_bridge = production_facade
+        .split("/// A revision-independent diagnostic location")
+        .nth(1)
+        .and_then(|source| source.split("/// The ownership-site policy").next())
+        .expect("durable terminal bridge");
+    let bridge_without_future_trap = terminal_bridge.replace(
+        "#[allow(dead_code)] // consumed when the durable AIR host is wired",
+        "",
+    );
+    assert!(
+        !bridge_without_future_trap.contains("allow(dead_code)"),
+        "durable terminal bridge must be live production code except its staged future adapters"
+    );
+    assert!(terminal_bridge.contains("ComptimeHostError::HostFailure"));
+    assert!(terminal_bridge.contains("ComptimeHostError::Abort"));
+    assert_eq!(
+        terminal_bridge
+            .matches("ComptimeHostError::HostFailure(self)")
+            .count(),
+        1,
+        "durable host-failure construction must have one canonical funnel"
+    );
+    assert_eq!(
+        terminal_bridge
+            .matches("ComptimeHostError::Abort(self)")
+            .count(),
+        1,
+        "durable abort construction must have one canonical funnel"
+    );
+    assert!(!database.contains("ComptimeHostError::HostFailure"));
+    assert!(!database.contains("ComptimeHostError::Abort"));
+    for reason in [
+        "division by zero (this operation would panic at runtime)",
+        "remainder by zero (this operation would panic at runtime)",
+    ] {
+        assert_eq!(
+            production_facade.matches(reason).count(),
+            1,
+            "durable arithmetic reason must have one canonical production spelling: {reason}"
+        );
+    }
+    assert!(database.contains(
+        "type EvaluateSemanticConstError = crate::durable_comptime::DurableComptimeFailure;"
+    ));
+    assert!(!database.contains("enum EvaluateSemanticConstError {"));
+    for routed in [
+        "DurableComptimeFailure::maximum_depth(",
+        "DurableComptimeFailure::integer_literal_overflow(",
+        "DurableComptimeFailure::arithmetic_overflow(",
+        "DurableComptimeFailure::division_by_zero()",
+        "DurableComptimeFailure::remainder_by_zero()",
+        "DurableComptimeFailure::provider_error(error)",
+        "DurableComptimeFailure::abort(abort)",
+    ] {
+        assert!(
+            database.contains(routed),
+            "legacy durable evaluator no longer routes {routed} through the canonical bridge"
         );
     }
     assert!(facade.contains("query: crate::semantic_query_nucleus::ComptimeCallQueryKey"));
@@ -3358,7 +3447,6 @@ fn durable_comptime_services_are_named_authority_operations() {
     assert!(consume_at < pop_at && pop_at < context_at && context_at < scope_at);
     assert!(scope_at < known_at && known_at < merge_at);
 
-    let database = include_str!("revisioned_query_database.rs");
     assert_eq!(
         database.matches("SemanticConstEvaluator {").count(),
         2,
@@ -3442,6 +3530,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         .nth(1)
         .and_then(|source| source.split("impl SemanticNucleusTypeProvider<'_>").next())
         .expect("durable evaluator source");
+    assert!(evaluator.contains("EvaluateSemanticConstError::comptime_failure_at("));
     let target_authority = database
         .split("impl crate::durable_comptime::DurableComptimeSemanticAuthority")
         .nth(1)

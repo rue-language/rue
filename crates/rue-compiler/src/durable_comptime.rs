@@ -24,6 +24,226 @@ type SemanticDeclarationDependency = crate::semantic_query_nucleus::SemanticDecl
 type DeferredOwnershipGate = crate::semantic_query_nucleus::DeferredOwnershipGate;
 type DeferredOwnershipApplication = crate::semantic_query_nucleus::DeferredOwnershipApplication;
 
+/// A revision-independent diagnostic location owned by the declaration that
+/// produced a durable comptime fact.  Durable failures must carry this
+/// semantic location rather than borrowing a caller span (or an instruction
+/// reference) from the revision that happened to observe them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DurableComptimeDiagnosticSite {
+    producer: DeclarationCandidateKey,
+    start: u32,
+    end: u32,
+}
+
+impl DurableComptimeDiagnosticSite {
+    pub(crate) fn new(producer: DeclarationCandidateKey, start: u32, end: u32) -> Self {
+        Self {
+            producer,
+            start,
+            end,
+        }
+    }
+}
+
+/// The durable boundary distinguishes query control from a committed
+/// semantic failure.  In particular, cancellation and missing inputs remain
+/// aborts and are never converted into diagnostics or memoized failures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DurableComptimeFailure {
+    Abort(QueryAbort),
+    Failure(Box<SemanticNucleusFailure>),
+}
+
+/// The AIR error channel has one failure type for both tagged branches.  This
+/// opaque payload keeps query aborts and semantic failures distinct; the
+/// canonical constructors below always pair each payload with its matching
+/// AIR outer tag.  AIR's public error enum still permits arbitrary payloads in
+/// principle, so this guarantee is enforced by this durable funnel rather
+/// than claimed as a property of the AIR type itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DurableComptimeHostFailure(DurableComptimeHostFailureKind);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DurableComptimeHostFailureKind {
+    Semantic(Box<SemanticNucleusFailure>),
+    QueryAbort(QueryAbort),
+}
+
+impl DurableComptimeHostFailure {
+    fn semantic(failure: Box<SemanticNucleusFailure>) -> Self {
+        Self(DurableComptimeHostFailureKind::Semantic(failure))
+    }
+
+    fn query_abort(abort: QueryAbort) -> Self {
+        Self(DurableComptimeHostFailureKind::QueryAbort(abort))
+    }
+
+    fn into_host_error(self) -> rue_air::ComptimeHostError<Self> {
+        match &self.0 {
+            DurableComptimeHostFailureKind::Semantic(_) => {
+                rue_air::ComptimeHostError::HostFailure(self)
+            }
+            DurableComptimeHostFailureKind::QueryAbort(_) => {
+                rue_air::ComptimeHostError::Abort(self)
+            }
+        }
+    }
+
+    fn into_legacy_failure(self) -> DurableComptimeFailure {
+        match self.0 {
+            DurableComptimeHostFailureKind::Semantic(failure) => {
+                DurableComptimeFailure::Failure(failure)
+            }
+            DurableComptimeHostFailureKind::QueryAbort(_) => {
+                unreachable!("canonical host failure carried a query abort")
+            }
+        }
+    }
+
+    fn into_legacy_abort(self) -> DurableComptimeFailure {
+        match self.0 {
+            DurableComptimeHostFailureKind::QueryAbort(abort) => {
+                DurableComptimeFailure::Abort(abort)
+            }
+            DurableComptimeHostFailureKind::Semantic(_) => {
+                unreachable!("canonical host abort carried a semantic failure")
+            }
+        }
+    }
+}
+
+impl DurableComptimeFailure {
+    pub(crate) fn failure(failure: SemanticNucleusFailure) -> Self {
+        Self::Failure(Box::new(failure))
+    }
+
+    pub(crate) fn abort(abort: QueryAbort) -> Self {
+        Self::Abort(abort)
+    }
+
+    pub(crate) fn resolution(message: impl Into<Arc<str>>) -> Self {
+        Self::failure(SemanticNucleusFailure::Resolution(message.into()))
+    }
+
+    pub(crate) fn comptime_failure(reason: impl Into<String>) -> Self {
+        Self::failure(SemanticNucleusFailure::Diagnostic(
+            rue_error::ErrorKind::ComptimeEvaluationFailed {
+                reason: reason.into(),
+            },
+        ))
+    }
+
+    pub(crate) fn maximum_depth(name: &str, maximum: usize) -> Self {
+        Self::comptime_failure(format!(
+            "specialization of '{name}' exceeded the maximum nesting depth ({maximum}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?"
+        ))
+    }
+
+    pub(crate) fn integer_literal_overflow(type_name: &str, value: i128) -> Self {
+        Self::comptime_failure(format!(
+            "integer overflow evaluating constant at type {type_name}: value {value} is out of range for type {type_name}; {value} does not fit in {type_name} (this operation would panic at runtime)"
+        ))
+    }
+
+    pub(crate) fn arithmetic_overflow(type_name: &str, operation: &str, detail: &str) -> Self {
+        Self::comptime_failure(format!(
+            "integer overflow evaluating {operation} at type {type_name}: {detail} (this operation would panic at runtime)"
+        ))
+    }
+
+    pub(crate) fn division_by_zero() -> Self {
+        Self::arithmetic_trap_failure("division by zero")
+    }
+
+    pub(crate) fn remainder_by_zero() -> Self {
+        Self::arithmetic_trap_failure("remainder by zero")
+    }
+
+    fn arithmetic_trap_failure(operation: &str) -> Self {
+        Self::comptime_failure(
+            arithmetic_trap_reason(operation).expect("unsupported durable arithmetic trap"),
+        )
+    }
+
+    /// Construct a diagnostic anchored to the owning declaration.  The site
+    /// is explicit so nested/foreign evaluation cannot accidentally label the
+    /// failure with the ambient caller's span.
+    pub(crate) fn comptime_failure_at(
+        site: &DurableComptimeDiagnosticSite,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::diagnostic_at_site(site, reason.into())
+    }
+
+    fn diagnostic_at_site(site: &DurableComptimeDiagnosticSite, reason: String) -> Self {
+        Self::failure(SemanticNucleusFailure::DiagnosticAtProducerRange {
+            kind: rue_error::ErrorKind::ComptimeEvaluationFailed { reason },
+            producer: site.producer.clone(),
+            start: site.start,
+            end: site.end,
+        })
+    }
+
+    /// Adapt a supported AIR arithmetic trap using the owning declaration and
+    /// the trap's own span.  Unsupported operations remain unsupported rather
+    /// than acquiring a new diagnostic spelling.
+    #[allow(dead_code)] // consumed when the durable AIR host is wired
+    pub(crate) fn trap_at(
+        producer: DeclarationCandidateKey,
+        trap: rue_air::ComptimeTrap,
+    ) -> Option<Self> {
+        let site = DurableComptimeDiagnosticSite::new(producer, trap.span.start, trap.span.end);
+        let reason = arithmetic_trap_reason(trap.operation)?;
+        Some(Self::diagnostic_at_site(&site, reason.to_owned()))
+    }
+
+    /// Adapt a durable terminal directly for the future AIR host.  Provider
+    /// errors use `provider_error_as_host` instead, so this seam never creates
+    /// a durable failure only to convert it back into a provider error.
+    #[allow(dead_code)] // consumed when the durable AIR host is wired
+    pub(crate) fn into_host_error(self) -> rue_air::ComptimeHostError<DurableComptimeHostFailure> {
+        match self {
+            Self::Failure(failure) => {
+                DurableComptimeHostFailure::semantic(failure).into_host_error()
+            }
+            Self::Abort(abort) => DurableComptimeHostFailure::query_abort(abort).into_host_error(),
+        }
+    }
+
+    /// Build the AIR error directly from a provider result.  This is the
+    /// future host funnel; the legacy adapter below only unwraps its matching
+    /// outer channel and never normalizes crossed tags.
+    pub(crate) fn provider_error_as_host(
+        error: rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    ) -> rue_air::ComptimeHostError<DurableComptimeHostFailure> {
+        match error {
+            rue_air::SemanticProviderError::Abort(abort) => {
+                DurableComptimeHostFailure::query_abort(abort).into_host_error()
+            }
+            rue_air::SemanticProviderError::Failure(failure) => {
+                DurableComptimeHostFailure::semantic(Box::new(failure)).into_host_error()
+            }
+        }
+    }
+
+    pub(crate) fn provider_error(
+        error: rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    ) -> Self {
+        match Self::provider_error_as_host(error) {
+            rue_air::ComptimeHostError::Abort(payload) => payload.into_legacy_abort(),
+            rue_air::ComptimeHostError::HostFailure(payload) => payload.into_legacy_failure(),
+        }
+    }
+}
+
+fn arithmetic_trap_reason(operation: &str) -> Option<&'static str> {
+    match operation {
+        "division by zero" => Some("division by zero (this operation would panic at runtime)"),
+        "remainder by zero" => Some("remainder by zero (this operation would panic at runtime)"),
+        _ => None,
+    }
+}
+
 /// The ownership-site policy is issued with an admitted call rather than
 /// inferred while finishing it. Expression calls may attribute still-deferred
 /// gates to their parent call; structured type calls deliberately preserve
@@ -3042,5 +3262,212 @@ mod effect_lifecycle_tests {
             )
             .unwrap();
         assert!(lifecycle.complete_known().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod terminal_adapter_tests {
+    use super::*;
+
+    fn site(name: &str, start: u32, end: u32) -> DurableComptimeDiagnosticSite {
+        DurableComptimeDiagnosticSite::new(
+            DeclarationCandidateKey {
+                module: ModuleId::from_validated_canonical("terminal-tests"),
+                category:
+                    crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate,
+                name: Arc::from(name),
+                owner: None,
+                duplicate_discriminator: 0,
+            },
+            start,
+            end,
+        )
+    }
+
+    #[test]
+    fn durable_failure_preserves_query_control_and_domain_channels() {
+        let aborts = [
+            QueryAbort::Canceled,
+            QueryAbort::Cycle(Arc::from([])),
+            QueryAbort::ForeignRuntime,
+            QueryAbort::UnpublishedRevision(rue_query::Revision::new(7, 8)),
+            QueryAbort::MissingInput(rue_query::InputIdentity::new("terminal", "missing")),
+        ];
+        for abort in aborts {
+            assert_eq!(
+                DurableComptimeFailure::abort(abort.clone()),
+                DurableComptimeFailure::Abort(abort),
+            );
+        }
+
+        let failure = DurableComptimeFailure::resolution(Arc::<str>::from("not ready"));
+        assert!(matches!(
+            failure,
+            DurableComptimeFailure::Failure(value)
+                if matches!(*value, SemanticNucleusFailure::Resolution(ref message) if message.as_ref() == "not ready")
+        ));
+
+        let provider =
+            DurableComptimeFailure::provider_error(rue_air::SemanticProviderError::Failure(
+                SemanticNucleusFailure::Resolution(Arc::from("provider failure")),
+            ));
+        assert!(matches!(
+            provider,
+            DurableComptimeFailure::Failure(value)
+                if matches!(*value, SemanticNucleusFailure::Resolution(ref message) if message.as_ref() == "provider failure")
+        ));
+
+        assert!(matches!(
+            DurableComptimeFailure::provider_error_as_host(rue_air::SemanticProviderError::Abort(
+                QueryAbort::Canceled
+            )),
+            rue_air::ComptimeHostError::Abort(DurableComptimeHostFailure(
+                DurableComptimeHostFailureKind::QueryAbort(QueryAbort::Canceled)
+            ))
+        ));
+        assert!(matches!(
+            DurableComptimeFailure::provider_error_as_host(
+                rue_air::SemanticProviderError::Failure(SemanticNucleusFailure::Resolution(
+                    Arc::from("host failure")
+                ))
+            ),
+            rue_air::ComptimeHostError::HostFailure(DurableComptimeHostFailure(
+                DurableComptimeHostFailureKind::Semantic(value)
+            ))
+                if matches!(*value, SemanticNucleusFailure::Resolution(ref message) if message.as_ref() == "host failure")
+        ));
+
+        assert!(matches!(
+            DurableComptimeFailure::provider_error_as_host(rue_air::SemanticProviderError::Abort(
+                QueryAbort::Canceled
+            )),
+            rue_air::ComptimeHostError::Abort(DurableComptimeHostFailure(
+                DurableComptimeHostFailureKind::QueryAbort(QueryAbort::Canceled)
+            ))
+        ));
+        assert!(matches!(
+            DurableComptimeFailure::provider_error_as_host(
+                rue_air::SemanticProviderError::Failure(SemanticNucleusFailure::Resolution(
+                    Arc::from("provider failure")
+                ))
+            ),
+            rue_air::ComptimeHostError::HostFailure(DurableComptimeHostFailure(
+                DurableComptimeHostFailureKind::Semantic(value)
+            ))
+                if matches!(value.as_ref(), SemanticNucleusFailure::Resolution(actual) if actual.as_ref() == "provider failure")
+        ));
+        assert!(matches!(
+            DurableComptimeFailure::abort(QueryAbort::Canceled).into_host_error(),
+            rue_air::ComptimeHostError::Abort(DurableComptimeHostFailure(
+                DurableComptimeHostFailureKind::QueryAbort(QueryAbort::Canceled)
+            ))
+        ));
+    }
+
+    #[test]
+    fn named_diagnostic_constructors_preserve_exact_legacy_text() {
+        let cases = [
+            (
+                DurableComptimeFailure::maximum_depth(
+                    "count",
+                    rue_air::specialize::MAX_COMPTIME_CALL_DEPTH,
+                ),
+                format!(
+                    "specialization of 'count' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
+                    rue_air::specialize::MAX_COMPTIME_CALL_DEPTH,
+                ),
+            ),
+            (
+                DurableComptimeFailure::integer_literal_overflow("i8", 128),
+                "integer overflow evaluating constant at type i8: value 128 is out of range for type i8; 128 does not fit in i8 (this operation would panic at runtime)".to_owned(),
+            ),
+            (
+                DurableComptimeFailure::arithmetic_overflow(
+                    "i8",
+                    "addition",
+                    "value 128 is out of range for type i8; 128 does not fit in i8",
+                ),
+                "integer overflow evaluating addition at type i8: value 128 is out of range for type i8; 128 does not fit in i8 (this operation would panic at runtime)".to_owned(),
+            ),
+            (
+                DurableComptimeFailure::division_by_zero(),
+                "division by zero (this operation would panic at runtime)".to_owned(),
+            ),
+            (
+                DurableComptimeFailure::remainder_by_zero(),
+                "remainder by zero (this operation would panic at runtime)".to_owned(),
+            ),
+        ];
+        for (failure, expected) in cases {
+            let DurableComptimeFailure::Failure(value) = failure else {
+                panic!("durable diagnostic must remain a domain failure");
+            };
+            let SemanticNucleusFailure::Diagnostic(
+                rue_error::ErrorKind::ComptimeEvaluationFailed { reason: actual },
+            ) = *value
+            else {
+                panic!("durable diagnostic has the wrong error channel");
+            };
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn stable_trap_site_uses_trap_range_and_distinguishes_colliding_owners() {
+        let root = site("root", 10, 20);
+        let nested = site("nested", 100, 120);
+        let trap = |operation| rue_air::ComptimeTrap {
+            operation,
+            span: rue_span::Span::new(999, 1000),
+        };
+        let root_failure =
+            DurableComptimeFailure::trap_at(root.producer.clone(), trap("division by zero"))
+                .expect("division trap is supported");
+        let nested_failure =
+            DurableComptimeFailure::trap_at(nested.producer.clone(), trap("division by zero"))
+                .expect("division trap is supported");
+        assert!(matches!(
+            root_failure,
+            DurableComptimeFailure::Failure(value)
+                if matches!(*value, SemanticNucleusFailure::DiagnosticAtProducerRange {
+                    ref producer, start: 999, end: 1000, ..
+                } if producer == &root.producer)
+        ));
+        assert!(matches!(
+            nested_failure,
+            DurableComptimeFailure::Failure(value)
+                if matches!(*value, SemanticNucleusFailure::DiagnosticAtProducerRange {
+                    ref producer, start: 999, end: 1000, ..
+                } if producer == &nested.producer)
+        ));
+        let remainder =
+            DurableComptimeFailure::trap_at(nested.producer.clone(), trap("remainder by zero"))
+                .expect("remainder trap is supported");
+        assert!(matches!(
+            remainder,
+            DurableComptimeFailure::Failure(value)
+                if matches!(*value, SemanticNucleusFailure::DiagnosticAtProducerRange {
+                    ref producer,
+                    kind: rue_error::ErrorKind::ComptimeEvaluationFailed { ref reason },
+                    start: 999, end: 1000, ..
+                } if producer == &nested.producer && reason == "remainder by zero (this operation would panic at runtime)"
+            )
+        ));
+        assert!(DurableComptimeFailure::trap_at(nested.producer.clone(), trap("other")).is_none());
+        assert_eq!((root.start, root.end), (10, 20));
+        assert_eq!((nested.start, nested.end), (100, 120));
+    }
+
+    #[test]
+    fn stable_site_constructor_keeps_explicit_non_trap_diagnostics() {
+        let nested = site("nested", 100, 120);
+        let failure = DurableComptimeFailure::comptime_failure_at(&nested, "foreign failure");
+        assert!(matches!(
+            failure,
+            DurableComptimeFailure::Failure(value)
+                if matches!(*value, SemanticNucleusFailure::DiagnosticAtProducerRange {
+                    ref producer, start: 100, end: 120, ..
+                } if producer == &nested.producer)
+        ));
     }
 }
