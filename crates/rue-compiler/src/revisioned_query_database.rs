@@ -23540,7 +23540,7 @@ impl<'a> CompilerBodyFactProvider<'a> {
         let Some(declaration) = declaration_candidate_for_stable_key(producer) else {
             return Ok(
                 crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
-                    crate::body_query::ForeignComptimeProgramProjectionFailure::InvalidProducer(
+                    crate::body_query::ComptimeProgramProjectionFailure::InvalidProducer(
                         producer.clone(),
                     ),
                 ),
@@ -23551,9 +23551,9 @@ impl<'a> CompilerBodyFactProvider<'a> {
             type_arguments: type_arguments.to_vec().into(),
             value_arguments: value_arguments.to_vec().into(),
         };
-        let foreign_plan = crate::body_query::ForeignComptimeProgramPlan {
-            key: crate::body_query::ForeignComptimeProgramKey {
-                producer: producer.clone(),
+        let foreign_plan = crate::body_query::DurableComptimeProgramPlan {
+            key: crate::body_query::DurableComptimeProgramKey {
+                declaration: producer.clone(),
                 configuration: self.queries.configuration.clone(),
             },
             candidate: declaration,
@@ -23592,15 +23592,17 @@ impl<'a> CompilerBodyFactProvider<'a> {
                     rue_query::QueryOutcome::Success(
                         DeclarationBodyPlanArtifactsValue::Failure(failure),
                     ) => {
-                        return Ok(crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
-                            crate::body_query::ForeignComptimeProgramProjectionFailure::Artifact(
-                                failure.clone(),
+                        return Ok(
+                            crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
+                                crate::body_query::ComptimeProgramProjectionFailure::Artifact(
+                                    failure.clone(),
+                                ),
                             ),
-                        ));
+                        );
                     }
                     rue_query::QueryOutcome::Failure(failure) => {
                         return Ok(crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
-                            crate::body_query::ForeignComptimeProgramProjectionFailure::ArtifactQueryFailure(
+                            crate::body_query::ComptimeProgramProjectionFailure::ArtifactQueryFailure(
                                 failure.clone(),
                             ),
                         ));
@@ -23619,11 +23621,9 @@ impl<'a> CompilerBodyFactProvider<'a> {
                     Ok(program) => Ok(crate::body_query::ForeignComptimeCallLookup::Admitted(
                         program,
                     )),
-                    Err(
-                        crate::body_query::ForeignComptimeProgramProjectionFailure::Materialization(
-                            crate::canonical_lower::BodyPlanMaterializationFailure::Query(abort),
-                        ),
-                    ) => Err(abort),
+                    Err(crate::body_query::ComptimeProgramProjectionFailure::Materialization(
+                        crate::canonical_lower::BodyPlanMaterializationFailure::Query(abort),
+                    )) => Err(abort),
                     Err(error) => {
                         Ok(crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(error))
                     }
@@ -28226,9 +28226,12 @@ fn main() -> i32 {
         let crate::body_query::ForeignComptimeCallLookup::Admitted(program) = probe else {
             panic!("cold foreign comptime lookup should admit its owned body plan");
         };
-        assert_eq!(program.plan.key.producer, producer);
-        assert_eq!(program.callable.context.as_str(), "main.rue");
-        assert_eq!(program.import_occurrences.len(), 1);
+        assert_eq!(program.plan.key.declaration, producer);
+        assert_eq!(
+            program.callable().expect("callable root").context.as_str(),
+            "main.rue"
+        );
+        assert_eq!(program.imports.len(), 1);
         assert_eq!(
             database
                 .declaration_body_plan_astgen_evaluations

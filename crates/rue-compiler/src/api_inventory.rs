@@ -3177,6 +3177,8 @@ fn durable_comptime_services_are_named_authority_operations() {
         "ticket_from_admitted_edge",
         "merge_child",
         "complete_root",
+        "begin_durable_structured_type",
+        "resume_durable_structured_type",
     ] {
         assert!(
             facade.contains(required),
@@ -3189,6 +3191,89 @@ fn durable_comptime_services_are_named_authority_operations() {
             "durable service facade must not become an evaluator: {forbidden}"
         );
     }
+    let body_query = include_str!("body_query.rs");
+    for required in [
+        "OwnedComptimeProgramCore",
+        "OwnedComptimeProgramRoot",
+        "type DurableComptimeProgramKey = rue_air::ComptimeProgramKey",
+        "rue_air::ComptimeProgram<Arc<str>",
+        "impl Deref for OwnedForeignComptimeProgram",
+        "from_const_body_plan",
+    ] {
+        assert!(
+            body_query.contains(required),
+            "shared program core missing {required}"
+        );
+    }
+    let core = body_query
+        .split("pub(crate) struct OwnedComptimeProgramCore {")
+        .nth(1)
+        .and_then(|source| source.split("}\n\n/// Owned compiler/query-side").next())
+        .expect("shared durable program core");
+    assert!(core.contains("program: DurableComptimeProgram,"));
+    for forbidden in [
+        "ValidatedRir",
+        "symbols:",
+        "import_occurrences:",
+        "registry:",
+    ] {
+        assert!(
+            !core.contains(forbidden),
+            "compiler core duplicated AIR program authority: {forbidden}"
+        );
+    }
+    let admission = body_query
+        .split("fn from_body_plan(")
+        .nth(2)
+        .and_then(|source| source.split("/// Materialize a const declaration").next())
+        .expect("shared comptime program admission kernel");
+    assert_eq!(
+        admission
+            .matches("materialize_semantic_candidate_rir")
+            .count(),
+        1
+    );
+    assert_eq!(
+        admission
+            .matches("semantic_candidate_import_occurrences")
+            .count(),
+        1
+    );
+    let call_payload = body_query
+        .split("pub(crate) struct OwnedForeignComptimeProgram {")
+        .nth(1)
+        .and_then(|source| source.split("}\n\nimpl Deref").next())
+        .expect("foreign program payload");
+    for forbidden in [
+        "ValidatedRir",
+        "symbols:",
+        "import_occurrences:",
+        "pub(crate) plan:",
+        "from_const_body_plan",
+    ] {
+        assert!(
+            !call_payload.contains(forbidden),
+            "foreign payload duplicated shared program ownership: {forbidden}"
+        );
+    }
+    let structured_adapter = production_facade
+        .split("pub(crate) fn begin_durable_structured_type")
+        .nth(1)
+        .and_then(|source| source.split("impl ComptimeValue").next())
+        .expect("durable structured adapter");
+    for forbidden in [
+        "InstData",
+        "eval(",
+        "ComptimeEngine",
+        "SemanticConstEvaluator",
+        "from_registered",
+    ] {
+        assert!(
+            !structured_adapter.contains(forbidden),
+            "structured adapter gained evaluator authority: {forbidden}"
+        );
+    }
+    assert!(structured_adapter.contains(".structured_type_authority("));
     let session = production_facade
         .split("pub(crate) struct DurableComptimeSession {")
         .nth(1)
@@ -3203,9 +3288,10 @@ fn durable_comptime_services_are_named_authority_operations() {
         session_fields,
         [
             "lifecycle: DurableComptimeCallLifecycle,",
-            "next_call: u32,"
+            "next_call: u32,",
+            "programs: crate::body_query::DurableComptimeProgramRegistry,"
         ],
-        "durable session must own exactly lifecycle state and the root call ordinal"
+        "durable session owns one root-local AIR program registry beside lifecycle state"
     );
     assert!(!session.contains("pub(crate)"));
     for forbidden in ["InstData", "InstRef", "ComptimeEngine"] {
@@ -3229,7 +3315,7 @@ fn durable_comptime_services_are_named_authority_operations() {
     for required in [
         "ReadyFailure(crate::semantic_query_nucleus::SemanticNucleusFailure)",
         "ReadyQueryFailure(rue_query::QueryFailure)",
-        "AdmissionFailure(crate::body_query::ForeignComptimeProgramProjectionFailure)",
+        "AdmissionFailure(crate::body_query::ComptimeProgramProjectionFailure)",
         "UnexpectedReadyProjection",
     ] {
         assert!(

@@ -422,7 +422,7 @@ pub(crate) struct DurableComptimeCallContext {
     parent_producer: crate::StableDefinitionKey,
     parent_declaration: crate::declaration_candidate::DeclarationCandidateKey,
     child_producer: crate::StableDefinitionKey,
-    program: crate::body_query::ForeignComptimeProgramKey,
+    program: crate::body_query::DurableComptimeProgramKey,
     application_policy: DurableComptimeApplicationPolicy,
 }
 
@@ -463,14 +463,16 @@ impl DurableComptimeCallContext {
         parent_declaration: crate::declaration_candidate::DeclarationCandidateKey,
         application_policy: DurableComptimeApplicationPolicy,
     ) -> Result<Self, DurableComptimeLifecycleError> {
-        let child_producer = admitted.plan.key.producer.clone();
+        let child_producer = admitted.plan.key.declaration.clone();
         let Some(child_declaration) =
             crate::revisioned_query_database::declaration_candidate_for_stable_key(&child_producer)
         else {
             return Err(DurableComptimeLifecycleError::InvalidContext);
         };
         if child_declaration != admitted.plan.candidate
-            || admitted.callable.context != child_declaration.module
+            || admitted
+                .callable()
+                .is_none_or(|callable| callable.context != child_declaration.module)
         {
             return Err(DurableComptimeLifecycleError::InvalidContext);
         }
@@ -498,8 +500,8 @@ impl DurableComptimeCallContext {
             parent_producer,
             parent_declaration,
             child_producer: child_producer.clone(),
-            program: crate::body_query::ForeignComptimeProgramKey {
-                producer: child_producer,
+            program: crate::body_query::DurableComptimeProgramKey {
+                declaration: child_producer,
                 configuration,
             },
             application_policy,
@@ -560,8 +562,8 @@ impl DurableComptimeCallContext {
             parent_producer,
             parent_declaration,
             child_producer: child_producer.clone(),
-            program: crate::body_query::ForeignComptimeProgramKey {
-                producer: child_producer,
+            program: crate::body_query::DurableComptimeProgramKey {
+                declaration: child_producer,
                 configuration,
             },
             application_policy,
@@ -685,13 +687,14 @@ impl<V, F> DurableComptimeCompletion<V, F> {
 /// Per-root durable comptime session.
 ///
 /// The AIR frame remains the owner of expression locals, producer identity,
-/// and expected-result context.  This session owns only compiler-side call
-/// lifecycle state and the root-local call ordinal allocator that the future
-/// durable host will use when it issues lifecycle edges.
+/// and expected-result context. This session owns compiler-side call lifecycle
+/// state, the root-local call ordinal allocator, and the one AIR program
+/// registry shared by every root and foreign frame in the evaluation.
 #[derive(Debug)]
 pub(crate) struct DurableComptimeSession {
     lifecycle: DurableComptimeCallLifecycle,
     next_call: u32,
+    programs: crate::body_query::DurableComptimeProgramRegistry,
 }
 
 /// Engine-shaped semantic input for one anonymous nominal.
@@ -851,7 +854,7 @@ pub(crate) enum DurableComptimeForeignCall {
 pub(crate) enum DurableComptimeForeignCallError {
     ReadyFailure(crate::semantic_query_nucleus::SemanticNucleusFailure),
     ReadyQueryFailure(rue_query::QueryFailure),
-    AdmissionFailure(crate::body_query::ForeignComptimeProgramProjectionFailure),
+    AdmissionFailure(crate::body_query::ComptimeProgramProjectionFailure),
     UnexpectedReadyProjection,
     Lifecycle(DurableComptimeLifecycleError),
 }
@@ -864,7 +867,16 @@ impl DurableComptimeSession {
         Ok(Self {
             lifecycle: DurableComptimeCallLifecycle::new(parent_producer, parent_declaration)?,
             next_call: 0,
+            programs: crate::body_query::DurableComptimeProgramRegistry::new(),
         })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn register_program(
+        &mut self,
+        core: &crate::body_query::OwnedComptimeProgramCore,
+    ) -> Result<(), rue_air::ComptimeProgramRegistrationError> {
+        core.register_into(&mut self.programs)
     }
 
     pub(crate) fn next_call_ordinal(&mut self) -> u32 {
@@ -2151,6 +2163,107 @@ impl AsRef<DurableType> for DurableComptimeType {
 }
 
 impl ComptimeType for DurableComptimeType {}
+
+/// The canonical structured-type job owned by one durable program core. The
+/// job retains the cloned type arena and symbol authority internally; callers
+/// can only resume the exact continuation returned by the AIR resolver.
+#[allow(dead_code)]
+pub(crate) type DurableStructuredTypeJob = rue_air::ComptimeStructuredTypeJob<
+    crate::body_query::DurableComptimeProgramKey,
+    ModuleId,
+    crate::StableDefinitionKey,
+    Arc<str>,
+    crate::StableDefinitionKey,
+    DurableType,
+    DurableConstValue,
+    lasso::Spur,
+    Arc<[Arc<str>]>,
+>;
+
+#[allow(dead_code)]
+pub(crate) type DurableStructuredTypePoll = rue_air::ComptimeStructuredTypePoll<
+    crate::body_query::DurableComptimeProgramKey,
+    ModuleId,
+    crate::StableDefinitionKey,
+    Arc<str>,
+    crate::StableDefinitionKey,
+    DurableType,
+    DurableConstValue,
+    lasso::Spur,
+    Arc<[Arc<str>]>,
+>;
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) enum DurableStructuredTypeBeginError<E, F> {
+    UnregisteredProgram,
+    InvalidProgramAuthority,
+    Resolution(rue_air::SemanticTypeSyntaxError<E, F, crate::StableDefinitionKey, Arc<str>>),
+}
+
+/// Begin the canonical AIR structured resolver against an owning program.
+/// This is deliberately generic over the existing semantic provider so the
+/// adapter adds no second type-syntax traversal or query authority.
+#[allow(dead_code)]
+pub(crate) fn begin_durable_structured_type<Q>(
+    session: &DurableComptimeSession,
+    key: &crate::body_query::DurableComptimeProgramKey,
+    root: rue_rir::RirTypeSyntaxRef,
+    provider: &mut Q,
+) -> Result<DurableStructuredTypePoll, DurableStructuredTypeBeginError<Q::Abort, Q::Failure>>
+where
+    Q: rue_air::SemanticTypeSyntaxProvider<
+            ModuleId,
+            ModuleId,
+            crate::StableDefinitionKey,
+            crate::StableDefinitionKey,
+            Arc<str>,
+            DurableType,
+            DurableConstValue,
+        >,
+{
+    if !session.programs.contains_key(key) {
+        return Err(DurableStructuredTypeBeginError::UnregisteredProgram);
+    }
+    let Some(authority) =
+        session
+            .programs
+            .structured_type_authority(key, key.declaration.module().clone(), root)
+    else {
+        return Err(DurableStructuredTypeBeginError::InvalidProgramAuthority);
+    };
+    DurableStructuredTypeJob::begin::<ModuleId, Q>(provider, authority)
+        .map_err(DurableStructuredTypeBeginError::Resolution)
+}
+
+/// Resume one consuming canonical structured continuation. The reduced call
+/// result is supplied by the same engine that owns the enclosing expression.
+#[allow(dead_code)]
+pub(crate) fn resume_durable_structured_type<Q>(
+    job: DurableStructuredTypeJob,
+    provider: &mut Q,
+    reduced: rue_air::SemanticProviderResult<
+        Option<rue_air::SemanticComptimeCallResult<DurableType, DurableConstValue>>,
+        Q::Abort,
+        Q::Failure,
+    >,
+) -> Result<
+    DurableStructuredTypePoll,
+    rue_air::SemanticTypeSyntaxError<Q::Abort, Q::Failure, crate::StableDefinitionKey, Arc<str>>,
+>
+where
+    Q: rue_air::SemanticTypeSyntaxProvider<
+            ModuleId,
+            ModuleId,
+            crate::StableDefinitionKey,
+            crate::StableDefinitionKey,
+            Arc<str>,
+            DurableType,
+            DurableConstValue,
+        >,
+{
+    job.resume::<ModuleId, Q>(provider, reduced)
+}
 
 impl ComptimeValue for EvaluatedSemanticConst {
     type Type = DurableComptimeType;
@@ -3517,9 +3630,9 @@ mod effect_lifecycle_tests {
             ]),
         };
         let admitted = crate::body_query::OwnedForeignComptimeProgram::from_body_plan(
-            crate::body_query::ForeignComptimeProgramPlan {
-                key: crate::body_query::ForeignComptimeProgramKey {
-                    producer: producer.clone(),
+            crate::body_query::DurableComptimeProgramPlan {
+                key: crate::body_query::DurableComptimeProgramKey {
+                    declaration: producer.clone(),
                     configuration: configuration.clone(),
                 },
                 candidate: candidate.clone(),
@@ -3649,7 +3762,7 @@ mod effect_lifecycle_tests {
                 "query", "failure",
             )),
             ForeignComptimeCallLookup::AdmissionFailure(
-                crate::body_query::ForeignComptimeProgramProjectionFailure::IdentityMismatch,
+                crate::body_query::ComptimeProgramProjectionFailure::IdentityMismatch,
             ),
             ForeignComptimeCallLookup::UnexpectedReadyProjection,
         ];
@@ -3674,7 +3787,7 @@ mod effect_lifecycle_tests {
                     assert_eq!(failure.code.as_ref(), "query")
                 }
                 DurableComptimeForeignCallError::AdmissionFailure(
-                    crate::body_query::ForeignComptimeProgramProjectionFailure::IdentityMismatch,
+                    crate::body_query::ComptimeProgramProjectionFailure::IdentityMismatch,
                 )
                 | DurableComptimeForeignCallError::UnexpectedReadyProjection => {}
                 other => panic!("wrong foreign lookup error channel: {other:?}"),
@@ -3703,7 +3816,7 @@ mod effect_lifecycle_tests {
         lifecycle.complete_known().unwrap();
 
         let mut inconsistent = admitted.clone();
-        inconsistent.plan.candidate = sibling;
+        Arc::make_mut(&mut inconsistent.core).plan.candidate = sibling;
         assert!(matches!(
             DurableComptimeCallContext::from_admitted_expression(
                 &inconsistent,
@@ -4571,6 +4684,473 @@ mod effect_lifecycle_tests {
             )
             .unwrap();
         assert!(lifecycle.complete_known().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod structured_type_adapter_tests {
+    use super::*;
+    use std::convert::Infallible;
+
+    struct Provider {
+        scope: ModuleId,
+    }
+
+    impl rue_air::SemanticModulePathProvider<ModuleId, ModuleId, crate::StableDefinitionKey>
+        for Provider
+    {
+        type Abort = Infallible;
+        type Failure = Infallible;
+
+        fn root_module_binding(
+            &mut self,
+            _scope: &ModuleId,
+            _name: &str,
+        ) -> rue_air::SemanticProviderResult<
+            Option<rue_air::SemanticModuleBinding<ModuleId, crate::StableDefinitionKey>>,
+            Self::Abort,
+            Self::Failure,
+        > {
+            Ok(None)
+        }
+
+        fn module_binding(
+            &mut self,
+            _module: &ModuleId,
+            _name: &str,
+        ) -> rue_air::SemanticProviderResult<
+            Option<rue_air::SemanticModuleBinding<ModuleId, crate::StableDefinitionKey>>,
+            Self::Abort,
+            Self::Failure,
+        > {
+            Ok(None)
+        }
+
+        fn module_display_name(&self, module: &ModuleId) -> Arc<str> {
+            Arc::from(module.as_str())
+        }
+
+        fn accessing_domain(&self, scope: &ModuleId) -> rue_air::SemanticVisibilityDomain {
+            assert_eq!(
+                scope, &self.scope,
+                "the registry key supplies the exact root scope"
+            );
+            rue_air::SemanticVisibilityDomain::from_file_path(Some(scope.as_str()))
+        }
+    }
+
+    #[rustfmt::skip]
+    impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, crate::StableDefinitionKey, crate::StableDefinitionKey, Arc<str>, DurableType, DurableConstValue> for Provider {
+        fn substituted_type(
+            &mut self,
+            scope: &ModuleId,
+            _name: &str,
+        ) -> rue_air::SemanticProviderResult<Option<DurableType>, Self::Abort, Self::Failure>
+        {
+            assert_eq!(scope, &self.scope);
+            Ok(None)
+        }
+
+        fn primitive_type(
+            &mut self,
+            name: &str,
+        ) -> rue_air::SemanticProviderResult<Option<DurableType>, Self::Abort, Self::Failure>
+        {
+            Ok(match name {
+                "i32" => Some(DurableType::I32),
+                "i64" => Some(DurableType::I64),
+                _ => None,
+            })
+        }
+
+        fn builtin_type(
+            &mut self,
+            _scope: &ModuleId,
+            _name: &str,
+        ) -> rue_air::SemanticProviderResult<Option<DurableType>, Self::Abort, Self::Failure>
+        {
+            Ok(None)
+        }
+
+        fn root_struct_type(
+            &mut self,
+            _scope: &ModuleId,
+            _name: &str,
+        ) -> rue_air::SemanticProviderResult<
+            Option<rue_air::SemanticTypeFact<DurableType, crate::StableDefinitionKey>>,
+            Self::Abort,
+            Self::Failure,
+        > {
+            Ok(None)
+        }
+
+        fn root_enum_type(
+            &mut self,
+            _scope: &ModuleId,
+            _name: &str,
+        ) -> rue_air::SemanticProviderResult<
+            Option<rue_air::SemanticTypeFact<DurableType, crate::StableDefinitionKey>>,
+            Self::Abort,
+            Self::Failure,
+        > {
+            Ok(None)
+        }
+
+        fn root_type_alias(
+            &mut self,
+            _scope: &ModuleId,
+            _name: &str,
+        ) -> rue_air::SemanticProviderResult<
+            Option<rue_air::SemanticTypeFact<DurableType, crate::StableDefinitionKey>>,
+            Self::Abort,
+            Self::Failure,
+        > {
+            Ok(None)
+        }
+
+        fn module_struct_type(
+            &mut self,
+            _module: &ModuleId,
+            _name: &str,
+        ) -> rue_air::SemanticProviderResult<
+            Option<rue_air::SemanticTypeFact<DurableType, crate::StableDefinitionKey>>,
+            Self::Abort,
+            Self::Failure,
+        > {
+            Ok(None)
+        }
+
+        fn module_enum_type(
+            &mut self,
+            _module: &ModuleId,
+            _name: &str,
+        ) -> rue_air::SemanticProviderResult<
+            Option<rue_air::SemanticTypeFact<DurableType, crate::StableDefinitionKey>>,
+            Self::Abort,
+            Self::Failure,
+        > {
+            Ok(None)
+        }
+
+        fn module_type_alias(
+            &mut self,
+            _module: &ModuleId,
+            _name: &str,
+        ) -> rue_air::SemanticProviderResult<
+            Option<rue_air::SemanticTypeFact<DurableType, crate::StableDefinitionKey>>,
+            Self::Abort,
+            Self::Failure,
+        > {
+            Ok(None)
+        }
+
+        fn resolve_array_length(
+            &mut self,
+            _scope: &ModuleId,
+            _length: rue_air::SemanticValueSyntax<'_>,
+        ) -> rue_air::SemanticProviderResult<Option<u64>, Self::Abort, Self::Failure> {
+            unreachable!("fixture has no array syntax")
+        }
+
+        fn array_length_from_value(
+            &mut self,
+            _scope: &ModuleId,
+            _value: &DurableConstValue,
+        ) -> rue_air::SemanticProviderResult<Option<u64>, Self::Abort, Self::Failure> {
+            unreachable!("fixture has no array syntax")
+        }
+
+        fn array_type(
+            &mut self,
+            _element: DurableType,
+            _length: Option<u64>,
+        ) -> rue_air::SemanticProviderResult<DurableType, Self::Abort, Self::Failure> {
+            unreachable!("fixture has no array syntax")
+        }
+
+        fn ptr_const_type(
+            &mut self,
+            _pointee: DurableType,
+        ) -> rue_air::SemanticProviderResult<DurableType, Self::Abort, Self::Failure> {
+            unreachable!("fixture has no pointer syntax")
+        }
+
+        fn ptr_mut_type(
+            &mut self,
+            _pointee: DurableType,
+        ) -> rue_air::SemanticProviderResult<DurableType, Self::Abort, Self::Failure> {
+            unreachable!("fixture has no pointer syntax")
+        }
+
+        fn slice_type(
+            &mut self,
+            _scope: &ModuleId,
+            _syntax: &str,
+            _element: DurableType,
+        ) -> rue_air::SemanticProviderResult<DurableType, Self::Abort, Self::Failure> {
+            unreachable!("fixture has no slice syntax")
+        }
+
+        fn builtin_type_call(
+            &mut self,
+            _scope: &ModuleId,
+            _name: &str,
+            _arguments: &[rue_air::SemanticValueSyntax<'_>],
+        ) -> rue_air::SemanticProviderResult<Option<DurableType>, Self::Abort, Self::Failure>
+        {
+            Ok(None)
+        }
+
+        fn root_constructor(
+            &mut self,
+            scope: &ModuleId,
+            name: &str,
+        ) -> rue_air::SemanticProviderResult<
+            Option<
+                rue_air::SemanticTypeConstructorHead<
+                    crate::StableDefinitionKey,
+                    Arc<str>,
+                    crate::StableDefinitionKey,
+                >,
+            >,
+            Self::Abort,
+            Self::Failure,
+        > {
+            assert_eq!(scope, &self.scope);
+            if name != "Wrap" {
+                return Ok(None);
+            }
+            let constructor = crate::StableDefinitionKey::from_stable_parts(
+                scope.clone(),
+                crate::StableDefinitionNamespace::Value,
+                crate::StableDefinitionKind::Function,
+                name,
+                None,
+            );
+            Ok(Some(rue_air::SemanticTypeConstructorHead {
+                key: constructor.clone(),
+                site: constructor,
+                parameters: Arc::from([rue_air::SemanticTypeConstructorParameter {
+                    name: Arc::from("T"),
+                    is_comptime: true,
+                    is_type: true,
+                }]),
+                returns_type: true,
+                is_public: true,
+                defining_domain: rue_air::SemanticVisibilityDomain::from_file_path(Some(
+                    scope.as_str(),
+                )),
+                defining_file: Arc::from(scope.as_str()),
+            }))
+        }
+
+        fn module_constructor(
+            &mut self,
+            _module: &ModuleId,
+            _name: &str,
+        ) -> rue_air::SemanticProviderResult<
+            Option<
+                rue_air::SemanticTypeConstructorHead<
+                    crate::StableDefinitionKey,
+                    Arc<str>,
+                    crate::StableDefinitionKey,
+                >,
+            >,
+            Self::Abort,
+            Self::Failure,
+        > {
+            Ok(None)
+        }
+
+        fn resolve_value_argument(
+            &mut self,
+            _scope: &ModuleId,
+            _constructor: &str,
+            _head: &rue_air::SemanticTypeConstructorHead<
+                crate::StableDefinitionKey,
+                Arc<str>,
+                crate::StableDefinitionKey,
+            >,
+            _parameter_index: usize,
+            _type_arguments: &[(Arc<str>, DurableType)],
+            _value_arguments: &[(Arc<str>, DurableConstValue)],
+            _syntax: rue_air::SemanticValueSyntax<'_>,
+        ) -> rue_air::SemanticProviderResult<DurableConstValue, Self::Abort, Self::Failure>
+        {
+            unreachable!("fixture constructor has no value argument")
+        }
+
+        fn reduce_comptime_call(
+            &mut self,
+            _head: &rue_air::SemanticTypeConstructorHead<
+                crate::StableDefinitionKey,
+                Arc<str>,
+                crate::StableDefinitionKey,
+            >,
+            _type_arguments: &[(Arc<str>, DurableType)],
+            _value_arguments: &[(Arc<str>, DurableConstValue)],
+        ) -> rue_air::SemanticProviderResult<
+            Option<rue_air::SemanticComptimeCallResult<DurableType, DurableConstValue>>,
+            Self::Abort,
+            Self::Failure,
+        > {
+            unreachable!("the durable host supplies the reduced call result on resume")
+        }
+    }
+
+    fn const_program(
+        path: &str,
+        argument: &str,
+    ) -> Arc<crate::body_query::OwnedComptimeProgramCore> {
+        let snapshot =
+            crate::SourceSnapshot::single(path, format!("const target: Wrap({argument}) = 1;"))
+                .unwrap();
+        let module = crate::parsed_modules::parse_source_snapshot_modules(&snapshot)
+            .unwrap()
+            .modules()[0]
+            .clone();
+        let candidate = module
+            .definitions()
+            .declaration_keys_in_source_order()
+            .find(|candidate| candidate.name.as_ref() == "target")
+            .unwrap()
+            .clone();
+        let artifacts =
+            crate::canonical_lower::lower_parsed_declaration_body_plan(&module, &candidate, || {
+                Ok(())
+            })
+            .unwrap();
+        let key = crate::body_query::DurableComptimeProgramKey {
+            declaration: crate::StableDefinitionKey::from_stable_parts(
+                candidate.module.clone(),
+                crate::StableDefinitionNamespace::Value,
+                crate::StableDefinitionKind::ValueConst,
+                "target",
+                None,
+            ),
+            configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                target: rue_target::Target::X86_64Linux,
+                preview_features: crate::StablePreviewFeatures::new(
+                    &crate::PreviewFeatures::default(),
+                ),
+            },
+        };
+        crate::body_query::OwnedComptimeProgramCore::from_const_body_plan(
+            crate::body_query::DurableComptimeProgramPlan { key, candidate },
+            &artifacts,
+            || Ok(()),
+        )
+        .unwrap()
+    }
+
+    fn session() -> DurableComptimeSession {
+        let module = ModuleId::from_logical_path("structured-parent.rue").unwrap();
+        let producer = crate::StableDefinitionKey::from_stable_parts(
+            module,
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            "parent",
+            None,
+        );
+        let declaration =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&producer)
+                .unwrap();
+        DurableComptimeSession::new(producer, declaration).unwrap()
+    }
+
+    #[test]
+    fn durable_registry_owns_structured_jobs_across_colliding_programs() {
+        let first = const_program("first.rue", "i32");
+        let second = const_program("second.rue", "i64");
+        let mut session = session();
+        session.register_program(&first).unwrap();
+        session.register_program(&second).unwrap();
+        assert_eq!(
+            session.register_program(&first),
+            Err(rue_air::ComptimeProgramRegistrationError::AlreadyRegistered)
+        );
+
+        let (_, Some(first_root), _) = first.const_root().unwrap() else {
+            panic!("first const retains its declared type root");
+        };
+        let (_, Some(second_root), _) = second.const_root().unwrap() else {
+            panic!("second const retains its declared type root");
+        };
+        assert_eq!(first_root, second_root, "fixture uses colliding dense refs");
+
+        let mut first_provider = Provider {
+            scope: first.plan.candidate.module.clone(),
+        };
+        let first_poll = begin_durable_structured_type(
+            &session,
+            &first.plan.key,
+            first_root,
+            &mut first_provider,
+        )
+        .unwrap();
+        let DurableStructuredTypePoll::Suspended(first_job) = first_poll else {
+            panic!("Wrap(i32) suspends for the durable call result");
+        };
+        assert_eq!(first_job.program(), &first.plan.key);
+        assert_eq!(
+            first_job.type_arguments(),
+            &[(Arc::from("T"), DurableType::I32)]
+        );
+        let first_ready = resume_durable_structured_type(
+            *first_job,
+            &mut first_provider,
+            Ok(Some(rue_air::SemanticComptimeCallResult::Type(
+                DurableType::I64,
+            ))),
+        )
+        .unwrap();
+        assert!(matches!(
+            first_ready,
+            DurableStructuredTypePoll::Ready(DurableType::I64)
+        ));
+
+        let mut second_provider = Provider {
+            scope: second.plan.candidate.module.clone(),
+        };
+        let second_poll = begin_durable_structured_type(
+            &session,
+            &second.plan.key,
+            second_root,
+            &mut second_provider,
+        )
+        .unwrap();
+        let DurableStructuredTypePoll::Suspended(second_job) = second_poll else {
+            panic!("colliding program independently suspends");
+        };
+        assert_eq!(second_job.program(), &second.plan.key);
+        assert_ne!(second_job.program(), &first.plan.key);
+        assert_eq!(
+            second_job.type_arguments(),
+            &[(Arc::from("T"), DurableType::I64)],
+            "the second key selects the second arena despite its colliding root ref"
+        );
+
+        let mut missing_key = first.plan.key.clone();
+        missing_key.declaration = crate::StableDefinitionKey::from_stable_parts(
+            ModuleId::from_logical_path("missing.rue").unwrap(),
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::ValueConst,
+            "target",
+            None,
+        );
+        assert!(matches!(
+            begin_durable_structured_type(&session, &missing_key, first_root, &mut first_provider),
+            Err(DurableStructuredTypeBeginError::UnregisteredProgram)
+        ));
+        assert!(matches!(
+            begin_durable_structured_type(
+                &session,
+                &first.plan.key,
+                rue_rir::RirTypeSyntaxRef::from_u32(u32::MAX),
+                &mut first_provider
+            ),
+            Err(DurableStructuredTypeBeginError::InvalidProgramAuthority)
+        ));
     }
 }
 
