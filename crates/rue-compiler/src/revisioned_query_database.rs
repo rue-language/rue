@@ -4048,16 +4048,7 @@ impl LinearOwnershipFact {
     }
 }
 
-enum EvaluateSemanticConstError {
-    Abort(QueryAbort),
-    Failure(Box<crate::semantic_query_nucleus::SemanticNucleusFailure>),
-}
-
-impl EvaluateSemanticConstError {
-    fn failure(failure: crate::semantic_query_nucleus::SemanticNucleusFailure) -> Self {
-        Self::Failure(Box::new(failure))
-    }
-}
+type EvaluateSemanticConstError = crate::durable_comptime::DurableComptimeFailure;
 
 fn durable_type_diagnostic_name(ty: &crate::durable_semantics::DurableType) -> String {
     use crate::durable_semantics::DurableType as T;
@@ -7474,10 +7465,12 @@ impl SemanticComptimeCallDepthGuard {
         SEMANTIC_COMPTIME_CALL_DEPTH.with(|depth| {
             let current = depth.get();
             if current >= SEMANTIC_COMPTIME_MAX_DEPTH {
-                return Err(SemanticConstEvaluator::comptime_failure_value(format!(
-                    "specialization of '{name}' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
-                    SEMANTIC_COMPTIME_MAX_DEPTH,
-                )));
+                return Err(
+                    crate::durable_comptime::DurableComptimeFailure::maximum_depth(
+                        name,
+                        SEMANTIC_COMPTIME_MAX_DEPTH,
+                    ),
+                );
             }
             depth.set(current + 1);
             Ok(Self(current))
@@ -7497,19 +7490,7 @@ impl SemanticConstEvaluator<'_, '_> {
     }
 
     fn failure_value(message: impl Into<Arc<str>>) -> EvaluateSemanticConstError {
-        EvaluateSemanticConstError::failure(
-            crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(message.into()),
-        )
-    }
-
-    fn comptime_failure_value(reason: impl Into<String>) -> EvaluateSemanticConstError {
-        EvaluateSemanticConstError::failure(
-            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                rue_error::ErrorKind::ComptimeEvaluationFailed {
-                    reason: reason.into(),
-                },
-            ),
-        )
+        crate::durable_comptime::DurableComptimeFailure::resolution(message)
     }
 
     fn provider_error(
@@ -7518,20 +7499,17 @@ impl SemanticConstEvaluator<'_, '_> {
             crate::semantic_query_nucleus::SemanticNucleusFailure,
         >,
     ) -> EvaluateSemanticConstError {
-        match error {
-            rue_air::SemanticProviderError::Abort(abort) => Self::abort(abort),
-            rue_air::SemanticProviderError::Failure(failure) => Self::domain_failure(failure),
-        }
+        crate::durable_comptime::DurableComptimeFailure::provider_error(error)
     }
 
     fn abort(abort: QueryAbort) -> EvaluateSemanticConstError {
-        EvaluateSemanticConstError::Abort(abort)
+        crate::durable_comptime::DurableComptimeFailure::abort(abort)
     }
 
     fn domain_failure(
         failure: crate::semantic_query_nucleus::SemanticNucleusFailure,
     ) -> EvaluateSemanticConstError {
-        EvaluateSemanticConstError::failure(failure)
+        crate::durable_comptime::DurableComptimeFailure::failure(failure)
     }
 
     fn symbol(&self, symbol: &lasso::Spur) -> Arc<str> {
@@ -7655,9 +7633,11 @@ impl SemanticConstEvaluator<'_, '_> {
                 _ => unreachable!(),
             };
             let type_name = durable_type_diagnostic_name(ty);
-            Err(Self::comptime_failure_value(format!(
-                "integer overflow evaluating constant at type {type_name}: value {value} is out of range for type {type_name}; {value} does not fit in {type_name} (this operation would panic at runtime)",
-            )))
+            Err(
+                crate::durable_comptime::DurableComptimeFailure::integer_literal_overflow(
+                    &type_name, value,
+                ),
+            )
         }
     }
 
@@ -7676,9 +7656,11 @@ impl SemanticConstEvaluator<'_, '_> {
                     )
                 },
             );
-            return Err(Self::comptime_failure_value(format!(
-                "integer overflow evaluating {operation} at type {type_name}: {detail} (this operation would panic at runtime)",
-            )));
+            return Err(
+                crate::durable_comptime::DurableComptimeFailure::arithmetic_overflow(
+                    &type_name, operation, &detail,
+                ),
+            );
         };
         Ok(value)
     }
@@ -7767,14 +7749,10 @@ impl SemanticConstEvaluator<'_, '_> {
                 "multiplication",
             )?),
             O::Div if right == 0 => {
-                return Err(Self::comptime_failure_value(
-                    "division by zero (this operation would panic at runtime)",
-                ));
+                return Err(crate::durable_comptime::DurableComptimeFailure::division_by_zero());
             }
             O::Mod if right == 0 => {
-                return Err(Self::comptime_failure_value(
-                    "remainder by zero (this operation would panic at runtime)",
-                ));
+                return Err(crate::durable_comptime::DurableComptimeFailure::remainder_by_zero());
             }
             O::Div => V::Integer(Self::checked_integer_result(
                 &operand_ty,
@@ -8326,22 +8304,21 @@ impl SemanticConstEvaluator<'_, '_> {
                                     "type",
                                 )
                         }) {
-                            return Err(EvaluateSemanticConstError::failure(
-                                crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtProducerRange {
-                                    kind: rue_error::ErrorKind::ComptimeEvaluationFailed {
-                                        reason: format!(
-                                            "method '{}' declares its own `comptime` type parameter, \
-                                             which is not yet supported (a method cannot be \
-                                             monomorphized over its own type parameter); \
-                                             move the type parameter to the enclosing type \
-                                             constructor instead",
-                                            semantic_candidate_spelling(symbols, name)
-                                        ),
-                                    },
-                                    producer: producer.clone(),
-                                    start: method.span.start,
-                                    end: method.span.end,
-                                },
+                            let site = crate::durable_comptime::DurableComptimeDiagnosticSite::new(
+                                producer.clone(),
+                                method.span.start,
+                                method.span.end,
+                            );
+                            return Err(EvaluateSemanticConstError::comptime_failure_at(
+                                &site,
+                                format!(
+                                    "method '{}' declares its own `comptime` type parameter, \
+                                         which is not yet supported (a method cannot be \
+                                         monomorphized over its own type parameter); \
+                                         move the type parameter to the enclosing type \
+                                         constructor instead",
+                                    semantic_candidate_spelling(symbols, name)
+                                ),
                             ));
                         }
                         let parameters = rir
