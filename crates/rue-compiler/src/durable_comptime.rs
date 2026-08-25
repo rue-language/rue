@@ -683,6 +683,41 @@ impl<V, F> DurableComptimeCompletion<V, F> {
     }
 }
 
+/// Per-root durable comptime session.
+///
+/// The AIR frame remains the owner of expression locals, producer identity,
+/// and expected-result context.  This session owns only compiler-side call
+/// lifecycle state and the root-local call ordinal allocator that the future
+/// durable host will use when it issues lifecycle edges.
+#[derive(Debug)]
+pub(crate) struct DurableComptimeSession {
+    lifecycle: DurableComptimeCallLifecycle,
+    next_call: u32,
+}
+
+impl DurableComptimeSession {
+    pub(crate) fn new(
+        parent_producer: crate::StableDefinitionKey,
+        parent_declaration: crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Result<Self, DurableComptimeLifecycleError> {
+        Ok(Self {
+            lifecycle: DurableComptimeCallLifecycle::new(parent_producer, parent_declaration)?,
+            next_call: 0,
+        })
+    }
+
+    pub(crate) fn next_call_ordinal(&mut self) -> u32 {
+        let ordinal = self.next_call;
+        self.next_call += 1;
+        ordinal
+    }
+
+    #[allow(dead_code)] // activated when the durable AIR host enters call edges
+    pub(crate) fn lifecycle_mut(&mut self) -> &mut DurableComptimeCallLifecycle {
+        &mut self.lifecycle
+    }
+}
+
 /// Root-local call/effect authority for a durable comptime host.
 ///
 /// `finish` consumes an entered ticket and its lifecycle-owned scope. Cleanup
@@ -2425,6 +2460,28 @@ mod effect_lifecycle_tests {
             child_producer,
             ordinal,
         )
+    }
+
+    #[test]
+    fn durable_session_isolates_root_ordinals_and_owns_lifecycle() {
+        let parent = definition("parent");
+        let parent_declaration =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&parent)
+                .unwrap();
+        let mut session =
+            DurableComptimeSession::new(parent.clone(), parent_declaration.clone()).unwrap();
+        assert_eq!(session.next_call_ordinal(), 0);
+        assert_eq!(session.next_call_ordinal(), 1);
+
+        let mut ticket = session.lifecycle_mut().prepare(context(0)).unwrap();
+        session.lifecycle_mut().enter(&ticket).unwrap();
+        session
+            .lifecycle_mut()
+            .finish(&mut ticket, &rue_air::ComptimeOutcome::<(), ()>::Known(()))
+            .unwrap();
+
+        let mut sibling = DurableComptimeSession::new(parent, parent_declaration).unwrap();
+        assert_eq!(sibling.next_call_ordinal(), 0);
     }
 
     fn structured_context() -> DurableComptimeCallContext {

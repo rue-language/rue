@@ -3136,6 +3136,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         "DurableComptimeDiagnosticSite",
         "DurableComptimeFailure",
         "DurableComptimeHostFailure",
+        "DurableComptimeSession",
         "into_host_error",
         "provider_error_as_host",
         "maximum_depth",
@@ -3181,6 +3182,38 @@ fn durable_comptime_services_are_named_authority_operations() {
             "durable service facade must not become an evaluator: {forbidden}"
         );
     }
+    let session = production_facade
+        .split("pub(crate) struct DurableComptimeSession {")
+        .nth(1)
+        .and_then(|source| source.split("}\n\nimpl DurableComptimeSession").next())
+        .expect("durable root session");
+    let session_fields = session
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.ends_with(','))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        session_fields,
+        [
+            "lifecycle: DurableComptimeCallLifecycle,",
+            "next_call: u32,"
+        ],
+        "durable session must own exactly lifecycle state and the root call ordinal"
+    );
+    assert!(!session.contains("pub(crate)"));
+    for forbidden in ["InstData", "InstRef", "ComptimeEngine"] {
+        assert!(
+            !session.contains(forbidden),
+            "durable session duplicated AIR frame authority: {forbidden}"
+        );
+    }
+    assert_eq!(
+        production_facade
+            .matches("pub(crate) fn next_call_ordinal(")
+            .count(),
+        1
+    );
+    assert!(production_facade.contains("pub(crate) fn lifecycle_mut("));
     let failure_carrier = production_facade
         .split("pub(crate) enum DurableComptimeFailure {")
         .nth(1)
@@ -3468,6 +3501,8 @@ fn durable_comptime_services_are_named_authority_operations() {
     for root in evaluator_roots {
         assert!(root.contains("effects:"));
         assert!(root.contains("std::mem::take(&mut evaluator.effects)"));
+        assert!(root.contains("session,"));
+        assert!(!root.contains("next_call:"));
         assert!(root.contains("provider.merge_comptime_effects("));
         for forbidden in [
             "DurableComptimeCallLifecycle",
@@ -3621,7 +3656,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         );
     }
     assert!(
-        named_call.contains("let call_ordinal = self.next_call;"),
+        named_call.contains("let call_ordinal = self.session.next_call_ordinal();"),
         "durable call ordinals must be allocated before admission"
     );
     let binding_header = production_facade
