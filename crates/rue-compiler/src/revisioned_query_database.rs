@@ -23707,6 +23707,24 @@ struct DurableComptimeForeignQueryAuthority<'a> {
     configuration: &'a crate::semantic_query_nucleus::SemanticQueryConfiguration,
 }
 
+/// Keep the non-computing probe decision separate from the expensive cold-miss
+/// admission.  In particular, NotReady is a terminal for this observer and
+/// must not invoke the body-plan query closure.
+fn foreign_comptime_miss_or_not_ready<T>(
+    probe: rue_query::ReadyQueryProbe<T>,
+    on_miss: impl FnOnce() -> Result<crate::body_query::ForeignComptimeCallLookup, QueryAbort>,
+) -> Result<crate::body_query::ForeignComptimeCallLookup, QueryAbort> {
+    match probe {
+        rue_query::ReadyQueryProbe::NotReady => {
+            Ok(crate::body_query::ForeignComptimeCallLookup::NotReady)
+        }
+        rue_query::ReadyQueryProbe::Miss => on_miss(),
+        rue_query::ReadyQueryProbe::Ready(_) => {
+            unreachable!("ready probes are converted by the caller")
+        }
+    }
+}
+
 #[allow(dead_code)] // activated by the staged durable AIR host
 impl crate::durable_comptime::DurableComptimeForeignCallAuthority
     for DurableComptimeForeignQueryAuthority<'_>
@@ -23763,54 +23781,60 @@ impl crate::durable_comptime::DurableComptimeForeignCallAuthority
                 ),
                 _ => Ok(crate::body_query::ForeignComptimeCallLookup::UnexpectedReadyProjection),
             },
-            rue_query::ReadyQueryProbe::Miss | rue_query::ReadyQueryProbe::NotReady => {
-                let artifacts = self.context.query_registered(
-                    self.declaration_body_plan_artifacts,
-                    DeclarationBodyPlanQueryKey(foreign_plan.candidate.clone()),
-                )?;
-                let artifacts = match artifacts.outcome() {
-                    rue_query::QueryOutcome::Success(
-                        DeclarationBodyPlanArtifactsValue::Available(artifacts),
-                    ) => artifacts,
-                    rue_query::QueryOutcome::Success(
-                        DeclarationBodyPlanArtifactsValue::Failure(failure),
-                    ) => {
-                        return Ok(
-                            crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
-                                crate::body_query::ComptimeProgramProjectionFailure::Artifact(
-                                    failure.clone(),
+            probe @ (rue_query::ReadyQueryProbe::NotReady | rue_query::ReadyQueryProbe::Miss) => {
+                foreign_comptime_miss_or_not_ready(probe, || {
+                    let artifacts = self.context.query_registered(
+                        self.declaration_body_plan_artifacts,
+                        DeclarationBodyPlanQueryKey(foreign_plan.candidate.clone()),
+                    )?;
+                    let artifacts = match artifacts.outcome() {
+                        rue_query::QueryOutcome::Success(
+                            DeclarationBodyPlanArtifactsValue::Available(artifacts),
+                        ) => artifacts,
+                        rue_query::QueryOutcome::Success(
+                            DeclarationBodyPlanArtifactsValue::Failure(failure),
+                        ) => {
+                            return Ok(
+                                crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
+                                    crate::body_query::ComptimeProgramProjectionFailure::Artifact(
+                                        failure.clone(),
+                                    ),
                                 ),
-                            ),
-                        );
-                    }
-                    rue_query::QueryOutcome::Failure(failure) => {
-                        return Ok(crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
+                            );
+                        }
+                        rue_query::QueryOutcome::Failure(failure) => {
+                            return Ok(crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(
                             crate::body_query::ComptimeProgramProjectionFailure::ArtifactQueryFailure(
                                 failure.clone(),
                             ),
                         ));
+                        }
+                    };
+                    let seed = crate::body_query::ForeignComptimeCallSeed {
+                        type_arguments: type_arguments.to_vec().into(),
+                        value_arguments: value_arguments.to_vec().into(),
+                    };
+                    match crate::body_query::OwnedForeignComptimeProgram::from_body_plan(
+                        foreign_plan,
+                        artifacts,
+                        seed,
+                        || self.context.check_canceled(),
+                    ) {
+                        Ok(program) => Ok(crate::body_query::ForeignComptimeCallLookup::Admitted(
+                            program,
+                        )),
+                        Err(
+                            crate::body_query::ComptimeProgramProjectionFailure::Materialization(
+                                crate::canonical_lower::BodyPlanMaterializationFailure::Query(
+                                    abort,
+                                ),
+                            ),
+                        ) => Err(abort),
+                        Err(error) => Ok(
+                            crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(error),
+                        ),
                     }
-                };
-                let seed = crate::body_query::ForeignComptimeCallSeed {
-                    type_arguments: type_arguments.to_vec().into(),
-                    value_arguments: value_arguments.to_vec().into(),
-                };
-                match crate::body_query::OwnedForeignComptimeProgram::from_body_plan(
-                    foreign_plan,
-                    artifacts,
-                    seed,
-                    || self.context.check_canceled(),
-                ) {
-                    Ok(program) => Ok(crate::body_query::ForeignComptimeCallLookup::Admitted(
-                        program,
-                    )),
-                    Err(crate::body_query::ComptimeProgramProjectionFailure::Materialization(
-                        crate::canonical_lower::BodyPlanMaterializationFailure::Query(abort),
-                    )) => Err(abort),
-                    Err(error) => {
-                        Ok(crate::body_query::ForeignComptimeCallLookup::AdmissionFailure(error))
-                    }
-                }
+                })
             }
         }
     }
@@ -28539,35 +28563,35 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn not_ready_foreign_probe_uses_owned_plan_admission() {
+    fn noncomputing_foreign_probe_adapter_does_not_admit_not_ready() {
+        let called = std::cell::Cell::new(false);
+        let result =
+            foreign_comptime_miss_or_not_ready(rue_query::ReadyQueryProbe::<()>::NotReady, || {
+                called.set(true);
+                panic!("NotReady must not construct the cold-miss admission");
+            })
+            .unwrap();
         assert!(matches!(
-            crate::body_query::ForeignComptimeCallLookup::NotReady,
+            result,
             crate::body_query::ForeignComptimeCallLookup::NotReady
         ));
-        let source = include_str!("revisioned_query_database.rs");
-        let probe = source
-            .split("struct DurableComptimeForeignQueryAuthority<'a> {")
-            .nth(1)
-            .and_then(|source| source.split("impl CompilerBodyFactProvider").next())
-            .expect("the canonical comptime probe");
-        let not_ready = probe
-            .find("rue_query::ReadyQueryProbe::Miss | rue_query::ReadyQueryProbe::NotReady =>")
-            .expect("the canonical provider must handle NotReady");
-        let arm_end = probe[not_ready..]
-            .find("\n            }")
-            .map(|offset| not_ready + offset)
-            .expect("the Miss/NotReady arm must have a bounded match body");
-        let arm = &probe[not_ready..arm_end];
-        assert!(
-            arm.contains("declaration_body_plan_artifacts")
-                && arm.contains("OwnedForeignComptimeProgram::from_body_plan"),
-            "Miss and NotReady must use the owned foreign-plan admission path"
-        );
-        assert!(
-            !arm.contains("query_registered(&self.semantic_nucleus")
-                && !arm.contains("probe_registered_ready("),
-            "owned-plan admission must not demand or evaluate the semantic nucleus"
-        );
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn noncomputing_foreign_probe_adapter_admits_a_cold_miss_once() {
+        let calls = std::cell::Cell::new(0);
+        let result =
+            foreign_comptime_miss_or_not_ready(rue_query::ReadyQueryProbe::<()>::Miss, || {
+                calls.set(calls.get() + 1);
+                Ok(crate::body_query::ForeignComptimeCallLookup::NotReady)
+            })
+            .unwrap();
+        assert!(matches!(
+            result,
+            crate::body_query::ForeignComptimeCallLookup::NotReady
+        ));
+        assert_eq!(calls.get(), 1);
     }
 
     /// Anonymous identity comes from the canonical candidate artifact. A source
