@@ -166,6 +166,23 @@ fn main() -> i32 {
 }
 """ }]
 
+[[case]]
+name = "declared_linear_constant_projection_from_loop_binder_is_rejected"
+description = "A constant projection that would consume a declared-linear loop binder is rejected through the loop's shared borrow slot."
+compile_fail = true
+error_contains = ["cannot move out of borrowed value"]
+files = [{ path = "main.rue", source = """
+linear struct Token { values: [i32; 2] }
+fn main() -> i32 {
+    let tokens = [Token { values: [7, 8] }];
+    for token in tokens {
+        token.values[0]
+    }
+    @drop(tokens);
+    0
+}
+""" }]
+
 # --- RUE-257: mutating the collection via an inout-self method ----------------
 
 [[case]]

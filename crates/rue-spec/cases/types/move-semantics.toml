@@ -1731,9 +1731,9 @@ compile_fail = true
 error_contains = "'h.b' still holds a linear value"
 
 [[case]]
-name = "declared_linear_root_destructure_consumes_the_binding"
+name = "declared_linear_nested_projection_leaves_ancestor_obligation"
 spec = ["3.8:33", "3.8:74"]
-description = "When the declared-linear struct IS the binding, the destructure consumes the whole binding, array field and all (RUE-1632 keeps this case unchanged)"
+description = "When declared-linear values are nested, the smallest enclosing value is consumed and the declared-linear ancestor remains obligated (RUE-614)"
 source = """
 linear struct MustUse { value: i32 }
 
@@ -1744,7 +1744,8 @@ fn main() -> i32 {
     h.arr[0].value
 }
 """
-exit_code = 1
+compile_fail = true
+error_contains = "linear value 'h' must be consumed"
 
 [[case]]
 name = "infectious_carrier_unconsumed_field_reported_at_scope_exit"
@@ -1962,9 +1963,9 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
-name = "linear_param_destructor_self_exempt"
+name = "linear_param_destructor_external_projection_rejected"
 spec = ["3.8:62"]
-description = "A destructor's self parameter is exempt from the linear must-consume rule"
+description = "A destructor's self parameter is exempt from must-consume checking, but an external declared-linear value with a whole-value destructor rejects field projection (RUE-614)"
 source = """
 linear struct MustUse { value: i32 }
 
@@ -1977,7 +1978,8 @@ fn main() -> i32 {
     consume(m)
 }
 """
-exit_code = 42
+compile_fail = true
+error_contains = ["E0456", "cannot move field `value` out of a value of type 'MustUse'"]
 
 [[case]]
 name = "linear_temporary_discarded_error"

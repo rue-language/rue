@@ -2574,69 +2574,141 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// not the root binding in every case. Scoping it to the root discharged
     /// every sibling place's linear obligation along with it (RUE-1632).
     ///
-    /// The SHALLOWEST declared-`linear` container along the chain wins:
-    /// reaching a deeper one means projecting through the shallow one, which
-    /// destructures (and so consumes) that outer value wholly, residue
-    /// included. Levels above it are not declared linear, so they follow the
-    /// ordinary partial-move model (3.8:22, RUE-1591) and keep the
-    /// obligations of their other sub-places.
+    /// The SMALLEST (innermost) declared-`linear` container along the chain
+    /// wins: a deeper declared-linear value is the value whose selected field
+    /// is projected, while declared-linear ancestors remain ordinary enclosing
+    /// places with their own obligations. This is the maintainer ruling for
+    /// RUE-614; it also keeps unrelated ancestor siblings visible to the
+    /// ordinary residual-linear check.
     ///
-    /// Only called once the last container is known to be declared linear, so
-    /// a level always exists; depth 0 (consume the root) is the fallback.
-    fn declared_linear_destructure_depth(&self, trace: &PlaceTrace) -> usize {
+    /// Returns `None` when no declared-linear container encloses the selected
+    /// leaf; depth 0 means the root itself is the consumed place. Dynamic
+    /// index paths pass `false` to retain their pre-RUE-614 shallowest-place
+    /// fallback while RUE-1755 owns their future design.
+    fn declared_linear_destructure_depth(
+        &self,
+        trace: &PlaceTrace,
+        prefer_innermost: bool,
+    ) -> Option<usize> {
         let mut container = trace.base_type;
+        let mut smallest = None;
         for (depth, proj) in trace.projections.iter().enumerate() {
             if container
                 .as_struct()
                 .is_some_and(|id| self.struct_declared_linear(id))
             {
-                return depth;
+                if !prefer_innermost {
+                    return Some(depth);
+                }
+                smallest = Some(depth);
             }
             container = proj.result_type;
         }
-        0
+        smallest
     }
 
-    /// Reject a field access that consumes (destructures) a **declared**
-    /// `linear` struct when the destructure would implicitly drop a
-    /// *different* field that itself carries a linear value (E0474, spec
-    /// 3.8:60, RUE-40).
+    /// Add the immediate drops required by a declared-linear projection.
     ///
-    /// Destructuring consumption (spec 3.8:33) extracts the accessed leaf
-    /// field and drops everything else in the value. That implicit drop must
-    /// not lose a linear value. Every struct level along the projection
-    /// chain is checked: at each level, all fields other than the projected
-    /// one are dropped.
-    ///
-    /// Only levels whose struct is declared `linear` destructure this way
-    /// (RUE-1591). A field access on an *infectious* carrier is an ordinary
-    /// partial move: the siblings stay Owned and their residue is dropped by
-    /// the scope-exit walk, so a linear sibling is caught by the residual
-    /// must-consume check ([`Self::residual_linear_place`], core §5.6)
-    /// instead of here — that is what lets `sink(c.inner)` keep a Copy
-    /// sibling readable while `c.tag` alone still fails.
-    fn reject_linear_destructure_dropping_linear_field(
+    /// The projection produces one leaf of the smallest declared-linear
+    /// place.  Every other droppable residue in that place is consumed before
+    /// the expression completes, in declaration/ascending-index order.  A
+    /// whole `Drop` is safe for a residue branch: no move can already exist
+    /// below the consumed place (the use-after-consumption check rejects that
+    /// case), and declared-linear residues carrying linear values are rejected
+    /// by the caller.
+    fn emit_declared_linear_residue_drops(
         &self,
+        air: &mut Air,
         trace: &PlaceTrace,
+        marker_depth: usize,
+        span: Span,
+    ) -> CompileResult<Vec<AirRef>> {
+        let mut projections = trace.projections[..marker_depth]
+            .iter()
+            .map(|p| p.proj)
+            .collect::<Vec<_>>();
+        let container_type = marker_depth
+            .checked_sub(1)
+            .map_or(trace.base_type, |i| trace.projections[i].result_type);
+        let container_struct_id = container_type.as_struct().ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::InternalError(
+                    "declared-linear destructure container is not a struct".to_string(),
+                ),
+                span,
+            )
+        })?;
+        let accessed = trace.projections[marker_depth].field_name;
+        let root_name = self
+            .body_type_pool()
+            .struct_def(container_struct_id)
+            .name
+            .to_string();
+        let mut drops = Vec::new();
+        self.emit_declared_linear_residue_drops_at(
+            air,
+            trace.base,
+            trace.base_type,
+            container_type,
+            &trace.projections[marker_depth..],
+            &mut projections,
+            &mut drops,
+            &root_name,
+            accessed,
+            span,
+        )?;
+        Ok(drops)
+    }
+
+    fn emit_declared_linear_residue_drops_at(
+        &self,
+        air: &mut Air,
+        base: AirPlaceBase,
+        base_type: Type,
+        current_type: Type,
+        selected_path: &[ProjectionInfo],
+        projections: &mut Vec<AirProjection>,
+        drops: &mut Vec<AirRef>,
+        root_name: &str,
+        accessed: Option<Spur>,
         span: Span,
     ) -> CompileResult<()> {
-        let mut current_ty = trace.base_type;
-        for proj in &trace.projections {
-            if let AirProjection::Field {
-                struct_id,
-                field_index,
-            } = proj.proj
-                && self.struct_declared_linear(struct_id)
-            {
+        let Some(selected) = selected_path.first() else {
+            return Ok(());
+        };
+        match (current_type.kind(), selected.proj) {
+            (TypeKind::Struct(struct_id), AirProjection::Field { field_index, .. }) => {
                 let def = self.body_type_pool().struct_def(struct_id);
-                for (i, field) in def.fields.iter().enumerate() {
-                    if i as u32 != field_index && self.type_carries_linear(field.ty) {
-                        let accessed = def.fields[field_index as usize].name.clone();
+                for (index, field) in def.fields.iter().enumerate() {
+                    let index = index as u32;
+                    projections.push(AirProjection::Field {
+                        struct_id,
+                        field_index: index,
+                    });
+                    if index == field_index {
+                        self.emit_declared_linear_residue_drops_at(
+                            air,
+                            base,
+                            base_type,
+                            field.ty,
+                            &selected_path[1..],
+                            projections,
+                            drops,
+                            root_name,
+                            accessed,
+                            span,
+                        )?;
+                    } else if self.type_carries_linear(field.ty) {
                         let err = CompileError::new(
                             ErrorKind::LinearFieldDroppedByDestructure(Box::new(
                                 rue_error::LinearFieldDroppedByDestructureError {
-                                    struct_name: def.name.to_string(),
-                                    accessed,
+                                    struct_name: root_name.to_string(),
+                                    accessed: accessed
+                                        .map(|field| {
+                                            let field_name = self.body_interner().resolve(&field);
+                                            field_name.to_string()
+                                        })
+                                        .unwrap_or_else(|| "array element".to_string()),
                                     dropped: field.name.clone(),
                                 },
                             )),
@@ -2645,16 +2717,170 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         .with_help(
                             "destructuring consumption extracts one field and drops \
                              the rest; access the linear field instead and consume \
-                             its value, or consume the whole value by passing it to \
-                             a function",
+                             its value, or consume the whole value by passing it to a function",
                         );
-                        return Err(self.attach_infectious_linear_note(err, current_ty));
+                        return Err(self.attach_infectious_linear_note(err, field.ty));
+                    } else if self.body_type_pool().type_needs_drop(field.ty) {
+                        let place = air.make_place(base, base_type, projections.iter().copied())?;
+                        let value = air.add_inst(AirInst {
+                            data: AirInstData::PlaceRead { place },
+                            ty: field.ty,
+                            span,
+                        });
+                        drops.push(air.add_inst(AirInst {
+                            data: AirInstData::Drop { value },
+                            ty: Type::UNIT,
+                            span,
+                        }));
                     }
+                    projections.pop();
                 }
             }
-            current_ty = proj.result_type;
+            (TypeKind::Array(array_id), AirProjection::Index { .. }) => {
+                let Some(selected_index) = selected.const_index else {
+                    return Err(CompileError::new(
+                        ErrorKind::MoveOutOfIndex {
+                            element_type: selected
+                                .result_type
+                                .safe_name_with_pool(Some(self.body_type_pool())),
+                        },
+                        span,
+                    )
+                    .with_help(
+                        "moving an element out through an array index requires a \
+                         compile-time constant index",
+                    ));
+                };
+                let (element_type, length) = self.body_type_pool().array_def(array_id);
+                for index in 0..length {
+                    let index = index as i64;
+                    let index_ref = air.add_inst(AirInst {
+                        data: AirInstData::Const(index as u64),
+                        ty: Type::U64,
+                        span,
+                    });
+                    projections.push(AirProjection::Index {
+                        array_type: current_type,
+                        index: index_ref,
+                    });
+                    if index == selected_index {
+                        self.emit_declared_linear_residue_drops_at(
+                            air,
+                            base,
+                            base_type,
+                            element_type,
+                            &selected_path[1..],
+                            projections,
+                            drops,
+                            root_name,
+                            accessed,
+                            span,
+                        )?;
+                    } else if self.type_carries_linear(element_type) {
+                        let err = CompileError::new(
+                            ErrorKind::LinearFieldDroppedByDestructure(Box::new(
+                                rue_error::LinearFieldDroppedByDestructureError {
+                                    struct_name: root_name.to_string(),
+                                    accessed: accessed
+                                        .map(|field| {
+                                            let field_name = self.body_interner().resolve(&field);
+                                            field_name.to_string()
+                                        })
+                                        .unwrap_or_else(|| "array element".to_string()),
+                                    dropped: format!("array element [{index}]"),
+                                },
+                            )),
+                            span,
+                        )
+                        .with_help(
+                            "destructuring consumption extracts one element and drops \
+                             the rest; consume every linear element explicitly",
+                        );
+                        return Err(self.attach_infectious_linear_note(err, element_type));
+                    } else if self.body_type_pool().type_needs_drop(element_type) {
+                        let place = air.make_place(base, base_type, projections.iter().copied())?;
+                        let value = air.add_inst(AirInst {
+                            data: AirInstData::PlaceRead { place },
+                            ty: element_type,
+                            span,
+                        });
+                        drops.push(air.add_inst(AirInst {
+                            data: AirInstData::Drop { value },
+                            ty: Type::UNIT,
+                            span,
+                        }));
+                    }
+                    projections.pop();
+                }
+            }
+            _ => {
+                return Err(CompileError::new(
+                    ErrorKind::InternalError(
+                        "declared-linear projection does not match its container".to_string(),
+                    ),
+                    span,
+                ));
+            }
         }
         Ok(())
+    }
+
+    /// Sequence a declared-linear projection's value before its residue.
+    ///
+    /// A plain AIR block evaluates its statements before its final value. The
+    /// selected projection is an owned value, so putting it in the statement
+    /// list would also schedule a temporary drop for it. Store it in a short-
+    /// lived slot instead: the `Alloc` evaluates the selected value first,
+    /// residue statements then run, and the final moved read transfers the
+    /// selected value out without a second drop.
+    fn sequence_declared_linear_projection_value(
+        &self,
+        air: &mut Air,
+        ctx: &mut AnalysisContext,
+        value: AirRef,
+        ty: Type,
+        residue: &[AirRef],
+        span: Span,
+    ) -> CompileResult<AirRef> {
+        if residue.is_empty() {
+            return Ok(value);
+        }
+        let slots = self.require_layout_slots(ty, span)?;
+        let slot = self.reserve_frame_slots(&mut ctx.next_slot, slots, span)?;
+        let storage_live = air.add_inst(AirInst {
+            data: AirInstData::StorageLive { slot },
+            ty,
+            span,
+        });
+        let alloc = air.add_inst(AirInst {
+            data: AirInstData::Alloc { slot, init: value },
+            ty: Type::UNIT,
+            span,
+        });
+        let place = air.make_place(AirPlaceBase::Local(slot), ty, [])?;
+        let read = air.add_inst(AirInst {
+            data: AirInstData::PlaceRead { place },
+            ty,
+            span,
+        });
+        let result = if self.is_type_copy(ty) {
+            read
+        } else {
+            air.add_inst(AirInst {
+                data: AirInstData::MarkMoved {
+                    value: read,
+                    slot,
+                    is_param: false,
+                    place: None,
+                },
+                ty,
+                span,
+            })
+        };
+        let mut statements = Vec::with_capacity(2 + residue.len());
+        statements.extend([storage_live, alloc]);
+        statements.extend_from_slice(residue);
+        Ok(air.add_block(&statements, result, ty, span)?)
     }
 
     /// Reject moving a field out of a value whose struct type has a
@@ -2663,9 +2889,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// The destructor always runs on the *whole* value when it is dropped:
     /// it would observe the moved-out field (a use-after-free for heap
     /// fields), and the automatic field cleanup after the destructor would
-    /// drop the field a second time. Inside `drop fn T(self)` this same rule
-    /// rejects `self.field` moves — `self` has type `T`, which has the very
-    /// destructor being defined (whole-`self` moves are E0442).
+    /// drop the field a second time. The destructor body itself is the
+    /// established self-consumption context and is exempt; this rule applies
+    /// to external values, including values inspected from within a
+    /// destructor body.
     ///
     /// Every container along the projection chain is checked (`o.a.b` moves
     /// out of both `o` and `o.a`), mirroring Rust: a deep move leaves every
@@ -2833,15 +3060,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // through a moved-out element (RUE-186).
             self.check_read_through_moved_element(&trace, ctx, span)?;
 
-            // Get struct info for move checking
-            // The trace's result type is the field type, but we need the parent struct type
-            // to check if it's linear. The parent is the type *before* the last projection.
-            let parent_type = if trace.projections.len() > 1 {
-                trace.projections[trace.projections.len() - 2].result_type
-            } else {
-                trace.base_type
-            };
-
             // Whole-value destructuring consumption (3.8:33) is the model for
             // a struct DECLARED `linear` only: its obligation belongs to the
             // value itself, whatever its fields hold (3.8:74). A struct that
@@ -2858,9 +3076,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // PLACE, which is the root binding only when the declared-linear
             // struct IS the root (RUE-1632) — see
             // `declared_linear_destructure_depth`.
-            let is_declared_linear = parent_type
+            let has_untrackable_index = trace.has_untrackable_index();
+            let declared_depth =
+                self.declared_linear_destructure_depth(&trace, !has_untrackable_index);
+            let immediate_parent_type = if trace.projections.len() > 1 {
+                trace.projections[trace.projections.len() - 2].result_type
+            } else {
+                trace.base_type
+            };
+            let immediate_parent_declared_linear = immediate_parent_type
                 .as_struct()
                 .is_some_and(|id| self.struct_declared_linear(id));
+            // A destructor's own by-value `self` is disposed of by drop glue,
+            // so its field projections retain the established self exemption.
+            // External declared-linear values in the same destructor body do
+            // not receive that exemption and still follow RUE-614.
+            let is_destructor_self =
+                ctx.is_destructor && ctx.params.iter().any(|param| param.name == trace.root_var);
+            let is_declared_linear = if has_untrackable_index {
+                immediate_parent_declared_linear
+            } else {
+                declared_depth.is_some()
+            } && !is_destructor_self;
 
             // Move checking using the trace. `move_is_partial` selects the
             // MarkMoved marker's place component: absent for a whole-slot
@@ -2915,8 +3152,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             } else if is_declared_linear {
                 // For a declared-linear struct, field access destructures and
                 // so consumes that struct's whole value (3.8:33).
+                // Dynamic/untrackable index paths intentionally retain the
+                // transitional whole-root fallback. RUE-1755 owns the design
+                // decision for making those paths precise; RUE-614 only adds
+                // residue semantics where the place is statically trackable.
                 self.reject_accessor_place_move(&trace, field_type, span)?;
-                self.reject_linear_destructure_dropping_linear_field(&trace, span)?;
+                self.reject_field_move_out_of_destructor_type(&trace, span)?;
                 self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
                 self.reject_move_of_call_loaned_root(trace.root_var, span, ctx)?;
 
@@ -2926,7 +3167,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // their own linear obligations and their drop glue (RUE-1632).
                 // An unnameable place (dynamic index in the prefix) cannot be
                 // recorded per-place, so it keeps the whole-root consumption.
-                marker_depth = self.declared_linear_destructure_depth(&trace);
+                marker_depth = declared_depth.expect("declared-linear depth checked above");
                 let destructured_path = trace.prefix_field_path(marker_depth).unwrap_or_default();
 
                 // Destructuring a sub-place uses it as a whole value, so the
@@ -3097,6 +3338,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     span,
                 });
             }
+            if is_declared_linear && emit_move_marker && !has_untrackable_index {
+                let residue =
+                    self.emit_declared_linear_residue_drops(air, &trace, marker_depth, span)?;
+                air_ref = self.sequence_declared_linear_projection_value(
+                    air, ctx, air_ref, field_type, &residue, span,
+                )?;
+            }
             // Accessor guard statements (ADR-0062) run before the read.
             let air_ref = Self::finish_traced_value(air, &mut trace, air_ref, field_type, span)?;
             return Ok(AnalysisResult::with_continues(
@@ -3150,6 +3398,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         let field_type = struct_field.ty;
 
+        let is_declared_linear = self.struct_declared_linear(struct_id);
+
         // Moving a non-Copy field out of a destructor-typed value is E0456 no
         // matter how the value was produced. The named-place path above
         // rejects it via `reject_field_move_out_of_destructor_type`; a
@@ -3159,7 +3409,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // temporary's type is `base_type`, so the check is the same one, just
         // without a `PlaceTrace` to walk. Copy fields are read, not moved, and
         // stay legal.
-        if !self.is_type_copy(field_type) && struct_def.destructor.is_some() {
+        if struct_def.destructor.is_some() && (is_declared_linear || !self.is_type_copy(field_type))
+        {
             let field_name = field_name.to_string();
             return Err(self.field_move_out_of_destructor_type_error(struct_id, field_name, span));
         }
@@ -3200,6 +3451,45 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             span,
         });
 
+        // A declared-linear computed value is consumed at this projection,
+        // just like a named place. Mark the whole temporary and destroy its
+        // residue immediately; the temporary's scope-exit drop must not see
+        // the consumed value again.
+        if is_declared_linear {
+            let trace = PlaceTrace {
+                base: AirPlaceBase::Local(temp_slot),
+                base_type,
+                projections: vec![ProjectionInfo {
+                    proj: AirProjection::Field {
+                        struct_id,
+                        field_index: field_index as u32,
+                    },
+                    result_type: field_type,
+                    field_name: Some(field),
+                    const_index: None,
+                    index_segment: None,
+                }],
+                root_var: field,
+                is_root_mutable: false,
+                is_borrow_param: false,
+                pending_stmts: Vec::new(),
+                via_accessor: false,
+                continues: base_result.continues,
+            };
+            value_ref = air.add_inst(AirInst {
+                data: AirInstData::MarkMoved {
+                    value: value_ref,
+                    slot: temp_slot,
+                    is_param: false,
+                    place: None,
+                },
+                ty: field_type,
+                span,
+            });
+            let residue = self.emit_declared_linear_residue_drops(air, &trace, 0, span)?;
+            value_ref = self.sequence_declared_linear_projection_value(
+                air, ctx, value_ref, field_type, &residue, span,
+            )?;
         // Projecting a non-Copy field out of this spilled temporary MOVES it
         // out of the temporary. The temporary is dropped whole at scope exit
         // (drop elaboration in rue-cfg), so without a move marker its per-field
@@ -3207,7 +3497,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // the `let` binding) also drops — a double free (RUE-258). Emit a
         // field-path MarkMoved on the temp slot, exactly as the named-place
         // path above does, so the temporary's scope-exit drop skips this field.
-        if !self.is_type_copy(field_type) {
+        } else if !self.is_type_copy(field_type) {
             value_ref = air.add_inst(AirInst {
                 data: AirInstData::MarkMoved {
                     value: value_ref,
@@ -3338,7 +3628,43 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // element; the per-element check below also covers a moved-out
             // element, RUE-186).
             let is_byref_arg_use = ctx.byref_arg_root == Some(trace.root_var);
+            let declared_depth = self.declared_linear_destructure_depth(&trace, true);
+            let is_destructor_self =
+                ctx.is_destructor && ctx.params.iter().any(|param| param.name == trace.root_var);
+            // Dynamic/untrackable index paths retain their pre-RUE-614
+            // Copy/non-Copy behavior. RUE-1755 owns any future precise
+            // semantics; only constant-index paths enter the new
+            // declared-linear residue plan.
+            let trackable_declared_depth =
+                declared_depth.filter(|_| !is_destructor_self && !trace.has_untrackable_index());
             let mut element_move: Option<i64> = None;
+            // A for-loop element binder is a shared borrow slot. Constant
+            // declared-linear projections would consume that borrowed value,
+            // so mirror FieldGet's E0428 guard before entering the move path.
+            // Ordinary Copy reads and explicit by-ref index uses remain legal.
+            if !is_byref_arg_use
+                && trackable_declared_depth.is_some()
+                && matches!(trace.base, AirPlaceBase::Local(slot) if air.is_borrow_slot(slot))
+            {
+                return Err(CompileError::new(
+                    ErrorKind::MoveOutOfBorrow {
+                        variable: self.body_interner().resolve(&trace.root_var).to_string(),
+                    },
+                    span,
+                ));
+            }
+            // Dynamic declared-linear Copy projections do not enter the new
+            // move path, but they still cannot bypass whole-value destructor
+            // safety. Dynamic non-Copy projections retain their existing
+            // check in the ordinary move branch below.
+            if !is_byref_arg_use
+                && declared_depth.is_some()
+                && trace.has_untrackable_index()
+                && !is_destructor_self
+                && self.is_type_copy(elem_type)
+            {
+                self.reject_field_move_out_of_destructor_type(&trace, span)?;
+            }
             if is_byref_arg_use {
                 let field_path = trace.field_path();
                 if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
@@ -3353,6 +3679,33 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     }
                 }
                 self.check_read_through_moved_element(&trace, ctx, span)?;
+            } else if let Some(declared_depth) = trackable_declared_depth {
+                self.reject_accessor_place_move(&trace, elem_type, span)?;
+                self.reject_field_move_out_of_destructor_type(&trace, span)?;
+                self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
+                self.reject_move_of_call_loaned_root(trace.root_var, span, ctx)?;
+
+                let destructured_path = trace.prefix_field_path(declared_depth).unwrap_or_default();
+                if !destructured_path.is_empty()
+                    && let Some(state) = ctx.moved_vars.get(&trace.root_var)
+                    && let Some(moved_span) = state.is_path_or_descendant_moved(&destructured_path)
+                {
+                    return Err(super::use_after_move_path_error(
+                        self.body_interner(),
+                        trace.root_var,
+                        &destructured_path,
+                        span,
+                        moved_span,
+                    ));
+                }
+                ctx.moved_vars
+                    .entry(trace.root_var)
+                    .or_default()
+                    .mark_path_moved(&destructured_path, span);
+                if trace.continues {
+                    self.record_completed_exclusive_use(trace.root_var, span, ctx);
+                }
+                element_move = Some(i64::MIN);
             } else if !self.is_type_copy(elem_type) {
                 self.reject_accessor_place_move(&trace, elem_type, span)?;
                 // A CONSTANT index directly into an array variable moves
@@ -3397,7 +3750,39 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ty: elem_type,
                 span,
             });
-            if let Some(k) = element_move {
+            if element_move == Some(i64::MIN) {
+                let declared_depth = trackable_declared_depth.expect("declared marker has depth");
+                let marker_place = if declared_depth == 0 {
+                    None
+                } else {
+                    Some(Self::build_move_marker_place_ref(
+                        air,
+                        &trace,
+                        &trace.projections[..declared_depth],
+                        span,
+                    )?)
+                };
+                air_ref = air.add_inst(AirInst {
+                    data: AirInstData::MarkMoved {
+                        value: air_ref,
+                        slot: match trace.base {
+                            AirPlaceBase::Local(slot) | AirPlaceBase::Param(slot) => slot,
+                            AirPlaceBase::Accessor(_) | AirPlaceBase::Indirect(_) => {
+                                unreachable!("accessor places never receive move markers")
+                            }
+                        },
+                        is_param: matches!(trace.base, AirPlaceBase::Param(_)),
+                        place: marker_place,
+                    },
+                    ty: elem_type,
+                    span,
+                });
+                let residue =
+                    self.emit_declared_linear_residue_drops(air, &trace, declared_depth, span)?;
+                air_ref = self.sequence_declared_linear_projection_value(
+                    air, ctx, air_ref, elem_type, &residue, span,
+                )?;
+            } else if let Some(k) = element_move {
                 // Export the element move to drop elaboration (RUE-186).
                 air_ref = self.emit_element_move_marker(
                     air,
@@ -4876,9 +5261,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// - a place moved out on every path holds nothing — `None`;
     /// - a **declared**-`linear` struct's obligation belongs to the value
     ///   itself, not its contents (3.8:74), so a live one is always residue.
-    ///   A husk whose linear field was moved out is reached only through the
-    ///   moved-out clause above, which keeps the current husk acceptance
-    ///   (RUE-614, an open maintainer decision) unchanged;
+    ///   A legal by-value projection records the smallest enclosing declared-
+    ///   linear place as moved and destroys its droppable residue immediately,
+    ///   so that consumed place is handled by the moved-out clause above;
+    ///   declared-linear ancestors remain live obligations;
     /// - a struct otherwise recurses into the fields that carry a linear
     ///   value;
     /// - an array recurses into its elements once any move was recorded

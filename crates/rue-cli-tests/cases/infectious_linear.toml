@@ -440,8 +440,8 @@ error_contains = [
 ]
 
 [[case]]
-name = "declared_linear_husk_behavior_unchanged"
-description = "A DECLARED-linear struct still destructures whole-value: its husk stays droppable (RUE-614, unchanged by RUE-1591)."
+name = "declared_linear_nested_field_consumes_outer_container"
+description = "Projection consumes the smallest declared-linear container and immediately drops its droppable residue; ordinary infectious-carrier behavior remains unchanged."
 files = [{ path = "main.rue", source = """
 linear struct Token { v: i32 }
 linear struct H { t: Token, n: i32 }
