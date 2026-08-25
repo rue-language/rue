@@ -694,6 +694,31 @@ pub(crate) struct DurableComptimeSession {
     next_call: u32,
 }
 
+/// The result of consuming one pre-lookup foreign-call edge. A ready fact is
+/// merged into the lifecycle-owned scope, while an admitted body is returned
+/// with the exact ticket that the canonical AIR engine must later enter. The
+/// edge cannot be used for both alternatives.
+#[allow(dead_code)] // consumed by the root-integrated durable AIR host
+#[derive(Debug)]
+pub(crate) enum DurableComptimeForeignCall {
+    Ready(crate::semantic_query_nucleus::ComptimeCallResultProjection),
+    Enter {
+        program: crate::body_query::OwnedForeignComptimeProgram,
+        ticket: Box<DurableComptimeCallTicket>,
+    },
+    NotReady,
+}
+
+#[allow(dead_code)] // preserves exact lookup/lifecycle errors for the host
+#[derive(Debug)]
+pub(crate) enum DurableComptimeForeignCallError {
+    ReadyFailure(crate::semantic_query_nucleus::SemanticNucleusFailure),
+    ReadyQueryFailure(rue_query::QueryFailure),
+    AdmissionFailure(crate::body_query::ForeignComptimeProgramProjectionFailure),
+    UnexpectedReadyProjection,
+    Lifecycle(DurableComptimeLifecycleError),
+}
+
 impl DurableComptimeSession {
     pub(crate) fn new(
         parent_producer: crate::StableDefinitionKey,
@@ -723,10 +748,74 @@ impl DurableComptimeSession {
 
     pub(crate) fn finish_ready_expression_edge(
         &mut self,
-        edge: &mut DurableComptimeCallEdge,
-        projection: &crate::semantic_query_nucleus::ComptimeCallProjection,
-    ) -> Result<(), DurableComptimeLifecycleError> {
-        self.lifecycle.merge_ready_projection(edge, projection)
+        edge: DurableComptimeCallEdge,
+        projection: crate::semantic_query_nucleus::ComptimeCallProjection,
+    ) -> Result<
+        crate::semantic_query_nucleus::ComptimeCallResultProjection,
+        DurableComptimeLifecycleError,
+    > {
+        self.consume_foreign_lookup(edge, ForeignComptimeCallLookup::Ready(projection))
+            .map(|result| match result {
+                DurableComptimeForeignCall::Ready(result) => result,
+                DurableComptimeForeignCall::Enter { .. } | DurableComptimeForeignCall::NotReady => {
+                    unreachable!("finish_ready_expression_edge supplies a ready projection")
+                }
+            })
+            .map_err(|error| match error {
+                DurableComptimeForeignCallError::Lifecycle(error) => error,
+                DurableComptimeForeignCallError::ReadyFailure(_)
+                | DurableComptimeForeignCallError::ReadyQueryFailure(_)
+                | DurableComptimeForeignCallError::AdmissionFailure(_)
+                | DurableComptimeForeignCallError::UnexpectedReadyProjection => {
+                    unreachable!("finish_ready_expression_edge supplies a ready projection")
+                }
+            })
+    }
+
+    /// Consume the one lookup result associated with a pre-lookup edge. This
+    /// is the compiler-side adapter for the RUE-1795 seam: it never evaluates
+    /// a child or demands a terminal. The future durable host will convert the
+    /// returned admitted program and exact ticket into
+    /// `ComptimeCallPreparation::Enter`, which the currently running AIR
+    /// engine consumes through its normal call path.
+    pub(crate) fn consume_foreign_lookup(
+        &mut self,
+        edge: DurableComptimeCallEdge,
+        lookup: ForeignComptimeCallLookup,
+    ) -> Result<DurableComptimeForeignCall, DurableComptimeForeignCallError> {
+        let mut edge = edge;
+        match lookup {
+            ForeignComptimeCallLookup::Ready(projection) => {
+                let result = self
+                    .lifecycle
+                    .merge_ready_projection_owned(&mut edge, projection)
+                    .map_err(DurableComptimeForeignCallError::Lifecycle)?;
+                Ok(DurableComptimeForeignCall::Ready(result))
+            }
+            ForeignComptimeCallLookup::Admitted(program) => {
+                let ticket = self
+                    .lifecycle
+                    .ticket_from_admitted_edge(edge, &program)
+                    .map_err(DurableComptimeForeignCallError::Lifecycle)?;
+                Ok(DurableComptimeForeignCall::Enter {
+                    program,
+                    ticket: Box::new(ticket),
+                })
+            }
+            ForeignComptimeCallLookup::NotReady => Ok(DurableComptimeForeignCall::NotReady),
+            ForeignComptimeCallLookup::ReadyFailure(failure) => {
+                Err(DurableComptimeForeignCallError::ReadyFailure(failure))
+            }
+            ForeignComptimeCallLookup::ReadyQueryFailure(failure) => {
+                Err(DurableComptimeForeignCallError::ReadyQueryFailure(failure))
+            }
+            ForeignComptimeCallLookup::AdmissionFailure(failure) => {
+                Err(DurableComptimeForeignCallError::AdmissionFailure(failure))
+            }
+            ForeignComptimeCallLookup::UnexpectedReadyProjection => {
+                Err(DurableComptimeForeignCallError::UnexpectedReadyProjection)
+            }
+        }
     }
 
     /// Drain observations only after the evaluator has fully unwound. The
@@ -995,6 +1084,18 @@ impl DurableComptimeCallLifecycle {
         self.current_effects_mut()
             .merge_child(ready, &edge.application_policy);
         Ok(())
+    }
+
+    pub(crate) fn merge_ready_projection_owned(
+        &mut self,
+        edge: &mut DurableComptimeCallEdge,
+        projection: crate::semantic_query_nucleus::ComptimeCallProjection,
+    ) -> Result<
+        crate::semantic_query_nucleus::ComptimeCallResultProjection,
+        DurableComptimeLifecycleError,
+    > {
+        self.merge_ready_projection(edge, &projection)?;
+        Ok(projection.result)
     }
 
     /// Consume a foreign-call lookup only when it contains a ready Known
@@ -2526,9 +2627,9 @@ mod effect_lifecycle_tests {
             crate::revisioned_query_database::declaration_candidate_for_stable_key(&parent)
                 .unwrap();
         let mut session = DurableComptimeSession::new(parent, declaration).unwrap();
-        let mut edge = session.prepare_expression_edge(9).unwrap();
+        let edge = session.prepare_expression_edge(9).unwrap();
         session
-            .finish_ready_expression_edge(&mut edge, &ready_projection(9))
+            .finish_ready_expression_edge(edge, ready_projection(9))
             .unwrap();
         let effects = session.drain_root_effects().unwrap();
         assert_eq!(
@@ -2979,6 +3080,116 @@ mod effect_lifecycle_tests {
             structured.application_policy,
             DurableComptimeApplicationPolicy::Preserve
         );
+
+        // The production session adapter consumes one pre-lookup edge and
+        // returns the admitted owned program with the exact ticket; admission
+        // alone does not activate a lifecycle scope.
+        let mut session = DurableComptimeSession::new(
+            definition("parent"),
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&definition(
+                "parent",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let edge = session.prepare_expression_edge(42).unwrap();
+        let consumed = session
+            .consume_foreign_lookup(edge, ForeignComptimeCallLookup::Admitted(admitted.clone()))
+            .unwrap();
+        let DurableComptimeForeignCall::Enter {
+            program,
+            mut ticket,
+        } = consumed
+        else {
+            panic!("an admitted lookup must return an entered-frame plan");
+        };
+        assert_eq!(program.plan, admitted.plan);
+        assert!(session.lifecycle.active.is_empty());
+        session.lifecycle.enter(&ticket).unwrap();
+        session
+            .lifecycle
+            .finish(&mut ticket, &rue_air::ComptimeOutcome::<(), ()>::Known(()))
+            .unwrap();
+
+        let mut ready_session = DurableComptimeSession::new(
+            definition("parent"),
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&definition(
+                "parent",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let ready_edge = ready_session.prepare_expression_edge(42).unwrap();
+        assert!(matches!(
+            ready_session
+                .consume_foreign_lookup(
+                    ready_edge,
+                    ForeignComptimeCallLookup::Ready(ready_projection(42)),
+                )
+                .unwrap(),
+            DurableComptimeForeignCall::Ready(
+                crate::semantic_query_nucleus::ComptimeCallResultProjection::Value(
+                    DurableConstValue::Integer(42),
+                )
+            )
+        ));
+        assert!(!ready_session.drain_root_effects().unwrap().is_empty());
+
+        let mut miss_session = DurableComptimeSession::new(
+            definition("parent"),
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&definition(
+                "parent",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let miss_edge = miss_session.prepare_expression_edge(43).unwrap();
+        assert!(matches!(
+            miss_session.consume_foreign_lookup(miss_edge, ForeignComptimeCallLookup::NotReady),
+            Ok(DurableComptimeForeignCall::NotReady)
+        ));
+        assert!(miss_session.drain_root_effects().unwrap().is_empty());
+
+        let failures = [
+            ForeignComptimeCallLookup::ReadyFailure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Shell(Arc::from("shell")),
+            ),
+            ForeignComptimeCallLookup::ReadyQueryFailure(rue_query::QueryFailure::new(
+                "query", "failure",
+            )),
+            ForeignComptimeCallLookup::AdmissionFailure(
+                crate::body_query::ForeignComptimeProgramProjectionFailure::IdentityMismatch,
+            ),
+            ForeignComptimeCallLookup::UnexpectedReadyProjection,
+        ];
+        for lookup in failures {
+            let mut failure_session = DurableComptimeSession::new(
+                definition("parent"),
+                crate::revisioned_query_database::declaration_candidate_for_stable_key(
+                    &definition("parent"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let failure_edge = failure_session.prepare_expression_edge(44).unwrap();
+            let error = failure_session
+                .consume_foreign_lookup(failure_edge, lookup)
+                .expect_err("non-ready lookup must preserve its exact error channel");
+            match error {
+                DurableComptimeForeignCallError::ReadyFailure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::Shell(message),
+                ) => assert_eq!(message.as_ref(), "shell"),
+                DurableComptimeForeignCallError::ReadyQueryFailure(failure) => {
+                    assert_eq!(failure.code.as_ref(), "query")
+                }
+                DurableComptimeForeignCallError::AdmissionFailure(
+                    crate::body_query::ForeignComptimeProgramProjectionFailure::IdentityMismatch,
+                )
+                | DurableComptimeForeignCallError::UnexpectedReadyProjection => {}
+                other => panic!("wrong foreign lookup error channel: {other:?}"),
+            }
+            assert!(failure_session.drain_root_effects().unwrap().is_empty());
+        }
 
         // The same pre-lookup edge can choose the admitted branch and derive
         // the child query only from the owned program payload.
