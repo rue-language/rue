@@ -3420,7 +3420,9 @@ fn durable_comptime_services_are_named_authority_operations() {
         "resolve_named_value_in_order",
         "resolve_module_member_in_order",
         "begin_comptime_call_admission",
+        "begin_comptime_call_admission_for_key",
         "finish_comptime_call_admission",
+        "finish_structured_comptime_call_admission",
         "reserve_bound_expression_call",
         "admit_bound_expression_call",
         "prepare_bound_expression_call",
@@ -4221,6 +4223,34 @@ fn durable_comptime_services_are_named_authority_operations() {
             "durable session duplicated AIR frame authority: {forbidden}"
         );
     }
+    let session_impl = production_facade
+        .split("impl DurableComptimeSession {")
+        .nth(1)
+        .and_then(|source| source.split("/// Compare the immutable metadata").next())
+        .expect("durable session implementation");
+    let observe_dependency = session_impl
+        .split("pub(crate) fn observe_dependency(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("pub(crate) fn observe_anonymous_nominal(")
+                .next()
+        })
+        .expect("session dependency observer");
+    assert!(observe_dependency.contains("self.lifecycle.observe_dependency(dependency)"));
+    let structured_finish = production_facade
+        .split("pub(crate) fn finish_structured_comptime_call_admission(")
+        .nth(1)
+        .and_then(|source| source.split("pub(crate) fn resolve_named_value(").next())
+        .expect("structured callable finish service");
+    assert!(structured_finish.contains("DurableParameterMode::Value"));
+    assert!(
+        structured_finish.contains("self.finish_comptime_call_admission(start, &argument_modes)")
+    );
+    assert!(!structured_finish.contains("begin_comptime_call_admission"));
+    assert!(!structured_finish.contains("resolve_named_value"));
+    assert!(!structured_finish.contains("InstData"));
+    assert!(!structured_finish.contains("InstRef"));
     let foreign_adapter = production_facade
         .split("pub(crate) enum DurableComptimeForeignCall {")
         .nth(1)
@@ -5630,6 +5660,42 @@ fn durable_comptime_services_are_named_authority_operations() {
         .and_then(|source| source.split("\n    fn resolve_named_value(").next())
         .expect("call admission completion authority source");
     assert!(!admission_finish_authority.contains("provider.dependency_source"));
+    let keyed_admission_authority = target_authority
+        .split("fn begin_comptime_call_admission_for_key(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n    fn finish_comptime_call_admission(")
+                .next()
+        })
+        .expect("exact keyed call admission authority source");
+    for required in [
+        "declaration_candidate_for_stable_key(head)",
+        "identity(candidate.clone())",
+        "if identity.key != *head",
+        "name: Arc::from(head.name())",
+        "source: accessing_source.clone()",
+        "identity.key,",
+    ] {
+        assert!(
+            keyed_admission_authority.contains(required),
+            "keyed call admission lost exact-head validation: {required}"
+        );
+    }
+    for forbidden in [
+        "candidate_from(",
+        "module,",
+        "query_registered(",
+        "resolve_named_value",
+        "SemanticConstEvaluator",
+        "InstData",
+        "InstRef",
+    ] {
+        assert!(
+            !keyed_admission_authority.contains(forbidden),
+            "keyed call admission must not rediscover or evaluate: {forbidden}"
+        );
+    }
     let named_value_authority = format!(
         "{}{}",
         target_authority

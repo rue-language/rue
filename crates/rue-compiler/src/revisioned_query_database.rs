@@ -4415,6 +4415,13 @@ fn publish_body_plan_materialization_attribution(
     );
 }
 
+/// Reconstruct the canonical syntax candidate represented by a stable key.
+///
+/// Stable definition keys identify the canonical declaration spelling and
+/// owner, but intentionally do not encode a duplicate-discriminator.  This
+/// helper therefore reconstructs discriminator zero; callers must use the
+/// projected identity check rather than treating the result as proof that a
+/// duplicate candidate was preserved.
 pub(crate) fn declaration_candidate_for_stable_key(
     key: &StableDefinitionKey,
 ) -> Option<crate::declaration_candidate::DeclarationCandidateKey> {
@@ -7197,6 +7204,53 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
             identity: identity.clone(),
             configuration: self.provider.configuration.clone(),
             name: Arc::from(name),
+            dependency: crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                source: accessing_source.clone(),
+                kind: rue_air::DeclarationTypeDependencyKind::Body,
+                target:
+                    crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                        identity.key,
+                    ),
+            },
+        })
+    }
+
+    fn begin_comptime_call_admission_for_key(
+        &self,
+        accessing_source: &crate::StableDefinitionKey,
+        head: &crate::StableDefinitionKey,
+    ) -> Result<
+        crate::durable_comptime::DurableComptimeCallableAdmissionStart,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        type Failure = crate::semantic_query_nucleus::SemanticNucleusFailure;
+
+        let Some(candidate) =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(head)
+        else {
+            return Err(rue_air::SemanticProviderError::Failure(
+                Failure::Resolution(Arc::from(format!(
+                    "undefined comptime function `{}`",
+                    head.name()
+                ))),
+            ));
+        };
+        let identity = self.provider.identity(candidate.clone())?;
+        if identity.key != *head {
+            return Err(rue_air::SemanticProviderError::Failure(
+                Failure::Resolution(Arc::from(
+                    "comptime function identity does not match requested key",
+                )),
+            ));
+        }
+        Ok(crate::durable_comptime::DurableComptimeCallableAdmissionStart {
+            candidate,
+            identity: identity.clone(),
+            configuration: self.provider.configuration.clone(),
+            name: Arc::from(head.name()),
             dependency: crate::semantic_query_nucleus::SemanticDeclarationDependency {
                 source: accessing_source.clone(),
                 kind: rue_air::DeclarationTypeDependencyKind::Body,
@@ -30517,6 +30571,245 @@ fn main() -> i32 {
             restored_values,
             BTreeMap::from([(Arc::from("OLD"), V::Integer(7))])
         );
+    }
+
+    #[test]
+    fn production_root_authority_keyed_admission_preserves_identity_and_dependency() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            SemanticDeclarationDependency, SemanticDeclarationDependencyTarget as Target,
+            SemanticNucleusFailure as Failure,
+        };
+
+        let source = source_snapshot(
+            &[
+                (1, "/left.rue", "left.rue", "fn target() -> i32 { 1 }\n"),
+                (2, "/right.rue", "right.rue", "fn target() -> i32 { 2 }\n"),
+            ],
+            1,
+        );
+        let left_module = ModuleId::from_logical_path("left.rue").unwrap();
+        let right_module = ModuleId::from_logical_path("right.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let left_candidate = declaration_candidate(
+            &database,
+            revision,
+            &left_module,
+            Category::Function,
+            "target",
+        );
+        let right_candidate = declaration_candidate(
+            &database,
+            revision,
+            &right_module,
+            Category::Function,
+            "target",
+        );
+        let configuration = semantic_configuration();
+        let left_head = StableDefinitionKey::from_stable_parts(
+            left_module.clone(),
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            "target",
+            None,
+        );
+        let right_head = StableDefinitionKey::from_stable_parts(
+            right_module,
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            "target",
+            None,
+        );
+        let accessing_source = StableDefinitionKey::from_stable_parts(
+            left_module,
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            "caller",
+            None,
+        );
+        let unknown_head = StableDefinitionKey::from_stable_parts(
+            accessing_source.module().clone(),
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            "missing",
+            None,
+        );
+        let mismatched_head = StableDefinitionKey::from_stable_parts(
+            accessing_source.module().clone(),
+            crate::StableDefinitionNamespace::Type,
+            crate::StableDefinitionKind::Function,
+            "target",
+            None,
+        );
+
+        let captured = std::cell::RefCell::new(None);
+        let attempt = database.runtime.query(
+            &database.provider_probe,
+            revision,
+            ProviderProbeKey {
+                label: Arc::from("production-keyed-call-admission"),
+            },
+            CancellationToken::new(),
+            |context| {
+                let provider = SemanticNucleusTypeProvider {
+                    context,
+                    family: &database.semantic_nucleus,
+                    shells: &database.declaration_shells,
+                    names: &database.lookup_names,
+                    configuration: configuration.clone(),
+                    substitutions: BTreeMap::new(),
+                    value_substitutions: BTreeMap::new(),
+                    deferred_value_parameters: BTreeMap::new(),
+                    anonymous_nominals: BTreeMap::new(),
+                    dependency_source: accessing_source.clone(),
+                    dependency_kind: rue_air::DeclarationTypeDependencyKind::Body,
+                    dependencies: BTreeSet::new(),
+                    deferred_ownership: BTreeSet::new(),
+                    ownership_properties: BTreeMap::new(),
+                };
+                let session = crate::durable_comptime::DurableComptimeSession::new(
+                    left_head.clone(),
+                    left_candidate.clone(),
+                )
+                .unwrap();
+                let mut authority = DurableComptimeRootAuthority {
+                    provider,
+                    imports: database.declaration_imports.clone(),
+                    session,
+                    legacy_effects: Default::default(),
+                    foreign: DurableComptimeForeignQueryAuthority {
+                        context,
+                        semantic_nucleus: &database.semantic_nucleus,
+                        declaration_body_plan_artifacts: &database.declaration_body_plan_artifacts,
+                        configuration: &configuration,
+                    },
+                };
+                let first = {
+                    let services =
+                        crate::durable_comptime::DurableComptimeServices::new(&mut authority);
+                    services.begin_comptime_call_admission_for_key(&accessing_source, &left_head)
+                };
+                let second = {
+                    let services =
+                        crate::durable_comptime::DurableComptimeServices::new(&mut authority);
+                    services.begin_comptime_call_admission_for_key(&accessing_source, &right_head)
+                };
+                let unknown = {
+                    let services =
+                        crate::durable_comptime::DurableComptimeServices::new(&mut authority);
+                    services.begin_comptime_call_admission_for_key(&accessing_source, &unknown_head)
+                };
+                let mismatched = {
+                    let services =
+                        crate::durable_comptime::DurableComptimeServices::new(&mut authority);
+                    services
+                        .begin_comptime_call_admission_for_key(&accessing_source, &mismatched_head)
+                };
+                *captured.borrow_mut() = Some((first, second, unknown, mismatched));
+                Ok(rue_query::QueryOutput::success(ProviderProbeValue))
+            },
+        );
+        assert!(
+            attempt.is_ok(),
+            "production authority probe should complete"
+        );
+        let (first, second, unknown, mismatched) = captured.into_inner().unwrap();
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_eq!(first.candidate, left_candidate);
+        assert_eq!(second.candidate, right_candidate);
+        assert_eq!(first.identity.key, left_head);
+        assert_eq!(second.identity.key, right_head);
+        assert_eq!(first.configuration, configuration);
+        assert_eq!(second.configuration, configuration);
+        for (admission, head) in [(&first, &left_head), (&second, &right_head)] {
+            assert_eq!(
+                admission.dependency,
+                SemanticDeclarationDependency {
+                    source: accessing_source.clone(),
+                    kind: rue_air::DeclarationTypeDependencyKind::Body,
+                    target: Target::NamedValue(head.clone()),
+                }
+            );
+        }
+        assert!(
+            matches!(&unknown, Err(rue_air::SemanticProviderError::Failure(_))),
+            "unexpected unknown-head result: {unknown:?}"
+        );
+        assert!(
+            format!("{unknown:?}").contains("missing"),
+            "unknown-head failure lost its requested spelling: {unknown:?}"
+        );
+        assert!(matches!(
+            &mismatched,
+            Err(rue_air::SemanticProviderError::Failure(Failure::Resolution(reason)))
+                if reason.as_ref() == "comptime function identity does not match requested key"
+        ));
+
+        let cancellation = CancellationToken::new();
+        let cancel_in_closure = cancellation.clone();
+        let aborted = std::cell::RefCell::new(None);
+        let _attempt = database.runtime.query(
+            &database.provider_probe,
+            revision,
+            ProviderProbeKey {
+                label: Arc::from("production-keyed-call-admission-abort"),
+            },
+            cancellation,
+            |context| {
+                cancel_in_closure.cancel();
+                let provider = SemanticNucleusTypeProvider {
+                    context,
+                    family: &database.semantic_nucleus,
+                    shells: &database.declaration_shells,
+                    names: &database.lookup_names,
+                    configuration: configuration.clone(),
+                    substitutions: BTreeMap::new(),
+                    value_substitutions: BTreeMap::new(),
+                    deferred_value_parameters: BTreeMap::new(),
+                    anonymous_nominals: BTreeMap::new(),
+                    dependency_source: accessing_source.clone(),
+                    dependency_kind: rue_air::DeclarationTypeDependencyKind::Body,
+                    dependencies: BTreeSet::new(),
+                    deferred_ownership: BTreeSet::new(),
+                    ownership_properties: BTreeMap::new(),
+                };
+                let session = crate::durable_comptime::DurableComptimeSession::new(
+                    left_head.clone(),
+                    left_candidate.clone(),
+                )
+                .unwrap();
+                let mut authority = DurableComptimeRootAuthority {
+                    provider,
+                    imports: database.declaration_imports.clone(),
+                    session,
+                    legacy_effects: Default::default(),
+                    foreign: DurableComptimeForeignQueryAuthority {
+                        context,
+                        semantic_nucleus: &database.semantic_nucleus,
+                        declaration_body_plan_artifacts: &database.declaration_body_plan_artifacts,
+                        configuration: &configuration,
+                    },
+                };
+                let result = {
+                    let services =
+                        crate::durable_comptime::DurableComptimeServices::new(&mut authority);
+                    services.begin_comptime_call_admission_for_key(&accessing_source, &left_head)
+                };
+                *aborted.borrow_mut() = Some(result);
+                Ok(rue_query::QueryOutput::success(ProviderProbeValue))
+            },
+        );
+        assert!(matches!(
+            aborted.into_inner(),
+            Some(Err(rue_air::SemanticProviderError::Abort(
+                QueryAbort::Canceled
+            )))
+        ));
     }
 
     #[test]
