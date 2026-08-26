@@ -23,9 +23,11 @@ Accepted on 2026-07-16, closing the RUE-915 design issue and filing the phase
 issues below. Phase 1 shipped in July 2026: the CFG splice primitive landed
 with RUE-929 (`crates/rue-cfg/src/inline.rs`) and is consumed today by the
 compiler's mandatory accessor splices
-(`crates/rue-compiler/src/cfg_query.rs`). The inlining driver phases (RUE-930
-through RUE-933) and the method/destructor extension remain tracked and
-unimplemented, so no general `-O2`/`-O3` inlining runs yet.
+(`crates/rue-compiler/src/cfg_query.rs`). RUE-930's conservative whole-program
+`-O2`/`-O3` free-function inlining batch is implemented in
+`crates/rue-compiler/src/cfg_query.rs`; this implementation also completes the
+accepted Phase 5 reachability step in that same batch. Phase 3/4 and the
+method/destructor extension remain tracked separately.
 
 This note analyzes the architecture of function inlining and records the
 accepted direction. ADR-0044 already fixed the *level*
@@ -604,7 +606,7 @@ already synthesized.
   to simple local/parameter roots), callee-lifetime storage + copied
   parameter-drop handling (§3), and return→block-param wiring. Unit-tested in
   `rue-cfg`. (landed, RUE-929, July 2026)
-- [ ] **Phase 2: Free-function driver at `-O2`** — two-phase construction; build
+- [x] **Phase 2: Free-function driver at `-O2`** — two-phase construction; build
   the call-site graph by CFG scan (§5); conservative leaf/small thresholds;
   single-call-site inlining *without* callee removal; recursion refusal via
   call-site SCC; differential CLI coverage. Inlined callers are **not cached
@@ -614,9 +616,12 @@ already synthesized.
 - [ ] **Phase 4: Durable cache integration for inlined callers** — multi-body
   `CfgDomainProjection` (§4c), callee-body-fingerprint + policy-version cache key
   (§4b); turn caching on for inlined callers. (file RUE-932)
-- [ ] **Phase 5: Whole-program dead-function elimination** — separate pass that
-  removes now-unreachable functions (including single-call-site callees the
-  inliner consumed) under full reachability analysis (§6). (file RUE-933)
+- [x] **Phase 5: Whole-program dead-function elimination** — the canonical
+  deterministic reachability step in the whole-program batch removes
+  now-unreachable functions (including single-call-site callees the inliner
+  consumed) while retaining entry points, exports, calls, cleanup edges, and
+  conservatively all units when dependency completeness is unknown. (file
+  RUE-933)
 - [ ] **Phase 6: Methods/destructors** — extend as the ADR-0050 method/destructor
   caller surfaces complete. (file RUE-NNN — awaits the ADR-0050 method/destructor
   caller surfaces before it can be scoped and filed.)
@@ -668,7 +673,8 @@ already synthesized.
 
 ## Future Work
 
-- Whole-program dead-function elimination (Phase 5) as its own ADR-worthy pass.
+- Broader whole-program reachability roots and method/destructor inlining remain
+  future work as described by Phases 3, 4, and 6.
 - Bounded recursive inlining under a size budget.
 - Profile-guided inlining once any profiling exists.
 

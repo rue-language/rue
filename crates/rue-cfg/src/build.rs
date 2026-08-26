@@ -692,6 +692,12 @@ impl<'a> CfgBuilder<'a> {
             .all_struct_ids()
             .filter(|id| builder.implicit_named_destructors.contains(id))
             .collect();
+        let implicit_drop_glue_types = builder
+            .implicit_destructor_types
+            .iter()
+            .copied()
+            .filter(|ty| builder.type_needs_drop(*ty))
+            .collect();
 
         // Derive the grouped per-source-parameter ABI descriptors (RUE-1005)
         // from the AIR, which both a fresh analysis and a durable/imported body
@@ -727,6 +733,7 @@ impl<'a> CfgBuilder<'a> {
             warnings: builder.warnings,
             errors: builder.errors,
             implicit_named_destructors,
+            implicit_drop_glue_types,
             anonymous_destructor_dependency_incomplete: builder
                 .anonymous_destructor_dependency_incomplete,
         }

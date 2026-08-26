@@ -722,6 +722,22 @@ impl CfgDomainProjection {
         }
     }
 
+    /// Whether this live symbol is explicitly a runtime or intrinsic symbol.
+    /// This is separate from [`Self::callable_for_symbol`], whose `None` also
+    /// covers malformed or absent canonical callable identities.
+    pub(crate) fn is_known_non_callable_symbol(&self, name: Spur) -> bool {
+        let position = self
+            .symbols
+            .partition_point(|(live, _)| live.into_usize() < name.into_usize());
+        self.symbols.get(position).is_some_and(|(live, stable)| {
+            *live == name
+                && matches!(
+                    stable,
+                    StableCfgSymbol::Runtime(_) | StableCfgSymbol::Intrinsic(_)
+                )
+        })
+    }
+
     pub(crate) fn stable_types(&self) -> impl Iterator<Item = &CanonicalType> {
         self.types.iter().map(|(_, stable)| stable)
     }

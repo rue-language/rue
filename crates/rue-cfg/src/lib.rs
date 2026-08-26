@@ -63,6 +63,9 @@ pub struct CfgOutput {
     pub errors: Vec<CompileError>,
     /// Named user destructors required by implicit drops emitted in this CFG.
     pub implicit_named_destructors: Vec<StructId>,
+    /// Aggregate type instances whose synthesized drop glue is required by
+    /// implicit drops emitted in this CFG, including array and enum wrappers.
+    pub implicit_drop_glue_types: Vec<Type>,
     /// Whether an implicit destructor target was anonymous and therefore has
     /// no stable definition endpoint.
     pub anonymous_destructor_dependency_incomplete: bool,
