@@ -1155,11 +1155,12 @@ impl DurableComptimeSession {
         };
         core.register_into(&mut self.programs)
             .map_err(|_| DurableComptimeConstRootAdmissionError::DuplicateProgram)?;
+        let context = self.registered_file(&core.plan.key);
         Ok(rue_air::ComptimeFrame {
             program: core.plan.key.clone(),
             body: init,
             name: None,
-            context: Some(core.plan.candidate.module.clone()),
+            context: Some(context),
             span: core.rir.get(init).span,
             function_span: core.rir.get(root).span,
             type_bindings: AHashMap::new(),
@@ -1186,6 +1187,30 @@ impl DurableComptimeSession {
         key: &crate::body_query::DurableComptimeProgramKey,
     ) -> Option<&crate::body_query::DurableComptimeProgram> {
         self.programs.get(key)
+    }
+
+    /// Issue the AIR file capability only for a program retained by this
+    /// session's keyed registry. Unknown keys cannot acquire a file domain.
+    #[allow(dead_code)] // consumed by the staged durable AIR host
+    pub(crate) fn file_for_program(
+        &self,
+        key: &crate::body_query::DurableComptimeProgramKey,
+    ) -> Result<DurableComptimeFile, DurableComptimeDiagnosticSiteError> {
+        if self.programs.get(key).is_none() {
+            return Err(DurableComptimeDiagnosticSiteError::UnknownProgram);
+        }
+        Ok(self.registered_file(key))
+    }
+
+    fn registered_file(
+        &self,
+        key: &crate::body_query::DurableComptimeProgramKey,
+    ) -> DurableComptimeFile {
+        assert!(
+            self.programs.get(key).is_some(),
+            "registered file capability requires a retained program"
+        );
+        DurableComptimeFile::new(key.clone())
     }
 
     /// Build the canonical AIR import site from one registered program.  The
@@ -1315,6 +1340,7 @@ impl DurableComptimeSession {
         let Some(registered) = self.programs.get(key) else {
             return Err(DurableComptimeForeignFrameAdmissionError::RegistryMismatch);
         };
+        let context = self.registered_file(key);
         let crate::body_query::OwnedComptimeProgramRoot::Callable(callable) =
             &registered.imports.root
         else {
@@ -1334,7 +1360,7 @@ impl DurableComptimeSession {
                 program: key.clone(),
                 body: callable.body,
                 name: Some(DurableComptimeName::from(key.declaration.name())),
-                context: Some(callable.context.clone()),
+                context: Some(context),
                 span: call_span,
                 function_span: registered.rir.get(callable.root).span,
                 type_bindings,
@@ -3103,7 +3129,26 @@ impl From<&str> for DurableComptimeName {
 }
 
 impl ComptimeName for DurableComptimeName {}
-impl ComptimeFile for ModuleId {}
+
+/// The AIR file domain is keyed by the complete owning program identity.
+/// A raw span file id or ambient module is insufficient when foreign programs
+/// reuse dense file/instruction ids, so frames receive this only after their
+/// program has been validated by the session registry.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct DurableComptimeFile(crate::body_query::DurableComptimeProgramKey);
+
+impl DurableComptimeFile {
+    fn new(program: crate::body_query::DurableComptimeProgramKey) -> Self {
+        Self(program)
+    }
+
+    #[allow(dead_code)] // consumed by the staged durable AIR host
+    pub(crate) fn program(&self) -> &crate::body_query::DurableComptimeProgramKey {
+        &self.0
+    }
+}
+
+impl ComptimeFile for DurableComptimeFile {}
 
 /// Lossless compiler-owned AIR identity domain. The wrapped producer retains
 /// definition and specialized-function identity; the newtype exists only to
@@ -3134,7 +3179,7 @@ pub(crate) type DurableComptimeConstFrame = rue_air::ComptimeFrame<
     EvaluatedSemanticConst,
     DurableComptimeType,
     DurableComptimeName,
-    ModuleId,
+    DurableComptimeFile,
     crate::body_query::DurableComptimeProgramKey,
     DurableComptimeIdentity,
 >;
@@ -6943,7 +6988,10 @@ mod structured_type_adapter_tests {
         assert_eq!(frame.program, core.plan.key);
         assert_eq!(frame.body, core.callable().unwrap().body);
         assert_eq!(frame.name.as_ref().unwrap().as_str(), "target");
-        assert_eq!(frame.context, Some(core.plan.candidate.module.clone()));
+        assert_eq!(
+            frame.context.as_ref().map(DurableComptimeFile::program),
+            Some(&core.plan.key)
+        );
         assert_eq!(frame.span, rue_span::Span::new(17, 23));
         assert_eq!(
             frame.function_span,
@@ -7020,8 +7068,11 @@ mod structured_type_adapter_tests {
         assert_eq!(second_frame.program, core.plan.key);
         assert_eq!(second_frame.body, core.callable().unwrap().body);
         assert_eq!(
-            second_frame.context,
-            Some(core.plan.candidate.module.clone())
+            second_frame
+                .context
+                .as_ref()
+                .map(DurableComptimeFile::program),
+            Some(&core.plan.key)
         );
         assert_eq!(
             second_frame.function_span,
@@ -7086,7 +7137,7 @@ mod structured_type_adapter_tests {
             EvaluatedSemanticConst,
             DurableComptimeType,
             DurableComptimeName,
-            ModuleId,
+            DurableComptimeFile,
             crate::body_query::DurableComptimeProgramKey,
             DurableComptimeIdentity,
         >(None);
@@ -7094,6 +7145,10 @@ mod structured_type_adapter_tests {
         let second = const_program("frame-second.rue", "i64");
         let callable = callable_program("frame-callable.rue");
         let mut session = session();
+        assert_eq!(
+            session.file_for_program(&callable.plan.key),
+            Err(DurableComptimeDiagnosticSiteError::UnknownProgram)
+        );
 
         let specialized_producer = crate::StableProducerId::Function(rue_air::Node::new(
             crate::FunctionInstanceKey::Specialization {
@@ -7110,8 +7165,11 @@ mod structured_type_adapter_tests {
         assert_eq!(first_frame.program, first.plan.key);
         assert_eq!(first_frame.body, first.const_root().unwrap().0);
         assert_eq!(
-            first_frame.context,
-            Some(first.plan.candidate.module.clone())
+            first_frame
+                .context
+                .as_ref()
+                .map(DurableComptimeFile::program),
+            Some(&first.plan.key)
         );
         assert_eq!(first_frame.span, first.rir.get(first_frame.body).span);
         assert_eq!(
@@ -7139,6 +7197,21 @@ mod structured_type_adapter_tests {
             "dense refs intentionally collide"
         );
         assert_ne!(first_frame.program, second_frame.program);
+        assert_eq!(
+            first_frame
+                .context
+                .as_ref()
+                .map(DurableComptimeFile::program),
+            Some(&first.plan.key)
+        );
+        assert_eq!(
+            second_frame
+                .context
+                .as_ref()
+                .map(DurableComptimeFile::program),
+            Some(&second.plan.key)
+        );
+        assert_ne!(first_frame.context, second_frame.context);
         assert_eq!(session.programs.len(), 2);
         assert_ne!(
             session.programs.get(&first_frame.program).unwrap().symbols,

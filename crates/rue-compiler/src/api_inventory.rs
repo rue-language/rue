@@ -3381,10 +3381,12 @@ fn durable_comptime_services_are_named_authority_operations() {
         "DurableComptimeHostFailure",
         "DurableComptimeSession",
         "DurableComptimeName",
+        "DurableComptimeFile",
         "DurableComptimeIdentity",
         "DurableComptimeConstFrame",
         "DurableComptimeConstRootAdmissionError",
         "admit_const_root",
+        "file_for_program",
         "DurableComptimeForeignCall",
         "DurableComptimeForeignCallError",
         "DurableAnonymousNominalDescriptor",
@@ -3431,7 +3433,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         "begin_durable_structured_type",
         "resume_durable_structured_type",
         "impl ComptimeName for DurableComptimeName",
-        "impl ComptimeFile for ModuleId",
+        "impl ComptimeFile for DurableComptimeFile",
         "impl ComptimeIdentity for DurableComptimeIdentity",
     ] {
         assert!(
@@ -3542,7 +3544,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         "ComptimeFrame",
         "core.plan.key.clone()",
         "body: init",
-        "context: Some(core.plan.candidate.module.clone())",
+        "registered_file(&core.plan.key)",
         "call_identity: None",
         "expected_result",
     ] {
@@ -3560,6 +3562,87 @@ fn durable_comptime_services_are_named_authority_operations() {
         assert!(
             !frame_adapter.contains(forbidden),
             "const frame adapter gained evaluation authority: {forbidden}"
+        );
+    }
+    assert!(
+        !production_facade.contains("impl ComptimeFile for ModuleId"),
+        "durable file authority must remain program-keyed"
+    );
+    let file_accessor = production_facade
+        .split("pub(crate) fn file_for_program(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn registered_file(").next())
+        .expect("fallible keyed durable file accessor");
+    assert!(file_accessor.contains("self.programs.get(key).is_none()"));
+    assert!(file_accessor.contains("UnknownProgram"));
+    assert!(file_accessor.contains("self.registered_file(key)"));
+    assert!(!file_accessor.contains("DurableComptimeFile::new("));
+    let registered_file = production_facade
+        .split("\n    fn registered_file(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("/// Build the canonical AIR import site")
+                .next()
+        })
+        .expect("infallible retained-file capability");
+    assert!(registered_file.contains("assert!("));
+    assert!(!registered_file.contains("debug_assert!"));
+    assert!(registered_file.contains("self.programs.get(key).is_some()"));
+    assert!(registered_file.contains("DurableComptimeFile::new(key.clone())"));
+    assert!(
+        registered_file
+            .find("assert!(")
+            .expect("registered-file assertion")
+            < registered_file
+                .find("DurableComptimeFile::new(")
+                .expect("registered-file construction")
+    );
+    assert!(!registered_file.contains("span.file_id"));
+    assert_eq!(
+        production_facade
+            .matches("DurableComptimeFile::new(")
+            .count(),
+        1,
+        "the keyed file capability must have one registry-owned constructor"
+    );
+    assert!(production_facade.contains("pub(crate) struct DurableComptimeFile("));
+    assert!(!production_facade.contains("DurableComptimeFile(pub(crate)"));
+    let file_impl = production_facade
+        .split("impl DurableComptimeFile {")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("impl ComptimeFile for DurableComptimeFile")
+                .next()
+        })
+        .expect("durable file implementation");
+    assert!(file_impl.contains("    fn new("));
+    assert!(!file_impl.contains("pub(crate) fn new("));
+    assert!(!file_impl.contains("pub fn new("));
+    let file_domain = production_facade
+        .split("pub(crate) struct DurableComptimeFile")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("/// Lossless compiler-owned AIR identity")
+                .next()
+        })
+        .expect("durable file domain");
+    assert!(!file_domain.contains("impl From"));
+    let foreign_frame_adapter = production_facade
+        .split("pub(crate) fn admit_foreign_frame(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn observe_anonymous_nominal").next())
+        .expect("foreign frame adapter");
+    assert!(
+        foreign_frame_adapter.contains("registered_file(key)"),
+        "foreign frame must retain its exact registered program as context/file"
+    );
+    for forbidden in ["span.file_id", "ambient_program", "ModuleId>\n"] {
+        assert!(
+            !foreign_frame_adapter.contains(forbidden),
+            "foreign frame adapter gained ambient file authority: {forbidden}"
         );
     }
     for forbidden in ["InstData", "eval_const_expr", "ComptimeEngine"] {
