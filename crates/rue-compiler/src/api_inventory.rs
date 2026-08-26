@@ -10,10 +10,11 @@
 mod comptime_public_contract_tests {
     use rue_air::{
         ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallArgument,
-        ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCompletedCallMemo, ComptimeEngine,
-        ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame, ComptimeHost, ComptimeHostResult,
-        ComptimeIdentity, ComptimeMemoizedOutcome, ComptimeName, ComptimeOutcome, ComptimeProgram,
-        ComptimeProgramKey, ComptimeProgramRegistry, ComptimeType, ComptimeValue,
+        ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCompletedCallMemo, ComptimeDiagnosticSite,
+        ComptimeEngine, ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame, ComptimeHost,
+        ComptimeHostResult, ComptimeIdentity, ComptimeMemoizedOutcome, ComptimeName,
+        ComptimeOutcome, ComptimeProgram, ComptimeProgramKey, ComptimeProgramRegistry,
+        ComptimeType, ComptimeValue,
     };
     use rue_rir::{Inst, InstData, InstRef, RirEditor, RirValidationContext, ValidatedRir};
     use rue_span::Span;
@@ -103,6 +104,12 @@ mod comptime_public_contract_tests {
     fn generic_call_argument_contract<V>(argument: &ComptimeCallArgument<V>) {
         let _value = argument.value();
         let _direct_unit_literal = argument.is_direct_unit_literal();
+    }
+
+    #[allow(dead_code)]
+    fn generic_diagnostic_site_contract<P>(site: &ComptimeDiagnosticSite<P>) {
+        let _program = site.program();
+        let _span = site.span();
     }
 
     #[test]
@@ -4904,6 +4911,42 @@ fn match_patterns_have_one_air_decoder_and_one_durable_kernel() {
             .matches("pub(crate) fn durable_match_pattern_matches(")
             .count(),
         1
+    );
+}
+
+#[test]
+fn durable_diagnostic_sites_use_only_registered_program_provenance() {
+    let durable = include_str!("durable_comptime.rs");
+    let method = durable
+        .split("pub(crate) fn diagnostic_site(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("    /// Atomically admit an already-prepared")
+                .next()
+        })
+        .expect("bounded durable diagnostic-site method");
+    assert!(method.contains("self.programs.get(key)"));
+    assert!(method.contains("declaration_candidate_for_stable_key"));
+    assert!(method.contains("DurableComptimeDiagnosticSite::new"));
+    for forbidden in [
+        "self.lifecycle",
+        "self.next_call",
+        "effects",
+        "query_registered",
+        "InstData",
+        "ComptimeEngine",
+        "SemanticConstEvaluator",
+    ] {
+        assert!(
+            !method.contains(forbidden),
+            "diagnostic-site lookup acquired unrelated authority: {forbidden}"
+        );
+    }
+    assert_eq!(
+        durable.matches("pub(crate) fn diagnostic_site(").count(),
+        1,
+        "the session must expose one immutable diagnostic-site lookup"
     );
 }
 

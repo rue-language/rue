@@ -98,6 +98,68 @@ fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
 }
 
 #[test]
+fn diagnostic_hooks_are_keyed_by_the_engine_program() {
+    let comptime = include_str!("sema/comptime.rs");
+    let host = comptime
+        .split("pub trait ComptimeHost {")
+        .nth(1)
+        .and_then(|source| source.split("/// Opaque structured continuations").next())
+        .expect("bounded ComptimeHost trait");
+    for hook in [
+        "fn require_preview(",
+        "fn depth_exceeded(",
+        "fn literal_out_of_range(",
+        "fn float_not_implemented(",
+        "fn cannot_negate(",
+        "fn unsupported_anon_method_type_param(",
+        "fn non_function_anon_method(",
+        "fn resolve_named_array_length(",
+        "fn check_require_droppable(",
+        "fn check_trivially_droppable(",
+        "fn resolve_comptime_type_intrinsic(",
+        "fn integer_operation_type(",
+        "fn unary_integer_type(",
+        "fn compare_comptime_values(",
+        "fn reject_non_type_array_repeat(",
+        "fn finish_arith(",
+    ] {
+        let body = host
+            .split(hook)
+            .nth(1)
+            .and_then(|source| source.split("\n    fn ").next())
+            .unwrap_or_else(|| panic!("missing diagnostic hook {hook}"));
+        assert!(
+            body.contains("ComptimeDiagnosticSite<Self::ProgramKey>"),
+            "diagnostic hook is not producer-keyed: {hook}"
+        );
+        assert!(!body.contains("span: Span"), "raw span leaked into {hook}");
+    }
+    let site = comptime
+        .split("pub struct ComptimeDiagnosticSite<P>")
+        .nth(1)
+        .and_then(|source| source.split("\n}\n\nimpl<P> ComptimeDiagnosticSite").next())
+        .expect("diagnostic site fields");
+    assert!(site.contains("program: P"));
+    assert!(site.contains("span: Span"));
+    assert!(!site.contains("pub program"));
+    assert!(!site.contains("pub span"));
+
+    let run_frame = comptime
+        .split("fn run_frame(")
+        .nth(1)
+        .and_then(|source| source.split("fn diagnostic_site(").next())
+        .expect("bounded frame runner");
+    let depth = run_frame
+        .find("depth_exceeded(")
+        .expect("depth diagnostic call");
+    let rejected = run_frame[..depth].rfind("frame.program.clone()");
+    assert!(
+        rejected.is_some(),
+        "depth site must use rejected frame program"
+    );
+}
+
+#[test]
 fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     let comptime = include_str!("sema/comptime.rs");
     let ordinary = include_str!("sema/comptime_eval.rs");
@@ -390,7 +452,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
             .map(|offset| start + hook.len() + offset)
             .unwrap_or(host_contract.len());
         let signature = &host_contract[start..end];
-        for forbidden in ["ProgramKey", "ComptimeEnv", "InstRef"] {
+        for forbidden in ["ComptimeEnv", "InstRef"] {
             assert!(
                 !signature.contains(forbidden),
                 "{hook} leaked evaluator authority: {forbidden}"

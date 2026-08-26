@@ -403,6 +403,34 @@ pub struct ComptimeSite<P> {
     span: Span,
 }
 
+/// The exact owning program and source range for an engine-created diagnostic.
+/// Unlike `ComptimeSite`, this carries no semantic occurrence classification:
+/// terminal hooks need only the active program and the span supplied by the
+/// engine.
+#[derive(Debug, Clone)]
+pub struct ComptimeDiagnosticSite<P> {
+    program: P,
+    span: Span,
+}
+
+impl<P> ComptimeDiagnosticSite<P> {
+    /// Constructs the producer-keyed site for the active engine frame.
+    ///
+    /// Kept private so hosts cannot manufacture a site for an unrelated
+    /// program authority.
+    fn new(program: P, span: Span) -> Self {
+        Self { program, span }
+    }
+
+    pub fn program(&self) -> &P {
+        &self.program
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
 impl<P: Clone> ComptimeSite<P> {
     fn new(program: P, kind: ComptimeSiteKind, occurrence: u32, span: Span) -> Self {
         Self {
@@ -571,6 +599,8 @@ mod value_domain_tests {
         static MATCH_PATTERN_EVENTS: RefCell<Vec<ComptimeMatchPattern<FakeName>>> =
             const { RefCell::new(Vec::new()) };
         static MATCH_SYMBOL_CALLS: Cell<usize> = const { Cell::new(0) };
+        static DIAGNOSTIC_SITES: RefCell<Vec<(usize, u32, u32)>> =
+            const { RefCell::new(Vec::new()) };
     }
 
     #[test]
@@ -1039,47 +1069,64 @@ mod value_domain_tests {
             &self,
             _feature: rue_error::PreviewFeature,
             _what: &str,
-            _span: Span,
+            _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
         ) -> ComptimeHostResult<(), Self::Failure> {
             Ok(())
         }
-        fn depth_exceeded(&self, _name: &Self::Name, _depth: usize, _span: Span) -> Self::Failure {
+        fn depth_exceeded(
+            &self,
+            _name: &Self::Name,
+            _depth: usize,
+            site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+        ) -> Self::Failure {
+            DIAGNOSTIC_SITES.with(|sites| {
+                sites
+                    .borrow_mut()
+                    .push((*site.program(), site.span().start, site.span().end))
+            });
             FAKE_FAILURE
         }
         fn literal_out_of_range(
             &self,
             _value: u64,
             _ty: &Self::Type,
-            _span: Span,
+            _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
         ) -> Self::Failure {
             FAKE_FAILURE
         }
-        fn float_not_implemented(&self, _span: Span) -> Self::Failure {
+        fn float_not_implemented(
+            &self,
+            _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+        ) -> Self::Failure {
             self.float_evaluations.set(self.float_evaluations.get() + 1);
             FAKE_FAILURE
         }
-        fn cannot_negate(&self, _ty: &Self::Type, _span: Span) -> Self::Failure {
-            FAKE_FAILURE
-        }
-        fn comptime_panic(&self, _reason: String, _span: Span) -> Self::Failure {
+        fn cannot_negate(
+            &self,
+            _ty: &Self::Type,
+            _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+        ) -> Self::Failure {
             FAKE_FAILURE
         }
         fn unsupported_anon_method_type_param(
             &self,
-            _method_span: Span,
             _method_name: &str,
+            _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
         ) -> Self::Failure {
             METHOD_FAILURES.with(|failures| failures.borrow_mut().push("own_type"));
             FakeFailure::OwnComptimeTypeParameter
         }
-        fn non_function_anon_method(&self, _method_span: Span) -> Self::Failure {
+        fn non_function_anon_method(
+            &self,
+            _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+        ) -> Self::Failure {
             METHOD_FAILURES.with(|failures| failures.borrow_mut().push("non_function"));
             FakeFailure::NonFunctionMethod
         }
         fn resolve_named_array_length(
             &mut self,
             _name: &Self::Name,
-            _span: Span,
+            _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
             _values: Option<&AHashMap<Self::Name, Self::Value>>,
         ) -> ComptimeHostResult<u64, Self::Failure> {
             Ok(0)
@@ -1144,14 +1191,14 @@ mod value_domain_tests {
         fn check_require_droppable(
             &mut self,
             _ty: Self::Type,
-            _span: Span,
+            _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
         ) -> ComptimeHostResult<(), Self::Failure> {
             Ok(())
         }
         fn check_trivially_droppable(
             &mut self,
             _ty: Self::Type,
-            _span: Span,
+            _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
         ) -> ComptimeHostResult<(), Self::Failure> {
             Ok(())
         }
@@ -1168,7 +1215,7 @@ mod value_domain_tests {
             resolved_type: Option<&Self::Type>,
             lhs: &Self::Value,
             rhs: &Self::Value,
-            _span: Span,
+            _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
         ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
             INTEGER_HINTS.with(|hints| hints.borrow_mut().push(resolved_type.copied()));
             if let (Some(lhs), Some(rhs)) = (lhs.as_integer_type(), rhs.as_integer_type()) {
@@ -1186,8 +1233,13 @@ mod value_domain_tests {
             result: CheckedIntegerResult,
             _ty: Option<Self::Type>,
             _op: &str,
-            _span: Span,
+            site: &ComptimeDiagnosticSite<Self::ProgramKey>,
         ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
+            DIAGNOSTIC_SITES.with(|sites| {
+                sites
+                    .borrow_mut()
+                    .push((*site.program(), site.span().start, site.span().end))
+            });
             if matches!(self.finish_outcome, FakeFinishOutcome::AbortFromArithmetic) {
                 return Err(ComptimeHostError::Abort(FAKE_FAILURE));
             }
@@ -1206,7 +1258,7 @@ mod value_domain_tests {
             &mut self,
             intrinsic: ComptimeTypeIntrinsic,
             ty: Self::Type,
-            _span: Span,
+            _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
         ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
             TYPE_INTRINSIC_EVENTS.with(|events| events.borrow_mut().push((intrinsic, ty)));
             if TYPE_INTRINSIC_ABORT.with(Cell::get) {
@@ -1627,7 +1679,7 @@ mod value_domain_tests {
         fn reject_non_type_array_repeat(
             &mut self,
             _value: Self::Value,
-            _span: Span,
+            _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
         ) -> ComptimeOutcome<Self::Value, Self::Failure> {
             self.dependencies
                 .push((FakeFile { index: 0xFFFF_FFFA }, FakeName { ordinal: 0 }));
@@ -1643,7 +1695,7 @@ mod value_domain_tests {
             lhs: &Self::Value,
             rhs: &Self::Value,
             equal: bool,
-            _span: Span,
+            _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
         ) -> ComptimeOutcome<Self::Value, Self::Failure> {
             let (Some(lhs), Some(rhs)) = (lhs.as_type(), rhs.as_type()) else {
                 return ComptimeOutcome::RuntimeDependent;
@@ -3962,6 +4014,82 @@ mod value_domain_tests {
     }
 
     #[test]
+    fn nested_child_and_parent_diagnostics_use_the_active_program_in_one_evaluation() {
+        let interner = lasso::ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("diagnostic_child");
+        let symbol_handle = SymbolHandle::new(symbol);
+        let base = symbol_handle.issuing_interner_ordinal() as u32;
+
+        let mut root = RirEditor::new();
+        let call = root.add_call(symbol, &[], Span::new(1, 2)).unwrap();
+        let root_rhs = root.add_inst(Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(2, 3),
+        });
+        let root_add = root.add_inst(Inst {
+            data: InstData::Add {
+                lhs: call,
+                rhs: root_rhs,
+            },
+            span: Span::new(3, 4),
+        });
+
+        let mut child = RirEditor::new();
+        let child_lhs = child.add_inst(Inst {
+            data: InstData::IntConst(4),
+            span: Span::new(10, 11),
+        });
+        let child_rhs = child.add_inst(Inst {
+            data: InstData::IntConst(5),
+            span: Span::new(11, 12),
+        });
+        let child_add = child.add_inst(Inst {
+            data: InstData::Add {
+                lhs: child_lhs,
+                rhs: child_rhs,
+            },
+            span: Span::new(12, 13),
+        });
+        let mut call_plans = AHashMap::new();
+        call_plans.insert(
+            base,
+            FakePreparedCall::Enter {
+                program: 1,
+                body: child_add,
+                expected: None,
+                name_bindings: AHashMap::new(),
+            },
+        );
+        let mut host = FakeHost {
+            programs: vec![root.finish(), child.finish()],
+            type_symbol: symbol_handle,
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans,
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        DIAGNOSTIC_SITES.with(|sites| sites.borrow_mut().clear());
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        assert!(matches!(
+            ComptimeEngine::new(&mut host)
+                .evaluate(ComptimeFrame::expression(0, root_add), &mut env),
+            ComptimeOutcome::Known(FakeValue::Integer(11))
+        ));
+        DIAGNOSTIC_SITES.with(|sites| {
+            let programs = sites
+                .borrow()
+                .iter()
+                .map(|(program, _, _)| *program)
+                .collect::<Vec<_>>();
+            assert_eq!(programs, vec![1, 0]);
+        });
+    }
+
+    #[test]
     fn entered_frames_use_the_real_48_frame_budget_and_memoized_bypasses_it() {
         let mut editor = rue_rir::RirEditor::new();
         let interner = lasso::ThreadedRodeo::new();
@@ -4014,6 +4142,7 @@ mod value_domain_tests {
         let mut engine = ComptimeEngine::new(&mut host);
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         TICKET_EVENTS.with(|events| events.borrow_mut().clear());
+        DIAGNOSTIC_SITES.with(|sites| sites.borrow_mut().clear());
         assert!(matches!(
             engine.evaluate(ComptimeFrame::expression(0, root_call), &mut env),
             ComptimeOutcome::HostFailure(FAKE_FAILURE)
@@ -4021,6 +4150,13 @@ mod value_domain_tests {
         assert_eq!(host.enter_count, MAX_COMPTIME_CALL_DEPTH + 1);
         TICKET_EVENTS.with(|events| {
             assert_eq!(events.borrow().len(), MAX_COMPTIME_CALL_DEPTH * 2);
+        });
+        DIAGNOSTIC_SITES.with(|sites| {
+            assert_eq!(
+                sites.borrow().as_slice(),
+                &[(1, 0, 0)],
+                "depth rejection uses the rejected child program"
+            );
         });
 
         let mut editor = rue_rir::RirEditor::new();
@@ -5004,23 +5140,42 @@ pub trait ComptimeHost {
         &self,
         feature: rue_error::PreviewFeature,
         what: &str,
-        span: Span,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure>;
-    fn depth_exceeded(&self, name: &Self::Name, depth: usize, span: Span) -> Self::Failure;
-    fn literal_out_of_range(&self, value: u64, ty: &Self::Type, span: Span) -> Self::Failure;
-    fn float_not_implemented(&self, span: Span) -> Self::Failure;
-    fn cannot_negate(&self, ty: &Self::Type, span: Span) -> Self::Failure;
-    fn comptime_panic(&self, reason: String, span: Span) -> Self::Failure;
+    fn depth_exceeded(
+        &self,
+        name: &Self::Name,
+        depth: usize,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure;
+    fn literal_out_of_range(
+        &self,
+        value: u64,
+        ty: &Self::Type,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure;
+    fn float_not_implemented(
+        &self,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure;
+    fn cannot_negate(
+        &self,
+        ty: &Self::Type,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure;
     fn unsupported_anon_method_type_param(
         &self,
-        method_span: Span,
         method_name: &str,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure;
-    fn non_function_anon_method(&self, method_span: Span) -> Self::Failure;
+    fn non_function_anon_method(
+        &self,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure;
     fn resolve_named_array_length(
         &mut self,
         name: &Self::Name,
-        span: Span,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
         values: Option<&AHashMap<Self::Name, Self::Value>>,
     ) -> ComptimeHostResult<u64, Self::Failure>;
     fn rir_type_named_symbol(
@@ -5063,12 +5218,12 @@ pub trait ComptimeHost {
     fn check_require_droppable(
         &mut self,
         ty: Self::Type,
-        span: Span,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure>;
     fn check_trivially_droppable(
         &mut self,
         ty: Self::Type,
-        span: Span,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure>;
     fn type_name(&self, ty: &Self::Type) -> String;
     fn type_is_unsigned(&self, ty: &Self::Type) -> bool;
@@ -5081,15 +5236,15 @@ pub trait ComptimeHost {
         &mut self,
         intrinsic: ComptimeTypeIntrinsic,
         ty: Self::Type,
-        span: Span,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
         match intrinsic {
             ComptimeTypeIntrinsic::RequireDroppable => {
-                self.check_require_droppable(ty, span)?;
+                self.check_require_droppable(ty, site)?;
                 Ok(Some(Self::Value::unit()))
             }
             ComptimeTypeIntrinsic::RequireTriviallyDroppable => {
-                self.check_trivially_droppable(ty, span)?;
+                self.check_trivially_droppable(ty, site)?;
                 Ok(Some(Self::Value::unit()))
             }
             ComptimeTypeIntrinsic::IntegerBound(bound) => {
@@ -5126,7 +5281,7 @@ pub trait ComptimeHost {
         resolved_type: Option<&Self::Type>,
         lhs: &Self::Value,
         rhs: &Self::Value,
-        _span: Span,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
         Ok(resolved_type
             .cloned()
@@ -5141,7 +5296,7 @@ pub trait ComptimeHost {
         &self,
         resolved_type: Option<&Self::Type>,
         operand: &Self::Value,
-        _span: Span,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
         Ok(resolved_type.cloned().or_else(|| operand.as_integer_type()))
     }
@@ -5154,7 +5309,7 @@ pub trait ComptimeHost {
         _lhs: &Self::Value,
         _rhs: &Self::Value,
         _equal: bool,
-        _span: Span,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeOutcome<Self::Value, Self::Failure> {
         ComptimeOutcome::RuntimeDependent
     }
@@ -5163,7 +5318,7 @@ pub trait ComptimeHost {
         result: CheckedIntegerResult,
         ty: Option<Self::Type>,
         op: &str,
-        span: Span,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure>;
     fn resolve_named_type_value(
         &mut self,
@@ -5441,7 +5596,7 @@ pub trait ComptimeHost {
     fn reject_non_type_array_repeat(
         &mut self,
         _value: Self::Value,
-        _span: Span,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeOutcome<Self::Value, Self::Failure> {
         ComptimeOutcome::RuntimeDependent
     }
@@ -5627,9 +5782,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 ..
             } = instruction_data
             else {
-                return ComptimeOutcome::HostFailure(
-                    self.host.non_function_anon_method(method_span),
-                );
+                let site = ComptimeDiagnosticSite::new(program.clone(), method_span);
+                return ComptimeOutcome::HostFailure(self.host.non_function_anon_method(&site));
             };
             let method_name = self.host.name_from_symbol(program, name.into());
             let parameter_data = self.host.program_rir(program).params(&params).to_vec();
@@ -5647,9 +5801,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         .rir_type_named_symbol(program, parameter.ty)
                         .is_some_and(|name| self.host.display_name(&name) == "type")
             }) {
+                let site = ComptimeDiagnosticSite::new(program.clone(), method_span);
                 return ComptimeOutcome::HostFailure(self.host.unsupported_anon_method_type_param(
-                    method_span,
                     &self.host.display_name(&method_name),
+                    &site,
                 ));
             }
             let mut parameters = Vec::with_capacity(parameter_data.len());
@@ -5761,6 +5916,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             .expect("comptime evaluation requires an active frame")
             .program
             .clone()
+    }
+
+    fn diagnostic_site(&self, span: Span) -> ComptimeDiagnosticSite<H::ProgramKey> {
+        ComptimeDiagnosticSite::new(self.program_key(), span)
     }
 
     fn semantic_site(
@@ -6025,10 +6184,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             .filter(|frame| frame.name.is_some())
             .count();
         if frame.name.is_some() && entered_depth >= MAX_COMPTIME_CALL_DEPTH {
+            let site = ComptimeDiagnosticSite::new(frame.program.clone(), frame.function_span);
             return ComptimeOutcome::HostFailure(self.host.depth_exceeded(
                 frame.name.as_ref().expect("named frame"),
                 MAX_COMPTIME_CALL_DEPTH,
-                frame.function_span,
+                &site,
             ));
         }
         if let Some(name) = frame.name.clone() {
@@ -6235,11 +6395,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     .filter(|ty| self.host.type_integer_semantics(ty).is_some())
                     .cloned()
             });
+        let site = self.diagnostic_site(span);
         ComptimeOutcome::Known(host_value!(self.host.integer_operation_type(
             hint.as_ref(),
             lhs,
             rhs,
-            span
+            &site,
         )))
     }
 
@@ -6259,10 +6420,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     .filter(|ty| self.host.type_integer_semantics(ty).is_some())
                     .cloned()
             });
+        let site = self.diagnostic_site(span);
         ComptimeOutcome::Known(host_value!(self.host.unary_integer_type(
             hint.as_ref(),
             operand,
-            span
+            &site,
         )))
     }
 
@@ -6273,7 +6435,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         op: &str,
         span: Span,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
-        let Some(value) = host_value!(self.host.finish_arith(result, ty, op, span)) else {
+        let site = self.diagnostic_site(span);
+        let Some(value) = host_value!(self.host.finish_arith(result, ty, op, &site)) else {
             return ComptimeOutcome::RuntimeDependent;
         };
         ComptimeOutcome::Known(value)
@@ -6412,9 +6575,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         .type_integer_semantics(ty)
                         .is_some_and(|integer| integer.fits_i128(v))
                     {
-                        return ComptimeOutcome::HostFailure(
-                            self.host.literal_out_of_range(*value, ty, span),
-                        );
+                        return ComptimeOutcome::HostFailure(self.host.literal_out_of_range(
+                            *value,
+                            ty,
+                            &self.diagnostic_site(span),
+                        ));
                     }
                 }
                 ComptimeOutcome::Known(H::Value::integer_typed(v, ty))
@@ -6431,9 +6596,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 host_value!(self.host.require_preview(
                     rue_error::PreviewFeature::Floats,
                     "a floating-point literal",
-                    span,
+                    &self.diagnostic_site(span),
                 ));
-                ComptimeOutcome::HostFailure(self.host.float_not_implemented(span))
+                ComptimeOutcome::HostFailure(
+                    self.host.float_not_implemented(&self.diagnostic_site(span)),
+                )
             }
 
             // String constants are intentionally routed through the host:
@@ -6459,7 +6626,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         outcome_value!(self.unary_integer_type_for(env, inst_ref, &literal, span,));
                     if let Some(ref ty) = ty {
                         if self.host.type_is_unsigned(ty) {
-                            return ComptimeOutcome::HostFailure(self.host.cannot_negate(ty, span));
+                            return ComptimeOutcome::HostFailure(
+                                self.host.cannot_negate(ty, &self.diagnostic_site(span)),
+                            );
                         }
                     }
                     // The literal path uses mathematical magnitude semantics:
@@ -6482,7 +6651,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             if let Some(ref ty) = ty {
                                 if self.host.type_is_unsigned(ty) {
                                     return ComptimeOutcome::HostFailure(
-                                        self.host.cannot_negate(ty, span),
+                                        self.host.cannot_negate(ty, &self.diagnostic_site(span)),
                                     );
                                 }
                             }
@@ -6659,7 +6828,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             (_, _, Some(lhs), Some(rhs)) => {
                                 ComptimeOutcome::Known(H::Value::boolean(lhs == rhs))
                             }
-                            _ => self.host.compare_comptime_values(&lhs, &rhs, true, span),
+                            _ => {
+                                let site = self.diagnostic_site(span);
+                                self.host.compare_comptime_values(&lhs, &rhs, true, &site)
+                            }
                         }
                     }
                     other => other,
@@ -6697,7 +6869,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             (_, _, Some(lhs), Some(rhs)) => {
                                 ComptimeOutcome::Known(H::Value::boolean(lhs != rhs))
                             }
-                            _ => self.host.compare_comptime_values(&lhs, &rhs, false, span),
+                            _ => {
+                                let site = self.diagnostic_site(span);
+                                self.host.compare_comptime_values(&lhs, &rhs, false, &site)
+                            }
                         }
                     }
                     other => other,
@@ -7082,15 +7257,17 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let (value, count) = (*value, count.clone());
                 let value = outcome_value!(self.eval(value, env));
                 let Some(elem_ty) = value.as_type() else {
-                    return self.host.reject_non_type_array_repeat(value, span);
+                    let site = self.diagnostic_site(span);
+                    return self.host.reject_non_type_array_repeat(value, &site);
                 };
                 let len = match count {
                     RepeatCount::Literal(n) => n,
                     RepeatCount::Named(sym) => {
                         let name = self.name_from_rir(sym.into());
+                        let site = self.diagnostic_site(span);
                         host_value!(self.host.resolve_named_array_length(
                             &name,
-                            span,
+                            &site,
                             Some(&env.value_subst),
                         ))
                     }
@@ -7287,7 +7464,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 match host_value!(self.host.resolve_comptime_type_intrinsic(
                     intrinsic,
                     intrinsic_ty,
-                    span,
+                    &self.diagnostic_site(span),
                 )) {
                     Some(value) => ComptimeOutcome::Known(value),
                     None => ComptimeOutcome::RuntimeDependent,

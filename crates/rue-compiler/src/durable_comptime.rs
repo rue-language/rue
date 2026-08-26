@@ -875,6 +875,16 @@ pub(crate) enum DurableComptimeProgramFinalizationError {
     AuthorityMismatch,
 }
 
+/// Failure to turn a registered program identity and source range into a
+/// durable diagnostic site. Unknown keys never fall back to the session's
+/// parent provenance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // consumed by the staged durable AIR host
+pub(crate) enum DurableComptimeDiagnosticSiteError {
+    UnknownProgram,
+    UnknownDeclaration,
+}
+
 /// Failure before a foreign AIR frame is handed to the engine.  Admission is
 /// intentionally separate from lifecycle activation: the engine still owns
 /// the depth check, `enter`, and cleanup after it receives this frame.
@@ -974,6 +984,26 @@ impl DurableComptimeSession {
         key: &crate::body_query::DurableComptimeProgramKey,
     ) -> Option<&crate::body_query::DurableComptimeProgram> {
         self.programs.get(key)
+    }
+
+    /// Resolve an engine-created diagnostic range against the exact
+    /// registered program key, without observing effects or query state.
+    #[allow(dead_code)] // consumed by the staged durable AIR host
+    pub(crate) fn diagnostic_site(
+        &self,
+        key: &crate::body_query::DurableComptimeProgramKey,
+        span: rue_span::Span,
+    ) -> Result<DurableComptimeDiagnosticSite, DurableComptimeDiagnosticSiteError> {
+        if self.programs.get(key).is_none() {
+            return Err(DurableComptimeDiagnosticSiteError::UnknownProgram);
+        }
+        let producer = crate::revisioned_query_database::declaration_candidate_for_stable_key(
+            &key.declaration,
+        )
+        .ok_or(DurableComptimeDiagnosticSiteError::UnknownDeclaration)?;
+        Ok(DurableComptimeDiagnosticSite::new(
+            producer, span.start, span.end,
+        ))
     }
 
     /// Atomically admit an already-prepared foreign callable into the keyed
@@ -5586,7 +5616,7 @@ mod structured_type_adapter_tests {
         }
     }
 
-    fn const_program(
+    pub(super) fn const_program(
         path: &str,
         argument: &str,
     ) -> Arc<crate::body_query::OwnedComptimeProgramCore> {
@@ -5680,7 +5710,7 @@ mod structured_type_adapter_tests {
         .unwrap()
     }
 
-    fn callable_program(path: &str) -> Arc<crate::body_query::OwnedComptimeProgramCore> {
+    pub(super) fn callable_program(path: &str) -> Arc<crate::body_query::OwnedComptimeProgramCore> {
         let snapshot = crate::SourceSnapshot::single(path, "fn target() -> i32 { 1 }").unwrap();
         let module = crate::parsed_modules::parse_source_snapshot_modules(&snapshot)
             .unwrap()
@@ -5728,7 +5758,7 @@ mod structured_type_adapter_tests {
         program.core
     }
 
-    fn session() -> DurableComptimeSession {
+    pub(super) fn session() -> DurableComptimeSession {
         let module = ModuleId::from_logical_path("structured-parent.rue").unwrap();
         let producer = crate::StableDefinitionKey::from_stable_parts(
             module,
@@ -6530,5 +6560,30 @@ mod terminal_adapter_tests {
                 && mismatch.expected == "an integer type"
                 && mismatch.found == "bool"
         ));
+    }
+
+    #[test]
+    fn diagnostic_sites_are_keyed_and_reject_unknown_programs() {
+        let first =
+            super::structured_type_adapter_tests::const_program("diagnostic-first.rue", "i32");
+        let second =
+            super::structured_type_adapter_tests::const_program("diagnostic-second.rue", "i64");
+        let mut session = super::structured_type_adapter_tests::session();
+        session.register_program(&first).unwrap();
+        session.register_program(&second).unwrap();
+
+        let span = rue_span::Span::with_file(rue_span::FileId::DEFAULT, 11, 19);
+        let first_site = session.diagnostic_site(&first.plan.key, span).unwrap();
+        let second_site = session.diagnostic_site(&second.plan.key, span).unwrap();
+        assert_eq!((first_site.start, first_site.end), (11, 19));
+        assert_eq!((second_site.start, second_site.end), (11, 19));
+        assert_ne!(first_site.producer, second_site.producer);
+
+        let unknown =
+            super::structured_type_adapter_tests::callable_program("diagnostic-unknown.rue");
+        assert_eq!(
+            session.diagnostic_site(&unknown.plan.key, span),
+            Err(DurableComptimeDiagnosticSiteError::UnknownProgram)
+        );
     }
 }
