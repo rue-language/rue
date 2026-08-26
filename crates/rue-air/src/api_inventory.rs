@@ -750,9 +750,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "call argument provenance must have one engine-owned helper"
     );
     assert_eq!(
-        production
-            .matches("self.evaluate_call_arguments(&args, env, &mut binding, span)")
-            .count(),
+        production.matches("self.evaluate_call_arguments(").count(),
         2,
         "direct and qualified calls must share argument provenance"
     );
