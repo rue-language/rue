@@ -210,7 +210,7 @@ exit_code = 0
 
 [[case]]
 name = "string_query_borrow_valid"
-spec = ["3.10:13"]
+spec = ["3.10:10", "3.10:11", "3.10:12", "3.10:13"]
 description = "Query methods borrow, string remains valid"
 real_std = true
 source = """
@@ -486,7 +486,7 @@ exit_code = 0
 
 [[case]]
 name = "string_clone_borrow"
-spec = ["3.10:27"]
+spec = ["3.10:26", "3.10:27"]
 description = "Clone borrows, original remains valid"
 real_std = true
 source = """
@@ -563,7 +563,7 @@ exit_code = 0
 
 [[case]]
 name = "string_byte_semantics"
-spec = ["3.10:32"]
+spec = ["3.10:16", "3.10:32"]
 description = "Strings are byte sequences"
 real_std = true
 source = """

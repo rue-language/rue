@@ -140,7 +140,7 @@ expected_stdout = "foobar\n"
 # it, which this case would have contradicted.
 [[case]]
 name = "string_capacity_is_observable"
-spec = ["3.7:41"]
+spec = ["3.7:41", "3.10:11", "3.10:26"]
 description = "capacity() returns the implementation's chosen capacity: 0 for a literal, a nonzero value after a clone allocates."
 real_std = true
 source = """

@@ -103,7 +103,8 @@ fn run_traceability(detailed: bool, json: bool) {
 
     // Exit with error if the gate is failing: an *unexpected* uncovered
     // normative paragraph (one not on the known-gap allowlist), a stale
-    // allowlist entry, or an orphan reference. Rules whose only tests are
+    // allowlist entry, an orphan reference, or a behavior-asserting case whose
+    // citations are all non-normative. Rules whose only tests are
     // skipped/preview-allowed-to-fail no longer count as coverage (RUE-132);
     // the ones tracked in KNOWN_UNCOVERED_NORMATIVE are reported but don't fail
     // the gate. Informative paragraphs never require coverage.

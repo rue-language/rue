@@ -449,7 +449,7 @@ expected_stdout = """
 
 [[case]]
 name = "compound_assign_place_once_example"
-spec = ["5.2:19"]
+spec = ["5.2:17", "5.2:18", "5.2:19"]
 source = """
 fn tap(n: u64) -> u64 { @dbg(n); n }
 
@@ -466,7 +466,7 @@ expected_stdout = """
 
 [[case]]
 name = "compound_assign_places_example"
-spec = ["5.2:20"]
+spec = ["5.2:17", "5.2:20"]
 source = """
 struct Counter { hits: i32 }
 

@@ -127,7 +127,7 @@ fn main() -> i32 {
 
 `fn reserve(inout self, additional: u64)` ensures the string has capacity for at least `additional` more bytes.
 
-{{ rule(id="3.10:19", cat="informative") }}
+{{ rule(id="3.10:19", cat="legality-rule") }}
 
 Mutation methods use `inout self` to modify the string in place. The variable must be declared with `let mut` to allow mutation.
 

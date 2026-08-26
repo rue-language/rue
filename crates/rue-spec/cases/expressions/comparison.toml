@@ -46,7 +46,7 @@ params = [
 
 [[case]]
 name = "ordering_{op}_integers"
-spec = ["4.3:4"]
+spec = ["4.3:5"]
 source = """
 fn main() -> i32 {
     if {expr} { 1 } else { 0 }
@@ -194,7 +194,7 @@ params = [
 
 [[case]]
 name = "separate_comparisons_with_and"
-spec = ["4.3:13"]
+spec = ["4.3:5", "4.3:8", "4.3:13"]
 source = """
 fn main() -> i32 {
     if 1 < 2 && 2 < 3 { 1 } else { 0 }

@@ -128,7 +128,7 @@ exit_code = 0
 # observation (3.6:9), not a language guarantee.
 [[case]]
 name = "struct_fields_declaration_order"
-spec = ["3.6:9"]
+spec = ["3.6:8", "3.6:9"]
 source = """
 struct Point { x: i32, y: i32 }
 fn main() -> i32 {
@@ -142,7 +142,7 @@ exit_code = 8
 # documented observation of the current layout (3.6:10), not guaranteed.
 [[case]]
 name = "struct_size_sum_of_fields"
-spec = ["3.6:10"]
+spec = ["3.6:8", "3.6:10"]
 source = """
 struct Triple { a: i32, b: i32, c: i32 }
 fn main() -> i32 {
@@ -154,7 +154,7 @@ exit_code = 12
 
 [[case]]
 name = "nested_struct_size"
-spec = ["3.6:10"]
+spec = ["3.6:8", "3.6:10"]
 source = """
 struct Point { x: i32, y: i32 }
 struct Line { start: Point, end: Point }

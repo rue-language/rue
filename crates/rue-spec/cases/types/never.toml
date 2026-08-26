@@ -188,7 +188,7 @@ exit_code = 7
 
 [[case]]
 name = "panic_statement_diverges_has_never_type"
-spec = ["3.4:2", "3.4:6a", "4.13:5b"]
+spec = ["3.4:2", "3.4:6a", "4.13:5c"]
 description = "A semicolon-terminated diverging statement leaves no reachable block tail and gives the block type !"
 source = """
 fn main() -> i32 {
@@ -237,7 +237,7 @@ exit_code = 42
 
 [[case]]
 name = "nested_panic_statement_diverges_has_never_type"
-spec = ["3.4:2", "3.4:6a", "4.13:5b"]
+spec = ["3.4:2", "3.4:6a", "4.13:5c"]
 description = "A nested block preserves bottom propagation from a diverging statement"
 source = """
 fn main() -> i32 {
@@ -251,7 +251,7 @@ stderr_contains = "panic"
 
 [[case]]
 name = "panic_in_let_statement_propagates_bottom"
-spec = ["3.4:2", "3.4:6a", "4.13:5b"]
+spec = ["3.4:2", "3.4:6a", "4.13:5c"]
 description = "A diverging initializer makes its unit-valued let statement non-continuing"
 source = """
 fn main() -> i32 {
@@ -263,7 +263,7 @@ stderr_contains = "panic: initializer"
 
 [[case]]
 name = "panic_in_call_argument_propagates_bottom"
-spec = ["3.4:2", "3.4:6a", "4.13:5b"]
+spec = ["3.4:2", "3.4:6a", "4.13:5c"]
 description = "A diverging call argument prevents the call statement from reaching its end"
 source = """
 fn sink(value: i32) {}
@@ -276,7 +276,7 @@ stderr_contains = "panic: argument"
 
 [[case]]
 name = "panic_in_pointer_intrinsic_operand_propagates_bottom"
-spec = ["3.4:2", "3.4:6a", "4.13:5b"]
+spec = ["3.4:2", "3.4:6a", "4.13:5c"]
 description = "A diverging strict intrinsic operand prevents the unit-valued statement from continuing"
 source = """
 fn main() -> i32 {
@@ -290,7 +290,7 @@ stderr_contains = "panic: pointer operand"
 
 [[case]]
 name = "assert_false_remains_unit"
-spec = ["3.4:6a", "4.13:5b"]
+spec = ["3.4:6a", "4.13:5d"]
 description = "@assert(false) remains unit-typed rather than becoming Never"
 source = """
 fn main() -> i32 {
