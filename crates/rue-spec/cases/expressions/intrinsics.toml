@@ -70,17 +70,16 @@ fn main() -> i32 {
 compile_fail = true
 
 # =============================================================================
-# Reserved-but-unspecified intrinsics: @panic / @assert / @cast (4.13:5b, RUE-319)
+# Intrinsic behavior and restrictions: @panic / @assert / @cast (4.13:5b-5e, RUE-319)
 #
-# @panic and @assert are not in the normative inventory yet, but they are no
-# longer silent no-ops: they abort the process (message to stderr, exit 101),
-# the same abort discipline as the @intCast overflow trap. @cast is rejected
-# at compile time in favor of @intCast.
+# @panic and @assert abort the process (message to stderr, exit 101), with the
+# same abort discipline as the @intCast overflow trap. @cast is rejected at
+# compile time in favor of @intCast.
 # =============================================================================
 
 [[case]]
 name = "panic_with_message_aborts"
-spec = ["4.13:5b"]
+spec = ["4.13:5c"]
 source = """
 fn main() -> i32 {
     @panic("boom");
@@ -92,7 +91,7 @@ stderr_contains = "panic: boom"
 
 [[case]]
 name = "panic_no_message_aborts"
-spec = ["4.13:5b"]
+spec = ["4.13:5c"]
 source = """
 fn main() -> i32 {
     @panic();
@@ -104,7 +103,7 @@ stderr_contains = "panic"
 
 [[case]]
 name = "assert_false_aborts"
-spec = ["4.13:5b"]
+spec = ["4.13:5d"]
 source = """
 fn main() -> i32 {
     @assert(false);
@@ -116,7 +115,7 @@ stderr_contains = "assertion failed"
 
 [[case]]
 name = "assert_true_passes"
-spec = ["4.13:5b"]
+spec = ["4.13:5d"]
 source = """
 fn main() -> i32 {
     @assert(true);
@@ -127,7 +126,7 @@ exit_code = 42
 
 [[case]]
 name = "assert_false_with_message_aborts"
-spec = ["4.13:5b"]
+spec = ["4.13:5d"]
 source = """
 fn main() -> i32 {
     @assert(1 == 2, "one is not two");
@@ -146,7 +145,7 @@ stderr_contains = "panic: one is not two"
 # @panic in the taken `else` arm of a typed `if`: coerces to i32, then aborts.
 [[case]]
 name = "panic_in_if_else_arm_taken_aborts"
-spec = ["3.4:2", "4.13:5b"]
+spec = ["3.4:2", "4.13:5c"]
 source = """
 fn main() -> i32 {
     let x: i32 = if false { 1 } else { @panic("boom") };
@@ -160,7 +159,7 @@ stderr_contains = "panic: boom"
 # This proves the never-coercion type-checks and leaves the value path intact.
 [[case]]
 name = "panic_in_if_else_arm_untaken_yields_value"
-spec = ["3.4:2", "4.13:5b"]
+spec = ["3.4:2", "4.13:5c"]
 source = """
 fn main() -> i32 {
     let x: i32 = if true { 7 } else { @panic("unreached") };
@@ -172,7 +171,7 @@ exit_code = 7
 # @panic in a typed `match` arm: the non-panic arm still produces a value.
 [[case]]
 name = "panic_in_match_arm_yields_value"
-spec = ["3.4:2", "4.13:5b"]
+spec = ["3.4:2", "4.13:5c"]
 source = """
 fn classify(n: i32) -> i32 {
     let r: i32 = match n {
@@ -188,7 +187,7 @@ exit_code = 100
 # @panic as a typed `let` initializer: coerces to i32, then aborts.
 [[case]]
 name = "panic_in_let_initializer_aborts"
-spec = ["3.4:2", "4.13:5b"]
+spec = ["3.4:2", "4.13:5c"]
 source = """
 fn main() -> i32 {
     let x: i32 = @panic("init");
@@ -202,7 +201,7 @@ stderr_contains = "panic: init"
 # needed, because `!` coerces to the declared return type.
 [[case]]
 name = "panic_as_function_tail_aborts"
-spec = ["3.4:2", "4.13:5b"]
+spec = ["3.4:2", "4.13:5c"]
 source = """
 fn dead() -> i32 { @panic("tail") }
 fn main() -> i32 { dead() }
@@ -212,7 +211,7 @@ stderr_contains = "panic: tail"
 
 [[case]]
 name = "cast_rejected_use_intcast"
-spec = ["4.13:5b"]
+spec = ["4.13:5e"]
 source = """
 fn main() -> i32 {
     let x: i64 = 5;
@@ -651,7 +650,7 @@ exit_code = 0
 # is four, from its i32 fields).
 [[case]]
 name = "align_of_natural_alignments"
-spec = ["4.13:22"]
+spec = ["4.13:18", "4.13:22"]
 source = """
 struct Point { x: i32, y: i32 }
 fn main() -> i32 {

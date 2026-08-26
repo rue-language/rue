@@ -41,8 +41,9 @@ This Quick Reference documents every source-spelled intrinsic name the compiler
 recognizes. The tables below group names that may appear in any expression
 position (expression intrinsics), only inside a `checked` block (unchecked
 intrinsics, specified in §9.2), or only as an internal checked bridge. Rule
-4.13:5b separately records frontend-reserved names whose surface syntax is not
-fully stabilized. This inventory is kept in sync with the compiler's
+4.13:5b separately records frontend-reserved names and test infrastructure.
+The contracts for the reserved expression intrinsics are stated in 4.13:5c–e.
+This inventory is kept in sync with the compiler's
 source-intrinsic recognition paths: the RIR type-intrinsic forms, the
 pre-interned names in `crates/rue-air/src/sema/known_symbols.rs`, and the
 semantic dispatch on them. A name absent from those paths is rejected as an
@@ -121,33 +122,32 @@ see rule [6.6:7](@/06-items/06-borrow-accessors.md)):
 
 {{ rule(id="4.13:5b", cat="informative") }}
 
-The compiler frontend additionally reserves the names `@cast`, `@panic`,
-`@assert`, and `@test_preview_gate`. Their surface syntax is not yet fully
-stabilized, so they are listed separately from the signature tables above, but
-they are no longer no-ops (RUE-319):
+The compiler frontend reserves the names `@cast`, `@panic`, `@assert`, and
+`@test_preview_gate`. The expression contracts for `@panic`, `@assert`, and
+`@cast` are specified in 4.13:5c, 4.13:5d, and 4.13:5e respectively. The
+`@test_preview_gate()` intrinsic is a zero-argument no-op used only to test the
+preview-feature gating machinery (`--preview test_infra`); it is test
+infrastructure, not a language feature.
 
-- `@panic(msg?: text)` has type `!` (never): it aborts the process and never
-  returns. The optional message may use any canonical text rung; unrelated
-  aggregates are not accepted. It writes
-  `panic: <msg>` (or just `panic` when called with no
-  argument) to standard error and exits with status 101 — the same abort
-  discipline as the `@intCast` overflow, division-by-zero, and bounds-check
-  traps. As a diverging expression it participates in never coercion (3.4:2),
-  so it may appear wherever a value of any type is expected — a typed `let`
-  initializer, an `if`/`else` or `match` arm whose other arms produce a value,
-  or a bare function tail.
-- `@assert(cond: bool, msg?: text)` requires an exact boolean condition and
-  the same optional text contract as `@panic`. When `cond` is `false` it
-  aborts exactly like `@panic`: with a message it writes `panic: <msg>`,
-  otherwise it writes `assertion failed`, and in both cases exits with status
-  101. When `cond` is `true` it has no effect. The expression has type `()` on
-  both paths.
-- `@cast` is rejected at compile time with a diagnostic directing the programmer
-  to `@intCast`; it never had a working inference rule and is fully redundant
-  with `@intCast`. Use `@intCast` for integer conversions.
-- `@test_preview_gate()` is a zero-argument no-op that exists only to test the
-  preview-feature gating machinery itself (`--preview test_infra`); it is test
-  infrastructure, not a language feature.
+{{ rule(id="4.13:5c", cat="dynamic-semantics") }}
+
+`@panic(msg?: text)` has type `!`, writes `panic: <msg>` (or `panic` without a
+message) to standard error, and terminates with status 101 without returning.
+It participates in never coercion (3.4:2), so it may appear wherever a value
+of any type is expected.
+
+{{ rule(id="4.13:5d", cat="dynamic-semantics") }}
+
+`@assert(cond: bool, msg?: text)` requires a boolean condition and has type
+`()`. A false condition terminates exactly as `@panic` (using `panic: <msg>`
+when a message is supplied, or `assertion failed` otherwise), with status 101;
+a true condition has no effect.
+
+{{ rule(id="4.13:5e", cat="legality-rule") }}
+
+`@cast` is reserved but not a valid conversion intrinsic. A call to it **MUST**
+be rejected at compile time with a diagnostic directing the programmer to
+`@intCast`.
 
 ## `@dbg`
 

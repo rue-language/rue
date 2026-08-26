@@ -295,7 +295,7 @@ params = [
 
 [[case]]
 name = "unsigned_division_large_value"
-spec = ["4.2:10"]
+spec = ["4.2:1"]
 source = """
 fn main() -> i32 {
     // 0x80000000 = 2147483648 (would be -2147483648 if signed)
@@ -312,7 +312,7 @@ exit_code = 20
 
 [[case]]
 name = "unsigned_modulo_large_value"
-spec = ["4.2:10"]
+spec = ["4.2:1"]
 source = """
 fn main() -> i32 {
     // 0x80000000 = 2147483648 (would be -2147483648 if signed)
@@ -327,7 +327,7 @@ exit_code = 48
 
 [[case]]
 name = "unsigned_division_max_value"
-spec = ["4.2:10"]
+spec = ["4.2:1"]
 source = """
 fn main() -> i32 {
     // 0xFFFFFFFF = 4294967295 (would be -1 if signed)
@@ -344,7 +344,7 @@ exit_code = 55
 
 [[case]]
 name = "unsigned_modulo_max_value"
-spec = ["4.2:10"]
+spec = ["4.2:1"]
 source = """
 fn main() -> i32 {
     // 0xFFFFFFFF = 4294967295 (would be -1 if signed)

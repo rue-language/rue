@@ -249,6 +249,8 @@ included in `./test.sh` and `./buck2 test //...`. It fails if:
 - Any test references a non-existent spec paragraph ID
 - Any normative rule is covered only through a large program (see
   "Focused coverage" above)
+- Any behavior-asserting case cites only informative/example paragraphs. Such a case
+  must cite the matching normative rule.
 - Any case declares an ambiguous platform responsibility (see
   "Platform Responsibility" above)
 

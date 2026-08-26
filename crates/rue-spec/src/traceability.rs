@@ -117,6 +117,20 @@ pub struct TestReference {
     pub source_lines: usize,
 }
 
+/// A behavior-asserting spec case whose citations are all non-normative.
+///
+/// Informative and example paragraphs are useful documentation, but they do
+/// not establish a language requirement. Keeping this finding in the report
+/// makes a case which claims executable behavior without a normative anchor
+/// visible to both humans and machine consumers of the traceability report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NonNormativeCase {
+    /// Full test name in the format `section::case_name`.
+    pub test_name: String,
+    /// Every cited paragraph and its parsed category, in citation order.
+    pub citations: Vec<(String, String)>,
+}
+
 /// A complete traceability report linking specification paragraphs to tests.
 ///
 /// This report provides:
@@ -157,6 +171,9 @@ pub struct TraceabilityReport {
     /// `(test_name, only_on)`. Reported so the exclusion is visible rather than
     /// silent; a rule left uncovered by it fails the gate the ordinary way.
     pub platform_unreachable_cases: Vec<(String, Vec<String>)>,
+    /// Behavior-asserting cases whose citations are all informative/example. These
+    /// fail the gate unless repaired with a normative citation.
+    pub non_normative_cases: Vec<NonNormativeCase>,
 }
 
 /// The headline figures of a [`TraceabilityReport`], for machine consumers.
@@ -303,6 +320,16 @@ pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[
     ),
 ];
 
+fn format_non_normative_case(case: &NonNormativeCase) -> String {
+    let citations = case
+        .citations
+        .iter()
+        .map(|(id, category)| format!("{id} [{category}]"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{} cites only {}", case.test_name, citations)
+}
+
 impl TraceabilityReport {
     /// Whether `id` is on the [`KNOWN_UNCOVERED_NORMATIVE`] allowlist.
     fn is_known_uncovered(id: &str) -> bool {
@@ -430,15 +457,16 @@ impl TraceabilityReport {
     }
 
     /// Whether the traceability gate should fail: any *unexpected* uncovered
-    /// normative rule, any stale allowlist entry, any orphan reference, any
-    /// duplicate rule id, or any normative rule covered only through a large
-    /// program.
+    /// normative rule, stale allowlist entry, orphan reference,
+    /// duplicate rule id, unfocused normative coverage, or behavior-asserting case
+    /// whose citations are all non-normative.
     pub fn gate_failing(&self) -> bool {
         !self.unexpected_uncovered_normative_paragraphs().is_empty()
             || !self.stale_known_uncovered().is_empty()
             || !self.orphan_references.is_empty()
             || !self.duplicate_rule_ids.is_empty()
             || !self.unfocused_normative_coverage().is_empty()
+            || !self.non_normative_cases.is_empty()
     }
 
     /// Returns the coverage percentage for normative paragraphs (0.0 to 100.0).
@@ -705,6 +733,17 @@ impl TraceabilityReport {
             );
             for (test_name, ref_id) in &self.orphan_references {
                 println!("  {} references non-existent '{}'", test_name, ref_id);
+            }
+            println!();
+        }
+
+        if !self.non_normative_cases.is_empty() {
+            println!(
+                "Behavior-asserting cases with only non-normative citations ({}):",
+                self.non_normative_cases.len()
+            );
+            for case in &self.non_normative_cases {
+                println!("  {}", format_non_normative_case(case));
             }
             println!();
         }
@@ -1778,6 +1817,20 @@ pub fn parse_spec_paragraphs(
     Ok((paragraphs, duplicates))
 }
 
+/// Whether a case carries a runner assertion that needs a specification anchor.
+/// The runner owns the grouped execution and golden-IR field predicates; the
+/// remaining compile/diagnostic assertions are explicit here. `compile_only`
+/// is included because it asserts compile success even though it does not run
+/// the produced program. Adding a new assertion requires updating the runner's
+/// corresponding predicate and this traceability adapter together.
+fn asserts_executable_behavior(case: &rue_test_runner::Case) -> bool {
+    case.has_execution_assertions()
+        || case.has_golden_ir_assertions()
+        || case.compile_fail
+        || !case.error_contains.is_empty()
+        || case.expected_error.is_some()
+}
+
 /// Generates a complete traceability report linking specification to tests.
 ///
 /// This is the main entry point for the traceability system. It:
@@ -1824,6 +1877,7 @@ pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> Result<Traceability
     // Process test files
     let mut platform_unreachable_cases = Vec::new();
     let mut responsibility_census = ResponsibilityCensus::default();
+    let mut non_normative_cases = Vec::new();
     for (_, test_file) in &test_files {
         for case in &test_file.case {
             let test_name = format!("{}::{}", test_file.section.id, case.name);
@@ -1838,6 +1892,36 @@ pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> Result<Traceability
             }
             let counts_as_coverage =
                 !case.skip && (case.preview.is_none() || case.preview_should_pass) && reachable;
+
+            // Citation integrity applies even when a case is skipped, preview-
+            // allowed-to-fail, or unreachable on required CI. Those cases do
+            // not contribute coverage, but their behavior claims must not be
+            // allowed to hide behind the coverage filters.
+            if asserts_executable_behavior(case) && !case.spec.is_empty() {
+                let citations = case
+                    .spec
+                    .iter()
+                    .map(|id| {
+                        (
+                            id.clone(),
+                            paragraphs
+                                .get(id)
+                                .map(|paragraph| paragraph.category.clone())
+                                .unwrap_or_else(|| "orphan".to_string()),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if citations.iter().all(|(id, _)| {
+                    paragraphs
+                        .get(id)
+                        .is_none_or(|paragraph| !TraceabilityReport::is_normative(paragraph))
+                }) {
+                    non_normative_cases.push(NonNormativeCase {
+                        test_name: test_name.clone(),
+                        citations,
+                    });
+                }
+            }
 
             for spec_ref in &case.spec {
                 if let Some(tests) = coverage.get_mut(spec_ref) {
@@ -1867,6 +1951,7 @@ pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> Result<Traceability
         duplicate_rule_ids,
         responsibility_census,
         platform_unreachable_cases,
+        non_normative_cases,
     })
 }
 
@@ -2617,12 +2702,171 @@ fn main() { }
             duplicate_rule_ids: vec![],
             responsibility_census: ResponsibilityCensus::default(),
             platform_unreachable_cases: vec![],
+            non_normative_cases: vec![],
         };
 
         assert_eq!(report.covered_count(), 1);
         // One of the two paragraphs is uncovered.
         assert_eq!(report.paragraphs.len() - report.covered_count(), 1);
         assert_eq!(report.coverage_percentage(), 50.0);
+    }
+
+    #[test]
+    fn executable_cases_with_only_non_normative_citations_fail_with_categories() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        write_test_appendix(spec_dir.path());
+        fs::write(
+            spec_dir.path().join("spec.md"),
+            concat!(
+                "{{ rule(id=\"1.1:1\", cat=\"informative\") }}\nExplanation.\n",
+                "{{ rule(id=\"1.1:2\", cat=\"example\") }}\nExample.\n",
+            ),
+        )
+        .unwrap();
+        let cases_dir = tempfile::tempdir().unwrap();
+        fs::write(
+            cases_dir.path().join("cases.toml"),
+            r#"
+[section]
+id = "test.section"
+name = "Test"
+
+[[case]]
+name = "informative_only"
+spec = ["1.1:1", "1.1:2"]
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+"#,
+        )
+        .unwrap();
+
+        let report = generate_report(spec_dir.path(), cases_dir.path()).unwrap();
+        assert_eq!(
+            &report.non_normative_cases,
+            &[NonNormativeCase {
+                test_name: "test.section::informative_only".to_string(),
+                citations: vec![
+                    ("1.1:1".to_string(), "informative".to_string()),
+                    ("1.1:2".to_string(), "example".to_string()),
+                ],
+            }]
+        );
+        assert!(report.gate_failing());
+    }
+
+    #[test]
+    fn non_normative_citation_check_includes_non_coverage_cases_and_assertion_kinds() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        write_test_appendix(spec_dir.path());
+        fs::write(
+            spec_dir.path().join("spec.md"),
+            concat!(
+                "{{ rule(id=\"1.1:1\", cat=\"informative\") }}\nInformative.\n",
+                "{{ rule(id=\"1.1:2\", cat=\"example\") }}\nExample.\n",
+                "{{ rule(id=\"1.1:3\", cat=\"informative\") }}\nInformative.\n",
+                "{{ rule(id=\"1.1:4\", cat=\"informative\") }}\nInformative.\n",
+                "{{ rule(id=\"1.1:5\", cat=\"informative\") }}\nInformative.\n",
+                "{{ rule(id=\"1.1:6\", cat=\"informative\") }}\nInformative.\n",
+                "{{ rule(id=\"1.1:7\", cat=\"informative\") }}\nInformative.\n",
+                "{{ rule(id=\"1.1:8\", cat=\"informative\") }}\nInformative.\n",
+            ),
+        )
+        .unwrap();
+        let cases_dir = tempfile::tempdir().unwrap();
+        fs::write(
+            cases_dir.path().join("cases.toml"),
+            r#"
+[section]
+id = "test.section"
+name = "Test"
+
+[[case]]
+name = "normal"
+spec = ["1.1:1", "1.1:2"]
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "skipped"
+spec = ["1.1:3"]
+skip = true
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "preview_may_fail"
+spec = ["1.1:4"]
+preview = "floats"
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "preview_must_pass"
+spec = ["1.1:5"]
+preview = "floats"
+preview_should_pass = true
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "unreachable"
+spec = ["1.1:6"]
+only_on = ["x86-64-macos"]
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "golden"
+spec = ["1.1:7"]
+source = "fn main() -> i32 { 0 }"
+expected_ast = "program"
+
+[[case]]
+name = "compile_fail"
+spec = ["1.1:8"]
+source = "fn main() -> i32 { true }"
+compile_fail = true
+error_contains = "type mismatch"
+
+[[case]]
+name = "source_only"
+spec = ["1.1:1"]
+source = "fn main() -> i32 { 0 }"
+"#,
+        )
+        .unwrap();
+
+        let report = generate_report(spec_dir.path(), cases_dir.path()).unwrap();
+        let mut names = report
+            .non_normative_cases
+            .iter()
+            .map(|case| case.test_name.as_str())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec![
+                "test.section::compile_fail",
+                "test.section::golden",
+                "test.section::normal",
+                "test.section::preview_may_fail",
+                "test.section::preview_must_pass",
+                "test.section::skipped",
+                "test.section::unreachable",
+            ]
+        );
+        assert!(!names.contains(&"test.section::source_only"));
+        assert!(report.gate_failing());
+        assert_eq!(
+            format_non_normative_case(
+                report
+                    .non_normative_cases
+                    .iter()
+                    .find(|case| case.test_name == "test.section::normal")
+                    .unwrap()
+            ),
+            "test.section::normal cites only 1.1:1 [informative], 1.1:2 [example]"
+        );
     }
 
     #[test]
@@ -2848,6 +3092,7 @@ exit_code = 0
                 duplicate_rule_ids: vec![],
                 responsibility_census: ResponsibilityCensus::default(),
                 platform_unreachable_cases: vec![],
+                non_normative_cases: vec![],
             }
         }
 
