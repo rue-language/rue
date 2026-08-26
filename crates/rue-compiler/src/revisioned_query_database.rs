@@ -8071,7 +8071,7 @@ impl SemanticConstEvaluator<'_, '_> {
             let services =
                 crate::durable_comptime::DurableComptimeServices::new(&mut *self.authority);
             services
-                .begin_comptime_call_admission(&source, module, &name)
+                .begin_evaluated_module_call(&source, module, &name)
                 .map_err(Self::provider_error)?
         };
         self.authority
@@ -8820,7 +8820,7 @@ impl SemanticConstEvaluator<'_, '_> {
                 let services =
                     crate::durable_comptime::DurableComptimeServices::new(&mut *self.authority);
                 let projection = services
-                    .resolve_module_member(&source, &module, &name)
+                    .resolve_evaluated_module_member(&source, &module, &name)
                     .map_err(Self::provider_error)?;
                 let (value, dependency) = projection.into_parts();
                 self.authority.legacy_effects.observe_dependency(dependency);
