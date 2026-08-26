@@ -4539,7 +4539,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         .and_then(|source| source.split("/// The ownership-site policy").next())
         .expect("durable terminal bridge");
     let bridge_without_future_trap = terminal_bridge.replace(
-        "#[allow(dead_code)] // consumed when the durable AIR host is wired",
+        "#[allow(dead_code)] // consumed after durable query-root cutover",
         "",
     );
     assert!(
@@ -4552,8 +4552,8 @@ fn durable_comptime_services_are_named_authority_operations() {
         terminal_bridge
             .matches("ComptimeHostError::HostFailure(self)")
             .count(),
-        1,
-        "durable host-failure construction must have one canonical funnel"
+        2,
+        "durable semantic/query-failure construction must stay in one canonical funnel"
     );
     assert_eq!(
         terminal_bridge
@@ -5292,10 +5292,37 @@ fn durable_comptime_services_are_named_authority_operations() {
         );
     }
     assert!(evaluator.contains("DurableComptimeServices::new(&mut *self.authority)"));
+    let type_syntax_resolver = evaluator
+        .split("fn resolve_type_syntax(")
+        .nth(1)
+        .and_then(|source| source.split("    fn value(").next())
+        .expect("durable evaluator type-syntax resolver");
     assert!(
-        evaluator.contains("resolve_type_syntax(&self.program, syntax)"),
+        type_syntax_resolver.contains("resolve_type_syntax(&self.program, syntax)"),
         "legacy type syntax consumers must retain their provider-owned substitution view"
     );
+    assert!(
+        type_syntax_resolver
+            .contains("map_err(crate::durable_comptime::durable_comptime_type_syntax_failure)"),
+        "legacy type syntax consumers must use the comptime-evaluation failure adapter"
+    );
+    assert!(!type_syntax_resolver.contains("SemanticTypeSyntaxError::"));
+    assert!(!type_syntax_resolver.contains("format!(\"{other:?}\")"));
+    let signature_type_syntax_adapter = database
+        .split("fn semantic_type_query_failure(")
+        .nth(1)
+        .and_then(|source| source.split("fn resolve_parsed_semantic_signature(").next())
+        .expect("signature type-syntax failure adapter");
+    assert!(
+        signature_type_syntax_adapter.contains("classify_durable_type_syntax_failure(failure)")
+    );
+    for detailed in ["ErrorKind::UnknownType", "ErrorKind::UnknownModuleMember"] {
+        assert!(
+            signature_type_syntax_adapter.contains(detailed),
+            "signature type-syntax adapter must preserve detailed diagnostics: {detailed}"
+        );
+    }
+    assert!(!signature_type_syntax_adapter.contains("durable_comptime_type_syntax_failure"));
     assert!(evaluator.contains("let expected = self.resolve_type_syntax(*annotation)?;"));
     let type_literal = evaluator
         .split("fn eval_type_literal(")
@@ -5906,7 +5933,7 @@ fn match_patterns_have_one_air_decoder_and_one_durable_kernel() {
 
     let durable = include_str!("durable_comptime.rs");
     let kernel = durable
-        .split("pub(crate) fn durable_match_pattern_matches(")
+        .split("pub(crate) fn durable_match_pattern_matches")
         .nth(1)
         .and_then(|source| source.split("\n}\n\n/// The canonical pure target").next())
         .expect("durable match kernel");
@@ -5914,7 +5941,7 @@ fn match_patterns_have_one_air_decoder_and_one_durable_kernel() {
     assert!(kernel.contains("binding_count: 0"));
     assert_eq!(
         durable
-            .matches("pub(crate) fn durable_match_pattern_matches(")
+            .matches("pub(crate) fn durable_match_pattern_matches")
             .count(),
         1
     );
@@ -5952,6 +5979,74 @@ fn match_patterns_have_one_air_decoder_and_one_durable_kernel() {
     assert!(rejection_kernel.contains("module used where a value is required"));
     assert!(
         rejection_kernel.contains("target descriptor used where a durable const value is required")
+    );
+}
+
+#[test]
+fn durable_air_host_is_composition_not_a_peer_interpreter() {
+    let durable = include_str!("durable_comptime.rs");
+    let host = durable
+        .split("pub(crate) struct DurableComptimeHost<")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("pub(crate) type DurableComptimeConstFrame =")
+                .next()
+        })
+        .expect("bounded durable AIR host composition");
+    assert!(host.contains("impl<A: DurableComptimeHostAuthority"));
+    assert!(host.contains("rue_air::ComptimeHost"));
+    assert!(host.contains("durable_session_mut()"));
+    assert!(host.contains("DurableComptimeScalarPolicy"));
+    assert!(host.contains("project_durable_anonymous_nominal"));
+    assert!(!host.contains("InstData::"));
+    assert!(!host.contains("fn eval("));
+    assert!(!host.contains("SemanticConstEvaluator"));
+    assert!(!host.contains("SemanticNucleusKey::ComptimeCall"));
+}
+
+#[test]
+fn durable_projection_failures_have_one_shared_semantic_mapping() {
+    let durable = include_str!("durable_comptime.rs");
+    let database = include_str!("revisioned_query_database.rs");
+    assert_eq!(
+        durable
+            .matches("pub(crate) fn durable_candidate_rir_semantic_failure(")
+            .count(),
+        1
+    );
+    assert_eq!(
+        durable
+            .matches("pub(crate) fn durable_materialization_semantic_failure(")
+            .count(),
+        1
+    );
+    let projection = durable
+        .split("fn durable_projection_failure_error(")
+        .nth(1)
+        .and_then(|source| source.split("\n}\n\n").next())
+        .expect("durable projection adapter");
+    assert!(projection.contains("durable_candidate_rir_semantic_failure(&failure)"));
+    assert!(projection.contains("durable_materialization_semantic_failure(failure)"));
+    assert!(!projection.contains("CandidateRirRejected(errors)"));
+    assert!(!projection.contains("Materialization::Build(error)"));
+    let candidate_wrapper = database
+        .split("fn candidate_rir_semantic_failure(")
+        .nth(1)
+        .and_then(|source| source.split("\n}\n\n").next())
+        .expect("legacy candidate failure adapter");
+    assert!(
+        candidate_wrapper
+            .contains("crate::durable_comptime::durable_candidate_rir_semantic_failure(failure)")
+    );
+    let materialization_wrapper = database
+        .split("fn semantic_materialization_failure(")
+        .nth(1)
+        .and_then(|source| source.split("\n}\n\n").next())
+        .expect("legacy materialization failure adapter");
+    assert!(
+        materialization_wrapper
+            .contains("crate::durable_comptime::durable_materialization_semantic_failure(failure)")
     );
 }
 

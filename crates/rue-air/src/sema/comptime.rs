@@ -279,6 +279,14 @@ pub trait ComptimeValue: Clone {
     fn as_boolean(&self) -> Option<bool>;
     fn as_type(&self) -> Option<Self::Type>;
 
+    /// Whether a reduced value may participate in an anonymous nominal's
+    /// captured value substitution.  Semantic domains with lexical handles
+    /// (for example modules and target descriptors) can opt out; ordinary
+    /// body values retain the historical all-values behavior.
+    fn eligible_for_comptime_capture(&self) -> bool {
+        true
+    }
+
     /// Recover optional declared integer metadata carried by a host value.
     /// The ordinary body value domain returns `None`; durable hosts may use
     /// this to retain operand typing after a child reduction.
@@ -625,8 +633,11 @@ where
             if let Some(t) = val.as_type() {
                 type_subst.insert(name.clone(), t);
                 value_subst.remove(name);
-            } else {
+            } else if val.eligible_for_comptime_capture() {
                 value_subst.insert(name.clone(), val.clone());
+                type_subst.remove(name);
+            } else {
+                value_subst.remove(name);
                 type_subst.remove(name);
             }
         }
@@ -689,6 +700,7 @@ mod value_domain_tests {
         static TICKET_EVENTS: RefCell<Vec<(usize, bool)>> = const { RefCell::new(Vec::new()) };
         static PRODUCER_CALLS: RefCell<Vec<(usize, usize, u32)>> = const { RefCell::new(Vec::new()) };
         static INTEGER_HINTS: RefCell<Vec<Option<FakeType>>> = const { RefCell::new(Vec::new()) };
+        static FINISH_ARITH_OPERATIONS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
         static METHOD_FAILURES: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
         static TYPE_RESOLUTION_CALLS: Cell<usize> = const { Cell::new(0) };
         static CHECKPOINTS: Cell<usize> = const { Cell::new(0) };
@@ -703,6 +715,7 @@ mod value_domain_tests {
         static EVALUATED_METHOD_EVENTS: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
         static EVALUATED_METHOD_ARGUMENT_CALLS: Cell<usize> = const { Cell::new(0) };
         static EVALUATED_METHOD_FAIL_ON_UNIT: Cell<bool> = const { Cell::new(false) };
+        static REJECT_QUALIFIED_ENUM: Cell<bool> = const { Cell::new(false) };
         static REJECT_ADMISSION: Cell<bool> = const { Cell::new(false) };
         static REJECT_BIND_AT: Cell<Option<usize>> = const { Cell::new(None) };
         static NAMED_VALUE_CALLS: Cell<usize> = const { Cell::new(0) };
@@ -2124,9 +2137,10 @@ mod value_domain_tests {
             &self,
             result: CheckedIntegerResult,
             _ty: Option<Self::Type>,
-            _op: &str,
+            op: &str,
             site: &ComptimeDiagnosticSite<Self::ProgramKey>,
         ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
+            FINISH_ARITH_OPERATIONS.with(|operations| operations.borrow_mut().push(op.to_owned()));
             DIAGNOSTIC_SITES.with(|sites| {
                 sites
                     .borrow_mut()
@@ -2603,8 +2617,12 @@ mod value_domain_tests {
             &mut self,
             _type_name: Self::Name,
             _variant: Self::Name,
+            has_module: bool,
             _site: &ComptimeSite<Self::ProgramKey>,
         ) -> ComptimeHostResult<bool, Self::Failure> {
+            if has_module && REJECT_QUALIFIED_ENUM.with(Cell::get) {
+                return Err(ComptimeHostError::HostFailure(FAKE_FAILURE));
+            }
             Ok(self.admits_durable_forms())
         }
 
@@ -3112,6 +3130,53 @@ mod value_domain_tests {
                 .iter()
                 .any(|(file, _)| file.index == 0xFFFF_FFFA)
         );
+    }
+
+    #[test]
+    fn qualified_enum_admission_rejects_before_evaluating_module_child() {
+        clear_named_value_observations();
+        REJECT_QUALIFIED_ENUM.with(|reject| reject.set(true));
+        let mut editor = rue_rir::RirEditor::new();
+        let interner = lasso::ThreadedRodeo::new();
+        let module_name = interner.get_or_intern("module");
+        let module = editor.add_inst(rue_rir::Inst {
+            data: InstData::VarRef {
+                name: module_name,
+                anchor: None,
+            },
+            span: Span::new(0, 6),
+        });
+        let enum_variant = editor.add_inst(rue_rir::Inst {
+            data: InstData::EnumVariant {
+                module: Some(module),
+                type_name: interner.get_or_intern("Arch"),
+                variant: interner.get_or_intern("X86_64"),
+            },
+            span: Span::new(0, 14),
+        });
+        let mut host = FakeHost {
+            programs: vec![editor.finish()],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result = ComptimeEngine::new(&mut host)
+            .evaluate(ComptimeFrame::expression(0, enum_variant), &mut env);
+        assert!(matches!(result, ComptimeOutcome::HostFailure(FAKE_FAILURE)));
+        assert_eq!(
+            NAMED_VALUE_CALLS.with(Cell::get),
+            0,
+            "qualified enum rejection must precede module-child evaluation"
+        );
+        REJECT_QUALIFIED_ENUM.with(|reject| reject.set(false));
+        clear_named_value_observations();
     }
 
     #[test]
@@ -3884,6 +3949,48 @@ mod value_domain_tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn direct_negative_literal_uses_the_distinct_negation_operation() {
+        let mut editor = rue_rir::RirEditor::new();
+        let magnitude = editor.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(129),
+            span: Span::new(0, 3),
+        });
+        let negative = editor.add_inst(rue_rir::Inst {
+            data: InstData::Neg { operand: magnitude },
+            span: Span::new(0, 4),
+        });
+        let interner = lasso::ThreadedRodeo::new();
+        let mut host = FakeHost {
+            programs: vec![editor.finish()],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        FINISH_ARITH_OPERATIONS.with(|operations| operations.borrow_mut().clear());
+
+        assert!(matches!(
+            ComptimeEngine::new(&mut host).evaluate(
+                ComptimeFrame {
+                    expected_result: Some(FakeType(8)),
+                    ..ComptimeFrame::expression(0, negative)
+                },
+                &mut env,
+            ),
+            ComptimeOutcome::RuntimeDependent
+        ));
+        FINISH_ARITH_OPERATIONS.with(|operations| {
+            assert_eq!(operations.borrow().as_slice(), ["negation"]);
+        });
     }
 
     #[test]
@@ -6706,6 +6813,17 @@ pub trait ComptimeHost {
         ty: &Self::Type,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure;
+    /// Give a semantic host a chance to preserve a checked-negation policy
+    /// after the operand has been reduced. Ordinary hosts retain the
+    /// historical immediate `CannotNegate` terminal; durable hosts may defer
+    /// to their checked integer-result policy.
+    fn reject_unsigned_negation(
+        &self,
+        ty: &Self::Type,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Option<Self::Failure> {
+        Some(self.cannot_negate(ty, site))
+    }
     fn unsupported_anon_method_type_param(
         &self,
         method_name: &str,
@@ -7110,6 +7228,7 @@ pub trait ComptimeHost {
         &mut self,
         _type_name: Self::Name,
         _variant: Self::Name,
+        _has_module: bool,
         _site: &ComptimeSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<bool, Self::Failure> {
         Ok(false)
@@ -8330,9 +8449,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         outcome_value!(self.unary_integer_type_for(env, inst_ref, &literal, span,));
                     if let Some(ref ty) = ty {
                         if self.host.type_is_unsigned(ty) {
-                            return ComptimeOutcome::HostFailure(
-                                self.host.cannot_negate(ty, &self.diagnostic_site(span)),
-                            );
+                            if let Some(failure) = self
+                                .host
+                                .reject_unsigned_negation(ty, &self.diagnostic_site(span))
+                            {
+                                return ComptimeOutcome::HostFailure(failure);
+                            }
                         }
                     }
                     // The literal path uses mathematical magnitude semantics:
@@ -8345,7 +8467,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             || CheckedIntegerResult::from_raw((magnitude as i128).checked_neg()),
                             |integer| integer.checked_neg_literal_report_i128(magnitude as i128),
                         );
-                    self.finish_arith_value(result, ty, "-", span)
+                    self.finish_arith_value(result, ty, "negation", span)
                 } else {
                     match self.eval(*operand, env) {
                         ComptimeOutcome::Known(value) => {
@@ -8360,9 +8482,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             );
                             if let Some(ref ty) = ty {
                                 if self.host.type_is_unsigned(ty) {
-                                    return ComptimeOutcome::HostFailure(
-                                        self.host.cannot_negate(ty, &self.diagnostic_site(span)),
-                                    );
+                                    if let Some(failure) = self
+                                        .host
+                                        .reject_unsigned_negation(ty, &self.diagnostic_site(span))
+                                    {
+                                        return ComptimeOutcome::HostFailure(failure);
+                                    }
                                 }
                             }
                             let result = match ty
@@ -8381,7 +8506,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                                 }
                                 None => CheckedIntegerResult::from_raw(n.checked_neg()),
                             };
-                            self.finish_arith_value(result, ty, "-", span)
+                            self.finish_arith_value(result, ty, "negation", span)
                         }
                         other => other,
                     }
@@ -9230,6 +9355,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 if !host_value!(self.host.admit_comptime_enum_variant(
                     type_name.clone(),
                     variant.clone(),
+                    module.is_some(),
                     &site,
                 )) {
                     return ComptimeOutcome::RuntimeDependent;

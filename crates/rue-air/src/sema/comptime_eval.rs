@@ -2189,7 +2189,17 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         op: &str,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<Option<ConstValue>, Self::Failure> {
-        OrdinaryBodyEngine::finish_arith(self, result, ty, op, site.span()).map_err(Into::into)
+        // The engine uses a distinct semantic token for unary negation so
+        // durable hosts can preserve its operation-specific wording. The
+        // ordinary body diagnostic remains the historical `-` spelling.
+        OrdinaryBodyEngine::finish_arith(
+            self,
+            result,
+            ty,
+            if op == "negation" { "-" } else { op },
+            site.span(),
+        )
+        .map_err(Into::into)
     }
     fn resolve_named_type_value(
         &mut self,

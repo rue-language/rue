@@ -2391,33 +2391,13 @@ fn candidate_rir_artifact_failure_errors(
 fn candidate_rir_semantic_failure(
     failure: &DeclarationBodyPlanFailure,
 ) -> crate::semantic_query_nucleus::SemanticNucleusFailure {
-    use crate::semantic_query_nucleus::SemanticNucleusFailure as Failure;
-    match failure {
-        DeclarationBodyPlanFailure::Build(kind) => Failure::Diagnostic(kind.clone()),
-        DeclarationBodyPlanFailure::CandidateRirRejected(errors) => {
-            Failure::Syntax(Arc::from(errors.to_string()))
-        }
-        failure => Failure::Resolution(Arc::from(format!(
-            "candidate RIR artifact failed: {failure:?}"
-        ))),
-    }
+    crate::durable_comptime::durable_candidate_rir_semantic_failure(failure)
 }
 
 fn semantic_materialization_failure(
     failure: crate::canonical_lower::BodyPlanMaterializationFailure,
 ) -> Result<crate::semantic_query_nucleus::SemanticNucleusFailure, QueryAbort> {
-    use crate::canonical_lower::BodyPlanMaterializationFailure as Materialization;
-    use crate::semantic_query_nucleus::SemanticNucleusFailure as Failure;
-    match failure {
-        Materialization::Query(abort) => Err(abort),
-        Materialization::Build(error) => Ok(Failure::Diagnostic(
-            crate::canonical_lower::rir_build_error_kind(
-                "declaration-time candidate materialization",
-                &error,
-            ),
-        )),
-        Materialization::Invalid(detail) => Ok(Failure::Resolution(detail)),
-    }
+    crate::durable_comptime::durable_materialization_semantic_failure(failure)
 }
 
 fn candidate_rir_composition_failure_error(
@@ -4177,26 +4157,7 @@ fn durable_legacy_named_array_length_failure(
     name: &str,
     error: crate::durable_comptime::DurableComptimeArrayLengthError,
 ) -> crate::semantic_query_nucleus::SemanticNucleusFailure {
-    use crate::durable_comptime::DurableComptimeArrayLengthError as E;
-    match error {
-        E::Module => crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
-            "module used where a value is required".into(),
-        ),
-        E::TargetEnum => crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
-            "target descriptor used where a durable const value is required".into(),
-        ),
-        E::NonInteger | E::Negative(_) | E::TooLarge(_) => {
-            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                rue_error::ErrorKind::InvalidArrayLength {
-                    reason: if matches!(error, E::NonInteger) {
-                        format!("array length expression '{name}' is not an integer")
-                    } else {
-                        format!("array length expression '{name}' is negative or too large")
-                    },
-                },
-            )
-        }
-    }
+    crate::durable_comptime::durable_named_array_length_failure(name, error)
 }
 
 fn durable_provider_named_array_length_failure(
@@ -6982,6 +6943,16 @@ impl crate::durable_comptime::DurableComptimeForeignCallAuthority
     }
 }
 
+impl crate::durable_comptime::DurableComptimeHostAuthority for DurableComptimeRootAuthority<'_> {
+    fn durable_session(&self) -> &crate::durable_comptime::DurableComptimeSession {
+        &self.session
+    }
+
+    fn durable_session_mut(&mut self) -> &mut crate::durable_comptime::DurableComptimeSession {
+        &mut self.session
+    }
+}
+
 fn project_named_value_candidate(
     provider: &SemanticNucleusTypeProvider<'_>,
     accessing_source: &crate::StableDefinitionKey,
@@ -7171,6 +7142,54 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
                 |symbol| registered.symbols[symbol.into_usize()].as_ref(),
             )
         })
+    }
+
+    fn begin_structured_type(
+        &mut self,
+        program: &crate::body_query::DurableComptimeProgramKey,
+        syntax: rue_rir::RirTypeSyntaxRef,
+        type_substitutions: Vec<(Arc<str>, crate::durable_semantics::DurableType)>,
+        value_substitutions: Vec<(Arc<str>, crate::durable_semantics::DurableConstValue)>,
+    ) -> Result<
+        crate::durable_comptime::DurableStructuredTypePoll,
+        crate::durable_comptime::DurableStructuredTypeBeginError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        crate::durable_comptime::begin_durable_structured_type(
+            &self.session,
+            program,
+            syntax,
+            type_substitutions,
+            value_substitutions,
+            &mut self.provider,
+        )
+    }
+
+    fn resume_structured_type(
+        &mut self,
+        job: crate::durable_comptime::DurableStructuredTypeJob,
+        reduced: rue_air::SemanticProviderResult<
+            Option<
+                rue_air::SemanticComptimeCallResult<
+                    crate::durable_semantics::DurableType,
+                    crate::durable_semantics::DurableConstValue,
+                >,
+            >,
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    ) -> Result<
+        crate::durable_comptime::DurableStructuredTypePoll,
+        rue_air::SemanticTypeSyntaxError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+            StableDefinitionKey,
+            Arc<str>,
+        >,
+    > {
+        crate::durable_comptime::resume_durable_structured_type(job, &mut self.provider, reduced)
     }
 
     fn begin_comptime_call_admission(
@@ -7670,15 +7689,7 @@ impl SemanticConstEvaluator<'_, '_> {
             crate::durable_comptime::DurableComptimeServices::new(&mut *self.authority);
         services
             .resolve_type_syntax(&self.program, syntax)
-            .map_err(|error| match error {
-                rue_air::SemanticTypeSyntaxError::ProviderAbort(abort) => {
-                    EvaluateSemanticConstError::Abort(abort)
-                }
-                rue_air::SemanticTypeSyntaxError::ProviderFailure(failure) => {
-                    EvaluateSemanticConstError::failure(failure)
-                }
-                other => Self::failure_value(format!("{other:?}")),
-            })
+            .map_err(crate::durable_comptime::durable_comptime_type_syntax_failure)
     }
 
     fn value(
@@ -11051,59 +11062,70 @@ fn semantic_type_query_failure(
         Arc<str>,
     >,
 ) -> ResolveSemanticSignatureError {
-    use rue_air::SemanticResolutionError as E;
     use rue_air::SemanticTypeSyntaxFailure as F;
     use rue_error::ErrorKind;
-    match failure {
-        E::ProviderAbort(abort) => ResolveSemanticSignatureError::Abort(abort),
-        E::ProviderFailure(failure) => ResolveSemanticSignatureError::failure(failure),
-        E::Semantic(F::UnknownType { syntax }) => ResolveSemanticSignatureError::failure(
-            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                ErrorKind::UnknownType(syntax.to_string()),
-            ),
-        ),
-        E::Semantic(F::UnknownModuleMember { module, member, .. }) => {
-            ResolveSemanticSignatureError::failure(
-                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                    ErrorKind::UnknownModuleMember {
-                        module_name: module.to_string(),
-                        member_name: member.to_string(),
-                    },
+
+    match crate::durable_comptime::classify_durable_type_syntax_failure(failure) {
+        crate::durable_comptime::DurableTypeSyntaxClassification::Abort(abort) => {
+            ResolveSemanticSignatureError::Abort(abort)
+        }
+        crate::durable_comptime::DurableTypeSyntaxClassification::Failure(failure) => {
+            ResolveSemanticSignatureError::failure(failure)
+        }
+        crate::durable_comptime::DurableTypeSyntaxClassification::Semantic(failure) => {
+            match failure {
+                F::UnknownType { syntax } => ResolveSemanticSignatureError::failure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                        ErrorKind::UnknownType(syntax.to_string()),
+                    ),
                 ),
-            )
+                F::UnknownModuleMember { module, member, .. } => {
+                    ResolveSemanticSignatureError::failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                            ErrorKind::UnknownModuleMember {
+                                module_name: module.to_string(),
+                                member_name: member.to_string(),
+                            },
+                        ),
+                    )
+                }
+                F::ValueWhereTypeExpected { parameter, .. } => {
+                    ResolveSemanticSignatureError::failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
+                            Arc::from(format!(
+                                "argument for comptime parameter `{parameter}` must be a type"
+                            )),
+                        ),
+                    )
+                }
+                F::InvalidConstructorArity {
+                    constructor,
+                    expected,
+                    found,
+                    ..
+                } => ResolveSemanticSignatureError::failure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(Arc::from(
+                        format!(
+                            "type constructor `{constructor}` expects {expected} comptime type argument(s), but {found} provided"
+                        ),
+                    )),
+                ),
+                F::NotTypeConstructor { constructor, .. } => {
+                    ResolveSemanticSignatureError::failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
+                            Arc::from(format!("function `{constructor}` is not a type")),
+                        ),
+                    )
+                }
+                other => ResolveSemanticSignatureError::failure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason: format!("{other:?}"),
+                        },
+                    ),
+                ),
+            }
         }
-        E::Semantic(F::ValueWhereTypeExpected { parameter, .. }) => {
-            ResolveSemanticSignatureError::failure(
-                crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(Arc::from(
-                    format!("argument for comptime parameter `{parameter}` must be a type"),
-                )),
-            )
-        }
-        E::Semantic(F::InvalidConstructorArity {
-            constructor,
-            expected,
-            found,
-            ..
-        }) => ResolveSemanticSignatureError::failure(
-            crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(Arc::from(format!(
-                "type constructor `{constructor}` expects {expected} comptime type argument(s), but {found} provided"
-            ))),
-        ),
-        E::Semantic(F::NotTypeConstructor { constructor, .. }) => {
-            ResolveSemanticSignatureError::failure(
-                crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(Arc::from(
-                    format!("function `{constructor}` is not a type"),
-                )),
-            )
-        }
-        E::ComptimeCallTypeArgument { error, .. } => semantic_type_query_failure(*error),
-        other => ResolveSemanticSignatureError::failure(
-            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!("{other:?}"),
-                },
-            ),
-        ),
     }
 }
 
@@ -30344,6 +30366,67 @@ fn main() -> i32 {
             || Ok(()),
         )
         .unwrap();
+        // Build a deliberately qualified enum node directly in RIR.  The
+        // source parser's dotted expression is a FieldGet until semantic
+        // resolution, so a source-only fixture cannot exercise AIR's
+        // pre-child EnumVariant admission contract.
+        let mut qualified_editor = rue_rir::RirEditor::new();
+        let qualified_interner = lasso::ThreadedRodeo::new();
+        let module_symbol = qualified_interner.get_or_intern("module");
+        let type_symbol = qualified_interner.get_or_intern("Arch");
+        let variant_symbol = qualified_interner.get_or_intern("X86_64");
+        let module_ref = qualified_editor.add_inst(rue_rir::Inst {
+            data: InstData::VarRef {
+                name: module_symbol,
+                anchor: None,
+            },
+            span: rue_span::Span::new(0, 6),
+        });
+        let qualified_body = qualified_editor.add_inst(rue_rir::Inst {
+            data: InstData::EnumVariant {
+                module: Some(module_ref),
+                type_name: type_symbol,
+                variant: variant_symbol,
+            },
+            span: rue_span::Span::new(0, 14),
+        });
+        let qualified_rir = rue_rir::ValidatedRir::finish(
+            qualified_editor,
+            &rue_rir::RirValidationContext {
+                symbol_count: qualified_interner.len(),
+                source_lengths: &[(FileId::DEFAULT, 32)],
+            },
+        )
+        .unwrap();
+        let qualified_symbols: Arc<[Arc<str>]> = (0..qualified_interner.len())
+            .map(|index| {
+                Arc::from(
+                    qualified_interner
+                        .resolve(&lasso::Spur::try_from_usize(index).unwrap())
+                        .to_owned(),
+                )
+            })
+            .collect();
+        let qualified_key = crate::body_query::DurableComptimeProgramKey {
+            declaration: StableDefinitionKey::from_stable_parts(
+                candidate.module.clone(),
+                crate::StableDefinitionNamespace::Value,
+                crate::StableDefinitionKind::Function,
+                "qualified_test",
+                None,
+            ),
+            configuration: configuration.clone(),
+        };
+        let qualified_core = OwnedComptimeProgramCore::from_test_rir(
+            DurableComptimeProgramPlan {
+                key: qualified_key.clone(),
+                candidate: candidate.clone(),
+            },
+            qualified_rir,
+            qualified_symbols,
+            qualified_body,
+            qualified_body,
+        );
         let root = core.callable().unwrap().root;
         let (type_syntax, value_syntax, abort_syntax, named_syntax) = match &core.rir.get(root).data
         {
@@ -30406,6 +30489,30 @@ fn main() -> i32 {
                     },
                 };
                 authority.session.register_program(&core).unwrap();
+                authority
+                    .session
+                    .register_program(&qualified_core)
+                    .unwrap();
+
+                // Exercise the production host through the canonical AIR
+                // dispatcher, using the exact registered callable body. This
+                // is deliberately a non-root harness: query roots remain on
+                // SemanticConstEvaluator in this staged migration.
+                let callable = core.callable().expect("callable fixture").clone();
+                let mut host = crate::durable_comptime::DurableComptimeHost::new(&mut authority);
+                let mut env = rue_air::ComptimeEnv::new();
+                let outcome = rue_air::ComptimeEngine::new(&mut host).evaluate(
+                    rue_air::ComptimeFrame::expression(program_key.clone(), callable.body),
+                    &mut env,
+                );
+                assert!(matches!(
+                    outcome,
+                    rue_air::ComptimeOutcome::Known(
+                        crate::durable_comptime::EvaluatedSemanticConst::Value(value)
+                    ) if matches!(value.value, crate::durable_semantics::DurableConstValue::Integer(1))
+                ));
+
+                drop(host);
 
                 let expected_types = BTreeMap::from([(Arc::from("OLD"), T::I8)]);
                 let expected_values = BTreeMap::from([(Arc::from("OLD"), V::Integer(7))]);
@@ -30493,6 +30600,41 @@ fn main() -> i32 {
                 assert_eq!(authority.provider.substitutions, expected_types);
                 assert_eq!(authority.provider.value_substitutions, expected_values);
 
+                // The qualified EnumVariant fixture is registered above and
+                // evaluated through the canonical AIR dispatcher. Cancellation
+                // is armed by the host at the admission boundary as a
+                // child-evaluation tripwire: if AIR ever evaluates
+                // `module_ref` before admission rejects the path, its eval
+                // checkpoint must return QueryAbort::Canceled rather than the
+                // expected typed semantic HostFailure.
+                crate::durable_comptime::set_enum_variant_child_tripwire(Some(
+                    cancel_in_closure.clone(),
+                ));
+                let dependencies_before_qualified = authority.provider.dependencies.clone();
+                let mut qualified_env = rue_air::ComptimeEnv::new();
+                let mut qualified_host =
+                    crate::durable_comptime::DurableComptimeHost::new(&mut authority);
+                let qualified_outcome = rue_air::ComptimeEngine::new(&mut qualified_host).evaluate(
+                    rue_air::ComptimeFrame::expression(qualified_key, qualified_body),
+                    &mut qualified_env,
+                );
+                let rue_air::ComptimeOutcome::HostFailure(qualified_failure) = qualified_outcome
+                else {
+                    panic!("qualified enum should be a durable host failure: {qualified_outcome:?}");
+                };
+                assert!(matches!(
+                    qualified_failure.semantic_failure(),
+                    Some(crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
+                        message
+                    )) if message.as_ref() == "expression is not supported in declaration-time comptime"
+                ));
+                drop(qualified_host);
+                crate::durable_comptime::set_enum_variant_child_tripwire(None);
+                assert_eq!(
+                    authority.provider.dependencies,
+                    dependencies_before_qualified,
+                    "qualified enum admission must not evaluate its module child"
+                );
                 cancel_in_closure.cancel();
                 let aborted = {
                     let mut services =
@@ -45633,5 +45775,36 @@ fn main() -> i32 {
             anonymous_identity_for_digest_test("TooLate", rue_air::AnonymousNominalKind::Struct),
             1,
         );
+    }
+
+    #[test]
+    fn type_syntax_adapters_preserve_comptime_and_signature_diagnostics() {
+        use rue_air::{SemanticResolutionError as E, SemanticTypeSyntaxFailure as F};
+
+        let nested = E::ComptimeCallTypeArgument {
+            constructor: Arc::from("Box"),
+            argument_index: 0,
+            argument: Arc::from("Sef"),
+            error: Box::new(E::Semantic(F::UnknownType {
+                syntax: Arc::from("Sef"),
+            })),
+        };
+        let comptime =
+            crate::durable_comptime::durable_comptime_type_syntax_failure(nested.clone());
+        assert!(matches!(
+            comptime,
+            crate::durable_comptime::DurableComptimeFailure::Failure(value)
+                if matches!(value.as_ref(), crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(reason)
+                    if reason.contains("Semantic(UnknownType"))
+        ));
+
+        let signature = semantic_type_query_failure(nested);
+        assert!(matches!(
+            signature,
+            ResolveSemanticSignatureError::Failure(value)
+                if matches!(value.as_ref(), crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::UnknownType(syntax)
+                ) if syntax == "Sef")
+        ));
     }
 }
