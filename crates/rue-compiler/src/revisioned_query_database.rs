@@ -7466,9 +7466,20 @@ impl SemanticConstEvaluator<'_, '_> {
         expression: rue_rir::InstRef,
     ) -> Result<bool, EvaluateSemanticConstError> {
         let evaluated = self.eval(expression)?;
-        match self.value(evaluated)?.value {
-            crate::durable_semantics::DurableConstValue::Bool(value) => Ok(value),
-            _ => Self::failure("comptime condition is not boolean"),
+        match &evaluated {
+            EvaluatedSemanticConst::Value(value) => match value.value {
+                crate::durable_semantics::DurableConstValue::Bool(value) => Ok(value),
+                _ => Err(
+                    crate::durable_comptime::DurableComptimeFailure::comptime_rejection(
+                        rue_air::ComptimeSemanticRejection::ConditionNotBoolean(evaluated),
+                    ),
+                ),
+            },
+            _ => Err(
+                crate::durable_comptime::DurableComptimeFailure::comptime_rejection(
+                    rue_air::ComptimeSemanticRejection::ConditionNotBoolean(evaluated),
+                ),
+            ),
         }
     }
 
@@ -7478,10 +7489,22 @@ impl SemanticConstEvaluator<'_, '_> {
     ) -> Result<(i128, Option<crate::durable_semantics::DurableType>), EvaluateSemanticConstError>
     {
         let evaluated = self.eval(expression)?;
-        let typed = self.value(evaluated)?;
-        match typed.value {
-            crate::durable_semantics::DurableConstValue::Integer(value) => Ok((value, typed.ty)),
-            _ => Self::failure("comptime arithmetic operand is not an integer"),
+        match &evaluated {
+            EvaluatedSemanticConst::Value(typed) => match typed.value {
+                crate::durable_semantics::DurableConstValue::Integer(value) => {
+                    Ok((value, typed.ty.clone()))
+                }
+                _ => Err(
+                    crate::durable_comptime::DurableComptimeFailure::comptime_rejection(
+                        rue_air::ComptimeSemanticRejection::UnaryOperandNotInteger(evaluated),
+                    ),
+                ),
+            },
+            _ => Err(
+                crate::durable_comptime::DurableComptimeFailure::comptime_rejection(
+                    rue_air::ComptimeSemanticRejection::UnaryOperandNotInteger(evaluated),
+                ),
+            ),
         }
     }
 
@@ -7661,7 +7684,11 @@ impl SemanticConstEvaluator<'_, '_> {
         let saved_values = self.authority.provider.value_substitutions.clone();
         let count = self.rir.block_inst_count(instructions);
         let Some(last) = count.checked_sub(1) else {
-            return Self::failure("comptime block has no result instruction");
+            return Err(
+                crate::durable_comptime::DurableComptimeFailure::comptime_rejection(
+                    rue_air::ComptimeSemanticRejection::EmptyBlock,
+                ),
+            );
         };
         for index in 0..last {
             let statement = self
@@ -7759,8 +7786,10 @@ impl SemanticConstEvaluator<'_, '_> {
                     }
                 }
                 rue_rir::InstData::Assign { .. } => {
-                    return Self::failure(
-                        "assignment is not supported in declaration-time comptime",
+                    return Err(
+                        crate::durable_comptime::DurableComptimeFailure::comptime_rejection(
+                            rue_air::ComptimeSemanticRejection::Assignment,
+                        ),
                     );
                 }
                 _ => {
@@ -8352,7 +8381,19 @@ impl SemanticConstEvaluator<'_, '_> {
                 )?;
                 let result = if matches!(&instruction.data, E::Neg { .. }) {
                     let Some(integer) = durable_int_width(&ty) else {
-                        return Self::failure("comptime negation operand is not an integer");
+                        return Err(
+                            crate::durable_comptime::DurableComptimeFailure::comptime_rejection(
+                                rue_air::ComptimeSemanticRejection::UnaryTypeNotInteger {
+                                    operation: rue_air::ComptimeUnaryOperation::Neg,
+                                    value: EvaluatedSemanticConst::Value(
+                                        TypedSemanticConst::typed(
+                                            V::Integer(operand_value),
+                                            ty.clone(),
+                                        ),
+                                    ),
+                                },
+                            ),
+                        );
                     };
                     let report = if matches!(&self.rir.get(*operand).data, E::IntConst(_)) {
                         integer.checked_neg_literal_report_i128(operand_value)
@@ -8367,7 +8408,19 @@ impl SemanticConstEvaluator<'_, '_> {
                     // `~0u8` is 255, not the i128 -1 this used to compute and
                     // then reject as out of range for u8 (RUE-1698).
                     let Some(width) = durable_int_width(&ty) else {
-                        return Self::failure("comptime bitwise NOT operand is not an integer");
+                        return Err(
+                            crate::durable_comptime::DurableComptimeFailure::comptime_rejection(
+                                rue_air::ComptimeSemanticRejection::UnaryTypeNotInteger {
+                                    operation: rue_air::ComptimeUnaryOperation::BitNot,
+                                    value: EvaluatedSemanticConst::Value(
+                                        TypedSemanticConst::typed(
+                                            V::Integer(operand_value),
+                                            ty.clone(),
+                                        ),
+                                    ),
+                                },
+                            ),
+                        );
                     };
                     return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
                         V::Integer(width.bitnot_i128(operand_value)),
@@ -8492,16 +8545,13 @@ impl SemanticConstEvaluator<'_, '_> {
                 let Some(intrinsic) =
                     rue_air::ComptimeTypeIntrinsic::from_name(intrinsic_name.as_ref())
                 else {
-                    return Err(Self::domain_failure(
-                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                            rue_error::ErrorKind::ConstExprNotSupported {
-                                expr_kind: format!(
-                                    "intrinsic `@{}`",
-                                    semantic_candidate_spelling(self.symbols, name)
-                                ),
-                            },
+                    return Err(
+                        crate::durable_comptime::DurableComptimeFailure::comptime_rejection(
+                            rue_air::ComptimeSemanticRejection::UnsupportedIntrinsic(
+                                semantic_candidate_spelling(self.symbols, name).to_owned(),
+                            ),
                         ),
-                    ));
+                    );
                 };
                 let ty = self.resolve_type_syntax(*type_arg)?;
                 let ownership_kind = match intrinsic {
@@ -8579,24 +8629,23 @@ impl SemanticConstEvaluator<'_, '_> {
                 self.authority.legacy_effects.observe_dependency(dependency);
                 Ok(value)
             }
-            E::StructInit { .. } | E::ArrayInit { .. } => Err(Self::domain_failure(
-                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                    rue_error::ErrorKind::ConstExprNotSupported {
-                        expr_kind: "aggregate expression".to_owned(),
-                    },
+            E::StructInit { .. } | E::ArrayInit { .. } => Err(
+                crate::durable_comptime::DurableComptimeFailure::comptime_rejection(
+                    rue_air::ComptimeSemanticRejection::AggregateExpression,
                 ),
-            )),
-            E::Intrinsic { name, .. } => Err(Self::domain_failure(
-                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                    rue_error::ErrorKind::ConstExprNotSupported {
-                        expr_kind: format!(
-                            "intrinsic `@{}`",
-                            semantic_candidate_spelling(self.symbols, name)
-                        ),
-                    },
+            ),
+            E::Intrinsic { name, .. } => Err(
+                crate::durable_comptime::DurableComptimeFailure::comptime_rejection(
+                    rue_air::ComptimeSemanticRejection::UnsupportedIntrinsic(
+                        semantic_candidate_spelling(self.symbols, name).to_owned(),
+                    ),
                 ),
-            )),
-            _ => Self::failure("expression is not supported in declaration-time comptime"),
+            ),
+            _ => Err(
+                crate::durable_comptime::DurableComptimeFailure::comptime_rejection(
+                    rue_air::ComptimeSemanticRejection::UnsupportedExpression,
+                ),
+            ),
         }
     }
 }

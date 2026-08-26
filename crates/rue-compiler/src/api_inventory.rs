@@ -4914,6 +4914,41 @@ fn match_patterns_have_one_air_decoder_and_one_durable_kernel() {
             .count(),
         1
     );
+    let rejection_kernel = durable
+        .split("pub(crate) fn comptime_rejection(")
+        .nth(1)
+        .and_then(|source| source.split("\n    pub(crate) fn maximum_depth(").next())
+        .expect("durable rejection kernel");
+    for rejection in [
+        "ConditionNotBoolean",
+        "ArithmeticOperandNotInteger",
+        "UnaryOperandNotInteger",
+        "UnaryTypeNotInteger",
+        "Assignment",
+        "AggregateExpression",
+        "EmptyBlock",
+        "UnsupportedIntrinsic(name)",
+        "UnsupportedExpression",
+    ] {
+        assert!(
+            rejection_kernel.contains(rejection),
+            "durable rejection kernel missing {rejection}"
+        );
+    }
+    assert!(rejection_kernel.contains("operation"));
+    assert!(rejection_kernel.contains("ComptimeUnaryOperation::Neg"));
+    assert!(rejection_kernel.contains("ComptimeUnaryOperation::BitNot"));
+    let legacy_eval_binary = include_str!("revisioned_query_database.rs")
+        .split("fn eval_binary(")
+        .nth(1)
+        .expect("legacy binary evaluator");
+    assert!(legacy_eval_binary.contains("let left = self.eval(lhs)?"));
+    assert!(legacy_eval_binary.contains("let right = self.eval(rhs)?"));
+    assert!(rejection_kernel.contains("Self::resolution"));
+    assert!(rejection_kernel.contains("module used where a value is required"));
+    assert!(
+        rejection_kernel.contains("target descriptor used where a durable const value is required")
+    );
 }
 
 #[test]

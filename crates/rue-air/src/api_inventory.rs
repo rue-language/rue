@@ -324,8 +324,139 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     assert!(contract.contains("Self::CanonicalIdentity"));
     assert!(contract.contains("Self::File,"));
     assert!(contract.contains("fn match_no_selected_arm("));
+    let rejection_hook = contract
+        .split("fn reject_comptime_expression(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("fn evaluate_binary_rhs_after_rejection(")
+                .next()
+        })
+        .expect("semantic rejection hook");
+    assert!(rejection_hook.contains("ComptimeSemanticRejection<Self::Value>"));
+    assert!(contract.contains("fn evaluate_binary_rhs_after_rejection("));
     assert!(contract.contains("ComptimeOutcome<Self::Value, Self::Failure>"));
+    assert!(production.contains("pub enum ComptimeSemanticRejection"));
+    assert!(production.contains("pub enum ComptimeIntegerOperation"));
+    assert!(production.contains("pub enum ComptimeUnaryOperation"));
+    for operation in [
+        "Add", "Sub", "Mul", "Div", "Mod", "Lt", "Gt", "Le", "Ge", "BitAnd", "BitOr", "BitXor",
+        "Shl", "Shr",
+    ] {
+        assert!(
+            production.contains(operation),
+            "missing integer operation: {operation}"
+        );
+    }
+    for (start, end, operation) in [
+        (
+            "InstData::Add { lhs, rhs } => {",
+            "InstData::Sub { lhs, rhs } => {",
+            "Add",
+        ),
+        (
+            "InstData::Sub { lhs, rhs } => {",
+            "InstData::Mul { lhs, rhs } => {",
+            "Sub",
+        ),
+        (
+            "InstData::Mul { lhs, rhs } => {",
+            "InstData::Div { lhs, rhs } | InstData::Mod { lhs, rhs } => {",
+            "Mul",
+        ),
+        (
+            "InstData::Lt { lhs, rhs } => {",
+            "InstData::Gt { lhs, rhs } => {",
+            "Lt",
+        ),
+        (
+            "InstData::Gt { lhs, rhs } => {",
+            "InstData::Le { lhs, rhs } => {",
+            "Gt",
+        ),
+        (
+            "InstData::Le { lhs, rhs } => {",
+            "InstData::Ge { lhs, rhs } => {",
+            "Le",
+        ),
+        (
+            "InstData::Ge { lhs, rhs } => {",
+            "// Logical operations",
+            "Ge",
+        ),
+        (
+            "InstData::BitAnd { lhs, rhs } => {",
+            "InstData::BitOr { lhs, rhs } => {",
+            "BitAnd",
+        ),
+        (
+            "InstData::BitOr { lhs, rhs } => {",
+            "InstData::BitXor { lhs, rhs } => {",
+            "BitOr",
+        ),
+        (
+            "InstData::BitXor { lhs, rhs } => {",
+            "InstData::Shl { lhs, rhs } | InstData::Shr { lhs, rhs } => {",
+            "BitXor",
+        ),
+    ] {
+        let arm = production
+            .split(start)
+            .nth(1)
+            .and_then(|source| source.split(end).next())
+            .unwrap_or_else(|| panic!("missing bounded {operation} dispatch arm"));
+        assert!(
+            arm.contains(&format!("ComptimeIntegerOperation::{operation},")),
+            "{start} is not routed through {operation} rejection policy"
+        );
+    }
+    let div_mod_arm = production
+        .split("InstData::Div { lhs, rhs } | InstData::Mod { lhs, rhs } => {")
+        .nth(1)
+        .and_then(|source| source.split("// Comparison operations").next())
+        .expect("bounded division/remainder dispatch arm");
+    assert!(div_mod_arm.contains(
+        "if is_div {\n                        ComptimeIntegerOperation::Div\n                    } else {\n                        ComptimeIntegerOperation::Mod\n                    }"
+    ));
+    let shift_arm = production
+        .split("InstData::Shl { lhs, rhs } | InstData::Shr { lhs, rhs } => {")
+        .nth(1)
+        .and_then(|source| source.split("InstData::BitNot { operand } => {").next())
+        .expect("bounded shift dispatch arm");
+    assert!(shift_arm.contains(
+        "if is_shl {\n                        ComptimeIntegerOperation::Shl\n                    } else {\n                        ComptimeIntegerOperation::Shr\n                    }"
+    ));
+    for rejection in [
+        "ConditionNotBoolean",
+        "ArithmeticOperandNotInteger",
+        "UnaryOperandNotInteger",
+        "UnaryTypeNotInteger",
+        "Assignment",
+        "AggregateExpression",
+        "EmptyBlock",
+        "UnsupportedIntrinsic(String)",
+        "UnsupportedExpression",
+    ] {
+        assert!(
+            production.contains(rejection),
+            "missing rejection: {rejection}"
+        );
+    }
     assert!(production.contains("decode_anon_method_descriptors"));
+    let neg_dispatch = production
+        .split("InstData::Neg { operand } => {")
+        .nth(1)
+        .and_then(|source| source.split("// These control-flow").next())
+        .expect("negation dispatch");
+    let evaluated_neg = neg_dispatch
+        .split("match self.eval(*operand, env)")
+        .nth(1)
+        .expect("nonliteral negation dispatch");
+    assert!(
+        evaluated_neg.find("value.as_integer()").unwrap()
+            < evaluated_neg.find("unary_integer_type_for").unwrap(),
+        "nonliteral negation must extract the scalar before unary type policy"
+    );
     assert!(production.contains("Root expression frames are intentionally ticket-free"));
     assert!(production.contains("if frame.name.is_none()"));
     assert!(!production.contains("eval_const_expr"));
