@@ -3474,7 +3474,9 @@ fn durable_comptime_services_are_named_authority_operations() {
             .unwrap_or_else(|| panic!("missing opaque struct {name}"));
         let derive = if matches!(
             bare_name,
-            "DurableStructuredTypePendingCall" | "DurableStructuredTypeProbedCall"
+            "DurableStructuredTypePendingCall"
+                | "DurableStructuredTypeProbedCall"
+                | "DurableStructuredTypeValidatedCall"
         ) {
             // These handoff structs intentionally have no derive attribute;
             // do not reach back into the preceding type's derive when
@@ -3528,6 +3530,7 @@ fn durable_comptime_services_are_named_authority_operations() {
     // Generic parameters may occur between `impl` and `Clone`; the
     // normalized `Clonefor...` marker catches those implementations too.
     assert!(!normalized_facade.contains("CloneforDurableComptime"));
+    assert!(!normalized_facade.contains("CloneforDurableStructuredType"));
     assert!(!normalized_facade.contains("CloneforDurableStructuredTypeProgramCapability"));
     let admitted_call = production_facade
         .split("pub(crate) struct DurableComptimeAdmittedCall {")
@@ -3707,6 +3710,7 @@ fn durable_comptime_services_are_named_authority_operations() {
     for name in [
         "DurableStructuredTypePendingCall",
         "DurableStructuredTypeProbedCall",
+        "DurableStructuredTypeValidatedCall",
     ] {
         let body = no_clone_private_struct(name);
         for forbidden in [
@@ -3752,14 +3756,28 @@ fn durable_comptime_services_are_named_authority_operations() {
         .nth(1)
         .and_then(|source| {
             source
-                .split("\n    }\n\n    /// Consume exactly one structured probe")
+                .split("\n    /// Validate the keyed constructor contract")
                 .next()
         })
         .expect("structured preparation funnel");
     assert!(structured_prepare.contains("self.lifecycle.prepare_structured_edge()"));
     assert!(structured_prepare.contains("job.request_view()"));
+    assert!(structured_prepare.contains("call_span"));
     for forbidden in ["probe_comptime_call", "query(", "eval(", "InstData"] {
         assert!(!structured_prepare.contains(forbidden));
+    }
+    let structured_validate = production_facade
+        .split("pub(crate) fn validate_structured_type_call(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n    /// Consume exactly one structured probe")
+                .next()
+        })
+        .expect("structured validation funnel");
+    assert!(structured_validate.contains("durable_structured_value_fit_failure("));
+    for forbidden in ["probe_comptime_call", "query(", "eval(", "InstData"] {
+        assert!(!structured_validate.contains(forbidden));
     }
     let structured_consume = production_facade
         .split("pub(crate) fn consume_structured_type_call(")
@@ -4177,7 +4195,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         .nth(1)
         .and_then(|source| {
             source
-                .split("\n    }\n\n    /// Consume exactly one structured probe")
+                .split("\n    /// Validate the keyed constructor contract")
                 .next()
         })
         .expect("structured capability validation");
@@ -5507,11 +5525,13 @@ fn durable_comptime_services_are_named_authority_operations() {
         .nth(1)
         .and_then(|source| source.split("fn resolve_value_argument(").next())
         .expect("durable structured comptime reducer");
-    assert!(structured_reducer.contains("durable_value_fit_failure("));
+    assert!(structured_reducer.contains("durable_structured_value_fit_failure("));
     assert_eq!(
-        database.matches("durable_value_fit_failure(").count(),
+        database
+            .matches("durable_structured_value_fit_failure(")
+            .count(),
         1,
-        "durable value-fit policy must have one structured-reducer consumer"
+        "durable structured value-fit mapping must have one legacy consumer"
     );
     assert!(evaluator.contains("import_site_for_instruction("));
     assert!(evaluator.contains("&self.program"));

@@ -737,6 +737,8 @@ mod value_domain_tests {
         static MATCH_SYMBOL_CALLS: Cell<usize> = const { Cell::new(0) };
         static DIAGNOSTIC_SITES: RefCell<Vec<(usize, u32, u32)>> =
             const { RefCell::new(Vec::new()) };
+        static STRUCTURED_PREPARE_SPANS: RefCell<Vec<Span>> =
+            const { RefCell::new(Vec::new()) };
         static EXPRESSION_INTRINSIC_REQUESTS:
             RefCell<Vec<ComptimeExpressionIntrinsicRequest<FakeName>>> =
             const { RefCell::new(Vec::new()) };
@@ -2687,6 +2689,7 @@ mod value_domain_tests {
         fn prepare_structured_type_call(
             &mut self,
             suspension: &Self::StructuredTypeSuspension,
+            span: Span,
         ) -> ComptimeOutcome<
             Option<
                 ComptimeCallPreparation<
@@ -2702,6 +2705,7 @@ mod value_domain_tests {
             >,
             Self::Failure,
         > {
+            STRUCTURED_PREPARE_SPANS.with(|spans| spans.borrow_mut().push(span));
             match suspension.preparations[suspension.index] {
                 FakeStructuredPreparation::Enter => {
                     ComptimeOutcome::Known(Some(ComptimeCallPreparation::Enter {
@@ -2890,7 +2894,7 @@ mod value_domain_tests {
             data: InstData::TypeConst {
                 type_name: rue_rir::RirTypeSyntaxRef::from_u32(0),
             },
-            span: Span::new(0, 0),
+            span: Span::new(17, 29),
         });
         let interner = lasso::ThreadedRodeo::new();
         let mut child_editor = rue_rir::RirEditor::new();
@@ -2914,6 +2918,7 @@ mod value_domain_tests {
             float_evaluations: Cell::new(0),
         };
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        STRUCTURED_PREPARE_SPANS.with(|spans| spans.borrow_mut().clear());
         let result =
             ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, root), &mut env);
         assert!(matches!(
@@ -2921,6 +2926,12 @@ mod value_domain_tests {
             ComptimeOutcome::Known(FakeValue::Type(FakeType(9)))
         ));
         assert_eq!(host.finished.len(), 1);
+        assert_eq!(
+            STRUCTURED_PREPARE_SPANS.with(|spans| spans.borrow().clone()),
+            vec![Span::new(17, 29), Span::new(17, 29)],
+            "structured successors retain the original type-expression span"
+        );
+        STRUCTURED_PREPARE_SPANS.with(|spans| spans.borrow_mut().clear());
     }
 
     #[test]
@@ -7033,6 +7044,7 @@ pub trait ComptimeHost {
     fn prepare_structured_type_call(
         &mut self,
         suspension: &Self::StructuredTypeSuspension,
+        span: Span,
     ) -> ComptimeOutcome<
         Option<
             ComptimeCallPreparation<
@@ -7244,10 +7256,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     fn drive_structured_type(
         &mut self,
         suspension: H::StructuredTypeSuspension,
+        span: Span,
     ) -> ComptimeOutcome<H::Type, H::Failure> {
         let mut suspension = suspension;
         loop {
-            let preparation = self.host.prepare_structured_type_call(&suspension);
+            let preparation = self.host.prepare_structured_type_call(&suspension, span);
             let reduced = match preparation {
                 ComptimeOutcome::Known(Some(preparation)) => match preparation {
                     ComptimeCallPreparation::Memoized(outcome) => outcome,
@@ -7304,7 +7317,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 ComptimeOutcome::Known(value)
             }
             ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Suspended(suspension)) => {
-                self.drive_structured_type(suspension)
+                self.drive_structured_type(suspension, span)
             }
             ComptimeOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
             ComptimeOutcome::NotReady => ComptimeOutcome::NotReady,

@@ -1063,8 +1063,16 @@ pub(crate) enum DurableComptimeForeignCallError {
     ReadyQueryFailure(rue_query::QueryFailure),
     AdmissionFailure(crate::body_query::ComptimeProgramProjectionFailure),
     FrameAdmission(DurableComptimeForeignFrameAdmissionError),
+    StructuredFrame(DurableComptimeStructuredFrameAdmissionError),
     UnexpectedReadyProjection,
     Lifecycle(DurableComptimeLifecycleError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DurableComptimeStructuredFrameAdmissionError {
+    InvalidContract,
+    ValueFit(SemanticNucleusFailure),
+    ResultNotType,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1161,6 +1169,7 @@ impl DurableComptimeSession {
     pub(crate) fn prepare_structured_type_call(
         &mut self,
         job: &DurableStructuredTypeJob,
+        call_span: rue_span::Span,
     ) -> Result<DurableStructuredTypePendingCall, DurableComptimeLifecycleError> {
         let request = job.request_view();
         if !self.structured_program_is_current(request.program()) {
@@ -1169,11 +1178,135 @@ impl DurableComptimeSession {
         let request = DurableStructuredTypeRequest {
             program: request.program().key().clone(),
             head_key: request.head().key.clone(),
+            parameters: request.head().parameters.clone(),
+            returns_type: request.head().returns_type,
             type_arguments: request.type_arguments().to_vec(),
             value_arguments: request.value_arguments().to_vec(),
+            call_span,
         };
         let edge = self.lifecycle.prepare_structured_edge()?;
         Ok(DurableStructuredTypePendingCall { request, edge })
+    }
+
+    /// Validate the keyed constructor contract before probing its foreign
+    /// result.  This is the structured-call equivalent of ordinary argument
+    /// binding: all typed frame metadata is derived from the admitted
+    /// signature and the ordered AIR request, never from caller-supplied maps.
+    #[allow(dead_code)]
+    pub(crate) fn validate_structured_type_call(
+        &self,
+        pending: DurableStructuredTypePendingCall,
+        admission: DurableComptimeCallableAdmission,
+    ) -> Result<DurableStructuredTypeValidatedCall, DurableComptimeForeignCallError> {
+        let request = &pending.request;
+        let expected_candidate =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(
+                &request.head_key,
+            );
+        if expected_candidate.as_ref() != Some(&admission.candidate)
+            || admission.identity.key != request.head_key
+            || admission.configuration != request.program.configuration
+            || !request.returns_type
+            || admission.result != DurableType::ComptimeType
+            || request.parameters.len() != admission.parameters.len()
+            || request.parameters.len() != admission.shell_parameters.len()
+        {
+            return Err(DurableComptimeForeignCallError::StructuredFrame(
+                if admission.result != DurableType::ComptimeType || !request.returns_type {
+                    DurableComptimeStructuredFrameAdmissionError::ResultNotType
+                } else {
+                    DurableComptimeStructuredFrameAdmissionError::InvalidContract
+                },
+            ));
+        }
+
+        let type_arguments = request
+            .type_arguments
+            .iter()
+            .map(|(_, ty)| ty.clone())
+            .collect::<Vec<_>>();
+        let mut type_bindings = AHashMap::new();
+        let mut value_bindings = AHashMap::new();
+        let mut type_index = 0;
+        let mut value_index = 0;
+        for ((head, parameter), shell) in request
+            .parameters
+            .iter()
+            .zip(admission.parameters.iter())
+            .zip(admission.shell_parameters.iter())
+        {
+            if head.name != parameter.name
+                || head.name != shell.name
+                || head.is_type != shell.is_type_parameter
+                || head.is_comptime != parameter.is_comptime
+                || parameter.mode != crate::durable_semantics::DurableParameterMode::Value
+                || shell.mode != crate::declaration_candidate::DeclarationParameterMode::Value
+                || shell.is_comptime != parameter.is_comptime
+            {
+                return Err(DurableComptimeForeignCallError::StructuredFrame(
+                    DurableComptimeStructuredFrameAdmissionError::InvalidContract,
+                ));
+            }
+            if head.is_type {
+                let Some((name, ty)) = request.type_arguments.get(type_index) else {
+                    return Err(DurableComptimeForeignCallError::StructuredFrame(
+                        DurableComptimeStructuredFrameAdmissionError::InvalidContract,
+                    ));
+                };
+                if name != &head.name {
+                    return Err(DurableComptimeForeignCallError::StructuredFrame(
+                        DurableComptimeStructuredFrameAdmissionError::InvalidContract,
+                    ));
+                }
+                type_bindings.insert(
+                    DurableComptimeName::from(name.clone()),
+                    DurableComptimeType(ty.clone()),
+                );
+                type_index += 1;
+            } else {
+                let Some((name, value)) = request.value_arguments.get(value_index) else {
+                    return Err(DurableComptimeForeignCallError::StructuredFrame(
+                        DurableComptimeStructuredFrameAdmissionError::InvalidContract,
+                    ));
+                };
+                if name != &head.name {
+                    return Err(DurableComptimeForeignCallError::StructuredFrame(
+                        DurableComptimeStructuredFrameAdmissionError::InvalidContract,
+                    ));
+                }
+                let expected = substitute_durable_generics(&parameter.ty, &type_arguments);
+                if let Some(failure) = durable_structured_value_fit_failure(value, &expected) {
+                    return Err(DurableComptimeForeignCallError::StructuredFrame(
+                        DurableComptimeStructuredFrameAdmissionError::ValueFit(failure),
+                    ));
+                }
+                value_bindings.insert(
+                    DurableComptimeName::from(name.clone()),
+                    EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                        value.clone(),
+                        expected,
+                    )),
+                );
+                value_index += 1;
+            }
+        }
+        if type_index != request.type_arguments.len()
+            || value_index != request.value_arguments.len()
+        {
+            return Err(DurableComptimeForeignCallError::StructuredFrame(
+                DurableComptimeStructuredFrameAdmissionError::InvalidContract,
+            ));
+        }
+        Ok(DurableStructuredTypeValidatedCall {
+            pending,
+            admission,
+            type_bindings,
+            value_bindings,
+            expected_result: DurableComptimeType::from(substitute_durable_generics(
+                &DurableType::ComptimeType,
+                &type_arguments,
+            )),
+        })
     }
 
     /// Consume exactly one structured probe. An admitted lookup is registered
@@ -1185,9 +1318,46 @@ impl DurableComptimeSession {
         probed: DurableStructuredTypeProbedCall,
     ) -> Result<DurableStructuredTypeCall, DurableComptimeForeignCallError> {
         let DurableStructuredTypeProbedCall { pending, lookup } = probed;
+        let DurableStructuredTypeValidatedCall {
+            pending,
+            admission,
+            type_bindings,
+            value_bindings,
+            expected_result,
+        } = pending;
         let DurableStructuredTypePendingCall { request, edge } = pending;
         match lookup {
             ForeignComptimeCallLookup::Admitted(program) => {
+                // Validate every immutable child fact before consuming the
+                // lifecycle edge.  In particular, a const-root payload must
+                // not obtain a ticket or enter the registry before the
+                // structured callable check below.
+                let is_callable = matches!(
+                    program.root(),
+                    crate::body_query::OwnedComptimeProgramRoot::Callable(_)
+                );
+                let child_contract_matches = admission.identity.key == request.head_key
+                    && admission.configuration == request.program.configuration
+                    && admission.result == DurableType::ComptimeType
+                    && program.plan.key.configuration == request.program.configuration
+                    && program.plan.key.declaration == request.head_key
+                    && program.seed.type_arguments.as_ref() == request.type_arguments.as_slice()
+                    && program.seed.value_arguments.as_ref() == request.value_arguments.as_slice();
+                let registry_matches = self
+                    .programs
+                    .get(&program.plan.key)
+                    .map(|existing| same_registered_program(existing, &program))
+                    .unwrap_or(true);
+                if !is_callable {
+                    return Err(DurableComptimeForeignCallError::FrameAdmission(
+                        DurableComptimeForeignFrameAdmissionError::NotCallable,
+                    ));
+                }
+                if !child_contract_matches || !registry_matches {
+                    return Err(DurableComptimeForeignCallError::FrameAdmission(
+                        DurableComptimeForeignFrameAdmissionError::RegistryMismatch,
+                    ));
+                }
                 let DurableComptimeForeignCall::Enter { program, ticket } = self
                     .consume_foreign_lookup(edge, ForeignComptimeCallLookup::Admitted(program))?
                 else {
@@ -1195,15 +1365,6 @@ impl DurableComptimeSession {
                         DurableComptimeForeignFrameAdmissionError::RegistryMismatch,
                     ));
                 };
-                if program.plan.key.configuration != request.program.configuration
-                    || program.plan.key.declaration != request.head_key
-                    || program.seed.type_arguments.as_ref() != request.type_arguments.as_slice()
-                    || program.seed.value_arguments.as_ref() != request.value_arguments.as_slice()
-                {
-                    return Err(DurableComptimeForeignCallError::FrameAdmission(
-                        DurableComptimeForeignFrameAdmissionError::RegistryMismatch,
-                    ));
-                }
                 if let Some(existing) = self.programs.get(&program.plan.key) {
                     if !same_registered_program(existing, &program) {
                         return Err(DurableComptimeForeignCallError::FrameAdmission(
@@ -1220,7 +1381,36 @@ impl DurableComptimeSession {
                             )
                         })?;
                 }
-                Ok(DurableStructuredTypeCall::Enter { program, ticket })
+                let registered = self
+                    .programs
+                    .get(&program.plan.key)
+                    .expect("admitted structured program is registered");
+                let callable = match &registered.imports.root {
+                    crate::body_query::OwnedComptimeProgramRoot::Callable(callable) => callable,
+                    crate::body_query::OwnedComptimeProgramRoot::Const { .. } => unreachable!(
+                        "structured callable was prevalidated before registry admission"
+                    ),
+                };
+                let frame = rue_air::ComptimeFrame {
+                    program: program.plan.key.clone(),
+                    body: callable.body,
+                    name: Some(DurableComptimeName::from(
+                        program.plan.key.declaration.name(),
+                    )),
+                    context: Some(self.registered_file(&program.plan.key)),
+                    span: request.call_span,
+                    function_span: registered.rir.get(callable.root).span,
+                    type_bindings,
+                    value_bindings,
+                    name_bindings: AHashMap::new(),
+                    call_identity: None,
+                    expected_result: Some(expected_result),
+                };
+                Ok(DurableStructuredTypeCall::Enter {
+                    program,
+                    frame: Box::new(frame),
+                    ticket,
+                })
             }
             ForeignComptimeCallLookup::Ready(projection) => {
                 match self
@@ -1601,6 +1791,7 @@ impl DurableComptimeSession {
                 | DurableComptimeForeignCallError::ReadyQueryFailure(_)
                 | DurableComptimeForeignCallError::AdmissionFailure(_)
                 | DurableComptimeForeignCallError::FrameAdmission(_)
+                | DurableComptimeForeignCallError::StructuredFrame(_)
                 | DurableComptimeForeignCallError::UnexpectedReadyProjection => {
                     unreachable!("finish_ready_expression_edge supplies a ready projection")
                 }
@@ -2562,6 +2753,31 @@ pub(crate) fn durable_value_fit_failure(
     })
 }
 
+/// Map the shared value-fit classification to the exact semantic channel used
+/// by structured durable calls.  Consumers may add presentation-specific
+/// wrappers, but they must not reimplement this mapping.
+pub(crate) fn durable_structured_value_fit_failure(
+    value: &DurableConstValue,
+    expected: &DurableType,
+) -> Option<SemanticNucleusFailure> {
+    durable_value_fit_failure(value, expected).map(|failure| match failure {
+        DurableComptimeValueFitFailure::CallableAlias => SemanticNucleusFailure::Resolution(
+            Arc::from("a callable alias cannot be passed as a comptime value argument"),
+        ),
+        DurableComptimeValueFitFailure::IntegerOutOfRange { value, type_name } => {
+            SemanticNucleusFailure::Resolution(Arc::from(format!(
+                "value {value} is outside the range of type {type_name}"
+            )))
+        }
+        DurableComptimeValueFitFailure::TypeMismatch { expected, found } => {
+            SemanticNucleusFailure::Diagnostic(rue_error::ErrorKind::TypeMismatch {
+                expected,
+                found,
+            })
+        }
+    })
+}
+
 pub(crate) fn durable_int_width(
     ty: &DurableType,
 ) -> Option<rue_air::integer_semantics::IntegerType> {
@@ -2802,6 +3018,7 @@ impl<'a> DurableComptimeBoundCallQuery<'a> {
         self.type_arguments
     }
 
+    #[allow(dead_code)]
     pub(crate) fn value_arguments(&self) -> &[(Arc<str>, DurableConstValue)] {
         self.value_arguments
     }
@@ -3389,9 +3606,9 @@ impl<A: DurableComptimeForeignCallAuthority + ?Sized> DurableComptimeServices<'_
     #[allow(dead_code)]
     pub(crate) fn probe_structured_type_call(
         &self,
-        pending: DurableStructuredTypePendingCall,
+        pending: DurableStructuredTypeValidatedCall,
     ) -> Result<DurableStructuredTypeProbedCall, QueryAbort> {
-        let request = &pending.request;
+        let request = &pending.pending.request;
         let lookup = self.authority.probe_comptime_call(
             &request.head_key,
             &request.type_arguments,
@@ -3836,8 +4053,11 @@ impl DurableStructuredTypeProgramCapability {
 struct DurableStructuredTypeRequest {
     program: crate::body_query::DurableComptimeProgramKey,
     head_key: crate::StableDefinitionKey,
+    parameters: Arc<[rue_air::SemanticTypeConstructorParameter<Arc<str>>]>,
+    returns_type: bool,
     type_arguments: Vec<(Arc<str>, DurableType)>,
     value_arguments: Vec<(Arc<str>, DurableConstValue)>,
+    call_span: rue_span::Span,
 }
 
 /// A structured-type call after its canonical AIR job has supplied the
@@ -3849,12 +4069,25 @@ pub(crate) struct DurableStructuredTypePendingCall {
     edge: DurableComptimeCallEdge,
 }
 
-/// The result of one and only one structured foreign probe.  It is consuming
-/// and non-cloneable by construction; the canonical AIR job remains attached
-/// to the handoff for the eventual resume operation.
+/// A pending structured call after the exact callable contract has been
+/// checked. The typed bindings are produced here, before a foreign query is
+/// probed, so the eventual frame cannot be paired with a different request.
+#[allow(dead_code)]
+pub(crate) struct DurableStructuredTypeValidatedCall {
+    pending: DurableStructuredTypePendingCall,
+    admission: DurableComptimeCallableAdmission,
+    type_bindings: AHashMap<DurableComptimeName, DurableComptimeType>,
+    value_bindings: AHashMap<DurableComptimeName, EvaluatedSemanticConst>,
+    expected_result: DurableComptimeType,
+}
+
+/// The result of one and only one structured foreign probe. It is consuming
+/// and non-cloneable by construction. The canonical AIR job remains owned by
+/// the engine; the pending request snapshots only its keyed facts and the
+/// original call span supplied separately by the engine.
 #[allow(dead_code)]
 pub(crate) struct DurableStructuredTypeProbedCall {
-    pending: DurableStructuredTypePendingCall,
+    pending: DurableStructuredTypeValidatedCall,
     lookup: ForeignComptimeCallLookup,
 }
 
@@ -3865,6 +4098,7 @@ pub(crate) enum DurableStructuredTypeCall {
     },
     Enter {
         program: crate::body_query::OwnedForeignComptimeProgram,
+        frame: Box<DurableComptimeForeignFrame>,
         ticket: Box<DurableComptimeCallTicket>,
     },
     NotReady,
@@ -4055,6 +4289,44 @@ mod tests {
             value,
             ty: Some(ty),
         }
+    }
+
+    #[test]
+    fn structured_value_fit_mapping_preserves_each_exact_failure_channel() {
+        let alias_key = crate::StableDefinitionKey::from_stable_parts(
+            ModuleId::from_logical_path("structured-fit.rue").unwrap(),
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            "alias",
+            None,
+        );
+        assert_eq!(
+            durable_structured_value_fit_failure(
+                &DurableConstValue::Function(alias_key),
+                &DurableType::I32,
+            ),
+            Some(SemanticNucleusFailure::Resolution(Arc::from(
+                "a callable alias cannot be passed as a comptime value argument",
+            )))
+        );
+        assert_eq!(
+            durable_structured_value_fit_failure(
+                &DurableConstValue::Integer(i128::MAX),
+                &DurableType::I32,
+            ),
+            Some(SemanticNucleusFailure::Resolution(Arc::from(
+                "value 170141183460469231731687303715884105727 is outside the range of type i32",
+            )))
+        );
+        assert_eq!(
+            durable_structured_value_fit_failure(&DurableConstValue::Bool(true), &DurableType::I32,),
+            Some(SemanticNucleusFailure::Diagnostic(
+                rue_error::ErrorKind::TypeMismatch {
+                    expected: "i32".into(),
+                    found: "bool".into(),
+                },
+            ))
+        );
     }
 
     fn parameter(name: &str, ty: DurableType) -> DurableSemanticParameter {
@@ -6692,6 +6964,7 @@ mod effect_lifecycle_tests {
 #[cfg(test)]
 mod structured_type_adapter_tests {
     use super::*;
+    use crate::durable_semantics::{DurableParameterMode, DurableSemanticParameter};
     use std::cell::{Cell, RefCell};
     use std::convert::Infallible;
 
@@ -6935,6 +7208,7 @@ mod structured_type_adapter_tests {
             if name != "Wrap" {
                 return Ok(None);
             }
+            let interleaved = scope.as_str().contains("structured-ordered-frame");
             let constructor = crate::StableDefinitionKey::from_stable_parts(
                 scope.clone(),
                 crate::StableDefinitionNamespace::Value,
@@ -6945,11 +7219,36 @@ mod structured_type_adapter_tests {
             Ok(Some(rue_air::SemanticTypeConstructorHead {
                 key: constructor.clone(),
                 site: constructor,
-                parameters: Arc::from([rue_air::SemanticTypeConstructorParameter {
-                    name: Arc::from("T"),
-                    is_comptime: true,
-                    is_type: true,
-                }]),
+                parameters: if interleaved {
+                    Arc::from([
+                        rue_air::SemanticTypeConstructorParameter {
+                            name: Arc::from("T0"),
+                            is_comptime: true,
+                            is_type: true,
+                        },
+                        rue_air::SemanticTypeConstructorParameter {
+                            name: Arc::from("x0"),
+                            is_comptime: true,
+                            is_type: false,
+                        },
+                        rue_air::SemanticTypeConstructorParameter {
+                            name: Arc::from("T1"),
+                            is_comptime: true,
+                            is_type: true,
+                        },
+                        rue_air::SemanticTypeConstructorParameter {
+                            name: Arc::from("x1"),
+                            is_comptime: true,
+                            is_type: false,
+                        },
+                    ])
+                } else {
+                    Arc::from([rue_air::SemanticTypeConstructorParameter {
+                        name: Arc::from("T"),
+                        is_comptime: true,
+                        is_type: true,
+                    }])
+                },
                 returns_type: true,
                 is_public: true,
                 defining_domain: rue_air::SemanticVisibilityDomain::from_file_path(Some(
@@ -6979,7 +7278,7 @@ mod structured_type_adapter_tests {
 
         fn resolve_value_argument(
             &mut self,
-            _scope: &ModuleId,
+            scope: &ModuleId,
             _constructor: &str,
             _head: &rue_air::SemanticTypeConstructorHead<
                 crate::StableDefinitionKey,
@@ -6992,6 +7291,14 @@ mod structured_type_adapter_tests {
             _syntax: rue_air::SemanticValueSyntax<'_>,
         ) -> rue_air::SemanticProviderResult<DurableConstValue, Self::Abort, Self::Failure>
         {
+            if scope.as_str().contains("structured-ordered-frame") {
+                return match _syntax {
+                    rue_air::SemanticValueSyntax::Integer(value) => {
+                        Ok(DurableConstValue::Integer(value))
+                    }
+                    rue_air::SemanticValueSyntax::Name(_) => Ok(DurableConstValue::Integer(0)),
+                };
+            }
             unreachable!("fixture constructor has no value argument")
         }
 
@@ -7115,8 +7422,14 @@ mod structured_type_adapter_tests {
         path: &str,
         name: &str,
     ) -> Arc<crate::body_query::OwnedComptimeProgramCore> {
-        let snapshot =
-            crate::SourceSnapshot::single(path, format!("fn {name}() -> i32 {{ 1 }}")).unwrap();
+        let source = if path.contains("structured-ordered-frame") {
+            format!(
+                "fn {name}(comptime T0: type, comptime x0: i32, comptime T1: type, comptime x1: i64) -> type {{ [T0; x0] }}"
+            )
+        } else {
+            format!("fn {name}() -> i32 {{ 1 }}")
+        };
+        let snapshot = crate::SourceSnapshot::single(path, source).unwrap();
         let module = crate::parsed_modules::parse_source_snapshot_modules(&snapshot)
             .unwrap()
             .modules()[0]
@@ -7327,6 +7640,54 @@ mod structured_type_adapter_tests {
                     is_type_parameter: false,
                 },
             ]),
+        }
+    }
+
+    fn structured_admission(
+        pending: &DurableStructuredTypePendingCall,
+    ) -> DurableComptimeCallableAdmission {
+        let request = &pending.request;
+        let parameters: Arc<[_]> = request
+            .parameters
+            .iter()
+            .map(|parameter| DurableSemanticParameter {
+                name: parameter.name.clone(),
+                ty: if parameter.is_type {
+                    DurableType::ComptimeType
+                } else {
+                    DurableType::I32
+                },
+                mode: DurableParameterMode::Value,
+                is_comptime: parameter.is_comptime,
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let shell_parameters: Arc<[_]> = request
+            .parameters
+            .iter()
+            .map(
+                |parameter| crate::declaration_candidate::DeclarationParameterHeader {
+                    name: parameter.name.clone(),
+                    mode: crate::declaration_candidate::DeclarationParameterMode::Value,
+                    is_comptime: parameter.is_comptime,
+                    is_type_parameter: parameter.is_type,
+                },
+            )
+            .collect::<Vec<_>>()
+            .into();
+        DurableComptimeCallableAdmission {
+            candidate: crate::revisioned_query_database::declaration_candidate_for_stable_key(
+                &request.head_key,
+            )
+            .unwrap(),
+            identity: crate::semantic_query_nucleus::DeclarationIdentityProjection {
+                key: request.head_key.clone(),
+                is_public: true,
+            },
+            configuration: request.program.configuration.clone(),
+            parameters,
+            result: DurableType::ComptimeType,
+            shell_parameters,
         }
     }
 
@@ -8150,14 +8511,21 @@ mod structured_type_adapter_tests {
         .unwrap() else {
             panic!("fixture structured call must suspend");
         };
-        let pending = session.prepare_structured_type_call(&job).unwrap();
+        let pending = session
+            .prepare_structured_type_call(&job, rue_span::Span::new(9, 10))
+            .unwrap();
         let mut authority = prepared_authority(
             vec![(Arc::from("T"), DurableType::I32)],
             Vec::new(),
             ForeignComptimeCallLookup::Ready(prepared_ready_projection(73)),
         );
+        let admission = structured_admission(&pending);
+        let validated = match session.validate_structured_type_call(pending, admission) {
+            Ok(value) => value,
+            Err(error) => panic!("structured fixture contract: {error:?}"),
+        };
         let probed = DurableComptimeServices::new(&mut authority)
-            .probe_structured_type_call(pending)
+            .probe_structured_type_call(validated)
             .unwrap();
         let DurableStructuredTypeCall::Ready { result } =
             session.consume_structured_type_call(probed).unwrap()
@@ -8189,7 +8557,9 @@ mod structured_type_adapter_tests {
         .unwrap() else {
             panic!("second fixture structured call must suspend");
         };
-        let pending = session.prepare_structured_type_call(&job).unwrap();
+        let pending = session
+            .prepare_structured_type_call(&job, rue_span::Span::new(11, 12))
+            .unwrap();
         authority
             .expected
             .borrow_mut()
@@ -8198,8 +8568,12 @@ mod structured_type_adapter_tests {
             .lookups
             .borrow_mut()
             .push(ForeignComptimeCallLookup::NotReady);
+        let admission = structured_admission(&pending);
+        let validated = session
+            .validate_structured_type_call(pending, admission)
+            .unwrap();
         let probed = DurableComptimeServices::new(&mut authority)
-            .probe_structured_type_call(pending)
+            .probe_structured_type_call(validated)
             .unwrap();
         let DurableStructuredTypeCall::NotReady =
             session.consume_structured_type_call(probed).unwrap()
@@ -8234,7 +8608,13 @@ mod structured_type_adapter_tests {
             .unwrap() else {
                 panic!("fixture structured call must suspend");
             };
-            session.prepare_structured_type_call(&job).unwrap()
+            let pending = session
+                .prepare_structured_type_call(&job, rue_span::Span::new(13, 14))
+                .unwrap();
+            let admission = structured_admission(&pending);
+            session
+                .validate_structured_type_call(pending, admission)
+                .unwrap()
         };
 
         let mut failure_authority = prepared_authority(
@@ -8276,6 +8656,363 @@ mod structured_type_adapter_tests {
     }
 
     #[test]
+    fn structured_frame_validation_rejects_before_probe_or_registry_mutation() {
+        let core = const_program("structured-frame-validation.rue", "i32");
+        let (_, Some(root), _) = core.const_root().unwrap() else {
+            panic!("fixture retains its declared type root");
+        };
+        let mut session = session();
+        session.register_program(&core).unwrap();
+        let mut provider = Provider {
+            scope: core.plan.candidate.module.clone(),
+        };
+        let DurableStructuredTypePoll::Suspended(suspension) = begin_durable_structured_type(
+            &session,
+            &core.plan.key,
+            root,
+            Vec::new(),
+            Vec::new(),
+            &mut provider,
+        )
+        .unwrap() else {
+            panic!("fixture structured call must suspend");
+        };
+        let pending = session
+            .prepare_structured_type_call(&suspension, rue_span::Span::new(90, 91))
+            .unwrap();
+        let mut invalid = structured_admission(&pending);
+        invalid.result = DurableType::I32;
+        let serial_before = session.lifecycle.next_serial;
+        let programs_before = session.programs.len();
+        assert!(matches!(
+            session.validate_structured_type_call(pending, invalid),
+            Err(DurableComptimeForeignCallError::StructuredFrame(
+                DurableComptimeStructuredFrameAdmissionError::ResultNotType
+            ))
+        ));
+        assert_eq!(session.programs.len(), programs_before);
+        assert_eq!(session.lifecycle.active.len(), 0);
+        assert!(session.lifecycle.effects.is_empty());
+        assert_eq!(session.lifecycle.next_serial, serial_before);
+    }
+
+    #[test]
+    fn structured_non_callable_is_rejected_before_ticket_or_registration() {
+        let root_core = const_program("structured-non-callable.rue", "i32");
+        let callable_core = callable_program_named("structured-non-callable.rue", "Wrap");
+        let (_, Some(root), _) = root_core.const_root().unwrap() else {
+            panic!("fixture retains its declared type root");
+        };
+        let mut session = session();
+        session.register_program(&root_core).unwrap();
+        let mut provider = Provider {
+            scope: root_core.plan.candidate.module.clone(),
+        };
+        let DurableStructuredTypePoll::Suspended(suspension) = begin_durable_structured_type(
+            &session,
+            &root_core.plan.key,
+            root,
+            Vec::new(),
+            Vec::new(),
+            &mut provider,
+        )
+        .unwrap() else {
+            panic!("fixture structured call must suspend");
+        };
+        let pending = session
+            .prepare_structured_type_call(&suspension, rue_span::Span::new(92, 93))
+            .unwrap();
+        let mut non_callable_core = (*root_core).clone();
+        non_callable_core.plan.key = callable_core.plan.key.clone();
+        let admitted = crate::body_query::OwnedForeignComptimeProgram {
+            core: Arc::new(non_callable_core),
+            seed: crate::body_query::ForeignComptimeCallSeed {
+                type_arguments: Arc::from([(Arc::from("T"), DurableType::I32)]),
+                value_arguments: Arc::from([]),
+            },
+        };
+        let mut authority = prepared_authority(
+            vec![(Arc::from("T"), DurableType::I32)],
+            Vec::new(),
+            ForeignComptimeCallLookup::Admitted(admitted),
+        );
+        let admission = structured_admission(&pending);
+        let validated = session
+            .validate_structured_type_call(pending, admission)
+            .unwrap();
+        let probed = DurableComptimeServices::new(&mut authority)
+            .probe_structured_type_call(validated)
+            .unwrap();
+        let serial_before = session.lifecycle.next_serial;
+        let programs_before = session.programs.len();
+        assert!(matches!(
+            session.consume_structured_type_call(probed),
+            Err(DurableComptimeForeignCallError::FrameAdmission(
+                DurableComptimeForeignFrameAdmissionError::NotCallable
+            ))
+        ));
+        assert_eq!(authority.calls.get(), 1);
+        assert_eq!(session.lifecycle.next_serial, serial_before);
+        assert!(session.lifecycle.active.is_empty());
+        assert!(session.lifecycle.effects.is_empty());
+        assert_eq!(session.programs.len(), programs_before);
+        assert!(
+            session
+                .registered_program(&callable_core.plan.key)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn structured_frame_validation_rejects_name_order_kind_and_value_fit() {
+        let root_core = const_program("structured-frame-contract.rue", "i32");
+        let callable_core = callable_program_named("structured-frame-contract.rue", "Wrap");
+        let (_, Some(root), _) = root_core.const_root().unwrap() else {
+            panic!("fixture retains its declared type root");
+        };
+        let mut session = session();
+        session.register_program(&root_core).unwrap();
+        let mut provider = Provider {
+            scope: root_core.plan.candidate.module.clone(),
+        };
+        let pending = |session: &mut DurableComptimeSession, provider: &mut Provider| {
+            let DurableStructuredTypePoll::Suspended(suspension) = begin_durable_structured_type(
+                &*session,
+                &root_core.plan.key,
+                root,
+                Vec::new(),
+                Vec::new(),
+                provider,
+            )
+            .unwrap() else {
+                panic!("fixture structured call must suspend");
+            };
+            session
+                .prepare_structured_type_call(&suspension, rue_span::Span::new(94, 95))
+                .unwrap()
+        };
+
+        let name_pending = pending(&mut session, &mut provider);
+        let mut name_admission = structured_admission(&name_pending);
+        let mut name_parameter = name_admission.parameters[0].clone();
+        name_parameter.name = Arc::from("Wrong");
+        name_admission.parameters = Arc::from([name_parameter]);
+        assert!(matches!(
+            session.validate_structured_type_call(name_pending, name_admission),
+            Err(DurableComptimeForeignCallError::StructuredFrame(
+                DurableComptimeStructuredFrameAdmissionError::InvalidContract
+            ))
+        ));
+
+        let kind_pending = pending(&mut session, &mut provider);
+        let mut kind_admission = structured_admission(&kind_pending);
+        let mut kind_shell = kind_admission.shell_parameters[0].clone();
+        kind_shell.is_type_parameter = false;
+        kind_admission.shell_parameters = Arc::from([kind_shell]);
+        assert!(matches!(
+            session.validate_structured_type_call(kind_pending, kind_admission),
+            Err(DurableComptimeForeignCallError::StructuredFrame(
+                DurableComptimeStructuredFrameAdmissionError::InvalidContract
+            ))
+        ));
+
+        let mut order_pending = pending(&mut session, &mut provider);
+        order_pending.request.parameters = Arc::from([
+            rue_air::SemanticTypeConstructorParameter {
+                name: Arc::from("T0"),
+                is_comptime: true,
+                is_type: true,
+            },
+            rue_air::SemanticTypeConstructorParameter {
+                name: Arc::from("T1"),
+                is_comptime: true,
+                is_type: true,
+            },
+        ]);
+        order_pending.request.type_arguments = vec![
+            (Arc::from("T0"), DurableType::I32),
+            (Arc::from("T1"), DurableType::I64),
+        ];
+        let mut order_admission = ordered_admission(&callable_core);
+        order_admission.result = DurableType::ComptimeType;
+        order_admission.parameters = Arc::from([
+            order_admission.parameters[1].clone(),
+            order_admission.parameters[0].clone(),
+        ]);
+        order_admission.shell_parameters = Arc::from([
+            order_admission.shell_parameters[1].clone(),
+            order_admission.shell_parameters[0].clone(),
+        ]);
+        assert!(matches!(
+            session.validate_structured_type_call(order_pending, order_admission),
+            Err(DurableComptimeForeignCallError::StructuredFrame(
+                DurableComptimeStructuredFrameAdmissionError::InvalidContract
+            ))
+        ));
+
+        let mut fit_pending = pending(&mut session, &mut provider);
+        fit_pending.request.parameters = Arc::from([rue_air::SemanticTypeConstructorParameter {
+            name: Arc::from("x"),
+            is_comptime: true,
+            is_type: false,
+        }]);
+        fit_pending.request.type_arguments.clear();
+        fit_pending.request.value_arguments =
+            vec![(Arc::from("x"), DurableConstValue::Integer(i128::MAX))];
+        let mut fit_admission = structured_admission(&fit_pending);
+        fit_admission.result = DurableType::ComptimeType;
+        fit_admission.parameters = Arc::from([DurableSemanticParameter {
+            name: Arc::from("x"),
+            ty: DurableType::I32,
+            mode: DurableParameterMode::Value,
+            is_comptime: true,
+        }]);
+        fit_admission.shell_parameters =
+            Arc::from([crate::declaration_candidate::DeclarationParameterHeader {
+                name: Arc::from("x"),
+                mode: crate::declaration_candidate::DeclarationParameterMode::Value,
+                is_comptime: true,
+                is_type_parameter: false,
+            }]);
+        assert!(matches!(
+            session.validate_structured_type_call(fit_pending, fit_admission),
+            Err(DurableComptimeForeignCallError::StructuredFrame(
+                DurableComptimeStructuredFrameAdmissionError::ValueFit(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn structured_frame_admission_preserves_ordered_typed_bindings_and_lifecycle() {
+        let root_core = const_program("structured-ordered-frame.rue", "i32, 10, i64, 20");
+        let callable_core = callable_program_named("structured-ordered-frame.rue", "Wrap");
+        let (_, Some(root), _) = root_core.const_root().unwrap() else {
+            panic!("fixture retains its declared type root");
+        };
+        let mut session = session();
+        session.register_program(&root_core).unwrap();
+        let mut provider = Provider {
+            scope: root_core.plan.candidate.module.clone(),
+        };
+        let DurableStructuredTypePoll::Suspended(suspension) = begin_durable_structured_type(
+            &session,
+            &root_core.plan.key,
+            root,
+            Vec::new(),
+            Vec::new(),
+            &mut provider,
+        )
+        .unwrap() else {
+            panic!("fixture structured call must suspend");
+        };
+        let pending = session
+            .prepare_structured_type_call(&suspension, rue_span::Span::new(1000, 1001))
+            .unwrap();
+        let mut admission = ordered_admission(&callable_core);
+        admission.result = DurableType::ComptimeType;
+        admission.parameters = Arc::from([
+            admission.parameters[0].clone(),
+            admission.parameters[2].clone(),
+            admission.parameters[1].clone(),
+            admission.parameters[3].clone(),
+        ]);
+        admission.shell_parameters = Arc::from([
+            admission.shell_parameters[0].clone(),
+            admission.shell_parameters[2].clone(),
+            admission.shell_parameters[1].clone(),
+            admission.shell_parameters[3].clone(),
+        ]);
+        assert_eq!(
+            admission.candidate,
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(
+                &pending.request.head_key
+            )
+            .unwrap()
+        );
+        assert_eq!(admission.identity.key, pending.request.head_key);
+        assert_eq!(
+            admission.configuration,
+            pending.request.program.configuration
+        );
+        assert_eq!(admission.parameters.len(), 4);
+        assert_eq!(admission.shell_parameters.len(), 4);
+        let validated = session
+            .validate_structured_type_call(pending, admission)
+            .unwrap();
+        let admitted = crate::body_query::OwnedForeignComptimeProgram {
+            core: callable_core.clone(),
+            seed: crate::body_query::ForeignComptimeCallSeed {
+                type_arguments: Arc::from([
+                    (Arc::from("T0"), DurableType::I32),
+                    (Arc::from("T1"), DurableType::I64),
+                ]),
+                value_arguments: Arc::from([
+                    (Arc::from("x0"), DurableConstValue::Integer(10)),
+                    (Arc::from("x1"), DurableConstValue::Integer(20)),
+                ]),
+            },
+        };
+        let mut authority = prepared_authority(
+            vec![
+                (Arc::from("T0"), DurableType::I32),
+                (Arc::from("T1"), DurableType::I64),
+            ],
+            vec![
+                (Arc::from("x0"), DurableConstValue::Integer(10)),
+                (Arc::from("x1"), DurableConstValue::Integer(20)),
+            ],
+            ForeignComptimeCallLookup::Admitted(admitted),
+        );
+        let probed = DurableComptimeServices::new(&mut authority)
+            .probe_structured_type_call(validated)
+            .unwrap();
+        let DurableStructuredTypeCall::Enter {
+            frame, mut ticket, ..
+        } = session.consume_structured_type_call(probed).unwrap()
+        else {
+            panic!("ordered structured call must admit a frame");
+        };
+        assert_eq!(authority.calls.get(), 1);
+        assert_eq!(frame.span, rue_span::Span::new(1000, 1001));
+        assert_ne!(frame.span, frame.function_span);
+        assert_eq!(frame.call_identity, None);
+        assert_eq!(
+            frame.type_bindings.get(&DurableComptimeName::from("T0")),
+            Some(&DurableComptimeType::from(DurableType::I32))
+        );
+        assert_eq!(
+            frame.type_bindings.get(&DurableComptimeName::from("T1")),
+            Some(&DurableComptimeType::from(DurableType::I64))
+        );
+        assert_eq!(
+            frame.value_bindings.get(&DurableComptimeName::from("x0")),
+            Some(&EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                DurableConstValue::Integer(10),
+                DurableType::I32,
+            )))
+        );
+        assert_eq!(
+            frame.value_bindings.get(&DurableComptimeName::from("x1")),
+            Some(&EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                DurableConstValue::Integer(20),
+                DurableType::I64,
+            )))
+        );
+        assert_eq!(
+            frame.expected_result,
+            Some(DurableComptimeType::from(DurableType::ComptimeType))
+        );
+        assert!(session.lifecycle.active.is_empty());
+        session.enter_call(&ticket).unwrap();
+        assert_eq!(session.lifecycle.active.len(), 1);
+        session
+            .finish_call(&mut ticket, &rue_air::ComptimeOutcome::<(), ()>::Known(()))
+            .unwrap();
+        assert!(session.lifecycle.active.is_empty());
+        assert!(session.drain_root_effects().unwrap().is_empty());
+    }
+
+    #[test]
     fn structured_type_call_admission_returns_dormant_ticket_after_validation() {
         let root_core = const_program("structured-call-enter.rue", "i32");
         let callable_core = callable_program_named("structured-call-enter.rue", "Wrap");
@@ -8298,7 +9035,9 @@ mod structured_type_adapter_tests {
         .unwrap() else {
             panic!("fixture structured call must suspend");
         };
-        let pending = session.prepare_structured_type_call(&job).unwrap();
+        let pending = session
+            .prepare_structured_type_call(&job, rue_span::Span::new(15, 16))
+            .unwrap();
         let admitted = crate::body_query::OwnedForeignComptimeProgram {
             core: callable_core.clone(),
             seed: crate::body_query::ForeignComptimeCallSeed {
@@ -8311,17 +9050,37 @@ mod structured_type_adapter_tests {
             Vec::new(),
             ForeignComptimeCallLookup::Admitted(admitted),
         );
+        let admission = structured_admission(&pending);
+        let validated = session
+            .validate_structured_type_call(pending, admission)
+            .unwrap();
         let probed = DurableComptimeServices::new(&mut authority)
-            .probe_structured_type_call(pending)
+            .probe_structured_type_call(validated)
             .unwrap();
         let DurableStructuredTypeCall::Enter {
             program,
+            frame,
             mut ticket,
         } = session.consume_structured_type_call(probed).unwrap()
         else {
             panic!("admitted structured call must issue a dormant ticket");
         };
         assert_eq!(program.plan.key, callable_core.plan.key);
+        assert_eq!(frame.span, rue_span::Span::new(15, 16));
+        assert_eq!(frame.call_identity, None);
+        assert_eq!(
+            frame.expected_result,
+            Some(DurableComptimeType::from(DurableType::ComptimeType))
+        );
+        assert_eq!(
+            frame.context.as_ref().unwrap().program(),
+            &callable_core.plan.key
+        );
+        assert_eq!(
+            frame.type_bindings.get(&DurableComptimeName::from("T")),
+            Some(&DurableComptimeType::from(DurableType::I32))
+        );
+        assert!(frame.value_bindings.is_empty());
         assert!(
             session
                 .registered_program(&callable_core.plan.key)
@@ -8360,7 +9119,9 @@ mod structured_type_adapter_tests {
         .unwrap() else {
             panic!("second fixture structured call must suspend");
         };
-        let pending = session.prepare_structured_type_call(&job).unwrap();
+        let pending = session
+            .prepare_structured_type_call(&job, rue_span::Span::new(17, 18))
+            .unwrap();
         let wrong_program = crate::body_query::OwnedForeignComptimeProgram {
             core: wrong_core.clone(),
             seed: crate::body_query::ForeignComptimeCallSeed {
@@ -8373,8 +9134,12 @@ mod structured_type_adapter_tests {
             Vec::new(),
             ForeignComptimeCallLookup::Admitted(wrong_program),
         );
+        let admission = structured_admission(&pending);
+        let validated = session
+            .validate_structured_type_call(pending, admission)
+            .unwrap();
         let probed = DurableComptimeServices::new(&mut wrong_authority)
-            .probe_structured_type_call(pending)
+            .probe_structured_type_call(validated)
             .unwrap();
         assert!(matches!(
             session.consume_structured_type_call(probed),
@@ -8410,7 +9175,7 @@ mod structured_type_adapter_tests {
         let serial_before = other_session.lifecycle.next_serial;
         let active_before = other_session.lifecycle.active.clone();
         assert!(matches!(
-            other_session.prepare_structured_type_call(&job),
+            other_session.prepare_structured_type_call(&job, rue_span::Span::new(19, 20)),
             Err(DurableComptimeLifecycleError::InvalidProgramAuthority)
         ));
         assert_eq!(other_session.lifecycle.next_serial, serial_before);
@@ -8422,7 +9187,13 @@ mod structured_type_adapter_tests {
                 .is_some()
         );
 
-        let pending = session.prepare_structured_type_call(&job).unwrap();
+        let pending = session
+            .prepare_structured_type_call(&job, rue_span::Span::new(19, 20))
+            .unwrap();
+        let admission = structured_admission(&pending);
+        let validated = session
+            .validate_structured_type_call(pending, admission)
+            .unwrap();
         let mut foreign_session = fresh_session();
         let foreign_program = crate::body_query::OwnedForeignComptimeProgram {
             core: callable_core.clone(),
@@ -8437,7 +9208,7 @@ mod structured_type_adapter_tests {
             ForeignComptimeCallLookup::Admitted(foreign_program),
         );
         let probed = DurableComptimeServices::new(&mut foreign_authority)
-            .probe_structured_type_call(pending)
+            .probe_structured_type_call(validated)
             .unwrap();
         assert!(matches!(
             foreign_session.consume_structured_type_call(probed),

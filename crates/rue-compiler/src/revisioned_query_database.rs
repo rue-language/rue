@@ -10983,25 +10983,10 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                 return Self::provider_failure("comptime value argument has no parameter");
             };
             let expected = substitute_durable_generics(&parameter.ty, &concrete_type_arguments);
-            if let Some(failure) = crate::durable_comptime::durable_value_fit_failure(
-                value, &expected,
-            ) {
-                use crate::durable_comptime::DurableComptimeValueFitFailure as Fit;
-                return match failure {
-                    Fit::CallableAlias => Self::provider_failure(
-                        "a callable alias cannot be passed as a comptime value argument",
-                    ),
-                    Fit::IntegerOutOfRange { value, type_name } => {
-                        Self::provider_failure(format!(
-                            "value {value} is outside the range of type {type_name}"
-                        ))
-                    }
-                    Fit::TypeMismatch { expected, found } => Self::provider_domain_failure(
-                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                            rue_error::ErrorKind::TypeMismatch { expected, found },
-                        ),
-                    ),
-                };
+            if let Some(failure) =
+                crate::durable_comptime::durable_structured_value_fit_failure(value, &expected)
+            {
+                return Self::provider_domain_failure(failure);
             }
         }
         let query = K::ComptimeCall(ComptimeCallQueryKey {
