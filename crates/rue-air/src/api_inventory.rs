@@ -75,7 +75,7 @@ fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
     let match_hook = host
         .split("fn match_pattern(")
         .nth(1)
-        .and_then(|source| source.split("fn require_preview(").next())
+        .and_then(|source| source.split("fn match_no_selected_arm(").next())
         .expect("bounded ComptimeHost match hook");
     assert!(match_hook.contains("ComptimeMatchPattern<Self::Name>"));
     assert!(!match_hook.contains("ProgramKey"));
@@ -106,6 +106,7 @@ fn diagnostic_hooks_are_keyed_by_the_engine_program() {
         .and_then(|source| source.split("/// Opaque structured continuations").next())
         .expect("bounded ComptimeHost trait");
     for hook in [
+        "fn match_no_selected_arm(",
         "fn require_preview(",
         "fn depth_exceeded(",
         "fn literal_out_of_range(",
@@ -322,12 +323,32 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     assert!(contract.contains("type Failure;"));
     assert!(contract.contains("Self::CanonicalIdentity"));
     assert!(contract.contains("Self::File,"));
+    assert!(contract.contains("fn match_no_selected_arm("));
+    assert!(contract.contains("ComptimeOutcome<Self::Value, Self::Failure>"));
     assert!(production.contains("decode_anon_method_descriptors"));
     assert!(production.contains("Root expression frames are intentionally ticket-free"));
     assert!(production.contains("if frame.name.is_none()"));
     assert!(!production.contains("eval_const_expr"));
     assert!(!production.contains("ComptimeEngine::new"));
     assert!(!production.contains("reduce_external_comptime_call"));
+    let match_dispatch = production
+        .split("InstData::Match { scrutinee, arms } => {")
+        .nth(1)
+        .and_then(|source| source.split("InstData::AnonStructType {").next())
+        .expect("match dispatch");
+    assert!(match_dispatch.contains(
+        "}\n                self.host.match_no_selected_arm(&self.diagnostic_site(span))"
+    ));
+    assert!(
+        !match_dispatch
+            .contains("}\n                ComptimeOutcome::RuntimeDependent\n            }")
+    );
+    let ordinary_match = ordinary
+        .split("fn match_no_selected_arm(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn ").next())
+        .expect("ordinary match terminal hook");
+    assert!(ordinary_match.contains("ComptimeOutcome::RuntimeDependent"));
     let macro_start = production
         .find("macro_rules! host_value")
         .expect("canonical host-value funnel");

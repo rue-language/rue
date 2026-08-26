@@ -1936,6 +1936,12 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     ) -> Option<bool> {
         const_pattern_matches(pattern, value.clone())
     }
+    fn match_no_selected_arm(
+        &self,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        ComptimeOutcome::RuntimeDependent
+    }
     fn require_preview(
         &self,
         feature: rue_error::PreviewFeature,

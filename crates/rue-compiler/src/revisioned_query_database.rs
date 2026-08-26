@@ -8411,7 +8411,10 @@ impl SemanticConstEvaluator<'_, '_> {
                         return self.eval(body);
                     }
                 }
-                Self::failure("comptime match has no selected arm")
+                Err(
+                    crate::durable_comptime::DurableComptimeFailure::comptime_match_no_selected_arm(
+                    ),
+                )
             }
             E::Comptime { expr } | E::Checked { expr } => self.eval(*expr),
             E::TypeConst { .. } | E::AnonStructType { .. } | E::AnonEnumType { .. } => {
