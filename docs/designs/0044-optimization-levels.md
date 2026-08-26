@@ -33,8 +33,8 @@ as separate Linear issues.
 
 Rue exposes the conventional `-O0`/`-O1`/`-O2`/`-O3` optimization levels. This
 ADR fixes what each level *promises* to a user (its cost/benefit contract) and
-which passes populate it, so that `-O2` and `-O3` stop being undefined
-placeholders that silently alias `-O1`. The single non-negotiable rule across
+which passes populate it, so that each level has an explicit current contract
+and future additions have a documented home. The single non-negotiable rule across
 every level is the **observable-behavior invariant**: for any program with
 defined behavior, exit code and I/O are byte-for-byte identical at `-O0`,
 `-O1`, `-O2`, and `-O3`. Levels may trade compile time, code size, and run time
@@ -53,15 +53,16 @@ but the mapping is:
 |-------|------------------|
 | `-O0` | Nothing. CFG passes straight to lowering (plus the always-on structural `verify()`). |
 | `-O1` | Constant folding ⇄ store-to-load constant propagation to a fixpoint, then dead-code elimination. |
-| `-O2` | **Aliases `-O1`.** |
-| `-O3` | **Aliases `-O1`.** |
+| `-O2` | `-O1` plus the conservative whole-program free-function inlining batch (RUE-930) and Phase 5 reachability elimination (RUE-933). |
+| `-O3` | `-O2` plus trap-free LICM (RUE-927) and bounded constant-trip unrolling (RUE-928); broader inlining thresholds and guarded hoisting remain planned. |
 
-So the only behavioral fork is `-O0` vs `-O1+`; `-O2`/`-O3` are reserved names
-with no distinct meaning. RUE-245 asks us to *deliberately decide* what belongs
-at each level rather than leave the top two as accidental synonyms — both so
-users get the contract they expect from `-O` flags, and so that when we do add
-inlining / CSE / peephole / loop passes, there is already a documented home for
-each.
+The levels now have distinct behavior: `-O2`/`-O3` run the compiler's
+conservative whole-program inlining and reachability batch, and `-O3` adds the
+landed LICM and constant-trip unrolling passes. Broader inlining thresholds and
+guarded hoisting remain future work. RUE-245 asks us to *deliberately decide*
+what belongs at each level rather than leave the top two as accidental
+synonyms — both so users get the contract they expect from `-O` flags, and so
+that further passes already have a documented home.
 
 ### The current pipeline (ground truth)
 
@@ -70,7 +71,7 @@ CFG → CFG transforms between CFG construction and MIR lowering. `optimize()` i
 the single choke point every build funnels through:
 
 ```
-AIR -> CfgBuilder -> CFG -> [opt::optimize(level)] -> CfgLower -> MIR -> RegAlloc -> Emit
+AIR -> CfgBuilder -> CFG -> [opt::optimize(level)] -> [whole-program inlining/reachability at -O2/-O3] -> CfgLower -> MIR -> RegAlloc -> Emit
 ```
 
 The passes that exist:
@@ -93,12 +94,11 @@ correctness check, not an optimization, so it is outside the level contract.
 The RUE-236 differential-opt harness (landed, PR #1092) runs a marked subset of
 CLI cases across `["-O0", "-O1", "-O2", "-O3"]` and asserts identical exit code
 and stdout at every level (`run_case_differential` in
-`crates/rue-cli-tests/src/main.rs`, gated by `differential_opt = true`). It was
-deliberately set up *now*, while `-O2`/`-O3` still alias `-O1`, so the results
-already match and any future divergence a new pass introduces is caught the
-moment it appears. The `rue-cfg` review exercised exactly this net when it
-caught the RUE-348 enum-fold miscompile. With that net in place, we can safely
-start populating the higher levels.
+`crates/rue-cli-tests/src/main.rs`, gated by `differential_opt = true`). The
+harness was established before the higher levels had distinct passes; it now
+guards the live O2/O3 inlining and reachability batch as well as the local
+transforms. The `rue-cfg` review exercised exactly this net when it caught the
+RUE-348 enum-fold miscompile.
 
 ## Prior art: how mainstream compilers assign passes to levels
 
@@ -203,8 +203,8 @@ shapes each new pass targets (see Sequencing).
 |-------|----------|----------------|-----------------------|
 | `-O0` | No optimization. Codegen tracks source; fastest compile; best debugging. **Default.** | none (only always-on `verify()`) | stays empty |
 | `-O1` | Cheap, always-safe, compile-time-neutral-or-positive local cleanups. | sparse constfold/constprop (RUE-794) → peephole (RUE-912) → simplify-cfg (RUE-910/911) → DCE | complete for now |
-| `-O2` | **Release default.** All balanced optimizations that reliably help without a size blow-up. Superset of `-O1`. | `-O1` + copy propagation / store-to-load forwarding (RUE-914) → block-local CSE (RUE-913) | + conservative inlining (small/leaf fns); wider GVN; better regalloc |
-| `-O3` | `-O2` plus speculative, size-spending, speed-chasing transforms. Superset of `-O2`. | = `-O2` today | + aggressive inlining (RUE-915, pending); loop opts (LICM, unrolling); later, vectorization |
+| `-O2` | **Release default.** All balanced optimizations that reliably help without a size blow-up. Superset of `-O1`. | `-O1` + copy propagation / store-to-load forwarding (RUE-914) → block-local CSE (RUE-913) → conservative whole-program inlining and Phase 5 reachability (RUE-930, RUE-933) | wider GVN; better regalloc |
+| `-O3` | `-O2` plus speculative, size-spending, speed-chasing transforms. Superset of `-O2`. | current O2 batch + trap-free LICM (RUE-927) + bounded constant-trip unrolling (RUE-928) | aggressive inlining; guarded trapping-op hoisting (RUE-934); later, vectorization |
 
 Rules that make the table a *contract* rather than a wishlist:
 
@@ -221,15 +221,12 @@ Rules that make the table a *contract* rather than a wishlist:
 
 ### How current passes map
 
-The passes that exist (`constfold`, `constprop`, `dce`) are exactly the "cheap,
-always-safe, local" set, so they belong at **`-O1`**, which is where they run
-today. **No code change is required to adopt this ADR**: the present behavior is
-already the correct `-O1` content, and `-O2`/`-O3` legitimately *alias* `-O1`
-until a genuinely `-O2`-class pass exists. Aliasing is the honest state when a
-level has no distinct content yet — it is not a bug, and the differential
-harness confirms the three levels agree. The `mod.rs` doc comment and the
-`OptLevel` variant docs already describe this; they stay accurate under this
-ADR.
+The local passes (`constfold`, `constprop`, `dce`) remain the cheap,
+always-safe set at **`-O1`**. O2/O3 also run the canonical whole-program batch
+owned by `rue-compiler`, which performs conservative free-function inlining and
+post-inline reachability elimination while preserving O0/O1 source-faithful
+behavior. Broader O3 thresholds remain planned; the `mod.rs` level knob and
+these phase-specific additions are the current architecture.
 
 ### How plausible future passes map
 
@@ -271,22 +268,22 @@ than inventing a parallel flag, so there is one dial for the whole pipeline.
 
 ## Implementation Phases
 
-This ADR is the plan; the phases below are *tracking placeholders* to be filed
-as Linear issues under RUE-245. **This ADR implements none of them.**
+This ADR remains the plan for future phases; the checklist records which
+phase-specific pieces are implemented in the current compiler.
 
 - [x] **Phase 0: Differential net** — RUE-236 (done; PR #1092). Prerequisite.
 - [x] **Phase 1: Define the contract** — this ADR (RUE-245).
 - [x] **Phase 2: `-O1` completions** — peephole/strength-reduction + simplify-cfg,
   added at `-O1` with differential coverage. (RUE-910, RUE-911, RUE-912; merged
   2026-07-16)
-- [ ] **Phase 3: `-O2` content** — CSE/GVN, copy prop, conservative inlining;
-  `-O2` stops aliasing `-O1`. Partial: block-local CSE (RUE-913) and copy
-  propagation / store-to-load forwarding (RUE-914, which also keys never-written
-  parameter reads in CSE and lands the shared dominator-tree infrastructure for
-  later LICM/GVN) have landed, so `-O2` no longer aliases `-O1`; conservative
-  inlining (RUE-915) still pending. (file RUE-NNN)
-- [ ] **Phase 4: `-O3` content** — aggressive inlining + loop opts; `-O3` stops
-  aliasing `-O2`. (file RUE-NNN)
+- [ ] **Phase 3: `-O2` content** — CSE/GVN, copy prop, and conservative
+  inlining. Partial: block-local CSE (RUE-913), copy propagation /
+  store-to-load forwarding (RUE-914), and conservative whole-program inlining
+  plus Phase 5 reachability (RUE-930, RUE-933) have landed; broader GVN and
+  other O2 tuning remain. (file RUE-NNN)
+- [ ] **Phase 4: `-O3` content** — partial: trap-free LICM (RUE-927) and bounded
+  constant-trip unrolling (RUE-928) have landed; aggressive inlining and guarded
+  trapping-op hoisting (RUE-934) remain. (file RUE-NNN)
 - [ ] **Phase 5 (optional): size levels** — `-Os`/`-Oz` if a size-sensitive
   target (WASM/embedded) materializes. (file RUE-NNN)
 
@@ -298,14 +295,15 @@ shapes the pass rewrites, and (c) keep the full differential set green.
 
 ### Positive
 
-- **`-O2`/`-O3` gain defined meaning** instead of being accidental `-O1`
-  synonyms; users get the `-O` contract they expect from GCC/Clang/rustc.
+- **`-O2`/`-O3` have an explicit current contract** and a documented path for
+  broader future optimization; users get the `-O` contract they expect from
+  GCC/Clang/rustc.
 - **Every future pass has a documented home** decided by a consistent cost/risk
   rule, so pass placement is not re-litigated case by case.
 - **The invariant is explicit and enforced**, making "optimization" vs
   "miscompile" a bright line the differential harness already polices.
-- **Zero code churn to adopt**: today's behavior is already the correct `-O1`,
-  and aliasing is the honest state for empty upper levels.
+- **Incremental level evolution**: the differential net and phase checklist
+  make each O2/O3 addition explicit while preserving the O0 baseline.
 
 ### Negative
 

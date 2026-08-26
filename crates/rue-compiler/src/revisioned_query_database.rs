@@ -1426,6 +1426,11 @@ pub(crate) struct BackendRootCandidate {
 #[derive(Debug, Clone)]
 pub(crate) struct OptimizedCfgBatchKey {
     pub(crate) keys: Arc<[crate::cfg_query::OptimizedCfgQueryKey]>,
+    /// Roots supplied by the canonical body closure.  Whole-program CFG
+    /// reachability must use the same roots as semantic body discovery,
+    /// including C-ABI exports, rather than inferring ownership from a CFG
+    /// body's presentation fields.
+    pub(crate) roots: Arc<[crate::FunctionInstanceKey]>,
     /// O2/O3 batches are request-local because their values may contain
     /// rewritten callers. Child CFG terminals remain reusable; this token
     /// prevents a rewritten whole-program result crossing request boundaries.
@@ -1447,17 +1452,20 @@ impl OptimizedCfgBatchKey {
     pub(crate) fn new(
         keys: Arc<[crate::cfg_query::OptimizedCfgQueryKey]>,
         generation: u64,
+        roots: Arc<[crate::FunctionInstanceKey]>,
     ) -> Self {
         let mut hasher = rue_query::StableHasher::new();
         hasher.write_usize(keys.len());
         for key in keys.iter() {
             key.stable_hash(&mut hasher);
         }
+        roots.hash(&mut hasher);
         generation.hash(&mut hasher);
         let digest = hasher.finish128();
         let memo_hash = hasher.finish();
         Self {
             keys,
+            roots,
             generation,
             digest,
             memo_hash,
@@ -1469,6 +1477,7 @@ impl PartialEq for OptimizedCfgBatchKey {
     fn eq(&self, other: &Self) -> bool {
         self.generation == other.generation
             && (Arc::ptr_eq(&self.keys, &other.keys) || self.keys == other.keys)
+            && (Arc::ptr_eq(&self.roots, &other.roots) || self.roots == other.roots)
     }
 }
 
@@ -1488,6 +1497,7 @@ impl QueryKey for OptimizedCfgBatchKey {
             identity.push('\u{1e}');
             identity.push_str(&key.shared_stable_identity());
         }
+        identity.push_str(&format!(";roots={:?}", self.roots));
         identity.push_str(&format!(";generation={}", self.generation));
         identity
     }
@@ -1510,6 +1520,10 @@ pub(crate) struct OptimizedCfgBatchOutput {
     /// and pin these records for codegen; the request-local batch generation
     /// ensures no successor can reuse that whole-program result.
     pub(crate) non_reusable_functions: Arc<[crate::FunctionInstanceKey]>,
+    /// Functions absent from the post-inline whole-program reachability
+    /// closure.  The batch retains value/key alignment; rooted backend
+    /// consumers filter these identities before making codegen requests.
+    pub(crate) unreachable_functions: Arc<[crate::FunctionInstanceKey]>,
     /// Exact child leases acquired while the rooted batch evaluator still owns
     /// every request lease. The memoized root encapsulates these pins so
     /// retaining it also retains the scheduled children through publication.
@@ -15082,6 +15096,7 @@ impl RevisionedQueryDatabase {
                             .zip(right.values.iter())
                             .all(|(left, right)| crate::cfg_query::cfg_value_equal(left, right))
                         && left.non_reusable_functions == right.non_reusable_functions
+                        && left.unreachable_functions == right.unreachable_functions
                 },
                 move |context, _, key: &OptimizedCfgBatchKey| {
                     let fallbacks = backend_retention_fallbacks(
@@ -15111,8 +15126,13 @@ impl RevisionedQueryDatabase {
                             value.clone()
                         })
                         .collect::<Vec<_>>();
-                    let (values, non_reusable_functions) =
-                        crate::cfg_query::apply_general_inlining(context, key.keys.as_ref(), &values)?;
+                    let (values, non_reusable_functions, unreachable_functions) =
+                        crate::cfg_query::apply_general_inlining(
+                            context,
+                            key.keys.as_ref(),
+                            &values,
+                            key.roots.as_ref(),
+                        )?;
                     let kind = if values.iter().all(|value| matches!(value, crate::cfg_query::CfgValue::Available(_))) {
                         QueryTerminalKind::Success
                     } else {
@@ -15120,9 +15140,13 @@ impl RevisionedQueryDatabase {
                     };
                     let retained_terminals = terminals
                         .iter()
+                        .zip(key.keys.iter())
                         .zip(values.iter())
-                        .filter(|(_, value)| matches!(value, crate::cfg_query::CfgValue::Available(record) if record.durable_reuse_allowed))
-                        .map(|(terminal, _)| terminal.clone())
+                        .filter(|((_, key), value)| {
+                            !unreachable_functions.contains(&key.cfg.function)
+                                && matches!(value, crate::cfg_query::CfgValue::Available(record) if record.durable_reuse_allowed)
+                        })
+                        .map(|((terminal, _), _)| terminal.clone())
                         .collect::<Vec<_>>();
                     let retained_children = Arc::new(
                         context
@@ -15133,6 +15157,7 @@ impl RevisionedQueryDatabase {
                     Ok(QueryOutput::success(OptimizedCfgBatchOutput {
                         values,
                         non_reusable_functions: non_reusable_functions.into_iter().collect::<Vec<_>>().into(),
+                        unreachable_functions: unreachable_functions.into_iter().collect::<Vec<_>>().into(),
                         _retained_children: retained_children,
                     })
                     .with_terminal_kind(kind))
@@ -17263,6 +17288,7 @@ impl RevisionedQueryDatabase {
         &self,
         revision: Revision,
         keys: Arc<[crate::cfg_query::OptimizedCfgQueryKey]>,
+        roots: Arc<[crate::FunctionInstanceKey]>,
         cancellation: CancellationToken,
     ) -> (
         OptimizedCfgBatchKey,
@@ -17277,7 +17303,7 @@ impl RevisionedQueryDatabase {
         } else {
             0
         };
-        let key = OptimizedCfgBatchKey::new(keys, generation);
+        let key = OptimizedCfgBatchKey::new(keys, generation, roots);
         let attempt = self.runtime.request_registered(
             &self.optimized_cfg_batches,
             revision,
@@ -17399,18 +17425,26 @@ impl RevisionedQueryDatabase {
             .pin_terminal(terminal)
             .expect("optimized-CFG batch result belongs to the registered family");
         candidate.lease.lease(pin);
-        let non_reusable = match terminal.outcome() {
-            rue_query::QueryOutcome::Success(output) => output
-                .non_reusable_functions
-                .iter()
-                .collect::<std::collections::BTreeSet<_>>(),
-            rue_query::QueryOutcome::Failure(_) => std::collections::BTreeSet::new(),
+        let (non_reusable, unreachable) = match terminal.outcome() {
+            rue_query::QueryOutcome::Success(output) => (
+                output
+                    .non_reusable_functions
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>(),
+                output
+                    .unreachable_functions
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>(),
+            ),
+            rue_query::QueryOutcome::Failure(_) => (
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
         };
-        for optimized in key
-            .keys
-            .iter()
-            .filter(|optimized| !non_reusable.contains(&optimized.cfg.function))
-        {
+        for optimized in key.keys.iter().filter(|optimized| {
+            !non_reusable.contains(&optimized.cfg.function)
+                && !unreachable.contains(&optimized.cfg.function)
+        }) {
             for cfg_key in
                 std::iter::once(&optimized.cfg).chain(optimized.accessor_dependencies.iter())
             {
@@ -17418,7 +17452,11 @@ impl RevisionedQueryDatabase {
             }
             candidate.functions.insert(optimized.cfg.function.clone());
         }
-        candidate.optimized_cfg_terminals = key.keys.len();
+        candidate.optimized_cfg_terminals = key
+            .keys
+            .iter()
+            .filter(|optimized| !unreachable.contains(&optimized.cfg.function))
+            .count();
     }
 
     /// Retain the registered CodegenUnit batch from result birth until the

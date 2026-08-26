@@ -5438,6 +5438,18 @@ impl CompilerSession {
         let (cfg_batch_key, attempt) = self.queries.revisioned.optimized_cfg_batch(
             graph.revision,
             optimized_keys,
+            std::iter::once(crate::FunctionInstanceKey::Definition(graph.main.clone()))
+                .chain(
+                    graph
+                        .c_export_roots
+                        .iter()
+                        .cloned()
+                        .map(crate::FunctionInstanceKey::Definition),
+                )
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .into(),
             cancellation,
         );
         let batch_execution = attempt.execution();
@@ -5533,6 +5545,7 @@ impl CompilerSession {
             unreachable!("OptimizedCfgBatch publishes typed values")
         };
         assert_eq!(batch.values.len(), cfg_requests.len());
+        let unreachable_functions = batch.unreachable_functions.iter().collect::<BTreeSet<_>>();
         for (((function, optimized_cfg_key, body_span), value), _execution) in cfg_requests
             .into_iter()
             .zip(batch.values.iter())
@@ -5585,6 +5598,12 @@ impl CompilerSession {
                 record.body_span,
                 body_span,
             ));
+            // Reachability only controls backend publication. Diagnostics and
+            // completed-work accounting belong to every successfully queried
+            // body, including a callee removed after inlining.
+            if unreachable_functions.contains(&function) {
+                continue;
+            }
             cfgs.push(RootedCfgUnit {
                 function,
                 optimized_cfg_key,

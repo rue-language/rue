@@ -61,6 +61,7 @@ mod tests {
         let optimized_batch = crate::revisioned_query_database::OptimizedCfgBatchKey::new(
             Arc::from([optimized.clone()]),
             0,
+            Arc::from([]),
         );
         let codegen_batch = crate::revisioned_query_database::CodegenUnitBatchKey {
             keys: Arc::from([codegen.clone()]),
@@ -71,8 +72,8 @@ mod tests {
         assert_eq!(
             optimized_batch.stable_identity(),
             format!(
-                "optimized-cfg-batch;units=1\u{1e}{};generation=0",
-                optimized.shared_stable_identity()
+                "optimized-cfg-batch;units=1\u{1e}{};roots=[];generation=0",
+                optimized.shared_stable_identity(),
             )
         );
         assert_eq!(
@@ -2833,7 +2834,7 @@ mod tests {
                     .find(|unit| unit.record.codegen.defined_symbol.ends_with("main"))
                     .is_some_and(|unit| !unit.record.durable_reuse_allowed)
             );
-            assert!(output.cfgs.iter().any(|unit| matches!(
+            assert!(!output.cfgs.iter().any(|unit| matches!(
                 &unit.function,
                 FunctionInstanceKey::Definition(definition) if definition.name() == "add_one"
             )));
@@ -2844,8 +2845,10 @@ mod tests {
             assert!(session
                 .rooted_cfg_executions()
                 .iter()
-                .any(|(function, execution)| matches!(function, FunctionInstanceKey::Definition(definition) if definition.name() == "add_one")
-                    && matches!(execution, rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined)));
+                .any(|(function, execution)| {
+                matches!(function, FunctionInstanceKey::Definition(definition) if definition.name() == "add_one")
+                    && matches!(execution, rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined)
+            }));
         }
     }
 
@@ -2861,30 +2864,225 @@ mod tests {
             .update_for_presentation(&snapshot)
             .into_result()
             .unwrap();
-        let output = session
-            .rooted_cfg(&CompileOptions {
-                opt_level: rue_cfg::OptLevel::O2,
+        for opt_level in [rue_cfg::OptLevel::O2, rue_cfg::OptLevel::O3] {
+            let options = CompileOptions {
+                opt_level,
                 ..CompileOptions::default()
-            })
+            };
+            let output = session
+                .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+                .unwrap();
+            assert!(
+                !output.objects.is_empty(),
+                "linked backend objects at {opt_level:?}"
+            );
+            assert!(
+                output.units.iter().any(|unit| matches!(
+                    &unit.function,
+                    FunctionInstanceKey::Definition(definition) if definition.name() == "next"
+                )),
+                "reachable method must retain a standalone codegen unit at {opt_level:?}"
+            );
+            let main = output
+                .cfgs
+                .iter()
+                .find(|unit| unit.record.codegen.defined_symbol.ends_with("main"))
+                .unwrap();
+            assert!(main.record.durable_reuse_allowed);
+            assert!(
+                main.record
+                    .cfg
+                    .blocks()
+                    .iter()
+                    .flat_map(|block| block.insts.iter())
+                    .any(|value| matches!(
+                        main.record.cfg.get_inst(*value).data,
+                        rue_cfg::CfgInstData::Call { .. }
+                    ))
+            );
+            let linked =
+                crate::queries::compile_with_session(&mut session, &snapshot, &options).unwrap();
+            assert!(
+                !linked.elf.is_empty(),
+                "method-containing image at {opt_level:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn phase5_accessor_splice_reaches_backend_and_linker() {
+        let snapshot = SourceSnapshot::single(
+            "<phase5-accessor-backend>",
+            "struct Point { value: i32, fn read(borrow self) -> borrow i32 { yield self.value; } } fn main() -> i32 { let point = Point { value: 7 }; @dbg(point.read()); 0 }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        for opt_level in [rue_cfg::OptLevel::O2, rue_cfg::OptLevel::O3] {
+            let options = CompileOptions {
+                opt_level,
+                ..CompileOptions::default()
+            };
+            let output = session
+                .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+                .unwrap();
+            let main = output
+                .cfgs
+                .iter()
+                .find(|unit| unit.record.codegen.defined_symbol.ends_with("main"))
+                .expect("main reaches the backend");
+            assert!(
+                !main.optimized_cfg_key.accessor_dependencies.is_empty(),
+                "the accessor's raw CFG dependency must remain attached at {opt_level:?}"
+            );
+            assert!(
+                output.units.iter().any(|unit| matches!(
+                    &unit.function,
+                    FunctionInstanceKey::Definition(definition) if definition.name() == "main"
+                )),
+                "the spliced caller must reach codegen at {opt_level:?}"
+            );
+            assert!(
+                !output.units.iter().any(|unit| matches!(
+                    &unit.function,
+                    FunctionInstanceKey::Definition(definition) if definition.name() == "read"
+                )),
+                "mandatory accessors have no standalone ABI unit at {opt_level:?}"
+            );
+            let linked =
+                crate::queries::compile_with_session(&mut session, &snapshot, &options).unwrap();
+            assert!(
+                !linked.elf.is_empty(),
+                "accessor-containing image at {opt_level:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn phase5_nested_drop_glue_reaches_backend_and_linker() {
+        let snapshot = SourceSnapshot::single(
+            "<phase5-nested-drop-glue>",
+            "struct Inner { value: i32 } drop fn Inner(self) { @dbg(self.value); } struct Outer { inner: Inner } drop fn Outer(self) { @dbg(self.inner.value); } fn main() -> i32 { let outer = Outer { inner: Inner { value: 7 } }; 0 }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        for opt_level in [rue_cfg::OptLevel::O2, rue_cfg::OptLevel::O3] {
+            let options = CompileOptions {
+                opt_level,
+                ..CompileOptions::default()
+            };
+            let output = session
+                .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+                .unwrap();
+            let drop_glue_units = output
+                .units
+                .iter()
+                .filter(|unit| matches!(unit.function, FunctionInstanceKey::DropGlue(_)))
+                .count();
+            assert!(
+                drop_glue_units >= 2,
+                "nested aggregate cleanup must retain both glue units at {opt_level:?}: {drop_glue_units}"
+            );
+            let linked =
+                crate::queries::compile_with_session(&mut session, &snapshot, &options).unwrap();
+            assert!(
+                !linked.elf.is_empty(),
+                "nested cleanup image at {opt_level:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn phase5_retains_wrapper_drop_glue_implicit_edge() {
+        let snapshot = SourceSnapshot::single(
+            "<phase5-wrapper-drop-glue>",
+            "struct D { value: i32 } drop fn D(self) { @dbg(self.value); } fn main() -> i32 { let _items: [D; 2] = [D { value: 1 }, D { value: 2 }]; 0 }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let options = CompileOptions {
+            opt_level: rue_cfg::OptLevel::O2,
+            ..CompileOptions::default()
+        };
+        let output = session
+            .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
             .unwrap();
         let main = output
             .cfgs
             .iter()
-            .find(|unit| unit.record.codegen.defined_symbol.ends_with("main"))
-            .unwrap();
-        assert!(main.record.durable_reuse_allowed);
+            .find(|unit| unit.record.codegen.defined_symbol.as_ref() == "main")
+            .expect("main reaches the backend");
         assert!(
             main.record
+                .implicit_drop_glue_targets
+                .iter()
+                .any(|target| matches!(target, crate::TypeInstanceKey::Array { .. })),
+            "wrapper array drop glue must be an explicit reachability edge"
+        );
+        assert!(
+            output.units.iter().any(|unit| {
+                matches!(unit.function, FunctionInstanceKey::DropGlue(ref owner)
+                    if matches!(owner.as_ref(), crate::TypeInstanceKey::Array { .. }))
+            }),
+            "the wrapper drop-glue unit must survive DFE"
+        );
+    }
+
+    #[test]
+    fn phase5_keeps_exported_and_recursive_functions_reachable() {
+        let snapshot = SourceSnapshot::single(
+            "<phase5-roots>",
+            "pub extern \"C\" fn exported() -> i32 { 7 } fn recurse(n: i32) -> i32 { if n == 0 { 0 } else { recurse(n - 1) } } fn main() -> i32 { recurse(1) }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let output = session
+            .rooted_cfg(&CompileOptions {
+                opt_level: rue_cfg::OptLevel::O2,
+                preview_features: PreviewFeatures::from([PreviewFeature::CFfi]),
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert!(output.cfgs.iter().any(|unit| matches!(
+            &unit.function,
+            FunctionInstanceKey::Definition(definition) if definition.name() == "exported"
+        )));
+        let recurse = output
+            .cfgs
+            .iter()
+            .find(|unit| {
+                matches!(
+                    &unit.function,
+                    FunctionInstanceKey::Definition(definition) if definition.name() == "recurse"
+                )
+            })
+            .expect("the rooted recursive function remains in the program image");
+        assert!(
+            recurse
+                .record
                 .cfg
                 .blocks()
                 .iter()
                 .flat_map(|block| block.insts.iter())
-                .any(|value| {
-                    matches!(
-                        main.record.cfg.get_inst(*value).data,
-                        rue_cfg::CfgInstData::Call { .. }
-                    )
-                })
+                .any(|value| matches!(
+                    recurse.record.cfg.get_inst(*value).data,
+                    rue_cfg::CfgInstData::Call { .. }
+                ))
         );
     }
 
@@ -2938,10 +3136,48 @@ mod tests {
             .unwrap();
         assert_eq!(call_count(&o2), 0);
         assert!(!o2.cfgs.iter().find(|unit| matches!(&unit.function, FunctionInstanceKey::Definition(definition) if definition.name() == "main")).unwrap().record.durable_reuse_allowed);
-        assert!(o2.cfgs.iter().any(|unit| matches!(
+        assert!(!o2.cfgs.iter().any(|unit| matches!(
             &unit.function,
             FunctionInstanceKey::Definition(definition) if definition.name() == "consume"
         )));
+    }
+
+    #[test]
+    fn phase5_inlined_callee_preserves_wrapper_drop_glue() {
+        let snapshot = SourceSnapshot::single(
+            "<phase5-inlined-wrapper-drop-glue>",
+            "struct D { value: i32 } drop fn D(self) { @dbg(self.value); } fn consume(_items: [D; 1]) -> i32 { 0 } fn main() -> i32 { consume([D { value: 1 }]) }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let options = CompileOptions {
+            opt_level: rue_cfg::OptLevel::O2,
+            ..CompileOptions::default()
+        };
+        let output = session
+            .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+            .unwrap();
+        assert!(
+            !output.cfgs.iter().any(|unit| matches!(
+                &unit.function,
+                FunctionInstanceKey::Definition(definition) if definition.name() == "consume"
+            )),
+            "the single-use callee should be removed after inlining"
+        );
+        assert!(
+            output.units.iter().any(|unit| {
+                matches!(unit.function, FunctionInstanceKey::DropGlue(ref owner)
+                    if matches!(owner.as_ref(), crate::TypeInstanceKey::Array { .. }))
+            }),
+            "the inlined callee's wrapper drop glue must remain reachable"
+        );
+        let linked = crate::queries::compile_with_session(&mut session, &snapshot, &options)
+            .expect("inlined wrapper cleanup must link");
+        assert!(!linked.elf.is_empty());
     }
 
     #[test]
@@ -2967,6 +3203,9 @@ mod tests {
             let first = session
                 .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
                 .unwrap();
+            let root = session.backend_root_metrics();
+            assert_eq!(root.functions, 0, "{target}: {root:?}");
+            assert_eq!(root.optimized_cfg_terminals, 1, "{target}: {root:?}");
             let main_cfg = first
                 .cfgs
                 .iter()
@@ -2990,20 +3229,19 @@ mod tests {
                 .iter()
                 .find(|unit| matches!(&unit.function, FunctionInstanceKey::Definition(definition) if definition.name() == "main"))
                 .unwrap();
-            let callee_unit = first
-                .units
-                .iter()
-                .find(|unit| matches!(&unit.function, FunctionInstanceKey::Definition(definition) if definition.name() == "add_one"))
-                .unwrap();
             assert!(
                 main_unit
                     .unit
                     .relocations
                     .iter()
-                    .all(|relocation| relocation.symbol != callee_unit.unit.defined_symbol),
+                    .all(|relocation| !relocation.symbol.contains("add_one")),
                 "the {target} caller must not retain a relocation to its inlined callee: {:?}",
                 main_unit.unit.relocations
             );
+            assert!(!first.units.iter().any(|unit| matches!(
+                &unit.function,
+                FunctionInstanceKey::Definition(definition) if definition.name() == "add_one"
+            )));
 
             session
                 .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
@@ -3013,9 +3251,8 @@ mod tests {
                 matches!(function, FunctionInstanceKey::Definition(definition) if definition.name() == "main")
                     && *execution == rue_query::RequestExecution::Computed
             }), "{target}: {executions:?}");
-            assert!(executions.iter().any(|(function, execution)| {
+            assert!(!executions.iter().any(|(function, _execution)| {
                 matches!(function, FunctionInstanceKey::Definition(definition) if definition.name() == "add_one")
-                    && matches!(execution, rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined)
             }), "{target}: {executions:?}");
         }
     }
@@ -3032,6 +3269,49 @@ mod tests {
         assert_eq!(output.warnings.len(), 1);
         assert!(output.warnings[0].to_string().contains("unused variable"));
         assert!(output.warnings[0].to_string().contains("'x'"));
+    }
+
+    #[test]
+    fn optimized_inlined_callee_warnings_match_o0() {
+        let snapshot = SourceSnapshot::single(
+            "<optimized-callee-warning>",
+            "fn warned() -> i32 { return 42; 0 } fn main() -> i32 { warned() }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+
+        let mut expected = None;
+        for opt_level in [
+            rue_cfg::OptLevel::O0,
+            rue_cfg::OptLevel::O2,
+            rue_cfg::OptLevel::O3,
+        ] {
+            let output = session
+                .rooted_cfg(&CompileOptions {
+                    opt_level,
+                    ..CompileOptions::default()
+                })
+                .unwrap();
+            assert_eq!(
+                output.warnings.len(),
+                1,
+                "{opt_level:?}: {:?}",
+                output.warnings
+            );
+            assert!(output.warnings[0].to_string().contains("unreachable"));
+            if let Some(expected) = &expected {
+                assert_eq!(
+                    &output.warnings, expected,
+                    "warning parity at {opt_level:?}"
+                );
+            } else {
+                expected = Some(output.warnings.clone());
+            }
+        }
     }
 
     #[test]

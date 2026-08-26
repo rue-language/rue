@@ -559,6 +559,7 @@ pub(crate) struct CfgRecord {
     pub(crate) body_span: Span,
     pub(crate) warnings: Arc<[rue_error::CompileWarning]>,
     pub(crate) implicit_destructor_targets: Arc<[crate::TypeInstanceKey]>,
+    pub(crate) implicit_drop_glue_targets: Arc<[crate::TypeInstanceKey]>,
     pub(crate) implicit_destructor_dependencies_complete: bool,
     /// General interprocedural inlining changes the caller's CFG in a
     /// whole-program batch. Such a record is a backend result, not a durable
@@ -579,6 +580,17 @@ pub(crate) struct CfgCodegenDomain {
     pub(crate) defined_symbol: Arc<str>,
     pub(crate) symbol_mappings: Arc<std::collections::BTreeMap<String, String>>,
     pub(crate) foreign_symbols: Arc<std::collections::BTreeSet<String>>,
+}
+
+impl CfgCodegenDomain {
+    /// Classify a source spelling using the exact symbol projection already
+    /// consumed by codegen. A target-C callable is a legitimate external edge
+    /// even when its callable identity has no body in this batch.
+    pub(crate) fn is_foreign_source_symbol(&self, source: &str) -> bool {
+        self.symbol_mappings
+            .get(source)
+            .is_some_and(|machine| self.foreign_symbols.contains(machine))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -829,6 +841,7 @@ impl RetainedCharge for CfgRecord {
             .saturating_add(self.materialization_warnings.retained_charge())
             .saturating_add(self.warnings.retained_charge())
             .saturating_add(self.implicit_destructor_targets.retained_charge())
+            .saturating_add(self.implicit_drop_glue_targets.retained_charge())
     }
 }
 
@@ -1636,6 +1649,12 @@ fn build_cfg(
             ));
         }
     };
+    let implicit_destructor_dependencies_complete =
+        output.implicit_named_destructors.iter().all(|id| {
+            materialized
+                .aggregate_types
+                .contains_key(&rue_air::Type::new_struct(*id))
+        });
     let mut implicit_destructor_targets = output
         .implicit_named_destructors
         .iter()
@@ -1646,6 +1665,17 @@ fn build_cfg(
                 .cloned()
         })
         .collect::<std::collections::BTreeSet<_>>();
+    let implicit_drop_glue_dependencies_complete = output
+        .implicit_drop_glue_types
+        .iter()
+        .all(|ty| materialized.aggregate_types.contains_key(ty));
+    let implicit_drop_glue_targets = output
+        .implicit_drop_glue_types
+        .iter()
+        .filter_map(|ty| materialized.aggregate_types.get(ty).cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     if let CfgSemanticInput::DropGlue { owner, facts, .. } = &key.semantic_input
         && facts.destructor.is_some()
     {
@@ -1682,7 +1712,10 @@ fn build_cfg(
             .into_iter()
             .collect::<Vec<_>>()
             .into(),
+        implicit_drop_glue_targets: implicit_drop_glue_targets.into(),
         implicit_destructor_dependencies_complete: materialized.completeness.is_complete()
+            && implicit_destructor_dependencies_complete
+            && implicit_drop_glue_dependencies_complete
             && !output.anonymous_destructor_dependency_incomplete,
         durable_reuse_allowed: true,
     }));
@@ -1732,6 +1765,11 @@ pub(crate) fn evaluate_optimized_cfg(
     let mut warnings = record.warnings.to_vec();
     let mut implicit_destructor_targets = record
         .implicit_destructor_targets
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut implicit_drop_glue_targets = record
+        .implicit_drop_glue_targets
         .iter()
         .cloned()
         .collect::<std::collections::BTreeSet<_>>();
@@ -1886,6 +1924,7 @@ pub(crate) fn evaluate_optimized_cfg(
             }
         }
         implicit_destructor_targets.extend(callee.implicit_destructor_targets.iter().cloned());
+        implicit_drop_glue_targets.extend(callee.implicit_drop_glue_targets.iter().cloned());
         implicit_destructor_dependencies_complete &=
             callee.implicit_destructor_dependencies_complete;
         let callee_value_base = current.value_count() as u32;
@@ -1950,6 +1989,10 @@ pub(crate) fn evaluate_optimized_cfg(
                 .into_iter()
                 .collect::<Vec<_>>()
                 .into(),
+            implicit_drop_glue_targets: implicit_drop_glue_targets
+                .into_iter()
+                .collect::<Vec<_>>()
+                .into(),
             implicit_destructor_dependencies_complete,
             durable_reuse_allowed: record.durable_reuse_allowed,
         },
@@ -1992,6 +2035,7 @@ fn optimize_cfg_without_accessors(
             body_span: record.body_span,
             warnings: record.warnings.clone(),
             implicit_destructor_targets: record.implicit_destructor_targets.clone(),
+            implicit_drop_glue_targets: record.implicit_drop_glue_targets.clone(),
             implicit_destructor_dependencies_complete: record
                 .implicit_destructor_dependencies_complete,
             durable_reuse_allowed: record.durable_reuse_allowed,
@@ -2008,9 +2052,11 @@ pub(crate) fn apply_general_inlining(
     context: &QueryContext,
     keys: &[OptimizedCfgQueryKey],
     values: &[CfgValue],
+    roots: &[crate::FunctionInstanceKey],
 ) -> Result<
     (
         Vec<CfgValue>,
+        std::collections::BTreeSet<crate::FunctionInstanceKey>,
         std::collections::BTreeSet<crate::FunctionInstanceKey>,
     ),
     QueryAbort,
@@ -2018,7 +2064,11 @@ pub(crate) fn apply_general_inlining(
     if keys.first().is_none_or(|key| {
         key.opt_level == rue_cfg::OptLevel::O0 || key.opt_level == rue_cfg::OptLevel::O1
     }) {
-        return Ok((values.to_vec(), std::collections::BTreeSet::new()));
+        return Ok((
+            values.to_vec(),
+            std::collections::BTreeSet::new(),
+            std::collections::BTreeSet::new(),
+        ));
     }
     context.check_canceled()?;
 
@@ -2036,7 +2086,11 @@ pub(crate) fn apply_general_inlining(
         })
         .collect::<Option<std::collections::BTreeMap<_, _>>>()
     else {
-        return Ok((values.to_vec(), std::collections::BTreeSet::new()));
+        return Ok((
+            values.to_vec(),
+            std::collections::BTreeSet::new(),
+            std::collections::BTreeSet::new(),
+        ));
     };
 
     // Membership in the batch is asked once per call instruction across every
@@ -2222,6 +2276,11 @@ pub(crate) fn apply_general_inlining(
             .iter()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
+        let mut implicit_drop_glue_targets = record
+            .implicit_drop_glue_targets
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
         let mut implicit_destructor_dependencies_complete =
             record.implicit_destructor_dependencies_complete;
         // Splices run against a plain `Cfg` and the batch is verified once,
@@ -2293,6 +2352,7 @@ pub(crate) fn apply_general_inlining(
             );
             foreign_symbols.extend(callee.codegen.foreign_symbols.iter().cloned());
             implicit_destructor_targets.extend(callee.implicit_destructor_targets.iter().cloned());
+            implicit_drop_glue_targets.extend(callee.implicit_drop_glue_targets.iter().cloned());
             implicit_destructor_dependencies_complete &=
                 callee.implicit_destructor_dependencies_complete;
             let call_block = current
@@ -2379,12 +2439,220 @@ pub(crate) fn apply_general_inlining(
                 .into_iter()
                 .collect::<Vec<_>>()
                 .into(),
+            implicit_drop_glue_targets: implicit_drop_glue_targets
+                .into_iter()
+                .collect::<Vec<_>>()
+                .into(),
             implicit_destructor_dependencies_complete,
             durable_reuse_allowed: false,
         }));
         changed.insert(function.clone());
     }
-    Ok((output, changed))
+    // Phase 5 consumes the post-inline CFGs produced above.  This is kept in
+    // the same batch so the call-site graph and the reachability result share
+    // one canonical domain projection and one deterministic function set.
+    let mut final_records = std::collections::BTreeMap::new();
+    for (key, value) in keys.iter().zip(output.iter()) {
+        if let CfgValue::Available(record) = value {
+            final_records.insert(key.cfg.function.clone(), record.clone());
+        }
+    }
+    let final_keys: ahash::AHashSet<_> = final_records.keys().cloned().collect();
+    let mut graph = std::collections::BTreeMap::<
+        crate::FunctionInstanceKey,
+        Vec<crate::FunctionInstanceKey>,
+    >::new();
+    let key_by_function = keys
+        .iter()
+        .map(|key| (key.cfg.function.clone(), key))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut dependency_complete = true;
+    context.record_work(rue_query::WorkItem::new(
+        "cfg.general-reachability.functions",
+        final_records.len() as u64,
+    ));
+    for (function, record) in &final_records {
+        context.check_canceled()?;
+        if !record.implicit_destructor_dependencies_complete {
+            dependency_complete = false;
+        }
+        let mut dependencies = Vec::new();
+        for block in record.cfg.blocks() {
+            for &value in &block.insts {
+                let rue_cfg::CfgInstData::Call { runtime, name, .. } =
+                    record.cfg.get_inst(value).data
+                else {
+                    continue;
+                };
+                if runtime.is_some() {
+                    continue;
+                }
+                let edge = match record.domains.callable_for_symbol(name) {
+                    Some(callee) => {
+                        let in_batch = final_keys.contains(&callee);
+                        let foreign = record
+                            .codegen
+                            .is_foreign_source_symbol(record.interner.resolve(&name));
+                        classify_reachability_edge(Some(callee), in_batch, foreign, false)
+                    }
+                    None => classify_reachability_edge(
+                        None,
+                        false,
+                        false,
+                        record.domains.is_known_non_callable_symbol(name),
+                    ),
+                };
+                match edge {
+                    ReachabilityEdge::Internal(callee) => dependencies.push(callee),
+                    ReachabilityEdge::External => {}
+                    ReachabilityEdge::Incomplete => {
+                        // An opaque call or a resolved native Rue callable
+                        // missing from this batch makes dependency discovery
+                        // incomplete. Keep every unit rather than treating
+                        // that edge as dead.
+                        dependency_complete = false;
+                    }
+                }
+            }
+        }
+        for owner in record.implicit_destructor_targets.iter() {
+            let drop_glue = crate::FunctionInstanceKey::DropGlue(Node::new(owner.clone()));
+            if final_keys.contains(&drop_glue) {
+                dependencies.push(drop_glue);
+            } else {
+                // A named-destructor edge without its synthesized glue is an
+                // incomplete dependency projection. Keep the whole batch so
+                // an unavailable edge can never turn into removed code.
+                dependency_complete = false;
+            }
+        }
+        for owner in record.implicit_drop_glue_targets.iter() {
+            let drop_glue = crate::FunctionInstanceKey::DropGlue(Node::new(owner.clone()));
+            if final_keys.contains(&drop_glue) {
+                dependencies.push(drop_glue);
+            } else {
+                dependency_complete = false;
+            }
+        }
+        // Drop glue lowers destructor and nested-glue calls through `Drop`
+        // instructions, not ordinary CFG `Call` instructions. Preserve those
+        // implicit edges from the same typed drop-glue facts used to build the
+        // unit, so eliminating an uncalled-looking destructor cannot break a
+        // retained cleanup path.
+        if let Some(CfgSemanticInput::DropGlue { facts, .. }) = key_by_function
+            .get(function)
+            .map(|key| &key.cfg.semantic_input)
+        {
+            if let Some(destructor) = &facts.destructor {
+                if final_keys.contains(destructor) {
+                    dependencies.push(destructor.clone());
+                } else {
+                    dependency_complete = false;
+                }
+            }
+            for owner in facts.nested.iter() {
+                let nested = crate::FunctionInstanceKey::DropGlue(Node::new(owner.clone()));
+                if final_keys.contains(&nested) {
+                    dependencies.push(nested);
+                } else {
+                    dependency_complete = false;
+                }
+            }
+        }
+        dependencies.sort();
+        dependencies.dedup();
+        graph.insert(function.clone(), dependencies);
+    }
+
+    let removed =
+        whole_program_unreachable_checked(&graph, roots, &final_keys, dependency_complete, || {
+            context.check_canceled()
+        })?
+        .unwrap_or_default();
+    Ok((output, changed, removed))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ReachabilityEdge<K> {
+    Internal(K),
+    External,
+    Incomplete,
+}
+
+/// Classify one scanned call edge before it enters the rooted graph. A
+/// resolved target-C callable is external by ABI contract; a resolved native
+/// callable absent from the batch is an incomplete projection and must fail
+/// closed.
+fn classify_reachability_edge<K>(
+    callee: Option<K>,
+    in_batch: bool,
+    foreign: bool,
+    known_non_callable: bool,
+) -> ReachabilityEdge<K> {
+    match callee {
+        Some(callee) if in_batch => ReachabilityEdge::Internal(callee),
+        Some(_) if foreign => ReachabilityEdge::External,
+        Some(_) => ReachabilityEdge::Incomplete,
+        None if known_non_callable => ReachabilityEdge::External,
+        None => ReachabilityEdge::Incomplete,
+    }
+}
+
+/// Compute the complement of the canonical rooted closure.  `None` means the
+/// graph is incomplete and callers must keep every unit; this explicit result
+/// prevents a missing edge from being mistaken for an unreachable function.
+#[cfg(test)]
+fn whole_program_unreachable<K: Clone + Ord + std::hash::Hash + Eq>(
+    graph: &std::collections::BTreeMap<K, Vec<K>>,
+    roots: &[K],
+    all_functions: &ahash::AHashSet<K>,
+    dependency_complete: bool,
+) -> Option<std::collections::BTreeSet<K>> {
+    match whole_program_unreachable_checked(
+        graph,
+        roots,
+        all_functions,
+        dependency_complete,
+        || Ok(()),
+    ) {
+        Ok(result) => result,
+        Err(_) => None,
+    }
+}
+
+fn whole_program_unreachable_checked<
+    K: Clone + Ord + std::hash::Hash + Eq,
+    F: FnMut() -> Result<(), QueryAbort>,
+>(
+    graph: &std::collections::BTreeMap<K, Vec<K>>,
+    roots: &[K],
+    all_functions: &ahash::AHashSet<K>,
+    dependency_complete: bool,
+    mut checkpoint: F,
+) -> Result<Option<std::collections::BTreeSet<K>>, QueryAbort> {
+    if !dependency_complete || roots.iter().any(|root| !all_functions.contains(root)) {
+        return Ok(None);
+    }
+    let mut reachable = std::collections::BTreeSet::new();
+    let mut pending = roots.to_vec();
+    pending.sort();
+    pending.dedup();
+    while let Some(function) = pending.pop() {
+        checkpoint()?;
+        if !reachable.insert(function.clone()) {
+            continue;
+        }
+        if let Some(dependencies) = graph.get(&function) {
+            pending.extend(dependencies.iter().cloned());
+        }
+    }
+    Ok(Some(
+        all_functions
+            .iter()
+            .filter(|function| !reachable.contains(*function))
+            .cloned()
+            .collect(),
+    ))
 }
 
 const PHASE2_VALUE_CAP: usize = 32;
@@ -2711,6 +2979,66 @@ mod accessor_graph_tests {
             assert_eq!(work.closure_edges, width);
             assert_eq!(output, (1..=width).collect::<Vec<_>>());
         }
+    }
+
+    #[test]
+    fn whole_program_reachability_is_ordered_and_fail_safe() {
+        let graph = std::collections::BTreeMap::from([
+            (1usize, vec![2]),
+            (2, vec![3]),
+            (3, vec![3]),
+            (4, Vec::new()),
+        ]);
+        let all = [1, 2, 3, 4].into_iter().collect();
+        assert_eq!(
+            whole_program_unreachable(&graph, &[1], &all, true),
+            Some(std::collections::BTreeSet::from([4]))
+        );
+        assert_eq!(whole_program_unreachable(&graph, &[1], &all, false), None);
+        assert_eq!(whole_program_unreachable(&graph, &[99], &all, true), None);
+        let mut checkpoints = 0;
+        assert!(matches!(
+            whole_program_unreachable_checked(&graph, &[1], &all, true, || {
+                checkpoints += 1;
+                (checkpoints < 2).then_some(()).ok_or(QueryAbort::Canceled)
+            }),
+            Err(QueryAbort::Canceled)
+        ));
+        assert_eq!(checkpoints, 2);
+    }
+
+    #[test]
+    fn reachability_scanner_classifies_foreign_and_missing_internal_edges() {
+        // Production domain construction rejects a missing live symbol before
+        // the batch scanner can publish it. Exercise the scanner seam directly
+        // for that fail-closed case while using the real codegen-domain foreign
+        // projection for the legitimate external case.
+        let foreign_domain = CfgCodegenDomain {
+            defined_symbol: Arc::from("caller"),
+            symbol_mappings: Arc::new(std::collections::BTreeMap::from([(
+                "foreign".to_owned(),
+                "ffi_symbol".to_owned(),
+            )])),
+            foreign_symbols: Arc::new(std::collections::BTreeSet::from(["ffi_symbol".to_owned()])),
+        };
+        assert!(foreign_domain.is_foreign_source_symbol("foreign"));
+        assert!(!foreign_domain.is_foreign_source_symbol("missing"));
+        assert_eq!(
+            classify_reachability_edge(Some(7usize), false, true, false),
+            ReachabilityEdge::External
+        );
+        assert_eq!(
+            classify_reachability_edge(Some(7usize), false, false, false),
+            ReachabilityEdge::Incomplete
+        );
+        assert_eq!(
+            classify_reachability_edge(None::<usize>, false, false, true),
+            ReachabilityEdge::External
+        );
+        assert_eq!(
+            classify_reachability_edge(Some(7usize), true, true, false),
+            ReachabilityEdge::Internal(7)
+        );
     }
 
     #[test]
