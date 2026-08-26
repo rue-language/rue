@@ -1,10 +1,8 @@
-//! Durable compile-time values shared by the legacy evaluator and the AIR
-//! adapter boundary.
+//! Durable compile-time values and the compiler-side authority adapter for
+//! the canonical AIR comptime engine.
 //!
-//! The value cases in this module are deliberately the existing durable
-//! evaluator representation.  The AIR implementations below are only an
-//! adapter over that representation; they do not define a second value
-//! algebra or perform evaluation.
+//! The value cases in this module are the durable semantic representation;
+//! AIR owns instruction evaluation while this module supplies host policy.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -104,6 +102,32 @@ impl DurableComptimeHostFailure {
         }
     }
 
+    /// Split the host's terminal channel at a declaration query root. AIR
+    /// keeps semantic failures and retained query failures in the same
+    /// `HostFailure` variant, while the query family must publish those two
+    /// outcomes through different outer channels.
+    pub(crate) fn into_root_host_failure(
+        self,
+    ) -> Result<Box<SemanticNucleusFailure>, rue_query::QueryFailure> {
+        match self.0 {
+            DurableComptimeHostFailureKind::Semantic(failure) => Ok(failure),
+            DurableComptimeHostFailureKind::QueryFailure(failure) => Err(failure),
+            DurableComptimeHostFailureKind::QueryAbort(_) => {
+                unreachable!("query aborts use the AIR Abort outcome")
+            }
+        }
+    }
+
+    pub(crate) fn into_root_abort(self) -> QueryAbort {
+        match self.0 {
+            DurableComptimeHostFailureKind::QueryAbort(abort) => abort,
+            DurableComptimeHostFailureKind::Semantic(_)
+            | DurableComptimeHostFailureKind::QueryFailure(_) => {
+                unreachable!("semantic and retained query failures use HostFailure")
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn semantic_failure(&self) -> Option<&SemanticNucleusFailure> {
         match &self.0 {
@@ -136,7 +160,8 @@ impl DurableComptimeFailure {
     }
 
     /// The exact durable terminal used when a comptime match reaches no
-    /// selected arm. This remains a resolution failure, matching the legacy
+    /// selected arm. This remains a resolution failure, matching the
+    /// established declaration-time behavior.
     /// evaluator's existing `comptime match has no selected arm` policy.
     pub(crate) fn comptime_match_no_selected_arm() -> Self {
         Self::resolution("comptime match has no selected arm")
@@ -277,20 +302,6 @@ impl DurableComptimeFailure {
         ))
     }
 
-    pub(crate) fn division_by_zero() -> Self {
-        Self::arithmetic_trap_failure("division by zero")
-    }
-
-    pub(crate) fn remainder_by_zero() -> Self {
-        Self::arithmetic_trap_failure("remainder by zero")
-    }
-
-    fn arithmetic_trap_failure(operation: &str) -> Self {
-        Self::comptime_failure(
-            arithmetic_trap_reason(operation).expect("unsupported durable arithmetic trap"),
-        )
-    }
-
     /// Construct a diagnostic anchored to the owning declaration.  The site
     /// is explicit so nested/foreign evaluation cannot accidentally label the
     /// failure with the ambient caller's span.
@@ -313,7 +324,7 @@ impl DurableComptimeFailure {
     /// Adapt a supported AIR arithmetic trap using the owning declaration and
     /// the trap's own span.  Unsupported operations remain unsupported rather
     /// than acquiring a new diagnostic spelling.
-    #[allow(dead_code)] // consumed after durable query-root cutover
+    #[allow(dead_code)] // consumed by the canonical durable AIR host
     pub(crate) fn trap_at(
         producer: DeclarationCandidateKey,
         trap: rue_air::ComptimeTrap,
@@ -326,7 +337,7 @@ impl DurableComptimeFailure {
     /// Adapt a durable terminal directly for the AIR host.  Provider
     /// errors use `provider_error_as_host` instead, so this seam never creates
     /// a durable failure only to convert it back into a provider error.
-    #[allow(dead_code)] // consumed after durable query-root cutover
+    #[allow(dead_code)] // consumed by the canonical durable AIR host
     pub(crate) fn into_host_error(self) -> rue_air::ComptimeHostError<DurableComptimeHostFailure> {
         match self {
             Self::Failure(failure) => {
@@ -337,9 +348,9 @@ impl DurableComptimeFailure {
     }
 
     /// Build the AIR error directly from a provider result.  This is the
-    /// AIR host funnel; the legacy adapter below only unwraps its matching
+    /// AIR host funnel; the query-root adapter below only unwraps its matching
     /// outer channel and never normalizes crossed tags.
-    #[allow(dead_code)] // consumed after durable query-root cutover
+    #[allow(dead_code)] // consumed by the canonical durable AIR host
     pub(crate) fn provider_error_as_host(
         error: rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
     ) -> rue_air::ComptimeHostError<DurableComptimeHostFailure> {
@@ -349,17 +360,6 @@ impl DurableComptimeFailure {
             }
             rue_air::SemanticProviderError::Failure(failure) => {
                 DurableComptimeHostFailure::semantic(Box::new(failure)).into_host_error()
-            }
-        }
-    }
-
-    pub(crate) fn provider_error(
-        error: rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
-    ) -> Self {
-        match error {
-            rue_air::SemanticProviderError::Abort(abort) => DurableComptimeFailure::Abort(abort),
-            rue_air::SemanticProviderError::Failure(failure) => {
-                DurableComptimeFailure::Failure(Box::new(failure))
             }
         }
     }
@@ -544,7 +544,7 @@ fn merge_effects_into(
 /// whose configuration, ordered arguments, producer, and program disagree.
 /// The only production constructor derives all of them from the owned
 /// admission payload.
-#[allow(dead_code)] // carried by the root-integrated AIR host in the next slice
+#[allow(dead_code)] // carried by the canonical root-integrated AIR host
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DurableComptimeCallContext {
     query: crate::semantic_query_nucleus::ComptimeCallQueryKey,
@@ -907,8 +907,8 @@ pub(crate) struct DurableComptimeSession {
 
 /// Engine-shaped semantic input for one anonymous nominal.
 ///
-/// The legacy evaluator is still responsible for decoding RIR into this
-/// descriptor. Keeping the descriptor independent of RIR lets the durable
+/// The AIR engine decodes RIR into this descriptor. Keeping the descriptor
+/// independent of RIR lets the durable
 /// AIR host reuse the exact identity, shape, mode, capture, and effect policy
 /// without acquiring a second instruction dispatcher.
 #[derive(Debug, Clone)]
@@ -1093,7 +1093,7 @@ pub(crate) enum DurableComptimeProgramFinalizationError {
 /// durable diagnostic site. Unknown keys never fall back to the session's
 /// parent provenance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // consumed by the staged durable AIR host
+#[allow(dead_code)] // consumed by the canonical durable AIR host
 pub(crate) enum DurableComptimeDiagnosticSiteError {
     UnknownProgram,
     UnknownDeclaration,
@@ -1102,7 +1102,7 @@ pub(crate) enum DurableComptimeDiagnosticSiteError {
 /// Failure before a foreign AIR frame is handed to the engine.  Admission is
 /// intentionally separate from lifecycle activation: the engine still owns
 /// the depth check, `enter`, and cleanup after it receives this frame.
-#[allow(dead_code)] // consumed by the staged durable AIR host
+#[allow(dead_code)] // consumed by the canonical durable AIR host
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DurableComptimeForeignFrameAdmissionError {
     NotCallable,
@@ -1137,6 +1137,42 @@ impl DurableComptimeSession {
             next_call: 0,
             programs: crate::body_query::DurableComptimeProgramRegistry::new(),
         })
+    }
+
+    /// Return the semantic cycle produced when a fully-keyed call repeats an
+    /// active admitted frame.  The key includes declaration, configuration,
+    /// and ordered type/value arguments; changing any of those keeps the call
+    /// a real recursive specialization and lets AIR enforce its depth limit.
+    pub(crate) fn active_comptime_call_cycle(
+        &self,
+        producer: &crate::StableDefinitionKey,
+        configuration: &crate::semantic_query_nucleus::SemanticQueryConfiguration,
+        type_arguments: &[(Arc<str>, DurableType)],
+        value_arguments: &[(Arc<str>, DurableConstValue)],
+    ) -> Option<SemanticNucleusFailure> {
+        let declaration =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(producer)?;
+        let query = crate::semantic_query_nucleus::ComptimeCallQueryKey {
+            declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration,
+                configuration: configuration.clone(),
+            },
+            type_arguments: type_arguments.to_vec().into(),
+            value_arguments: value_arguments.to_vec().into(),
+        };
+        let first = self.lifecycle.active.iter().position(|key| {
+            self.lifecycle
+                .contexts
+                .get(key)
+                .is_some_and(|context| context.query == query)
+        })?;
+        let mut names = self.lifecycle.active[first..]
+            .iter()
+            .filter_map(|key| self.lifecycle.contexts.get(key))
+            .map(|context| context.query.declaration.declaration.name.clone())
+            .collect::<Vec<Arc<str>>>();
+        names.push(query.declaration.declaration.name.clone());
+        Some(SemanticNucleusFailure::Cycle(names.into()))
     }
 
     #[allow(dead_code)]
@@ -1496,7 +1532,8 @@ impl DurableComptimeSession {
     }
 
     /// Reserve one call ordinal and seal it to this session. Failed admission
-    /// or binding still consumes the reservation, matching the legacy timing.
+    /// or binding still consumes the reservation, matching the established
+    /// admission timing.
     #[allow(dead_code)]
     pub(crate) fn reserve_bound_expression_call(&mut self) -> DurableComptimeCallReservation {
         let ordinal = self.next_call;
@@ -1559,7 +1596,7 @@ impl DurableComptimeSession {
     /// instruction references remain meaningful only through the returned
     /// owning program, so callers cannot accidentally pair a reference with a
     /// colliding program.
-    #[allow(dead_code)] // consumed by the staged durable AIR host
+    #[allow(dead_code)] // consumed by the canonical durable AIR host
     pub(crate) fn registered_program(
         &self,
         key: &crate::body_query::DurableComptimeProgramKey,
@@ -1569,7 +1606,7 @@ impl DurableComptimeSession {
 
     /// Issue the AIR file capability only for a program retained by this
     /// session's keyed registry. Unknown keys cannot acquire a file domain.
-    #[allow(dead_code)] // consumed by the staged durable AIR host
+    #[allow(dead_code)] // consumed by the canonical durable AIR host
     pub(crate) fn file_for_program(
         &self,
         key: &crate::body_query::DurableComptimeProgramKey,
@@ -1592,9 +1629,10 @@ impl DurableComptimeSession {
     }
 
     /// Build the canonical AIR import site from one registered program.  The
-    /// raw instruction is accepted only at this legacy evaluator adapter;
+    /// raw instruction is accepted only at this compiler-side adapter;
     /// lookup, occurrence, span, and program identity are paired here from
     /// the same registry entry before a semantic site escapes.
+    #[cfg(test)]
     pub(crate) fn import_site_for_instruction(
         &self,
         key: &crate::body_query::DurableComptimeProgramKey,
@@ -1628,7 +1666,7 @@ impl DurableComptimeSession {
 
     /// Resolve an engine-created diagnostic range against the exact
     /// registered program key, without observing effects or query state.
-    #[allow(dead_code)] // consumed by the staged durable AIR host
+    #[allow(dead_code)] // consumed by the canonical durable AIR host
     pub(crate) fn diagnostic_site(
         &self,
         key: &crate::body_query::DurableComptimeProgramKey,
@@ -1651,7 +1689,7 @@ impl DurableComptimeSession {
     /// capability here: this method validates its exact call identity but
     /// never enters a lifecycle scope.  The canonical AIR engine performs
     /// depth admission and calls `enter` after producer issuance.
-    #[allow(dead_code)] // consumed by the staged durable AIR host
+    #[allow(dead_code)] // consumed by the canonical durable AIR host
     pub(crate) fn admit_foreign_frame(
         &mut self,
         admitted: crate::body_query::OwnedForeignComptimeProgram,
@@ -1771,6 +1809,7 @@ impl DurableComptimeSession {
         self.lifecycle.prepare_expression_edge(call_ordinal)
     }
 
+    #[cfg(test)]
     pub(crate) fn finish_ready_expression_edge(
         &mut self,
         edge: DurableComptimeCallEdge,
@@ -1799,25 +1838,10 @@ impl DurableComptimeSession {
             })
     }
 
-    /// Complete a prepared call's ready projection without exposing its
-    /// lifecycle edge outside this module.
-    pub(crate) fn finish_ready_prepared_call(
-        &mut self,
-        pending: DurableComptimePendingCall,
-        projection: crate::semantic_query_nucleus::ComptimeCallProjection,
-    ) -> Result<
-        crate::semantic_query_nucleus::ComptimeCallResultProjection,
-        DurableComptimeLifecycleError,
-    > {
-        self.finish_ready_expression_edge(pending.edge, projection)
-    }
-
     /// Consume the one lookup result associated with a pre-lookup edge. This
     /// is the compiler-side adapter for the RUE-1795 seam: it never evaluates
-    /// a child or demands a terminal. The future durable host will convert the
-    /// returned admitted program and exact ticket into
-    /// `ComptimeCallPreparation::Enter`, which the currently running AIR
-    /// engine consumes through its normal call path.
+    /// a child or demands a terminal. The canonical AIR engine converts the
+    /// returned admitted program and exact ticket into its normal call path.
     pub(crate) fn consume_foreign_lookup(
         &mut self,
         edge: DurableComptimeCallEdge,
@@ -1940,7 +1964,7 @@ impl DurableComptimeSession {
     /// Record a semantic dependency in the current lifecycle scope.  Service
     /// callers use this funnel between keyed admission's begin and finish
     /// phases so a later admission failure cannot erase the begin observation.
-    #[allow(dead_code)] // consumed by the staged structured-frame adapter
+    #[allow(dead_code)] // consumed by the canonical structured-frame adapter
     pub(crate) fn observe_dependency(&mut self, dependency: SemanticDeclarationDependency) {
         self.lifecycle.observe_dependency(dependency);
     }
@@ -1952,7 +1976,7 @@ impl DurableComptimeSession {
     /// Enter one lifecycle ticket through the session-owned funnel.  Keeping
     /// this operation here prevents hosts from reaching around the
     /// session and mutating the lifecycle with a mismatched ticket.
-    #[allow(dead_code)] // activated after durable call-edge cutover
+    #[allow(dead_code)] // activated by the canonical durable call lifecycle
     pub(crate) fn enter_call(
         &mut self,
         ticket: &DurableComptimeCallTicket,
@@ -1963,7 +1987,7 @@ impl DurableComptimeSession {
     /// Finish one entered call through the session-owned funnel.  Lifecycle
     /// validation, cleanup, and Known-only effect publication remain a single
     /// operation owned by the session.
-    #[allow(dead_code)] // activated after durable call-edge cutover
+    #[allow(dead_code)] // activated by the canonical durable call lifecycle
     pub(crate) fn finish_call<V, F>(
         &mut self,
         ticket: &mut DurableComptimeCallTicket,
@@ -2005,7 +2029,7 @@ fn same_registered_program_authority(
 /// `finish` consumes an entered ticket and its lifecycle-owned scope. Cleanup
 /// happens for every AIR terminal, while effects publish only for a known
 /// result, without copying AIR's outcome algebra into the compiler.
-#[allow(dead_code)] // AIR owns the active root lifecycle until compiler cutover
+#[allow(dead_code)] // AIR owns the active root lifecycle
 #[derive(Debug)]
 pub(crate) struct DurableComptimeCallLifecycle {
     owner: u64,
@@ -2512,16 +2536,8 @@ impl DurableComptimeAdmittedCall {
         Self { token, admission }
     }
 
-    pub(crate) fn candidate(&self) -> &DeclarationCandidateKey {
-        &self.admission.candidate
-    }
-
     pub(crate) fn parameters(&self) -> &[crate::durable_semantics::DurableSemanticParameter] {
         &self.admission.parameters
-    }
-
-    pub(crate) fn result(&self) -> &DurableType {
-        &self.admission.result
     }
 
     pub(crate) fn shell_parameters(
@@ -2811,7 +2827,7 @@ impl DurableComptimeScalarPolicy {
         durable_type_diagnostic_name_kernel(ty)
     }
 
-    #[allow(dead_code)] // activated by the staged durable AIR host
+    #[allow(dead_code)] // activated by the canonical durable AIR host
     pub(crate) fn type_is_unsigned(ty: &DurableType) -> bool {
         Self::type_integer_semantics(ty).is_some_and(|integer| integer.is_unsigned())
     }
@@ -3142,10 +3158,11 @@ pub(crate) fn bind_durable_comptime_argument(
 pub(crate) struct DurableComptimeNamedValueProjection {
     value: EvaluatedSemanticConst,
     dependency: SemanticDeclarationDependency,
+    anonymous_nominals: Arc<[DurableAnonymousNominal]>,
 }
 
 /// The only declaration kinds considered by durable named-value lookup, in
-/// the same order as the legacy evaluator's semantic lookup policy.
+/// the same order as the established semantic lookup policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DurableComptimeNamedValueKind {
     Const,
@@ -3210,11 +3227,29 @@ impl DurableComptimeNamedValueProjection {
         value: EvaluatedSemanticConst,
         dependency: SemanticDeclarationDependency,
     ) -> Self {
-        Self { value, dependency }
+        Self {
+            value,
+            dependency,
+            anonymous_nominals: Arc::from([]),
+        }
     }
 
-    pub(crate) fn into_parts(self) -> (EvaluatedSemanticConst, SemanticDeclarationDependency) {
-        (self.value, self.dependency)
+    pub(crate) fn with_anonymous_nominals(
+        mut self,
+        anonymous_nominals: Arc<[DurableAnonymousNominal]>,
+    ) -> Self {
+        self.anonymous_nominals = anonymous_nominals;
+        self
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        EvaluatedSemanticConst,
+        SemanticDeclarationDependency,
+        Arc<[DurableAnonymousNominal]>,
+    ) {
+        (self.value, self.dependency, self.anonymous_nominals)
     }
 }
 
@@ -3248,7 +3283,7 @@ pub(crate) trait DurableComptimeSemanticAuthority {
     /// Resolve syntax against the exact active type/value substitution view.
     /// The program key remains the sole arena and symbol authority; callers
     /// cannot pair a syntax reference with an independently supplied arena.
-    #[allow(dead_code)] // consumed by the staged durable AIR host
+    #[allow(dead_code)] // consumed by the canonical durable AIR host
     fn resolve_type_syntax_with_substitutions(
         &mut self,
         program: &crate::body_query::DurableComptimeProgramKey,
@@ -3312,7 +3347,7 @@ pub(crate) trait DurableComptimeSemanticAuthority {
     /// identity key. A stable key does not carry duplicate-discriminator
     /// information, so this operation must not claim to preserve duplicate
     /// candidates; it never infers identity from a spelling.
-    #[allow(dead_code)] // consumed by the staged structured-frame adapter
+    #[allow(dead_code)] // consumed by the canonical structured-frame adapter
     fn begin_comptime_call_admission_for_key(
         &self,
         accessing_source: &crate::StableDefinitionKey,
@@ -3386,7 +3421,7 @@ pub(crate) trait DurableComptimeSemanticAuthority {
     ) -> Result<TargetEnumValue, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>;
 }
 
-#[allow(dead_code)] // activated by the staged durable AIR host
+#[allow(dead_code)] // activated by the canonical durable AIR host
 pub(crate) trait DurableComptimeForeignCallAuthority {
     fn probe_comptime_call(
         &self,
@@ -3423,7 +3458,7 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
         self.authority.resolve_type_syntax(program, syntax)
     }
 
-    #[allow(dead_code)] // consumed by the staged durable AIR host
+    #[allow(dead_code)] // consumed by the canonical durable AIR host
     pub(crate) fn resolve_type_syntax_with_substitutions(
         &mut self,
         program: &crate::body_query::DurableComptimeProgramKey,
@@ -3447,24 +3482,7 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
         )
     }
 
-    pub(crate) fn check_canceled(&self) -> Result<(), QueryAbort> {
-        self.authority.check_canceled()
-    }
-
-    pub(crate) fn begin_comptime_call_admission(
-        &self,
-        accessing_source: &crate::StableDefinitionKey,
-        module: &ModuleId,
-        name: &str,
-    ) -> Result<
-        DurableComptimeCallableAdmissionStart,
-        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
-    > {
-        self.authority
-            .begin_comptime_call_admission(accessing_source, module, name)
-    }
-
-    #[allow(dead_code)] // consumed by the staged structured-frame adapter
+    #[allow(dead_code)] // consumed by the canonical structured-frame adapter
     pub(crate) fn begin_comptime_call_admission_for_key(
         &self,
         accessing_source: &crate::StableDefinitionKey,
@@ -3475,22 +3493,6 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
     > {
         self.authority
             .begin_comptime_call_admission_for_key(accessing_source, head)
-    }
-
-    /// Begin admission for a method whose receiver has already reduced to an
-    /// exact module value.  Keeping this named seam distinct from the
-    /// unqualified call operation makes it impossible for the AIR host
-    /// to recover the method's module from a spelling in the caller.
-    pub(crate) fn begin_evaluated_module_call(
-        &self,
-        accessing_source: &crate::StableDefinitionKey,
-        receiver_module: &ModuleId,
-        method: &str,
-    ) -> Result<
-        DurableComptimeCallableAdmissionStart,
-        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
-    > {
-        self.begin_comptime_call_admission(accessing_source, receiver_module, method)
     }
 
     pub(crate) fn finish_comptime_call_admission(
@@ -3509,7 +3511,7 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
     /// already supplied the ordered arguments, so every argument is a value;
     /// the begin phase remains separate so its dependency can be observed
     /// before signature/arity policy is allowed to fail.
-    #[allow(dead_code)] // consumed by the staged structured-frame adapter
+    #[allow(dead_code)] // consumed by the canonical structured-frame adapter
     pub(crate) fn finish_structured_comptime_call_admission(
         &self,
         start: DurableComptimeCallableAdmissionStart,
@@ -3522,48 +3524,6 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
             .map(|_| crate::durable_semantics::DurableParameterMode::Value)
             .collect::<Vec<_>>();
         self.finish_comptime_call_admission(start, &argument_modes)
-    }
-
-    pub(crate) fn resolve_named_value(
-        &self,
-        accessing_source: &crate::StableDefinitionKey,
-        module: &ModuleId,
-        name: &str,
-    ) -> Result<
-        Option<DurableComptimeNamedValueProjection>,
-        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
-    > {
-        self.authority
-            .resolve_named_value(accessing_source, module, name)
-    }
-
-    pub(crate) fn resolve_module_member(
-        &self,
-        accessing_source: &crate::StableDefinitionKey,
-        module: &ModuleId,
-        member: &str,
-    ) -> Result<
-        DurableComptimeNamedValueProjection,
-        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
-    > {
-        self.authority
-            .resolve_module_member(accessing_source, module, member)
-    }
-
-    /// Resolve a member from an already-evaluated module value.  This is the
-    /// durable counterpart of AIR's evaluated receiver path: it preserves the
-    /// module identity and returns the direct dependency projection exactly
-    /// once to the caller, with no unqualified fallback.
-    pub(crate) fn resolve_evaluated_module_member(
-        &self,
-        accessing_source: &crate::StableDefinitionKey,
-        receiver_module: &ModuleId,
-        member: &str,
-    ) -> Result<
-        DurableComptimeNamedValueProjection,
-        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
-    > {
-        self.resolve_module_member(accessing_source, receiver_module, member)
     }
 
     /// Resolve an import against the registered program selected by `program`.
@@ -3579,34 +3539,14 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
         }
         self.authority.resolve_keyed_import(site, specifier)
     }
-
-    pub(crate) fn resolve_target_intrinsic(
-        &self,
-        intrinsic: ComptimeTargetIntrinsic,
-        argument_count: usize,
-    ) -> Result<TargetEnumValue, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>
-    {
-        self.authority
-            .resolve_target_intrinsic(intrinsic, argument_count)
-    }
-
-    pub(crate) fn resolve_target_enum_variant(
-        &self,
-        type_name: &str,
-        variant: &str,
-    ) -> Result<TargetEnumValue, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>
-    {
-        self.authority
-            .resolve_target_enum_variant(type_name, variant)
-    }
 }
 
-#[allow(dead_code)] // activated by the staged durable AIR host
+#[allow(dead_code)] // activated by the canonical durable AIR host
 impl<A: DurableComptimeForeignCallAuthority + ?Sized> DurableComptimeServices<'_, A> {
     /// Probe only an already-published foreign fact or admit its owned body
     /// frame. The authority owns dependency observation and cancellation; this
     /// method never demands a child comptime query.
-    #[allow(dead_code)] // activated by the staged durable AIR host
+    #[allow(dead_code)] // activated by the canonical durable AIR host
     pub(crate) fn probe_comptime_call(
         &self,
         producer: &crate::StableDefinitionKey,
@@ -3679,7 +3619,7 @@ pub(crate) enum DurableComptimeArrayLengthBinding {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // consumed by the future durable AIR array-length hook
+#[allow(dead_code)] // consumed by the canonical durable AIR array-length hook
 pub(crate) enum DurableComptimeArrayLengthDecision {
     Concrete(u64),
     Shadowed,
@@ -3701,7 +3641,7 @@ pub(crate) enum DurableComptimeArrayLengthError {
 /// Convert the AIR-owned lexical fact without dropping any value variant.
 /// This is intentionally exhaustive so the AIR host cannot accidentally
 /// reinterpret a shadow as an unbound global lookup.
-#[allow(dead_code)] // consumed when the staged durable AIR host is entered
+#[allow(dead_code)] // consumed by the canonical durable AIR host
 pub(crate) fn durable_array_length_binding_from_air(
     binding: rue_air::ComptimeArrayLengthBinding<EvaluatedSemanticConst>,
 ) -> DurableComptimeArrayLengthBinding {
@@ -3720,8 +3660,8 @@ pub(crate) fn durable_array_length_binding_from_air(
 }
 
 /// Apply the canonical named array-length policy to a lexical semantic fact.
-/// Concrete conversion and its semantic failures are shared by the legacy
-/// evaluator and the AIR host; global lookup remains the caller's
+/// Concrete conversion and its semantic failures are shared by the durable
+/// host paths; global lookup remains the caller's
 /// responsibility so dependency observation happens exactly at the existing
 /// provider point.
 pub(crate) fn classify_durable_named_array_length(
@@ -3997,7 +3937,7 @@ impl DurableComptimeFile {
         Self(program)
     }
 
-    #[allow(dead_code)] // consumed by the durable query-root host during cutover
+    #[allow(dead_code)] // consumed by the canonical durable query-root host
     pub(crate) fn program(&self) -> &crate::body_query::DurableComptimeProgramKey {
         &self.0
     }
@@ -4028,7 +3968,7 @@ impl ComptimeIdentity for DurableComptimeIdentity {}
 /// Anonymous nominal identities are issued by AIR from the active producer
 /// and structural anchor.  This wrapper keeps the canonical compiler key
 /// opaque while satisfying AIR's identity marker at the host boundary.
-#[allow(dead_code)] // consumed after durable query-root cutover
+#[allow(dead_code)] // consumed by the canonical durable AIR host
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct DurableComptimeAnonymousIdentity(crate::AnonymousNominalKey);
 
@@ -4047,12 +3987,19 @@ impl DurableComptimeAnonymousIdentity {
 /// The narrow authority required by the production-shaped durable AIR host.
 /// Query roots implement this beside their existing semantic and foreign
 /// authorities; the host never owns a second registry or provider.
-#[allow(dead_code)] // consumed after durable query-root cutover
+#[allow(dead_code)] // consumed by the canonical durable AIR host
 pub(crate) trait DurableComptimeHostAuthority:
     DurableComptimeSemanticAuthority + DurableComptimeForeignCallAuthority
 {
     fn durable_session(&self) -> &DurableComptimeSession;
     fn durable_session_mut(&mut self) -> &mut DurableComptimeSession;
+
+    /// Test-only injection point for exercising the named array-length
+    /// conversion boundary with a value the source language cannot spell.
+    /// Production authorities leave this disabled.
+    fn test_array_length_override(&self) -> Option<i128> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -4076,15 +4023,15 @@ fn arm_enum_variant_child_tripwire() {
 }
 
 /// Production host composition boundary.  Its implementation is introduced
-/// separately from query-root cutover so the canonical AIR engine can be
-/// exercised without changing the legacy evaluator's authority.
-#[allow(dead_code)] // consumed after durable query-root cutover
+/// The canonical AIR engine uses this host for both declaration-time query
+/// roots and nested admitted frames.
+#[allow(dead_code)] // consumed by the canonical durable AIR host
 pub(crate) struct DurableComptimeHost<'a, A: DurableComptimeHostAuthority + ?Sized> {
     authority: &'a mut A,
 }
 
 impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
-    #[allow(dead_code)] // consumed after durable query-root cutover
+    #[allow(dead_code)] // consumed by the canonical durable AIR host
     pub(crate) fn new(authority: &'a mut A) -> Self {
         Self { authority }
     }
@@ -4197,17 +4144,10 @@ fn durable_host_failure(error: DurableComptimeFailure) -> DurableComptimeHostFai
 }
 
 fn durable_diagnostic_failure(
-    site: &DurableComptimeDiagnosticSite,
+    _site: &DurableComptimeDiagnosticSite,
     kind: rue_error::ErrorKind,
 ) -> DurableComptimeHostFailure {
-    DurableComptimeHostFailure::semantic(Box::new(
-        SemanticNucleusFailure::DiagnosticAtProducerRange {
-            kind,
-            producer: site.producer.clone(),
-            start: site.start,
-            end: site.end,
-        },
-    ))
+    DurableComptimeHostFailure::semantic(Box::new(SemanticNucleusFailure::Diagnostic(kind)))
 }
 
 fn durable_host_error(
@@ -4473,7 +4413,7 @@ fn durable_host_error_outcome<T>(
 }
 
 /// AIR supplies compact operator tokens; durable diagnostics use the
-/// operation names from the legacy declaration evaluator.  Unary negation is
+/// operation names from established declaration-time semantics. Unary negation is
 /// passed as its own token by the canonical engine so it cannot be confused
 /// with subtraction.
 fn durable_arithmetic_operation_name(operation: &str) -> &str {
@@ -4556,12 +4496,21 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
             )
             .map_err(durable_provider_error)?;
         let Some(projection) = projection else {
-            return Ok(rue_air::ComptimeNamedValueResolution::Missing);
+            return Err(rue_air::ComptimeHostError::HostFailure(
+                DurableComptimeHostFailure::semantic(Box::new(SemanticNucleusFailure::Resolution(
+                    Arc::from(format!("undefined constant `{}`", name.as_str())),
+                ))),
+            ));
         };
-        let (value, dependency) = projection.into_parts();
+        let (value, dependency, anonymous_nominals) = projection.into_parts();
         self.authority
             .durable_session_mut()
             .observe_dependency(dependency);
+        for nominal in anonymous_nominals.iter().cloned() {
+            self.authority
+                .durable_session_mut()
+                .observe_anonymous_nominal(nominal);
+        }
         Ok(rue_air::ComptimeNamedValueResolution::Known(value))
     }
 
@@ -4687,10 +4636,9 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
 
     fn non_function_anon_method(
         &self,
-        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure {
-        durable_host_failure(DurableComptimeFailure::comptime_failure_at(
-            &self.diagnostic_site(site),
+        durable_host_failure(DurableComptimeFailure::resolution(
             "anonymous type carries a non-function method instruction",
         ))
     }
@@ -4767,10 +4715,14 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
                         };
                     }
                 };
-                let (value, dependency) = projection.into_parts();
+                let (value, dependency, _anonymous_nominals) = projection.into_parts();
                 self.authority
                     .durable_session_mut()
                     .observe_dependency(dependency);
+                let value = self
+                    .authority
+                    .test_array_length_override()
+                    .map_or(value, EvaluatedSemanticConst::integer);
                 match durable_named_array_length_value(&value) {
                     Ok(value) => rue_air::ComptimeOutcome::Known(value),
                     Err(error) => {
@@ -4899,7 +4851,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
         for (name, value) in value_subst {
             let EvaluatedSemanticConst::Value(value) = value else {
                 // Module and target locals are lexical context, not captured
-                // durable value parameters. The legacy evaluator excludes
+                // durable value parameters. Non-const values are excluded
                 // these non-const values from anonymous nominal identity.
                 continue;
             };
@@ -5028,7 +4980,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
         _ty: &Self::Type,
         _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Option<Self::Failure> {
-        // Legacy declaration evaluation reports the checked integer overflow
+        // Declaration-time evaluation reports the checked integer overflow
         // from `finish_arith`, rather than AIR's ordinary CannotNegate policy.
         None
     }
@@ -5395,6 +5347,14 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
                     "durable call lifecycle: {error:?}"
                 )))
             })?;
+        if let Some(failure) = self.authority.durable_session().active_comptime_call_cycle(
+            &pending.producer,
+            &pending.bound.admission.configuration,
+            &pending.bound.type_arguments,
+            &pending.bound.value_arguments,
+        ) {
+            return Err(durable_host_error(DurableComptimeFailure::failure(failure)));
+        }
         let probed = DurableComptimeServices::new(&mut *self.authority)
             .probe_prepared_call(pending)
             .map_err(|abort| {
@@ -5526,14 +5486,18 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
         producer: &Self::CanonicalIdentity,
         anchor: &rue_rir::RirStructuralAnchor,
     ) -> Self::AnonymousIdentity {
-        DurableComptimeAnonymousIdentity::new(crate::AnonymousNominalKey {
-            kind: match kind {
-                rue_air::ComptimeAnonymousKind::Struct => rue_air::AnonymousNominalKind::Struct,
-                rue_air::ComptimeAnonymousKind::Enum => rue_air::AnonymousNominalKind::Enum,
-            },
-            producer: producer.0.clone(),
-            anchor: anchor.clone(),
-        })
+        DurableComptimeAnonymousIdentity::new(
+            crate::AnonymousNominalKey {
+                kind: match kind {
+                    rue_air::ComptimeAnonymousKind::Struct => rue_air::AnonymousNominalKind::Struct,
+                    rue_air::ComptimeAnonymousKind::Enum => rue_air::AnonymousNominalKind::Enum,
+                },
+                producer: producer.0.clone(),
+                anchor: anchor.clone(),
+            }
+            .with_canonical_producer()
+            .into_owned(),
+        )
     }
 
     fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
@@ -5657,6 +5621,16 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
                 ));
             }
         };
+        if let Some(failure) = self.authority.durable_session().active_comptime_call_cycle(
+            &head,
+            &program.configuration,
+            request.type_arguments(),
+            request.value_arguments(),
+        ) {
+            return durable_host_error_outcome(durable_host_error(
+                DurableComptimeFailure::failure(failure),
+            ));
+        }
         let start = match self
             .authority
             .begin_comptime_call_admission_for_key(&program.declaration, &head)
@@ -5894,7 +5868,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
     ) -> rue_air::ComptimeHostResult<bool, Self::Failure> {
         // A qualified enum path is not a durable target descriptor. Reject
         // it before AIR evaluates the optional module child, preserving the
-        // legacy pre-child policy and avoiding an ambient module lookup.
+        // established pre-child policy and avoiding an ambient module lookup.
         if has_module {
             #[cfg(test)]
             arm_enum_variant_child_tripwire();
@@ -5967,10 +5941,15 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
             Ok(projection) => projection,
             Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
         };
-        let (value, dependency) = projection.into_parts();
+        let (value, dependency, anonymous_nominals) = projection.into_parts();
         self.authority
             .durable_session_mut()
             .observe_dependency(dependency);
+        for nominal in anonymous_nominals.iter().cloned() {
+            self.authority
+                .durable_session_mut()
+                .observe_anonymous_nominal(nominal);
+        }
         rue_air::ComptimeOutcome::Known(value)
     }
 
@@ -6082,7 +6061,7 @@ impl DurableStructuredTypeProgramCapability {
         Self { key, owner }
     }
 
-    fn key(&self) -> &crate::body_query::DurableComptimeProgramKey {
+    pub(crate) fn key(&self) -> &crate::body_query::DurableComptimeProgramKey {
         &self.key
     }
 }
@@ -12218,16 +12197,6 @@ mod terminal_adapter_tests {
                 if matches!(*value, SemanticNucleusFailure::Resolution(ref message) if message.as_ref() == "not ready")
         ));
 
-        let provider =
-            DurableComptimeFailure::provider_error(rue_air::SemanticProviderError::Failure(
-                SemanticNucleusFailure::Resolution(Arc::from("provider failure")),
-            ));
-        assert!(matches!(
-            provider,
-            DurableComptimeFailure::Failure(value)
-                if matches!(*value, SemanticNucleusFailure::Resolution(ref message) if message.as_ref() == "provider failure")
-        ));
-
         assert!(matches!(
             DurableComptimeFailure::provider_error_as_host(rue_air::SemanticProviderError::Abort(
                 QueryAbort::Canceled
@@ -12299,14 +12268,6 @@ mod terminal_adapter_tests {
                     "value 128 is out of range for type i8; 128 does not fit in i8",
                 ),
                 "integer overflow evaluating addition at type i8: value 128 is out of range for type i8; 128 does not fit in i8 (this operation would panic at runtime)".to_owned(),
-            ),
-            (
-                DurableComptimeFailure::division_by_zero(),
-                "division by zero (this operation would panic at runtime)".to_owned(),
-            ),
-            (
-                DurableComptimeFailure::remainder_by_zero(),
-                "remainder by zero (this operation would panic at runtime)".to_owned(),
             ),
         ];
         for (failure, expected) in cases {
@@ -12711,7 +12672,7 @@ mod terminal_adapter_tests {
         );
 
         // A reduced operand type wins over the frame expected type, matching
-        // the legacy evaluator's integer_type(left, right) precedence.
+        // the established integer_type(left, right) precedence.
         assert_eq!(
             DurableComptimeScalarPolicy::integer_operation_type(Some(&T::U16), Some(&T::I8), None,)
                 .unwrap(),
