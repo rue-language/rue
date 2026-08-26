@@ -9166,7 +9166,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // their intrinsic-site diagnostics.
             InstData::Intrinsic { name, args } => {
                 let name = self.name_from_rir((*name).into());
-                let decoded = match self.decode_expression_intrinsic(name, &args) {
+                let decoded = match self.decode_expression_intrinsic(name, args) {
                     Ok(decoded) => decoded,
                     Err(display_name) => {
                         return self.host.reject_comptime_expression(
