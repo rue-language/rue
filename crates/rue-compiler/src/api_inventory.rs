@@ -3410,6 +3410,9 @@ fn durable_comptime_services_are_named_authority_operations() {
         "DurableComptimeNamedValueProjection",
         "resolve_named_value",
         "resolve_module_member",
+        "resolve_keyed_import",
+        "import_site_for_instruction",
+        "DurableComptimeKeyedImportError",
         "resolve_target_intrinsic",
         "resolve_target_enum_variant",
         "probe_comptime_call",
@@ -3559,10 +3562,45 @@ fn durable_comptime_services_are_named_authority_operations() {
             "const frame adapter gained evaluation authority: {forbidden}"
         );
     }
-    for forbidden in ["InstData", "eval_const_expr", "ComptimeEngine", "InstRef"] {
+    for forbidden in ["InstData", "eval_const_expr", "ComptimeEngine"] {
         assert!(
             !facade.contains(forbidden),
             "durable service facade must not become an evaluator: {forbidden}"
+        );
+    }
+    let keyed_import_kernel = production_facade
+        .split("pub(crate) fn import_site_for_instruction(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("/// Resolve an engine-created diagnostic")
+                .next()
+        })
+        .expect("keyed import-site pairing kernel");
+    assert!(
+        keyed_import_kernel.contains("self.programs.get(key)"),
+        "keyed import adapter must obtain program metadata from the session registry"
+    );
+    for required in [
+        "occurrence.inst == instruction",
+        "occurrence.specifier.as_ref() != specifier",
+        "ComptimeSite::from_import_occurrence",
+    ] {
+        assert!(
+            keyed_import_kernel.contains(required),
+            "keyed import kernel lost exact registered-program validation: {required}"
+        );
+    }
+    for forbidden in [
+        "import_occurrences",
+        "InstData",
+        "ComptimeEngine",
+        "SemanticConstEvaluator",
+        "query_registered(",
+    ] {
+        assert!(
+            !keyed_import_kernel.contains(forbidden),
+            "keyed import kernel gained ambient/evaluator authority: {forbidden}"
         );
     }
     let body_query = include_str!("body_query.rs");
@@ -3872,7 +3910,11 @@ fn durable_comptime_services_are_named_authority_operations() {
     let registry_accessor = production_facade
         .split("pub(crate) fn registered_program(")
         .nth(1)
-        .and_then(|source| source.split("\n    fn observe_anonymous_nominal").next())
+        .and_then(|source| {
+            source
+                .split("\n    pub(crate) fn import_site_for_instruction(")
+                .next()
+        })
         .expect("keyed durable program registry accessor");
     assert!(registry_accessor.contains("self.programs.get(key)"));
     assert!(!registry_accessor.contains("ComptimeEngine"));
@@ -4486,6 +4528,10 @@ fn durable_comptime_services_are_named_authority_operations() {
             );
         }
     }
+    assert!(
+        !service_impl.contains("InstRef"),
+        "semantic service facade must accept semantic sites, not raw instruction references"
+    );
     let target_kernel = facade
         .split("pub(crate) fn resolve_target_intrinsic_facts")
         .nth(1)
@@ -4593,13 +4639,13 @@ fn durable_comptime_services_are_named_authority_operations() {
     }
     for forbidden in [
         "SemanticConstEvaluator",
+        "InstRef",
         "SEMANTIC_COMPTIME",
         "ComptimeEngine",
         "ValidatedRir",
         "program_rir",
         "child_instructions",
         "InstData",
-        "InstRef",
         ".eval(",
         "evaluate",
         "eval_const_expr",
@@ -4611,6 +4657,22 @@ fn durable_comptime_services_are_named_authority_operations() {
             "semantic authority must not become an evaluator: {forbidden}"
         );
     }
+    let keyed_import_authority = target_authority
+        .split("fn resolve_keyed_import(")
+        .nth(1)
+        .and_then(|source| source.split("fn resolve_target_intrinsic(").next())
+        .expect("root keyed import authority");
+    for required in [
+        "self.session.registered_program(program)",
+        "occurrence.occurrence == site.occurrence()",
+        "self.resolve_import(&durable_site)",
+    ] {
+        assert!(
+            keyed_import_authority.contains(required),
+            "root keyed import authority lost operation ordering: {required}"
+        );
+    }
+    assert!(!keyed_import_authority.contains("import_occurrences"));
     let keyed_type_resolver = target_authority
         .split("fn resolve_type_syntax(")
         .nth(1)
@@ -4929,7 +4991,33 @@ fn durable_comptime_services_are_named_authority_operations() {
         1,
         "durable value-fit policy must have one structured-reducer consumer"
     );
-    assert!(evaluator.contains(".resolve_import(&site)"));
+    assert!(evaluator.contains("import_site_for_instruction("));
+    assert!(evaluator.contains("&self.program"));
+    assert!(!evaluator.contains(".resolve_import(&site)"));
+    assert!(!evaluator.contains("import_occurrences"));
+    let import_eval = evaluator
+        .split("fn eval_import(")
+        .nth(1)
+        .and_then(|source| source.split("fn eval_identifier(").next())
+        .expect("durable import evaluator");
+    assert_eq!(import_eval.matches("resolve_keyed_import(").count(), 1);
+    assert!(import_eval.contains("&self.program"));
+    assert!(import_eval.contains("import_site_for_instruction"));
+    assert!(import_eval.contains("instruction"));
+    assert!(import_eval.contains("specifier"));
+    for forbidden in [
+        "import_occurrences",
+        "resolve_import(&site)",
+        "query_registered(",
+        "DeclarationImportQueryKey",
+        "ComptimeEngine",
+        "SemanticConstEvaluator",
+    ] {
+        assert!(
+            !import_eval.contains(forbidden),
+            "legacy import evaluator retained an ambient/import authority bypass: {forbidden}"
+        );
+    }
     let named_value = evaluator
         .split("fn eval_identifier(")
         .nth(1)
