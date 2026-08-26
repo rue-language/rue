@@ -1111,7 +1111,7 @@ pub(crate) enum DurableComptimePreparedCall {
         expected_result: DurableType,
     },
     Enter {
-        frame: DurableComptimeForeignFrame,
+        frame: Box<DurableComptimeForeignFrame>,
         ticket: Box<DurableComptimeCallTicket>,
     },
     NotReady,
@@ -1601,7 +1601,10 @@ impl DurableComptimeSession {
                 let (frame, ticket) = self
                     .admit_foreign_frame(program, Box::new(ticket), call_span, bound)
                     .map_err(DurableComptimeForeignCallError::FrameAdmission)?;
-                Ok(DurableComptimePreparedCall::Enter { frame, ticket })
+                Ok(DurableComptimePreparedCall::Enter {
+                    frame: Box::new(frame),
+                    ticket,
+                })
             }
             ForeignComptimeCallLookup::NotReady => Ok(DurableComptimePreparedCall::NotReady),
             ForeignComptimeCallLookup::ReadyFailure(failure) => {

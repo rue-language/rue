@@ -3589,6 +3589,8 @@ fn durable_comptime_services_are_named_authority_operations() {
     for required in ["Ready", "expected_result", "Enter", "NotReady"] {
         assert!(prepared_call.contains(required));
     }
+    assert!(prepared_call.contains("frame: Box<DurableComptimeForeignFrame>"));
+    assert!(!prepared_call.contains("frame: DurableComptimeForeignFrame"));
     assert!(!prepared_call.contains("Clone"));
     let prepare_call = production_facade
         .split("pub(crate) fn prepare_bound_expression_call(")
