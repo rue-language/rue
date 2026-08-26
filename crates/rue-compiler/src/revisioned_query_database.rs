@@ -6817,7 +6817,6 @@ struct SemanticConstEvaluator<'a, 'provider> {
     declaration: &'a crate::semantic_query_nucleus::DeclarationSemanticQueryKey,
     rir: &'a rue_rir::ValidatedRir,
     symbols: &'a [&'a str],
-    import_occurrences: BTreeMap<rue_rir::InstRef, (u32, Arc<str>)>,
     locals: BTreeMap<Arc<str>, EvaluatedSemanticConst>,
     producer: crate::StableProducerId,
     expected_type: Option<crate::durable_semantics::DurableType>,
@@ -7389,6 +7388,54 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
                 crate::durable_comptime::DurableImportResolution::Failure(failure.clone())
             }
         })
+    }
+
+    fn resolve_keyed_import(
+        &self,
+        site: &rue_air::ComptimeSite<crate::body_query::DurableComptimeProgramKey>,
+        specifier: &str,
+    ) -> Result<
+        crate::durable_comptime::DurableImportResolution,
+        crate::durable_comptime::DurableComptimeKeyedImportError,
+    > {
+        if site.kind() != rue_air::ComptimeSiteKind::Import {
+            return Err(crate::durable_comptime::DurableComptimeKeyedImportError::WrongSiteKind);
+        }
+        let program = site.program();
+        let Some(registered) = self.session.registered_program(program) else {
+            return Err(crate::durable_comptime::DurableComptimeKeyedImportError::UnknownProgram);
+        };
+        let Some(occurrence) = registered
+            .imports
+            .imports
+            .iter()
+            .find(|occurrence| occurrence.occurrence == site.occurrence())
+        else {
+            return Err(
+                crate::durable_comptime::DurableComptimeKeyedImportError::UnknownInstruction,
+            );
+        };
+        if occurrence.specifier.as_ref() != specifier {
+            return Err(
+                crate::durable_comptime::DurableComptimeKeyedImportError::SpecifierMismatch,
+            );
+        }
+        let Some(declaration) =
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(
+                &program.declaration,
+            )
+        else {
+            return Err(
+                crate::durable_comptime::DurableComptimeKeyedImportError::UnknownDeclaration,
+            );
+        };
+        let durable_site = crate::durable_comptime::DurableImportSite {
+            declaration,
+            occurrence: occurrence.occurrence,
+            specifier: occurrence.specifier.clone(),
+        };
+        self.resolve_import(&durable_site)
+            .map_err(crate::durable_comptime::DurableComptimeKeyedImportError::ProviderAbort)
     }
 
     fn resolve_target_intrinsic(
@@ -7971,21 +8018,57 @@ impl SemanticConstEvaluator<'_, '_> {
         &mut self,
         instruction: rue_rir::InstRef,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
-        let Some((occurrence, specifier)) = self.import_occurrences.get(&instruction) else {
-            return Self::failure(
-                "exact const import is absent from its candidate RIR occurrence index",
-            );
+        let specifier = match &self.rir.get(instruction).data {
+            rue_rir::InstData::Intrinsic { args, .. } => {
+                let Some(argument) = self.rir.intrinsic_args(args).get(0) else {
+                    return Self::failure(
+                        "exact const import is absent from its candidate RIR occurrence index",
+                    );
+                };
+                let rue_rir::InstData::StringConst { content, .. } = &self.rir.get(argument).data
+                else {
+                    return Self::failure(
+                        "exact const import is absent from its candidate RIR occurrence index",
+                    );
+                };
+                self.symbol(content)
+            }
+            _ => {
+                return Self::failure(
+                    "exact const import is absent from its candidate RIR occurrence index",
+                );
+            }
+        };
+        // This is the sole legacy RIR adapter: after decoding the string
+        // operand, pair the instruction with the exact registered program
+        // before crossing into the semantic AIR-site service.
+        let site = self.authority.session.import_site_for_instruction(
+            &self.program,
+            instruction,
+            &specifier,
+        );
+        let site = match site {
+            Ok(site) => site,
+            Err(_) => {
+                return Self::failure(
+                    "exact const import is absent from its candidate RIR occurrence index",
+                );
+            }
         };
         let services = crate::durable_comptime::DurableComptimeServices::new(&mut *self.authority);
-        let site = crate::durable_comptime::DurableImportSite {
-            declaration: self.declaration.declaration.clone(),
-            occurrence: *occurrence,
-            specifier: specifier.clone(),
+        let resolution = services.resolve_keyed_import(&site, &specifier);
+        let resolution = match resolution {
+            Ok(resolution) => resolution,
+            Err(crate::durable_comptime::DurableComptimeKeyedImportError::ProviderAbort(abort)) => {
+                return Err(EvaluateSemanticConstError::Abort(abort));
+            }
+            Err(_) => {
+                return Self::failure(
+                    "exact const import is absent from its candidate RIR occurrence index",
+                );
+            }
         };
-        match services
-            .resolve_import(&site)
-            .map_err(EvaluateSemanticConstError::Abort)?
-        {
+        match resolution {
             crate::durable_comptime::DurableImportResolution::Resolved(module) => {
                 Ok(EvaluatedSemanticConst::Module(module))
             }
@@ -13931,20 +14014,6 @@ impl RevisionedQueryDatabase {
                                                 crate::StableProducerId::Definition(
                                                     const_identity.key.clone(),
                                                 );
-                                            let import_occurrences =
-                                        core.imports
-                                            .imports
-                                            .iter()
-                                            .map(|occurrence| {
-                                                (
-                                                    occurrence.inst,
-                                                    (
-                                                        occurrence.occurrence,
-                                                        occurrence.specifier.clone(),
-                                                    ),
-                                                )
-                                            })
-                                            .collect::<BTreeMap<_, _>>();
                                             let (result, provider) = {
                                                 let mut evaluator = SemanticConstEvaluator {
                                                     authority: &mut authority,
@@ -13952,7 +14021,6 @@ impl RevisionedQueryDatabase {
                                                     declaration: query,
                                             rir,
                                                     symbols: &symbols,
-                                                    import_occurrences,
                                                     locals: BTreeMap::new(),
                                                     producer: const_producer.clone(),
                                                     expected_type,
@@ -14485,20 +14553,6 @@ impl RevisionedQueryDatabase {
                                         .iter()
                                         .map(AsRef::as_ref)
                                         .collect::<Vec<_>>();
-                                    let import_occurrences = core
-                                        .imports
-                                        .imports
-                                        .iter()
-                                        .map(|occurrence| {
-                                            (
-                                                occurrence.inst,
-                                                (
-                                                    occurrence.occurrence,
-                                                    occurrence.specifier.clone(),
-                                                ),
-                                            )
-                                        })
-                                        .collect::<BTreeMap<_, _>>();
                                             let (result, provider) = {
                                                 let mut authority = DurableComptimeRootAuthority {
                                                     provider,
@@ -14523,7 +14577,6 @@ impl RevisionedQueryDatabase {
                                                     declaration: &call.declaration,
                                             rir,
                                                     symbols: &symbols,
-                                                    import_occurrences,
                                                     locals,
                                                     producer: producer.clone(),
                                                     expected_type: Some(expected_type),

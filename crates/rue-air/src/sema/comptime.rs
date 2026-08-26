@@ -442,6 +442,25 @@ impl<P> ComptimeDiagnosticSite<P> {
 }
 
 impl<P: Clone> ComptimeSite<P> {
+    /// Constructs a semantic site from an operation kind and source-order
+    /// occurrence. The occurrence is never an instruction reference.
+    pub fn from_occurrence(
+        program: P,
+        kind: ComptimeSiteKind,
+        occurrence: u32,
+        span: Span,
+    ) -> Self {
+        Self::new(program, kind, occurrence, span)
+    }
+
+    /// Constructs an import site from its semantic source-order occurrence.
+    ///
+    /// The occurrence is an operation-order fact, not an `InstRef`; callers
+    /// must obtain it from the owning program's semantic import metadata.
+    pub fn from_import_occurrence(program: P, occurrence: u32, span: Span) -> Self {
+        Self::from_occurrence(program, ComptimeSiteKind::Import, occurrence, span)
+    }
+
     fn new(program: P, kind: ComptimeSiteKind, occurrence: u32, span: Span) -> Self {
         Self {
             program,

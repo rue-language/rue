@@ -1188,6 +1188,41 @@ impl DurableComptimeSession {
         self.programs.get(key)
     }
 
+    /// Build the canonical AIR import site from one registered program.  The
+    /// raw instruction is accepted only at this legacy evaluator adapter;
+    /// lookup, occurrence, span, and program identity are paired here from
+    /// the same registry entry before a semantic site escapes.
+    pub(crate) fn import_site_for_instruction(
+        &self,
+        key: &crate::body_query::DurableComptimeProgramKey,
+        instruction: rue_rir::InstRef,
+        specifier: &str,
+    ) -> Result<
+        rue_air::ComptimeSite<crate::body_query::DurableComptimeProgramKey>,
+        DurableComptimeKeyedImportError,
+    > {
+        let Some(program) = self.programs.get(key) else {
+            return Err(DurableComptimeKeyedImportError::UnknownProgram);
+        };
+        let Some(occurrence) = program
+            .imports
+            .imports
+            .iter()
+            .find(|occurrence| occurrence.inst == instruction)
+        else {
+            return Err(DurableComptimeKeyedImportError::UnknownInstruction);
+        };
+        if occurrence.specifier.as_ref() != specifier {
+            return Err(DurableComptimeKeyedImportError::SpecifierMismatch);
+        }
+        let span = program.rir.get(instruction).span;
+        Ok(rue_air::ComptimeSite::from_import_occurrence(
+            key.clone(),
+            occurrence.occurrence,
+            span,
+        ))
+    }
+
     /// Resolve an engine-created diagnostic range against the exact
     /// registered program key, without observing effects or query state.
     #[allow(dead_code)] // consumed by the staged durable AIR host
@@ -1827,6 +1862,20 @@ pub(crate) enum DurableImportResolution {
     Resolved(ModuleId),
     Missing,
     Failure(DeclarationImportFailure),
+}
+
+/// Failure while pairing an engine import instruction with the occurrence
+/// owned by its exact registered program.  The provider/query abort variant
+/// remains separate so the evaluator cannot turn cancellation into a
+/// declaration-time diagnostic.
+#[derive(Debug)]
+pub(crate) enum DurableComptimeKeyedImportError {
+    UnknownProgram,
+    UnknownInstruction,
+    WrongSiteKind,
+    SpecifierMismatch,
+    UnknownDeclaration,
+    ProviderAbort(QueryAbort),
 }
 
 /// The identity and dependency facts established before signature admission.
@@ -2519,6 +2568,16 @@ pub(crate) trait DurableComptimeSemanticAuthority {
         site: &DurableImportSite,
     ) -> Result<DurableImportResolution, QueryAbort>;
 
+    /// Resolve an import occurrence through the exact registered program
+    /// authority. The semantic site already carries the owning program and
+    /// source-order occurrence; implementations must not consult an ambient
+    /// occurrence map.
+    fn resolve_keyed_import(
+        &self,
+        site: &rue_air::ComptimeSite<crate::body_query::DurableComptimeProgramKey>,
+        specifier: &str,
+    ) -> Result<DurableImportResolution, DurableComptimeKeyedImportError>;
+
     /// Resolve a target intrinsic from semantic name/arity facts.  The
     /// authority owns the configured target and the diagnostic policy; no RIR
     /// instruction or argument callback crosses this boundary.
@@ -2685,11 +2744,18 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
         self.resolve_module_member(accessing_source, receiver_module, member)
     }
 
-    pub(crate) fn resolve_import(
+    /// Resolve an import against the registered program selected by `program`.
+    /// This is the only evaluator-facing import path; occurrence metadata and
+    /// declaration identity are paired atomically before querying imports.
+    pub(crate) fn resolve_keyed_import(
         &self,
-        site: &DurableImportSite,
-    ) -> Result<DurableImportResolution, QueryAbort> {
-        self.authority.resolve_import(site)
+        site: &rue_air::ComptimeSite<crate::body_query::DurableComptimeProgramKey>,
+        specifier: &str,
+    ) -> Result<DurableImportResolution, DurableComptimeKeyedImportError> {
+        if site.kind() != rue_air::ComptimeSiteKind::Import {
+            return Err(DurableComptimeKeyedImportError::WrongSiteKind);
+        }
+        self.authority.resolve_keyed_import(site, specifier)
     }
 
     pub(crate) fn resolve_target_intrinsic(
@@ -5886,6 +5952,7 @@ mod effect_lifecycle_tests {
 #[cfg(test)]
 mod structured_type_adapter_tests {
     use super::*;
+    use std::cell::Cell;
     use std::convert::Infallible;
 
     fn assert_frame_domains<
@@ -6518,6 +6585,295 @@ mod structured_type_adapter_tests {
             ),
             Err(DurableStructuredTypeBeginError::InvalidProgramAuthority)
         ));
+    }
+
+    #[test]
+    fn keyed_import_sites_preserve_program_local_occurrences_and_reject_mismatches() {
+        let first = const_program("first-import.rue", "i32");
+        let second = const_program("second-import.rue", "i64");
+        let mut session = session();
+        session.register_program(&first).unwrap();
+        session.register_program(&second).unwrap();
+
+        let first_registered = session.registered_program(&first.plan.key).unwrap();
+        let second_registered = session.registered_program(&second.plan.key).unwrap();
+        let first_occurrence = first_registered.imports.imports[0].inst;
+        let second_occurrence = second_registered.imports.imports[0].inst;
+        assert_eq!(first_occurrence, second_occurrence);
+
+        let first_site = session
+            .import_site_for_instruction(&first.plan.key, first_occurrence, "first-import.rue")
+            .unwrap();
+        assert_eq!(first_site.occurrence(), 0);
+        assert_eq!(first_site.kind(), rue_air::ComptimeSiteKind::Import);
+        assert_eq!(first_site.program(), &first.plan.key);
+
+        let second_site = session
+            .import_site_for_instruction(&second.plan.key, second_occurrence, "second-import.rue")
+            .unwrap();
+        assert_eq!(second_site.occurrence(), 0);
+        assert_eq!(second_site.kind(), rue_air::ComptimeSiteKind::Import);
+        assert_eq!(second_site.program(), &second.plan.key);
+        assert_ne!(first_site.program(), second_site.program());
+
+        assert!(matches!(
+            session.import_site_for_instruction(
+                &first.plan.key,
+                first_occurrence,
+                "second-import.rue",
+            ),
+            Err(DurableComptimeKeyedImportError::SpecifierMismatch)
+        ));
+        assert!(matches!(
+            session.import_site_for_instruction(
+                &first.plan.key,
+                rue_rir::InstRef::from_raw(u32::MAX),
+                "first-import.rue",
+            ),
+            Err(DurableComptimeKeyedImportError::UnknownInstruction)
+        ));
+        let mut wrong_key = first.plan.key.clone();
+        wrong_key.configuration.target = rue_target::Target::Aarch64Linux;
+        assert!(matches!(
+            session.import_site_for_instruction(&wrong_key, first_occurrence, "first-import.rue",),
+            Err(DurableComptimeKeyedImportError::UnknownProgram)
+        ));
+
+        // A caller cannot pair the first key with the second program: the
+        // second instruction is interpreted only against the first registry
+        // entry and therefore fails before any import query/effect exists.
+        assert!(matches!(
+            session.import_site_for_instruction(
+                &first.plan.key,
+                second_occurrence,
+                "second-import.rue",
+            ),
+            Err(DurableComptimeKeyedImportError::SpecifierMismatch)
+                | Err(DurableComptimeKeyedImportError::UnknownInstruction)
+        ));
+    }
+
+    enum ImportServiceMode {
+        Missing,
+        Failure(crate::declaration_candidate::DeclarationImportFailure),
+        Abort,
+    }
+
+    struct ImportServiceAuthority {
+        calls: Cell<usize>,
+        mode: ImportServiceMode,
+    }
+
+    impl DurableComptimeSemanticAuthority for ImportServiceAuthority {
+        fn check_canceled(&self) -> Result<(), QueryAbort> {
+            panic!("not part of keyed import service test")
+        }
+
+        fn resolve_type_syntax(
+            &mut self,
+            _program: &crate::body_query::DurableComptimeProgramKey,
+            _syntax: rue_rir::RirTypeSyntaxRef,
+        ) -> Result<
+            DurableType,
+            rue_air::SemanticTypeSyntaxError<
+                QueryAbort,
+                SemanticNucleusFailure,
+                crate::StableDefinitionKey,
+                Arc<str>,
+            >,
+        > {
+            panic!("not part of keyed import service test")
+        }
+
+        fn resolve_type_syntax_with_substitutions(
+            &mut self,
+            _program: &crate::body_query::DurableComptimeProgramKey,
+            _syntax: rue_rir::RirTypeSyntaxRef,
+            _type_substitutions: &[(Arc<str>, DurableType)],
+            _value_substitutions: &[(Arc<str>, DurableConstValue)],
+        ) -> Result<
+            DurableType,
+            rue_air::SemanticTypeSyntaxError<
+                QueryAbort,
+                SemanticNucleusFailure,
+                crate::StableDefinitionKey,
+                Arc<str>,
+            >,
+        > {
+            panic!("not part of keyed import service test")
+        }
+
+        fn begin_comptime_call_admission(
+            &self,
+            _accessing_source: &crate::StableDefinitionKey,
+            _module: &ModuleId,
+            _name: &str,
+        ) -> Result<
+            DurableComptimeCallableAdmissionStart,
+            rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+        > {
+            panic!("not part of keyed import service test")
+        }
+
+        fn finish_comptime_call_admission(
+            &self,
+            _start: DurableComptimeCallableAdmissionStart,
+            _argument_modes: &[crate::durable_semantics::DurableParameterMode],
+        ) -> Result<
+            DurableComptimeCallableAdmission,
+            rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+        > {
+            panic!("not part of keyed import service test")
+        }
+
+        fn resolve_named_value(
+            &self,
+            _accessing_source: &crate::StableDefinitionKey,
+            _module: &ModuleId,
+            _name: &str,
+        ) -> Result<
+            Option<DurableComptimeNamedValueProjection>,
+            rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+        > {
+            panic!("not part of keyed import service test")
+        }
+
+        fn resolve_module_member(
+            &self,
+            _accessing_source: &crate::StableDefinitionKey,
+            _module: &ModuleId,
+            _member: &str,
+        ) -> Result<
+            DurableComptimeNamedValueProjection,
+            rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+        > {
+            panic!("not part of keyed import service test")
+        }
+
+        fn resolve_import(
+            &self,
+            _site: &DurableImportSite,
+        ) -> Result<DurableImportResolution, QueryAbort> {
+            panic!("keyed import service must not use the unkeyed import operation")
+        }
+
+        fn resolve_keyed_import(
+            &self,
+            _site: &rue_air::ComptimeSite<crate::body_query::DurableComptimeProgramKey>,
+            _specifier: &str,
+        ) -> Result<DurableImportResolution, DurableComptimeKeyedImportError> {
+            self.calls.set(self.calls.get() + 1);
+            match &self.mode {
+                ImportServiceMode::Missing => Ok(DurableImportResolution::Missing),
+                ImportServiceMode::Failure(failure) => {
+                    Ok(DurableImportResolution::Failure(failure.clone()))
+                }
+                ImportServiceMode::Abort => Err(DurableComptimeKeyedImportError::ProviderAbort(
+                    QueryAbort::Canceled,
+                )),
+            }
+        }
+
+        fn resolve_target_intrinsic(
+            &self,
+            _name: &str,
+            _argument_count: usize,
+        ) -> Result<
+            TargetEnumValue,
+            rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+        > {
+            panic!("not part of keyed import service test")
+        }
+
+        fn resolve_target_enum_variant(
+            &self,
+            _type_name: &str,
+            _variant: &str,
+        ) -> Result<
+            TargetEnumValue,
+            rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+        > {
+            panic!("not part of keyed import service test")
+        }
+    }
+
+    #[test]
+    fn keyed_import_service_preserves_terminals_and_skips_structural_rejections() {
+        let first = const_program("service-import.rue", "i32");
+        let mut session = session();
+        session.register_program(&first).unwrap();
+        let instruction = session
+            .registered_program(&first.plan.key)
+            .unwrap()
+            .imports
+            .imports[0]
+            .inst;
+        let site = session
+            .import_site_for_instruction(&first.plan.key, instruction, "service-import.rue")
+            .unwrap();
+        let import_key = crate::declaration_candidate::DeclarationImportSiteKey {
+            declaration: first.plan.candidate.clone(),
+            occurrence: 0,
+            specifier: Arc::from("service-import.rue"),
+        };
+
+        for (mode, expected) in [
+            (ImportServiceMode::Missing, DurableImportResolution::Missing),
+            (
+                ImportServiceMode::Failure(
+                    crate::declaration_candidate::DeclarationImportFailure::ResolutionUnavailable(
+                        import_key.clone(),
+                    ),
+                ),
+                DurableImportResolution::Failure(
+                    crate::declaration_candidate::DeclarationImportFailure::ResolutionUnavailable(
+                        import_key.clone(),
+                    ),
+                ),
+            ),
+        ] {
+            let calls = Cell::new(0);
+            let mut authority = ImportServiceAuthority { calls, mode };
+            let services = DurableComptimeServices::new(&mut authority);
+            assert_eq!(
+                services
+                    .resolve_keyed_import(&site, "service-import.rue")
+                    .unwrap(),
+                expected
+            );
+            assert_eq!(authority.calls.get(), 1);
+        }
+
+        let calls = Cell::new(0);
+        let mut authority = ImportServiceAuthority {
+            calls,
+            mode: ImportServiceMode::Abort,
+        };
+        let services = DurableComptimeServices::new(&mut authority);
+        assert!(matches!(
+            services.resolve_keyed_import(&site, "service-import.rue"),
+            Err(DurableComptimeKeyedImportError::ProviderAbort(
+                QueryAbort::Canceled
+            ))
+        ));
+        assert_eq!(authority.calls.get(), 1);
+
+        let wrong_kind = rue_air::ComptimeSite::from_occurrence(
+            first.plan.key.clone(),
+            rue_air::ComptimeSiteKind::Intrinsic,
+            site.occurrence(),
+            site.span(),
+        );
+        let mut authority = ImportServiceAuthority {
+            calls: Cell::new(0),
+            mode: ImportServiceMode::Missing,
+        };
+        let services = DurableComptimeServices::new(&mut authority);
+        assert!(matches!(
+            services.resolve_keyed_import(&wrong_kind, "service-import.rue"),
+            Err(DurableComptimeKeyedImportError::WrongSiteKind)
+        ));
+        assert_eq!(authority.calls.get(), 0);
     }
 
     #[test]
