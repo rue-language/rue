@@ -56,10 +56,11 @@ use rue_span::{FileId, Span};
 
 use super::comptime::{
     ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallArgument,
-    ComptimeCallPreparation, ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile,
-    ComptimeFrame, ComptimeHost, ComptimeHostError, ComptimeHostResult, ComptimeIdentity,
-    ComptimeMatchPattern, ComptimeMethodDescriptor, ComptimeName, ComptimeNamedValueResolution,
-    ComptimeOutcome, ComptimeStructuredTypeResolution, ComptimeTrap, ComptimeType,
+    ComptimeCallPreparation, ComptimeDiagnosticSite, ComptimeEngine,
+    ComptimeEnv as GenericComptimeEnv, ComptimeFile, ComptimeFrame, ComptimeHost,
+    ComptimeHostError, ComptimeHostResult, ComptimeIdentity, ComptimeMatchPattern,
+    ComptimeMethodDescriptor, ComptimeName, ComptimeNamedValueResolution, ComptimeOutcome,
+    ComptimeStructuredTypeResolution, ComptimeTrap, ComptimeType,
 };
 use super::context::{AnalysisContext, ConstValue};
 use super::info::FunctionCallInfo;
@@ -1940,11 +1941,16 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         &self,
         feature: rue_error::PreviewFeature,
         what: &str,
-        span: Span,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure> {
-        OrdinaryBodyEngine::require_preview(self, feature, what, span).map_err(Into::into)
+        OrdinaryBodyEngine::require_preview(self, feature, what, site.span()).map_err(Into::into)
     }
-    fn depth_exceeded(&self, name: &Spur, depth: usize, span: Span) -> Self::Failure {
+    fn depth_exceeded(
+        &self,
+        name: &Spur,
+        depth: usize,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
         CompileError::new(
             ErrorKind::ComptimeEvaluationFailed {
                 reason: format!(
@@ -1956,31 +1962,40 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
                     depth
                 ),
             },
-            span,
+            site.span(),
         )
     }
-    fn literal_out_of_range(&self, value: u64, ty: &Type, span: Span) -> Self::Failure {
+    fn literal_out_of_range(
+        &self,
+        value: u64,
+        ty: &Type,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
         CompileError::new(
             ErrorKind::LiteralOutOfRange {
                 value,
                 ty: self.type_name(ty),
             },
-            span,
+            site.span(),
         )
     }
-    fn float_not_implemented(&self, span: Span) -> Self::Failure {
-        CompileError::new(ErrorKind::FloatNotYetImplemented, span)
+    fn float_not_implemented(
+        &self,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        CompileError::new(ErrorKind::FloatNotYetImplemented, site.span())
     }
-    fn cannot_negate(&self, ty: &Type, span: Span) -> Self::Failure {
-        CompileError::new(ErrorKind::CannotNegate(self.type_name(ty)), span)
-    }
-    fn comptime_panic(&self, reason: String, span: Span) -> Self::Failure {
-        comptime_panic_err(reason, span)
+    fn cannot_negate(
+        &self,
+        ty: &Type,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        CompileError::new(ErrorKind::CannotNegate(self.type_name(ty)), site.span())
     }
     fn unsupported_anon_method_type_param(
         &self,
-        method_span: Span,
         method_name: &str,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure {
         CompileError::new(
             ErrorKind::ComptimeEvaluationFailed {
@@ -1993,25 +2008,28 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
                     method_name
                 ),
             },
-            method_span,
+            site.span(),
         )
     }
-    fn non_function_anon_method(&self, method_span: Span) -> Self::Failure {
+    fn non_function_anon_method(
+        &self,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
         CompileError::new(
             ErrorKind::ComptimeEvaluationFailed {
                 reason: "anonymous type carries a non-function method instruction".to_owned(),
             },
-            method_span,
+            site.span(),
         )
     }
     fn resolve_named_array_length(
         &mut self,
         name: &Spur,
-        span: Span,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
         values: Option<&AHashMap<Spur, ConstValue>>,
     ) -> ComptimeHostResult<u64, Self::Failure> {
         let name = self.body_interner().resolve(name).to_owned();
-        OrdinaryBodyEngine::resolve_array_length(self, &ArrayLen::Named(name), span, values)
+        OrdinaryBodyEngine::resolve_array_length(self, &ArrayLen::Named(name), site.span(), values)
             .map_err(Into::into)
     }
     fn rir_type_named_symbol(
@@ -2126,16 +2144,16 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     fn check_require_droppable(
         &mut self,
         ty: Type,
-        span: Span,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure> {
-        OrdinaryBodyEngine::check_require_droppable(self, ty, span).map_err(Into::into)
+        OrdinaryBodyEngine::check_require_droppable(self, ty, site.span()).map_err(Into::into)
     }
     fn check_trivially_droppable(
         &mut self,
         ty: Type,
-        span: Span,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure> {
-        OrdinaryBodyEngine::check_trivially_droppable(self, ty, span).map_err(Into::into)
+        OrdinaryBodyEngine::check_trivially_droppable(self, ty, site.span()).map_err(Into::into)
     }
     fn const_expr_type(
         &self,
@@ -2159,9 +2177,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         result: CheckedIntegerResult,
         ty: Option<Type>,
         op: &str,
-        span: Span,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<Option<ConstValue>, Self::Failure> {
-        OrdinaryBodyEngine::finish_arith(self, result, ty, op, span).map_err(Into::into)
+        OrdinaryBodyEngine::finish_arith(self, result, ty, op, site.span()).map_err(Into::into)
     }
     fn resolve_named_type_value(
         &mut self,
