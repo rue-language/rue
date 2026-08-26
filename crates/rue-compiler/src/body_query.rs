@@ -321,6 +321,31 @@ impl OwnedForeignComptimeProgram {
 }
 
 impl OwnedComptimeProgramCore {
+    #[cfg(test)]
+    pub(crate) fn from_test_rir(
+        plan: DurableComptimeProgramPlan,
+        rir: rue_rir::ValidatedRir,
+        symbols: Arc<[Arc<str>]>,
+        root: rue_rir::InstRef,
+        body: rue_rir::InstRef,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            program: DurableComptimeProgram {
+                rir: Arc::new(rir),
+                symbols,
+                imports: DurableComptimeProgramMetadata {
+                    imports: Arc::from([]),
+                    root: OwnedComptimeProgramRoot::Callable(ForeignComptimeCallable {
+                        body,
+                        context: plan.candidate.module.clone(),
+                        root,
+                    }),
+                },
+            },
+            plan,
+        })
+    }
+
     pub(crate) fn from_callable_body_plan_without_imports(
         plan: DurableComptimeProgramPlan,
         artifacts: &crate::canonical_lower::DeclarationBodyPlanArtifacts,
