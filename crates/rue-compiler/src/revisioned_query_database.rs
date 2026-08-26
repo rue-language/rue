@@ -7197,6 +7197,7 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
         Ok(crate::durable_comptime::DurableComptimeCallableAdmissionStart {
             candidate,
             identity: identity.clone(),
+            configuration: self.provider.configuration.clone(),
             name: Arc::from(name),
             dependency: crate::semantic_query_nucleus::SemanticDeclarationDependency {
                 source: accessing_source.clone(),
@@ -7224,6 +7225,7 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
         let crate::durable_comptime::DurableComptimeCallableAdmissionStart {
             candidate,
             identity,
+            configuration,
             name,
             dependency: _,
         } = start;
@@ -7301,6 +7303,7 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
         Ok(crate::durable_comptime::DurableComptimeCallableAdmission {
             candidate,
             identity,
+            configuration,
             parameters,
             result,
             shell_parameters: shell.parameters.clone(),
@@ -8134,7 +8137,7 @@ impl SemanticConstEvaluator<'_, '_> {
             ComptimeCallQueryKey, ComptimeCallResultProjection, SemanticNucleusKey,
             SemanticNucleusValue,
         };
-        let call_ordinal = self.authority.session.next_call_ordinal();
+        let reservation = self.authority.session.reserve_bound_expression_call();
         let argument_modes = self
             .rir
             .call_args(arguments)
@@ -8167,11 +8170,16 @@ impl SemanticConstEvaluator<'_, '_> {
                 .finish_comptime_call_admission(admission_start, &argument_modes)
                 .map_err(Self::provider_error)?
         };
-        let candidate = admission.candidate;
-        let parameters = admission.parameters;
-        let result = admission.result;
-        let shell_parameters = admission.shell_parameters;
-        let mut binding = crate::durable_comptime::DurableComptimeBinding::default();
+        let admitted = self
+            .authority
+            .session
+            .admit_bound_expression_call(reservation, admission)
+            .map_err(|error| Self::failure_value(format!("durable call lifecycle: {error:?}")))?;
+        let mut binding = crate::durable_comptime::DurableComptimeBinding::new(&admitted);
+        let candidate = admitted.candidate().clone();
+        let parameters = admitted.parameters().to_vec();
+        let result = admitted.result().clone();
+        let shell_parameters = admitted.shell_parameters().to_vec();
         for (index, (header, parameter)) in
             shell_parameters.iter().zip(parameters.iter()).enumerate()
         {
@@ -8207,21 +8215,21 @@ impl SemanticConstEvaluator<'_, '_> {
             }
         }
         let legacy_result = result.clone();
-        let bound = binding.finish(result);
-        let (type_arguments, value_arguments) = bound.into_query_parts();
+        let bound = binding.finish();
+        let query_view = bound.query_view();
         let query = SemanticNucleusKey::ComptimeCall(ComptimeCallQueryKey {
             declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
                 declaration: candidate,
                 configuration: self.declaration.configuration.clone(),
             },
-            type_arguments: type_arguments.into(),
-            value_arguments: value_arguments.into(),
+            type_arguments: query_view.type_arguments().to_vec().into(),
+            value_arguments: query_view.value_arguments().to_vec().into(),
         });
         let _depth = SemanticComptimeCallDepthGuard::enter(&name)?;
-        let edge = self
+        let pending = self
             .authority
             .session
-            .prepare_expression_edge(call_ordinal)
+            .prepare_bound_expression_call(admitted, bound)
             .map_err(|error| Self::failure_value(format!("durable call lifecycle: {error:?}")))?;
         let queried = self
             .authority
@@ -8233,7 +8241,7 @@ impl SemanticConstEvaluator<'_, '_> {
                 let value = self
                     .authority
                     .session
-                    .finish_ready_expression_edge(edge, value)
+                    .finish_ready_prepared_call(pending, value)
                     .map_err(|error| {
                         Self::failure_value(format!("durable call lifecycle: {error:?}"))
                     })?;
