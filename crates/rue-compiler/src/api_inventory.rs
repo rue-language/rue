@@ -3199,6 +3199,61 @@ fn durable_const_integer_semantics_use_the_shared_kernel() {
 }
 
 #[test]
+fn durable_named_array_length_consumers_share_one_conversion_kernel() {
+    let database = include_str!("revisioned_query_database.rs");
+    let evaluator = database
+        .split("impl SemanticConstEvaluator<'_, '_> {")
+        .nth(1)
+        .and_then(|source| source.split("impl SemanticNucleusTypeProvider<'_").next())
+        .expect("durable evaluator source");
+    let array_arm = evaluator
+        .split("E::ArrayRepeat { value, count } => {")
+        .nth(1)
+        .and_then(|source| source.split("E::").next())
+        .expect("evaluator named array-length arm");
+    assert_eq!(
+        array_arm
+            .matches("classify_durable_named_array_length")
+            .count(),
+        1,
+        "legacy named counts must classify through the shared kernel"
+    );
+    assert_eq!(
+        array_arm
+            .matches("durable_named_array_length_value")
+            .count(),
+        1,
+        "legacy global values must use the shared integer conversion"
+    );
+    assert!(!array_arm.contains("DurableConstValue::Integer"));
+    assert!(!array_arm.contains("u64::try_from"));
+
+    let provider = database
+        .split("impl rue_air::SemanticTypeSyntaxProvider<ModuleId")
+        .nth(1)
+        .and_then(|source| source.split("impl ").next())
+        .expect("durable type provider");
+    let provider_length = provider
+        .split("fn resolve_array_length(")
+        .nth(1)
+        .and_then(|source| source.split("fn array_length_from_value(").next())
+        .expect("provider array-length operation");
+    let named_provider = provider_length
+        .split("SemanticValueSyntax::Name(name)")
+        .nth(1)
+        .expect("provider named-length branch");
+    assert_eq!(
+        named_provider
+            .matches("durable_named_array_length_const")
+            .count(),
+        2,
+        "substitution and global named values must use the shared conversion"
+    );
+    assert!(!named_provider.contains("DurableConstValue::Integer"));
+    assert!(!named_provider.contains("u64::try_from"));
+}
+
+#[test]
 fn durable_specialized_producer_issuance_has_one_ordered_kernel() {
     let durable = include_str!("durable_comptime.rs");
     let producer_kernel = durable

@@ -2667,6 +2667,119 @@ pub(crate) struct TargetEnumValue {
     pub(crate) variant: &'static str,
 }
 
+/// The semantic state an array-repeat count can have before global lookup.
+/// `Unbound` is the only state that may proceed to the provider; a shadowed
+/// value or type never falls through to a same-named global constant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // runtime-dependent bindings arrive with the durable AIR host
+pub(crate) enum DurableComptimeArrayLengthBinding {
+    LocalValue(EvaluatedSemanticConst),
+    /// A type substitution shadows the name but has no value representation.
+    Shadowed,
+    RuntimeDependent,
+    Unbound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // consumed by the future durable AIR array-length hook
+pub(crate) enum DurableComptimeArrayLengthDecision {
+    Concrete(u64),
+    Shadowed,
+    RuntimeDependent,
+    ResolveGlobal,
+}
+
+/// Diagnostic-free semantic failures from named array-length conversion. Each
+/// caller owns the wording/channel adapter appropriate to its query surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DurableComptimeArrayLengthError {
+    Module,
+    TargetEnum,
+    NonInteger,
+    Negative(i128),
+    TooLarge(i128),
+}
+
+/// Convert the AIR-owned lexical fact without dropping any value variant.
+/// This is intentionally exhaustive so a future host cannot accidentally
+/// reinterpret a shadow as an unbound global lookup.
+#[allow(dead_code)] // consumed when the staged durable AIR host is entered
+pub(crate) fn durable_array_length_binding_from_air(
+    binding: rue_air::ComptimeArrayLengthBinding<EvaluatedSemanticConst>,
+) -> DurableComptimeArrayLengthBinding {
+    match binding {
+        rue_air::ComptimeArrayLengthBinding::LocalValue(value) => {
+            DurableComptimeArrayLengthBinding::LocalValue(value)
+        }
+        rue_air::ComptimeArrayLengthBinding::Shadowed => {
+            DurableComptimeArrayLengthBinding::Shadowed
+        }
+        rue_air::ComptimeArrayLengthBinding::RuntimeDependent => {
+            DurableComptimeArrayLengthBinding::RuntimeDependent
+        }
+        rue_air::ComptimeArrayLengthBinding::Unbound => DurableComptimeArrayLengthBinding::Unbound,
+    }
+}
+
+/// Apply the canonical named array-length policy to a lexical semantic fact.
+/// Concrete conversion and its semantic failures are shared by the legacy
+/// evaluator and the future AIR host; global lookup remains the caller's
+/// responsibility so dependency observation happens exactly at the existing
+/// provider point.
+pub(crate) fn classify_durable_named_array_length(
+    _name: &str,
+    binding: DurableComptimeArrayLengthBinding,
+) -> Result<DurableComptimeArrayLengthDecision, DurableComptimeArrayLengthError> {
+    match binding {
+        DurableComptimeArrayLengthBinding::RuntimeDependent => {
+            Ok(DurableComptimeArrayLengthDecision::RuntimeDependent)
+        }
+        DurableComptimeArrayLengthBinding::Shadowed => {
+            Ok(DurableComptimeArrayLengthDecision::Shadowed)
+        }
+        DurableComptimeArrayLengthBinding::Unbound => {
+            Ok(DurableComptimeArrayLengthDecision::ResolveGlobal)
+        }
+        DurableComptimeArrayLengthBinding::LocalValue(value) => Ok(
+            DurableComptimeArrayLengthDecision::Concrete(durable_named_array_length_value(&value)?),
+        ),
+    }
+}
+
+pub(crate) fn durable_named_array_length_value(
+    value: &EvaluatedSemanticConst,
+) -> Result<u64, DurableComptimeArrayLengthError> {
+    let EvaluatedSemanticConst::Value(value) = value else {
+        return Err(match value {
+            EvaluatedSemanticConst::Module(_) => DurableComptimeArrayLengthError::Module,
+            EvaluatedSemanticConst::TargetEnum(_) => DurableComptimeArrayLengthError::TargetEnum,
+            EvaluatedSemanticConst::Value(_) => unreachable!(),
+        });
+    };
+    durable_named_array_length_const(&value.value)
+}
+
+pub(crate) fn durable_named_array_length_const(
+    value: &DurableConstValue,
+) -> Result<u64, DurableComptimeArrayLengthError> {
+    let DurableConstValue::Integer(value) = value else {
+        return Err(DurableComptimeArrayLengthError::NonInteger);
+    };
+    durable_named_array_length_integer(*value)
+}
+
+pub(crate) fn durable_named_array_length_integer(
+    value: i128,
+) -> Result<u64, DurableComptimeArrayLengthError> {
+    u64::try_from(value).map_err(|_| {
+        if value < 0 {
+            DurableComptimeArrayLengthError::Negative(value)
+        } else {
+            DurableComptimeArrayLengthError::TooLarge(value)
+        }
+    })
+}
+
 /// Match semantics shared by the durable evaluator and its future AIR host.
 /// Durable values deliberately remain narrower than the language's runtime
 /// enum algebra: only an exact, unqualified, binding-free target descriptor
@@ -3141,6 +3254,116 @@ mod tests {
             EvaluatedSemanticConst::unit(),
             value(DurableConstValue::Unit, Some(DurableType::Unit))
         );
+    }
+
+    #[test]
+    fn named_array_length_policy_preserves_lexical_and_conversion_channels() {
+        let integer = EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+            DurableConstValue::Integer(4),
+            DurableType::I32,
+        ));
+        assert_eq!(
+            classify_durable_named_array_length(
+                "N",
+                DurableComptimeArrayLengthBinding::LocalValue(integer),
+            )
+            .unwrap(),
+            DurableComptimeArrayLengthDecision::Concrete(4)
+        );
+        assert_eq!(
+            classify_durable_named_array_length("N", DurableComptimeArrayLengthBinding::Unbound,)
+                .unwrap(),
+            DurableComptimeArrayLengthDecision::ResolveGlobal
+        );
+        assert_eq!(
+            classify_durable_named_array_length(
+                "N",
+                DurableComptimeArrayLengthBinding::RuntimeDependent,
+            )
+            .unwrap(),
+            DurableComptimeArrayLengthDecision::RuntimeDependent
+        );
+
+        let non_integer = EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+            DurableConstValue::Bool(true),
+            DurableType::Bool,
+        ));
+        let error = classify_durable_named_array_length(
+            "N",
+            DurableComptimeArrayLengthBinding::LocalValue(non_integer),
+        )
+        .unwrap_err();
+        assert!(matches!(error, DurableComptimeArrayLengthError::NonInteger));
+        assert_eq!(
+            classify_durable_named_array_length("N", DurableComptimeArrayLengthBinding::Shadowed,)
+                .unwrap(),
+            DurableComptimeArrayLengthDecision::Shadowed
+        );
+        assert!(matches!(
+            classify_durable_named_array_length(
+                "N",
+                DurableComptimeArrayLengthBinding::LocalValue(EvaluatedSemanticConst::Module(
+                    ModuleId::from_validated_canonical("root")
+                ),),
+            )
+            .unwrap_err(),
+            DurableComptimeArrayLengthError::Module
+        ));
+        assert!(matches!(
+            classify_durable_named_array_length(
+                "N",
+                DurableComptimeArrayLengthBinding::LocalValue(EvaluatedSemanticConst::TargetEnum(
+                    TargetEnumValue {
+                        type_name: "Target",
+                        variant: "x86_64",
+                    }
+                ),),
+            )
+            .unwrap_err(),
+            DurableComptimeArrayLengthError::TargetEnum
+        ));
+
+        for (value, expected) in [(-1, "negative"), (i128::from(u64::MAX) + 1, "too_large")] {
+            let error = durable_named_array_length_value(&EvaluatedSemanticConst::Value(
+                TypedSemanticConst::typed(DurableConstValue::Integer(value), DurableType::I64),
+            ))
+            .unwrap_err();
+            match (expected, error) {
+                ("negative", DurableComptimeArrayLengthError::Negative(actual)) => {
+                    assert_eq!(actual, value)
+                }
+                ("too_large", DurableComptimeArrayLengthError::TooLarge(actual)) => {
+                    assert_eq!(actual, value)
+                }
+                _ => panic!("unexpected array-length error"),
+            }
+        }
+    }
+
+    #[test]
+    fn air_array_length_binding_conversion_is_exhaustive_and_lossless() {
+        let value = EvaluatedSemanticConst::integer(7);
+        let cases = [
+            (
+                rue_air::ComptimeArrayLengthBinding::LocalValue(value.clone()),
+                DurableComptimeArrayLengthBinding::LocalValue(value),
+            ),
+            (
+                rue_air::ComptimeArrayLengthBinding::Shadowed,
+                DurableComptimeArrayLengthBinding::Shadowed,
+            ),
+            (
+                rue_air::ComptimeArrayLengthBinding::RuntimeDependent,
+                DurableComptimeArrayLengthBinding::RuntimeDependent,
+            ),
+            (
+                rue_air::ComptimeArrayLengthBinding::Unbound,
+                DurableComptimeArrayLengthBinding::Unbound,
+            ),
+        ];
+        for (air, expected) in cases {
+            assert_eq!(durable_array_length_binding_from_air(air), expected);
+        }
     }
 
     #[test]

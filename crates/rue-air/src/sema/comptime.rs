@@ -487,7 +487,9 @@ pub enum ComptimeAnonymousKind {
 /// The engine owns precedence and the ordinary host may deliberately ignore
 /// this durable-only fact while retaining its historical substitution input.
 pub enum ComptimeArrayLengthBinding<V> {
-    LocalInteger(V),
+    /// A lexical value, including non-integers. The host owns the semantic
+    /// conversion; the engine must not discard the value before lookup.
+    LocalValue(V),
     Shadowed,
     RuntimeDependent,
     Unbound,
@@ -1404,13 +1406,13 @@ mod value_domain_tests {
         env.value_subst.insert(name.clone(), FakeValue::Integer(4));
         assert!(matches!(
             ComptimeEngine::<FakeHost>::classify_array_length_binding(&env, &name),
-            ComptimeArrayLengthBinding::LocalInteger(FakeValue::Integer(4))
+            ComptimeArrayLengthBinding::LocalValue(FakeValue::Integer(4))
         ));
         env.value_subst
             .insert(name.clone(), FakeValue::Type(FakeType(1)));
         assert!(matches!(
             ComptimeEngine::<FakeHost>::classify_array_length_binding(&env, &name),
-            ComptimeArrayLengthBinding::Shadowed
+            ComptimeArrayLengthBinding::LocalValue(FakeValue::Type(FakeType(1)))
         ));
         env.value_subst.clear();
         env.runtime_local_names.insert(name.clone());
@@ -1422,13 +1424,13 @@ mod value_domain_tests {
         env.locals.insert(name.clone(), FakeValue::Integer(9));
         assert!(matches!(
             ComptimeEngine::<FakeHost>::classify_array_length_binding(&env, &name),
-            ComptimeArrayLengthBinding::LocalInteger(FakeValue::Integer(9))
+            ComptimeArrayLengthBinding::LocalValue(FakeValue::Integer(9))
         ));
         env.locals
             .insert(name.clone(), FakeValue::Type(FakeType(2)));
         assert!(matches!(
             ComptimeEngine::<FakeHost>::classify_array_length_binding(&env, &name),
-            ComptimeArrayLengthBinding::Shadowed
+            ComptimeArrayLengthBinding::LocalValue(FakeValue::Type(FakeType(2)))
         ));
     }
 
@@ -1879,7 +1881,12 @@ mod value_domain_tests {
                     }),
                 )
             });
-            if matches!(binding, ComptimeArrayLengthBinding::Shadowed) {
+            let shadowed = match &binding {
+                ComptimeArrayLengthBinding::Shadowed => true,
+                ComptimeArrayLengthBinding::LocalValue(value) => value.as_integer().is_none(),
+                _ => false,
+            };
+            if shadowed {
                 return ComptimeOutcome::HostFailure(FAKE_FAILURE);
             }
             if ARRAY_LENGTH_ABORT.with(Cell::get) {
@@ -6815,11 +6822,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         name: &H::Name,
     ) -> ComptimeArrayLengthBinding<H::Value> {
         if let Some(value) = env.locals.get(name) {
-            return if value.as_integer().is_some() {
-                ComptimeArrayLengthBinding::LocalInteger(value.clone())
-            } else {
-                ComptimeArrayLengthBinding::Shadowed
-            };
+            return ComptimeArrayLengthBinding::LocalValue(value.clone());
         }
         if env.runtime_local_names.contains(name) {
             return ComptimeArrayLengthBinding::RuntimeDependent;
@@ -6828,11 +6831,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             return ComptimeArrayLengthBinding::Shadowed;
         }
         if let Some(value) = env.value_subst.get(name) {
-            return if value.as_integer().is_some() {
-                ComptimeArrayLengthBinding::LocalInteger(value.clone())
-            } else {
-                ComptimeArrayLengthBinding::Shadowed
-            };
+            return ComptimeArrayLengthBinding::LocalValue(value.clone());
         }
         if env.runtime_binding_names.contains(name) {
             return ComptimeArrayLengthBinding::RuntimeDependent;
