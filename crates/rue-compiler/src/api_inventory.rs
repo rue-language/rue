@@ -4870,11 +4870,11 @@ fn durable_comptime_services_are_named_authority_operations() {
         })
         .expect("canonical target variant kernel");
     for required in [
-        "target_arch",
-        "target_os",
-        "target_data_model",
+        "ComptimeTargetIntrinsic::Arch",
+        "ComptimeTargetIntrinsic::Os",
+        "ComptimeTargetIntrinsic::DataModel",
         "IntrinsicWrongArgCount",
-        "unknown target descriptor intrinsic",
+        "intrinsic.as_str()",
     ] {
         assert!(
             target_kernel.contains(required),
@@ -4892,12 +4892,12 @@ fn durable_comptime_services_are_named_authority_operations() {
             "target variant policy must remain in the canonical kernel: {required}"
         );
     }
-    assert_eq!(production_facade.matches("\"target_arch\"").count(), 1);
-    assert_eq!(production_facade.matches("\"target_os\"").count(), 1);
-    assert_eq!(
-        production_facade.matches("\"target_data_model\"").count(),
-        1
-    );
+    for spelling in ["\"target_arch\"", "\"target_os\"", "\"target_data_model\""] {
+        assert!(
+            !production_facade.contains(spelling),
+            "compiler production must not maintain target intrinsic spellings: {spelling}"
+        );
+    }
     let evaluator = database
         .split("impl SemanticConstEvaluator<'_, '_> {")
         .nth(1)
@@ -5067,9 +5067,6 @@ fn durable_comptime_services_are_named_authority_operations() {
         );
     }
     for policy in [
-        "\"target_arch\"",
-        "\"target_os\"",
-        "\"target_data_model\"",
         "IntrinsicWrongArgCount",
         "UnknownVariant",
         "unknown target descriptor intrinsic",

@@ -7443,7 +7443,7 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
 
     fn resolve_target_intrinsic(
         &self,
-        name: &str,
+        intrinsic: rue_air::ComptimeTargetIntrinsic,
         argument_count: usize,
     ) -> Result<
         crate::durable_comptime::TargetEnumValue,
@@ -7453,7 +7453,7 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
         >,
     > {
         crate::durable_comptime::resolve_target_intrinsic_facts(
-            name,
+            intrinsic,
             argument_count,
             self.provider.configuration.target.arch(),
             self.provider.configuration.target.os(),
@@ -7646,14 +7646,13 @@ impl SemanticConstEvaluator<'_, '_> {
 
     fn target_intrinsic(
         &mut self,
-        name: lasso::Spur,
+        intrinsic: rue_air::ComptimeTargetIntrinsic,
         args: &rue_rir::RirIntrinsicArgsRange,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
-        let name = self.symbol(&name);
         let argument_count = self.rir.intrinsic_args(args).len();
         let services = crate::durable_comptime::DurableComptimeServices::new(&mut *self.authority);
         services
-            .resolve_target_intrinsic(name.as_ref(), argument_count)
+            .resolve_target_intrinsic(intrinsic, argument_count)
             .map(|value| EvaluatedSemanticConst::TargetEnum(value))
             .map_err(Self::provider_error)
     }
@@ -8816,17 +8815,26 @@ impl SemanticConstEvaluator<'_, '_> {
                     crate::durable_semantics::DurableType::ComptimeType,
                 )))
             }
-            E::Intrinsic { name, .. } if self.symbol(name).as_ref() == "import" => {
-                self.eval_import(expression)
-            }
-            E::Intrinsic { name, args } if self.symbol(name).as_ref() == "target_arch" => {
-                self.target_intrinsic(*name, args)
-            }
-            E::Intrinsic { name, args } if self.symbol(name).as_ref() == "target_os" => {
-                self.target_intrinsic(*name, args)
-            }
-            E::Intrinsic { name, args } if self.symbol(name).as_ref() == "target_data_model" => {
-                self.target_intrinsic(*name, args)
+            E::Intrinsic { name, args } => {
+                let intrinsic_name = self.symbol(name);
+                let Some(intrinsic) =
+                    rue_air::ComptimeExpressionIntrinsic::from_name(intrinsic_name.as_ref())
+                else {
+                    return Err(
+                        crate::durable_comptime::DurableComptimeFailure::comptime_rejection(
+                            rue_air::ComptimeSemanticRejection::UnsupportedIntrinsic(
+                                semantic_candidate_spelling(self.symbols, name).to_owned(),
+                            ),
+                        )
+                        .into(),
+                    );
+                };
+                match intrinsic {
+                    rue_air::ComptimeExpressionIntrinsic::Import => self.eval_import(expression),
+                    rue_air::ComptimeExpressionIntrinsic::Target(target) => {
+                        self.target_intrinsic(target, args)
+                    }
+                }
             }
             E::TypeIntrinsic { name, type_arg } => {
                 let intrinsic_name = self.symbol(name);
@@ -8920,13 +8928,6 @@ impl SemanticConstEvaluator<'_, '_> {
             E::StructInit { .. } | E::ArrayInit { .. } => Err(
                 crate::durable_comptime::DurableComptimeFailure::comptime_rejection(
                     rue_air::ComptimeSemanticRejection::AggregateExpression,
-                ),
-            ),
-            E::Intrinsic { name, .. } => Err(
-                crate::durable_comptime::DurableComptimeFailure::comptime_rejection(
-                    rue_air::ComptimeSemanticRejection::UnsupportedIntrinsic(
-                        semantic_candidate_spelling(self.symbols, name).to_owned(),
-                    ),
                 ),
             ),
             _ => Err(
