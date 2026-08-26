@@ -3402,6 +3402,16 @@ fn durable_comptime_services_are_named_authority_operations() {
         "division_by_zero",
         "remainder_by_zero",
         "DurableComptimeCallableAdmission",
+        "DurableComptimeAdmissionStamp",
+        "DurableComptimeCallToken",
+        "DurableComptimeCallTokenIdentity",
+        "DurableComptimeCallTokenHandle",
+        "DurableComptimeCallReservation",
+        "DurableComptimeAdmittedCall",
+        "DurableComptimePreparedCall",
+        "DurableComptimeBoundCallQuery",
+        "DurableComptimePendingCall",
+        "DurableComptimeProbedCall",
         "DurableComptimeCallableAdmissionStart",
         "DurableComptimeNamedValueKind",
         "DurableComptimeNamedValueOrder",
@@ -3409,6 +3419,11 @@ fn durable_comptime_services_are_named_authority_operations() {
         "resolve_module_member_in_order",
         "begin_comptime_call_admission",
         "finish_comptime_call_admission",
+        "reserve_bound_expression_call",
+        "admit_bound_expression_call",
+        "prepare_bound_expression_call",
+        "probe_prepared_call",
+        "consume_probed_call",
         "DurableComptimeNamedValueProjection",
         "resolve_named_value",
         "resolve_module_member",
@@ -3441,6 +3456,214 @@ fn durable_comptime_services_are_named_authority_operations() {
             "durable facade missing {required}"
         );
     }
+
+    // Include the immediately preceding derive in each declaration slice:
+    // `#[derive(Clone)]` is just as much an accidental escape hatch as a
+    // manual implementation. Keep field visibility scoped to the fields,
+    // since these opaque wrappers intentionally have pub(crate) declarations.
+    let opaque_declaration = |name: &str| {
+        let bare_name = name.split('<').next().unwrap();
+        let marker = format!("struct {bare_name}");
+        let declaration = production_facade
+            .find(&marker)
+            .unwrap_or_else(|| panic!("missing opaque struct {name}"));
+        let derive = production_facade[..declaration]
+            .rfind("#[derive(")
+            .unwrap_or(declaration);
+        let after = &production_facade[declaration..];
+        let end = if let Some(open) = after.find('{') {
+            declaration + open + after[open..].find("\n}").unwrap() + 2
+        } else {
+            declaration + after.find(';').unwrap() + 1
+        };
+        &production_facade[derive..end]
+    };
+    let no_clone_private_struct = |name: &str| {
+        let bare_name = name.split('<').next().unwrap();
+        let declaration = opaque_declaration(name);
+        let normalized = declaration
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(
+            !normalized.contains("Clone"),
+            "{name} declaration/derive must remain non-Clone"
+        );
+        let fields = declaration
+            .split_once('{')
+            .map(|(_, fields)| fields)
+            .unwrap_or_else(|| declaration.split_once(bare_name).unwrap().1);
+        assert!(!fields.contains("pub ") && !fields.contains("pub(crate)"));
+        declaration
+    };
+    for name in [
+        "DurableComptimeCallToken",
+        "DurableComptimeCallTokenIdentity",
+        "DurableComptimeCallTokenHandle",
+        "DurableComptimeCallReservation",
+        "DurableComptimeAdmittedCall",
+    ] {
+        no_clone_private_struct(name);
+    }
+    let normalized_facade = production_facade
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    assert!(!normalized_facade.contains("implCloneforDurableComptime"));
+    // Generic parameters may occur between `impl` and `Clone`; the
+    // normalized `Clonefor...` marker catches those implementations too.
+    assert!(!normalized_facade.contains("CloneforDurableComptime"));
+    let admitted_call = production_facade
+        .split("pub(crate) struct DurableComptimeAdmittedCall {")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n}\n\nimpl DurableComptimeAdmittedCall")
+                .next()
+        })
+        .expect("admitted-call wrapper body");
+    assert!(admitted_call.contains("token:") && admitted_call.contains("admission:"));
+    let admitted_constructor = production_facade
+        .split("impl DurableComptimeAdmittedCall {")
+        .nth(1)
+        .and_then(|source| source.split("\n    pub(crate) fn candidate").next())
+        .expect("admitted-call constructor");
+    assert!(admitted_constructor.contains("fn new(token: DurableComptimeCallToken"));
+    assert!(!admitted_constructor.contains("pub(crate) fn new"));
+    assert!(!production_facade.contains("impl Clone for DurableComptimeAdmittedCall"));
+    let token_constructor = production_facade
+        .split("impl DurableComptimeCallToken {")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn handle").next())
+        .expect("session token constructor");
+    assert!(token_constructor.contains("fn new(session: u64, ordinal: u32) -> Self"));
+    assert!(!token_constructor.contains("pub(crate) fn new"));
+    assert_eq!(
+        production_facade
+            .matches("DurableComptimeCallToken::new(")
+            .count(),
+        1,
+        "the session must own the sole production token constructor call"
+    );
+    let query_body = no_clone_private_struct("DurableComptimeBoundCallQuery<'a>");
+    assert!(query_body.contains("&'a [(Arc<str>, DurableType)]"));
+    assert!(query_body.contains("&'a [(Arc<str>, DurableConstValue)]"));
+    assert!(!query_body.contains("AHashMap"));
+    for forbidden in ["InstData", "InstRef", "ComptimeEngine"] {
+        assert!(!query_body.contains(forbidden));
+    }
+    let stamp_body = production_facade
+        .split("struct DurableComptimeAdmissionStamp {")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n}\n\nimpl DurableComptimeAdmissionStamp")
+                .next()
+        })
+        .expect("opaque admission stamp body");
+    for required in [
+        "candidate:",
+        "identity:",
+        "configuration:",
+        "parameters:",
+        "result:",
+        "shell_parameters:",
+    ] {
+        assert!(stamp_body.contains(required));
+    }
+    assert!(!stamp_body.contains("Clone"));
+    assert!(!production_facade.contains("impl Clone for DurableComptimeAdmissionStamp"));
+    let pending_body = no_clone_private_struct("DurableComptimePendingCall");
+    for required in ["edge:", "producer:", "program:", "token:", "bound:"] {
+        assert!(pending_body.contains(required));
+    }
+    let probed_body = no_clone_private_struct("DurableComptimeProbedCall");
+    for required in ["pending:", "lookup:"] {
+        assert!(probed_body.contains(required));
+    }
+    let prepared_call = production_facade
+        .split("pub(crate) enum DurableComptimePreparedCall")
+        .nth(1)
+        .and_then(|source| source.split("\n}\n\nimpl DurableComptimeSession").next())
+        .expect("prepared-call result enum");
+    for required in ["Ready", "expected_result", "Enter", "NotReady"] {
+        assert!(prepared_call.contains(required));
+    }
+    assert!(!prepared_call.contains("Clone"));
+    let prepare_call = production_facade
+        .split("pub(crate) fn prepare_bound_expression_call(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n    }\n\n    /// Read one already-registered")
+                .next()
+        })
+        .expect("prepared-call admission");
+    for required in [
+        "admitted.token.handle().same(&bound.token)",
+        "admission.identity.key",
+        "DurableComptimeAdmissionStamp::from_admission",
+        "BindingMismatch",
+        "let program =",
+        "prepare_expression_edge(bound.token.ordinal())",
+        "bound",
+    ] {
+        assert!(prepare_call.contains(required));
+    }
+    assert!(!prepare_call.contains("call_ordinal"));
+    assert!(!prepare_call.contains("AHashMap"));
+    assert_eq!(
+        prepare_call
+            .matches("Ok(DurableComptimePendingCall {")
+            .count(),
+        1,
+        "prepare is the sole pending-call constructor"
+    );
+    let consume_call = production_facade
+        .split("pub(crate) fn consume_probed_call(")
+        .nth(1)
+        .and_then(|source| source.split("\n    }\n\n    /// Drain observations").next())
+        .expect("prepared-call consumption");
+    for required in [
+        "merge_ready_projection_owned",
+        "ticket_from_admitted_edge",
+        "admit_foreign_frame",
+        "program.plan.key.declaration",
+        "program.plan.key != pending_program",
+        "producer",
+        "call_span",
+        "NotReady",
+    ] {
+        assert!(consume_call.contains(required));
+    }
+    assert!(!consume_call.contains("probe_comptime_call"));
+    assert!(!consume_call.contains("consume_foreign_lookup"));
+    let prepared_probe = production_facade
+        .split("pub(crate) fn probe_prepared_call(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n    }\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub(crate) enum EvaluatedSemanticConst")
+                .next()
+        })
+        .expect("prepared-call probe");
+    assert_eq!(
+        prepared_probe
+            .matches("self.authority.probe_comptime_call(")
+            .count(),
+        1,
+        "prepared-call probe must own exactly one raw probe"
+    );
+    for forbidden in ["eval(", "query(", "AHashMap", "consume_foreign_lookup"] {
+        assert!(!prepared_probe.contains(forbidden));
+    }
+    assert_eq!(
+        prepared_probe
+            .matches("Ok(DurableComptimeProbedCall {")
+            .count(),
+        1,
+        "probe_prepared_call is the sole probed-call constructor"
+    );
     let service_impl = production_facade
         .split(
             "impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A> {",
@@ -3536,7 +3759,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         .nth(1)
         .and_then(|source| {
             source
-                .split("\n    }\n\n    pub(crate) fn next_call_ordinal")
+                .split("\n    }\n\n    /// Reserve one call ordinal")
                 .next()
         })
         .expect("const frame adapter");
@@ -4057,10 +4280,21 @@ fn durable_comptime_services_are_named_authority_operations() {
     }
     assert_eq!(
         production_facade
-            .matches("pub(crate) fn next_call_ordinal(")
+            .matches("pub(crate) fn reserve_bound_expression_call(")
             .count(),
         1
     );
+    let reserve_call = production_facade
+        .split("pub(crate) fn reserve_bound_expression_call(")
+        .nth(1)
+        .and_then(|source| source.split("\n    /// Pair an already-admitted").next())
+        .expect("session-owned ordinal reservation");
+    assert!(reserve_call.contains("let ordinal = self.next_call"));
+    assert!(reserve_call.contains("self.next_call += 1"));
+    assert!(reserve_call.contains("DurableComptimeCallToken::new(self.lifecycle.owner, ordinal)"));
+    assert!(production_facade.contains("pub(crate) fn admit_bound_expression_call("));
+    assert!(!production_facade.contains("next_call_ordinal"));
+    assert!(!production_facade.contains("begin_bound_expression_call("));
     assert!(production_facade.contains("pub(crate) fn lifecycle_mut("));
     assert!(production_facade.contains("pub(crate) fn prepare_expression_edge("));
     assert!(production_facade.contains("pub(crate) fn finish_ready_expression_edge("));
@@ -4933,15 +5167,20 @@ fn durable_comptime_services_are_named_authority_operations() {
         );
     }
     assert!(
-        named_call.contains("let call_ordinal = self.authority.session.next_call_ordinal();"),
+        named_call
+            .contains("let reservation = self.authority.session.reserve_bound_expression_call();"),
         "durable call ordinals must be allocated before admission"
     );
     assert!(
-        named_call.contains("prepare_expression_edge(call_ordinal)"),
+        named_call.contains("admit_bound_expression_call(reservation"),
+        "durable named calls must issue a session token before binding"
+    );
+    assert!(
+        named_call.contains("prepare_bound_expression_call(admitted"),
         "durable named calls must issue the lifecycle edge before query lookup"
     );
     assert!(
-        named_call.contains("finish_ready_expression_edge(edge, value)"),
+        named_call.contains("finish_ready_prepared_call(pending, value)"),
         "ready comptime projections must publish through the lifecycle edge"
     );
     assert!(
@@ -4949,13 +5188,13 @@ fn durable_comptime_services_are_named_authority_operations() {
         "named calls must not bypass lifecycle-owned ready projection effects"
     );
     let edge = named_call
-        .find("prepare_expression_edge(call_ordinal)")
+        .find("prepare_bound_expression_call(admitted")
         .expect("named-call expression edge issuance");
     let query = named_call
         .find(".provider\n            .query(query)")
         .expect("named-call semantic query");
     let finish_edge = named_call
-        .find("finish_ready_expression_edge(edge, value)")
+        .find("finish_ready_prepared_call(pending, value)")
         .expect("named-call ready edge completion");
     assert!(
         edge < query && query < finish_edge,
@@ -4987,7 +5226,9 @@ fn durable_comptime_services_are_named_authority_operations() {
         .expect("durable value-fit kernel");
     assert!(
         !binding_kernel.contains("Clone")
+            && !binding_kernel.contains("Default")
             && !production_facade.contains("impl Clone for DurableComptimeBinding")
+            && !production_facade.contains("impl Default for DurableComptimeBinding")
             && !production_facade.contains("impl Clone for DurableComptimeBoundCall"),
         "durable binding state must remain non-Clone"
     );
@@ -4995,7 +5236,10 @@ fn durable_comptime_services_are_named_authority_operations() {
         "type_arguments",
         "value_arguments",
         "typed_value_arguments",
-        "pub(crate) fn finish(self, result: DurableType)",
+        "token:",
+        "admission:",
+        "pub(crate) fn new(admitted: &DurableComptimeAdmittedCall)",
+        "pub(crate) fn finish(self)",
         "pub(crate) struct DurableComptimeBoundCall",
     ] {
         assert!(

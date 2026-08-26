@@ -830,6 +830,7 @@ enum DurableTicketState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DurableComptimeLifecycleError {
     TicketMismatch,
+    BindingMismatch,
     NotEntered,
     OutOfOrder,
     TicketReused,
@@ -1060,6 +1061,7 @@ pub(crate) enum DurableComptimeForeignCallError {
     ReadyFailure(crate::semantic_query_nucleus::SemanticNucleusFailure),
     ReadyQueryFailure(rue_query::QueryFailure),
     AdmissionFailure(crate::body_query::ComptimeProgramProjectionFailure),
+    FrameAdmission(DurableComptimeForeignFrameAdmissionError),
     UnexpectedReadyProjection,
     Lifecycle(DurableComptimeLifecycleError),
 }
@@ -1096,6 +1098,23 @@ pub(crate) enum DurableComptimeForeignFrameAdmissionError {
     NotCallable,
     TicketMismatch,
     RegistryMismatch,
+}
+
+/// A completed foreign call after one-shot probing. The ready result retains
+/// the bound call's substituted result type so a host cannot reconstruct
+/// typed metadata from the raw query projection.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) enum DurableComptimePreparedCall {
+    Ready {
+        result: crate::semantic_query_nucleus::ComptimeCallResultProjection,
+        expected_result: DurableType,
+    },
+    Enter {
+        frame: DurableComptimeForeignFrame,
+        ticket: Box<DurableComptimeCallTicket>,
+    },
+    NotReady,
 }
 
 impl DurableComptimeSession {
@@ -1171,10 +1190,64 @@ impl DurableComptimeSession {
         })
     }
 
-    pub(crate) fn next_call_ordinal(&mut self) -> u32 {
+    /// Reserve one call ordinal and seal it to this session. Failed admission
+    /// or binding still consumes the reservation, matching the legacy timing.
+    #[allow(dead_code)]
+    pub(crate) fn reserve_bound_expression_call(&mut self) -> DurableComptimeCallReservation {
         let ordinal = self.next_call;
         self.next_call += 1;
-        ordinal
+        DurableComptimeCallReservation {
+            token: DurableComptimeCallToken::new(self.lifecycle.owner, ordinal),
+        }
+    }
+
+    /// Pair an already-admitted callable with one reservation before its
+    /// arguments are evaluated. Both token identity and ordinal are owned by
+    /// this session; callers cannot mint a token or reuse a consumed wrapper.
+    #[allow(dead_code)]
+    pub(crate) fn admit_bound_expression_call(
+        &mut self,
+        reservation: DurableComptimeCallReservation,
+        admission: DurableComptimeCallableAdmission,
+    ) -> Result<DurableComptimeAdmittedCall, DurableComptimeLifecycleError> {
+        if reservation.token.identity.session != self.lifecycle.owner
+            || reservation.token.identity.ordinal >= self.next_call
+        {
+            return Err(DurableComptimeLifecycleError::TicketMismatch);
+        }
+        Ok(DurableComptimeAdmittedCall::new(
+            reservation.token,
+            admission,
+        ))
+    }
+
+    /// Consume one admitted binding and issue the exact lifecycle edge that
+    /// will own its probe and eventual completion. The producer comes from
+    /// the admission identity; callers cannot provide an independent query
+    /// key, edge, or unordered argument map.
+    #[allow(dead_code)]
+    pub(crate) fn prepare_bound_expression_call(
+        &mut self,
+        admitted: DurableComptimeAdmittedCall,
+        bound: DurableComptimeBoundCall,
+    ) -> Result<DurableComptimePendingCall, DurableComptimeLifecycleError> {
+        let admission_stamp = DurableComptimeAdmissionStamp::from_admission(&admitted.admission);
+        if !admitted.token.handle().same(&bound.token) || admission_stamp != bound.admission {
+            return Err(DurableComptimeLifecycleError::BindingMismatch);
+        }
+        let producer = admitted.admission.identity.key.clone();
+        let program = crate::body_query::DurableComptimeProgramKey {
+            declaration: producer.clone(),
+            configuration: admitted.admission.configuration.clone(),
+        };
+        let edge = self.prepare_expression_edge(bound.token.ordinal())?;
+        Ok(DurableComptimePendingCall {
+            edge,
+            producer,
+            program,
+            token: admitted.token.handle(),
+            bound,
+        })
     }
 
     /// Read one already-registered program by its complete stable key. Dense
@@ -1287,6 +1360,12 @@ impl DurableComptimeSession {
         let Some(callable) = admitted.callable() else {
             return Err(DurableComptimeForeignFrameAdmissionError::NotCallable);
         };
+        if bound.admission.candidate != admitted.plan.candidate
+            || bound.admission.identity.key != admitted.plan.key.declaration
+            || bound.admission.configuration != admitted.plan.key.configuration
+        {
+            return Err(DurableComptimeForeignFrameAdmissionError::TicketMismatch);
+        }
         let key = &admitted.plan.key;
         let context = &ticket.context;
         let ticket_matches = ticket.owner == self.lifecycle.owner
@@ -1407,10 +1486,24 @@ impl DurableComptimeSession {
                 DurableComptimeForeignCallError::ReadyFailure(_)
                 | DurableComptimeForeignCallError::ReadyQueryFailure(_)
                 | DurableComptimeForeignCallError::AdmissionFailure(_)
+                | DurableComptimeForeignCallError::FrameAdmission(_)
                 | DurableComptimeForeignCallError::UnexpectedReadyProjection => {
                     unreachable!("finish_ready_expression_edge supplies a ready projection")
                 }
             })
+    }
+
+    /// Complete a prepared call's ready projection without exposing its
+    /// lifecycle edge outside this module.
+    pub(crate) fn finish_ready_prepared_call(
+        &mut self,
+        pending: DurableComptimePendingCall,
+        projection: crate::semantic_query_nucleus::ComptimeCallProjection,
+    ) -> Result<
+        crate::semantic_query_nucleus::ComptimeCallResultProjection,
+        DurableComptimeLifecycleError,
+    > {
+        self.finish_ready_expression_edge(pending.edge, projection)
     }
 
     /// Consume the one lookup result associated with a pre-lookup edge. This
@@ -1444,6 +1537,73 @@ impl DurableComptimeSession {
                 })
             }
             ForeignComptimeCallLookup::NotReady => Ok(DurableComptimeForeignCall::NotReady),
+            ForeignComptimeCallLookup::ReadyFailure(failure) => {
+                Err(DurableComptimeForeignCallError::ReadyFailure(failure))
+            }
+            ForeignComptimeCallLookup::ReadyQueryFailure(failure) => {
+                Err(DurableComptimeForeignCallError::ReadyQueryFailure(failure))
+            }
+            ForeignComptimeCallLookup::AdmissionFailure(failure) => {
+                Err(DurableComptimeForeignCallError::AdmissionFailure(failure))
+            }
+            ForeignComptimeCallLookup::UnexpectedReadyProjection => {
+                Err(DurableComptimeForeignCallError::UnexpectedReadyProjection)
+            }
+        }
+    }
+
+    /// Consume a one-shot probed call. Ready projections publish through the
+    /// exact edge once; admitted programs are framed immediately with the
+    /// same bound payload; all other terminals discard the package without
+    /// retrying, entering, or publishing effects.
+    #[allow(dead_code)]
+    pub(crate) fn consume_probed_call(
+        &mut self,
+        probed: DurableComptimeProbedCall,
+        call_span: rue_span::Span,
+    ) -> Result<DurableComptimePreparedCall, DurableComptimeForeignCallError> {
+        let DurableComptimeProbedCall { pending, lookup } = probed;
+        let DurableComptimePendingCall {
+            edge,
+            producer,
+            program: pending_program,
+            token,
+            bound,
+        } = pending;
+        if !token.same(&bound.token) {
+            return Err(DurableComptimeForeignCallError::Lifecycle(
+                DurableComptimeLifecycleError::BindingMismatch,
+            ));
+        }
+        match lookup {
+            ForeignComptimeCallLookup::Ready(projection) => {
+                let expected_result = bound.expected_result.clone();
+                let mut edge = edge;
+                let result = self
+                    .lifecycle
+                    .merge_ready_projection_owned(&mut edge, projection)
+                    .map_err(DurableComptimeForeignCallError::Lifecycle)?;
+                Ok(DurableComptimePreparedCall::Ready {
+                    result,
+                    expected_result,
+                })
+            }
+            ForeignComptimeCallLookup::Admitted(program) => {
+                if program.plan.key != pending_program || program.plan.key.declaration != producer {
+                    return Err(DurableComptimeForeignCallError::FrameAdmission(
+                        DurableComptimeForeignFrameAdmissionError::RegistryMismatch,
+                    ));
+                }
+                let ticket = self
+                    .lifecycle
+                    .ticket_from_admitted_edge(edge, &program)
+                    .map_err(DurableComptimeForeignCallError::Lifecycle)?;
+                let (frame, ticket) = self
+                    .admit_foreign_frame(program, Box::new(ticket), call_span, bound)
+                    .map_err(DurableComptimeForeignCallError::FrameAdmission)?;
+                Ok(DurableComptimePreparedCall::Enter { frame, ticket })
+            }
+            ForeignComptimeCallLookup::NotReady => Ok(DurableComptimePreparedCall::NotReady),
             ForeignComptimeCallLookup::ReadyFailure(failure) => {
                 Err(DurableComptimeForeignCallError::ReadyFailure(failure))
             }
@@ -1912,6 +2072,7 @@ pub(crate) enum DurableComptimeKeyedImportError {
 pub(crate) struct DurableComptimeCallableAdmissionStart {
     pub(crate) candidate: DeclarationCandidateKey,
     pub(crate) identity: crate::semantic_query_nucleus::DeclarationIdentityProjection,
+    pub(crate) configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
     pub(crate) name: Arc<str>,
     pub(crate) dependency: SemanticDeclarationDependency,
 }
@@ -1927,9 +2088,103 @@ pub(crate) struct DurableComptimeCallableAdmissionStart {
 pub(crate) struct DurableComptimeCallableAdmission {
     pub(crate) candidate: DeclarationCandidateKey,
     pub(crate) identity: crate::semantic_query_nucleus::DeclarationIdentityProjection,
+    pub(crate) configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
     pub(crate) parameters: Arc<[crate::durable_semantics::DurableSemanticParameter]>,
     pub(crate) result: DurableType,
     pub(crate) shell_parameters: Arc<[crate::declaration_candidate::DeclarationParameterHeader]>,
+}
+
+/// A session-issued call capability.  The capability is deliberately
+/// non-Clone; only its private identity handle may be retained by the bound
+/// payload while the admitted wrapper remains owned by the caller.
+#[derive(Debug)]
+struct DurableComptimeCallToken {
+    identity: Arc<DurableComptimeCallTokenIdentity>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DurableComptimeCallTokenIdentity {
+    session: u64,
+    ordinal: u32,
+}
+
+#[derive(Debug)]
+struct DurableComptimeCallTokenHandle(Arc<DurableComptimeCallTokenIdentity>);
+
+/// A one-shot ordinal reservation issued by a durable session. It is consumed
+/// to create the admission wrapper and cannot be copied into another call.
+#[derive(Debug)]
+pub(crate) struct DurableComptimeCallReservation {
+    token: DurableComptimeCallToken,
+}
+
+#[cfg(test)]
+impl DurableComptimeCallReservation {
+    fn ordinal(&self) -> u32 {
+        self.token.identity.ordinal
+    }
+}
+
+impl DurableComptimeCallToken {
+    fn new(session: u64, ordinal: u32) -> Self {
+        Self {
+            identity: Arc::new(DurableComptimeCallTokenIdentity { session, ordinal }),
+        }
+    }
+
+    fn handle(&self) -> DurableComptimeCallTokenHandle {
+        DurableComptimeCallTokenHandle(Arc::clone(&self.identity))
+    }
+}
+
+impl DurableComptimeCallTokenHandle {
+    fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    fn ordinal(&self) -> u32 {
+        self.0.ordinal
+    }
+}
+
+impl PartialEq for DurableComptimeCallTokenHandle {
+    fn eq(&self, other: &Self) -> bool {
+        self.same(other)
+    }
+}
+
+impl Eq for DurableComptimeCallTokenHandle {}
+
+/// Admission paired with the session-issued token before argument evaluation.
+/// It is consumed only after the resulting bound payload is complete.
+#[derive(Debug)]
+pub(crate) struct DurableComptimeAdmittedCall {
+    token: DurableComptimeCallToken,
+    admission: DurableComptimeCallableAdmission,
+}
+
+impl DurableComptimeAdmittedCall {
+    fn new(token: DurableComptimeCallToken, admission: DurableComptimeCallableAdmission) -> Self {
+        Self { token, admission }
+    }
+
+    pub(crate) fn candidate(&self) -> &DeclarationCandidateKey {
+        &self.admission.candidate
+    }
+
+    pub(crate) fn parameters(&self) -> &[crate::durable_semantics::DurableSemanticParameter] {
+        &self.admission.parameters
+    }
+
+    pub(crate) fn result(&self) -> &DurableType {
+        &self.admission.result
+    }
+
+    pub(crate) fn shell_parameters(
+        &self,
+    ) -> &[crate::declaration_candidate::DeclarationParameterHeader] {
+        &self.admission.shell_parameters
+    }
 }
 
 /// Convert the canonical type-instance representation into the durable type
@@ -2291,20 +2546,59 @@ impl DurableComptimeTypeIntrinsicPolicy {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+/// Opaque call-specific admission contract.  It retains every semantic fact
+/// that was admitted before argument evaluation, so a bound payload cannot be
+/// paired with a different candidate, configuration, signature, shell, or
+/// result contract.
+#[derive(Debug, PartialEq, Eq)]
+struct DurableComptimeAdmissionStamp {
+    candidate: DeclarationCandidateKey,
+    identity: crate::semantic_query_nucleus::DeclarationIdentityProjection,
+    configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+    parameters: Arc<[crate::durable_semantics::DurableSemanticParameter]>,
+    result: DurableType,
+    shell_parameters: Arc<[crate::declaration_candidate::DeclarationParameterHeader]>,
+}
+
+impl DurableComptimeAdmissionStamp {
+    fn from_admission(admission: &DurableComptimeCallableAdmission) -> Self {
+        Self {
+            candidate: admission.candidate.clone(),
+            identity: admission.identity.clone(),
+            configuration: admission.configuration.clone(),
+            parameters: admission.parameters.clone(),
+            result: admission.result.clone(),
+            shell_parameters: admission.shell_parameters.clone(),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct DurableComptimeBinding {
+    token: DurableComptimeCallTokenHandle,
+    admission: DurableComptimeAdmissionStamp,
     type_arguments: Vec<(Arc<str>, DurableType)>,
     value_arguments: Vec<(Arc<str>, DurableConstValue)>,
     typed_value_arguments: Vec<(Arc<str>, EvaluatedSemanticConst)>,
 }
 
 impl DurableComptimeBinding {
+    pub(crate) fn new(admitted: &DurableComptimeAdmittedCall) -> Self {
+        Self {
+            token: admitted.token.handle(),
+            admission: DurableComptimeAdmissionStamp::from_admission(&admitted.admission),
+            type_arguments: Vec::new(),
+            value_arguments: Vec::new(),
+            typed_value_arguments: Vec::new(),
+        }
+    }
+
     /// Finish binding only after every argument has passed the canonical
     /// parameter fit policy.  The resulting payload owns the substituted
     /// frame metadata; callers cannot reconstruct it from raw query values.
-    pub(crate) fn finish(self, result: DurableType) -> DurableComptimeBoundCall {
+    pub(crate) fn finish(self) -> DurableComptimeBoundCall {
         let expected_result = substitute_durable_generics(
-            &result,
+            &self.admission.result,
             &self
                 .type_arguments
                 .iter()
@@ -2312,6 +2606,8 @@ impl DurableComptimeBinding {
                 .collect::<Vec<_>>(),
         );
         DurableComptimeBoundCall {
+            token: self.token,
+            admission: self.admission,
             type_arguments: self.type_arguments,
             value_arguments: self.value_arguments,
             typed_value_arguments: self.typed_value_arguments,
@@ -2325,6 +2621,8 @@ impl DurableComptimeBinding {
 /// manufacture arbitrary frame metadata beside the binding policy.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct DurableComptimeBoundCall {
+    token: DurableComptimeCallTokenHandle,
+    admission: DurableComptimeAdmissionStamp,
     type_arguments: Vec<(Arc<str>, DurableType)>,
     value_arguments: Vec<(Arc<str>, DurableConstValue)>,
     typed_value_arguments: Vec<(Arc<str>, EvaluatedSemanticConst)>,
@@ -2332,14 +2630,63 @@ pub(crate) struct DurableComptimeBoundCall {
 }
 
 impl DurableComptimeBoundCall {
-    pub(crate) fn into_query_parts(
-        self,
-    ) -> (
-        Vec<(Arc<str>, DurableType)>,
-        Vec<(Arc<str>, DurableConstValue)>,
-    ) {
-        (self.type_arguments, self.value_arguments)
+    /// Borrow the canonical ordered query facts without consuming the bound
+    /// call. The view is intentionally private and cannot be paired with an
+    /// independently supplied producer or lifecycle edge.
+    pub(crate) fn query_view(&self) -> DurableComptimeBoundCallQuery<'_> {
+        DurableComptimeBoundCallQuery {
+            type_arguments: &self.type_arguments,
+            value_arguments: &self.value_arguments,
+        }
     }
+}
+
+/// One-shot borrowed query facts retained by a pending prepared call.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct DurableComptimeBoundCallQuery<'a> {
+    type_arguments: &'a [(Arc<str>, DurableType)],
+    value_arguments: &'a [(Arc<str>, DurableConstValue)],
+}
+
+impl<'a> DurableComptimeBoundCallQuery<'a> {
+    pub(crate) fn type_arguments(&self) -> &[(Arc<str>, DurableType)] {
+        self.type_arguments
+    }
+
+    pub(crate) fn value_arguments(&self) -> &[(Arc<str>, DurableConstValue)] {
+        self.value_arguments
+    }
+}
+
+/// A non-replayable call after admission and before the foreign probe. The
+/// edge, producer, complete program key, and bound call are consumed together
+/// so callers cannot cross-pair an ordinal with another query, configuration,
+/// or binding payload.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct DurableComptimePendingCall {
+    edge: DurableComptimeCallEdge,
+    producer: crate::StableDefinitionKey,
+    program: crate::body_query::DurableComptimeProgramKey,
+    token: DurableComptimeCallTokenHandle,
+    bound: DurableComptimeBoundCall,
+}
+
+impl DurableComptimePendingCall {
+    fn query_view(&self) -> DurableComptimeBoundCallQuery<'_> {
+        self.bound.query_view()
+    }
+}
+
+/// A non-replayable result of exactly one foreign probe. Raw lookup variants
+/// never escape this package and cannot be retried without reconstructing the
+/// consumed admission, edge, and bound call.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct DurableComptimeProbedCall {
+    pending: DurableComptimePendingCall,
+    lookup: ForeignComptimeCallLookup,
 }
 
 /// Match one already-evaluated durable argument immediately. The binding is
@@ -2819,6 +3166,23 @@ impl<A: DurableComptimeForeignCallAuthority + ?Sized> DurableComptimeServices<'_
     ) -> Result<ForeignComptimeCallLookup, QueryAbort> {
         self.authority
             .probe_comptime_call(producer, type_arguments, value_arguments)
+    }
+
+    /// Consume the pending package and perform exactly one raw foreign probe.
+    /// The query slices are borrowed from the opaque bound call; lookup and
+    /// lifecycle state cannot be reconstructed or retried by the caller.
+    #[allow(dead_code)]
+    pub(crate) fn probe_prepared_call(
+        &self,
+        pending: DurableComptimePendingCall,
+    ) -> Result<DurableComptimeProbedCall, QueryAbort> {
+        let query = pending.query_view();
+        let lookup = self.authority.probe_comptime_call(
+            &pending.producer,
+            query.type_arguments(),
+            query.value_arguments(),
+        )?;
+        Ok(DurableComptimeProbedCall { pending, lookup })
     }
 }
 
@@ -3427,6 +3791,61 @@ mod tests {
         }
     }
 
+    fn binding_admission() -> DurableComptimeCallableAdmission {
+        let module = ModuleId::from_logical_path("binding-test.rue").unwrap();
+        let key = crate::StableDefinitionKey::from_stable_parts(
+            module,
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            "binding",
+            None,
+        );
+        let parameters: Arc<[DurableSemanticParameter]> = Arc::from([
+            parameter("T", DurableType::ComptimeType),
+            parameter("value", DurableType::GenericParameter(0)),
+        ]);
+        let shell_parameters: Arc<[crate::declaration_candidate::DeclarationParameterHeader]> =
+            Arc::from([
+                crate::declaration_candidate::DeclarationParameterHeader {
+                    name: Arc::from("T"),
+                    mode: crate::declaration_candidate::DeclarationParameterMode::Value,
+                    is_comptime: true,
+                    is_type_parameter: true,
+                },
+                crate::declaration_candidate::DeclarationParameterHeader {
+                    name: Arc::from("value"),
+                    mode: crate::declaration_candidate::DeclarationParameterMode::Value,
+                    is_comptime: true,
+                    is_type_parameter: false,
+                },
+            ]);
+        DurableComptimeCallableAdmission {
+            candidate: crate::revisioned_query_database::declaration_candidate_for_stable_key(&key)
+                .unwrap(),
+            identity: crate::semantic_query_nucleus::DeclarationIdentityProjection {
+                key,
+                is_public: true,
+            },
+            configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                target: rue_target::Target::X86_64Linux,
+                preview_features: crate::StablePreviewFeatures::new(
+                    &crate::PreviewFeatures::default(),
+                ),
+            },
+            parameters,
+            result: DurableType::GenericParameter(0),
+            shell_parameters,
+        }
+    }
+
+    fn binding() -> DurableComptimeBinding {
+        let admitted = DurableComptimeAdmittedCall::new(
+            DurableComptimeCallToken::new(0, 0),
+            binding_admission(),
+        );
+        DurableComptimeBinding::new(&admitted)
+    }
+
     #[test]
     fn scalar_constructors_preserve_the_existing_durable_forms() {
         assert_eq!(
@@ -3683,7 +4102,7 @@ mod tests {
 
     #[test]
     fn incremental_binding_preserves_type_then_value_order_and_substitution() {
-        let mut binding = DurableComptimeBinding::default();
+        let mut binding = binding();
         bind_durable_comptime_argument(
             &mut binding,
             "T",
@@ -3703,19 +4122,22 @@ mod tests {
             false,
         )
         .unwrap();
-        let bound = binding.finish(DurableType::GenericParameter(0));
+        let bound = binding.finish();
         assert_eq!(bound.expected_result, DurableType::I16);
-        let (types, values) = bound.into_query_parts();
-        assert_eq!(types, vec![(Arc::from("T"), DurableType::I16)]);
+        let query = bound.query_view();
         assert_eq!(
-            values,
-            vec![(Arc::from("value"), DurableConstValue::Integer(12))]
+            query.type_arguments(),
+            &[(Arc::from("T"), DurableType::I16)]
+        );
+        assert_eq!(
+            query.value_arguments(),
+            &[(Arc::from("value"), DurableConstValue::Integer(12))]
         );
     }
 
     #[test]
     fn incremental_binding_preserves_early_type_and_range_failures() {
-        let mut mismatch = DurableComptimeBinding::default();
+        let mut mismatch = binding();
         let failure = bind_durable_comptime_argument(
             &mut mismatch,
             "value",
@@ -3732,7 +4154,7 @@ mod tests {
             other => panic!("unexpected binding failure: {other:?}"),
         }
 
-        let mut range = DurableComptimeBinding::default();
+        let mut range = binding();
         let failure = bind_durable_comptime_argument(
             &mut range,
             "value",
@@ -3757,7 +4179,7 @@ mod tests {
 
     #[test]
     fn incremental_binding_requires_direct_unit_for_type_arguments() {
-        let mut direct = DurableComptimeBinding::default();
+        let mut direct = binding();
         bind_durable_comptime_argument(
             &mut direct,
             "T",
@@ -3766,15 +4188,13 @@ mod tests {
             true,
         )
         .unwrap();
+        let bound = direct.finish();
         assert_eq!(
-            direct
-                .finish(DurableType::ComptimeType)
-                .into_query_parts()
-                .0,
-            vec![(Arc::from("T"), DurableType::Unit)]
+            bound.query_view().type_arguments(),
+            &[(Arc::from("T"), DurableType::Unit)]
         );
 
-        let mut computed = DurableComptimeBinding::default();
+        let mut computed = binding();
         let failure = bind_durable_comptime_argument(
             &mut computed,
             "T",
@@ -4078,8 +4498,8 @@ mod effect_lifecycle_tests {
                 .unwrap();
         let mut session =
             DurableComptimeSession::new(parent.clone(), parent_declaration.clone()).unwrap();
-        assert_eq!(session.next_call_ordinal(), 0);
-        assert_eq!(session.next_call_ordinal(), 1);
+        assert_eq!(session.reserve_bound_expression_call().ordinal(), 0);
+        assert_eq!(session.reserve_bound_expression_call().ordinal(), 1);
 
         let mut ticket = session.lifecycle_mut().prepare(context(0)).unwrap();
         session.lifecycle_mut().enter(&ticket).unwrap();
@@ -4089,7 +4509,7 @@ mod effect_lifecycle_tests {
             .unwrap();
 
         let mut sibling = DurableComptimeSession::new(parent, parent_declaration).unwrap();
-        assert_eq!(sibling.next_call_ordinal(), 0);
+        assert_eq!(sibling.reserve_bound_expression_call().ordinal(), 0);
     }
 
     #[test]
@@ -5997,7 +6417,7 @@ mod effect_lifecycle_tests {
 #[cfg(test)]
 mod structured_type_adapter_tests {
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::convert::Infallible;
 
     fn assert_frame_domains<
@@ -6475,8 +6895,11 @@ mod structured_type_adapter_tests {
         DurableComptimeSession::new(producer, declaration).unwrap()
     }
 
-    fn bound_call(value: Option<i128>, result: DurableType) -> DurableComptimeBoundCall {
-        let mut binding = DurableComptimeBinding::default();
+    fn bound_call(
+        admitted: &DurableComptimeAdmittedCall,
+        value: Option<i128>,
+    ) -> DurableComptimeBoundCall {
+        let mut binding = DurableComptimeBinding::new(admitted);
         if let Some(value) = value {
             bind_durable_comptime_argument(
                 &mut binding,
@@ -6511,7 +6934,780 @@ mod structured_type_adapter_tests {
             )
             .unwrap();
         }
-        binding.finish(result)
+        binding.finish()
+    }
+
+    fn test_admitted(
+        admission: DurableComptimeCallableAdmission,
+        ordinal: u32,
+    ) -> DurableComptimeAdmittedCall {
+        DurableComptimeAdmittedCall::new(DurableComptimeCallToken::new(0, ordinal), admission)
+    }
+
+    fn prepare_call(
+        session: &mut DurableComptimeSession,
+        ordinal: u32,
+        admission: DurableComptimeCallableAdmission,
+        value: Option<i128>,
+    ) -> DurableComptimePendingCall {
+        let admitted = admitted_call(session, ordinal, admission);
+        let bound = bound_call(&admitted, value);
+        session
+            .prepare_bound_expression_call(admitted, bound)
+            .unwrap()
+    }
+
+    fn admitted_call(
+        session: &mut DurableComptimeSession,
+        ordinal: u32,
+        admission: DurableComptimeCallableAdmission,
+    ) -> DurableComptimeAdmittedCall {
+        while session.next_call < ordinal {
+            let _ = session.reserve_bound_expression_call();
+        }
+        let reservation = session.reserve_bound_expression_call();
+        session
+            .admit_bound_expression_call(reservation, admission)
+            .unwrap()
+    }
+
+    struct PreparedProbeAuthority {
+        calls: Cell<usize>,
+        expected: RefCell<
+            Vec<(
+                Vec<(Arc<str>, DurableType)>,
+                Vec<(Arc<str>, DurableConstValue)>,
+            )>,
+        >,
+        lookups: RefCell<Vec<ForeignComptimeCallLookup>>,
+        abort: Cell<bool>,
+    }
+
+    impl DurableComptimeForeignCallAuthority for PreparedProbeAuthority {
+        fn probe_comptime_call(
+            &self,
+            _producer: &crate::StableDefinitionKey,
+            type_arguments: &[(Arc<str>, DurableType)],
+            value_arguments: &[(Arc<str>, DurableConstValue)],
+        ) -> Result<ForeignComptimeCallLookup, QueryAbort> {
+            self.calls.set(self.calls.get() + 1);
+            if self.abort.get() {
+                return Err(QueryAbort::Canceled);
+            }
+            let (expected_types, expected_values) = self.expected.borrow_mut().remove(0);
+            assert_eq!(type_arguments, expected_types.as_slice());
+            assert_eq!(value_arguments, expected_values.as_slice());
+            Ok(self.lookups.borrow_mut().remove(0))
+        }
+    }
+
+    fn prepared_admission(
+        core: &crate::body_query::OwnedComptimeProgramCore,
+    ) -> DurableComptimeCallableAdmission {
+        DurableComptimeCallableAdmission {
+            candidate: core.plan.candidate.clone(),
+            identity: crate::semantic_query_nucleus::DeclarationIdentityProjection {
+                key: core.plan.key.declaration.clone(),
+                is_public: true,
+            },
+            configuration: core.plan.key.configuration.clone(),
+            parameters: Arc::from([
+                crate::durable_semantics::DurableSemanticParameter {
+                    name: Arc::from("T"),
+                    ty: DurableType::ComptimeType,
+                    mode: crate::durable_semantics::DurableParameterMode::Value,
+                    is_comptime: true,
+                },
+                crate::durable_semantics::DurableSemanticParameter {
+                    name: Arc::from("x"),
+                    ty: DurableType::I32,
+                    mode: crate::durable_semantics::DurableParameterMode::Value,
+                    is_comptime: true,
+                },
+            ]),
+            result: DurableType::I32,
+            shell_parameters: Arc::from([
+                crate::declaration_candidate::DeclarationParameterHeader {
+                    name: Arc::from("T"),
+                    mode: crate::declaration_candidate::DeclarationParameterMode::Value,
+                    is_comptime: true,
+                    is_type_parameter: true,
+                },
+                crate::declaration_candidate::DeclarationParameterHeader {
+                    name: Arc::from("x"),
+                    mode: crate::declaration_candidate::DeclarationParameterMode::Value,
+                    is_comptime: true,
+                    is_type_parameter: false,
+                },
+            ]),
+        }
+    }
+
+    fn ordered_admission(
+        core: &crate::body_query::OwnedComptimeProgramCore,
+    ) -> DurableComptimeCallableAdmission {
+        let mut admission = prepared_admission(core);
+        admission.parameters = Arc::from([
+            crate::durable_semantics::DurableSemanticParameter {
+                name: Arc::from("T0"),
+                ty: DurableType::ComptimeType,
+                mode: crate::durable_semantics::DurableParameterMode::Value,
+                is_comptime: true,
+            },
+            crate::durable_semantics::DurableSemanticParameter {
+                name: Arc::from("T1"),
+                ty: DurableType::ComptimeType,
+                mode: crate::durable_semantics::DurableParameterMode::Value,
+                is_comptime: true,
+            },
+            crate::durable_semantics::DurableSemanticParameter {
+                name: Arc::from("x0"),
+                ty: DurableType::I32,
+                mode: crate::durable_semantics::DurableParameterMode::Value,
+                is_comptime: true,
+            },
+            crate::durable_semantics::DurableSemanticParameter {
+                name: Arc::from("x1"),
+                ty: DurableType::I64,
+                mode: crate::durable_semantics::DurableParameterMode::Value,
+                is_comptime: true,
+            },
+        ]);
+        admission.shell_parameters = Arc::from([
+            crate::declaration_candidate::DeclarationParameterHeader {
+                name: Arc::from("T0"),
+                mode: crate::declaration_candidate::DeclarationParameterMode::Value,
+                is_comptime: true,
+                is_type_parameter: true,
+            },
+            crate::declaration_candidate::DeclarationParameterHeader {
+                name: Arc::from("T1"),
+                mode: crate::declaration_candidate::DeclarationParameterMode::Value,
+                is_comptime: true,
+                is_type_parameter: true,
+            },
+            crate::declaration_candidate::DeclarationParameterHeader {
+                name: Arc::from("x0"),
+                mode: crate::declaration_candidate::DeclarationParameterMode::Value,
+                is_comptime: true,
+                is_type_parameter: false,
+            },
+            crate::declaration_candidate::DeclarationParameterHeader {
+                name: Arc::from("x1"),
+                mode: crate::declaration_candidate::DeclarationParameterMode::Value,
+                is_comptime: true,
+                is_type_parameter: false,
+            },
+        ]);
+        admission
+    }
+
+    fn ordered_bound_call(
+        admitted: &DurableComptimeAdmittedCall,
+        reverse_types: bool,
+        reverse_values: bool,
+    ) -> DurableComptimeBoundCall {
+        let mut binding = DurableComptimeBinding::new(admitted);
+        let types = [("T0", DurableType::I32), ("T1", DurableType::I64)];
+        let values = [
+            ("x0", DurableConstValue::Integer(10), DurableType::I32),
+            ("x1", DurableConstValue::Integer(20), DurableType::I64),
+        ];
+        let type_order: Vec<_> = if reverse_types {
+            types.into_iter().rev().collect()
+        } else {
+            types.into_iter().collect()
+        };
+        for (name, ty) in type_order {
+            bind_durable_comptime_argument(
+                &mut binding,
+                name,
+                &crate::durable_semantics::DurableSemanticParameter {
+                    name: Arc::from(name),
+                    ty: DurableType::ComptimeType,
+                    mode: crate::durable_semantics::DurableParameterMode::Value,
+                    is_comptime: true,
+                },
+                TypedSemanticConst {
+                    value: DurableConstValue::Type(ty),
+                    ty: Some(DurableType::ComptimeType),
+                },
+                false,
+            )
+            .unwrap();
+        }
+        let value_order: Vec<_> = if reverse_values {
+            values.into_iter().rev().collect()
+        } else {
+            values.into_iter().collect()
+        };
+        for (name, value, ty) in value_order {
+            bind_durable_comptime_argument(
+                &mut binding,
+                name,
+                &crate::durable_semantics::DurableSemanticParameter {
+                    name: Arc::from(name),
+                    ty: ty.clone(),
+                    mode: crate::durable_semantics::DurableParameterMode::Value,
+                    is_comptime: true,
+                },
+                TypedSemanticConst {
+                    value,
+                    ty: Some(ty),
+                },
+                false,
+            )
+            .unwrap();
+        }
+        binding.finish()
+    }
+
+    fn prepared_authority(
+        expected_types: Vec<(Arc<str>, DurableType)>,
+        expected_values: Vec<(Arc<str>, DurableConstValue)>,
+        lookup: ForeignComptimeCallLookup,
+    ) -> PreparedProbeAuthority {
+        PreparedProbeAuthority {
+            calls: Cell::new(0),
+            expected: RefCell::new(vec![(expected_types, expected_values)]),
+            lookups: RefCell::new(vec![lookup]),
+            abort: Cell::new(false),
+        }
+    }
+
+    fn prepared_ready_projection(
+        ordinal: u32,
+    ) -> crate::semantic_query_nucleus::ComptimeCallProjection {
+        crate::semantic_query_nucleus::ComptimeCallProjection {
+            result: crate::semantic_query_nucleus::ComptimeCallResultProjection::Value(
+                DurableConstValue::Integer(ordinal.into()),
+            ),
+            anonymous_nominals: Arc::from([]),
+            dependencies: Arc::from([]),
+            deferred_ownership: Arc::from([prepared_gate(ordinal)]),
+        }
+    }
+
+    fn prepared_gate(ordinal: u32) -> DeferredOwnershipGate {
+        DeferredOwnershipGate {
+            kind: crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireDroppable,
+            ty: DurableType::I32,
+            source: Arc::new(crate::semantic_query_nucleus::DeferredOwnershipGateSource {
+                declaration:
+                    crate::revisioned_query_database::declaration_candidate_for_stable_key(
+                        &prepared_definition("child"),
+                    )
+                    .unwrap(),
+                start: ordinal,
+                end: ordinal + 1,
+            }),
+            application: None,
+        }
+    }
+
+    fn prepared_definition(name: &str) -> crate::StableDefinitionKey {
+        crate::StableDefinitionKey::from_stable_parts(
+            ModuleId::from_logical_path("effects.rue").unwrap(),
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            Arc::from(name),
+            None,
+        )
+    }
+
+    #[test]
+    fn prepared_call_probe_is_one_shot_and_preserves_ready_ordinal_and_type() {
+        let core = callable_program("prepared-ready.rue");
+        let types = vec![(Arc::from("T"), DurableType::I32)];
+        let values = vec![(Arc::from("x"), DurableConstValue::Integer(7))];
+        let mut session = session();
+        let admission = prepared_admission(&core);
+        let pending = prepare_call(&mut session, 17, admission.clone(), Some(7));
+        let mut authority = prepared_authority(
+            types,
+            values,
+            ForeignComptimeCallLookup::Ready(prepared_ready_projection(17)),
+        );
+        let probed = DurableComptimeServices::new(&mut authority)
+            .probe_prepared_call(pending)
+            .unwrap();
+        let prepared = session
+            .consume_probed_call(probed, rue_span::Span::new(3, 4))
+            .unwrap();
+        assert!(matches!(
+            prepared,
+            DurableComptimePreparedCall::Ready {
+                result: crate::semantic_query_nucleus::ComptimeCallResultProjection::Value(
+                    DurableConstValue::Integer(17)
+                ),
+                expected_result: DurableType::I32,
+            }
+        ));
+        assert_eq!(authority.calls.get(), 1);
+        let effects = session.drain_root_effects().unwrap();
+        assert_eq!(
+            effects
+                .deferred_ownership()
+                .map(|gate| gate.application.as_ref().unwrap().call_ordinal)
+                .collect::<Vec<_>>(),
+            vec![17]
+        );
+    }
+
+    #[test]
+    fn prepared_call_admission_keeps_frame_and_ticket_from_one_bound_payload() {
+        let core = callable_program("prepared-enter.rue");
+        let mut session = session();
+        let admission = ordered_admission(&core);
+        let admitted_call = admitted_call(&mut session, 21, admission.clone());
+        let bound = ordered_bound_call(&admitted_call, false, false);
+        let pending = session
+            .prepare_bound_expression_call(admitted_call, bound)
+            .unwrap();
+        let admitted = crate::body_query::OwnedForeignComptimeProgram {
+            core: core.clone(),
+            seed: crate::body_query::ForeignComptimeCallSeed {
+                type_arguments: Arc::from([
+                    (Arc::from("T0"), DurableType::I32),
+                    (Arc::from("T1"), DurableType::I64),
+                ]),
+                value_arguments: Arc::from([
+                    (Arc::from("x0"), DurableConstValue::Integer(10)),
+                    (Arc::from("x1"), DurableConstValue::Integer(20)),
+                ]),
+            },
+        };
+        let mut authority = prepared_authority(
+            vec![
+                (Arc::from("T0"), DurableType::I32),
+                (Arc::from("T1"), DurableType::I64),
+            ],
+            vec![
+                (Arc::from("x0"), DurableConstValue::Integer(10)),
+                (Arc::from("x1"), DurableConstValue::Integer(20)),
+            ],
+            ForeignComptimeCallLookup::Admitted(admitted),
+        );
+        let probed = DurableComptimeServices::new(&mut authority)
+            .probe_prepared_call(pending)
+            .unwrap();
+        let prepared = session
+            .consume_probed_call(probed, rue_span::Span::new(11, 15))
+            .unwrap();
+        let DurableComptimePreparedCall::Enter { frame, mut ticket } = prepared else {
+            panic!("admitted prepared call must produce an AIR frame");
+        };
+        assert_eq!(frame.program, core.plan.key);
+        assert_eq!(frame.span, rue_span::Span::new(11, 15));
+        assert_eq!(
+            frame.expected_result,
+            Some(DurableComptimeType(DurableType::I32))
+        );
+        assert_eq!(
+            ticket.canonical_function_producer(&core.plan.key).unwrap(),
+            canonical_specialized_function_producer(
+                &core.plan.key.declaration,
+                &[
+                    (Arc::from("T0"), DurableType::I32),
+                    (Arc::from("T1"), DurableType::I64),
+                ],
+                &[
+                    (Arc::from("x0"), DurableConstValue::Integer(10)),
+                    (Arc::from("x1"), DurableConstValue::Integer(20)),
+                ],
+            )
+            .unwrap()
+        );
+        let issued = ticket.canonical_function_producer(&core.plan.key).unwrap();
+        let type_reversed = canonical_specialized_function_producer(
+            &core.plan.key.declaration,
+            &[
+                (Arc::from("T1"), DurableType::I64),
+                (Arc::from("T0"), DurableType::I32),
+            ],
+            &[
+                (Arc::from("x0"), DurableConstValue::Integer(10)),
+                (Arc::from("x1"), DurableConstValue::Integer(20)),
+            ],
+        )
+        .unwrap();
+        let value_reversed = canonical_specialized_function_producer(
+            &core.plan.key.declaration,
+            &[
+                (Arc::from("T0"), DurableType::I32),
+                (Arc::from("T1"), DurableType::I64),
+            ],
+            &[
+                (Arc::from("x1"), DurableConstValue::Integer(20)),
+                (Arc::from("x0"), DurableConstValue::Integer(10)),
+            ],
+        )
+        .unwrap();
+        assert_ne!(
+            issued, type_reversed,
+            "type stream order affects ticket identity"
+        );
+        assert_ne!(
+            issued, value_reversed,
+            "value stream order affects ticket identity"
+        );
+        assert_eq!(
+            frame.type_bindings,
+            AHashMap::from([
+                (
+                    DurableComptimeName::from("T0"),
+                    DurableComptimeType(DurableType::I32),
+                ),
+                (
+                    DurableComptimeName::from("T1"),
+                    DurableComptimeType(DurableType::I64),
+                ),
+            ])
+        );
+        assert_eq!(
+            frame.value_bindings,
+            AHashMap::from([
+                (
+                    DurableComptimeName::from("x0"),
+                    EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                        DurableConstValue::Integer(10),
+                        DurableType::I32,
+                    )),
+                ),
+                (
+                    DurableComptimeName::from("x1"),
+                    EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                        DurableConstValue::Integer(20),
+                        DurableType::I64,
+                    )),
+                ),
+            ])
+        );
+        assert!(session.lifecycle.active.is_empty());
+        session.lifecycle.enter(&ticket).unwrap();
+        session
+            .lifecycle
+            .finish(&mut ticket, &rue_air::ComptimeOutcome::<(), ()>::Known(()))
+            .unwrap();
+        assert!(session.drain_root_effects().unwrap().is_empty());
+        assert_eq!(authority.calls.get(), 1);
+    }
+
+    #[test]
+    fn prepared_call_rejects_cross_paired_admitted_authority_before_registration() {
+        let admitted_core = callable_program("prepared-admitted.rue");
+        let pending_core = callable_program("prepared-pending.rue");
+        let admitted = crate::body_query::OwnedForeignComptimeProgram {
+            core: admitted_core.clone(),
+            seed: crate::body_query::ForeignComptimeCallSeed {
+                type_arguments: Arc::from([(Arc::from("T"), DurableType::I32)]),
+                value_arguments: Arc::from([(Arc::from("x"), DurableConstValue::Integer(9))]),
+            },
+        };
+        let mut session = session();
+        let admission = prepared_admission(&pending_core);
+        let pending = prepare_call(&mut session, 22, admission.clone(), Some(9));
+        let mut authority = prepared_authority(
+            vec![(Arc::from("T"), DurableType::I32)],
+            vec![(Arc::from("x"), DurableConstValue::Integer(9))],
+            ForeignComptimeCallLookup::Admitted(admitted),
+        );
+        let probed = DurableComptimeServices::new(&mut authority)
+            .probe_prepared_call(pending)
+            .unwrap();
+        assert!(matches!(
+            session.consume_probed_call(probed, rue_span::Span::new(22, 24)),
+            Err(DurableComptimeForeignCallError::FrameAdmission(
+                DurableComptimeForeignFrameAdmissionError::RegistryMismatch
+            ))
+        ));
+        assert!(
+            session
+                .registered_program(&admitted_core.plan.key)
+                .is_none()
+        );
+        assert!(session.lifecycle.active.is_empty());
+
+        // Even identical semantic admissions receive distinct call tokens;
+        // crossing sibling bound payloads is rejected before an edge exists.
+        let first = admitted_call(&mut session, 27, admission.clone());
+        let second = admitted_call(&mut session, 28, admission);
+        let second_bound = bound_call(&second, Some(2));
+        assert!(matches!(
+            session.prepare_bound_expression_call(first, second_bound),
+            Err(DurableComptimeLifecycleError::BindingMismatch)
+        ));
+        assert!(session.lifecycle.active.is_empty());
+        assert!(session.drain_root_effects().unwrap().is_empty());
+        assert_eq!(authority.calls.get(), 1);
+    }
+
+    #[test]
+    fn prepared_call_rejects_crossed_admission_contract_before_edge_issuance() {
+        let core = callable_program("prepared-contract.rue");
+        let admission = prepared_admission(&core);
+        let mut session = session();
+
+        let mut wrong_result = admission.clone();
+        wrong_result.result = DurableType::I64;
+        assert!(matches!(
+            {
+                let admitted = admitted_call(&mut session, 23, admission.clone());
+                let wrong = admitted_call(&mut session, 25, wrong_result.clone());
+                session.prepare_bound_expression_call(admitted, bound_call(&wrong, Some(1)))
+            },
+            Err(DurableComptimeLifecycleError::BindingMismatch)
+        ));
+        assert!(session.lifecycle.active.is_empty());
+
+        let mut wrong_configuration = admission.clone();
+        wrong_configuration.configuration.target = rue_target::Target::Aarch64Linux;
+        assert!(matches!(
+            {
+                let admitted = admitted_call(&mut session, 24, admission);
+                let wrong = admitted_call(&mut session, 26, wrong_configuration);
+                session.prepare_bound_expression_call(admitted, bound_call(&wrong, Some(1)))
+            },
+            Err(DurableComptimeLifecycleError::BindingMismatch)
+        ));
+        assert!(session.lifecycle.active.is_empty());
+        assert!(session.drain_root_effects().unwrap().is_empty());
+    }
+
+    #[test]
+    fn prepared_call_preserves_two_ordered_type_and_value_streams() {
+        let core = callable_program("prepared-ordered-streams.rue");
+        let admission = ordered_admission(&core);
+        let mut session = session();
+        let first = admitted_call(&mut session, 0, admission.clone());
+        let second = admitted_call(&mut session, 1, admission);
+        let first_bound = ordered_bound_call(&first, false, false);
+        let swapped_bound = ordered_bound_call(&second, true, true);
+        let first_view = first_bound.query_view();
+        let swapped_view = swapped_bound.query_view();
+        assert_ne!(
+            first_view.type_arguments(),
+            swapped_view.type_arguments(),
+            "type argument order is part of the query"
+        );
+        assert_ne!(
+            first_view.value_arguments(),
+            swapped_view.value_arguments(),
+            "value argument order is part of the query"
+        );
+        assert!(matches!(
+            session.prepare_bound_expression_call(first, swapped_bound),
+            Err(DurableComptimeLifecycleError::BindingMismatch)
+        ));
+        assert!(session.lifecycle.active.is_empty());
+    }
+
+    #[test]
+    fn prepared_call_siblings_keep_original_ordinals_and_recover_after_abort() {
+        let core = callable_program("prepared-siblings.rue");
+        let admission = prepared_admission(&core);
+        let mut session = session();
+        let mut authority = prepared_authority(
+            vec![(Arc::from("T"), DurableType::I32)],
+            vec![(Arc::from("x"), DurableConstValue::Integer(1))],
+            ForeignComptimeCallLookup::NotReady,
+        );
+        authority.abort.set(true);
+        let aborted = prepare_call(&mut session, 31, admission.clone(), Some(1));
+        assert!(matches!(
+            DurableComptimeServices::new(&mut authority).probe_prepared_call(aborted),
+            Err(QueryAbort::Canceled)
+        ));
+        authority.abort.set(false);
+        authority.expected.borrow_mut().clear();
+        authority.expected.borrow_mut().push((
+            vec![(Arc::from("T"), DurableType::I32)],
+            vec![(Arc::from("x"), DurableConstValue::Integer(2))],
+        ));
+        authority.lookups.borrow_mut().clear();
+        authority
+            .lookups
+            .borrow_mut()
+            .push(ForeignComptimeCallLookup::Ready(prepared_ready_projection(
+                32,
+            )));
+        let sibling = prepare_call(&mut session, 32, admission.clone(), Some(2));
+        let sibling = DurableComptimeServices::new(&mut authority)
+            .probe_prepared_call(sibling)
+            .unwrap();
+        assert!(matches!(
+            session.consume_probed_call(sibling, rue_span::Span::new(32, 33)),
+            Ok(DurableComptimePreparedCall::Ready {
+                result: crate::semantic_query_nucleus::ComptimeCallResultProjection::Value(
+                    DurableConstValue::Integer(32)
+                ),
+                ..
+            })
+        ));
+        assert_eq!(authority.calls.get(), 2);
+        let effects = session.drain_root_effects().unwrap();
+        assert_eq!(
+            effects
+                .deferred_ownership()
+                .map(|gate| gate.application.as_ref().unwrap().call_ordinal)
+                .collect::<Vec<_>>(),
+            vec![32]
+        );
+
+        authority.expected.borrow_mut().extend([
+            (
+                vec![(Arc::from("T"), DurableType::I32)],
+                vec![(Arc::from("x"), DurableConstValue::Integer(3))],
+            ),
+            (
+                vec![(Arc::from("T"), DurableType::I32)],
+                vec![(Arc::from("x"), DurableConstValue::Integer(4))],
+            ),
+        ]);
+        authority.lookups.borrow_mut().extend([
+            ForeignComptimeCallLookup::Ready(prepared_ready_projection(33)),
+            ForeignComptimeCallLookup::Ready(prepared_ready_projection(34)),
+        ]);
+        let first = prepare_call(&mut session, 33, admission.clone(), Some(3));
+        let second = prepare_call(&mut session, 34, admission.clone(), Some(4));
+        let services = DurableComptimeServices::new(&mut authority);
+        let first = services.probe_prepared_call(first).unwrap();
+        let second = services.probe_prepared_call(second).unwrap();
+        drop(services);
+        assert!(matches!(
+            session.consume_probed_call(second, rue_span::Span::new(34, 35)),
+            Ok(DurableComptimePreparedCall::Ready {
+                result: crate::semantic_query_nucleus::ComptimeCallResultProjection::Value(
+                    DurableConstValue::Integer(34)
+                ),
+                ..
+            })
+        ));
+        assert!(matches!(
+            session.consume_probed_call(first, rue_span::Span::new(33, 34)),
+            Ok(DurableComptimePreparedCall::Ready {
+                result: crate::semantic_query_nucleus::ComptimeCallResultProjection::Value(
+                    DurableConstValue::Integer(33)
+                ),
+                ..
+            })
+        ));
+        let effects = session.drain_root_effects().unwrap();
+        assert_eq!(
+            effects
+                .deferred_ownership()
+                .map(|gate| gate.application.as_ref().unwrap().call_ordinal)
+                .collect::<Vec<_>>(),
+            vec![33, 34]
+        );
+    }
+
+    #[test]
+    fn prepared_call_not_ready_then_successful_sibling_uses_one_session() {
+        let core = callable_program("prepared-not-ready-sibling.rue");
+        let admission = prepared_admission(&core);
+        let mut session = session();
+        let mut authority = prepared_authority(
+            vec![(Arc::from("T"), DurableType::I32)],
+            vec![(Arc::from("x"), DurableConstValue::Integer(1))],
+            ForeignComptimeCallLookup::NotReady,
+        );
+        let not_ready = prepare_call(&mut session, 40, admission.clone(), Some(1));
+        let not_ready = DurableComptimeServices::new(&mut authority)
+            .probe_prepared_call(not_ready)
+            .unwrap();
+        assert!(matches!(
+            session.consume_probed_call(not_ready, rue_span::Span::new(40, 41)),
+            Ok(DurableComptimePreparedCall::NotReady)
+        ));
+
+        authority.expected.borrow_mut().push((
+            vec![(Arc::from("T"), DurableType::I32)],
+            vec![(Arc::from("x"), DurableConstValue::Integer(2))],
+        ));
+        authority
+            .lookups
+            .borrow_mut()
+            .push(ForeignComptimeCallLookup::Ready(prepared_ready_projection(
+                41,
+            )));
+        let sibling = prepare_call(&mut session, 41, admission, Some(2));
+        let sibling = DurableComptimeServices::new(&mut authority)
+            .probe_prepared_call(sibling)
+            .unwrap();
+        assert!(matches!(
+            session.consume_probed_call(sibling, rue_span::Span::new(41, 42)),
+            Ok(DurableComptimePreparedCall::Ready {
+                result: crate::semantic_query_nucleus::ComptimeCallResultProjection::Value(
+                    DurableConstValue::Integer(41)
+                ),
+                ..
+            })
+        ));
+        assert_eq!(authority.calls.get(), 2);
+        assert_eq!(
+            session
+                .drain_root_effects()
+                .unwrap()
+                .deferred_ownership()
+                .map(|gate| gate.application.as_ref().unwrap().call_ordinal)
+                .collect::<Vec<_>>(),
+            vec![41]
+        );
+    }
+
+    #[test]
+    fn prepared_call_terminals_are_consumed_without_retry_or_effects() {
+        let terminals = vec![
+            ForeignComptimeCallLookup::NotReady,
+            ForeignComptimeCallLookup::ReadyFailure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Shell(Arc::from("ready")),
+            ),
+            ForeignComptimeCallLookup::ReadyQueryFailure(rue_query::QueryFailure::new(
+                "query", "ready",
+            )),
+            ForeignComptimeCallLookup::AdmissionFailure(
+                crate::body_query::ComptimeProgramProjectionFailure::IdentityMismatch,
+            ),
+            ForeignComptimeCallLookup::UnexpectedReadyProjection,
+        ];
+        for lookup in terminals {
+            let core = callable_program("prepared-terminal.rue");
+            let mut session = session();
+            let admission = prepared_admission(&core);
+            let pending = prepare_call(&mut session, 29, admission.clone(), Some(1));
+            let mut authority = prepared_authority(
+                vec![(Arc::from("T"), DurableType::I32)],
+                vec![(Arc::from("x"), DurableConstValue::Integer(1))],
+                lookup,
+            );
+            let probed = DurableComptimeServices::new(&mut authority)
+                .probe_prepared_call(pending)
+                .unwrap();
+            assert!(matches!(
+                session.consume_probed_call(probed, rue_span::Span::new(1, 2)),
+                Ok(DurableComptimePreparedCall::NotReady) | Err(_)
+            ));
+            assert_eq!(authority.calls.get(), 1);
+            assert!(session.drain_root_effects().unwrap().is_empty());
+        }
+
+        let core = callable_program("prepared-abort.rue");
+        let mut session = session();
+        let admission = prepared_admission(&core);
+        let pending = prepare_call(&mut session, 30, admission.clone(), Some(1));
+        let mut authority = prepared_authority(
+            vec![(Arc::from("T"), DurableType::I32)],
+            vec![(Arc::from("x"), DurableConstValue::Integer(1))],
+            ForeignComptimeCallLookup::NotReady,
+        );
+        authority.abort.set(true);
+        assert!(matches!(
+            DurableComptimeServices::new(&mut authority).probe_prepared_call(pending),
+            Err(QueryAbort::Canceled)
+        ));
+        assert_eq!(authority.calls.get(), 1);
+        assert!(session.drain_root_effects().unwrap().is_empty());
     }
 
     #[test]
@@ -6977,12 +8173,14 @@ mod structured_type_adapter_tests {
             .lifecycle
             .ticket_from_admitted_edge(edge, &admitted)
             .unwrap();
+        let admission = prepared_admission(&core);
+        let bound_admitted = test_admitted(admission, 7);
         let (frame, _ticket) = session
             .admit_foreign_frame(
                 admitted,
                 Box::new(ticket),
                 rue_span::Span::new(17, 23),
-                bound_call(Some(9), DurableType::I32),
+                bound_call(&bound_admitted, Some(9)),
             )
             .unwrap();
         assert_eq!(frame.program, core.plan.key);
@@ -7027,12 +8225,14 @@ mod structured_type_adapter_tests {
             .lifecycle
             .ticket_from_admitted_edge(invalid_edge, &invalid_admitted)
             .unwrap();
+        let invalid_admission = prepared_admission(&invalid_core);
+        let invalid_bound_admitted = test_admitted(invalid_admission, 8);
         assert!(matches!(
             session.admit_foreign_frame(
                 invalid_admitted,
                 Box::new(invalid_ticket),
                 rue_span::Span::new(24, 27),
-                bound_call(Some(10), DurableType::I32),
+                bound_call(&invalid_bound_admitted, Some(10)),
             ),
             Err(DurableComptimeForeignFrameAdmissionError::TicketMismatch)
         ));
@@ -7057,12 +8257,14 @@ mod structured_type_adapter_tests {
             .lifecycle
             .ticket_from_admitted_edge(edge, &equivalent_admitted)
             .unwrap();
+        let equivalent_admission = prepared_admission(&equivalent_admitted.core);
+        let equivalent_bound_admitted = test_admitted(equivalent_admission, 8);
         let (second_frame, _) = session
             .admit_foreign_frame(
                 equivalent_admitted,
                 Box::new(ticket),
                 rue_span::Span::new(24, 27),
-                bound_call(Some(10), DurableType::I32),
+                bound_call(&equivalent_bound_admitted, Some(10)),
             )
             .unwrap();
         assert_eq!(second_frame.program, core.plan.key);
@@ -7118,12 +8320,14 @@ mod structured_type_adapter_tests {
             .lifecycle
             .ticket_from_admitted_edge(edge, &ticket_admitted)
             .unwrap();
+        let ticket_admission = prepared_admission(&ticket_admitted.core);
+        let ticket_bound_admitted = test_admitted(ticket_admission, 0);
         assert!(matches!(
             session.admit_foreign_frame(
                 admitted,
                 Box::new(ticket),
                 rue_span::Span::new(0, 1),
-                bound_call(None, DurableType::I32),
+                bound_call(&ticket_bound_admitted, None),
             ),
             Err(DurableComptimeForeignFrameAdmissionError::NotCallable)
         ));
