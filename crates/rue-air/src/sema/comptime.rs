@@ -9171,6 +9171,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     .host
                     .rir_type_named_symbol(&self.program_key(), type_name)
                 {
+                    // A runtime local shadows every outer type substitution
+                    // and global type name. Only a local carrying a type value
+                    // is eligible for comptime use here.
+                    if let Some(local) = env.locals.get(&type_symbol) {
+                        if let Some(ty) = local.as_type() {
+                            return ComptimeOutcome::Known(H::Value::type_value(ty));
+                        }
+                        return ComptimeOutcome::RuntimeDependent;
+                    }
                     if let Some(ty) = env.type_subst.get(&type_symbol) {
                         return ComptimeOutcome::Known(H::Value::type_value(ty.clone()));
                     }
