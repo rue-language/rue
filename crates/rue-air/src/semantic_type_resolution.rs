@@ -283,6 +283,20 @@ pub enum SemanticValueSyntax<'a> {
 pub trait SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>:
     SemanticModulePathProvider<S, M, A>
 {
+    /// Run one structured-type poll with the exact substitution scope owned
+    /// by its continuation. Ordinary providers already carry all relevant
+    /// state in their own value, so the default keeps their behavior intact.
+    /// Providers with ambient substitution maps may install and restore this
+    /// scope around the canonical poll.
+    fn with_comptime_substitutions<R>(
+        &mut self,
+        _type_substitutions: &[(N, T)],
+        _value_substitutions: &[(N, V)],
+        operation: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        operation(self)
+    }
+
     fn substituted_type(
         &mut self,
         scope: &S,
@@ -1118,8 +1132,12 @@ impl<'a, P, C, N, A, T, V> ComptimeStructuredTypeRequest<'a, P, C, N, A, T, V> {
 /// `RirTypeSyntaxRef` from being interpreted against another program's local
 /// arena, even when the two programs happen to use colliding indices.
 pub struct ComptimeStructuredTypeJob<P, S, C, N, A, T, V, Sym, R> {
+    // These scopes travel with the consuming continuation. A resumed poll
+    // therefore cannot accidentally observe another call's ambient maps.
     authority: ComptimeStructuredTypeAuthority<P, S, Sym, R>,
     suspension: StructuredTypeSuspension<C, N, A, T, V>,
+    type_substitutions: Vec<(N, T)>,
+    value_substitutions: Vec<(N, V)>,
 }
 
 impl<P, S, C, N, A, T, V, Sym, R> ComptimeStructuredTypeJob<P, S, C, N, A, T, V, Sym, R>
@@ -1181,10 +1199,14 @@ where
     fn from_suspension(
         authority: ComptimeStructuredTypeAuthority<P, S, Sym, R>,
         suspension: StructuredTypeSuspension<C, N, A, T, V>,
+        type_substitutions: Vec<(N, T)>,
+        value_substitutions: Vec<(N, V)>,
     ) -> Self {
         Self {
             authority,
             suspension,
+            type_substitutions,
+            value_substitutions,
         }
     }
 
@@ -1194,6 +1216,8 @@ where
     pub fn begin<M, Q>(
         provider: &mut Q,
         authority: ComptimeStructuredTypeAuthority<P, S, Sym, R>,
+        type_substitutions: Vec<(N, T)>,
+        value_substitutions: Vec<(N, V)>,
     ) -> Result<
         ComptimeStructuredTypePoll<P, S, C, N, A, T, V, Sym, R>,
         SemanticTypeSyntaxError<Q::Abort, Q::Failure, A, N>,
@@ -1212,15 +1236,21 @@ where
             symbols,
             root,
         } = authority;
-        let poll = poll_structured_type_machine(
-            StructuredTypeMachine::<C, N, A, T, V>::new(root),
-            provider,
-            &root_scope,
-            &arena,
-            |symbol: &Sym| {
-                symbols
-                    .resolve_symbol(symbol)
-                    .expect("structured type authority was admitted with all symbols")
+        let poll = provider.with_comptime_substitutions(
+            &type_substitutions,
+            &value_substitutions,
+            |provider| {
+                poll_structured_type_machine(
+                    StructuredTypeMachine::<C, N, A, T, V>::new(root),
+                    provider,
+                    &root_scope,
+                    &arena,
+                    |symbol: &Sym| {
+                        symbols
+                            .resolve_symbol(symbol)
+                            .expect("structured type authority was admitted with all symbols")
+                    },
+                )
             },
         )?;
         Ok(match poll {
@@ -1231,6 +1261,8 @@ where
                         program, root_scope, arena, symbols, root,
                     ),
                     *suspension,
+                    type_substitutions,
+                    value_substitutions,
                 )))
             }
         })
@@ -1261,6 +1293,8 @@ where
         let Self {
             authority,
             suspension,
+            type_substitutions,
+            value_substitutions,
         } = self;
         let ComptimeStructuredTypeAuthority {
             program,
@@ -1269,16 +1303,22 @@ where
             symbols,
             root,
         } = authority;
-        let poll = suspension.resume(
-            provider,
-            &root_scope,
-            &arena,
-            |symbol: &Sym| {
-                symbols
-                    .resolve_symbol(symbol)
-                    .expect("structured type authority was admitted with all symbols")
+        let poll = provider.with_comptime_substitutions(
+            &type_substitutions,
+            &value_substitutions,
+            |provider| {
+                suspension.resume(
+                    provider,
+                    &root_scope,
+                    &arena,
+                    |symbol: &Sym| {
+                        symbols
+                            .resolve_symbol(symbol)
+                            .expect("structured type authority was admitted with all symbols")
+                    },
+                    reduced,
+                )
             },
-            reduced,
         )?;
         Ok(match poll {
             StructuredTypePoll::Ready(value) => ComptimeStructuredTypePoll::Ready(value),
@@ -1288,6 +1328,8 @@ where
                         program, root_scope, arena, symbols, root,
                     ),
                     *suspension,
+                    type_substitutions,
+                    value_substitutions,
                 )))
             }
         })
@@ -1899,6 +1941,9 @@ mod tests {
     struct Fixture {
         calls: Vec<String>,
         reduced_arguments: Vec<String>,
+        active_type_substitutions: BTreeMap<&'static str, &'static str>,
+        active_value_substitutions: BTreeMap<&'static str, i64>,
+        scope_observations: Vec<(Vec<(&'static str, &'static str)>, Vec<(&'static str, i64)>)>,
         bindings: BTreeMap<(&'static str, &'static str), Binding>,
         root_structs: BTreeMap<(&'static str, &'static str), Fact>,
         root_enums: BTreeMap<(&'static str, &'static str), Fact>,
@@ -1917,6 +1962,19 @@ mod tests {
         array_type_error: Option<SemanticProviderError<&'static str, &'static str>>,
         allow_qualified_paths: Option<bool>,
         allow_qualified_value_heads: Option<bool>,
+    }
+
+    struct FixtureScopeRestore<'a> {
+        fixture: &'a mut Fixture,
+        previous_types: BTreeMap<&'static str, &'static str>,
+        previous_values: BTreeMap<&'static str, i64>,
+    }
+
+    impl Drop for FixtureScopeRestore<'_> {
+        fn drop(&mut self) {
+            self.fixture.active_type_substitutions = std::mem::take(&mut self.previous_types);
+            self.fixture.active_value_substitutions = std::mem::take(&mut self.previous_values);
+        }
     }
 
     impl Fixture {
@@ -1967,13 +2025,39 @@ mod tests {
             i64,
         > for Fixture
     {
+        fn with_comptime_substitutions<R>(
+            &mut self,
+            type_substitutions: &[(&'static str, &'static str)],
+            value_substitutions: &[(&'static str, i64)],
+            operation: impl FnOnce(&mut Self) -> R,
+        ) -> R {
+            let previous_types = std::mem::replace(
+                &mut self.active_type_substitutions,
+                type_substitutions.iter().copied().collect(),
+            );
+            let previous_values = std::mem::replace(
+                &mut self.active_value_substitutions,
+                value_substitutions.iter().copied().collect(),
+            );
+            self.scope_observations
+                .push((type_substitutions.to_vec(), value_substitutions.to_vec()));
+            let restore = FixtureScopeRestore {
+                fixture: self,
+                previous_types,
+                previous_values,
+            };
+            let result = operation(restore.fixture);
+            drop(restore);
+            result
+        }
+
         fn substituted_type(
             &mut self,
             scope: &&'static str,
             name: &str,
         ) -> FixtureResult<Option<&'static str>> {
             self.call("substitution", scope, name);
-            Ok(None)
+            Ok(self.active_type_substitutions.get(name).copied())
         }
 
         fn primitive_type(&mut self, name: &str) -> FixtureResult<Option<&'static str>> {
@@ -2071,9 +2155,12 @@ mod tests {
             self.call("array_length", scope, &format!("{length:?}"));
             match length {
                 SemanticValueSyntax::Integer(value) => Ok(u64::try_from(value).ok()),
-                SemanticValueSyntax::Name(_) => {
-                    Err(SemanticProviderError::Failure("unknown length"))
-                }
+                SemanticValueSyntax::Name(name) => self
+                    .active_value_substitutions
+                    .get(name)
+                    .copied()
+                    .map(|value| u64::try_from(value).ok())
+                    .ok_or(SemanticProviderError::Failure("unknown length")),
             }
         }
 
@@ -3084,8 +3171,13 @@ mod tests {
             Arc::from(arena.symbols()),
             root,
         );
-        let poll =
-            ComptimeStructuredTypeJob::begin::<&'static str, _>(&mut fixture, authority).unwrap();
+        let poll = ComptimeStructuredTypeJob::begin::<&'static str, _>(
+            &mut fixture,
+            authority,
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
         let ComptimeStructuredTypePoll::Suspended(job) = poll else {
             panic!("constructor call must suspend before reduction");
         };
@@ -3116,14 +3208,269 @@ mod tests {
             Arc::from([Arc::<str>::from("Outer"), Arc::<str>::from("i32")]),
             root,
         );
-        let poll_b =
-            ComptimeStructuredTypeJob::begin::<&'static str, _>(&mut fixture_b, authority_b)
-                .unwrap();
+        let poll_b = ComptimeStructuredTypeJob::begin::<&'static str, _>(
+            &mut fixture_b,
+            authority_b,
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
         let ComptimeStructuredTypePoll::Suspended(job_b) = poll_b else {
             panic!("colliding program must suspend before reduction");
         };
         assert_eq!(job_b.program(), &"program-b");
         assert_eq!(job_b.request_view().program(), &"program-b");
+    }
+
+    #[test]
+    fn structured_jobs_restore_and_reinstall_their_owned_scopes_when_interleaved() {
+        let (arena, root) = structured_type("Outer(Inner(i32), T, [i32; N])");
+        let mut fixture = Fixture::default();
+        configure_nested_calls(&mut fixture);
+        fixture.constructors.insert(
+            ("app/main.rue", "Outer"),
+            head(
+                "outer-site",
+                true,
+                true,
+                vec![
+                    SemanticTypeConstructorParameter {
+                        name: "InnerT",
+                        is_comptime: true,
+                        is_type: true,
+                    },
+                    SemanticTypeConstructorParameter {
+                        name: "ScopedT",
+                        is_comptime: true,
+                        is_type: true,
+                    },
+                    SemanticTypeConstructorParameter {
+                        name: "ArrayT",
+                        is_comptime: true,
+                        is_type: true,
+                    },
+                ],
+            ),
+        );
+        let poll_a = ComptimeStructuredTypeJob::begin::<&'static str, _>(
+            &mut fixture,
+            ComptimeStructuredTypeAuthority::from_registered(
+                "program-a",
+                "app/main.rue",
+                arena.clone(),
+                Arc::from(arena.symbols()),
+                root,
+            ),
+            vec![("T", "scope-a")],
+            vec![("N", 11)],
+        )
+        .unwrap();
+        let ComptimeStructuredTypePoll::Suspended(job_a) = poll_a else {
+            panic!("first constructor call must suspend");
+        };
+        let poll_b = ComptimeStructuredTypeJob::begin::<&'static str, _>(
+            &mut fixture,
+            ComptimeStructuredTypeAuthority::from_registered(
+                "program-b",
+                "app/main.rue",
+                arena.clone(),
+                Arc::from(arena.symbols()),
+                root,
+            ),
+            vec![("T", "scope-b")],
+            vec![("N", 22)],
+        )
+        .unwrap();
+        let ComptimeStructuredTypePoll::Suspended(job_b) = poll_b else {
+            panic!("second constructor call must suspend");
+        };
+
+        // A caller may have unrelated ambient state while a continuation is
+        // polled; the job's exact scope temporarily wins and is then restored.
+        fixture
+            .active_type_substitutions
+            .insert("ambient", "ambient-type");
+        fixture.active_value_substitutions.insert("ambient", 99);
+        let next_a = job_a
+            .resume::<&'static str, _>(
+                &mut fixture,
+                Ok(Some(SemanticComptimeCallResult::Type("inner-a"))),
+            )
+            .unwrap();
+        let ComptimeStructuredTypePoll::Suspended(outer_a) = next_a else {
+            panic!("first outer call must suspend after consuming its captured scope");
+        };
+        assert_eq!(
+            outer_a.type_arguments(),
+            &[
+                ("InnerT", "inner-a"),
+                ("ScopedT", "scope-a"),
+                ("ArrayT", "array"),
+            ]
+        );
+        assert_eq!(
+            fixture.active_type_substitutions.get("ambient"),
+            Some(&"ambient-type")
+        );
+        assert_eq!(fixture.active_value_substitutions.get("ambient"), Some(&99));
+
+        let next_b = job_b
+            .resume::<&'static str, _>(
+                &mut fixture,
+                Ok(Some(SemanticComptimeCallResult::Type("inner-b"))),
+            )
+            .unwrap();
+        let ComptimeStructuredTypePoll::Suspended(outer_b) = next_b else {
+            panic!("second outer call must suspend after consuming its captured scope");
+        };
+        assert_eq!(
+            outer_b.type_arguments(),
+            &[
+                ("InnerT", "inner-b"),
+                ("ScopedT", "scope-b"),
+                ("ArrayT", "array"),
+            ]
+        );
+
+        let ready_a = outer_a
+            .resume::<&'static str, _>(
+                &mut fixture,
+                Ok(Some(SemanticComptimeCallResult::Type("constructed"))),
+            )
+            .unwrap();
+        assert!(matches!(
+            ready_a,
+            ComptimeStructuredTypePoll::Ready("constructed")
+        ));
+        let ready_b = outer_b
+            .resume::<&'static str, _>(
+                &mut fixture,
+                Ok(Some(SemanticComptimeCallResult::Type("constructed"))),
+            )
+            .unwrap();
+        assert!(matches!(
+            ready_b,
+            ComptimeStructuredTypePoll::Ready("constructed")
+        ));
+        assert_eq!(
+            fixture.scope_observations,
+            [
+                (vec![("T", "scope-a")], vec![("N", 11)]),
+                (vec![("T", "scope-b")], vec![("N", 22)]),
+                (vec![("T", "scope-a")], vec![("N", 11)]),
+                (vec![("T", "scope-b")], vec![("N", 22)]),
+                (vec![("T", "scope-a")], vec![("N", 11)]),
+                (vec![("T", "scope-b")], vec![("N", 22)]),
+            ]
+        );
+        assert_eq!(
+            fixture.active_type_substitutions,
+            BTreeMap::from([("ambient", "ambient-type")])
+        );
+        assert_eq!(
+            fixture.active_value_substitutions,
+            BTreeMap::from([("ambient", 99)])
+        );
+    }
+
+    #[test]
+    fn structured_scope_restores_ambient_maps_after_failure_and_abort() {
+        let (arena, root) = structured_type("[i32; N]");
+        let mut fixture = Fixture {
+            active_type_substitutions: BTreeMap::from([("ambient", "old-type")]),
+            active_value_substitutions: BTreeMap::from([("ambient", 23)]),
+            array_type_error: Some(SemanticProviderError::Failure("array failure")),
+            ..Fixture::default()
+        };
+        let failed = ComptimeStructuredTypeJob::begin::<&'static str, _>(
+            &mut fixture,
+            ComptimeStructuredTypeAuthority::from_registered(
+                "failure-program",
+                "app/main.rue",
+                arena.clone(),
+                Arc::from(arena.symbols()),
+                root,
+            ),
+            vec![("T", "transient-type")],
+            vec![("N", 7)],
+        );
+        assert!(matches!(
+            failed,
+            Err(SemanticTypeSyntaxError::ProviderFailure("array failure"))
+        ));
+        assert_eq!(
+            fixture.active_type_substitutions,
+            BTreeMap::from([("ambient", "old-type")])
+        );
+        assert_eq!(
+            fixture.active_value_substitutions,
+            BTreeMap::from([("ambient", 23)])
+        );
+
+        fixture.array_type_error = Some(SemanticProviderError::Abort("cancelled"));
+        let aborted = ComptimeStructuredTypeJob::begin::<&'static str, _>(
+            &mut fixture,
+            ComptimeStructuredTypeAuthority::from_registered(
+                "abort-program",
+                "app/main.rue",
+                arena.clone(),
+                Arc::from(arena.symbols()),
+                root,
+            ),
+            vec![("T", "transient-type")],
+            vec![("N", 8)],
+        );
+        assert!(matches!(
+            aborted,
+            Err(SemanticTypeSyntaxError::ProviderAbort("cancelled"))
+        ));
+        assert_eq!(
+            fixture.active_type_substitutions,
+            BTreeMap::from([("ambient", "old-type")])
+        );
+        assert_eq!(
+            fixture.active_value_substitutions,
+            BTreeMap::from([("ambient", 23)])
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "scoped poll panic")]
+    fn structured_scope_restores_ambient_maps_after_panic() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        struct RestorationAssertion {
+            fixture: Rc<RefCell<Fixture>>,
+        }
+
+        impl Drop for RestorationAssertion {
+            fn drop(&mut self) {
+                let fixture = self.fixture.borrow();
+                assert_eq!(
+                    fixture.active_type_substitutions,
+                    BTreeMap::from([("ambient", "old-type")])
+                );
+                assert_eq!(
+                    fixture.active_value_substitutions,
+                    BTreeMap::from([("ambient", 23)])
+                );
+            }
+        }
+
+        let fixture = Rc::new(RefCell::new(Fixture {
+            active_type_substitutions: BTreeMap::from([("ambient", "old-type")]),
+            active_value_substitutions: BTreeMap::from([("ambient", 23)]),
+            ..Fixture::default()
+        }));
+        let _assertion = RestorationAssertion {
+            fixture: Rc::clone(&fixture),
+        };
+        fixture.borrow_mut().with_comptime_substitutions(
+            &[("T", "panic-type")],
+            &[("N", 9)],
+            |_| -> () { panic!("scoped poll panic") },
+        );
     }
 
     #[test]
