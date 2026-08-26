@@ -33,6 +33,38 @@ fn integer_consumers_use_one_representation_independent_kernel() {
 }
 
 #[test]
+fn structured_registry_authority_keeps_storage_keyed_and_identity_rich() {
+    let comptime = include_str!("sema/comptime.rs");
+    let stable = comptime
+        .split("pub fn structured_type_authority<")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("pub fn structured_type_authority_with_program")
+                .next()
+        })
+        .expect("stable structured authority accessor");
+    assert_eq!(
+        stable
+            .matches("self.structured_type_authority_with_program(")
+            .count(),
+        1,
+        "stable-key authority must delegate to the richer constructor"
+    );
+    let richer = comptime
+        .split("pub fn structured_type_authority_with_program<")
+        .nth(1)
+        .and_then(|source| source.split("\n}\n\n/// Stable key").next())
+        .expect("richer structured authority constructor");
+    assert_eq!(richer.matches("self.programs.get(key)").count(), 1);
+    assert!(richer.contains("registered.rir.type_syntax()"));
+    assert!(richer.contains("registered_symbol_authority_is_valid"));
+    assert!(richer.contains("from_registered(\n                program,"));
+    assert!(!richer.contains("program.rir"));
+    assert!(!richer.contains("program.symbols"));
+}
+
+#[test]
 fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
     let comptime = include_str!("sema/comptime.rs");
     let production = comptime
