@@ -340,23 +340,62 @@ syntactic contexts:
 
 > **Definition (use).** A **use** of a place `p` of type `T` is the appearance of
 > `p` as an expression in *value context* (the `e ::= p` production of §2). Its
-> effect depends only on `class(T)`:
+> effect is selected first by the static use plan recorded during elaboration
+> (§5.1), then by `class(T)`. A declared-linear destructure plan is the
+> central override: it consumes the selected enclosing place even when `T` is
+> `Copy`, and transfers the selected leaf while disposing of the residue.
 >
-> - if `class(T) = Copy`: the use **copies** — the value at `p` is duplicated;
->   `p` remains in whatever ownership state it had.
-> - if `class(T) ∈ {Affine, Linear}`: the use **moves** (equivalently,
+> - if the plan is `Declared(d,π)`, the use applies
+>   `(Use-Declared-Linear-Destructure)` (§5.1), consuming `d` and producing the
+>   selected leaf;
+> - if the plan is `Untrackable(ShallowConsume(m))`, the use applies the
+>   shallow/root fallback and consumes its recorded marker `m`, even when the
+>   selected leaf `T` is `Copy`;
+> - otherwise, if the plan is `Untrackable(CopyRead)` or
+>   `Untrackable(OrdinaryDynamic)` and `class(T) = Copy`, the use **copies** —
+>   the value at `p` is duplicated and `p` remains in whatever ownership state
+>   it had;
+> - otherwise, if `class(T) ∈ {Affine, Linear}`, the use **moves** (equivalently,
 >   *consumes*) — the value at `p` is transferred out; `p` becomes `MovedOut`
 >   (§5). A later use of `p`, or of any place under it, is ill-formed; and `p` is
 >   not dropped at scope exit.
 >
 > A use of a *projection* `p.f` (or `p[c]` with `c` a constant) in value context
-> is a **partial** move: it moves exactly the sub-place `p.f`, leaving sibling
+> is ordinarily a **partial** move: it moves exactly the sub-place `p.f`, leaving sibling
 > sub-places of `p` in their prior state (`3.8:22`). A use of a whole place moves
 > the whole place — and requires the whole place: using an aggregate any of
 > whose sub-places is already `MovedOut` is ill-formed (`3.8:26`; the
 > `fully-owned` premise of §5.1).
 
-Two static restrictions bound *which* projections may be partially moved:
+For the declared-linear plan, write `dl(Γ,p) = (d, π)` when `d` is the longest proper
+prefix of the projected place `p` whose type is a struct declared `linear`, and
+`π` is the nonempty path from `d` to the selected leaf. `dl` is defined only
+when every index in the complete path is a compile-time constant; an
+untracked/dynamic index makes it undefined. Thus `d` is the smallest enclosing
+declared-linear place, not necessarily the root binding. The selected path may
+pass through nested structs and constant-index arrays. The ordinary partial
+move rule remains in force when no declared-linear plan or applicable fallback
+plan is recorded, including for structs that are linear only by infection.
+
+For an untrackable path, elaboration records an explicit `uf(Γ,p)` fallback
+annotation instead of leaving the dynamic semantics to rediscover `Γ`. It
+contains the shallowest/root declared-linear prefix found by the current
+fallback walk, whether the final immediate parent is declared-linear, and the
+selected action: `CopyRead` (read the selected Copy value and keep the root
+live), `ShallowConsume(m)` (the existing shallowest/root consuming fallback,
+with `m` its consumed marker), or `OrdinaryDynamic` (the ordinary dynamic-index
+path, including its move rejection). If a dynamic prefix makes the intended
+declared place unnameable, `m` is the root place; otherwise `m` is that intended
+place. This is
+the RUE-1755 transitional behavior: a dynamic Copy read
+keeps its root live but still performs the full-prefix destructor check, while
+the consuming fallback is used only where the current ownership analysis
+selects it. The complete use plan is therefore
+`Declared(d,π)`, `Untrackable(uf(Γ,p))`, `Ordinary`, or `Borrowed` (for
+by-reference/equality place reads), and is carried into §6 as elaboration
+metadata.
+
+Two static restrictions bound *which ordinary partial moves* may be made:
 
 - **No moves out of a destructor-bearing value** (`3.9:34`, E0456): a partial
   move of `p.f` (or `p[c]`) is ill-formed if the type of `p` — or of any
@@ -375,9 +414,9 @@ That is the entire notion. Everything the prose enumerated is now a corollary:
 |---|---|
 | `3.8:5` use-after-move is an error | using `p` requires `p` Owned (§5); a moved `p` is MovedOut |
 | `3.8:7` moved when assigned / passed / returned | all three are value contexts ⇒ uses ⇒ moves (for non-Copy) |
-| `3.8:9/11` Copy used repeatedly / copied into params | Copy use = copy; ownership state unchanged |
+| `3.8:9/11` Copy used repeatedly / copied into params | Copy use = copy and ownership state unchanged unless a declared-linear projection plan overrides it |
 | `3.8:22` field access is a partial move | the projection clause of §4.2 |
-| `3.8:33` linear consumed when passed/returned/destructured | value-context use of a Linear place moves it |
+| `3.8:33` linear consumed when passed/returned/destructured | value-context use of a Linear place moves it; a declared-linear projection plan consumes its enclosing place even for a Copy leaf |
 | `3.8:53/54` reading a Copy field through a moved ancestor is an error | the base `p` of `p.f` must be Owned (§5, ProjRead) |
 | `4.3:3f` equality borrows its operands | equality operands are *place context* (§4.1), not a value-context use ⇒ no move; a shared loan for the compare |
 
@@ -537,16 +576,100 @@ by the ordinary `(Use-Copy)` premise.
 ### 5.1 Use and copy (the keystone, as a rule)
 
 ```
-  class(Γ ⊢ p : T) = Copy         Σ(p) = Owned         p not exclusively loaned in Λ
+  Γ ⊢ p : T       planΓ(p) = Ordinary(Copy,T)
+  Σ(p) = Owned         p not exclusively loaned in Λ
   ───────────────────────────────────────────────────────────────────────── (Use-Copy)
   Γ ; Σ ; Λ  ⊢  p  ⇒  T  ⊣  Σ
 
+  Γ ⊢ p : T       planΓ(p) = Ordinary(class(T),T)
   class(Γ ⊢ p : T) ∈ {Affine, Linear}    fully-owned(Σ, p)    p not loaned in Λ
   no proper prefix of p has a type that declares a destructor       -- 3.9:34 (E0456); moving the WHOLE value is fine
   any index step in p is a constant [c] applied directly to the root binding    -- 3.8:68 (E0904)
   ───────────────────────────────────────────────────────────────────────── (Use-Move)
   Γ ; Σ ; Λ  ⊢  p  ⇒  T  ⊣  Σ[ p ↦ MovedOut,  and every path strictly under p removed ]
 ```
+
+Untrackable uses are typed from their elaborated fallback action. `m` below is
+a recorded place, not a value reconstructed after an index reduces;
+when a dynamic prefix makes the intended declared place unnameable, the
+annotation records `m = root(p)` and consumes that root. `m not loaned` means
+the same root/loan exclusion as the ordinary use rules.
+
+Write `full-prefix-destructor-safe(Γ,p)` when no proper prefix of the complete
+place path `p` has a user-defined destructor. This is the static form of the
+all-enclosing-value restriction in 3.9:34; the result is carried in `μ` for
+dynamic reduction.
+
+```
+  Γ ⊢ p : T       planΓ(p) = Untrackable(CopyRead,T)
+  Σ(p) = Owned    p not exclusively loaned in Λ    full-prefix-destructor-safe(Γ,p)
+  ─────────────────────────────────────────────────────── (Use-Untrackable-CopyRead)
+  Γ ; Σ ; Λ ⊢ p ⇒ T ⊣ Σ
+
+  Γ ⊢ p : T       planΓ(p) = Untrackable(OrdinaryDynamic,T)
+  class(T) = Copy  Σ(p) = Owned    p not exclusively loaned in Λ
+  ─────────────────────────────────────────────────────── (Use-Untrackable-Dynamic-Copy)
+  Γ ; Σ ; Λ ⊢ p ⇒ T ⊣ Σ
+
+  Γ ⊢ p : T       planΓ(p) = Untrackable(ShallowConsume(m),T)
+  Γ ⊢ m : U       fully-owned(Σ,m)       m is a statically recorded place
+  m not loaned in Λ       full-prefix-destructor-safe(Γ,p)
+  ─────────────────────────────────────────────────────── (Use-Untrackable-Shallow)
+  Γ ; Σ ; Λ ⊢ p ⇒ T ⊣ Σ[ m ↦ MovedOut, and every path strictly under m removed ]
+```
+
+There is no successful static rule for `Untrackable(OrdinaryDynamic,T)` when
+`class(T) ∈ {Affine,Linear}`: the existing dynamic-index move restriction
+rejects that use. `Use-Untrackable-CopyRead` carries the full-prefix destructor
+gate required by the current declared-linear dynamic Copy path; the ordinary
+dynamic Copy rule has only the ordinary Copy-read premises.
+
+The ordinary rules above are selected only when elaboration records the
+corresponding `Ordinary` plan. They are overridden for a statically trackable projection
+whose path has a declared-linear prefix. Define the ordered residue traversal
+`residue(T, π)` recursively: at a struct step, visit fields in declaration
+order, recurse into the selected field, and retain every unselected field; at
+an array step, visit elements in ascending constant-index order, recurse into
+the selected element, and retain every unselected element. The traversal ends
+at the selected leaf, which is not residue. `linear-residue(T, π)` is true when
+one of the retained places carries a linear value (and false for an empty
+array's empty traversal). `drop-residue(T, π)` is the subsequence of that same
+traversal whose retained places are legally droppable; it is ordered by the
+traversal, so nested residue is visited before a later sibling.
+
+```
+  Γ ⊢ p : T       planΓ(p) = Declared(d,π) -- §4.2: longest declared-linear prefix
+  Γ ⊢ d : S       S is a struct declared `linear`
+  fully-owned(Σ,d)       d not loaned in Λ
+  ¬ linear-residue(S,π)
+  no proper prefix q of p has a user-defined destructor
+                                      -- every enclosing value, including d (3.9:34)
+  ───────────────────────────────────────────────────────── (Use-Declared-Linear-Destructure)
+  Γ ; Σ ; Λ ⊢ p ⇒ T ⊣ Σ[ d ↦ MovedOut, and every path strictly under d removed ]
+```
+
+Here `T` is bound by the `Γ ⊢ p : T` premise as the type of the selected leaf;
+the rule consumes the place `d`, not necessarily the root binding, and leaves
+declared-linear ancestors owned.
+The dynamic counterpart (§6.3) returns the selected leaf and immediately
+executes `drop-residue(S,π)` exactly once before the consumed place becomes
+`MovedOut`. A whole-value custom destructor on `d`, or on any enclosing value
+along the path from the root to `d`, is therefore unsafe for this projection;
+the same all-enclosing-value restriction as 3.9:34 applies even though only
+`d` is consumed. A destructor on a legally droppable unselected residue is run
+by its ordinary drop glue. The `linear-residue` premise rejects the access
+before any residue can be silently dropped. An untrackable path is not treated
+as ordinary merely because `dl` is undefined: its elaborated `Untrackable`
+fallback plan (§4.2) selects the current shallowest/root consuming fallback,
+the Copy-read fallback, or the ordinary dynamic-index rejection. By-reference
+and equality operands are `Borrowed` place uses and do not invoke this rule.
+
+The `(Use-Copy)` and `(Use-Move)` rules are read only with an `Ordinary` plan;
+this prevents overlap when a selected leaf is Copy inside a declared-linear
+destructure or an untrackable fallback.
+The rule is intentionally distinct from infectious linearity: a struct that is
+linear only because a field carries a linear value follows ordinary partial
+move and residual checking.
 
 `fully-owned(Σ, p)` (§5 preamble) is the **no-use-after-move** premise
 strengthened to the whole subtree (`3.8:5/24/26/53`): a use requires that `p`
@@ -909,7 +1032,8 @@ glue and over-rejected reads of a Copy sibling. Precisely:
 ```
   residual-linear(Σ, p, T) =
     false                                            if Σ(p) = MovedOut (or p is under a MovedOut prefix)
-    true                                             if T is a struct with attr(T) = linear      -- the obligation is the VALUE's (3.8:74)
+    true                                             if T is a declared-linear struct and p remains Owned
+                                                     -- the obligation is the live VALUE's (3.8:74)
     ∃ field f:  residual-linear(Σ, p.f, T_f)         if T = struct { …, f: T_f, … }
     ∃ tracked element [c]:  residual-linear(Σ, p[c], T')   ∨  (untracked residue carries linear)
                                                      if T = [T'; n], n > 0
@@ -920,33 +1044,15 @@ glue and over-rejected reads of a Copy sibling. Precisely:
 An `Owned` binding with **no** residual linear content but *some* residual
 droppable content falls to the third bullet: its scope-exit drop walks the
 value skipping every `MovedOut` sub-place, exactly as §6.11's `⊘`-skip does
-dynamically. Note the `attr(T) = linear` case: a **declared**-`linear` struct's
-obligation belongs to the value itself, not its contents (`3.8:74` — "must be
-consumed regardless of what its fields hold"; the empty
-`linear struct MustUse` of `3.8:75` is the motivating case), so a husk whose
-linear field was moved out is still ill-formed to drop.
-
-> **Open disagreement (RUE-614, RUE-1769).** This clause states a *different*
-> rule from the prose, and the disagreement is genuine rather than a matter of
-> precision. Prose `3.8:33` (`cat="normative"`) says that moving a field out of
-> a declared-`linear` value *destructures* it: "the field access consumes the
-> whole value, and the other fields are dropped with it". `3.8:60` repeats that
-> model independently. Under the prose the husk is consumed at the access, so
-> nothing is left unconsumed and the program is well-formed; under this clause
-> `Σ(husk) = Owned` with `attr = linear`, so `residual-linear` holds and the
-> leak check fires. The compiler implements the prose model — it treats the
-> field access as a whole-value destructure, leaving the husk `MovedOut` before
-> this clause is consulted — so it is the core, not the compiler, that stands
-> apart here. An earlier revision of this note described that as "the compiler
-> diverging" and claimed the core states the prose rule; both were wrong.
->
-> Per `1.3:1a` the three views MUST agree where they overlap, so this is a
-> specification defect awaiting the RUE-614 ruling on what consumes a
-> declared-`linear` struct after a field access. Whichever way it rules, one of
-> the two must move: either this clause drops its `attr(T) = linear` case (the
-> prose model) or `3.8:33`/`3.8:60` change (this clause's model). RUE-1591
-> confined the whole-value destructure to the declared case and deliberately
-> left the divergence untouched.
+dynamically. A **declared**-`linear` struct's obligation belongs to the live
+value itself, not to its fields (`3.8:74`); the empty `linear struct MustUse` of
+`3.8:75` is the motivating case. A declared-linear projection is different:
+the `Use-Declared-Linear-Destructure` rule (§5.1) marks its selected place
+`MovedOut` and destroys its legally droppable residue before this scope-exit
+check. The first clause therefore makes that consumed place non-residual. Any
+declared-linear ancestor remains `Owned` and is checked here, along with its
+unrelated residue. An infectious carrier has no value-level declaration and is
+instead handled by the recursive field/element clauses.
 
 Parameters passed `inout`/`borrow`, and a destructor's own `self`, are exempt from
 the must-consume and drop obligations here (`3.8:62`): the caller (resp. the drop
@@ -1623,19 +1729,85 @@ A literal is already a value; it takes no step except to *be* one. Its width and
 signedness were resolved by elaboration (§5.8), so the machine stores the concrete
 `n_T` / `b` / `⟨⟩` (`Const`/`BoolConst`).
 
-Using a place `p` in value context is the operational side of §4.2 / §5.1. Let
-`p` resolve, under ρ, to a root cell `ℓ` and an evaluated projection path `π`
-(field indices and already-reduced array indices, §6.2); write `H(ℓ)@π` for the
+Using a place `p` in value context is the operational side of §4.2 / §5.1. At
+static elaboration, every such use receives a closed annotation `μ`; it is one
+of `Declared(d,π_s,T)`, `Untrackable(f,T)`, or `Ordinary(class(T),T)`. The
+`Untrackable` annotation contains the concrete `uf` fallback data from §4.2 —
+the shallowest/root declared-linear prefix, the immediate-parent flag, and its
+selected action (`CopyRead`, `ShallowConsume(m)`, or `OrdinaryDynamic`) — plus
+the already-checked full-prefix destructor-safety result. A place in a
+by-reference or equality context receives `Borrowed` instead. Thus the dynamic
+rules consume elaboration metadata; they never consult `Γ`, recompute a
+declared-linear prefix, or recover constant-index provenance after reduction.
+
+Let `p` resolve, under ρ, to a root cell `ℓ` and an evaluated projection path
+`π` (field indices and already-reduced array indices, §6.2); write `H(ℓ)@π` for the
 sub-value reached by following `π` into `H(ℓ)`, and `H[ℓ@π ↦ ⊘]` for the store
 with that sub-position replaced by the moved-out marker. Reading navigates the
 stored aggregate exactly as `place_read` does.
 
+The declared-linear projection case is a distinct redex. If the elaboration
+annotation is `μ = Declared(d,π_s,T)` and `d` resolves to `ℓ@π_d`, let
+`split(H(ℓ)@π_d, π_s) = (v, [r_1, ..., r_m])` expose the selected leaf `v` and
+the ordered unselected residue values. `split` walks structs in declaration
+order and arrays in ascending constant-index order; at each selected step it
+recurses, and at each unselected step it appends the whole value. Define
+`destructure(H, ℓ@π_d, π_s) = (H', v)` by first applying `drop*` to
+`[r_1, ..., r_m]` left-to-right and then setting the consumed place `ℓ@π_d` to
+`⊘` in the resulting store. Thus each legally droppable residue is destroyed
+immediately and exactly once, while a linear residue is excluded by the
+`(Use-Declared-Linear-Destructure)` premise before this redex can fire.
+
 ```
-  ρ(root(p)) = ℓ      H(ℓ)@π = v      class(T) = Copy           -- T the type of p (§5)
+  ρ(root(p)) = ℓ      μ = Declared(d,π_s,T)   d resolves to ℓ@π_d
+  H(ℓ)@π_d is the aggregate selected by d      H(ℓ)@(π_d·π_s) = v
+  (H',v) = destructure(H, ℓ@π_d, π_s)
+  ───────────────────────────────────────────────────────── (D-Use-Declared-Linear)
+  ⟨ H ; φ ; K ; p ⟩ → ⟨ H' ; φ ; K ; v ⟩
+```
+
+Only the selected place `d` is replaced by `⊘`; a declared-linear ancestor and
+all of its unrelated residue remain in the store and retain their ownership
+obligations. The selected value `v` is the result transferred to the context,
+not a value dropped by `destructure`. An untrackable path follows its closed
+`Untrackable` fallback annotation below; it is not silently reclassified as an
+ordinary path after reduction. A by-reference or equality projection is not a
+value-context use and never fires this rule.
+
+For the RUE-1755 fallback, `μ = Untrackable(f,T)` has the following dynamic
+images. `f = CopyRead` keeps the root and all enclosing places live, but its
+carried full-prefix destructor-safety check has already rejected any unsafe
+custom destructor. `f = ShallowConsume(m)` uses the existing shallowest/root
+fallback and consumes its recorded marker `m` without entering the constant-index
+residue plan; the selected value is transferred and `m` becomes `⊘`.
+`f = OrdinaryDynamic`
+retains the ordinary dynamic-index behavior: a Copy read leaves storage live,
+while a non-Copy move is rejected by the static dynamic-index rule.
+
+```
+  ρ(root(p)) = ℓ      μ = Untrackable(CopyRead,T)      H(ℓ)@π = v
+  full-prefix-destructor-safe(μ)
+  ─────────────────────────────────────────────── (D-Use-Untrackable-Copy)
+  ⟨ H ; φ ; K ; p ⟩ → ⟨ H ; φ ; K ; v ⟩
+
+  ρ(root(p)) = ℓ      μ = Untrackable(ShallowConsume(m),T)
+  H(ℓ)@π = v          m resolves to ℓ@π_m
+  ─────────────────────────────────────────────── (D-Use-Untrackable-Move)
+  ⟨ H ; φ ; K ; p ⟩ → ⟨ H[ℓ@π_m ↦ ⊘] ; φ ; K ; v ⟩
+
+  ρ(root(p)) = ℓ      μ = Untrackable(OrdinaryDynamic,T)
+  class(T) = Copy      H(ℓ)@π = v
+  ─────────────────────────────────────────────── (D-Use-Untrackable-Dynamic-Copy)
+  ⟨ H ; φ ; K ; p ⟩ → ⟨ H ; φ ; K ; v ⟩
+```
+
+```
+  ρ(root(p)) = ℓ      μ = Ordinary(Copy,T)      H(ℓ)@π = v
   ─────────────────────────────────────────────────────────────────── (D-Use-Copy)
   ⟨ H ; φ ; K ; p ⟩ → ⟨ H ; φ ; K ; v ⟩                         -- the cell is left untouched
 
-  ρ(root(p)) = ℓ      H(ℓ)@π = v      class(T) ∈ {Affine, Linear}
+  ρ(root(p)) = ℓ      μ = Ordinary(class(T),T)  H(ℓ)@π = v
+  class(T) ∈ {Affine,Linear}
   ─────────────────────────────────────────────────────────────────── (D-Use-Move)
   ⟨ H ; φ ; K ; p ⟩ → ⟨ H[ℓ@π ↦ ⊘] ; φ ; K ; v ⟩               -- whole- or partial-place move; source becomes ⊘
 ```
@@ -1653,10 +1825,21 @@ dynamically. The two are observably identical: the same values are dropped the
 same number of times.
 
 Equality operands are the exception (§4.1, §5.4, `4.3:3f`): the operand place is
-**read through a shared loan and not moved**, so even an `Affine`/`Linear`
-operand steps by `(D-Use-Copy)` in the `E ≟ e` / `v ≟ E` positions, leaving its
-cell `Owned`. This is the dynamic image of the equality-borrow side condition; the
-oracle simply reads both operands without disturbing storage (`cmp`).
+**read through a shared loan and not moved**, regardless of whether its path
+would otherwise receive a declared or untrackable plan. The explicit place-read
+redex is:
+
+```
+  p occurs as the operand of `≟`       μ = Borrowed
+  ρ(root(p)) = ℓ                       H(ℓ)@π = v
+  ─────────────────────────────────────────────── (D-Use-Shared-Read)
+  ⟨ H ; φ ; K ; p ⟩ → ⟨ H ; φ ; K ; v ⟩
+```
+
+It leaves the cell `Owned`; no destructure, fallback action, or drop is run.
+By-reference arguments likewise carry `Borrowed` place metadata but are
+consumed by the call's loan rules rather than this value-producing redex. The
+oracle simply reads both equality operands without disturbing storage (`cmp`).
 
 ### 6.4 Primitive operators
 
@@ -1759,13 +1942,16 @@ the corresponding aggregate value, owning every component (`StructInit`/
 ```
 
 Projection in value context is subsumed by the place-use rules of §6.3 (a
-projection `p.f` / `p[e]` is a place); an **array index is bounds-checked** at the
-moment the path is navigated, and an out-of-range or negative index traps
+projection `p.f` / `p[e]` is a place). A statically trackable projection from a
+declared-linear place uses `(D-Use-Declared-Linear)` there; an untrackable
+projection uses its elaborated RUE-1755 fallback, and only an `Ordinary` plan
+uses the ordinary copy/partial-move rules. An **array index is
+bounds-checked** at the moment the path is navigated, and an out-of-range or negative index traps
 (`resolve_path`/`place_read`):
 
 ```
   0 ≤ i < n
-  ───────────────────────────────── (D-Index)         -- [v0,…,v_{n-1}] @ [i] = vi (then §6.3 copies or moves)
+  ───────────────────────────────── (D-Index)         -- [v0,…,v_{n-1}] @ [i] = vi (then §6.3 destructures, copies, or moves)
   reading [ v0, …, v_{n-1} ][ i ] yields vi
 
   i < 0   or   i ≥ n
@@ -2545,15 +2731,22 @@ neither claims anything about an uninhabited-parameter function such as
   variants `K1..Kn`, and the arms cover exactly those, so some arm always
   matches — a `match` is never stuck on an uncovered tag.
 
-- **No use-after-move.** In a well-typed program, the Use/Move dynamic rule is
-  never applied to a `MovedOut` place. *Because:* `Use-Move`/`Use-Copy` (§5.1)
-  require `Σ(p) = Owned`, and preservation maintains the invariant that Σ
-  faithfully tracks the store's initialization.
+- **No use-after-move.** In a well-typed program, no use redex — ordinary,
+  declared-linear, or untrackable fallback — is applied to a `MovedOut` place.
+  *Because:* the static plan requires `fully-owned(Σ,p)`, `fully-owned(Σ,d)`,
+  or `fully-owned(Σ,m)` for the consumed place, while `Borrowed` place reads
+  require an owned base;
+  preservation maintains the invariant that Σ faithfully tracks the store's
+  initialization. The dynamic declared rule therefore cannot navigate through
+  a hole before its `split`.
 
 - **No double-free.** Every stored value's destructor runs at most once. *Because:*
-  a move sets `p ↦ MovedOut`, and the Drop rule (§6) skips MovedOut places — so a
-  value that was moved out of a place is dropped through its *new* owner, never
-  again through the old one. For an **enum** this holds through two mechanisms at
+  an ordinary or fallback move sets its consumed place to `MovedOut`, and the
+  declared-linear rule transfers its selected leaf, applies each planned
+  droppable residue drop exactly once in order, then sets `d ↦ MovedOut`/`⊘`;
+  the Drop rule (§6) skips that consumed place and its moved-out descendants.
+  Thus neither the selected leaf nor residue is dropped again through the old
+  owner. For an **enum** this holds through two mechanisms at
   once: the Drop rule recurses into the *active* variant's payload only, so an
   inactive variant's (non-existent) payload is never freed; and a payload moved
   out by a `match` binding leaves the enum place `MovedOut`, so the arm's binding
@@ -2602,8 +2795,13 @@ neither claims anything about an uninhabited-parameter function such as
   (§5.3 rejects it) or is consumed on only some paths (§5.5 join rejects it) or is
   **overwritten by an assignment while still live** (§5.2's (Assign) premise
   rejects it, `3.8:77` — the RUE-387 hole: without this premise the overwrite-drop
-  of §6.8 would consume the old linear value implicitly); and no value is used
-  twice (`Use-Move` consumes it). Hence exactly once. This
+  of §6.8 would consume the old linear value implicitly). A declared-linear
+  projection additionally requires `fully-owned(Σ,d)`, rejects every linear
+  residue before execution, transfers exactly its selected leaf, drops only the
+  legally droppable residue once in the elaborated order, and then marks `d`
+  `MovedOut`/`⊘`; its selected leaf is consequently the sole new owner. No
+  value is used twice (`Use-Move` or the fallback consuming action consumes it).
+  Hence exactly once. This
   now covers **enums**: `class(E)` is the payload join (§3), so a `Linear`-payload
   enum is itself `Linear` and `carries_linear(E)` holds (§5.3); letting it reach
   end of scope unconsumed is rejected exactly as for a linear struct (`6.3:19`),
@@ -2671,6 +2869,7 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 | §5.8 (Panic)/(Dbg) intrinsic statics | 3.4:2, 8.1–8.3 (`@panic`); `@dbg` has no prose paragraph of its own |
 | §3 multiplicity lattice | 3.8:1–3, 3.8:14/16/18/20, 3.8:30/32/37, 3.8:57/58, 3.8:74, 3.9:31, 6.3:19 |
 | §4.2 definition of *use* (+ §5.1 premises) | 3.8:5, 3.8:7, 3.8:9, 3.8:11, 3.8:22, 3.8:26, 3.8:33, 3.8:53, 3.8:68, 3.9:34 |
+| §5.1 declared-linear projection destructure (smallest place, residue gate, and ownership transition) | 3.8:33, 3.8:60, 3.8:74, 3.9:34 |
 | §4.1/§5.4 equality borrows its operands | 4.3:3f |
 | §5.5 match / enum elim + intro | 6.3:17, 3.8:33 (destructure), 4.7 (match) |
 | §5.8 leaf/operator/aggregate/call statics | 4.1:2/5/7, 4.2:1/6/14, 4.3:1/2/5/6, 4.3a:3/4, 4.4:2, 3.6:5/6/15/16, 3.5:1/2, 4.10:3/4/5/7, 6.1:36 |
@@ -2681,17 +2880,17 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 | §5.3 discard leak check / explicit `@drop` | 3.8:64/65, 3.9:37–39 |
 | §5.4 borrows / exclusivity | 6.1:14–35, 6.1:20, 6.1:30 |
 | §5.5 branch join | 3.8:50/51, 3.8:73 |
-| §5.6 scope exit: residual leak check + drop | 3.8:32/62/66, 3.8:74, 3.9 (drop order) |
+| §5.6 scope exit: residual leak check + drop | 3.8:32/50/62/66/71/74, 3.9:1/2/4/13/15/18/28 |
 | §5.7 divergence + never-coercion; (Loop-Div)/(Loop-Break) loop typing, reachable back-edge invariance, and the break-edge join | 3.4:1/2/3/4/6/6a/8, 3.4:9, 4.8:21, 3.8:50/51/79/80 |
 | §6.2 evaluation order (contexts, left-to-right) | 4.0:3–9 |
-| §6.3 dynamic use: copy vs. move; equality borrows | 3.8:5/7/22, 4.3:3f |
+| §6.3 dynamic use: declared-linear destructure, copy vs. ordinary move; equality borrows | 3.8:5/7/22/33/60/68/74, 3.9:1/2/13/15/28/34, 4.3:3f |
 | §6.4 operator dynamics: arith/div/mod, compare, bitwise/shift | 4.2:1, 4.3:1/2, 4.3a:10, 3.1:6/13 |
-| §6.5 aggregate intro + projection (bounds) | 3.5:2, 3.6:16, 4.11:14, 4.12:9, 8.2 |
+| §6.5 aggregate intro + projection (declared-linear selection and bounds) | 3.5:2, 3.6:16, 3.8:33/60/68, 3.9:34, 4.11:14, 4.12:9, 8.2 |
 | §6.6 enum intro + match dynamics | 6.3:17, 4.7:16 |
 | §6.7/§6.8 let/seq/scope-drop (σ registration + `endscope`), assignment overwrite-drop; α-renamed shadowing | 4.5:3, 3.8:12/13, 3.8:55/64, 3.9 |
 | §6.9 call / return / inout copy-out; nested-`return` unwind with scope drops | 6.1:4/5/18, 4.9:1/7, 3.4:5/6b, 3.9:18 |
 | §6.10 loop / break dynamics | 4.8:18/21/22, 3.4:2 |
-| §6.11 drop relation (active enum payload; skip moved; explicit `@drop`) | 3.9, 6.3:20 |
+| §6.11 drop relation (active enum payload; skip moved; explicit `@drop`; residue order) | 3.9:1/2/4/13/15/18/28/37–39, 6.3:20 |
 | §6.12 overflow/bounds/div-zero/`@panic` traps + exit code | 3.1:6/13, 4.13:5b, 8.1, 8.2, 8.3, Appendix B |
 | §6.13 allocation store: handles, views, container equations | 3.7, 3.9 (drop order), 4.3:2 (string content equality); design citations: the RUE-390 ruling, ADR-0035/0041/0043, the RUE-386 str ruling, the RUE-388 linear-element gate |
 | §7 soundness | the informal safety intent throughout ch. 3 and 8 |
