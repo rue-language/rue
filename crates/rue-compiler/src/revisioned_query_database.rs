@@ -7,7 +7,7 @@
 //! 12 registers each family directly with the runtime; native selection roots
 //! retain the current and last-good terminals.
 
-use rue_air::Node;
+use rue_air::{Node, SemanticTypeSyntaxProvider};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
@@ -7146,26 +7146,24 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
             Arc<str>,
         >,
     > {
-        // Keep the provider's ordinary root view intact after this operation.
-        // The keyed program still supplies the only syntax arena and symbol
-        // authority; substitutions are semantic inputs, not alternate syntax
-        // ownership.
-        let new_types = type_substitutions.iter().cloned().collect();
-        let new_values = value_substitutions.iter().cloned().collect();
-        with_restored_state(
-            self,
-            |authority| {
-                (
-                    std::mem::replace(&mut authority.provider.substitutions, new_types),
-                    std::mem::replace(&mut authority.provider.value_substitutions, new_values),
-                )
-            },
-            |authority| authority.resolve_type_syntax(program, syntax),
-            |authority, (previous_types, previous_values)| {
-                authority.provider.substitutions = previous_types;
-                authority.provider.value_substitutions = previous_values;
-            },
-        )
+        let (provider, session) = (&mut self.provider, &self.session);
+        let Some(registered) = session.registered_program(program) else {
+            return Err(rue_air::SemanticResolutionError::ProviderFailure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(Arc::from(
+                    "durable comptime type syntax references an unregistered program",
+                )),
+            ));
+        };
+        let module = program.declaration.module();
+        provider.with_comptime_substitutions(type_substitutions, value_substitutions, |provider| {
+            rue_air::resolve_structured_semantic_type_syntax_with(
+                provider,
+                module,
+                registered.rir.type_syntax(),
+                syntax,
+                |symbol| registered.symbols[symbol.into_usize()].as_ref(),
+            )
+        })
     }
 
     fn begin_comptime_call_admission(
@@ -10347,6 +10345,30 @@ impl rue_air::SemanticModulePathProvider<ModuleId, ModuleId, StableDefinitionKey
 
 #[rustfmt::skip]
 impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey, StableDefinitionKey, Arc<str>, crate::durable_semantics::DurableType, crate::durable_semantics::DurableConstValue> for SemanticNucleusTypeProvider<'_> {
+    fn with_comptime_substitutions<R>(
+        &mut self,
+        type_substitutions: &[(Arc<str>, crate::durable_semantics::DurableType)],
+        value_substitutions: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
+        operation: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let new_types = type_substitutions.iter().cloned().collect();
+        let new_values = value_substitutions.iter().cloned().collect();
+        with_restored_state(
+            self,
+            |provider| {
+                (
+                    std::mem::replace(&mut provider.substitutions, new_types),
+                    std::mem::replace(&mut provider.value_substitutions, new_values),
+                )
+            },
+            operation,
+            |provider, (previous_types, previous_values)| {
+                provider.substitutions = previous_types;
+                provider.value_substitutions = previous_values;
+            },
+        )
+    }
+
     fn observe_selected_named_type(
         &mut self,
         _name: &str,

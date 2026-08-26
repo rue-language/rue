@@ -3617,6 +3617,8 @@ pub(crate) fn begin_durable_structured_type<Q>(
     session: &DurableComptimeSession,
     key: &crate::body_query::DurableComptimeProgramKey,
     root: rue_rir::RirTypeSyntaxRef,
+    type_substitutions: Vec<(Arc<str>, DurableType)>,
+    value_substitutions: Vec<(Arc<str>, DurableConstValue)>,
     provider: &mut Q,
 ) -> Result<DurableStructuredTypePoll, DurableStructuredTypeBeginError<Q::Abort, Q::Failure>>
 where
@@ -3640,8 +3642,13 @@ where
     else {
         return Err(DurableStructuredTypeBeginError::InvalidProgramAuthority);
     };
-    DurableStructuredTypeJob::begin::<ModuleId, Q>(provider, authority)
-        .map_err(DurableStructuredTypeBeginError::Resolution)
+    DurableStructuredTypeJob::begin::<ModuleId, Q>(
+        provider,
+        authority,
+        type_substitutions,
+        value_substitutions,
+    )
+    .map_err(DurableStructuredTypeBeginError::Resolution)
 }
 
 /// Resume one consuming canonical structured continuation. The reduced call
@@ -7759,6 +7766,8 @@ mod structured_type_adapter_tests {
             &session,
             &first.plan.key,
             first_root,
+            Vec::new(),
+            Vec::new(),
             &mut first_provider,
         )
         .unwrap();
@@ -7790,6 +7799,8 @@ mod structured_type_adapter_tests {
             &session,
             &second.plan.key,
             second_root,
+            Vec::new(),
+            Vec::new(),
             &mut second_provider,
         )
         .unwrap();
@@ -7813,7 +7824,14 @@ mod structured_type_adapter_tests {
             None,
         );
         assert!(matches!(
-            begin_durable_structured_type(&session, &missing_key, first_root, &mut first_provider),
+            begin_durable_structured_type(
+                &session,
+                &missing_key,
+                first_root,
+                Vec::new(),
+                Vec::new(),
+                &mut first_provider,
+            ),
             Err(DurableStructuredTypeBeginError::UnregisteredProgram)
         ));
         assert!(matches!(
@@ -7821,6 +7839,8 @@ mod structured_type_adapter_tests {
                 &session,
                 &first.plan.key,
                 rue_rir::RirTypeSyntaxRef::from_u32(u32::MAX),
+                Vec::new(),
+                Vec::new(),
                 &mut first_provider
             ),
             Err(DurableStructuredTypeBeginError::InvalidProgramAuthority)

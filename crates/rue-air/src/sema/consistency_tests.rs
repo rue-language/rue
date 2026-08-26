@@ -1107,6 +1107,7 @@ mod tests {
             "enum StructuredTypePoll<",
             "struct StructuredTypeSuspension<",
             "struct SemanticComptimeCallRequestView<",
+            "pub struct ComptimeStructuredTypeJob<",
         ] {
             let offset = SEMANTIC_TYPE_RESOLUTION_SOURCE
                 .find(declaration)
@@ -1161,6 +1162,59 @@ mod tests {
             1,
             "the keyed resolver job has one declaration"
         );
+        let semantic_type_production = SEMANTIC_TYPE_RESOLUTION_SOURCE
+            .split("#[cfg(test)]")
+            .next()
+            .expect("structured resolver production precedes its tests");
+        let job = item(
+            semantic_type_production,
+            "pub struct ComptimeStructuredTypeJob<",
+        );
+        let job_fields = job
+            .split_once('{')
+            .and_then(|(_, body)| body.strip_suffix('}'))
+            .expect("structured resolver job fields");
+        for required in [
+            "type_substitutions: Vec<(N, T)>",
+            "value_substitutions: Vec<(N, V)>",
+        ] {
+            assert!(
+                job_fields.contains(required),
+                "the consuming job must own its substitution scope: {required}"
+            );
+        }
+        assert!(
+            !job_fields.contains("pub "),
+            "substitution scope must remain private to the consuming job"
+        );
+        assert_eq!(
+            semantic_type_production
+                .matches("fn with_comptime_substitutions<R>(")
+                .count(),
+            1,
+            "the production type provider has one substitution-scoping seam"
+        );
+        let keyed_begin = item(semantic_type_production, "pub fn begin<M, Q>(");
+        for required in [
+            "type_substitutions: Vec<(N, T)>",
+            "value_substitutions: Vec<(N, V)>",
+            "with_comptime_substitutions(",
+        ] {
+            assert!(
+                keyed_begin.contains(required),
+                "structured begin must capture and install its scope once: {required}"
+            );
+        }
+        let job_resume = item(semantic_type_production, "pub fn resume<M, Q>(");
+        let keyed_resume_signature = job_resume
+            .split_once('{')
+            .map_or(job_resume, |(signature, _)| signature);
+        for forbidden in ["type_substitutions", "value_substitutions"] {
+            assert!(
+                !keyed_resume_signature.contains(forbidden),
+                "structured resume must not accept a replacement scope: {forbidden}"
+            );
+        }
         assert!(
             !SEMANTIC_TYPE_RESOLUTION_SOURCE.contains("Clone for ComptimeStructuredTypeJob"),
             "the keyed resolver job must remain consuming"

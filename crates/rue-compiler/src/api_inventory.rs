@@ -3231,7 +3231,7 @@ fn durable_named_array_length_consumers_share_one_conversion_kernel() {
     let provider = database
         .split("impl rue_air::SemanticTypeSyntaxProvider<ModuleId")
         .nth(1)
-        .and_then(|source| source.split("impl ").next())
+        .and_then(|source| source.split("\n}\n\nimpl ").next())
         .expect("durable type provider");
     let provider_length = provider
         .split("fn resolve_array_length(")
@@ -3239,7 +3239,7 @@ fn durable_named_array_length_consumers_share_one_conversion_kernel() {
         .and_then(|source| source.split("fn array_length_from_value(").next())
         .expect("provider array-length operation");
     let named_provider = provider_length
-        .split("SemanticValueSyntax::Name(name)")
+        .split("rue_air::SemanticValueSyntax::Name(name)")
         .nth(1)
         .expect("provider named-length branch");
     assert_eq!(
@@ -5019,10 +5019,10 @@ fn durable_comptime_services_are_named_authority_operations() {
         "program: &crate::body_query::DurableComptimeProgramKey",
         "type_substitutions: &[(Arc<str>, crate::durable_semantics::DurableType)]",
         "value_substitutions: &[(Arc<str>, crate::durable_semantics::DurableConstValue)]",
-        "with_restored_state(",
-        "authority.resolve_type_syntax(program, syntax)",
-        "authority.provider.substitutions",
-        "authority.provider.value_substitutions",
+        "provider.with_comptime_substitutions(",
+        "resolve_structured_semantic_type_syntax_with(",
+        "registered.rir.type_syntax()",
+        "registered.symbols[symbol.into_usize()]",
     ] {
         assert!(
             substituted_type_resolver.contains(required),
