@@ -617,6 +617,10 @@ mod value_domain_tests {
         static TYPE_INTRINSIC_ABORT: Cell<bool> = const { Cell::new(false) };
         static TYPE_INTRINSIC_NAME: RefCell<Option<(u32, &'static str)>> = const { RefCell::new(None) };
         static MATCH_PATTERN_MATCHES: Cell<bool> = const { Cell::new(false) };
+        static MATCH_PATTERN_FORCE_FALSE: Cell<bool> = const { Cell::new(false) };
+        static MATCH_NO_SELECTED_FAILURE: Cell<bool> = const { Cell::new(false) };
+        static MATCH_NO_SELECTED_SITES: RefCell<Vec<(usize, u32, u32)>> =
+            const { RefCell::new(Vec::new()) };
         static MATCH_PATTERN_EVENTS: RefCell<Vec<ComptimeMatchPattern<FakeName>>> =
             const { RefCell::new(Vec::new()) };
         static MATCH_SYMBOL_CALLS: Cell<usize> = const { Cell::new(0) };
@@ -763,6 +767,78 @@ mod value_domain_tests {
         assert_ne!(events[0], events[1], "active program must own symbol names");
         assert_eq!(MATCH_SYMBOL_CALLS.with(Cell::get), 4);
         MATCH_PATTERN_MATCHES.with(|matches| matches.set(false));
+    }
+
+    #[test]
+    fn match_without_a_selected_arm_uses_the_host_terminal_policy() {
+        let make_program = || {
+            let mut editor = RirEditor::new();
+            let scrutinee = editor.add_inst(Inst {
+                data: InstData::BoolConst(false),
+                span: Span::new(0, 1),
+            });
+            let body = editor.add_inst(Inst {
+                data: InstData::UnitConst,
+                span: Span::new(1, 2),
+            });
+            let root = editor
+                .add_match(
+                    scrutinee,
+                    &[(rue_rir::RirPattern::Bool(true, Span::new(0, 1)), body)],
+                    Span::new(0, 2),
+                )
+                .unwrap();
+            (editor.finish(), root)
+        };
+        let (program0, root0) = make_program();
+        let (program1, root1) = make_program();
+        let mut host = FakeHost {
+            programs: vec![program0, program1],
+            type_symbol: SymbolHandle::new(lasso::ThreadedRodeo::new().get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        MATCH_PATTERN_MATCHES.with(|matches| matches.set(true));
+        MATCH_PATTERN_FORCE_FALSE.with(|force| force.set(true));
+        MATCH_NO_SELECTED_FAILURE.with(|failure| failure.set(true));
+        MATCH_NO_SELECTED_SITES.with(|sites| sites.borrow_mut().clear());
+        assert!(matches!(
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, root0), &mut env),
+            ComptimeOutcome::HostFailure(FAKE_FAILURE)
+        ));
+        assert!(matches!(
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(1, root1), &mut env),
+            ComptimeOutcome::HostFailure(FAKE_FAILURE)
+        ));
+        MATCH_NO_SELECTED_SITES.with(|sites| {
+            assert_eq!(sites.borrow().as_slice(), &[(0, 0, 2), (1, 0, 2)]);
+        });
+
+        MATCH_NO_SELECTED_FAILURE.with(|failure| failure.set(false));
+        assert!(matches!(
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, root0), &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+
+        MATCH_NO_SELECTED_FAILURE.with(|failure| failure.set(true));
+        MATCH_NO_SELECTED_SITES.with(|sites| sites.borrow_mut().clear());
+        MATCH_PATTERN_MATCHES.with(|matches| matches.set(false));
+        assert!(matches!(
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, root0), &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+        MATCH_NO_SELECTED_SITES.with(|sites| assert!(sites.borrow().is_empty()));
+
+        MATCH_PATTERN_FORCE_FALSE.with(|force| force.set(false));
+        MATCH_PATTERN_MATCHES.with(|matches| matches.set(false));
+        MATCH_NO_SELECTED_FAILURE.with(|failure| failure.set(false));
     }
 
     #[derive(Clone, Debug, PartialEq)]
@@ -1340,7 +1416,22 @@ mod value_domain_tests {
                 return None;
             }
             MATCH_PATTERN_EVENTS.with(|events| events.borrow_mut().push(pattern.clone()));
-            Some(true)
+            Some(!MATCH_PATTERN_FORCE_FALSE.with(Cell::get))
+        }
+        fn match_no_selected_arm(
+            &self,
+            site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+        ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+            MATCH_NO_SELECTED_SITES.with(|sites| {
+                sites
+                    .borrow_mut()
+                    .push((*site.program(), site.span().start, site.span().end));
+            });
+            if MATCH_NO_SELECTED_FAILURE.with(Cell::get) {
+                ComptimeOutcome::HostFailure(FAKE_FAILURE)
+            } else {
+                ComptimeOutcome::RuntimeDependent
+            }
         }
         fn require_preview(
             &self,
@@ -5444,6 +5535,13 @@ pub trait ComptimeHost {
         pattern: &ComptimeMatchPattern<Self::Name>,
         value: &Self::Value,
     ) -> Option<bool>;
+    /// Resolve the terminal policy when every reached match arm declined.
+    /// Ordinary body evaluation remains runtime-dependent; durable hosts may
+    /// preserve a declaration-time failure through this semantic hook.
+    fn match_no_selected_arm(
+        &self,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure>;
     fn require_preview(
         &self,
         feature: rue_error::PreviewFeature,
@@ -7410,9 +7508,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         None => return ComptimeOutcome::RuntimeDependent,
                     }
                 }
-                // No arm matched. Exhaustiveness checking should make this
-                // unreachable for a well-typed match; treat as non-evaluable.
-                ComptimeOutcome::RuntimeDependent
+                self.host.match_no_selected_arm(&self.diagnostic_site(span))
             }
 
             // Anonymous struct type: evaluate to a comptime type value,

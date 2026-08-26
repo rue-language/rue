@@ -4889,6 +4889,8 @@ fn match_patterns_have_one_air_decoder_and_one_durable_kernel() {
     assert!(evaluator_match.contains("decode_comptime_match_pattern"));
     assert!(evaluator_match.contains("self.symbol(&symbol.spur())"));
     assert!(evaluator_match.contains("durable_match_pattern_matches"));
+    assert!(evaluator_match.contains("comptime_match_no_selected_arm"));
+    assert!(!evaluator_match.contains("Self::failure(\"comptime match has no selected arm\")"));
     assert!(!evaluator_match.contains("RirPatternView::"));
     assert_eq!(
         evaluator_match

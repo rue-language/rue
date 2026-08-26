@@ -136,6 +136,13 @@ impl DurableComptimeFailure {
         ))
     }
 
+    /// The exact durable terminal used when a comptime match reaches no
+    /// selected arm. This remains a resolution failure, matching the legacy
+    /// evaluator's existing `comptime match has no selected arm` policy.
+    pub(crate) fn comptime_match_no_selected_arm() -> Self {
+        Self::resolution("comptime match has no selected arm")
+    }
+
     pub(crate) fn maximum_depth(name: &str, maximum: usize) -> Self {
         Self::comptime_failure(format!(
             "specialization of '{name}' exceeded the maximum nesting depth ({maximum}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?"
@@ -6357,6 +6364,16 @@ mod terminal_adapter_tests {
             };
             assert_eq!(actual, expected);
         }
+    }
+
+    #[test]
+    fn unmatched_comptime_match_uses_the_canonical_legacy_failure() {
+        assert!(matches!(
+            DurableComptimeFailure::comptime_match_no_selected_arm(),
+            DurableComptimeFailure::Failure(value)
+                if matches!(*value, SemanticNucleusFailure::Resolution(ref message)
+                    if message.as_ref() == "comptime match has no selected arm")
+        ));
     }
 
     #[test]
