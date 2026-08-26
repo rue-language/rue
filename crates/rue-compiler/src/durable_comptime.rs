@@ -2453,6 +2453,26 @@ pub(crate) trait DurableComptimeSemanticAuthority {
         >,
     >;
 
+    /// Resolve syntax against the exact active type/value substitution view.
+    /// The program key remains the sole arena and symbol authority; callers
+    /// cannot pair a syntax reference with an independently supplied arena.
+    #[allow(dead_code)] // consumed by the staged durable AIR host
+    fn resolve_type_syntax_with_substitutions(
+        &mut self,
+        program: &crate::body_query::DurableComptimeProgramKey,
+        syntax: rue_rir::RirTypeSyntaxRef,
+        type_substitutions: &[(Arc<str>, DurableType)],
+        value_substitutions: &[(Arc<str>, DurableConstValue)],
+    ) -> Result<
+        DurableType,
+        rue_air::SemanticTypeSyntaxError<
+            QueryAbort,
+            SemanticNucleusFailure,
+            crate::StableDefinitionKey,
+            Arc<str>,
+        >,
+    >;
+
     fn begin_comptime_call_admission(
         &self,
         accessing_source: &crate::StableDefinitionKey,
@@ -2552,6 +2572,30 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
         >,
     > {
         self.authority.resolve_type_syntax(program, syntax)
+    }
+
+    #[allow(dead_code)] // consumed by the staged durable AIR host
+    pub(crate) fn resolve_type_syntax_with_substitutions(
+        &mut self,
+        program: &crate::body_query::DurableComptimeProgramKey,
+        syntax: rue_rir::RirTypeSyntaxRef,
+        type_substitutions: &[(Arc<str>, DurableType)],
+        value_substitutions: &[(Arc<str>, DurableConstValue)],
+    ) -> Result<
+        DurableType,
+        rue_air::SemanticTypeSyntaxError<
+            QueryAbort,
+            SemanticNucleusFailure,
+            crate::StableDefinitionKey,
+            Arc<str>,
+        >,
+    > {
+        self.authority.resolve_type_syntax_with_substitutions(
+            program,
+            syntax,
+            type_substitutions,
+            value_substitutions,
+        )
     }
 
     pub(crate) fn check_canceled(&self) -> Result<(), QueryAbort> {

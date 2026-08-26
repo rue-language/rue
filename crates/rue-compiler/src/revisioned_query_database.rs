@@ -6913,6 +6913,26 @@ fn semantic_candidate_type_is_named(
         .is_some_and(|symbol| symbols[symbol.into_usize()] == expected)
 }
 
+fn with_restored_state<S, O, R, Install, Operation, Restore>(
+    state: &mut S,
+    install: Install,
+    operation: Operation,
+    restore: Restore,
+) -> R
+where
+    Install: FnOnce(&mut S) -> O,
+    Operation: FnOnce(&mut S) -> R,
+    Restore: FnOnce(&mut S, O),
+{
+    let old = install(state);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(state)));
+    restore(state, old);
+    match result {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
 /// Exact query authorities used by durable comptime services. Keeping this
 /// adapter separate from the evaluator makes cancellation and import-site
 /// resolution reusable by the AIR host without allowing it to inspect RIR.
@@ -7109,6 +7129,43 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
             registered.rir.type_syntax(),
             syntax,
             |symbol| registered.symbols[symbol.into_usize()].as_ref(),
+        )
+    }
+
+    fn resolve_type_syntax_with_substitutions(
+        &mut self,
+        program: &crate::body_query::DurableComptimeProgramKey,
+        syntax: rue_rir::RirTypeSyntaxRef,
+        type_substitutions: &[(Arc<str>, crate::durable_semantics::DurableType)],
+        value_substitutions: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
+    ) -> Result<
+        crate::durable_semantics::DurableType,
+        rue_air::SemanticTypeSyntaxError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+            StableDefinitionKey,
+            Arc<str>,
+        >,
+    > {
+        // Keep the provider's ordinary root view intact after this operation.
+        // The keyed program still supplies the only syntax arena and symbol
+        // authority; substitutions are semantic inputs, not alternate syntax
+        // ownership.
+        let new_types = type_substitutions.iter().cloned().collect();
+        let new_values = value_substitutions.iter().cloned().collect();
+        with_restored_state(
+            self,
+            |authority| {
+                (
+                    std::mem::replace(&mut authority.provider.substitutions, new_types),
+                    std::mem::replace(&mut authority.provider.value_substitutions, new_values),
+                )
+            },
+            |authority| authority.resolve_type_syntax(program, syntax),
+            |authority, (previous_types, previous_values)| {
+                authority.provider.substitutions = previous_types;
+                authority.provider.value_substitutions = previous_values;
+            },
         )
     }
 
@@ -30079,6 +30136,303 @@ fn main() -> i32 {
                 QueryAbort::Canceled
             )))
         ));
+    }
+
+    #[test]
+    #[should_panic(expected = "controlled operation panic")]
+    fn restored_state_kernel_restores_exact_state_when_operation_panics() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        struct RestorationAssertion {
+            state: Rc<RefCell<BTreeMap<Arc<str>, i32>>>,
+            expected: BTreeMap<Arc<str>, i32>,
+        }
+
+        impl Drop for RestorationAssertion {
+            fn drop(&mut self) {
+                assert_eq!(*self.state.borrow(), self.expected);
+            }
+        }
+
+        let expected = BTreeMap::from([(Arc::from("OLD"), 7_i32)]);
+        let state = Rc::new(RefCell::new(expected.clone()));
+        let _assertion = RestorationAssertion {
+            state: Rc::clone(&state),
+            expected,
+        };
+        let mut active = Rc::clone(&state);
+        super::with_restored_state(
+            &mut active,
+            |state| {
+                std::mem::replace(
+                    &mut *state.borrow_mut(),
+                    BTreeMap::from([(Arc::from("TRANSIENT"), 9)]),
+                )
+            },
+            |_state| -> () { panic!("controlled operation panic") },
+            |state, old| *state.borrow_mut() = old,
+        );
+    }
+
+    #[test]
+    fn live_root_authority_resolves_keyed_substitutions_and_restores_provider_state() {
+        use crate::body_query::{DurableComptimeProgramPlan, OwnedComptimeProgramCore};
+        use crate::durable_semantics::{DurableConstValue as V, DurableType as T};
+        use rue_rir::InstData;
+
+        let snapshot = SourceSnapshot::single(
+            "root-type-seam.rue",
+            "struct NamedType {} fn target(value: T, count: [i32; N], bad: [i32; MISSING], named: [NamedType; N2]) -> i32 { 1 }",
+        )
+        .unwrap();
+        let module = crate::parsed_modules::parse_source_snapshot_modules(&snapshot)
+            .unwrap()
+            .modules()[0]
+            .clone();
+        let candidate = module
+            .definitions()
+            .declaration_keys_in_source_order()
+            .find(|candidate| candidate.name.as_ref() == "target")
+            .unwrap()
+            .clone();
+        let artifacts =
+            crate::canonical_lower::lower_parsed_declaration_body_plan(&module, &candidate, || {
+                Ok(())
+            })
+            .unwrap();
+        let configuration = semantic_configuration();
+        let program_key = crate::body_query::DurableComptimeProgramKey {
+            declaration: StableDefinitionKey::from_stable_parts(
+                candidate.module.clone(),
+                crate::StableDefinitionNamespace::Value,
+                crate::StableDefinitionKind::Function,
+                "target",
+                None,
+            ),
+            configuration: configuration.clone(),
+        };
+        let core = OwnedComptimeProgramCore::from_callable_body_plan_without_imports(
+            DurableComptimeProgramPlan {
+                key: program_key.clone(),
+                candidate: candidate.clone(),
+            },
+            &artifacts,
+            || Ok(()),
+        )
+        .unwrap();
+        let root = core.callable().unwrap().root;
+        let (type_syntax, value_syntax, abort_syntax, named_syntax) = match &core.rir.get(root).data
+        {
+            InstData::FnDecl { params, .. } => {
+                let params = core.rir.params(params).iter();
+                let params = params.collect::<Vec<_>>();
+                (params[0].ty, params[1].ty, params[2].ty, params[3].ty)
+            }
+            other => panic!("callable core has unexpected root: {other:?}"),
+        };
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&snapshot),
+            &snapshot,
+        );
+        let cancellation = CancellationToken::new();
+        let cancel_in_closure = cancellation.clone();
+        let captured = std::cell::RefCell::new(None);
+        let attempt = database.runtime.query(
+            &database.provider_probe,
+            revision,
+            ProviderProbeKey {
+                label: Arc::from("live-root-authority-type-substitutions"),
+            },
+            cancellation,
+            |context| {
+                let dependency_source = program_key.declaration.clone();
+                let provider = SemanticNucleusTypeProvider {
+                    context,
+                    family: &database.semantic_nucleus,
+                    shells: &database.declaration_shells,
+                    names: &database.lookup_names,
+                    configuration: configuration.clone(),
+                    substitutions: BTreeMap::from([(Arc::from("OLD"), T::I8)]),
+                    value_substitutions: BTreeMap::from([(Arc::from("OLD"), V::Integer(7))]),
+                    deferred_value_parameters: BTreeMap::new(),
+                    anonymous_nominals: BTreeMap::new(),
+                    dependency_source,
+                    dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
+                    dependencies: BTreeSet::new(),
+                    deferred_ownership: BTreeSet::new(),
+                    ownership_properties: BTreeMap::new(),
+                };
+                let session = crate::durable_comptime::DurableComptimeSession::new(
+                    program_key.declaration.clone(),
+                    candidate.clone(),
+                )
+                .unwrap();
+                let mut authority = DurableComptimeRootAuthority {
+                    provider,
+                    imports: database.declaration_imports.clone(),
+                    session,
+                    legacy_effects: Default::default(),
+                    foreign: DurableComptimeForeignQueryAuthority {
+                        context,
+                        semantic_nucleus: &database.semantic_nucleus,
+                        declaration_body_plan_artifacts: &database.declaration_body_plan_artifacts,
+                        configuration: &configuration,
+                    },
+                };
+                authority.session.register_program(&core).unwrap();
+
+                let expected_types = BTreeMap::from([(Arc::from("OLD"), T::I8)]);
+                let expected_values = BTreeMap::from([(Arc::from("OLD"), V::Integer(7))]);
+                let wrong_program = crate::body_query::DurableComptimeProgramKey {
+                    declaration: StableDefinitionKey::from_stable_parts(
+                        candidate.module.clone(),
+                        crate::StableDefinitionNamespace::Value,
+                        crate::StableDefinitionKind::Function,
+                        "wrong",
+                        None,
+                    ),
+                    configuration: configuration.clone(),
+                };
+                let (type_result, value_result, restored_after_success) = {
+                    let mut services =
+                        crate::durable_comptime::DurableComptimeServices::new(&mut authority);
+                    let type_result = services
+                        .resolve_type_syntax_with_substitutions(
+                            &program_key,
+                            type_syntax,
+                            &[(Arc::from("T"), T::I64)],
+                            &[(Arc::from("T"), V::Integer(9))],
+                        )
+                        .unwrap();
+                    let value_result = services
+                        .resolve_type_syntax_with_substitutions(
+                            &program_key,
+                            value_syntax,
+                            &[],
+                            &[(Arc::from("N"), V::Integer(3))],
+                        )
+                        .unwrap();
+                    let restored = authority.provider.substitutions == expected_types
+                        && authority.provider.value_substitutions == expected_values;
+                    (type_result, value_result, restored)
+                };
+
+                let provider_failure = {
+                    let mut services =
+                        crate::durable_comptime::DurableComptimeServices::new(&mut authority);
+                    services.resolve_type_syntax_with_substitutions(
+                        &wrong_program,
+                        type_syntax,
+                        &[(Arc::from("T"), T::U8)],
+                        &[(Arc::from("N"), V::Integer(4))],
+                    )
+                };
+                assert!(matches!(
+                    &provider_failure,
+                    Err(rue_air::SemanticTypeSyntaxError::ProviderFailure(_))
+                ));
+                assert_eq!(authority.provider.substitutions, expected_types);
+                assert_eq!(authority.provider.value_substitutions, expected_values);
+
+                let dependencies_before = authority.provider.dependencies.clone();
+                let named_result = {
+                    let mut services =
+                        crate::durable_comptime::DurableComptimeServices::new(&mut authority);
+                    services.resolve_type_syntax_with_substitutions(
+                        &program_key,
+                        named_syntax,
+                        &[],
+                        &[(Arc::from("N2"), V::Integer(2))],
+                    )
+                };
+                assert!(matches!(
+                    &named_result,
+                    Ok(T::Array { element, len: 2 })
+                        if matches!(element.as_ref(), T::Nominal(key) if key.name() == "NamedType")
+                ));
+                let new_dependencies = authority
+                    .provider
+                    .dependencies
+                    .difference(&dependencies_before)
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+                assert_eq!(new_dependencies.len(), 1);
+                assert!(new_dependencies.iter().all(|dependency| matches!(
+                    &dependency.target,
+                    crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedType(
+                        target
+                    ) if target.module() == &candidate.module
+                        && target.name() == "NamedType"
+                )));
+                assert_eq!(authority.provider.substitutions, expected_types);
+                assert_eq!(authority.provider.value_substitutions, expected_values);
+
+                cancel_in_closure.cancel();
+                let aborted = {
+                    let mut services =
+                        crate::durable_comptime::DurableComptimeServices::new(&mut authority);
+                    services.resolve_type_syntax_with_substitutions(
+                        &program_key,
+                        abort_syntax,
+                        &[],
+                        &[],
+                    )
+                };
+                *captured.borrow_mut() = Some((
+                    type_result,
+                    value_result,
+                    restored_after_success,
+                    provider_failure,
+                    named_result,
+                    aborted,
+                    authority.provider.substitutions.clone(),
+                    authority.provider.value_substitutions.clone(),
+                ));
+                Ok(rue_query::QueryOutput::success(ProviderProbeValue))
+            },
+        );
+        assert!(
+            attempt.is_err(),
+            "the injected cancellation should abort the probe"
+        );
+        let (
+            type_result,
+            value_result,
+            restored,
+            provider_failure,
+            named_result,
+            aborted,
+            restored_types,
+            restored_values,
+        ) = captured.into_inner().unwrap();
+        assert_eq!(type_result, T::I64);
+        assert_eq!(
+            value_result,
+            T::Array {
+                element: Arc::new(T::I32),
+                len: 3,
+            }
+        );
+        assert!(restored);
+        assert!(matches!(
+            &provider_failure,
+            Err(rue_air::SemanticTypeSyntaxError::ProviderFailure(_))
+        ));
+        assert!(named_result.is_ok());
+        assert!(matches!(
+            aborted,
+            Err(rue_air::SemanticTypeSyntaxError::ProviderAbort(
+                QueryAbort::Canceled
+            ))
+        ));
+        assert_eq!(restored_types, BTreeMap::from([(Arc::from("OLD"), T::I8)]));
+        assert_eq!(
+            restored_values,
+            BTreeMap::from([(Arc::from("OLD"), V::Integer(7))])
+        );
     }
 
     #[test]

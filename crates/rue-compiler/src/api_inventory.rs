@@ -4220,14 +4220,18 @@ fn durable_comptime_services_are_named_authority_operations() {
         !database.contains("struct SemanticComptimeAuthority"),
         "the ephemeral durable semantic authority must stay deleted"
     );
+    let production_database = database
+        .split("\n#[cfg(test)]\nmod tests")
+        .next()
+        .expect("revisioned query production boundary");
     assert_eq!(
-        database
+        production_database
             .matches("let mut authority = DurableComptimeRootAuthority {")
             .count(),
         2,
         "both durable evaluator roots must construct the root authority"
     );
-    let root_constructions = database
+    let root_constructions = production_database
         .split("let mut authority = DurableComptimeRootAuthority {")
         .skip(1)
         .take(2)
@@ -4281,21 +4285,21 @@ fn durable_comptime_services_are_named_authority_operations() {
         "durable roots must retain exactly two legacy evaluator constructions"
     );
     assert_eq!(
-        database
+        production_database
             .matches("from_const_body_plan_without_imports(")
             .count(),
         1,
         "the const root must materialize one shared owning program core"
     );
     assert_eq!(
-        database
+        production_database
             .matches("from_callable_body_plan_without_imports(")
             .count(),
         1,
         "the callable root must materialize one shared owning program core"
     );
     assert_eq!(
-        database
+        production_database
             .matches("materialize_semantic_candidate_rir")
             .count(),
         0,
@@ -4483,6 +4487,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         .expect("durable semantic authority source");
     for required in [
         "fn resolve_type_syntax(",
+        "fn resolve_type_syntax_with_substitutions(",
         "program: &crate::body_query::DurableComptimeProgramKey",
         "registered_program(program)",
         "program.declaration.module()",
@@ -4534,6 +4539,62 @@ fn durable_comptime_services_are_named_authority_operations() {
             "keyed type resolver must not accept loose program authority: {forbidden}"
         );
     }
+    let substituted_type_resolver = target_authority
+        .split("fn resolve_type_syntax_with_substitutions(")
+        .nth(1)
+        .and_then(|source| source.split("fn begin_comptime_call_admission(").next())
+        .expect("keyed substituted type resolver");
+    for required in [
+        "program: &crate::body_query::DurableComptimeProgramKey",
+        "type_substitutions: &[(Arc<str>, crate::durable_semantics::DurableType)]",
+        "value_substitutions: &[(Arc<str>, crate::durable_semantics::DurableConstValue)]",
+        "with_restored_state(",
+        "authority.resolve_type_syntax(program, syntax)",
+        "authority.provider.substitutions",
+        "authority.provider.value_substitutions",
+    ] {
+        assert!(
+            substituted_type_resolver.contains(required),
+            "substituted type resolution must remain keyed and restore the provider view: {required}"
+        );
+    }
+    for forbidden in [
+        "RirTypeSyntaxArena",
+        "arena: &",
+        "symbols: &[",
+        "RirTypeSyntaxNode",
+        ".type_syntax().node",
+        "ComptimeEngine",
+        "SemanticConstEvaluator",
+        "InstData",
+        "InstRef",
+    ] {
+        assert!(
+            !substituted_type_resolver.contains(forbidden),
+            "substituted type resolver must not acquire raw syntax or evaluator authority: {forbidden}"
+        );
+    }
+    let restore_kernel = database
+        .split("fn with_restored_state<")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("impl<'db> DurableComptimeRootAuthority")
+                .next()
+        })
+        .expect("durable substitution restoration kernel");
+    for required in [
+        "std::panic::catch_unwind",
+        "std::panic::resume_unwind",
+        "let old = install(state)",
+        "restore(state, old)",
+        "operation(state)",
+    ] {
+        assert!(
+            restore_kernel.contains(required),
+            "substitution restoration kernel must preserve unwind cleanup: {required}"
+        );
+    }
     for policy in [
         "\"target_arch\"",
         "\"target_os\"",
@@ -4549,6 +4610,10 @@ fn durable_comptime_services_are_named_authority_operations() {
         );
     }
     assert!(evaluator.contains("DurableComptimeServices::new(&mut *self.authority)"));
+    assert!(
+        evaluator.contains("resolve_type_syntax(&self.program, syntax)"),
+        "legacy type syntax consumers must retain their provider-owned substitution view"
+    );
     assert!(evaluator.contains("let expected = self.resolve_type_syntax(*annotation)?;"));
     let type_literal = evaluator
         .split("fn eval_type_literal(")
