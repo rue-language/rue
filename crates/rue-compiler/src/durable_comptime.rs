@@ -2615,6 +2615,22 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
             .begin_comptime_call_admission(accessing_source, module, name)
     }
 
+    /// Begin admission for a method whose receiver has already reduced to an
+    /// exact module value.  Keeping this named seam distinct from the
+    /// unqualified call operation makes it impossible for a future AIR host
+    /// to recover the method's module from a spelling in the caller.
+    pub(crate) fn begin_evaluated_module_call(
+        &self,
+        accessing_source: &crate::StableDefinitionKey,
+        receiver_module: &ModuleId,
+        method: &str,
+    ) -> Result<
+        DurableComptimeCallableAdmissionStart,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        self.begin_comptime_call_admission(accessing_source, receiver_module, method)
+    }
+
     pub(crate) fn finish_comptime_call_admission(
         &self,
         start: DurableComptimeCallableAdmissionStart,
@@ -2651,6 +2667,22 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
     > {
         self.authority
             .resolve_module_member(accessing_source, module, member)
+    }
+
+    /// Resolve a member from an already-evaluated module value.  This is the
+    /// durable counterpart of AIR's evaluated receiver path: it preserves the
+    /// module identity and returns the direct dependency projection exactly
+    /// once to the caller, with no unqualified fallback.
+    pub(crate) fn resolve_evaluated_module_member(
+        &self,
+        accessing_source: &crate::StableDefinitionKey,
+        receiver_module: &ModuleId,
+        member: &str,
+    ) -> Result<
+        DurableComptimeNamedValueProjection,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        self.resolve_module_member(accessing_source, receiver_module, member)
     }
 
     pub(crate) fn resolve_import(

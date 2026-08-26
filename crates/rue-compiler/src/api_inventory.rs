@@ -3436,6 +3436,96 @@ fn durable_comptime_services_are_named_authority_operations() {
             "durable facade missing {required}"
         );
     }
+    let service_impl = production_facade
+        .split(
+            "impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A> {",
+        )
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("impl<A: DurableComptimeForeignCallAuthority")
+                .next()
+        })
+        .expect("durable semantic services implementation");
+    let evaluated_call = service_impl
+        .split("pub(crate) fn begin_evaluated_module_call(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n    pub(crate) fn finish_comptime_call_admission(")
+                .next()
+        })
+        .expect("evaluated-module call service seam");
+    assert_eq!(
+        evaluated_call
+            .matches("self.begin_comptime_call_admission(")
+            .count(),
+        1,
+        "evaluated-module call must delegate through exactly one canonical admission"
+    );
+    for required in ["receiver_module", "method"] {
+        assert!(
+            evaluated_call.contains(required),
+            "evaluated-module call must preserve exact receiver input: {required}"
+        );
+    }
+    for forbidden in [
+        "resolve_named_value(",
+        "resolve_module_member(",
+        "begin_evaluated_module_call(",
+        "finish_comptime_call_admission(",
+    ] {
+        assert!(
+            !evaluated_call.contains(forbidden),
+            "evaluated-module call gained a second semantic operation: {forbidden}"
+        );
+    }
+    let evaluated_member = service_impl
+        .split("pub(crate) fn resolve_evaluated_module_member(")
+        .nth(1)
+        .and_then(|source| source.split("\n    pub(crate) fn resolve_import(").next())
+        .expect("evaluated-module member service seam");
+    assert_eq!(
+        evaluated_member
+            .matches("self.resolve_module_member(")
+            .count(),
+        1,
+        "evaluated-module member must delegate through exactly one canonical member lookup"
+    );
+    for required in ["receiver_module", "member"] {
+        assert!(
+            evaluated_member.contains(required),
+            "evaluated-module member must preserve exact receiver input: {required}"
+        );
+    }
+    for forbidden in [
+        "resolve_named_value(",
+        "begin_comptime_call_admission(",
+        "begin_evaluated_module_call(",
+        "resolve_evaluated_module_member(",
+        "finish_comptime_call_admission(",
+    ] {
+        assert!(
+            !evaluated_member.contains(forbidden),
+            "evaluated-module member gained a second semantic operation: {forbidden}"
+        );
+    }
+    for seam in [evaluated_call, evaluated_member] {
+        for forbidden in [
+            "InstData",
+            "InstRef",
+            "SemanticConstEvaluator",
+            "ComptimeEngine",
+            "query_registered(",
+            "candidate(",
+            "identity(",
+        ] {
+            assert!(
+                !seam.contains(forbidden),
+                "evaluated-module semantic seam gained policy or evaluator authority: {forbidden}"
+            );
+        }
+    }
     let frame_adapter = production_facade
         .split("pub(crate) fn admit_const_root(")
         .nth(1)
@@ -4656,12 +4746,22 @@ fn durable_comptime_services_are_named_authority_operations() {
         .nth(1)
         .and_then(|source| source.split("fn eval_type_literal(").next())
         .expect("durable named-call evaluator");
+    assert_eq!(
+        named_call.matches("begin_evaluated_module_call(").count(),
+        1,
+        "durable named calls must have one evaluated-module admission"
+    );
+    assert_eq!(
+        named_call.matches("begin_comptime_call_admission(").count(),
+        0,
+        "durable named calls must not bypass evaluated-module admission"
+    );
     assert!(
-        named_call.contains("begin_comptime_call_admission("),
-        "durable named calls must consume the canonical admission projection"
+        named_call.contains("begin_evaluated_module_call("),
+        "durable named calls must consume the evaluated-module admission projection"
     );
     let begin = named_call
-        .find("begin_comptime_call_admission(")
+        .find("begin_evaluated_module_call(")
         .expect("named-call begin admission");
     let observed = named_call
         .find("observe_dependency(admission_start.dependency.clone())")
@@ -4872,7 +4972,22 @@ fn durable_comptime_services_are_named_authority_operations() {
         .nth(1)
         .and_then(|source| source.split("E::StructInit").next())
         .expect("durable field-get evaluator");
-    assert_eq!(field_get.matches("resolve_module_member(").count(), 1);
+    assert_eq!(
+        field_get
+            .matches("resolve_evaluated_module_member(")
+            .count(),
+        1
+    );
+    assert_eq!(
+        field_get.matches("resolve_module_member(").count(),
+        0,
+        "durable FieldGet must not bypass evaluated-module member lookup"
+    );
+    assert_eq!(
+        field_get.matches("resolve_named_value(").count(),
+        0,
+        "durable FieldGet must not fall back to unqualified named lookup"
+    );
     let target_special = field_get
         .find("if let E::VarRef { name, .. }")
         .expect("field-get target descriptor special case");
@@ -4883,7 +4998,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         .find("member access on a non-module const value")
         .expect("field-get non-module rejection");
     let service = field_get
-        .find("resolve_module_member(")
+        .find("resolve_evaluated_module_member(")
         .expect("field-get module-member service");
     let field_projection = field_get
         .find("projection.into_parts()")
