@@ -1815,6 +1815,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     fn prepare_structured_type_call(
         &mut self,
         _suspension: &Self::StructuredTypeSuspension,
+        _span: Span,
     ) -> ComptimeOutcome<
         Option<
             ComptimeCallPreparation<
