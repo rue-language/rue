@@ -74,6 +74,7 @@ pub use runtime_call::{
     OptionVariant, RuntimeAirArgument, RuntimeAirType, RuntimeCallActivation, RuntimeCallKind,
     RuntimeOperandOrigin,
 };
+pub use sema::ComptimeMethodReceiverPolicy;
 pub use sema::{
     AnalyzedBodyOwnerEvent, AnalyzedCallableKind, AnalyzedFunction, BodyAnalysisWork,
     BodyFactProvider, BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken,

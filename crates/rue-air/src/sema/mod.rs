@@ -59,6 +59,7 @@ pub use binding_manifest::{
     SemanticDeclarationShell, SemanticDeclarationShellIdentity, SemanticDefinitionIdentity,
     SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
 };
+pub use comptime::ComptimeMethodReceiverPolicy;
 pub use comptime::{
     ComptimeAnonymousKind, ComptimeArgMode, ComptimeArrayLengthBinding, ComptimeCallAdmission,
     ComptimeCallArgument, ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCallPreparation,

@@ -391,6 +391,16 @@ pub enum ComptimeSiteKind {
     Member,
 }
 
+/// Controls whether a comptime method receiver is evaluated as a semantic
+/// value before callable admission. Ordinary body probing keeps the historical
+/// path-only behavior; durable declaration hosts can opt into receiver
+/// evaluation for exact module-receiver identity and diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeMethodReceiverPolicy {
+    SyntacticModulePath,
+    EvaluateReceiver,
+}
+
 /// An engine-owned semantic site identity. The owning program, operation kind,
 /// and source-order occurrence make equal instruction indices and spans from
 /// different programs distinct without exposing an instruction reference to a
@@ -597,6 +607,11 @@ mod value_domain_tests {
         static BINDING_FINISHES: Cell<usize> = const { Cell::new(0) };
         static PREPARE_CALLS: Cell<usize> = const { Cell::new(0) };
         static ALLOW_MODULE_CALLS: Cell<bool> = const { Cell::new(false) };
+        static EVALUATED_METHOD_RECEIVER_MODE: Cell<u8> = const { Cell::new(0) };
+        static EVALUATED_METHOD_RECEIVERS: RefCell<Vec<FakeValue>> = const { RefCell::new(Vec::new()) };
+        static EVALUATED_METHOD_EVENTS: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+        static EVALUATED_METHOD_ARGUMENT_CALLS: Cell<usize> = const { Cell::new(0) };
+        static EVALUATED_METHOD_FAIL_ON_UNIT: Cell<bool> = const { Cell::new(false) };
         static REJECT_ADMISSION: Cell<bool> = const { Cell::new(false) };
         static REJECT_BIND_AT: Cell<Option<usize>> = const { Cell::new(None) };
         static NAMED_VALUE_CALLS: Cell<usize> = const { Cell::new(0) };
@@ -1364,6 +1379,11 @@ mod value_domain_tests {
         REJECT_BIND_AT.with(|rejected| rejected.set(None));
         BINDING_FINISHES.with(|count| count.set(0));
         PREPARE_CALLS.with(|count| count.set(0));
+        EVALUATED_METHOD_RECEIVER_MODE.with(|mode| mode.set(0));
+        EVALUATED_METHOD_RECEIVERS.with(|receivers| receivers.borrow_mut().clear());
+        EVALUATED_METHOD_EVENTS.with(|events| events.borrow_mut().clear());
+        EVALUATED_METHOD_ARGUMENT_CALLS.with(|count| count.set(0));
+        EVALUATED_METHOD_FAIL_ON_UNIT.with(|fail| fail.set(false));
     }
 
     fn clear_named_value_observations() {
@@ -1714,6 +1734,9 @@ mod value_domain_tests {
             span: Span,
         ) -> ComptimeHostResult<ComptimeNamedValueResolution<Self::Value>, Self::Failure> {
             NAMED_VALUE_CALLS.with(|count| count.set(count.get() + 1));
+            if EVALUATED_METHOD_RECEIVER_MODE.with(|mode| mode.get() != 0) {
+                EVALUATED_METHOD_EVENTS.with(|events| events.borrow_mut().push("receiver_eval"));
+            }
             let info = self
                 .constant
                 .as_ref()
@@ -2050,6 +2073,63 @@ mod value_domain_tests {
                 .with(|allowed| allowed.get())
                 .then_some(method))
         }
+        fn comptime_method_receiver_policy(&self) -> ComptimeMethodReceiverPolicy {
+            EVALUATED_METHOD_RECEIVER_MODE.with(|mode| {
+                if mode.get() == 0 {
+                    ComptimeMethodReceiverPolicy::SyntacticModulePath
+                } else {
+                    ComptimeMethodReceiverPolicy::EvaluateReceiver
+                }
+            })
+        }
+        fn admit_evaluated_comptime_method(
+            &mut self,
+            receiver: Self::Value,
+            method: Self::Name,
+            _arg_count: usize,
+            _arg_modes: &[ComptimeArgMode],
+            _env: &mut ComptimeEnv<
+                '_,
+                Self::Value,
+                Self::Type,
+                Self::Name,
+                Self::File,
+                FakeIdentity,
+            >,
+            _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+            _span: Span,
+        ) -> ComptimeOutcome<
+            Option<ComptimeCallAdmission<Self::CallAdmission, Self::Name>>,
+            Self::Failure,
+        > {
+            EVALUATED_METHOD_EVENTS.with(|events| events.borrow_mut().push("receiver_hook"));
+            EVALUATED_METHOD_RECEIVERS
+                .with(|receivers| receivers.borrow_mut().push(receiver.clone()));
+            let mode = EVALUATED_METHOD_RECEIVER_MODE.with(Cell::get);
+            if EVALUATED_METHOD_FAIL_ON_UNIT.with(Cell::get) && receiver == FakeValue::Unit {
+                return ComptimeOutcome::HostFailure(FAKE_FAILURE);
+            }
+            match mode {
+                1 => ComptimeOutcome::Known(Some(ComptimeCallAdmission {
+                    name: FakeName {
+                        ordinal: receiver
+                            .as_type()
+                            .map_or(method.ordinal, |ty| method.ordinal + ty.0 as u32),
+                    },
+                    payload: (),
+                })),
+                2 => ComptimeOutcome::Known(None),
+                3 => ComptimeOutcome::RuntimeDependent,
+                4 => ComptimeOutcome::NotReady,
+                5 => ComptimeOutcome::UnsupportedContext,
+                6 => ComptimeOutcome::Trap(ComptimeTrap {
+                    operation: "receiver trap",
+                    span: Span::new(0, 0),
+                }),
+                7 => ComptimeOutcome::HostFailure(FAKE_FAILURE),
+                _ => ComptimeOutcome::Abort(FAKE_FAILURE),
+            }
+        }
         fn admit_comptime_call(
             &mut self,
             name: Self::Name,
@@ -2092,6 +2172,10 @@ mod value_domain_tests {
         ) -> ComptimeHostResult<bool, Self::Failure> {
             if REJECT_BIND_AT.with(|rejected| rejected.get() == Some(index)) {
                 return Ok(false);
+            }
+            if EVALUATED_METHOD_RECEIVER_MODE.with(|mode| mode.get() != 0) {
+                EVALUATED_METHOD_EVENTS.with(|events| events.borrow_mut().push("argument"));
+                EVALUATED_METHOD_ARGUMENT_CALLS.with(|count| count.set(count.get() + 1));
             }
             binding
                 .arguments
@@ -4203,6 +4287,231 @@ mod value_domain_tests {
     }
 
     #[test]
+    fn evaluated_method_receiver_is_admitted_before_arguments_and_preserves_terminals() {
+        let interner = lasso::ThreadedRodeo::new();
+        let receiver_symbol = interner.get_or_intern("lib");
+        let method_symbol = interner.get_or_intern("run");
+        let receiver_handle = SymbolHandle::new(receiver_symbol);
+        let method_handle = SymbolHandle::new(method_symbol);
+        let inner_symbol = interner.get_or_intern("inner");
+        let inner_handle = SymbolHandle::new(inner_symbol);
+        let mut parent = rue_rir::RirEditor::new();
+        let receiver = parent.add_inst(Inst {
+            data: InstData::VarRef {
+                name: receiver_symbol,
+                anchor: None,
+            },
+            span: Span::new(0, 3),
+        });
+        let argument = parent.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(4, 6),
+        });
+        let call = parent
+            .add_method_call(
+                receiver,
+                method_symbol,
+                &[rue_rir::RirCallArg {
+                    value: argument,
+                    mode: rue_rir::RirArgMode::Normal,
+                }],
+                Span::new(0, 7),
+            )
+            .unwrap();
+        let terminal_receiver = parent
+            .add_call(inner_symbol, &[], Span::new(8, 13))
+            .unwrap();
+        let terminal_call = parent
+            .add_method_call(
+                terminal_receiver,
+                method_symbol,
+                &[rue_rir::RirCallArg {
+                    value: argument,
+                    mode: rue_rir::RirArgMode::Normal,
+                }],
+                Span::new(8, 20),
+            )
+            .unwrap();
+        let non_module_receiver = parent.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(21, 22),
+        });
+        let non_module_call = parent
+            .add_method_call(
+                non_module_receiver,
+                method_symbol,
+                &[rue_rir::RirCallArg {
+                    value: argument,
+                    mode: rue_rir::RirArgMode::Normal,
+                }],
+                Span::new(21, 29),
+            )
+            .unwrap();
+        let mut child = rue_rir::RirEditor::new();
+        let child_body = child.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(10, 12),
+        });
+        let receiver_name = FakeName {
+            ordinal: receiver_handle.issuing_interner_ordinal() as u32,
+        };
+        let method_name = method_handle.issuing_interner_ordinal() as u32;
+        let selected_name = method_name + 7;
+        let inner_name = inner_handle.issuing_interner_ordinal() as u32;
+        let mut call_plans = AHashMap::new();
+        call_plans.insert(
+            selected_name,
+            FakePreparedCall::Enter {
+                program: 1,
+                body: child_body,
+                expected: None,
+                name_bindings: AHashMap::new(),
+            },
+        );
+        let mut host = FakeHost {
+            programs: vec![parent.finish(), child.finish()],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: Some((
+                FakeFile { index: 0 },
+                receiver_name.clone(),
+                FakeConstInfo {
+                    span: Span::new(0, 3),
+                    value: Some(FakeValue::Type(FakeType(7))),
+                },
+            )),
+            dependencies: Vec::new(),
+            call_plans,
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+
+        // Ordinary hosts retain the path-only shortcut and do not evaluate the
+        // receiver before module-path resolution.
+        clear_call_argument_observations();
+        clear_named_value_observations();
+        host.dependencies.clear();
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        assert!(matches!(
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, call), &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+        assert!(EVALUATED_METHOD_EVENTS.with(|events| events.borrow().is_empty()));
+        assert_eq!(NAMED_VALUE_CALLS.with(Cell::get), 0);
+        assert!(host.dependencies.is_empty());
+
+        // Durable-style hosts evaluate even a syntactically decodable path.
+        // The receiver token is retained by the admission hook, so the caller
+        // cannot accidentally select a same-spelled callable in its own module.
+        EVALUATED_METHOD_RECEIVER_MODE.with(|mode| mode.set(1));
+        let result =
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, call), &mut env);
+        assert!(matches!(
+            result,
+            ComptimeOutcome::Known(FakeValue::Integer(42))
+        ));
+        assert_eq!(
+            EVALUATED_METHOD_EVENTS.with(|events| events.borrow().clone()),
+            vec!["receiver_eval", "receiver_hook", "argument"]
+        );
+        assert_eq!(
+            EVALUATED_METHOD_RECEIVERS.with(|receivers| receivers.borrow().clone()),
+            vec![FakeValue::Type(FakeType(7))]
+        );
+        assert_eq!(
+            EVALUATED_METHOD_ARGUMENT_CALLS.with(Cell::get),
+            1,
+            "arguments are evaluated only after receiver admission"
+        );
+        assert_eq!(NAMED_VALUE_CALLS.with(Cell::get), 1);
+        assert_eq!(
+            host.dependencies,
+            vec![(FakeFile { index: 0 }, receiver_name.clone())]
+        );
+
+        // A known non-module receiver is rejected by its semantic value, and
+        // never reaches ordinary argument binding or preparation.
+        clear_call_argument_observations();
+        EVALUATED_METHOD_RECEIVER_MODE.with(|mode| mode.set(1));
+        EVALUATED_METHOD_FAIL_ON_UNIT.with(|fail| fail.set(true));
+        let non_module_result = ComptimeEngine::new(&mut host)
+            .evaluate(ComptimeFrame::expression(0, non_module_call), &mut env);
+        assert!(matches!(
+            non_module_result,
+            ComptimeOutcome::HostFailure(FAKE_FAILURE)
+        ));
+        assert_eq!(
+            EVALUATED_METHOD_RECEIVERS.with(|receivers| receivers.borrow().clone()),
+            vec![FakeValue::Unit]
+        );
+        assert_eq!(EVALUATED_METHOD_ARGUMENT_CALLS.with(Cell::get), 0);
+        assert_eq!(BINDING_FINISHES.with(Cell::get), 0);
+        assert_eq!(PREPARE_CALLS.with(Cell::get), 0);
+
+        // A receiver hook terminal propagates before argument evaluation.
+        for mode in 2..=8 {
+            clear_call_argument_observations();
+            EVALUATED_METHOD_RECEIVER_MODE.with(|configured| configured.set(mode));
+            let result = ComptimeEngine::new(&mut host)
+                .evaluate(ComptimeFrame::expression(0, call), &mut env);
+            match mode {
+                2 | 3 => assert!(matches!(result, ComptimeOutcome::RuntimeDependent)),
+                4 => assert!(matches!(result, ComptimeOutcome::NotReady)),
+                5 => assert!(matches!(result, ComptimeOutcome::UnsupportedContext)),
+                6 => assert!(matches!(result, ComptimeOutcome::Trap(_))),
+                7 => assert!(matches!(result, ComptimeOutcome::HostFailure(_))),
+                8 => assert!(matches!(result, ComptimeOutcome::Abort(_))),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                EVALUATED_METHOD_EVENTS.with(|events| events.borrow().clone()),
+                vec!["receiver_eval", "receiver_hook"]
+            );
+            assert_eq!(EVALUATED_METHOD_ARGUMENT_CALLS.with(Cell::get), 0);
+        }
+
+        // The same terminals must also propagate when they are genuinely
+        // produced while evaluating the receiver, before the receiver hook is
+        // reached. This covers the legacy receiver-evaluation ordering.
+        for mode in 3..=8 {
+            clear_call_argument_observations();
+            EVALUATED_METHOD_RECEIVER_MODE.with(|configured| configured.set(1));
+            let receiver_outcome = match mode {
+                3 => ComptimeOutcome::RuntimeDependent,
+                4 => ComptimeOutcome::NotReady,
+                5 => ComptimeOutcome::UnsupportedContext,
+                6 => ComptimeOutcome::Trap(ComptimeTrap {
+                    operation: "receiver trap",
+                    span: Span::new(0, 0),
+                }),
+                7 => ComptimeOutcome::HostFailure(FAKE_FAILURE),
+                _ => ComptimeOutcome::Abort(FAKE_FAILURE),
+            };
+            host.call_plans
+                .insert(inner_name, FakePreparedCall::Memoized(receiver_outcome));
+            let result = ComptimeEngine::new(&mut host)
+                .evaluate(ComptimeFrame::expression(0, terminal_call), &mut env);
+            match mode {
+                3 => assert!(matches!(result, ComptimeOutcome::RuntimeDependent)),
+                4 => assert!(matches!(result, ComptimeOutcome::NotReady)),
+                5 => assert!(matches!(result, ComptimeOutcome::UnsupportedContext)),
+                6 => assert!(matches!(result, ComptimeOutcome::Trap(_))),
+                7 => assert!(matches!(result, ComptimeOutcome::HostFailure(_))),
+                8 => assert!(matches!(result, ComptimeOutcome::Abort(_))),
+                _ => unreachable!(),
+            }
+            assert!(EVALUATED_METHOD_EVENTS.with(|events| events.borrow().is_empty()));
+            assert!(EVALUATED_METHOD_RECEIVERS.with(|receivers| receivers.borrow().is_empty()));
+            assert_eq!(EVALUATED_METHOD_ARGUMENT_CALLS.with(Cell::get), 0);
+        }
+        clear_call_argument_observations();
+        clear_named_value_observations();
+        host.dependencies.clear();
+    }
+
+    #[test]
     fn argument_provenance_restores_parent_program_after_a_foreign_argument() {
         let interner = lasso::ThreadedRodeo::new();
         let outer_symbol = interner.get_or_intern("outer");
@@ -6149,6 +6458,35 @@ pub trait ComptimeHost {
         method: Self::Name,
         span: Span,
     ) -> ComptimeHostResult<Option<Self::Name>, Self::Failure>;
+    fn comptime_method_receiver_policy(&self) -> ComptimeMethodReceiverPolicy {
+        ComptimeMethodReceiverPolicy::SyntacticModulePath
+    }
+    /// Admit a method call after its receiver has been evaluated. The
+    /// receiver remains in the host-owned admission payload, so a durable
+    /// host cannot accidentally resolve the method against an unqualified
+    /// spelling in the caller's module.
+    fn admit_evaluated_comptime_method(
+        &mut self,
+        _receiver: Self::Value,
+        _method: Self::Name,
+        _arg_count: usize,
+        _arg_modes: &[ComptimeArgMode],
+        _env: &mut ComptimeEnv<
+            '_,
+            Self::Value,
+            Self::Type,
+            Self::Name,
+            Self::File,
+            Self::CanonicalIdentity,
+        >,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+        _span: Span,
+    ) -> ComptimeOutcome<
+        Option<ComptimeCallAdmission<Self::CallAdmission, Self::Name>>,
+        Self::Failure,
+    > {
+        ComptimeOutcome::RuntimeDependent
+    }
     fn admit_comptime_call(
         &mut self,
         name: Self::Name,
@@ -7073,6 +7411,30 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         span: Span,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
         let args = self.program_rir().call_args(args).to_vec();
+        if matches!(
+            self.host.comptime_method_receiver_policy(),
+            ComptimeMethodReceiverPolicy::EvaluateReceiver
+        ) {
+            let receiver = outcome_value!(self.eval(receiver, env));
+            let arg_modes: Vec<ComptimeArgMode> = args
+                .iter()
+                .map(|arg| (arg.mode, self.program_rir().get(arg.value).span))
+                .collect();
+            let admission = outcome_value!(self.host.admit_evaluated_comptime_method(
+                receiver,
+                method,
+                args.len(),
+                &arg_modes,
+                env,
+                &self.diagnostic_site(span),
+                span,
+            ));
+            let Some(admission) = admission else {
+                return ComptimeOutcome::RuntimeDependent;
+            };
+            return self.evaluate_admitted_call(admission, &args, env, span);
+        }
+
         let decoded = self.decode_module_path(receiver, env);
         let Some((file_id, segments)) = decoded else {
             return ComptimeOutcome::RuntimeDependent;
@@ -7096,12 +7458,22 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let Some(admission) = admission else {
             return ComptimeOutcome::RuntimeDependent;
         };
+        self.evaluate_admitted_call(admission, &args, env, span)
+    }
+
+    fn evaluate_admitted_call(
+        &mut self,
+        admission: ComptimeCallAdmission<H::CallAdmission, H::Name>,
+        args: &[rue_rir::RirCallArg],
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+        span: Span,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
         let mut binding = host_value!(self.host.begin_comptime_call_binding(
             &admission,
             args.len(),
             span,
         ));
-        outcome_value!(self.evaluate_call_arguments(&args, env, &mut binding, span));
+        outcome_value!(self.evaluate_call_arguments(args, env, &mut binding, span));
         let bound = host_value!(self.host.finish_comptime_call_binding(binding, span));
         let Some(bound) = bound else {
             return ComptimeOutcome::RuntimeDependent;
