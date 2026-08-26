@@ -60,7 +60,7 @@ use super::comptime::{
     ComptimeEnv as GenericComptimeEnv, ComptimeFile, ComptimeFrame, ComptimeHost,
     ComptimeHostError, ComptimeHostResult, ComptimeIdentity, ComptimeMatchPattern,
     ComptimeMethodDescriptor, ComptimeName, ComptimeNamedValueResolution, ComptimeOutcome,
-    ComptimeStructuredTypeResolution, ComptimeTrap, ComptimeType,
+    ComptimeSemanticRejection, ComptimeStructuredTypeResolution, ComptimeTrap, ComptimeType,
 };
 use super::context::{AnalysisContext, ConstValue};
 use super::info::FunctionCallInfo;
@@ -1941,6 +1941,21 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeOutcome<Self::Value, Self::Failure> {
         ComptimeOutcome::RuntimeDependent
+    }
+    fn reject_comptime_expression(
+        &self,
+        rejection: ComptimeSemanticRejection<Self::Value>,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        match rejection {
+            // Empty ordinary blocks historically reduce to unit; preserve
+            // that body-domain behavior while durable hosts may reject them.
+            ComptimeSemanticRejection::EmptyBlock => ComptimeOutcome::Known(ConstValue::Unit),
+            _ => ComptimeOutcome::RuntimeDependent,
+        }
+    }
+    fn evaluate_binary_rhs_after_rejection(&self) -> bool {
+        false
     }
     fn require_preview(
         &self,

@@ -592,6 +592,7 @@ mod value_domain_tests {
         static TYPE_RESOLUTION_CALLS: Cell<usize> = const { Cell::new(0) };
         static CHECKPOINTS: Cell<usize> = const { Cell::new(0) };
         static ABORT_AT_CHECKPOINT: Cell<Option<usize>> = const { Cell::new(None) };
+        static EVALUATE_RHS_AFTER_REJECTION: Cell<bool> = const { Cell::new(true) };
         static CALL_ARGUMENTS: RefCell<Vec<(FakeValue, bool)>> = const { RefCell::new(Vec::new()) };
         static BINDING_FINISHES: Cell<usize> = const { Cell::new(0) };
         static PREPARE_CALLS: Cell<usize> = const { Cell::new(0) };
@@ -620,6 +621,10 @@ mod value_domain_tests {
         static MATCH_PATTERN_FORCE_FALSE: Cell<bool> = const { Cell::new(false) };
         static MATCH_NO_SELECTED_FAILURE: Cell<bool> = const { Cell::new(false) };
         static MATCH_NO_SELECTED_SITES: RefCell<Vec<(usize, u32, u32)>> =
+            const { RefCell::new(Vec::new()) };
+        static REJECTION_EVENTS: RefCell<Vec<ComptimeSemanticRejection<FakeValue>>> =
+            const { RefCell::new(Vec::new()) };
+        static REJECTION_SITES: RefCell<Vec<(usize, u32, u32)>> =
             const { RefCell::new(Vec::new()) };
         static MATCH_PATTERN_EVENTS: RefCell<Vec<ComptimeMatchPattern<FakeName>>> =
             const { RefCell::new(Vec::new()) };
@@ -841,6 +846,331 @@ mod value_domain_tests {
         MATCH_NO_SELECTED_FAILURE.with(|failure| failure.set(false));
     }
 
+    #[test]
+    fn semantic_rejections_are_emitted_by_real_engine_dispatch() {
+        let mut editor = RirEditor::new();
+        let unit = editor.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 1),
+        });
+        let boolean = editor.add_inst(Inst {
+            data: InstData::BoolConst(true),
+            span: Span::new(1, 2),
+        });
+        let not_unit = editor.add_inst(Inst {
+            data: InstData::Not { operand: unit },
+            span: Span::new(2, 3),
+        });
+        let add_unit = editor.add_inst(Inst {
+            data: InstData::Add {
+                lhs: unit,
+                rhs: boolean,
+            },
+            span: Span::new(3, 4),
+        });
+        let then_block = editor.add_block(&[unit], Span::new(4, 5)).unwrap();
+        let branch_unit = editor.add_inst(Inst {
+            data: InstData::Branch {
+                cond: unit,
+                then_block,
+                else_block: None,
+            },
+            span: Span::new(5, 6),
+        });
+        let empty_block = editor.add_block(&[], Span::new(6, 7)).unwrap();
+        let loop_unit = editor.add_inst(Inst {
+            data: InstData::Loop {
+                cond: boolean,
+                body: unit,
+            },
+            span: Span::new(7, 8),
+        });
+        let assignment = editor.add_inst(Inst {
+            data: InstData::Assign {
+                name: lasso::Spur::default(),
+                value: unit,
+            },
+            span: Span::new(8, 9),
+        });
+        let non_tail_assignment = editor
+            .add_block(&[assignment, unit], Span::new(9, 10))
+            .unwrap();
+        let tail_assignment = editor
+            .add_block(&[unit, assignment], Span::new(10, 11))
+            .unwrap();
+        let program = editor.finish();
+        let mut host = FakeHost {
+            programs: vec![program],
+            type_symbol: SymbolHandle::new(lasso::ThreadedRodeo::new().get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        REJECTION_EVENTS.with(|events| events.borrow_mut().clear());
+        let mut engine = ComptimeEngine::new(&mut host);
+        for root in [
+            not_unit,
+            add_unit,
+            branch_unit,
+            empty_block,
+            loop_unit,
+            non_tail_assignment,
+            tail_assignment,
+        ] {
+            assert!(matches!(
+                engine.evaluate(ComptimeFrame::expression(0, root), &mut env),
+                ComptimeOutcome::RuntimeDependent
+            ));
+        }
+        assert_eq!(
+            REJECTION_EVENTS.with(|events| events.borrow().clone()),
+            vec![
+                ComptimeSemanticRejection::ConditionNotBoolean(FakeValue::Unit),
+                ComptimeSemanticRejection::ArithmeticOperandNotInteger {
+                    operation: ComptimeIntegerOperation::Add,
+                    lhs: FakeValue::Unit,
+                    rhs: Some(FakeValue::Boolean(true)),
+                },
+                ComptimeSemanticRejection::ConditionNotBoolean(FakeValue::Unit),
+                ComptimeSemanticRejection::EmptyBlock,
+                ComptimeSemanticRejection::UnsupportedExpression,
+                ComptimeSemanticRejection::Assignment,
+                ComptimeSemanticRejection::UnsupportedExpression,
+            ]
+        );
+        configure_checkpoint_abort(None);
+        configure_binary_rhs_policy(false);
+        assert!(matches!(
+            engine.evaluate(ComptimeFrame::expression(0, add_unit), &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+        assert_eq!(checkpoint_count(), 2);
+        configure_checkpoint_abort(Some(3));
+        configure_binary_rhs_policy(true);
+        assert!(matches!(
+            engine.evaluate(ComptimeFrame::expression(0, add_unit), &mut env),
+            ComptimeOutcome::Abort(FakeFailure::Canceled)
+        ));
+        assert_eq!(checkpoint_count(), 3);
+        configure_checkpoint_abort(None);
+        configure_binary_rhs_policy(true);
+    }
+
+    #[test]
+    fn semantic_rejection_sites_preserve_program_identity_for_colliding_spans() {
+        let make_program = || {
+            let mut editor = RirEditor::new();
+            let unit = editor.add_inst(Inst {
+                data: InstData::UnitConst,
+                span: Span::new(40, 41),
+            });
+            let rejected = editor.add_inst(Inst {
+                data: InstData::Neg { operand: unit },
+                span: Span::new(40, 41),
+            });
+            (editor.finish(), rejected)
+        };
+        let (first, first_root) = make_program();
+        let (second, second_root) = make_program();
+        let mut host = FakeHost {
+            programs: vec![first, second],
+            type_symbol: SymbolHandle::new(lasso::ThreadedRodeo::new().get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        REJECTION_SITES.with(|sites| sites.borrow_mut().clear());
+
+        assert!(matches!(
+            ComptimeEngine::new(&mut host)
+                .evaluate(ComptimeFrame::expression(0, first_root), &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+        assert!(matches!(
+            ComptimeEngine::new(&mut host)
+                .evaluate(ComptimeFrame::expression(1, second_root), &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+        assert_eq!(
+            REJECTION_SITES.with(|sites| sites.borrow().clone()),
+            vec![(0, 40, 41), (1, 40, 41)]
+        );
+    }
+
+    #[test]
+    fn non_tail_assignment_restores_locals_before_rejection_and_reuse() {
+        let mut editor = RirEditor::new();
+        let unit = editor.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 1),
+        });
+        let assignment = editor.add_inst(Inst {
+            data: InstData::Assign {
+                name: lasso::Spur::default(),
+                value: unit,
+            },
+            span: Span::new(1, 2),
+        });
+        let allocation = editor
+            .add_alloc(
+                &[],
+                Some(lasso::Spur::default()),
+                false,
+                None,
+                unit,
+                false,
+                Span::new(0, 1),
+            )
+            .unwrap();
+        let non_tail = editor
+            .add_block(&[allocation, assignment, unit], Span::new(1, 3))
+            .unwrap();
+        let var = editor.add_inst(Inst {
+            data: InstData::VarRef {
+                name: lasso::Spur::default(),
+                anchor: None,
+            },
+            span: Span::new(3, 4),
+        });
+        let program = editor.finish();
+        let mut host = FakeHost {
+            programs: vec![program],
+            type_symbol: SymbolHandle::new(lasso::ThreadedRodeo::new().get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        assert!(matches!(
+            ComptimeEngine::new(&mut host)
+                .evaluate(ComptimeFrame::expression(0, non_tail), &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+        assert!(!env.locals.contains_key(&FakeName { ordinal: 0 }));
+        NAMED_TYPE_MISSING.with(|missing| missing.set(true));
+        assert!(matches!(
+            ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, var), &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+        NAMED_TYPE_MISSING.with(|missing| missing.set(false));
+    }
+
+    #[test]
+    fn unary_aggregate_and_unknown_type_intrinsic_use_real_rejection_dispatch() {
+        let mut editor = RirEditor::new();
+        let unit = editor.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(20, 21),
+        });
+        let neg = editor.add_inst(Inst {
+            data: InstData::Neg { operand: unit },
+            span: Span::new(20, 21),
+        });
+        let bitnot = editor.add_inst(Inst {
+            data: InstData::BitNot { operand: unit },
+            span: Span::new(20, 21),
+        });
+        let typed = editor.add_inst(Inst {
+            data: InstData::VarRef {
+                name: lasso::Spur::default(),
+                anchor: None,
+            },
+            span: Span::new(20, 21),
+        });
+        let typed_neg = editor.add_inst(Inst {
+            data: InstData::Neg { operand: typed },
+            span: Span::new(20, 21),
+        });
+        let typed_bitnot = editor.add_inst(Inst {
+            data: InstData::BitNot { operand: typed },
+            span: Span::new(20, 21),
+        });
+        let aggregate = editor
+            .add_struct_init(
+                None,
+                None,
+                lasso::Spur::default(),
+                &[],
+                None,
+                Span::new(20, 21),
+            )
+            .unwrap();
+        let type_arg = editor.add_unit_type().unwrap();
+        let unknown_type_intrinsic = editor.add_inst(Inst {
+            data: InstData::TypeIntrinsic {
+                name: lasso::Spur::default(),
+                type_arg,
+            },
+            span: Span::new(20, 21),
+        });
+        let mut host = FakeHost {
+            programs: vec![editor.finish()],
+            type_symbol: SymbolHandle::new(lasso::ThreadedRodeo::new().get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        env.locals.insert(
+            FakeName { ordinal: 0 },
+            FakeValue::TypedInteger(1, FakeType(99)),
+        );
+        REJECTION_EVENTS.with(|events| events.borrow_mut().clear());
+        let mut engine = ComptimeEngine::new(&mut host);
+        for root in [
+            neg,
+            bitnot,
+            typed_neg,
+            typed_bitnot,
+            aggregate,
+            unknown_type_intrinsic,
+        ] {
+            assert!(matches!(
+                engine.evaluate(ComptimeFrame::expression(0, root), &mut env),
+                ComptimeOutcome::RuntimeDependent
+            ));
+        }
+        assert_eq!(
+            REJECTION_EVENTS.with(|events| events.borrow().clone()),
+            vec![
+                ComptimeSemanticRejection::UnaryOperandNotInteger(FakeValue::Unit),
+                ComptimeSemanticRejection::UnaryOperandNotInteger(FakeValue::Unit),
+                ComptimeSemanticRejection::UnaryTypeNotInteger {
+                    operation: ComptimeUnaryOperation::Neg,
+                    value: FakeValue::TypedInteger(1, FakeType(99)),
+                },
+                ComptimeSemanticRejection::UnaryTypeNotInteger {
+                    operation: ComptimeUnaryOperation::BitNot,
+                    value: FakeValue::TypedInteger(1, FakeType(99)),
+                },
+                ComptimeSemanticRejection::AggregateExpression,
+                ComptimeSemanticRejection::UnsupportedIntrinsic("type".to_owned()),
+            ]
+        );
+    }
+
     #[derive(Clone, Debug, PartialEq)]
     enum FakeValue {
         Integer(i128),
@@ -1017,6 +1347,10 @@ mod value_domain_tests {
     fn configure_checkpoint_abort(abort_at: Option<usize>) {
         CHECKPOINTS.with(|count| count.set(0));
         ABORT_AT_CHECKPOINT.with(|configured| configured.set(abort_at));
+    }
+
+    fn configure_binary_rhs_policy(evaluate_rhs: bool) {
+        EVALUATE_RHS_AFTER_REJECTION.with(|policy| policy.set(evaluate_rhs));
     }
 
     fn checkpoint_count() -> usize {
@@ -1432,6 +1766,22 @@ mod value_domain_tests {
             } else {
                 ComptimeOutcome::RuntimeDependent
             }
+        }
+        fn reject_comptime_expression(
+            &self,
+            rejection: ComptimeSemanticRejection<Self::Value>,
+            site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+        ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+            REJECTION_EVENTS.with(|events| events.borrow_mut().push(rejection));
+            REJECTION_SITES.with(|sites| {
+                sites
+                    .borrow_mut()
+                    .push((*site.program(), site.span().start, site.span().end));
+            });
+            ComptimeOutcome::RuntimeDependent
+        }
+        fn evaluate_binary_rhs_after_rejection(&self) -> bool {
+            EVALUATE_RHS_AFTER_REJECTION.with(Cell::get)
         }
         fn require_preview(
             &self,
@@ -5373,6 +5723,53 @@ pub enum ComptimeMatchPattern<N> {
     },
 }
 
+/// A semantic reason why the canonical engine cannot reduce an expression.
+/// The ordinary host maps every reason to runtime dependence; a durable host
+/// can preserve the declaration-time failure associated with the reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeIntegerOperation {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeUnaryOperation {
+    Neg,
+    BitNot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComptimeSemanticRejection<V> {
+    ConditionNotBoolean(V),
+    ArithmeticOperandNotInteger {
+        operation: ComptimeIntegerOperation,
+        lhs: V,
+        rhs: Option<V>,
+    },
+    UnaryOperandNotInteger(V),
+    UnaryTypeNotInteger {
+        operation: ComptimeUnaryOperation,
+        value: V,
+    },
+    Assignment,
+    AggregateExpression,
+    EmptyBlock,
+    UnsupportedIntrinsic(String),
+    UnsupportedExpression,
+}
+
 /// Decode one compact RIR pattern into semantic facts.  Callers supply the
 /// owning-program symbol mapping; the pattern itself is never exposed beyond
 /// this canonical decoder.
@@ -5542,6 +5939,16 @@ pub trait ComptimeHost {
         &self,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeOutcome<Self::Value, Self::Failure>;
+    fn reject_comptime_expression(
+        &self,
+        rejection: ComptimeSemanticRejection<Self::Value>,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure>;
+    /// Whether a durable semantic host needs both source-order operands before
+    /// validating an integer operation. Ordinary body evaluation short-circuits
+    /// after a known invalid lhs; durable declaration evaluation preserves its
+    /// historical evaluate-both-before-validation order.
+    fn evaluate_binary_rhs_after_rejection(&self) -> bool;
     fn require_preview(
         &self,
         feature: rue_error::PreviewFeature,
@@ -6787,23 +7194,59 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
     fn eval_int_operands(
         &mut self,
+        operation: ComptimeIntegerOperation,
         lhs: InstRef,
         rhs: InstRef,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+        span: Span,
     ) -> ComptimeOutcome<(H::Value, H::Value), H::Failure> {
-        let l = outcome_value!(self.eval(lhs, env));
-        let Some(_) = l.as_integer() else {
-            return ComptimeOutcome::RuntimeDependent;
+        let l = match self.eval(lhs, env) {
+            ComptimeOutcome::Known(value) => value,
+            other => return Self::discard_rejection(other),
         };
-        let r = outcome_value!(self.eval(rhs, env));
-        let Some(_) = r.as_integer() else {
-            return ComptimeOutcome::RuntimeDependent;
+        if l.as_integer().is_none() && !self.host.evaluate_binary_rhs_after_rejection() {
+            return Self::discard_rejection(self.host.reject_comptime_expression(
+                ComptimeSemanticRejection::ArithmeticOperandNotInteger {
+                    operation,
+                    lhs: l,
+                    rhs: None,
+                },
+                &self.diagnostic_site(span),
+            ));
+        }
+        let r = match self.eval(rhs, env) {
+            ComptimeOutcome::Known(value) => value,
+            other => return Self::discard_rejection(other),
         };
+        if l.as_integer().is_none() || r.as_integer().is_none() {
+            return Self::discard_rejection(self.host.reject_comptime_expression(
+                ComptimeSemanticRejection::ArithmeticOperandNotInteger {
+                    operation,
+                    lhs: l,
+                    rhs: Some(r),
+                },
+                &self.diagnostic_site(span),
+            ));
+        }
         ComptimeOutcome::Known((l, r))
     }
 
     fn integer_pair(values: &(H::Value, H::Value)) -> Option<(i128, i128)> {
         Some((values.0.as_integer()?, values.1.as_integer()?))
+    }
+
+    fn discard_rejection<T>(
+        outcome: ComptimeOutcome<H::Value, H::Failure>,
+    ) -> ComptimeOutcome<T, H::Failure> {
+        match outcome {
+            ComptimeOutcome::Known(_) => ComptimeOutcome::RuntimeDependent,
+            ComptimeOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
+            ComptimeOutcome::NotReady => ComptimeOutcome::NotReady,
+            ComptimeOutcome::UnsupportedContext => ComptimeOutcome::UnsupportedContext,
+            ComptimeOutcome::Trap(trap) => ComptimeOutcome::Trap(trap),
+            ComptimeOutcome::HostFailure(error) => ComptimeOutcome::HostFailure(error),
+            ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
+        }
     }
 
     fn integer_type_for(
@@ -6892,7 +7335,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 self.evaluate_call(name, &args, env, span)
             }
             InstData::Comptime { expr } => self.eval(expr, env),
-            InstData::Block { instructions } => self.eval_block(instructions, env),
+            InstData::Block { instructions } => self.eval_block(instructions, env, span),
             InstData::Branch {
                 cond,
                 then_block,
@@ -6907,15 +7350,31 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         &mut self,
         instructions: rue_rir::RirBlockInstsRange,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+        span: Span,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
         let stmt_refs = self.program_rir().block_insts(&instructions).to_vec();
         if stmt_refs.is_empty() {
-            return ComptimeOutcome::Known(H::Value::unit());
+            return self.host.reject_comptime_expression(
+                ComptimeSemanticRejection::EmptyBlock,
+                &self.diagnostic_site(span),
+            );
         }
         let saved_locals = env.locals.clone();
         let mut result = H::Value::unit();
         for (i, stmt_ref) in stmt_refs.iter().copied().enumerate() {
             let is_tail = i + 1 == stmt_refs.len();
+            if !is_tail
+                && matches!(
+                    self.program_rir().get(stmt_ref).data,
+                    InstData::Assign { .. }
+                )
+            {
+                env.locals = saved_locals;
+                return self.host.reject_comptime_expression(
+                    ComptimeSemanticRejection::Assignment,
+                    &self.diagnostic_site(self.program_rir().get(stmt_ref).span),
+                );
+            }
             let value = if let InstData::Alloc { name, init, .. } =
                 &self.program_rir().get(stmt_ref).data
             {
@@ -6967,6 +7426,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     None => ComptimeOutcome::Known(H::Value::unit()),
                 }
             }
+            ComptimeOutcome::Known(value) => self.host.reject_comptime_expression(
+                ComptimeSemanticRejection::ConditionNotBoolean(value),
+                &self.diagnostic_site(self.program_rir().get(cond).span),
+            ),
             other => other,
         }
     }
@@ -7073,6 +7536,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 } else {
                     match self.eval(*operand, env) {
                         ComptimeOutcome::Known(value) => {
+                            let Some(n) = value.as_integer() else {
+                                return self.host.reject_comptime_expression(
+                                    ComptimeSemanticRejection::UnaryOperandNotInteger(value),
+                                    &self.diagnostic_site(span),
+                                );
+                            };
                             let ty = outcome_value!(
                                 self.unary_integer_type_for(env, inst_ref, &value, span,)
                             );
@@ -7083,16 +7552,22 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                                     );
                                 }
                             }
-                            let Some(n) = value.as_integer() else {
-                                return ComptimeOutcome::RuntimeDependent;
-                            };
-                            let result = ty
+                            let result = match ty
                                 .as_ref()
                                 .and_then(|ty| self.host.type_integer_semantics(ty))
-                                .map_or_else(
-                                    || CheckedIntegerResult::from_raw(n.checked_neg()),
-                                    |integer| integer.checked_neg_report_i128(n),
-                                );
+                            {
+                                Some(integer) => integer.checked_neg_report_i128(n),
+                                None if ty.is_some() => {
+                                    return self.host.reject_comptime_expression(
+                                        ComptimeSemanticRejection::UnaryTypeNotInteger {
+                                            operation: ComptimeUnaryOperation::Neg,
+                                            value,
+                                        },
+                                        &self.diagnostic_site(span),
+                                    );
+                                }
+                                None => CheckedIntegerResult::from_raw(n.checked_neg()),
+                            };
                             self.finish_arith_value(result, ty, "-", span)
                         }
                         other => other,
@@ -7105,7 +7580,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 match self.eval(*operand, env) {
                     ComptimeOutcome::Known(value) => match value.as_boolean() {
                         Some(b) => ComptimeOutcome::Known(H::Value::boolean(!b)),
-                        None => ComptimeOutcome::RuntimeDependent,
+                        None => self.host.reject_comptime_expression(
+                            ComptimeSemanticRejection::ConditionNotBoolean(value),
+                            &self.diagnostic_site(span),
+                        ),
                     },
                     // Can't logical-NOT an integer, type, or unit
                     other => other,
@@ -7114,7 +7592,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
             // Binary arithmetic operations, checked at the operand type
             InstData::Add { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(*lhs, *rhs, env));
+                let operands = outcome_value!(self.eval_int_operands(
+                    ComptimeIntegerOperation::Add,
+                    *lhs,
+                    *rhs,
+                    env,
+                    span
+                ));
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let ty = outcome_value!(self.integer_type_for(
                     env,
@@ -7133,7 +7617,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 self.finish_arith_value(result, ty, "+", span)
             }
             InstData::Sub { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(*lhs, *rhs, env));
+                let operands = outcome_value!(self.eval_int_operands(
+                    ComptimeIntegerOperation::Sub,
+                    *lhs,
+                    *rhs,
+                    env,
+                    span
+                ));
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let ty = outcome_value!(self.integer_type_for(
                     env,
@@ -7152,7 +7642,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 self.finish_arith_value(result, ty, "-", span)
             }
             InstData::Mul { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(*lhs, *rhs, env));
+                let operands = outcome_value!(self.eval_int_operands(
+                    ComptimeIntegerOperation::Mul,
+                    *lhs,
+                    *rhs,
+                    env,
+                    span
+                ));
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let ty = outcome_value!(self.integer_type_for(
                     env,
@@ -7173,7 +7669,17 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             InstData::Div { lhs, rhs } | InstData::Mod { lhs, rhs } => {
                 let is_div = matches!(&inst.data, InstData::Div { .. });
                 let op = if is_div { "/" } else { "%" };
-                let operands = outcome_value!(self.eval_int_operands(*lhs, *rhs, env));
+                let operands = outcome_value!(self.eval_int_operands(
+                    if is_div {
+                        ComptimeIntegerOperation::Div
+                    } else {
+                        ComptimeIntegerOperation::Mod
+                    },
+                    *lhs,
+                    *rhs,
+                    env,
+                    span
+                ));
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let ty = outcome_value!(self.integer_type_for(
                     env,
@@ -7307,7 +7813,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 }
             }
             InstData::Lt { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(*lhs, *rhs, env));
+                let operands = outcome_value!(self.eval_int_operands(
+                    ComptimeIntegerOperation::Lt,
+                    *lhs,
+                    *rhs,
+                    env,
+                    span
+                ));
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let _ = outcome_value!(self.integer_type_for(
                     env,
@@ -7319,7 +7831,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 ComptimeOutcome::Known(H::Value::boolean(l < r))
             }
             InstData::Gt { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(*lhs, *rhs, env));
+                let operands = outcome_value!(self.eval_int_operands(
+                    ComptimeIntegerOperation::Gt,
+                    *lhs,
+                    *rhs,
+                    env,
+                    span
+                ));
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let _ = outcome_value!(self.integer_type_for(
                     env,
@@ -7331,7 +7849,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 ComptimeOutcome::Known(H::Value::boolean(l > r))
             }
             InstData::Le { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(*lhs, *rhs, env));
+                let operands = outcome_value!(self.eval_int_operands(
+                    ComptimeIntegerOperation::Le,
+                    *lhs,
+                    *rhs,
+                    env,
+                    span
+                ));
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let _ = outcome_value!(self.integer_type_for(
                     env,
@@ -7343,7 +7867,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 ComptimeOutcome::Known(H::Value::boolean(l <= r))
             }
             InstData::Ge { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(*lhs, *rhs, env));
+                let operands = outcome_value!(self.eval_int_operands(
+                    ComptimeIntegerOperation::Ge,
+                    *lhs,
+                    *rhs,
+                    env,
+                    span
+                ));
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let _ = outcome_value!(self.integer_type_for(
                     env,
@@ -7367,9 +7897,17 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         ComptimeOutcome::Known(value) if value.as_boolean().is_some() => {
                             ComptimeOutcome::Known(value)
                         }
+                        ComptimeOutcome::Known(value) => self.host.reject_comptime_expression(
+                            ComptimeSemanticRejection::ConditionNotBoolean(value),
+                            &self.diagnostic_site(span),
+                        ),
                         other => other,
                     }
                 }
+                ComptimeOutcome::Known(value) => self.host.reject_comptime_expression(
+                    ComptimeSemanticRejection::ConditionNotBoolean(value),
+                    &self.diagnostic_site(span),
+                ),
                 other => other,
             },
             InstData::Or { lhs, rhs } => match self.eval(*lhs, env) {
@@ -7381,16 +7919,30 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         ComptimeOutcome::Known(value) if value.as_boolean().is_some() => {
                             ComptimeOutcome::Known(value)
                         }
+                        ComptimeOutcome::Known(value) => self.host.reject_comptime_expression(
+                            ComptimeSemanticRejection::ConditionNotBoolean(value),
+                            &self.diagnostic_site(span),
+                        ),
                         other => other,
                     }
                 }
+                ComptimeOutcome::Known(value) => self.host.reject_comptime_expression(
+                    ComptimeSemanticRejection::ConditionNotBoolean(value),
+                    &self.diagnostic_site(span),
+                ),
                 other => other,
             },
 
             // Bitwise operations. For values in range of their type these are
             // closed (no overflow possible), so no range check is needed.
             InstData::BitAnd { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(*lhs, *rhs, env));
+                let operands = outcome_value!(self.eval_int_operands(
+                    ComptimeIntegerOperation::BitAnd,
+                    *lhs,
+                    *rhs,
+                    env,
+                    span
+                ));
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let ty = outcome_value!(self.integer_type_for(
                     env,
@@ -7402,7 +7954,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 ComptimeOutcome::Known(H::Value::integer_typed(l & r, ty))
             }
             InstData::BitOr { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(*lhs, *rhs, env));
+                let operands = outcome_value!(self.eval_int_operands(
+                    ComptimeIntegerOperation::BitOr,
+                    *lhs,
+                    *rhs,
+                    env,
+                    span
+                ));
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let ty = outcome_value!(self.integer_type_for(
                     env,
@@ -7414,7 +7972,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 ComptimeOutcome::Known(H::Value::integer_typed(l | r, ty))
             }
             InstData::BitXor { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(*lhs, *rhs, env));
+                let operands = outcome_value!(self.eval_int_operands(
+                    ComptimeIntegerOperation::BitXor,
+                    *lhs,
+                    *rhs,
+                    env,
+                    span
+                ));
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let ty = outcome_value!(self.integer_type_for(
                     env,
@@ -7431,7 +7995,17 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // matching the runtime semantics (RUE-29).
             InstData::Shl { lhs, rhs } | InstData::Shr { lhs, rhs } => {
                 let is_shl = matches!(&inst.data, InstData::Shl { .. });
-                let operands = outcome_value!(self.eval_int_operands(*lhs, *rhs, env));
+                let operands = outcome_value!(self.eval_int_operands(
+                    if is_shl {
+                        ComptimeIntegerOperation::Shl
+                    } else {
+                        ComptimeIntegerOperation::Shr
+                    },
+                    *lhs,
+                    *rhs,
+                    env,
+                    span
+                ));
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let ty = outcome_value!(self.integer_type_for(
                     env,
@@ -7469,14 +8043,26 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             InstData::BitNot { operand } => {
                 let n = outcome_value!(self.eval(*operand, env));
                 let Some(raw) = n.as_integer() else {
-                    return ComptimeOutcome::RuntimeDependent;
+                    return self.host.reject_comptime_expression(
+                        ComptimeSemanticRejection::UnaryOperandNotInteger(n),
+                        &self.diagnostic_site(span),
+                    );
                 };
                 let ty = outcome_value!(self.unary_integer_type_for(env, inst_ref, &n, span,));
-                let v = match ty.as_ref() {
-                    Some(ty) => match self.host.type_integer_semantics(ty) {
-                        Some(integer) => integer.bitnot_i128(raw),
-                        None => return ComptimeOutcome::RuntimeDependent,
-                    },
+                let v = match ty
+                    .as_ref()
+                    .and_then(|ty| self.host.type_integer_semantics(ty))
+                {
+                    Some(integer) => integer.bitnot_i128(raw),
+                    None if ty.is_some() => {
+                        return self.host.reject_comptime_expression(
+                            ComptimeSemanticRejection::UnaryTypeNotInteger {
+                                operation: ComptimeUnaryOperation::BitNot,
+                                value: n,
+                            },
+                            &self.diagnostic_site(span),
+                        );
+                    }
                     None => !raw,
                 };
                 ComptimeOutcome::Known(H::Value::integer_typed(v, ty))
@@ -7876,7 +8462,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let gate_name = self.name_from_rir(name.into());
                 let gate = self.host.display_name(&gate_name);
                 let Some(intrinsic) = ComptimeTypeIntrinsic::from_name(&gate) else {
-                    return ComptimeOutcome::RuntimeDependent;
+                    return self.host.reject_comptime_expression(
+                        ComptimeSemanticRejection::UnsupportedIntrinsic(gate),
+                        &self.diagnostic_site(span),
+                    );
                 };
                 // Both well-formedness gates reduce to unit at comptime:
                 // `@require_droppable` (instantiation-time, rejects `linear`) and
@@ -7922,8 +8511,21 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 self.evaluate_method_call(receiver, method, args, env, span)
             }
 
-            // Everything else requires runtime evaluation
-            _ => ComptimeOutcome::RuntimeDependent,
+            InstData::StructInit { .. } | InstData::ArrayInit { .. } => {
+                self.host.reject_comptime_expression(
+                    ComptimeSemanticRejection::AggregateExpression,
+                    &self.diagnostic_site(span),
+                )
+            }
+
+            // Everything else requires runtime evaluation. The semantic
+            // rejection hook lets durable hosts preserve the exact
+            // declaration-time reason while ordinary evaluation remains
+            // runtime-dependent.
+            _ => self.host.reject_comptime_expression(
+                ComptimeSemanticRejection::UnsupportedExpression,
+                &self.diagnostic_site(span),
+            ),
         }
     }
 }

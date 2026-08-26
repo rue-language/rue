@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ahash::AHashMap;
 use rue_air::{
-    ComptimeFile, ComptimeIdentity, ComptimeMatchPattern, ComptimeName, ComptimeType, ComptimeValue,
+    ComptimeFile, ComptimeIdentity, ComptimeMatchPattern, ComptimeName, ComptimeSemanticRejection,
+    ComptimeType, ComptimeUnaryOperation, ComptimeValue,
 };
 use rue_query::QueryAbort;
 
@@ -141,6 +142,123 @@ impl DurableComptimeFailure {
     /// evaluator's existing `comptime match has no selected arm` policy.
     pub(crate) fn comptime_match_no_selected_arm() -> Self {
         Self::resolution("comptime match has no selected arm")
+    }
+
+    /// Map the AIR-owned semantic rejection vocabulary to the exact durable
+    /// declaration-time diagnostics. Ordinary AIR hosts intentionally keep
+    /// these same reasons runtime-dependent.
+    pub(crate) fn comptime_rejection(
+        rejection: ComptimeSemanticRejection<EvaluatedSemanticConst>,
+    ) -> Self {
+        match rejection {
+            ComptimeSemanticRejection::ConditionNotBoolean(value) => match value {
+                EvaluatedSemanticConst::Module(_) => {
+                    Self::resolution("module used where a value is required")
+                }
+                EvaluatedSemanticConst::TargetEnum(_) => Self::resolution(
+                    "target descriptor used where a durable const value is required",
+                ),
+                EvaluatedSemanticConst::Value(_) => {
+                    Self::resolution("comptime condition is not boolean")
+                }
+            },
+            ComptimeSemanticRejection::ArithmeticOperandNotInteger {
+                operation: _operation,
+                lhs,
+                rhs,
+            } => {
+                let values = [Some(lhs.clone()), rhs.clone()];
+                let target_count = values
+                    .iter()
+                    .flatten()
+                    .filter(|value| matches!(value, EvaluatedSemanticConst::TargetEnum(_)))
+                    .count();
+                if rhs.is_some() && target_count == 2 {
+                    return Self::resolution(
+                        "target descriptors support only equality comparisons",
+                    );
+                }
+                if rhs.is_some() && target_count == 1 {
+                    return Self::resolution(
+                        "target descriptor comparison requires matching enum variants",
+                    );
+                }
+                for value in [Some(lhs), rhs.clone()].into_iter().flatten() {
+                    match value {
+                        EvaluatedSemanticConst::Module(_) => {
+                            return Self::resolution("module used where a value is required");
+                        }
+                        EvaluatedSemanticConst::TargetEnum(_) => {
+                            return Self::resolution(
+                                "target descriptor used where a durable const value is required",
+                            );
+                        }
+                        EvaluatedSemanticConst::Value(_) => {}
+                    }
+                }
+                let bool_count = values
+                    .iter()
+                    .flatten()
+                    .filter(|value| {
+                        matches!(
+                            value,
+                            EvaluatedSemanticConst::Value(value)
+                                if matches!(value.value, DurableConstValue::Bool(_))
+                        )
+                    })
+                    .count();
+                if rhs.is_some() && bool_count == 2 {
+                    return Self::resolution("boolean values support only equality comparisons");
+                }
+                Self::resolution("comptime arithmetic operand is not an integer")
+            }
+            ComptimeSemanticRejection::UnaryOperandNotInteger(value) => match value {
+                EvaluatedSemanticConst::Module(_) => {
+                    Self::resolution("module used where a value is required")
+                }
+                EvaluatedSemanticConst::TargetEnum(_) => Self::resolution(
+                    "target descriptor used where a durable const value is required",
+                ),
+                EvaluatedSemanticConst::Value(_) => {
+                    Self::resolution("comptime arithmetic operand is not an integer")
+                }
+            },
+            ComptimeSemanticRejection::UnaryTypeNotInteger { operation, value } => match value {
+                EvaluatedSemanticConst::Module(_) => {
+                    Self::resolution("module used where a value is required")
+                }
+                EvaluatedSemanticConst::TargetEnum(_) => Self::resolution(
+                    "target descriptor used where a durable const value is required",
+                ),
+                EvaluatedSemanticConst::Value(_) => match operation {
+                    ComptimeUnaryOperation::Neg => {
+                        Self::resolution("comptime negation operand is not an integer")
+                    }
+                    ComptimeUnaryOperation::BitNot => {
+                        Self::resolution("comptime bitwise NOT operand is not an integer")
+                    }
+                },
+            },
+            ComptimeSemanticRejection::Assignment => {
+                Self::resolution("assignment is not supported in declaration-time comptime")
+            }
+            ComptimeSemanticRejection::AggregateExpression => Self::failure(
+                SemanticNucleusFailure::Diagnostic(rue_error::ErrorKind::ConstExprNotSupported {
+                    expr_kind: "aggregate expression".to_owned(),
+                }),
+            ),
+            ComptimeSemanticRejection::EmptyBlock => {
+                Self::resolution("comptime block has no result instruction")
+            }
+            ComptimeSemanticRejection::UnsupportedIntrinsic(name) => Self::failure(
+                SemanticNucleusFailure::Diagnostic(rue_error::ErrorKind::ConstExprNotSupported {
+                    expr_kind: format!("intrinsic `@{name}`"),
+                }),
+            ),
+            ComptimeSemanticRejection::UnsupportedExpression => {
+                Self::resolution("expression is not supported in declaration-time comptime")
+            }
+        }
     }
 
     pub(crate) fn maximum_depth(name: &str, maximum: usize) -> Self {
@@ -6222,6 +6340,7 @@ mod structured_type_adapter_tests {
 #[cfg(test)]
 mod terminal_adapter_tests {
     use super::*;
+    use rue_air::ComptimeIntegerOperation;
 
     fn site(name: &str, start: u32, end: u32) -> DurableComptimeDiagnosticSite {
         DurableComptimeDiagnosticSite::new(
@@ -6374,6 +6493,177 @@ mod terminal_adapter_tests {
                 if matches!(*value, SemanticNucleusFailure::Resolution(ref message)
                     if message.as_ref() == "comptime match has no selected arm")
         ));
+    }
+
+    #[test]
+    fn semantic_rejection_kernel_preserves_each_legacy_channel_and_text() {
+        let unit = EvaluatedSemanticConst::unit();
+        let cases = [
+            (
+                ComptimeSemanticRejection::ConditionNotBoolean(unit.clone()),
+                "comptime condition is not boolean",
+            ),
+            (
+                ComptimeSemanticRejection::ArithmeticOperandNotInteger {
+                    operation: ComptimeIntegerOperation::Add,
+                    lhs: unit.clone(),
+                    rhs: Some(unit.clone()),
+                },
+                "comptime arithmetic operand is not an integer",
+            ),
+            (
+                ComptimeSemanticRejection::UnaryOperandNotInteger(unit.clone()),
+                "comptime arithmetic operand is not an integer",
+            ),
+            (
+                ComptimeSemanticRejection::UnaryTypeNotInteger {
+                    operation: ComptimeUnaryOperation::BitNot,
+                    value: unit,
+                },
+                "comptime bitwise NOT operand is not an integer",
+            ),
+        ];
+        for (rejection, expected) in cases {
+            let DurableComptimeFailure::Failure(value) =
+                DurableComptimeFailure::comptime_rejection(rejection)
+            else {
+                panic!("semantic rejection must remain a durable failure");
+            };
+            let SemanticNucleusFailure::Resolution(reason) = *value else {
+                panic!("semantic rejection changed its failure channel");
+            };
+            assert_eq!(reason.as_ref(), expected);
+        }
+        for rejection in [
+            ComptimeSemanticRejection::EmptyBlock,
+            ComptimeSemanticRejection::UnsupportedExpression,
+        ] {
+            assert!(matches!(
+                DurableComptimeFailure::comptime_rejection(rejection),
+                DurableComptimeFailure::Failure(value)
+                    if matches!(*value, SemanticNucleusFailure::Resolution(_))
+            ));
+        }
+        let module = EvaluatedSemanticConst::Module(ModuleId::from_validated_canonical("m"));
+        let target = EvaluatedSemanticConst::TargetEnum(TargetEnumValue {
+            type_name: "Arch",
+            variant: "X86_64",
+        });
+        assert!(matches!(
+            DurableComptimeFailure::comptime_rejection(
+                ComptimeSemanticRejection::ConditionNotBoolean(module)
+            ),
+            DurableComptimeFailure::Failure(value)
+                if matches!(*value, SemanticNucleusFailure::Resolution(ref message)
+                    if message.as_ref() == "module used where a value is required")
+        ));
+        assert!(matches!(
+            DurableComptimeFailure::comptime_rejection(
+                ComptimeSemanticRejection::ArithmeticOperandNotInteger {
+                    operation: ComptimeIntegerOperation::Add,
+                    lhs: target,
+                    rhs: None,
+                }
+            ),
+                    DurableComptimeFailure::Failure(value)
+                        if matches!(*value, SemanticNucleusFailure::Resolution(ref message)
+                    if message.as_ref() == "target descriptor used where a durable const value is required")
+        ));
+        assert!(matches!(
+            DurableComptimeFailure::comptime_rejection(
+                ComptimeSemanticRejection::AggregateExpression
+            ),
+            DurableComptimeFailure::Failure(value)
+                if matches!(*value, SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::ConstExprNotSupported { ref expr_kind }
+                ) if expr_kind == "aggregate expression")
+        ));
+        assert!(matches!(
+            DurableComptimeFailure::comptime_rejection(
+                ComptimeSemanticRejection::UnsupportedIntrinsic("size_of".to_owned())
+            ),
+            DurableComptimeFailure::Failure(value)
+                if matches!(*value, SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::ConstExprNotSupported { ref expr_kind }
+                ) if expr_kind == "intrinsic `@size_of`")
+        ));
+        assert!(matches!(
+            DurableComptimeFailure::comptime_rejection(ComptimeSemanticRejection::Assignment),
+            DurableComptimeFailure::Failure(value)
+                if matches!(*value, SemanticNucleusFailure::Resolution(ref message)
+                    if message.as_ref()
+                        == "assignment is not supported in declaration-time comptime")
+        ));
+    }
+
+    #[test]
+    fn semantic_rejection_kernel_preserves_noncommutative_operand_decisions() {
+        let module = || EvaluatedSemanticConst::Module(ModuleId::from_validated_canonical("m"));
+        let target = || {
+            EvaluatedSemanticConst::TargetEnum(TargetEnumValue {
+                type_name: "Arch",
+                variant: "X86_64",
+            })
+        };
+        let boolean = || {
+            EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                DurableConstValue::Bool(true),
+                DurableType::Bool,
+            ))
+        };
+        let integer = || {
+            EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                DurableConstValue::Integer(1),
+                DurableType::I32,
+            ))
+        };
+        let reason = |lhs, rhs| {
+            let DurableComptimeFailure::Failure(value) = DurableComptimeFailure::comptime_rejection(
+                ComptimeSemanticRejection::ArithmeticOperandNotInteger {
+                    operation: ComptimeIntegerOperation::Lt,
+                    lhs,
+                    rhs,
+                },
+            ) else {
+                panic!("expected durable failure");
+            };
+            let SemanticNucleusFailure::Resolution(reason) = *value else {
+                panic!("expected resolution failure");
+            };
+            reason.to_string()
+        };
+        assert_eq!(
+            reason(target(), Some(module())),
+            "target descriptor comparison requires matching enum variants"
+        );
+        assert_eq!(
+            reason(module(), Some(target())),
+            "target descriptor comparison requires matching enum variants"
+        );
+        assert_eq!(
+            reason(target(), Some(target())),
+            "target descriptors support only equality comparisons"
+        );
+        assert_eq!(
+            reason(boolean(), Some(boolean())),
+            "boolean values support only equality comparisons"
+        );
+        assert_eq!(
+            reason(boolean(), Some(integer())),
+            "comptime arithmetic operand is not an integer"
+        );
+        assert_eq!(
+            reason(integer(), Some(boolean())),
+            "comptime arithmetic operand is not an integer"
+        );
+        assert_eq!(
+            reason(target(), None),
+            "target descriptor used where a durable const value is required"
+        );
+        assert_eq!(
+            reason(module(), None),
+            "module used where a value is required"
+        );
     }
 
     #[test]
