@@ -1745,6 +1745,14 @@ impl DurableComptimeSession {
         self.lifecycle.take_root_effects()
     }
 
+    /// Record a semantic dependency in the current lifecycle scope.  Service
+    /// callers use this funnel between keyed admission's begin and finish
+    /// phases so a later admission failure cannot erase the begin observation.
+    #[allow(dead_code)] // consumed by the staged structured-frame adapter
+    pub(crate) fn observe_dependency(&mut self, dependency: SemanticDeclarationDependency) {
+        self.lifecycle.observe_dependency(dependency);
+    }
+
     /// Enter one lifecycle ticket through the session-owned funnel.  Keeping
     /// this operation here prevents future hosts from reaching around the
     /// session and mutating the lifecycle with a mismatched ticket.
@@ -3045,6 +3053,24 @@ pub(crate) trait DurableComptimeSemanticAuthority {
         rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
     >;
 
+    /// Begin admission from the exact stable callable head supplied by a
+    /// structured-type continuation.  Unlike the spelling-based operation,
+    /// this operation must not rediscover a declaration through module/name
+    /// lookup: the implementation reconstructs the canonical syntax candidate
+    /// for the stable key with discriminator zero, then verifies the projected
+    /// identity key. A stable key does not carry duplicate-discriminator
+    /// information, so this operation must not claim to preserve duplicate
+    /// candidates; it never infers identity from a spelling.
+    #[allow(dead_code)] // consumed by the staged structured-frame adapter
+    fn begin_comptime_call_admission_for_key(
+        &self,
+        accessing_source: &crate::StableDefinitionKey,
+        head: &crate::StableDefinitionKey,
+    ) -> Result<
+        DurableComptimeCallableAdmissionStart,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    >;
+
     fn finish_comptime_call_admission(
         &self,
         start: DurableComptimeCallableAdmissionStart,
@@ -3187,6 +3213,19 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
             .begin_comptime_call_admission(accessing_source, module, name)
     }
 
+    #[allow(dead_code)] // consumed by the staged structured-frame adapter
+    pub(crate) fn begin_comptime_call_admission_for_key(
+        &self,
+        accessing_source: &crate::StableDefinitionKey,
+        head: &crate::StableDefinitionKey,
+    ) -> Result<
+        DurableComptimeCallableAdmissionStart,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        self.authority
+            .begin_comptime_call_admission_for_key(accessing_source, head)
+    }
+
     /// Begin admission for a method whose receiver has already reduced to an
     /// exact module value.  Keeping this named seam distinct from the
     /// unqualified call operation makes it impossible for a future AIR host
@@ -3213,6 +3252,25 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
     > {
         self.authority
             .finish_comptime_call_admission(start, argument_modes)
+    }
+
+    /// Finish admission for a structured-type call.  Structured syntax has
+    /// already supplied the ordered arguments, so every argument is a value;
+    /// the begin phase remains separate so its dependency can be observed
+    /// before signature/arity policy is allowed to fail.
+    #[allow(dead_code)] // consumed by the staged structured-frame adapter
+    pub(crate) fn finish_structured_comptime_call_admission(
+        &self,
+        start: DurableComptimeCallableAdmissionStart,
+        argument_count: usize,
+    ) -> Result<
+        DurableComptimeCallableAdmission,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        let argument_modes = (0..argument_count)
+            .map(|_| crate::durable_semantics::DurableParameterMode::Value)
+            .collect::<Vec<_>>();
+        self.finish_comptime_call_admission(start, &argument_modes)
     }
 
     pub(crate) fn resolve_named_value(
@@ -8467,9 +8525,19 @@ mod structured_type_adapter_tests {
         Abort,
     }
 
+    #[derive(Clone, Copy)]
+    enum CallFinishMode {
+        Success,
+        Failure,
+        Abort,
+    }
+
     struct ImportServiceAuthority {
         calls: Cell<usize>,
         mode: ImportServiceMode,
+        keyed_heads: RefCell<Vec<crate::StableDefinitionKey>>,
+        finish_modes: RefCell<Vec<Vec<crate::durable_semantics::DurableParameterMode>>>,
+        finish_mode: CallFinishMode,
     }
 
     impl DurableComptimeSemanticAuthority for ImportServiceAuthority {
@@ -8523,15 +8591,100 @@ mod structured_type_adapter_tests {
             panic!("not part of keyed import service test")
         }
 
+        fn begin_comptime_call_admission_for_key(
+            &self,
+            accessing_source: &crate::StableDefinitionKey,
+            head: &crate::StableDefinitionKey,
+        ) -> Result<
+            DurableComptimeCallableAdmissionStart,
+            rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+        > {
+            self.keyed_heads.borrow_mut().push(head.clone());
+            let candidate =
+                crate::revisioned_query_database::declaration_candidate_for_stable_key(head)
+                    .expect("test keyed head has a canonical candidate");
+            let identity = crate::semantic_query_nucleus::DeclarationIdentityProjection {
+                key: head.clone(),
+                is_public: true,
+            };
+            Ok(DurableComptimeCallableAdmissionStart {
+                candidate,
+                identity,
+                configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                    target: rue_target::Target::X86_64Linux,
+                    preview_features: crate::StablePreviewFeatures::new(
+                        &crate::PreviewFeatures::default(),
+                    ),
+                },
+                name: Arc::from(head.name()),
+                dependency: SemanticDeclarationDependency {
+                    source: accessing_source.clone(),
+                    kind: rue_air::DeclarationTypeDependencyKind::Body,
+                    target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                        head.clone(),
+                    ),
+                },
+            })
+        }
+
         fn finish_comptime_call_admission(
             &self,
-            _start: DurableComptimeCallableAdmissionStart,
-            _argument_modes: &[crate::durable_semantics::DurableParameterMode],
+            start: DurableComptimeCallableAdmissionStart,
+            argument_modes: &[crate::durable_semantics::DurableParameterMode],
         ) -> Result<
             DurableComptimeCallableAdmission,
             rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
         > {
-            panic!("not part of keyed import service test")
+            self.finish_modes.borrow_mut().push(argument_modes.to_vec());
+            match self.finish_mode {
+                CallFinishMode::Success => {
+                    let parameters: Arc<[crate::durable_semantics::DurableSemanticParameter]> =
+                        Arc::from([
+                            crate::durable_semantics::DurableSemanticParameter {
+                                name: Arc::from("first"),
+                                ty: DurableType::I32,
+                                mode: crate::durable_semantics::DurableParameterMode::Value,
+                                is_comptime: true,
+                            },
+                            crate::durable_semantics::DurableSemanticParameter {
+                                name: Arc::from("second"),
+                                ty: DurableType::I64,
+                                mode: crate::durable_semantics::DurableParameterMode::Value,
+                                is_comptime: true,
+                            },
+                        ]);
+                    let shell_parameters: Arc<
+                        [crate::declaration_candidate::DeclarationParameterHeader],
+                    > = Arc::from([
+                        crate::declaration_candidate::DeclarationParameterHeader {
+                            name: Arc::from("first"),
+                            mode: crate::declaration_candidate::DeclarationParameterMode::Value,
+                            is_comptime: true,
+                            is_type_parameter: false,
+                        },
+                        crate::declaration_candidate::DeclarationParameterHeader {
+                            name: Arc::from("second"),
+                            mode: crate::declaration_candidate::DeclarationParameterMode::Value,
+                            is_comptime: true,
+                            is_type_parameter: false,
+                        },
+                    ]);
+                    Ok(DurableComptimeCallableAdmission {
+                        candidate: start.candidate,
+                        identity: start.identity,
+                        configuration: start.configuration,
+                        parameters,
+                        result: DurableType::ComptimeType,
+                        shell_parameters,
+                    })
+                }
+                CallFinishMode::Failure => Err(rue_air::SemanticProviderError::Failure(
+                    SemanticNucleusFailure::Resolution(Arc::from("structured finish failed")),
+                )),
+                CallFinishMode::Abort => {
+                    Err(rue_air::SemanticProviderError::Abort(QueryAbort::Canceled))
+                }
+            }
         }
 
         fn resolve_named_value(
@@ -8606,6 +8759,168 @@ mod structured_type_adapter_tests {
     }
 
     #[test]
+    fn keyed_callable_admission_uses_exact_head_without_spelling_lookup() {
+        let first = super::structured_type_adapter_tests::callable_program("structured-head-a.rue");
+        let second =
+            super::structured_type_adapter_tests::callable_program("structured-head-b.rue");
+        let first_head = first.plan.key.declaration.clone();
+        let second_head = second.plan.key.declaration.clone();
+        assert_ne!(first_head, second_head);
+        let accessing_source = crate::StableDefinitionKey::from_stable_parts(
+            first_head.module().clone(),
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            "caller",
+            None,
+        );
+        let mut authority = ImportServiceAuthority {
+            calls: Cell::new(0),
+            mode: ImportServiceMode::Missing,
+            keyed_heads: RefCell::new(Vec::new()),
+            finish_modes: RefCell::new(Vec::new()),
+            finish_mode: CallFinishMode::Success,
+        };
+        let services = DurableComptimeServices::new(&mut authority);
+        let first_admission = services
+            .begin_comptime_call_admission_for_key(&accessing_source, &first_head)
+            .unwrap();
+        let second_admission = services
+            .begin_comptime_call_admission_for_key(&accessing_source, &second_head)
+            .unwrap();
+
+        assert_eq!(first_admission.identity.key, first_head);
+        assert_eq!(second_admission.identity.key, second_head);
+        assert_eq!(
+            first_admission.candidate.module,
+            first_head.module().clone()
+        );
+        assert_eq!(
+            second_admission.candidate.module,
+            second_head.module().clone()
+        );
+        assert_eq!(
+            authority.keyed_heads.borrow().as_slice(),
+            &[first_head, second_head]
+        );
+        // This test authority intentionally has no module/name candidate path;
+        // reaching both starts proves the structured seam carries the exact
+        // canonical head through the services facade.
+    }
+
+    #[test]
+    fn structured_callable_finish_uses_all_value_modes_and_preserves_begin_effects() {
+        let program = callable_program("structured-finish.rue");
+        let head = program.plan.key.declaration.clone();
+        let source = crate::StableDefinitionKey::from_stable_parts(
+            head.module().clone(),
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            "structured-caller",
+            None,
+        );
+        let dependency = |start: &DurableComptimeCallableAdmissionStart| start.dependency.clone();
+        let mut authority = ImportServiceAuthority {
+            calls: Cell::new(0),
+            mode: ImportServiceMode::Missing,
+            keyed_heads: RefCell::new(Vec::new()),
+            finish_modes: RefCell::new(Vec::new()),
+            finish_mode: CallFinishMode::Success,
+        };
+        let mut session = session();
+        let initial_serial = session.lifecycle.next_serial;
+        let initial_active = session.lifecycle.active.clone();
+        let initial_programs = session.programs.len();
+        let start = {
+            let services = DurableComptimeServices::new(&mut authority);
+            services
+                .begin_comptime_call_admission_for_key(&source, &head)
+                .unwrap()
+        };
+        session.observe_dependency(dependency(&start));
+        let admission = {
+            let services = DurableComptimeServices::new(&mut authority);
+            services
+                .finish_structured_comptime_call_admission(start, 2)
+                .unwrap()
+        };
+        assert_eq!(admission.identity.key, head);
+        assert_eq!(admission.result, DurableType::ComptimeType);
+        assert_eq!(admission.parameters[0].name.as_ref(), "first");
+        assert_eq!(admission.parameters[0].ty, DurableType::I32);
+        assert_eq!(admission.parameters[1].name.as_ref(), "second");
+        assert_eq!(admission.parameters[1].ty, DurableType::I64);
+        assert_eq!(
+            admission
+                .shell_parameters
+                .iter()
+                .map(|parameter| parameter.name.clone())
+                .collect::<Vec<_>>(),
+            vec![Arc::from("first"), Arc::from("second")]
+        );
+        assert_eq!(
+            authority.finish_modes.borrow().as_slice(),
+            &[[
+                crate::durable_semantics::DurableParameterMode::Value,
+                crate::durable_semantics::DurableParameterMode::Value,
+            ]]
+        );
+        assert_eq!(
+            session.drain_root_effects().unwrap().dependencies().count(),
+            1
+        );
+        assert!(session.drain_root_effects().unwrap().is_empty());
+        assert_eq!(session.lifecycle.next_serial, initial_serial);
+        assert_eq!(session.lifecycle.active, initial_active);
+        assert_eq!(session.programs.len(), initial_programs);
+
+        for finish_mode in [CallFinishMode::Failure, CallFinishMode::Abort] {
+            let mut authority = ImportServiceAuthority {
+                calls: Cell::new(0),
+                mode: ImportServiceMode::Missing,
+                keyed_heads: RefCell::new(Vec::new()),
+                finish_modes: RefCell::new(Vec::new()),
+                finish_mode,
+            };
+            let start = {
+                let services = DurableComptimeServices::new(&mut authority);
+                services
+                    .begin_comptime_call_admission_for_key(&source, &head)
+                    .unwrap()
+            };
+            let mut session = fresh_session();
+            let initial_serial = session.lifecycle.next_serial;
+            let initial_active = session.lifecycle.active.clone();
+            let initial_programs = session.programs.len();
+            session.observe_dependency(start.dependency.clone());
+            let result = {
+                let services = DurableComptimeServices::new(&mut authority);
+                services.finish_structured_comptime_call_admission(start, 2)
+            };
+            match finish_mode {
+                CallFinishMode::Failure => assert!(matches!(
+                    result,
+                    Err(rue_air::SemanticProviderError::Failure(
+                        SemanticNucleusFailure::Resolution(_)
+                    ))
+                )),
+                CallFinishMode::Abort => assert!(matches!(
+                    result,
+                    Err(rue_air::SemanticProviderError::Abort(QueryAbort::Canceled))
+                )),
+                CallFinishMode::Success => unreachable!(),
+            }
+            assert_eq!(
+                session.drain_root_effects().unwrap().dependencies().count(),
+                1
+            );
+            assert!(session.drain_root_effects().unwrap().is_empty());
+            assert_eq!(session.lifecycle.next_serial, initial_serial);
+            assert_eq!(session.lifecycle.active, initial_active);
+            assert_eq!(session.programs.len(), initial_programs);
+        }
+    }
+
+    #[test]
     fn keyed_import_service_preserves_terminals_and_skips_structural_rejections() {
         let first = const_program("service-import.rue", "i32");
         let mut session = session();
@@ -8641,7 +8956,13 @@ mod structured_type_adapter_tests {
             ),
         ] {
             let calls = Cell::new(0);
-            let mut authority = ImportServiceAuthority { calls, mode };
+            let mut authority = ImportServiceAuthority {
+                calls,
+                mode,
+                keyed_heads: RefCell::new(Vec::new()),
+                finish_modes: RefCell::new(Vec::new()),
+                finish_mode: CallFinishMode::Success,
+            };
             let services = DurableComptimeServices::new(&mut authority);
             assert_eq!(
                 services
@@ -8656,6 +8977,9 @@ mod structured_type_adapter_tests {
         let mut authority = ImportServiceAuthority {
             calls,
             mode: ImportServiceMode::Abort,
+            keyed_heads: RefCell::new(Vec::new()),
+            finish_modes: RefCell::new(Vec::new()),
+            finish_mode: CallFinishMode::Success,
         };
         let services = DurableComptimeServices::new(&mut authority);
         assert!(matches!(
@@ -8675,6 +8999,9 @@ mod structured_type_adapter_tests {
         let mut authority = ImportServiceAuthority {
             calls: Cell::new(0),
             mode: ImportServiceMode::Missing,
+            keyed_heads: RefCell::new(Vec::new()),
+            finish_modes: RefCell::new(Vec::new()),
+            finish_mode: CallFinishMode::Success,
         };
         let services = DurableComptimeServices::new(&mut authority);
         assert!(matches!(
