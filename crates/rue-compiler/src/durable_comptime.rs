@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ahash::AHashMap;
 use rue_air::{
     ComptimeFile, ComptimeIdentity, ComptimeMatchPattern, ComptimeName, ComptimeSemanticRejection,
-    ComptimeType, ComptimeUnaryOperation, ComptimeValue,
+    ComptimeTargetIntrinsic, ComptimeType, ComptimeUnaryOperation, ComptimeValue,
 };
 use rue_query::QueryAbort;
 
@@ -2959,7 +2959,7 @@ pub(crate) trait DurableComptimeSemanticAuthority {
     /// instruction or argument callback crosses this boundary.
     fn resolve_target_intrinsic(
         &self,
-        name: &str,
+        intrinsic: ComptimeTargetIntrinsic,
         argument_count: usize,
     ) -> Result<TargetEnumValue, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>;
 
@@ -3136,12 +3136,12 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
 
     pub(crate) fn resolve_target_intrinsic(
         &self,
-        name: &str,
+        intrinsic: ComptimeTargetIntrinsic,
         argument_count: usize,
     ) -> Result<TargetEnumValue, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>
     {
         self.authority
-            .resolve_target_intrinsic(name, argument_count)
+            .resolve_target_intrinsic(intrinsic, argument_count)
     }
 
     pub(crate) fn resolve_target_enum_variant(
@@ -3355,7 +3355,7 @@ pub(crate) fn durable_match_pattern_matches(
 /// future query adapters can cover data models not currently exposed by a
 /// concrete compiler target without copying the mapping policy.
 pub(crate) fn resolve_target_intrinsic_facts(
-    name: &str,
+    intrinsic: ComptimeTargetIntrinsic,
     argument_count: usize,
     arch: rue_target::Arch,
     os: rue_target::Os,
@@ -3364,28 +3364,28 @@ pub(crate) fn resolve_target_intrinsic_facts(
     if argument_count != 0 {
         return Err(SemanticNucleusFailure::Diagnostic(
             rue_error::ErrorKind::IntrinsicWrongArgCount {
-                name: name.to_owned(),
+                name: intrinsic.as_str().to_owned(),
                 expected: 0,
                 found: argument_count,
             },
         ));
     }
-    let (type_name, variant) = match name {
-        "target_arch" => (
+    let (type_name, variant) = match intrinsic {
+        ComptimeTargetIntrinsic::Arch => (
             "Arch",
             match arch {
                 rue_target::Arch::X86_64 => "X86_64",
                 rue_target::Arch::Aarch64 => "Aarch64",
             },
         ),
-        "target_os" => (
+        ComptimeTargetIntrinsic::Os => (
             "Os",
             match os {
                 rue_target::Os::Linux => "Linux",
                 rue_target::Os::Macos => "Macos",
             },
         ),
-        "target_data_model" => (
+        ComptimeTargetIntrinsic::DataModel => (
             "DataModel",
             match data_model {
                 rue_target::DataModel::Ilp32 => "Ilp32",
@@ -3393,11 +3393,6 @@ pub(crate) fn resolve_target_intrinsic_facts(
                 rue_target::DataModel::Llp64 => "Llp64",
             },
         ),
-        _ => {
-            return Err(SemanticNucleusFailure::Resolution(Arc::from(
-                "unknown target descriptor intrinsic",
-            )));
-        }
     };
     Ok(TargetEnumValue { type_name, variant })
 }
@@ -4363,18 +4358,30 @@ mod tests {
                     rue_target::DataModel::Llp64,
                 ] {
                     assert_eq!(
-                        resolve_target_intrinsic_facts("target_arch", 0, arch, os, data_model,)
-                            .unwrap()
-                            .variant,
+                        resolve_target_intrinsic_facts(
+                            ComptimeTargetIntrinsic::Arch,
+                            0,
+                            arch,
+                            os,
+                            data_model,
+                        )
+                        .unwrap()
+                        .variant,
                         match arch {
                             rue_target::Arch::X86_64 => "X86_64",
                             rue_target::Arch::Aarch64 => "Aarch64",
                         }
                     );
                     assert_eq!(
-                        resolve_target_intrinsic_facts("target_os", 0, arch, os, data_model,)
-                            .unwrap()
-                            .variant,
+                        resolve_target_intrinsic_facts(
+                            ComptimeTargetIntrinsic::Os,
+                            0,
+                            arch,
+                            os,
+                            data_model,
+                        )
+                        .unwrap()
+                        .variant,
                         match os {
                             rue_target::Os::Linux => "Linux",
                             rue_target::Os::Macos => "Macos",
@@ -4382,7 +4389,7 @@ mod tests {
                     );
                     assert_eq!(
                         resolve_target_intrinsic_facts(
-                            "target_data_model",
+                            ComptimeTargetIntrinsic::DataModel,
                             0,
                             arch,
                             os,
@@ -4413,7 +4420,7 @@ mod tests {
         }
         assert!(matches!(
             resolve_target_intrinsic_facts(
-                "target_os",
+                ComptimeTargetIntrinsic::Os,
                 1,
                 rue_target::Arch::X86_64,
                 rue_target::Os::Linux,
@@ -4422,17 +4429,6 @@ mod tests {
             Err(SemanticNucleusFailure::Diagnostic(
                 rue_error::ErrorKind::IntrinsicWrongArgCount { found: 1, .. }
             ))
-        ));
-        assert!(matches!(
-            resolve_target_intrinsic_facts(
-                "other",
-                0,
-                rue_target::Arch::X86_64,
-                rue_target::Os::Linux,
-                rue_target::DataModel::Lp64,
-            ),
-            Err(SemanticNucleusFailure::Resolution(message))
-                if message.as_ref() == "unknown target descriptor intrinsic"
         ));
         assert!(matches!(
             resolve_target_enum_variant_facts("Target", "X86_64"),
@@ -8020,7 +8016,7 @@ mod structured_type_adapter_tests {
 
         fn resolve_target_intrinsic(
             &self,
-            _name: &str,
+            _intrinsic: ComptimeTargetIntrinsic,
             _argument_count: usize,
         ) -> Result<
             TargetEnumValue,

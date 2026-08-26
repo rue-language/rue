@@ -5,7 +5,9 @@
 //! child instructions or invoke another evaluator.
 
 use ahash::{AHashMap, AHashSet};
-use rue_rir::{InstData, InstRef, RepeatCount, Rir, SymbolHandle, ValidatedRir};
+use rue_rir::{
+    InstData, InstRef, RepeatCount, Rir, RirIntrinsicArgsRange, SymbolHandle, ValidatedRir,
+};
 use rue_span::Span;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -335,16 +337,6 @@ pub enum ComptimeNamedValueResolution<V> {
     Missing,
 }
 
-/// An expression argument passed to a semantic intrinsic hook. String
-/// literals are represented as their interned semantic name instead of being
-/// forced through the four-value comptime algebra; all other arguments have
-/// already been recursively evaluated by [`ComptimeEngine`].
-#[derive(Debug, Clone)]
-pub enum ComptimeIntrinsicArgument<V, N> {
-    Value(V),
-    String(N),
-}
-
 /// The finite set of type intrinsics which can participate in declaration-time
 /// comptime evaluation. Classification is owned by AIR so compiler hosts do
 /// not maintain a second spelling table.
@@ -380,6 +372,65 @@ impl ComptimeTypeIntrinsic {
             _ => None,
         }
     }
+}
+
+/// The finite set of expression intrinsics whose semantic identity is known
+/// to AIR.  Keeping this spelling table here means compiler hosts receive a
+/// typed operation and do not need to rediscover the intrinsic from a name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeTargetIntrinsic {
+    Arch,
+    Os,
+    DataModel,
+}
+
+impl ComptimeTargetIntrinsic {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Arch => "target_arch",
+            Self::Os => "target_os",
+            Self::DataModel => "target_data_model",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeExpressionIntrinsic {
+    Import,
+    Target(ComptimeTargetIntrinsic),
+}
+
+impl ComptimeExpressionIntrinsic {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "import" => Some(Self::Import),
+            "target_arch" => Some(Self::Target(ComptimeTargetIntrinsic::Arch)),
+            "target_os" => Some(Self::Target(ComptimeTargetIntrinsic::Os)),
+            "target_data_model" => Some(Self::Target(ComptimeTargetIntrinsic::DataModel)),
+            _ => None,
+        }
+    }
+}
+
+/// Structural facts for an expression intrinsic.  The engine decodes this
+/// request before evaluating any child, so malformed controls retain their
+/// declaration-time diagnostic precedence.
+#[derive(Debug, Clone)]
+pub enum ComptimeExpressionIntrinsicRequest<N> {
+    Import {
+        argument_count: usize,
+        sole_string_literal: Option<N>,
+    },
+    Target {
+        intrinsic: ComptimeTargetIntrinsic,
+        argument_count: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct DecodedComptimeExpressionIntrinsic<N> {
+    request: ComptimeExpressionIntrinsicRequest<N>,
+    site_kind: ComptimeSiteKind,
 }
 
 /// The semantic operation whose source occurrence is being resolved.
@@ -667,6 +718,13 @@ mod value_domain_tests {
         static MATCH_SYMBOL_CALLS: Cell<usize> = const { Cell::new(0) };
         static DIAGNOSTIC_SITES: RefCell<Vec<(usize, u32, u32)>> =
             const { RefCell::new(Vec::new()) };
+        static EXPRESSION_INTRINSIC_REQUESTS:
+            RefCell<Vec<ComptimeExpressionIntrinsicRequest<FakeName>>> =
+            const { RefCell::new(Vec::new()) };
+        static EXPRESSION_INTRINSIC_NAMES: RefCell<Vec<(u32, &'static str)>> =
+            const { RefCell::new(Vec::new()) };
+        static EXPRESSION_INTRINSIC_OUTCOME: Cell<FakeExpressionIntrinsicOutcome> =
+            const { Cell::new(FakeExpressionIntrinsicOutcome::RuntimeDependent) };
     }
 
     #[test]
@@ -1327,6 +1385,17 @@ mod value_domain_tests {
         CanonicalFailure,
     }
 
+    #[derive(Clone, Copy, Debug)]
+    enum FakeExpressionIntrinsicOutcome {
+        Known,
+        RuntimeDependent,
+        NotReady,
+        UnsupportedContext,
+        Trap,
+        HostFailure,
+        Abort,
+    }
+
     #[derive(Clone, Copy)]
     enum FakeStructuredPreparation {
         Enter,
@@ -1719,6 +1788,15 @@ mod value_domain_tests {
             }
         }
         fn display_name(&self, name: &Self::Name) -> String {
+            if let Some((_, intrinsic)) = EXPRESSION_INTRINSIC_NAMES.with(|names| {
+                names
+                    .borrow()
+                    .iter()
+                    .find(|(ordinal, _)| *ordinal == name.ordinal)
+                    .copied()
+            }) {
+                return intrinsic.to_owned();
+            }
             if let Some((_, intrinsic)) = TYPE_INTRINSIC_NAME.with(|configured| {
                 configured
                     .borrow()
@@ -2429,36 +2507,46 @@ mod value_domain_tests {
             ComptimeOutcome::Known(FakeValue::Integer(17))
         }
 
-        fn resolve_comptime_intrinsic(
+        fn resolve_comptime_expression_intrinsic(
             &mut self,
-            name: Self::Name,
-            arguments: &[ComptimeIntrinsicArgument<Self::Value, Self::Name>],
-            _site: &ComptimeSite<Self::ProgramKey>,
-            _span: Span,
+            request: ComptimeExpressionIntrinsicRequest<Self::Name>,
+            site: &ComptimeSite<Self::ProgramKey>,
         ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-            // Encode the argument shape in the existing observation log so
-            // these tests do not need a second fake-host state channel.
-            let string_count = arguments
-                .iter()
-                .filter(|argument| matches!(argument, ComptimeIntrinsicArgument::String(_)))
-                .count();
-            self.dependencies.push((
-                FakeFile {
-                    index: 0xFFFF_FFFE - (*_site.program() as u32),
-                },
-                FakeName {
-                    ordinal: name.ordinal + string_count as u32 + _site.occurrence(),
-                },
-            ));
-            ComptimeOutcome::Known(FakeValue::Integer(
-                arguments
-                    .iter()
-                    .filter_map(|argument| match argument {
-                        ComptimeIntrinsicArgument::Value(value) => value.as_integer(),
-                        ComptimeIntrinsicArgument::String(_) => None,
-                    })
-                    .sum(),
-            ))
+            if let ComptimeExpressionIntrinsicRequest::Import {
+                sole_string_literal: Some(_),
+                ..
+            } = &request
+            {
+                self.dependencies.push((
+                    FakeFile {
+                        index: 0xFFFF_FFFE - (*site.program() as u32),
+                    },
+                    FakeName {
+                        ordinal: site.occurrence(),
+                    },
+                ));
+            }
+            EXPRESSION_INTRINSIC_REQUESTS.with(|requests| requests.borrow_mut().push(request));
+            match EXPRESSION_INTRINSIC_OUTCOME.with(Cell::get) {
+                FakeExpressionIntrinsicOutcome::Known => {
+                    ComptimeOutcome::Known(FakeValue::Integer(99))
+                }
+                FakeExpressionIntrinsicOutcome::RuntimeDependent => {
+                    ComptimeOutcome::RuntimeDependent
+                }
+                FakeExpressionIntrinsicOutcome::NotReady => ComptimeOutcome::NotReady,
+                FakeExpressionIntrinsicOutcome::UnsupportedContext => {
+                    ComptimeOutcome::UnsupportedContext
+                }
+                FakeExpressionIntrinsicOutcome::Trap => ComptimeOutcome::Trap(ComptimeTrap {
+                    operation: "fake intrinsic trap",
+                    span: site.span(),
+                }),
+                FakeExpressionIntrinsicOutcome::HostFailure => {
+                    ComptimeOutcome::HostFailure(FAKE_FAILURE)
+                }
+                FakeExpressionIntrinsicOutcome::Abort => ComptimeOutcome::Abort(FAKE_FAILURE),
+            }
         }
 
         fn resolve_comptime_enum_variant(
@@ -2488,14 +2576,6 @@ mod value_domain_tests {
             self.dependencies
                 .push((FakeFile { index: 0xFFFF_FFFB }, FakeName { ordinal: 0 }));
             ComptimeOutcome::Known(value)
-        }
-
-        fn admit_comptime_intrinsic(
-            &mut self,
-            _name: Self::Name,
-            _site: &ComptimeSite<Self::ProgramKey>,
-        ) -> ComptimeHostResult<bool, Self::Failure> {
-            Ok(self.admits_durable_forms())
         }
 
         fn admit_comptime_enum_variant(
@@ -2967,7 +3047,7 @@ mod value_domain_tests {
         ));
         assert!(matches!(
             engine.evaluate(ComptimeFrame::expression(0, intrinsic), &mut env),
-            ComptimeOutcome::Known(FakeValue::Integer(9))
+            ComptimeOutcome::RuntimeDependent
         ));
         assert!(matches!(
             engine.evaluate(ComptimeFrame::expression(0, checked), &mut env),
@@ -2986,11 +3066,6 @@ mod value_domain_tests {
             host.dependencies
                 .iter()
                 .any(|(file, _)| file.index == u32::MAX)
-        );
-        assert!(
-            host.dependencies
-                .iter()
-                .any(|(file, _)| file.index == 0xFFFF_FFFE)
         );
         assert!(
             host.dependencies
@@ -3067,16 +3142,16 @@ mod value_domain_tests {
         let mut engine = ComptimeEngine::new(&mut host);
         assert!(matches!(
             engine.evaluate(ComptimeFrame::expression(0, first0), &mut env),
-            ComptimeOutcome::Known(FakeValue::Integer(0))
+            ComptimeOutcome::RuntimeDependent
         ));
         assert!(matches!(
             engine.evaluate(ComptimeFrame::expression(0, second0), &mut env),
-            ComptimeOutcome::Known(FakeValue::Integer(0))
+            ComptimeOutcome::RuntimeDependent
         ));
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         assert!(matches!(
             engine.evaluate(ComptimeFrame::expression(1, first1), &mut env),
-            ComptimeOutcome::Known(FakeValue::Integer(0))
+            ComptimeOutcome::RuntimeDependent
         ));
         let import_observations = host
             .dependencies
@@ -3086,7 +3161,7 @@ mod value_domain_tests {
             .collect::<Vec<_>>();
         assert_eq!(
             import_observations,
-            vec![(0xFFFF_FFFE, 1), (0xFFFF_FFFE, 2), (0xFFFF_FFFD, 1001)]
+            vec![(0xFFFF_FFFE, 0), (0xFFFF_FFFE, 1), (0xFFFF_FFFD, 0)]
         );
     }
 
@@ -3094,6 +3169,10 @@ mod value_domain_tests {
     fn default_admission_does_not_evaluate_intrinsic_or_enum_children() {
         let mut editor = rue_rir::RirEditor::new();
         let interner = lasso::ThreadedRodeo::new();
+        let import_name = interner.get_or_intern("import");
+        let target_arch_name = interner.get_or_intern("target_arch");
+        let target_os_name = interner.get_or_intern("target_os");
+        let unknown_name = interner.get_or_intern("unknown_intrinsic");
         let bad = editor.add_inst(rue_rir::Inst {
             data: InstData::FloatConst {
                 text: interner.get_or_intern("1.0"),
@@ -3108,14 +3187,19 @@ mod value_domain_tests {
             span: Span::new(0, 3),
         });
         let valid_import = editor
-            .add_intrinsic(
-                interner.get_or_intern("import"),
-                &[valid_string],
-                Span::new(0, 3),
-            )
+            .add_intrinsic(import_name, &[valid_string], Span::new(0, 3))
             .unwrap();
         let intrinsic = editor
-            .add_intrinsic(interner.get_or_intern("import"), &[bad], Span::new(0, 3))
+            .add_intrinsic(import_name, &[bad], Span::new(0, 3))
+            .unwrap();
+        let target_arch = editor
+            .add_intrinsic(target_arch_name, &[], Span::new(0, 3))
+            .unwrap();
+        let malformed_target = editor
+            .add_intrinsic(target_os_name, &[bad], Span::new(0, 3))
+            .unwrap();
+        let unknown_intrinsic = editor
+            .add_intrinsic(unknown_name, &[bad], Span::new(0, 3))
             .unwrap();
         let enum_variant = editor.add_inst(rue_rir::Inst {
             data: InstData::EnumVariant {
@@ -3139,6 +3223,24 @@ mod value_domain_tests {
         };
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let mut engine = ComptimeEngine::new(&mut host);
+        EXPRESSION_INTRINSIC_NAMES.with(|names| {
+            names.borrow_mut().extend([
+                (
+                    SymbolHandle::new(target_arch_name).issuing_interner_ordinal() as u32,
+                    "target_arch",
+                ),
+                (
+                    SymbolHandle::new(target_os_name).issuing_interner_ordinal() as u32,
+                    "target_os",
+                ),
+                (
+                    SymbolHandle::new(unknown_name).issuing_interner_ordinal() as u32,
+                    "unknown_intrinsic",
+                ),
+            ]);
+        });
+        EXPRESSION_INTRINSIC_REQUESTS.with(|requests| requests.borrow_mut().clear());
+        REJECTION_EVENTS.with(|events| events.borrow_mut().clear());
         assert!(matches!(
             engine.evaluate(ComptimeFrame::expression(0, valid_import), &mut env),
             ComptimeOutcome::RuntimeDependent
@@ -3148,10 +3250,269 @@ mod value_domain_tests {
             ComptimeOutcome::RuntimeDependent
         ));
         assert!(matches!(
+            engine.evaluate(ComptimeFrame::expression(0, target_arch), &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+        assert!(matches!(
+            engine.evaluate(ComptimeFrame::expression(0, malformed_target), &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+        assert!(matches!(
+            engine.evaluate(ComptimeFrame::expression(0, unknown_intrinsic), &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+        assert!(matches!(
             engine.evaluate(ComptimeFrame::expression(0, enum_variant), &mut env),
             ComptimeOutcome::RuntimeDependent
         ));
         assert_eq!(host.float_evaluations.get(), 0);
+        let requests = EXPRESSION_INTRINSIC_REQUESTS.with(|requests| requests.borrow().clone());
+        assert_eq!(
+            requests.len(),
+            4,
+            "only intrinsic nodes should cross the typed request hook"
+        );
+        assert!(matches!(
+            &requests[0],
+            ComptimeExpressionIntrinsicRequest::Import {
+                argument_count: 1,
+                sole_string_literal: Some(_),
+            }
+        ));
+        assert!(matches!(
+            &requests[1],
+            ComptimeExpressionIntrinsicRequest::Import {
+                argument_count: 1,
+                sole_string_literal: None,
+            }
+        ));
+        assert!(matches!(
+            &requests[2],
+            ComptimeExpressionIntrinsicRequest::Target {
+                intrinsic: ComptimeTargetIntrinsic::Arch,
+                argument_count: 0,
+            }
+        ));
+        assert!(matches!(
+            &requests[3],
+            ComptimeExpressionIntrinsicRequest::Target {
+                intrinsic: ComptimeTargetIntrinsic::Os,
+                argument_count: 1,
+            }
+        ));
+        assert_eq!(
+            REJECTION_EVENTS.with(|events| events.borrow().clone()),
+            vec![ComptimeSemanticRejection::UnsupportedIntrinsic(
+                "unknown_intrinsic".to_owned()
+            )]
+        );
+        EXPRESSION_INTRINSIC_REQUESTS.with(|requests| requests.borrow_mut().clear());
+        EXPRESSION_INTRINSIC_NAMES.with(|names| names.borrow_mut().clear());
+    }
+
+    #[test]
+    fn expression_intrinsic_classifier_covers_targets_and_rejects_unknown_names() {
+        assert_eq!(
+            ComptimeExpressionIntrinsic::from_name("import"),
+            Some(ComptimeExpressionIntrinsic::Import)
+        );
+        assert_eq!(
+            ComptimeExpressionIntrinsic::from_name("target_arch"),
+            Some(ComptimeExpressionIntrinsic::Target(
+                ComptimeTargetIntrinsic::Arch
+            ))
+        );
+        assert_eq!(
+            ComptimeExpressionIntrinsic::from_name("target_os"),
+            Some(ComptimeExpressionIntrinsic::Target(
+                ComptimeTargetIntrinsic::Os
+            ))
+        );
+        assert_eq!(
+            ComptimeExpressionIntrinsic::from_name("target_data_model"),
+            Some(ComptimeExpressionIntrinsic::Target(
+                ComptimeTargetIntrinsic::DataModel
+            ))
+        );
+        assert_eq!(
+            ComptimeExpressionIntrinsic::from_name("unknown_intrinsic"),
+            None
+        );
+    }
+
+    #[test]
+    fn expression_intrinsic_requests_preserve_terminals_without_evaluating_children() {
+        let mut editor = rue_rir::RirEditor::new();
+        let interner = lasso::ThreadedRodeo::new();
+        let import_name = interner.get_or_intern("import");
+        let target_name = interner.get_or_intern("target_arch");
+        let bad = editor.add_inst(rue_rir::Inst {
+            data: InstData::FloatConst {
+                text: interner.get_or_intern("1.0"),
+            },
+            span: Span::new(4, 7),
+        });
+        let string = editor.add_inst(rue_rir::Inst {
+            data: InstData::StringConst {
+                content: interner.get_or_intern("dep"),
+                anchor: rue_rir::RirStructuralAnchor::new(Vec::new()),
+            },
+            span: Span::new(0, 3),
+        });
+        let valid_import = editor
+            .add_intrinsic(import_name, &[string], Span::new(0, 3))
+            .unwrap();
+        let malformed_import = editor
+            .add_intrinsic(import_name, &[bad], Span::new(4, 7))
+            .unwrap();
+        let malformed_target = editor
+            .add_intrinsic(target_name, &[bad], Span::new(8, 11))
+            .unwrap();
+        let mut host = FakeHost {
+            programs: vec![editor.finish()],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        EXPRESSION_INTRINSIC_NAMES.with(|names| {
+            names.borrow_mut().push((
+                SymbolHandle::new(target_name).issuing_interner_ordinal() as u32,
+                "target_arch",
+            ));
+        });
+        let outcomes = [
+            FakeExpressionIntrinsicOutcome::RuntimeDependent,
+            FakeExpressionIntrinsicOutcome::NotReady,
+            FakeExpressionIntrinsicOutcome::UnsupportedContext,
+            FakeExpressionIntrinsicOutcome::Trap,
+            FakeExpressionIntrinsicOutcome::HostFailure,
+            FakeExpressionIntrinsicOutcome::Abort,
+            FakeExpressionIntrinsicOutcome::Known,
+        ];
+        for expected in outcomes {
+            EXPRESSION_INTRINSIC_OUTCOME.with(|outcome| outcome.set(expected));
+            EXPRESSION_INTRINSIC_REQUESTS.with(|requests| requests.borrow_mut().clear());
+            let mut engine = ComptimeEngine::new(&mut host);
+            for expression in [valid_import, malformed_import, malformed_target] {
+                let result = engine.evaluate(ComptimeFrame::expression(0, expression), &mut env);
+                match (expected, result) {
+                    (
+                        FakeExpressionIntrinsicOutcome::Known,
+                        ComptimeOutcome::Known(FakeValue::Integer(99)),
+                    )
+                    | (
+                        FakeExpressionIntrinsicOutcome::RuntimeDependent,
+                        ComptimeOutcome::RuntimeDependent,
+                    )
+                    | (FakeExpressionIntrinsicOutcome::NotReady, ComptimeOutcome::NotReady)
+                    | (
+                        FakeExpressionIntrinsicOutcome::HostFailure,
+                        ComptimeOutcome::HostFailure(FAKE_FAILURE),
+                    )
+                    | (
+                        FakeExpressionIntrinsicOutcome::Abort,
+                        ComptimeOutcome::Abort(FAKE_FAILURE),
+                    ) => {}
+                    (
+                        FakeExpressionIntrinsicOutcome::UnsupportedContext,
+                        ComptimeOutcome::UnsupportedContext,
+                    )
+                    | (
+                        FakeExpressionIntrinsicOutcome::Trap,
+                        ComptimeOutcome::Trap(ComptimeTrap {
+                            operation: "fake intrinsic trap",
+                            ..
+                        }),
+                    ) => {}
+                    other => panic!("unexpected intrinsic outcome: {other:?}"),
+                }
+            }
+            assert_eq!(host.float_evaluations.get(), 0);
+            assert_eq!(
+                EXPRESSION_INTRINSIC_REQUESTS.with(|requests| requests.borrow().len()),
+                3
+            );
+        }
+        EXPRESSION_INTRINSIC_OUTCOME
+            .with(|outcome| outcome.set(FakeExpressionIntrinsicOutcome::RuntimeDependent));
+        EXPRESSION_INTRINSIC_REQUESTS.with(|requests| requests.borrow_mut().clear());
+        EXPRESSION_INTRINSIC_NAMES.with(|names| names.borrow_mut().clear());
+    }
+
+    #[test]
+    fn unknown_expression_intrinsic_rejects_per_program_without_calling_the_hook() {
+        let interner = lasso::ThreadedRodeo::new();
+        let unknown_name = interner.get_or_intern("mystery_intrinsic");
+        let make_program = || {
+            let mut editor = rue_rir::RirEditor::new();
+            let bad = editor.add_inst(rue_rir::Inst {
+                data: InstData::FloatConst {
+                    text: interner.get_or_intern("1.0"),
+                },
+                span: Span::new(12, 15),
+            });
+            let unknown = editor
+                .add_intrinsic(unknown_name, &[bad], Span::new(12, 15))
+                .unwrap();
+            (editor.finish(), unknown)
+        };
+        let (program0, unknown0) = make_program();
+        let (program1, unknown1) = make_program();
+        let mut host = FakeHost {
+            programs: vec![program0, program1],
+            type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        REJECTION_EVENTS.with(|events| events.borrow_mut().clear());
+        REJECTION_SITES.with(|sites| sites.borrow_mut().clear());
+        EXPRESSION_INTRINSIC_REQUESTS.with(|requests| requests.borrow_mut().clear());
+        let unknown_ordinal = SymbolHandle::new(unknown_name).issuing_interner_ordinal() as u32;
+        EXPRESSION_INTRINSIC_NAMES.with(|names| {
+            names.borrow_mut().extend([
+                (unknown_ordinal, "mystery_intrinsic"),
+                (unknown_ordinal + 1000, "mystery_intrinsic"),
+            ]);
+        });
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let mut engine = ComptimeEngine::new(&mut host);
+        assert!(matches!(
+            engine.evaluate(ComptimeFrame::expression(0, unknown0), &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+        assert!(matches!(
+            engine.evaluate(ComptimeFrame::expression(1, unknown1), &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+        assert_eq!(host.float_evaluations.get(), 0);
+        assert!(EXPRESSION_INTRINSIC_REQUESTS.with(|requests| requests.borrow().is_empty()));
+        assert_eq!(
+            REJECTION_EVENTS.with(|events| events.borrow().clone()),
+            vec![
+                ComptimeSemanticRejection::UnsupportedIntrinsic("mystery_intrinsic".to_owned()),
+                ComptimeSemanticRejection::UnsupportedIntrinsic("mystery_intrinsic".to_owned()),
+            ]
+        );
+        assert_eq!(
+            REJECTION_SITES.with(|sites| sites.borrow().clone()),
+            vec![(0, 12, 15), (1, 12, 15)]
+        );
+        REJECTION_EVENTS.with(|events| events.borrow_mut().clear());
+        REJECTION_SITES.with(|sites| sites.borrow_mut().clear());
+        EXPRESSION_INTRINSIC_NAMES.with(|names| names.borrow_mut().clear());
     }
 
     #[test]
@@ -6685,23 +7046,13 @@ pub trait ComptimeHost {
         ComptimeOutcome::RuntimeDependent
     }
 
-    fn admit_comptime_intrinsic(
+    /// Resolve a classified expression intrinsic after AIR has decoded its
+    /// exact argument shape. No child argument is evaluated for this finite
+    /// family; durable hosts can perform the keyed semantic operation directly.
+    fn resolve_comptime_expression_intrinsic(
         &mut self,
-        _name: Self::Name,
+        _request: ComptimeExpressionIntrinsicRequest<Self::Name>,
         _site: &ComptimeSite<Self::ProgramKey>,
-    ) -> ComptimeHostResult<bool, Self::Failure> {
-        Ok(false)
-    }
-
-    /// Handle an expression intrinsic after the engine has recursively
-    /// evaluated every non-string argument. The host receives semantic names
-    /// and values only; it never receives child instruction references.
-    fn resolve_comptime_intrinsic(
-        &mut self,
-        _name: Self::Name,
-        _arguments: &[ComptimeIntrinsicArgument<Self::Value, Self::Name>],
-        _site: &ComptimeSite<Self::ProgramKey>,
-        _span: Span,
     ) -> ComptimeOutcome<Self::Value, Self::Failure> {
         ComptimeOutcome::RuntimeDependent
     }
@@ -7113,6 +7464,50 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         ComptimeDiagnosticSite::new(self.program_key(), span)
     }
 
+    fn decode_expression_intrinsic(
+        &self,
+        name: H::Name,
+        args: &RirIntrinsicArgsRange,
+    ) -> Result<DecodedComptimeExpressionIntrinsic<H::Name>, String> {
+        let program = self.program_key();
+        let arguments = self.program_rir().intrinsic_args(args).to_vec();
+        let display_name = self.host.display_name(&name);
+        let Some(intrinsic) = ComptimeExpressionIntrinsic::from_name(&display_name) else {
+            return Err(display_name);
+        };
+        let request = match intrinsic {
+            ComptimeExpressionIntrinsic::Import => {
+                let sole_string_literal = (arguments.len() == 1)
+                    .then(|| match self.program_rir().get(arguments[0]).data {
+                        InstData::StringConst { content, .. } => {
+                            Some(self.host.name_from_symbol(&program, content.into()))
+                        }
+                        _ => None,
+                    })
+                    .flatten();
+                ComptimeExpressionIntrinsicRequest::Import {
+                    argument_count: arguments.len(),
+                    sole_string_literal,
+                }
+            }
+            ComptimeExpressionIntrinsic::Target(target) => {
+                ComptimeExpressionIntrinsicRequest::Target {
+                    intrinsic: target,
+                    argument_count: arguments.len(),
+                }
+            }
+        };
+        let site_kind = match &request {
+            ComptimeExpressionIntrinsicRequest::Import {
+                sole_string_literal: Some(_),
+                ..
+            } => ComptimeSiteKind::Import,
+            ComptimeExpressionIntrinsicRequest::Import { .. }
+            | ComptimeExpressionIntrinsicRequest::Target { .. } => ComptimeSiteKind::Intrinsic,
+        };
+        Ok(DecodedComptimeExpressionIntrinsic { request, site_kind })
+    }
+
     fn semantic_site(
         &self,
         inst_ref: InstRef,
@@ -7123,31 +7518,23 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let rir = self.host.program_rir(&program);
         let mut sites = Vec::new();
         for (candidate, instruction) in rir.iter() {
-            let candidate_kind = match (&instruction.data, kind) {
-                (InstData::Intrinsic { name, args }, ComptimeSiteKind::Import)
-                    if self
-                        .host
-                        .display_name(&self.host.name_from_symbol(&program, (*name).into()))
-                        == "import"
-                        && rir.intrinsic_args(args).get(0).is_some_and(|argument| {
-                            matches!(rir.get(argument).data, InstData::StringConst { .. })
-                        })
-                        && rir.intrinsic_args(args).len() == 1 =>
-                {
-                    Some(ComptimeSiteKind::Import)
-                }
-                (InstData::Intrinsic { .. }, ComptimeSiteKind::Intrinsic) => {
-                    Some(ComptimeSiteKind::Intrinsic)
-                }
-                (InstData::EnumVariant { .. }, ComptimeSiteKind::EnumVariant) => {
+            let candidate_kind = match &instruction.data {
+                InstData::Intrinsic { name, args } => self
+                    .decode_expression_intrinsic(
+                        self.host.name_from_symbol(&program, (*name).into()),
+                        args,
+                    )
+                    .ok()
+                    .map(|decoded| decoded.site_kind),
+                InstData::EnumVariant { .. } if kind == ComptimeSiteKind::EnumVariant => {
                     Some(ComptimeSiteKind::EnumVariant)
                 }
-                (InstData::FieldGet { .. }, ComptimeSiteKind::Member) => {
+                InstData::FieldGet { .. } if kind == ComptimeSiteKind::Member => {
                     Some(ComptimeSiteKind::Member)
                 }
                 _ => None,
             };
-            if candidate_kind.is_some() {
+            if candidate_kind == Some(kind) {
                 sites.push((instruction.span.start, instruction.span.end, candidate));
             }
         }
@@ -8772,41 +9159,25 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 }
             }
 
-            // Expression intrinsics receive semantic arguments. String
-            // literals are carried as names so `@import("...")` can be
-            // handled by a durable host; every other argument is recursively
-            // evaluated here before crossing the host boundary.
+            // Expression intrinsics are classified and structurally decoded
+            // before child evaluation. This finite family has no comptime
+            // child arguments: a durable host receives the import literal or
+            // target arity as semantic facts, while malformed controls retain
+            // their intrinsic-site diagnostics.
             InstData::Intrinsic { name, args } => {
                 let name = self.name_from_rir((*name).into());
-                let arguments = self.program_rir().intrinsic_args(args).to_vec();
-                let is_import = self.host.display_name(&name) == "import"
-                    && arguments.len() == 1
-                    && matches!(
-                        self.program_rir().get(arguments[0]).data,
-                        InstData::StringConst { .. }
-                    );
-                let kind = if is_import {
-                    ComptimeSiteKind::Import
-                } else {
-                    ComptimeSiteKind::Intrinsic
-                };
-                let site = self.semantic_site(inst_ref, kind, span);
-                if !host_value!(self.host.admit_comptime_intrinsic(name.clone(), &site)) {
-                    return ComptimeOutcome::RuntimeDependent;
-                }
-                let mut values = Vec::with_capacity(arguments.len());
-                for argument in arguments {
-                    match self.program_rir().get(argument).data {
-                        InstData::StringConst { content, .. } => values.push(
-                            ComptimeIntrinsicArgument::String(self.name_from_rir(content.into())),
-                        ),
-                        _ => values.push(ComptimeIntrinsicArgument::Value(outcome_value!(
-                            self.eval(argument, env)
-                        ))),
+                let decoded = match self.decode_expression_intrinsic(name, &args) {
+                    Ok(decoded) => decoded,
+                    Err(display_name) => {
+                        return self.host.reject_comptime_expression(
+                            ComptimeSemanticRejection::UnsupportedIntrinsic(display_name),
+                            &self.diagnostic_site(span),
+                        );
                     }
-                }
+                };
+                let site = self.semantic_site(inst_ref, decoded.site_kind, span);
                 self.host
-                    .resolve_comptime_intrinsic(name, &values, &site, span)
+                    .resolve_comptime_expression_intrinsic(decoded.request, &site)
             }
 
             // Enum variants are runtime values in the ordinary body domain.

@@ -189,8 +189,10 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "ComptimeHost",
         "ComptimeHostError",
         "ComptimeHostResult",
-        "ComptimeIntrinsicArgument",
+        "ComptimeExpressionIntrinsic",
+        "ComptimeExpressionIntrinsicRequest",
         "ComptimeIntegerBound",
+        "ComptimeTargetIntrinsic",
         "ComptimeTypeIntrinsic",
         "ComptimeSite",
         "ComptimeSiteKind",
@@ -220,7 +222,11 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     let classifier = comptime
         .split("impl ComptimeTypeIntrinsic {")
         .nth(1)
-        .and_then(|source| source.split("\n}\n\n/// The semantic operation").next())
+        .and_then(|source| {
+            source
+                .split("\n}\n\n/// The finite set of expression")
+                .next()
+        })
         .expect("type intrinsic classifier");
     assert_eq!(classifier.matches("fn from_name(").count(), 1);
     assert_eq!(
@@ -229,6 +235,60 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
             .count(),
         1
     );
+    let expression_classifier = comptime
+        .split("impl ComptimeExpressionIntrinsic {")
+        .nth(1)
+        .and_then(|source| source.split("\n}\n\n/// Structural facts").next())
+        .expect("expression intrinsic classifier");
+    assert_eq!(expression_classifier.matches("fn from_name(").count(), 1);
+    for spelling in [
+        "\"import\"",
+        "\"target_arch\"",
+        "\"target_os\"",
+        "\"target_data_model\"",
+    ] {
+        assert!(expression_classifier.contains(spelling));
+    }
+    assert!(!comptime.contains("fn admit_comptime_intrinsic("));
+    assert!(!comptime.contains("fn resolve_comptime_intrinsic("));
+    assert!(comptime.contains("fn resolve_comptime_expression_intrinsic("));
+    let expression_decoder = comptime
+        .split("fn decode_expression_intrinsic(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn semantic_site(").next())
+        .expect("shared expression intrinsic decoder");
+    assert_eq!(
+        comptime.matches("fn decode_expression_intrinsic(").count(),
+        1
+    );
+    assert!(expression_decoder.contains("ComptimeExpressionIntrinsic::from_name"));
+    assert!(expression_decoder.contains("ComptimeExpressionIntrinsicRequest"));
+    assert!(expression_decoder.contains("ComptimeSiteKind"));
+    assert!(!expression_decoder.contains("== \"import\""));
+    let semantic_site = comptime
+        .split("fn semantic_site(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn name_from_rir(").next())
+        .expect("semantic-site occurrence scanner");
+    assert!(semantic_site.contains("decode_expression_intrinsic("));
+    assert!(!semantic_site.contains("display_name(&self.host.name_from_symbol"));
+    assert!(!semantic_site.contains("== \"import\""));
+    let intrinsic_dispatch = comptime
+        .split("InstData::Intrinsic { name, args } => {")
+        .nth(1)
+        .and_then(|source| source.split("\n            // Enum variants").next())
+        .expect("expression intrinsic dispatch");
+    let decode_position = intrinsic_dispatch
+        .find("decode_expression_intrinsic(")
+        .expect("dispatch uses shared intrinsic decoder");
+    let site_position = intrinsic_dispatch
+        .find("self.semantic_site(")
+        .expect("dispatch constructs semantic site");
+    let hook_position = intrinsic_dispatch
+        .find("resolve_comptime_expression_intrinsic(")
+        .expect("dispatch calls typed intrinsic hook");
+    assert!(decode_position < site_position && site_position < hook_position);
+    assert!(!intrinsic_dispatch.contains("from_name(&display_name)"));
     assert!(comptime.contains("impl ComptimeIntegerBound {"));
     assert!(comptime.contains("pub fn as_str(self) -> &'static str"));
     assert_eq!(
