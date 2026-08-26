@@ -1071,7 +1071,7 @@ pub(crate) enum DurableComptimeForeignCallError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DurableComptimeStructuredFrameAdmissionError {
     InvalidContract,
-    ValueFit(SemanticNucleusFailure),
+    ValueFit(Box<SemanticNucleusFailure>),
     ResultNotType,
 }
 
@@ -1277,7 +1277,7 @@ impl DurableComptimeSession {
                 let expected = substitute_durable_generics(&parameter.ty, &type_arguments);
                 if let Some(failure) = durable_structured_value_fit_failure(value, &expected) {
                     return Err(DurableComptimeForeignCallError::StructuredFrame(
-                        DurableComptimeStructuredFrameAdmissionError::ValueFit(failure),
+                        DurableComptimeStructuredFrameAdmissionError::ValueFit(Box::new(failure)),
                     ));
                 }
                 value_bindings.insert(
