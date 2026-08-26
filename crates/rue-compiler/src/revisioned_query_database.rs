@@ -14226,34 +14226,12 @@ impl RevisionedQueryDatabase {
                                                 deferred_ownership: BTreeSet::new(),
                                                 ownership_properties: BTreeMap::new(),
                                             };
-                                            let canonical_arguments = crate::CanonicalArguments {
-                                                types: call
-                                                    .type_arguments
-                                                    .iter()
-                                                    .map(|(_, value)| {
-                                                        crate::semantic_identity::type_instance_from_semantic(value)
-                                                    })
-                                                    .collect::<Option<Vec<_>>>()
-                                                    .expect("durable type arguments have canonical identities")
-                                                    .into(),
-                                                values: call
-                                                    .value_arguments
-                                                    .iter()
-                                                    .map(|(_, value)| {
-                                                        crate::semantic_identity::argument_value_from_semantic(value)
-                                                    })
-                                                    .collect::<Option<Vec<_>>>()
-                                                    .expect("durable value arguments have canonical identities")
-                                                    .into(),
-                                            };
-                                            let producer = crate::StableProducerId::Function(Node::new(
-                                                crate::FunctionInstanceKey::Specialization {
-                                                    base: Node::new(crate::FunctionInstanceKey::Definition(
-                                                        producer_key.clone(),
-                                                    )),
-                                                    arguments: canonical_arguments,
-                                                },
-                                            ));
+                                            let producer = crate::durable_comptime::canonical_specialized_function_producer(
+                                                &producer_key,
+                                                &call.type_arguments,
+                                                &call.value_arguments,
+                                            )
+                                            .expect("durable type/value arguments have canonical identities");
                                             let session = crate::durable_comptime::DurableComptimeSession::new(
                                                 producer_key.clone(),
                                                 call.declaration.declaration.clone(),
@@ -22763,27 +22741,13 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
             }
         }
         if !projection.anonymous_nominals.is_empty() {
-            let Some(types) = type_arguments
-                .iter()
-                .map(|(_, value)| crate::semantic_identity::type_instance_from_semantic(value))
-                .collect::<Option<Vec<_>>>()
-            else {
-                return rue_air::DurableComptimeCallOutcome::NotReduced;
-            };
-            let Some(values) = value_arguments
-                .iter()
-                .map(|(_, value)| crate::semantic_identity::argument_value_from_semantic(value))
-                .collect::<Option<Vec<_>>>()
-            else {
-                return rue_air::DurableComptimeCallOutcome::NotReduced;
-            };
-            let arguments = crate::CanonicalArguments {
-                types: types.into(),
-                values: values.into(),
-            };
-            let producer = crate::FunctionInstanceKey::Specialization {
-                base: Node::new(crate::FunctionInstanceKey::Definition(definition.clone())),
-                arguments,
+            let producer = match crate::durable_comptime::canonical_specialized_function_instance(
+                definition,
+                type_arguments,
+                value_arguments,
+            ) {
+                Ok(producer) => producer,
+                Err(_) => return rue_air::DurableComptimeCallOutcome::NotReduced,
             };
             self.provider
                 .queries

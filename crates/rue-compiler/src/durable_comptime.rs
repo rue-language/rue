@@ -554,7 +554,74 @@ pub(crate) struct DurableComptimeCallContext {
     application_policy: DurableComptimeApplicationPolicy,
 }
 
+/// Failure while turning the ordered durable call arguments into a stable
+/// specialization identity.  This kernel is semantic-only: it owns no RIR,
+/// evaluator, query, or lifecycle authority.
+#[allow(dead_code)] // consumed by the root-integrated durable AIR host
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DurableComptimeProducerIssuanceError {
+    ProgramMismatch,
+    InvalidTypeArgument,
+    InvalidValueArgument,
+}
+
+pub(crate) fn canonical_specialized_function_producer(
+    base: &crate::StableDefinitionKey,
+    type_arguments: &[(Arc<str>, DurableType)],
+    value_arguments: &[(Arc<str>, DurableConstValue)],
+) -> Result<crate::StableProducerId, DurableComptimeProducerIssuanceError> {
+    let function = canonical_specialized_function_instance(base, type_arguments, value_arguments)?;
+    Ok(crate::StableProducerId::Function(rue_air::Node::new(
+        function,
+    )))
+}
+
+pub(crate) fn canonical_specialized_function_instance(
+    base: &crate::StableDefinitionKey,
+    type_arguments: &[(Arc<str>, DurableType)],
+    value_arguments: &[(Arc<str>, DurableConstValue)],
+) -> Result<crate::FunctionInstanceKey, DurableComptimeProducerIssuanceError> {
+    let types = type_arguments
+        .iter()
+        .map(|(_, value)| crate::semantic_identity::type_instance_from_semantic(value))
+        .collect::<Option<Vec<_>>>()
+        .ok_or(DurableComptimeProducerIssuanceError::InvalidTypeArgument)?
+        .into();
+    let values = value_arguments
+        .iter()
+        .map(|(_, value)| crate::semantic_identity::argument_value_from_semantic(value))
+        .collect::<Option<Vec<_>>>()
+        .ok_or(DurableComptimeProducerIssuanceError::InvalidValueArgument)?
+        .into();
+    Ok(
+        crate::semantic_identity::function_instance_from_canonical_arguments(
+            base.clone(),
+            types,
+            values,
+        ),
+    )
+}
+
 impl DurableComptimeCallContext {
+    #[allow(dead_code)] // consumed by the root-integrated durable AIR host
+    fn canonical_function_producer(
+        &self,
+        program: &crate::body_query::DurableComptimeProgramKey,
+    ) -> Result<crate::StableProducerId, DurableComptimeProducerIssuanceError> {
+        if &self.program != program
+            || self.child_producer != program.declaration
+            || self.query.declaration.declaration.module != *program.declaration.module()
+            || self.query.declaration.configuration != program.configuration
+        {
+            return Err(DurableComptimeProducerIssuanceError::ProgramMismatch);
+        }
+        canonical_specialized_function_producer(
+            &self.child_producer,
+            &self.query.type_arguments,
+            &self.query.value_arguments,
+        )
+    }
+
     #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn from_admitted_expression(
@@ -741,6 +808,16 @@ pub(crate) struct DurableComptimeCallTicket {
     context: DurableComptimeCallContext,
     expected_parent: Option<(u64, u64)>,
     consumed: bool,
+}
+
+impl DurableComptimeCallTicket {
+    #[allow(dead_code)] // consumed by the root-integrated durable AIR host
+    pub(crate) fn canonical_function_producer(
+        &self,
+        program: &crate::body_query::DurableComptimeProgramKey,
+    ) -> Result<crate::StableProducerId, DurableComptimeProducerIssuanceError> {
+        self.context.canonical_function_producer(program)
+    }
 }
 
 #[allow(dead_code)]
@@ -4440,6 +4517,95 @@ mod effect_lifecycle_tests {
         };
         assert_eq!(program.plan, admitted.plan);
         assert!(session.lifecycle.active.is_empty());
+
+        // Producer issuance is a ticket capability, not a context helper.
+        // This uses the exact ticket returned by lifecycle admission before
+        // activation, so an unordered AIR binding map cannot participate.
+        let issued = ticket
+            .canonical_function_producer(&program.plan.key)
+            .unwrap();
+        assert_eq!(
+            issued,
+            canonical_specialized_function_producer(
+                &producer,
+                &seed.type_arguments,
+                &seed.value_arguments,
+            )
+            .unwrap()
+        );
+        let renamed = canonical_specialized_function_producer(
+            &producer,
+            &seed
+                .type_arguments
+                .iter()
+                .map(|(_, value)| (Arc::from("renamed"), value.clone()))
+                .collect::<Vec<_>>(),
+            &seed
+                .value_arguments
+                .iter()
+                .map(|(_, value)| (Arc::from("renamed"), value.clone()))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert_eq!(issued, renamed, "argument names are not identity inputs");
+        let type_reordered = canonical_specialized_function_producer(
+            &producer,
+            &seed
+                .type_arguments
+                .iter()
+                .rev()
+                .cloned()
+                .collect::<Vec<_>>(),
+            &seed.value_arguments,
+        )
+        .unwrap();
+        assert_ne!(issued, type_reordered, "type stream order affects identity");
+        let value_reordered = canonical_specialized_function_producer(
+            &producer,
+            &seed.type_arguments,
+            &seed
+                .value_arguments
+                .iter()
+                .rev()
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert_ne!(
+            issued, value_reordered,
+            "value stream order affects identity"
+        );
+        let empty = canonical_specialized_function_producer(&producer, &[], &[]).unwrap();
+        assert!(matches!(
+            empty,
+            crate::StableProducerId::Function(ref function)
+                if matches!(function.as_ref(), crate::FunctionInstanceKey::Specialization { arguments, .. } if arguments.types.is_empty() && arguments.values.is_empty())
+        ));
+        let wrong_program = crate::body_query::DurableComptimeProgramKey {
+            declaration: crate::StableDefinitionKey::from_stable_parts(
+                sibling.module.clone(),
+                crate::StableDefinitionNamespace::Value,
+                crate::StableDefinitionKind::Function,
+                sibling.name.clone(),
+                None,
+            ),
+            configuration: configuration.clone(),
+        };
+        assert_eq!(
+            ticket.canonical_function_producer(&wrong_program),
+            Err(DurableComptimeProducerIssuanceError::ProgramMismatch)
+        );
+        let wrong_configuration = crate::body_query::DurableComptimeProgramKey {
+            declaration: program.plan.key.declaration.clone(),
+            configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                target: rue_target::Target::Aarch64Linux,
+                preview_features: configuration.preview_features.clone(),
+            },
+        };
+        assert_eq!(
+            ticket.canonical_function_producer(&wrong_configuration),
+            Err(DurableComptimeProducerIssuanceError::ProgramMismatch)
+        );
         session.lifecycle.enter(&ticket).unwrap();
         session
             .lifecycle

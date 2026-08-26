@@ -383,13 +383,29 @@ pub(crate) fn function_instance_from_specialization(
         .iter()
         .map(argument_value_from_semantic)
         .collect::<Option<Vec<_>>>()?;
-    Some(FunctionInstanceKey::Specialization {
-        base: Node::new(FunctionInstanceKey::Definition(value.base.clone())),
+    Some(function_instance_from_canonical_arguments(
+        value.base.clone(),
+        types,
+        values,
+    ))
+}
+
+/// Build the one canonical specialized-function identity from already
+/// canonical argument streams.  Durable callers perform semantic conversion
+/// before reaching this kernel; no caller may spell the specialization shape
+/// independently.
+pub(crate) fn function_instance_from_canonical_arguments(
+    base: StableDefinitionKey,
+    types: Vec<TypeInstanceKey>,
+    values: Vec<CanonicalArgumentValue>,
+) -> FunctionInstanceKey {
+    FunctionInstanceKey::Specialization {
+        base: Node::new(FunctionInstanceKey::Definition(base)),
         arguments: CanonicalArguments {
             types: types.into(),
             values: values.into(),
         },
-    })
+    }
 }
 
 fn tag(output: &mut String, value: u32) {

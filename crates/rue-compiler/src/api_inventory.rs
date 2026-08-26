@@ -3199,6 +3199,109 @@ fn durable_const_integer_semantics_use_the_shared_kernel() {
 }
 
 #[test]
+fn durable_specialized_producer_issuance_has_one_ordered_kernel() {
+    let durable = include_str!("durable_comptime.rs");
+    let producer_kernel = durable
+        .split("pub(crate) fn canonical_specialized_function_producer(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n}\n\npub(crate) fn canonical_specialized_function_instance(")
+                .next()
+        })
+        .expect("durable producer issuance kernel");
+    let instance_kernel = durable
+        .split("pub(crate) fn canonical_specialized_function_instance(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n}\n\nimpl DurableComptimeCallContext")
+                .next()
+        })
+        .expect("durable specialization conversion kernel");
+    assert_eq!(
+        durable
+            .matches("pub(crate) fn canonical_specialized_function_producer(")
+            .count(),
+        1
+    );
+    for required in [
+        "type_arguments",
+        "value_arguments",
+        "canonical_specialized_function_instance",
+    ] {
+        assert!(producer_kernel.contains(required));
+    }
+    assert!(instance_kernel.contains("function_instance_from_canonical_arguments"));
+    assert!(!instance_kernel.contains("FunctionInstanceKey::Specialization"));
+    for forbidden in [
+        "InstData",
+        "ComptimeEngine",
+        "SemanticConstEvaluator",
+        "query_registered",
+        "self.effects",
+    ] {
+        assert!(!producer_kernel.contains(forbidden));
+        assert!(!instance_kernel.contains(forbidden));
+    }
+    let source = include_str!("revisioned_query_database.rs");
+    let identity = include_str!("semantic_identity.rs");
+    let identity_production = identity
+        .split("\n#[cfg(test)]\nmod tests")
+        .next()
+        .expect("semantic identity production source");
+    let identity_kernel = identity_production
+        .split("pub(crate) fn function_instance_from_canonical_arguments(")
+        .nth(1)
+        .and_then(|source| source.split("\n}\n\nfn tag(").next())
+        .expect("canonical specialization identity kernel");
+    assert_eq!(
+        identity_production
+            .matches("pub(crate) fn function_instance_from_canonical_arguments(")
+            .count(),
+        1
+    );
+    assert!(identity_kernel.contains("FunctionInstanceKey::Specialization"));
+    let call_root = source
+        .split("Key::ComptimeCall(call) => {")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n                    let kind = if matches!(value, Value::Failure(_))")
+                .next()
+        })
+        .expect("legacy comptime-call root");
+    assert!(call_root.contains("canonical_specialized_function_producer"));
+    assert!(!call_root.contains("FunctionInstanceKey::Specialization"));
+    assert!(!call_root.contains("let canonical_arguments = crate::CanonicalArguments"));
+    assert!(!call_root.contains("type_instance_from_semantic("));
+    assert!(!call_root.contains("argument_value_from_semantic("));
+    let body_provider = source
+        .split("impl rue_air::DurableBodyLookupSource")
+        .nth(1)
+        .and_then(|source| source.split("impl rue_air::DurableConstSource").next())
+        .expect("body-provider comptime reduction");
+    assert!(body_provider.contains("canonical_specialized_function_instance"));
+    assert!(!body_provider.contains("let producer = crate::FunctionInstanceKey::Specialization"));
+    assert!(!body_provider.contains("type_instance_from_semantic"));
+    assert!(!body_provider.contains("argument_value_from_semantic"));
+    let context = durable
+        .split("impl DurableComptimeCallContext {")
+        .nth(1)
+        .and_then(|source| source.split("impl DurableComptimeCallTicket").next())
+        .expect("durable call context implementation");
+    assert!(context.contains("fn canonical_function_producer("));
+    assert!(!context.contains("pub(crate) fn canonical_function_producer("));
+    let ticket = durable
+        .split("impl DurableComptimeCallTicket {")
+        .nth(1)
+        .and_then(|source| source.split("\n}\n\n#[allow(dead_code)]").next())
+        .expect("durable call ticket implementation");
+    assert!(ticket.contains("pub(crate) fn canonical_function_producer("));
+    assert!(ticket.contains("self.context.canonical_function_producer("));
+}
+
+#[test]
 fn durable_comptime_services_are_named_authority_operations() {
     let facade = include_str!("durable_comptime.rs");
     let database = include_str!("revisioned_query_database.rs");
@@ -3781,7 +3884,7 @@ fn durable_comptime_services_are_named_authority_operations() {
     let context_block = facade
         .split("pub(crate) struct DurableComptimeCallContext {")
         .nth(1)
-        .and_then(|source| source.split("}\n\nimpl DurableComptimeCallContext").next())
+        .and_then(|source| source.split("}\n\n/// Failure while turning").next())
         .expect("durable call context block");
     assert!(
         !context_block.contains("pub(crate)"),
