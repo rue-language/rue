@@ -1062,6 +1062,11 @@ pub struct ComptimeStructuredTypeAuthority<P, S, Sym, R> {
 pub type RegisteredComptimeStructuredTypeAuthority<D, C, Scope, S> =
     ComptimeStructuredTypeAuthority<crate::ComptimeProgramKey<D, C>, Scope, Spur, Arc<[S]>>;
 
+/// A structured authority using the registry's canonical syntax and symbol
+/// domains while carrying a caller-owned identity for the continuation.
+pub type ComptimeStructuredTypeAuthorityWithProgram<P, Scope, S> =
+    ComptimeStructuredTypeAuthority<P, Scope, Spur, Arc<[S]>>;
+
 pub trait ComptimeStructuredTypeSymbolAuthority<Sym> {
     fn resolve_symbol<'a>(&'a self, symbol: &'a Sym) -> Option<&'a str>;
 }
@@ -1089,6 +1094,10 @@ impl ComptimeStructuredTypeSymbolAuthority<Arc<str>> for Arc<[Arc<str>]> {
 }
 
 impl<P, S, Sym, R> ComptimeStructuredTypeAuthority<P, S, Sym, R> {
+    pub fn program(&self) -> &P {
+        &self.program
+    }
+
     pub(crate) fn from_registered(
         program: P,
         root_scope: S,

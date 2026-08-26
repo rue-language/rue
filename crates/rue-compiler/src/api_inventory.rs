@@ -3408,6 +3408,8 @@ fn durable_comptime_services_are_named_authority_operations() {
         "DurableComptimeCallTokenHandle",
         "DurableComptimeCallReservation",
         "DurableComptimeAdmittedCall",
+        "DurableStructuredTypeProgramCapability",
+        "DurableStructuredTypeProgramCapability",
         "DurableComptimePreparedCall",
         "DurableComptimeBoundCallQuery",
         "DurableComptimePendingCall",
@@ -3447,6 +3449,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         "complete_root",
         "begin_durable_structured_type",
         "resume_durable_structured_type",
+        "DurableStructuredTypeProgramCapability",
         "impl ComptimeName for DurableComptimeName",
         "impl ComptimeFile for DurableComptimeFile",
         "impl ComptimeIdentity for DurableComptimeIdentity",
@@ -3467,9 +3470,19 @@ fn durable_comptime_services_are_named_authority_operations() {
         let declaration = production_facade
             .find(&marker)
             .unwrap_or_else(|| panic!("missing opaque struct {name}"));
-        let derive = production_facade[..declaration]
-            .rfind("#[derive(")
-            .unwrap_or(declaration);
+        let derive = if matches!(
+            bare_name,
+            "DurableStructuredTypePendingCall" | "DurableStructuredTypeProbedCall"
+        ) {
+            // These handoff structs intentionally have no derive attribute;
+            // do not reach back into the preceding type's derive when
+            // checking their non-replayability.
+            declaration
+        } else {
+            production_facade[..declaration]
+                .rfind("#[derive(")
+                .unwrap_or(declaration)
+        };
         let after = &production_facade[declaration..];
         let end = if let Some(open) = after.find('{') {
             declaration + open + after[open..].find("\n}").unwrap() + 2
@@ -3513,6 +3526,7 @@ fn durable_comptime_services_are_named_authority_operations() {
     // Generic parameters may occur between `impl` and `Clone`; the
     // normalized `Clonefor...` marker catches those implementations too.
     assert!(!normalized_facade.contains("CloneforDurableComptime"));
+    assert!(!normalized_facade.contains("CloneforDurableStructuredTypeProgramCapability"));
     let admitted_call = production_facade
         .split("pub(crate) struct DurableComptimeAdmittedCall {")
         .nth(1)
@@ -3544,6 +3558,13 @@ fn durable_comptime_services_are_named_authority_operations() {
             .count(),
         1,
         "the session must own the sole production token constructor call"
+    );
+    assert_eq!(
+        production_facade
+            .matches("DurableStructuredTypeProgramCapability::new(")
+            .count(),
+        1,
+        "the session must own the sole structured capability constructor call"
     );
     let query_body = no_clone_private_struct("DurableComptimeBoundCallQuery<'a>");
     assert!(query_body.contains("&'a [(Arc<str>, DurableType)]"));
@@ -3645,7 +3666,7 @@ fn durable_comptime_services_are_named_authority_operations() {
         .nth(1)
         .and_then(|source| {
             source
-                .split("\n    }\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub(crate) enum EvaluatedSemanticConst")
+                .split("\n    /// Probe one structured-type continuation")
                 .next()
         })
         .expect("prepared-call probe");
@@ -3666,6 +3687,130 @@ fn durable_comptime_services_are_named_authority_operations() {
         1,
         "probe_prepared_call is the sole probed-call constructor"
     );
+    let structured_probe = production_facade
+        .split("pub(crate) fn probe_structured_type_call(")
+        .nth(1)
+        .and_then(|source| source.split("\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub(crate) enum EvaluatedSemanticConst").next())
+        .expect("structured-type probe");
+    assert_eq!(
+        structured_probe
+            .matches("self.authority.probe_comptime_call(")
+            .count(),
+        1,
+        "structured-type probe must own exactly one raw probe"
+    );
+    for forbidden in ["eval(", "query(", "AHashMap", "consume_foreign_lookup"] {
+        assert!(!structured_probe.contains(forbidden));
+    }
+    for name in [
+        "DurableStructuredTypePendingCall",
+        "DurableStructuredTypeProbedCall",
+    ] {
+        let body = no_clone_private_struct(name);
+        for forbidden in [
+            "pub ",
+            "pub(crate)",
+            "InstData",
+            "InstRef",
+            "ComptimeEngine",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "structured handoff {name} exposed forbidden field/authority: {forbidden}"
+            );
+        }
+    }
+    let structured_call = production_facade
+        .split("pub(crate) enum DurableStructuredTypeCall {")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n}\n\n#[allow(dead_code)]\n#[derive(Debug)]")
+                .next()
+        })
+        .expect("structured call result enum");
+    assert!(!structured_call.contains("pub "));
+    assert!(!structured_call.contains("Clone"));
+    assert_eq!(
+        production_facade
+            .matches("pub(crate) fn prepare_structured_type_call(")
+            .count(),
+        1,
+        "session must own the sole structured preparation funnel"
+    );
+    assert_eq!(
+        production_facade
+            .matches("pub(crate) fn consume_structured_type_call(")
+            .count(),
+        1,
+        "session must own the sole structured consumption funnel"
+    );
+    let structured_prepare = production_facade
+        .split("pub(crate) fn prepare_structured_type_call(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n    }\n\n    /// Consume exactly one structured probe")
+                .next()
+        })
+        .expect("structured preparation funnel");
+    assert!(structured_prepare.contains("self.lifecycle.prepare_structured_edge()"));
+    assert!(structured_prepare.contains("job.request_view()"));
+    for forbidden in ["probe_comptime_call", "query(", "eval(", "InstData"] {
+        assert!(!structured_prepare.contains(forbidden));
+    }
+    let structured_consume = production_facade
+        .split("pub(crate) fn consume_structured_type_call(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n    }\n\n    /// Finalize import metadata")
+                .next()
+        })
+        .expect("structured consumption funnel");
+    assert_eq!(
+        structured_consume
+            .matches(".consume_foreign_lookup(")
+            .count(),
+        2,
+        "structured consumption must funnel both ready/admitted outcomes"
+    );
+    assert!(structured_consume.contains("program.plan.key.configuration"));
+    assert!(structured_consume.contains("program.seed.type_arguments"));
+    assert!(structured_consume.contains("program.seed.value_arguments"));
+    for forbidden in ["probe_comptime_call", "query(", "eval(", "InstData"] {
+        assert!(!structured_consume.contains(forbidden));
+    }
+    assert_eq!(
+        production_facade
+            .matches("pub(crate) fn enter_call(")
+            .count(),
+        1,
+        "session owns the lifecycle enter funnel"
+    );
+    assert_eq!(
+        production_facade
+            .matches("pub(crate) fn finish_call<")
+            .count(),
+        1,
+        "session owns the lifecycle finish funnel"
+    );
+    let enter_funnel = production_facade
+        .split("pub(crate) fn enter_call(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n    }\n\n    /// Finish one entered call")
+                .next()
+        })
+        .expect("session enter funnel");
+    assert!(enter_funnel.contains("self.lifecycle.enter(ticket)"));
+    let finish_funnel = production_facade
+        .split("pub(crate) fn finish_call<")
+        .nth(1)
+        .and_then(|source| source.split("\n    }\n\n    #[cfg(test)]").next())
+        .expect("session finish funnel");
+    assert!(finish_funnel.contains("self.lifecycle.finish(ticket, outcome)"));
     let service_impl = production_facade
         .split(
             "impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A> {",
@@ -4020,7 +4165,28 @@ fn durable_comptime_services_are_named_authority_operations() {
             "structured adapter gained evaluator authority: {forbidden}"
         );
     }
-    assert!(structured_adapter.contains(".structured_type_authority("));
+    assert!(structured_adapter.contains(".structured_type_authority_with_program("));
+    assert!(structured_adapter.contains("structured_program_capability(key)"));
+    let capability = no_clone_private_struct("DurableStructuredTypeProgramCapability");
+    assert!(capability.contains("key:"));
+    assert!(capability.contains("owner: u64"));
+    let capability_checks = production_facade
+        .split("pub(crate) fn prepare_structured_type_call(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n    }\n\n    /// Consume exactly one structured probe")
+                .next()
+        })
+        .expect("structured capability validation");
+    assert!(capability_checks.contains("structured_program_is_current"));
+    assert!(
+        capability_checks
+            .find("structured_program_is_current")
+            .unwrap()
+            < capability_checks.find("prepare_structured_edge").unwrap(),
+        "structured capability must be checked before edge issuance"
+    );
     let session = production_facade
         .split("pub(crate) struct DurableComptimeSession {")
         .nth(1)

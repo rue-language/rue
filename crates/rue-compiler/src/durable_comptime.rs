@@ -831,6 +831,7 @@ enum DurableTicketState {
 pub(crate) enum DurableComptimeLifecycleError {
     TicketMismatch,
     BindingMismatch,
+    InvalidProgramAuthority,
     NotEntered,
     OutOfOrder,
     TicketReused,
@@ -1135,6 +1136,119 @@ impl DurableComptimeSession {
         core: &crate::body_query::OwnedComptimeProgramCore,
     ) -> Result<(), rue_air::ComptimeProgramRegistrationError> {
         core.register_into(&mut self.programs)
+    }
+
+    fn structured_program_capability(
+        &self,
+        key: &crate::body_query::DurableComptimeProgramKey,
+    ) -> Option<DurableStructuredTypeProgramCapability> {
+        self.programs
+            .get(key)
+            .map(|_| DurableStructuredTypeProgramCapability::new(key.clone(), self.lifecycle.owner))
+    }
+
+    fn structured_program_is_current(
+        &self,
+        capability: &DurableStructuredTypeProgramCapability,
+    ) -> bool {
+        capability.owner == self.lifecycle.owner && self.programs.get(capability.key()).is_some()
+    }
+
+    /// Snapshot one suspended AIR structured job and issue the preserve-policy
+    /// edge for its exact foreign call request. AIR retains ownership of the
+    /// job for resume; this package contains only copied request facts.
+    #[allow(dead_code)]
+    pub(crate) fn prepare_structured_type_call(
+        &mut self,
+        job: &DurableStructuredTypeJob,
+    ) -> Result<DurableStructuredTypePendingCall, DurableComptimeLifecycleError> {
+        let request = job.request_view();
+        if !self.structured_program_is_current(request.program()) {
+            return Err(DurableComptimeLifecycleError::InvalidProgramAuthority);
+        }
+        let request = DurableStructuredTypeRequest {
+            program: request.program().key().clone(),
+            head_key: request.head().key.clone(),
+            type_arguments: request.type_arguments().to_vec(),
+            value_arguments: request.value_arguments().to_vec(),
+        };
+        let edge = self.lifecycle.prepare_structured_edge()?;
+        Ok(DurableStructuredTypePendingCall { request, edge })
+    }
+
+    /// Consume exactly one structured probe. An admitted lookup is registered
+    /// only after its complete declaration/configuration key has been checked;
+    /// a repeated equivalent registration keeps the existing first authority.
+    #[allow(dead_code)]
+    pub(crate) fn consume_structured_type_call(
+        &mut self,
+        probed: DurableStructuredTypeProbedCall,
+    ) -> Result<DurableStructuredTypeCall, DurableComptimeForeignCallError> {
+        let DurableStructuredTypeProbedCall { pending, lookup } = probed;
+        let DurableStructuredTypePendingCall { request, edge } = pending;
+        match lookup {
+            ForeignComptimeCallLookup::Admitted(program) => {
+                let DurableComptimeForeignCall::Enter { program, ticket } = self
+                    .consume_foreign_lookup(edge, ForeignComptimeCallLookup::Admitted(program))?
+                else {
+                    return Err(DurableComptimeForeignCallError::FrameAdmission(
+                        DurableComptimeForeignFrameAdmissionError::RegistryMismatch,
+                    ));
+                };
+                if program.plan.key.configuration != request.program.configuration
+                    || program.plan.key.declaration != request.head_key
+                    || program.seed.type_arguments.as_ref() != request.type_arguments.as_slice()
+                    || program.seed.value_arguments.as_ref() != request.value_arguments.as_slice()
+                {
+                    return Err(DurableComptimeForeignCallError::FrameAdmission(
+                        DurableComptimeForeignFrameAdmissionError::RegistryMismatch,
+                    ));
+                }
+                if let Some(existing) = self.programs.get(&program.plan.key) {
+                    if !same_registered_program(existing, &program) {
+                        return Err(DurableComptimeForeignCallError::FrameAdmission(
+                            DurableComptimeForeignFrameAdmissionError::RegistryMismatch,
+                        ));
+                    }
+                } else {
+                    program
+                        .core
+                        .register_into(&mut self.programs)
+                        .map_err(|_| {
+                            DurableComptimeForeignCallError::FrameAdmission(
+                                DurableComptimeForeignFrameAdmissionError::RegistryMismatch,
+                            )
+                        })?;
+                }
+                Ok(DurableStructuredTypeCall::Enter { program, ticket })
+            }
+            ForeignComptimeCallLookup::Ready(projection) => {
+                match self
+                    .consume_foreign_lookup(edge, ForeignComptimeCallLookup::Ready(projection))?
+                {
+                    DurableComptimeForeignCall::Ready(result) => {
+                        Ok(DurableStructuredTypeCall::Ready { result })
+                    }
+                    DurableComptimeForeignCall::Enter { .. }
+                    | DurableComptimeForeignCall::NotReady => {
+                        Err(DurableComptimeForeignCallError::UnexpectedReadyProjection)
+                    }
+                }
+            }
+            ForeignComptimeCallLookup::NotReady => Ok(DurableStructuredTypeCall::NotReady),
+            ForeignComptimeCallLookup::ReadyFailure(failure) => {
+                Err(DurableComptimeForeignCallError::ReadyFailure(failure))
+            }
+            ForeignComptimeCallLookup::ReadyQueryFailure(failure) => {
+                Err(DurableComptimeForeignCallError::ReadyQueryFailure(failure))
+            }
+            ForeignComptimeCallLookup::AdmissionFailure(failure) => {
+                Err(DurableComptimeForeignCallError::AdmissionFailure(failure))
+            }
+            ForeignComptimeCallLookup::UnexpectedReadyProjection => {
+                Err(DurableComptimeForeignCallError::UnexpectedReadyProjection)
+            }
+        }
     }
 
     /// Finalize import metadata on the exact program already registered for a
@@ -1631,7 +1745,30 @@ impl DurableComptimeSession {
         self.lifecycle.take_root_effects()
     }
 
+    /// Enter one lifecycle ticket through the session-owned funnel.  Keeping
+    /// this operation here prevents future hosts from reaching around the
+    /// session and mutating the lifecycle with a mismatched ticket.
     #[allow(dead_code)] // activated when the durable AIR host enters call edges
+    pub(crate) fn enter_call(
+        &mut self,
+        ticket: &DurableComptimeCallTicket,
+    ) -> Result<(), DurableComptimeLifecycleError> {
+        self.lifecycle.enter(ticket)
+    }
+
+    /// Finish one entered call through the session-owned funnel.  Lifecycle
+    /// validation, cleanup, and Known-only effect publication remain a single
+    /// operation owned by the session.
+    #[allow(dead_code)] // activated when the durable AIR host finishes calls
+    pub(crate) fn finish_call<V, F>(
+        &mut self,
+        ticket: &mut DurableComptimeCallTicket,
+        outcome: &rue_air::ComptimeOutcome<V, F>,
+    ) -> Result<(), DurableComptimeLifecycleError> {
+        self.lifecycle.finish(ticket, outcome)
+    }
+
+    #[cfg(test)]
     pub(crate) fn lifecycle_mut(&mut self) -> &mut DurableComptimeCallLifecycle {
         &mut self.lifecycle
     }
@@ -3187,6 +3324,23 @@ impl<A: DurableComptimeForeignCallAuthority + ?Sized> DurableComptimeServices<'_
         )?;
         Ok(DurableComptimeProbedCall { pending, lookup })
     }
+
+    /// Probe one structured-type continuation exactly once. The caller keeps
+    /// the AIR job for resume; this package owns only its copied keyed request
+    /// until the session consumes the lookup, so it cannot be cross-paired.
+    #[allow(dead_code)]
+    pub(crate) fn probe_structured_type_call(
+        &self,
+        pending: DurableStructuredTypePendingCall,
+    ) -> Result<DurableStructuredTypeProbedCall, QueryAbort> {
+        let request = &pending.request;
+        let lookup = self.authority.probe_comptime_call(
+            &request.head_key,
+            &request.type_arguments,
+            &request.value_arguments,
+        )?;
+        Ok(DurableStructuredTypeProbedCall { pending, lookup })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3577,7 +3731,7 @@ impl ComptimeType for DurableComptimeType {}
 /// can only resume the exact continuation returned by the AIR resolver.
 #[allow(dead_code)]
 pub(crate) type DurableStructuredTypeJob = rue_air::ComptimeStructuredTypeJob<
-    crate::body_query::DurableComptimeProgramKey,
+    DurableStructuredTypeProgramCapability,
     ModuleId,
     crate::StableDefinitionKey,
     Arc<str>,
@@ -3590,7 +3744,7 @@ pub(crate) type DurableStructuredTypeJob = rue_air::ComptimeStructuredTypeJob<
 
 #[allow(dead_code)]
 pub(crate) type DurableStructuredTypePoll = rue_air::ComptimeStructuredTypePoll<
-    crate::body_query::DurableComptimeProgramKey,
+    DurableStructuredTypeProgramCapability,
     ModuleId,
     crate::StableDefinitionKey,
     Arc<str>,
@@ -3600,6 +3754,63 @@ pub(crate) type DurableStructuredTypePoll = rue_air::ComptimeStructuredTypePoll<
     lasso::Spur,
     Arc<[Arc<str>]>,
 >;
+
+/// The immutable request contract copied from a canonical AIR job. The job
+/// itself remains owned by AIR for resume and never enters the probe package.
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct DurableStructuredTypeProgramCapability {
+    key: crate::body_query::DurableComptimeProgramKey,
+    owner: u64,
+}
+
+impl DurableStructuredTypeProgramCapability {
+    fn new(key: crate::body_query::DurableComptimeProgramKey, owner: u64) -> Self {
+        Self { key, owner }
+    }
+
+    fn key(&self) -> &crate::body_query::DurableComptimeProgramKey {
+        &self.key
+    }
+}
+
+#[allow(dead_code)]
+struct DurableStructuredTypeRequest {
+    program: crate::body_query::DurableComptimeProgramKey,
+    head_key: crate::StableDefinitionKey,
+    type_arguments: Vec<(Arc<str>, DurableType)>,
+    value_arguments: Vec<(Arc<str>, DurableConstValue)>,
+}
+
+/// A structured-type call after its canonical AIR job has supplied the
+/// immutable request facts. It does not own the AIR job, so the continuation
+/// cannot be replayed or cross-paired by this coordinator.
+#[allow(dead_code)]
+pub(crate) struct DurableStructuredTypePendingCall {
+    request: DurableStructuredTypeRequest,
+    edge: DurableComptimeCallEdge,
+}
+
+/// The result of one and only one structured foreign probe.  It is consuming
+/// and non-cloneable by construction; the canonical AIR job remains attached
+/// to the handoff for the eventual resume operation.
+#[allow(dead_code)]
+pub(crate) struct DurableStructuredTypeProbedCall {
+    pending: DurableStructuredTypePendingCall,
+    lookup: ForeignComptimeCallLookup,
+}
+
+#[allow(dead_code)]
+pub(crate) enum DurableStructuredTypeCall {
+    Ready {
+        result: crate::semantic_query_nucleus::ComptimeCallResultProjection,
+    },
+    Enter {
+        program: crate::body_query::OwnedForeignComptimeProgram,
+        ticket: Box<DurableComptimeCallTicket>,
+    },
+    NotReady,
+}
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -3632,14 +3843,15 @@ where
             DurableConstValue,
         >,
 {
-    if !session.programs.contains_key(key) {
+    let Some(capability) = session.structured_program_capability(key) else {
         return Err(DurableStructuredTypeBeginError::UnregisteredProgram);
-    }
-    let Some(authority) =
-        session
-            .programs
-            .structured_type_authority(key, key.declaration.module().clone(), root)
-    else {
+    };
+    let Some(authority) = session.programs.structured_type_authority_with_program(
+        key,
+        capability,
+        key.declaration.module().clone(),
+        root,
+    ) else {
         return Err(DurableStructuredTypeBeginError::InvalidProgramAuthority);
     };
     DurableStructuredTypeJob::begin::<ModuleId, Q>(
@@ -5442,10 +5654,9 @@ mod effect_lifecycle_tests {
             ticket.canonical_function_producer(&wrong_configuration),
             Err(DurableComptimeProducerIssuanceError::ProgramMismatch)
         );
-        session.lifecycle.enter(&ticket).unwrap();
+        session.enter_call(&ticket).unwrap();
         session
-            .lifecycle
-            .finish(&mut ticket, &rue_air::ComptimeOutcome::<(), ()>::Known(()))
+            .finish_call(&mut ticket, &rue_air::ComptimeOutcome::<(), ()>::Known(()))
             .unwrap();
 
         let mut ready_session = DurableComptimeSession::new(
@@ -6839,7 +7050,15 @@ mod structured_type_adapter_tests {
     }
 
     pub(super) fn callable_program(path: &str) -> Arc<crate::body_query::OwnedComptimeProgramCore> {
-        let snapshot = crate::SourceSnapshot::single(path, "fn target() -> i32 { 1 }").unwrap();
+        callable_program_named(path, "target")
+    }
+
+    fn callable_program_named(
+        path: &str,
+        name: &str,
+    ) -> Arc<crate::body_query::OwnedComptimeProgramCore> {
+        let snapshot =
+            crate::SourceSnapshot::single(path, format!("fn {name}() -> i32 {{ 1 }}")).unwrap();
         let module = crate::parsed_modules::parse_source_snapshot_modules(&snapshot)
             .unwrap()
             .modules()[0]
@@ -6847,7 +7066,7 @@ mod structured_type_adapter_tests {
         let candidate = module
             .definitions()
             .declaration_keys_in_source_order()
-            .find(|candidate| candidate.name.as_ref() == "target")
+            .find(|candidate| candidate.name.as_ref() == name)
             .unwrap()
             .clone();
         let artifacts =
@@ -6859,7 +7078,7 @@ mod structured_type_adapter_tests {
             candidate.module.clone(),
             crate::StableDefinitionNamespace::Value,
             crate::StableDefinitionKind::Function,
-            "target",
+            name,
             None,
         );
         let program = crate::body_query::OwnedForeignComptimeProgram::from_body_plan(
@@ -6899,6 +7118,10 @@ mod structured_type_adapter_tests {
             crate::revisioned_query_database::declaration_candidate_for_stable_key(&producer)
                 .unwrap();
         DurableComptimeSession::new(producer, declaration).unwrap()
+    }
+
+    fn fresh_session() -> DurableComptimeSession {
+        session()
     }
 
     fn bound_call(
@@ -7774,7 +7997,7 @@ mod structured_type_adapter_tests {
         let DurableStructuredTypePoll::Suspended(first_job) = first_poll else {
             panic!("Wrap(i32) suspends for the durable call result");
         };
-        assert_eq!(first_job.program(), &first.plan.key);
+        assert_eq!(first_job.program().key(), &first.plan.key);
         assert_eq!(
             first_job.type_arguments(),
             &[(Arc::from("T"), DurableType::I32)]
@@ -7807,8 +8030,8 @@ mod structured_type_adapter_tests {
         let DurableStructuredTypePoll::Suspended(second_job) = second_poll else {
             panic!("colliding program independently suspends");
         };
-        assert_eq!(second_job.program(), &second.plan.key);
-        assert_ne!(second_job.program(), &first.plan.key);
+        assert_eq!(second_job.program().key(), &second.plan.key);
+        assert_ne!(second_job.program().key(), &first.plan.key);
         assert_eq!(
             second_job.type_arguments(),
             &[(Arc::from("T"), DurableType::I64)],
@@ -7845,6 +8068,331 @@ mod structured_type_adapter_tests {
             ),
             Err(DurableStructuredTypeBeginError::InvalidProgramAuthority)
         ));
+    }
+
+    #[test]
+    fn structured_type_call_coordinator_consumes_job_and_probe_once() {
+        let core = const_program("structured-call-coordinator.rue", "i32");
+        let (_, Some(root), _) = core.const_root().unwrap() else {
+            panic!("fixture retains its declared type root");
+        };
+        let mut session = session();
+        session.register_program(&core).unwrap();
+        let mut provider = Provider {
+            scope: core.plan.candidate.module.clone(),
+        };
+        let DurableStructuredTypePoll::Suspended(job) = begin_durable_structured_type(
+            &session,
+            &core.plan.key,
+            root,
+            Vec::new(),
+            Vec::new(),
+            &mut provider,
+        )
+        .unwrap() else {
+            panic!("fixture structured call must suspend");
+        };
+        let pending = session.prepare_structured_type_call(&job).unwrap();
+        let mut authority = prepared_authority(
+            vec![(Arc::from("T"), DurableType::I32)],
+            Vec::new(),
+            ForeignComptimeCallLookup::Ready(prepared_ready_projection(73)),
+        );
+        let probed = DurableComptimeServices::new(&mut authority)
+            .probe_structured_type_call(pending)
+            .unwrap();
+        let DurableStructuredTypeCall::Ready { result } =
+            session.consume_structured_type_call(probed).unwrap()
+        else {
+            panic!("ready structured call must retain its job");
+        };
+        assert_eq!(job.program().key(), &core.plan.key);
+        assert_eq!(job.type_arguments(), &[(Arc::from("T"), DurableType::I32)]);
+        assert!(matches!(
+            result,
+            crate::semantic_query_nucleus::ComptimeCallResultProjection::Value(
+                DurableConstValue::Integer(73)
+            )
+        ));
+        assert_eq!(authority.calls.get(), 1);
+        assert!(session.lifecycle.active.is_empty());
+        assert!(!session.drain_root_effects().unwrap().is_empty());
+
+        // A second continuation proves NotReady is a terminal handoff that
+        // retains the canonical job without retrying the probe or publishing.
+        let DurableStructuredTypePoll::Suspended(job) = begin_durable_structured_type(
+            &session,
+            &core.plan.key,
+            root,
+            Vec::new(),
+            Vec::new(),
+            &mut provider,
+        )
+        .unwrap() else {
+            panic!("second fixture structured call must suspend");
+        };
+        let pending = session.prepare_structured_type_call(&job).unwrap();
+        authority
+            .expected
+            .borrow_mut()
+            .push((vec![(Arc::from("T"), DurableType::I32)], Vec::new()));
+        authority
+            .lookups
+            .borrow_mut()
+            .push(ForeignComptimeCallLookup::NotReady);
+        let probed = DurableComptimeServices::new(&mut authority)
+            .probe_structured_type_call(pending)
+            .unwrap();
+        let DurableStructuredTypeCall::NotReady =
+            session.consume_structured_type_call(probed).unwrap()
+        else {
+            panic!("not-ready structured call must retain its job");
+        };
+        assert_eq!(authority.calls.get(), 2);
+        assert!(session.lifecycle.active.is_empty());
+        assert!(session.drain_root_effects().unwrap().is_empty());
+    }
+
+    #[test]
+    fn structured_type_call_preserves_failure_and_abort_without_publication() {
+        let core = const_program("structured-call-terminals.rue", "i32");
+        let (_, Some(root), _) = core.const_root().unwrap() else {
+            panic!("fixture retains its declared type root");
+        };
+        let mut session = session();
+        session.register_program(&core).unwrap();
+        let mut provider = Provider {
+            scope: core.plan.candidate.module.clone(),
+        };
+        let make_pending = |session: &mut DurableComptimeSession, provider: &mut Provider| {
+            let DurableStructuredTypePoll::Suspended(job) = begin_durable_structured_type(
+                session,
+                &core.plan.key,
+                root,
+                Vec::new(),
+                Vec::new(),
+                provider,
+            )
+            .unwrap() else {
+                panic!("fixture structured call must suspend");
+            };
+            session.prepare_structured_type_call(&job).unwrap()
+        };
+
+        let mut failure_authority = prepared_authority(
+            vec![(Arc::from("T"), DurableType::I32)],
+            Vec::new(),
+            ForeignComptimeCallLookup::ReadyFailure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Shell(Arc::from(
+                    "structured failure",
+                )),
+            ),
+        );
+        let probed = DurableComptimeServices::new(&mut failure_authority)
+            .probe_structured_type_call(make_pending(&mut session, &mut provider))
+            .unwrap();
+        assert!(matches!(
+            session.consume_structured_type_call(probed),
+            Err(DurableComptimeForeignCallError::ReadyFailure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Shell(_)
+            ))
+        ));
+        assert_eq!(failure_authority.calls.get(), 1);
+        assert!(session.lifecycle.active.is_empty());
+        assert!(session.drain_root_effects().unwrap().is_empty());
+
+        let mut abort_authority = prepared_authority(
+            vec![(Arc::from("T"), DurableType::I32)],
+            Vec::new(),
+            ForeignComptimeCallLookup::NotReady,
+        );
+        abort_authority.abort.set(true);
+        assert!(matches!(
+            DurableComptimeServices::new(&mut abort_authority)
+                .probe_structured_type_call(make_pending(&mut session, &mut provider)),
+            Err(QueryAbort::Canceled)
+        ));
+        assert_eq!(abort_authority.calls.get(), 1);
+        assert!(session.lifecycle.active.is_empty());
+        assert!(session.drain_root_effects().unwrap().is_empty());
+    }
+
+    #[test]
+    fn structured_type_call_admission_returns_dormant_ticket_after_validation() {
+        let root_core = const_program("structured-call-enter.rue", "i32");
+        let callable_core = callable_program_named("structured-call-enter.rue", "Wrap");
+        let (_, Some(root), _) = root_core.const_root().unwrap() else {
+            panic!("fixture retains its declared type root");
+        };
+        let mut session = session();
+        session.register_program(&root_core).unwrap();
+        let mut provider = Provider {
+            scope: root_core.plan.candidate.module.clone(),
+        };
+        let DurableStructuredTypePoll::Suspended(job) = begin_durable_structured_type(
+            &session,
+            &root_core.plan.key,
+            root,
+            Vec::new(),
+            Vec::new(),
+            &mut provider,
+        )
+        .unwrap() else {
+            panic!("fixture structured call must suspend");
+        };
+        let pending = session.prepare_structured_type_call(&job).unwrap();
+        let admitted = crate::body_query::OwnedForeignComptimeProgram {
+            core: callable_core.clone(),
+            seed: crate::body_query::ForeignComptimeCallSeed {
+                type_arguments: Arc::from([(Arc::from("T"), DurableType::I32)]),
+                value_arguments: Arc::from([]),
+            },
+        };
+        let mut authority = prepared_authority(
+            vec![(Arc::from("T"), DurableType::I32)],
+            Vec::new(),
+            ForeignComptimeCallLookup::Admitted(admitted),
+        );
+        let probed = DurableComptimeServices::new(&mut authority)
+            .probe_structured_type_call(pending)
+            .unwrap();
+        let DurableStructuredTypeCall::Enter {
+            program,
+            mut ticket,
+        } = session.consume_structured_type_call(probed).unwrap()
+        else {
+            panic!("admitted structured call must issue a dormant ticket");
+        };
+        assert_eq!(program.plan.key, callable_core.plan.key);
+        assert!(
+            session
+                .registered_program(&callable_core.plan.key)
+                .is_some()
+        );
+        assert!(session.lifecycle.active.is_empty());
+        assert_eq!(
+            ticket
+                .canonical_function_producer(&callable_core.plan.key)
+                .unwrap(),
+            canonical_specialized_function_producer(
+                &callable_core.plan.key.declaration,
+                &[(Arc::from("T"), DurableType::I32)],
+                &[],
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            session.finish_call(&mut ticket, &rue_air::ComptimeOutcome::<(), ()>::Known(())),
+            Err(DurableComptimeLifecycleError::NotEntered)
+        );
+        assert!(session.lifecycle.active.is_empty());
+        assert!(session.drain_root_effects().unwrap().is_empty());
+
+        // A returned program with the wrong head contract is rejected only
+        // after the dormant ticket is issued, and cannot enter the registry.
+        let wrong_core = callable_program_named("structured-call-enter.rue", "Other");
+        let DurableStructuredTypePoll::Suspended(job) = begin_durable_structured_type(
+            &session,
+            &root_core.plan.key,
+            root,
+            Vec::new(),
+            Vec::new(),
+            &mut provider,
+        )
+        .unwrap() else {
+            panic!("second fixture structured call must suspend");
+        };
+        let pending = session.prepare_structured_type_call(&job).unwrap();
+        let wrong_program = crate::body_query::OwnedForeignComptimeProgram {
+            core: wrong_core.clone(),
+            seed: crate::body_query::ForeignComptimeCallSeed {
+                type_arguments: Arc::from([(Arc::from("T"), DurableType::I32)]),
+                value_arguments: Arc::from([]),
+            },
+        };
+        let mut wrong_authority = prepared_authority(
+            vec![(Arc::from("T"), DurableType::I32)],
+            Vec::new(),
+            ForeignComptimeCallLookup::Admitted(wrong_program),
+        );
+        let probed = DurableComptimeServices::new(&mut wrong_authority)
+            .probe_structured_type_call(pending)
+            .unwrap();
+        assert!(matches!(
+            session.consume_structured_type_call(probed),
+            Err(DurableComptimeForeignCallError::FrameAdmission(
+                DurableComptimeForeignFrameAdmissionError::RegistryMismatch
+            ))
+        ));
+        assert!(session.registered_program(&wrong_core.plan.key).is_none());
+        assert!(session.lifecycle.active.is_empty());
+
+        // An edge issued by another session fails before any registry
+        // mutation, even when its probe carries an otherwise valid admitted
+        // child.  This exercises the full ticket/authority handoff rather
+        // than only the Ready projection path.
+        let DurableStructuredTypePoll::Suspended(job) = begin_durable_structured_type(
+            &session,
+            &root_core.plan.key,
+            root,
+            Vec::new(),
+            Vec::new(),
+            &mut provider,
+        )
+        .unwrap() else {
+            panic!("third fixture structured call must suspend");
+        };
+
+        // A capability issued by this session cannot be prepared by another
+        // session, even when that session has registered the same stable key.
+        // Reject before the foreign session issues a serial/edge or changes
+        // its lifecycle/effect state.
+        let mut other_session = fresh_session();
+        other_session.register_program(&root_core).unwrap();
+        let serial_before = other_session.lifecycle.next_serial;
+        let active_before = other_session.lifecycle.active.clone();
+        assert!(matches!(
+            other_session.prepare_structured_type_call(&job),
+            Err(DurableComptimeLifecycleError::InvalidProgramAuthority)
+        ));
+        assert_eq!(other_session.lifecycle.next_serial, serial_before);
+        assert_eq!(other_session.lifecycle.active, active_before);
+        assert!(other_session.lifecycle.effects.is_empty());
+        assert!(
+            other_session
+                .registered_program(&root_core.plan.key)
+                .is_some()
+        );
+
+        let pending = session.prepare_structured_type_call(&job).unwrap();
+        let mut foreign_session = fresh_session();
+        let foreign_program = crate::body_query::OwnedForeignComptimeProgram {
+            core: callable_core.clone(),
+            seed: crate::body_query::ForeignComptimeCallSeed {
+                type_arguments: Arc::from([(Arc::from("T"), DurableType::I32)]),
+                value_arguments: Arc::from([]),
+            },
+        };
+        let mut foreign_authority = prepared_authority(
+            vec![(Arc::from("T"), DurableType::I32)],
+            Vec::new(),
+            ForeignComptimeCallLookup::Admitted(foreign_program),
+        );
+        let probed = DurableComptimeServices::new(&mut foreign_authority)
+            .probe_structured_type_call(pending)
+            .unwrap();
+        assert!(matches!(
+            foreign_session.consume_structured_type_call(probed),
+            Err(DurableComptimeForeignCallError::Lifecycle(
+                DurableComptimeLifecycleError::TicketMismatch
+            ))
+        ));
+        assert!(
+            foreign_session
+                .registered_program(&root_core.plan.key)
+                .is_none()
+        );
+        assert!(foreign_session.lifecycle.active.is_empty());
     }
 
     #[test]

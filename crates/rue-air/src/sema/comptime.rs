@@ -122,20 +122,39 @@ where
         C: Clone,
         S: AsRef<str>,
     {
-        let program = self.programs.get(key)?;
-        program.rir.type_syntax().node(root)?;
+        self.structured_type_authority_with_program(key, key.clone(), root_scope, root)
+    }
+
+    /// Admit the exact registered arena, symbol authority, and root while
+    /// carrying a richer caller-owned program identity in the continuation.
+    /// The stable key still selects the registry entry; `program` is never
+    /// used to select or reconstruct that entry.
+    pub fn structured_type_authority_with_program<P, Scope>(
+        &self,
+        key: &ComptimeProgramKey<D, C>,
+        program: P,
+        root_scope: Scope,
+        root: rue_rir::RirTypeSyntaxRef,
+    ) -> Option<
+        crate::semantic_type_resolution::ComptimeStructuredTypeAuthorityWithProgram<P, Scope, S>,
+    >
+    where
+        S: AsRef<str>,
+    {
+        let registered = self.programs.get(key)?;
+        registered.rir.type_syntax().node(root)?;
         if !crate::semantic_type_resolution::registered_symbol_authority_is_valid(
-            program.rir.type_syntax(),
-            &program.symbols,
+            registered.rir.type_syntax(),
+            &registered.symbols,
         ) {
             return None;
         }
         Some(
             crate::semantic_type_resolution::ComptimeStructuredTypeAuthority::from_registered(
-                key.clone(),
+                program,
                 root_scope,
-                program.rir.type_syntax().clone(),
-                Arc::clone(&program.symbols),
+                registered.rir.type_syntax().clone(),
+                Arc::clone(&registered.symbols),
                 root,
             ),
         )
@@ -6263,6 +6282,10 @@ mod value_domain_tests {
                 .structured_type_authority(&bad_key, "scope", root)
                 .is_none()
         );
+        let richer = registry
+            .structured_type_authority_with_program(&key, "richer", "scope", root)
+            .expect("richer identity uses the registered arena");
+        assert_eq!(richer.program(), &"richer");
         assert!(
             registry
                 .structured_type_authority(&key, "scope", rue_rir::RirTypeSyntaxRef::from_u32(99))
