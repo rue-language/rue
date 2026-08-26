@@ -592,7 +592,12 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .expect("engine array-length classifier");
     assert!(classifier.contains("ComptimeArrayLengthBinding::Unbound"));
     assert!(classifier.contains("ComptimeArrayLengthBinding::Shadowed"));
+    assert!(classifier.contains("ComptimeArrayLengthBinding::LocalValue(value.clone())"));
     assert!(classifier.contains("ComptimeArrayLengthBinding::RuntimeDependent"));
+    assert!(
+        !classifier.contains("value.as_integer().is_some()"),
+        "array-length classification must preserve non-integer lexical values"
+    );
     let classifier_order = [
         "env.locals",
         "env.runtime_local_names",

@@ -4161,22 +4161,8 @@ fn durable_const_fits_type(
 ///
 /// The wording mirrors `rue_air::sema::typeck`'s local provider so the same
 /// program reports the same text whichever provider resolved the length.
-fn durable_named_array_length_failure(
-    name: &str,
-    value: i128,
-) -> crate::semantic_query_nucleus::SemanticNucleusFailure {
-    let reason = if value < 0 {
-        format!("array length '{name}' is negative ({value})")
-    } else {
-        format!("array length '{name}' ({value}) is too large")
-    };
-    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-        rue_error::ErrorKind::InvalidArrayLength { reason },
-    )
-}
-
-/// The unnamed counterpart of [`durable_named_array_length_failure`], for a
-/// length that arrived as a literal or an already-evaluated comptime value.
+/// The unnamed counterpart of the durable named-length failure, for a length
+/// that arrived as a literal or an already-evaluated comptime value.
 fn durable_literal_array_length_failure(
     value: i128,
 ) -> crate::semantic_query_nucleus::SemanticNucleusFailure {
@@ -4185,6 +4171,56 @@ fn durable_literal_array_length_failure(
             reason: format!("array length must be non-negative, got {value}"),
         },
     )
+}
+
+fn durable_legacy_named_array_length_failure(
+    name: &str,
+    error: crate::durable_comptime::DurableComptimeArrayLengthError,
+) -> crate::semantic_query_nucleus::SemanticNucleusFailure {
+    use crate::durable_comptime::DurableComptimeArrayLengthError as E;
+    match error {
+        E::Module => crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
+            "module used where a value is required".into(),
+        ),
+        E::TargetEnum => crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
+            "target descriptor used where a durable const value is required".into(),
+        ),
+        E::NonInteger | E::Negative(_) | E::TooLarge(_) => {
+            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                rue_error::ErrorKind::InvalidArrayLength {
+                    reason: if matches!(error, E::NonInteger) {
+                        format!("array length expression '{name}' is not an integer")
+                    } else {
+                        format!("array length expression '{name}' is negative or too large")
+                    },
+                },
+            )
+        }
+    }
+}
+
+fn durable_provider_named_array_length_failure(
+    name: &str,
+    error: crate::durable_comptime::DurableComptimeArrayLengthError,
+) -> crate::semantic_query_nucleus::SemanticNucleusFailure {
+    use crate::durable_comptime::DurableComptimeArrayLengthError as E;
+    match error {
+        E::Negative(value) => crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+            rue_error::ErrorKind::InvalidArrayLength {
+                reason: format!("array length '{name}' is negative ({value})"),
+            },
+        ),
+        E::TooLarge(value) => crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+            rue_error::ErrorKind::InvalidArrayLength {
+                reason: format!("array length '{name}' ({value}) is too large"),
+            },
+        ),
+        E::NonInteger | E::Module | E::TargetEnum => {
+            crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
+                format!("array length `{name}` is not an integer").into(),
+            )
+        }
+    }
 }
 
 /// Describe integer type `ty` for the canonical width-truncating semantics in
@@ -7227,6 +7263,15 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
             crate::semantic_query_nucleus::SemanticNucleusFailure,
         >,
     > {
+        #[cfg(test)]
+        {
+            TEST_NAMED_VALUE_CHECKS.with(|checks| {
+                checks.set(checks.get() + 1);
+            });
+            if TEST_NAMED_VALUE_CANCEL.with(std::cell::Cell::get) {
+                return Err(rue_air::SemanticProviderError::Abort(QueryAbort::Canceled));
+            }
+        }
         crate::durable_comptime::resolve_named_value_in_order(|kind| {
             project_named_value_candidate(&self.provider, accessing_source, module, name, kind)
         })
@@ -7329,6 +7374,63 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
 thread_local! {
     static SEMANTIC_COMPTIME_CALL_DEPTH: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
+    #[cfg(test)]
+    static TEST_NAMED_VALUE_CANCEL: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+    #[cfg(test)]
+    static TEST_NAMED_VALUE_CHECKS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    #[cfg(test)]
+    static TEST_ARRAY_LENGTH_OVERRIDE: std::cell::Cell<Option<i128>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+struct TestSemanticComptimeNamedValueCancelGuard {
+    previous: bool,
+}
+
+#[cfg(test)]
+impl TestSemanticComptimeNamedValueCancelGuard {
+    fn set(value: bool) -> Self {
+        let previous = TEST_NAMED_VALUE_CANCEL.with(|slot| {
+            let previous = slot.get();
+            slot.set(value);
+            previous
+        });
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestSemanticComptimeNamedValueCancelGuard {
+    fn drop(&mut self) {
+        TEST_NAMED_VALUE_CANCEL.with(|slot| slot.set(self.previous));
+    }
+}
+
+#[cfg(test)]
+struct TestSemanticComptimeArrayLengthOverrideGuard {
+    previous: Option<i128>,
+}
+
+#[cfg(test)]
+impl TestSemanticComptimeArrayLengthOverrideGuard {
+    fn set(value: Option<i128>) -> Self {
+        let previous = TEST_ARRAY_LENGTH_OVERRIDE.with(|slot| {
+            let previous = slot.get();
+            slot.set(value);
+            previous
+        });
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestSemanticComptimeArrayLengthOverrideGuard {
+    fn drop(&mut self) {
+        TEST_ARRAY_LENGTH_OVERRIDE.with(|slot| slot.set(self.previous));
+    }
 }
 
 /// Comptime call-nesting budget for the durable (declaration-time) evaluator.
@@ -8494,30 +8596,68 @@ impl SemanticConstEvaluator<'_, '_> {
                     rue_rir::RepeatCount::Literal(value) => *value,
                     rue_rir::RepeatCount::Named(name) => {
                         let name = self.symbol(name);
-                        let evaluated = self.eval_identifier(name.clone())?;
-                        let typed = self.value(evaluated)?;
-                        let V::Integer(value) = typed.value else {
-                            return Err(EvaluateSemanticConstError::failure(
-                                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                                    rue_error::ErrorKind::InvalidArrayLength {
-                                        reason: format!(
-                                            "array length expression '{name}' is not an integer"
-                                        ),
-                                    },
-                                ),
-                            ));
-                        };
-                        u64::try_from(value).map_err(|_| {
-                            EvaluateSemanticConstError::failure(
-                                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                                    rue_error::ErrorKind::InvalidArrayLength {
-                                        reason: format!(
-                                            "array length expression '{name}' is negative or too large"
-                                        ),
-                                    },
-                                ),
+                        let binding = self
+                            .locals
+                            .get(&name)
+                            .cloned()
+                            .map(
+                                crate::durable_comptime::DurableComptimeArrayLengthBinding::LocalValue,
                             )
-                        })?
+                            .unwrap_or(
+                                crate::durable_comptime::DurableComptimeArrayLengthBinding::Unbound,
+                            );
+                        let decision =
+                            crate::durable_comptime::classify_durable_named_array_length(
+                                &name, binding,
+                            )
+                            .map_err(|error| {
+                                EvaluateSemanticConstError::failure(
+                                    durable_legacy_named_array_length_failure(&name, error),
+                                )
+                            })?;
+                        let evaluated = match decision {
+                            crate::durable_comptime::DurableComptimeArrayLengthDecision::Concrete(
+                                value,
+                            ) => value,
+                            crate::durable_comptime::DurableComptimeArrayLengthDecision::ResolveGlobal => {
+                                let evaluated = self.eval_identifier(name.clone())?;
+                                #[cfg(test)]
+                                let evaluated =
+                                    TEST_ARRAY_LENGTH_OVERRIDE.with(|value| {
+                                        value.get().map(|value| {
+                                            EvaluatedSemanticConst::Value(
+                                                TypedSemanticConst::typed(
+                                                    V::Integer(value),
+                                                    crate::durable_semantics::DurableType::U64,
+                                                ),
+                                            )
+                                        })
+                                    })
+                                    .unwrap_or(evaluated);
+                                crate::durable_comptime::durable_named_array_length_value(
+                                    &evaluated,
+                                )
+                                .map_err(|error| {
+                                    EvaluateSemanticConstError::failure(
+                                        durable_legacy_named_array_length_failure(&name, error),
+                                    )
+                                })?
+                            }
+                            crate::durable_comptime::DurableComptimeArrayLengthDecision::Shadowed => {
+                                return Err(EvaluateSemanticConstError::failure(
+                                    durable_legacy_named_array_length_failure(
+                                        &name,
+                                        crate::durable_comptime::DurableComptimeArrayLengthError::NonInteger,
+                                    ),
+                                ));
+                            }
+                            crate::durable_comptime::DurableComptimeArrayLengthDecision::RuntimeDependent => {
+                                unreachable!(
+                                    "legacy evaluator has no runtime lexical array lengths"
+                                );
+                            }
+                        };
+                        evaluated
                     }
                 };
                 Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
@@ -10282,15 +10422,14 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                     ))
                 }),
             rue_air::SemanticValueSyntax::Name(name) => {
-                if let Some(crate::durable_semantics::DurableConstValue::Integer(value)) =
-                    self.value_substitutions.get(name)
-                {
-                    let value = *value;
-                    return u64::try_from(value).map(Some).map_err(|_| {
-                        rue_air::SemanticProviderError::Failure(durable_named_array_length_failure(
-                            name, value,
-                        ))
-                    });
+                if let Some(value) = self.value_substitutions.get(name) {
+                    return crate::durable_comptime::durable_named_array_length_const(value)
+                        .map(Some)
+                        .map_err(|error| {
+                            rue_air::SemanticProviderError::Failure(
+                                durable_provider_named_array_length_failure(name, error),
+                            )
+                        });
                 }
                 if let Some(ty) = self.deferred_value_parameters.get(name) {
                     if matches!(
@@ -10330,16 +10469,13 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                         "array length `{name}` is not an integer"
                     ));
                 };
-                let crate::durable_semantics::DurableConstValue::Integer(value) = *value else {
-                    return Self::provider_failure(format!(
-                        "array length `{name}` is not an integer"
-                    ));
-                };
-                u64::try_from(value).map(Some).map_err(|_| {
-                    rue_air::SemanticProviderError::Failure(durable_named_array_length_failure(
-                        name, value,
-                    ))
-                })
+                crate::durable_comptime::durable_named_array_length_const(&value)
+                    .map(Some)
+                    .map_err(|error| {
+                        rue_air::SemanticProviderError::Failure(
+                            durable_provider_named_array_length_failure(name, error),
+                        )
+                    })
             }
         }
     }
@@ -29331,6 +29467,617 @@ fn main() -> i32 {
                 value,
                 ..
             }) if matches!(*value, crate::durable_semantics::DurableConstValue::Bool(true))
+        ));
+    }
+
+    #[test]
+    fn direct_const_named_array_length_uses_the_live_evaluator_policy() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            ConstResolutionProjection, SemanticNucleusFailure as Failure,
+            SemanticNucleusKey as Key, SemanticNucleusValue as Value,
+        };
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "const N: i32 = 3;\n\
+                 const GLOBAL: type = [i32; N];\n\
+                 fn Shadow(comptime N: i32) -> type { [i32; N] }\n\
+                 const LOCAL: type = Shadow(4);\n\
+                     const NEG_N: i32 = -1;\n\
+                     const NEG: type = [i32; NEG_N];\n\
+                     const HUGE_N: i32 = 1;\n\
+                     const HUGE: type = [i32; HUGE_N];\n\
+                     fn main() -> i32 { 0 }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let query = |name: &str| {
+            let declaration =
+                declaration_candidate(&database, revision, &module, Category::ConstCandidate, name);
+            request_semantic_nucleus(
+                &database,
+                revision,
+                Key::ConstResolution(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration,
+                    configuration: semantic_configuration(),
+                }),
+            )
+        };
+        let expected = crate::durable_semantics::DurableConstValue::Type(
+            crate::durable_semantics::DurableType::Array {
+                element: Arc::new(crate::durable_semantics::DurableType::I32),
+                len: 3,
+            },
+        );
+        let (global, global_attempt) = {
+            let declaration = declaration_candidate(
+                &database,
+                revision,
+                &module,
+                Category::ConstCandidate,
+                "GLOBAL",
+            );
+            request_semantic_nucleus_observed(
+                &database,
+                revision,
+                Key::ConstResolution(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration,
+                    configuration: semantic_configuration(),
+                }),
+            )
+        };
+        assert!(matches!(
+            global,
+            Value::ConstResolution(ConstResolutionProjection::Value { value, .. })
+                if *value == expected
+        ));
+        assert_eq!(
+            global_attempt
+                .dependencies()
+                .iter()
+                .filter(|dependency| {
+                    dependency.node.family() == "compiler.semantic-nucleus"
+                        && dependency
+                            .node
+                            .key()
+                            .contains("const:8:main.rue:ConstCandidate:1:N:")
+                })
+                .count(),
+            1,
+            "unbound global named length must observe exactly one const dependency: {:?}",
+            global_attempt.dependencies()
+        );
+        let expected_local = crate::durable_semantics::DurableConstValue::Type(
+            crate::durable_semantics::DurableType::Array {
+                element: Arc::new(crate::durable_semantics::DurableType::I32),
+                len: 4,
+            },
+        );
+        assert!(matches!(
+            query("LOCAL"),
+            Value::ConstResolution(ConstResolutionProjection::Value { value, .. })
+                if *value == expected_local
+        ));
+        assert!(matches!(
+            query("NEG"),
+            Value::Failure(Failure::Diagnostic(
+                rue_error::ErrorKind::InvalidArrayLength { reason }
+            )) if reason == "array length expression 'NEG_N' is negative or too large"
+        ));
+        // The source language has no integer literal wider than u64. Inject
+        // the out-of-range semantic value after the real evaluator resolves
+        // HUGE_N, so this still exercises the live ArrayRepeat consumer.
+        let _huge_override =
+            TestSemanticComptimeArrayLengthOverrideGuard::set(Some(i128::from(u64::MAX) + 1));
+        let huge_declaration = declaration_candidate(
+            &database,
+            revision,
+            &module,
+            Category::ConstCandidate,
+            "HUGE",
+        );
+        let (huge, huge_attempt) = request_semantic_nucleus_observed(
+            &database,
+            revision,
+            Key::ConstResolution(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration: huge_declaration,
+                configuration: semantic_configuration(),
+            }),
+        );
+        assert!(matches!(
+            huge,
+            Value::Failure(Failure::Diagnostic(
+                rue_error::ErrorKind::InvalidArrayLength { reason }
+            )) if reason == "array length expression 'HUGE_N' is negative or too large"
+        ));
+        assert_eq!(
+            huge_attempt
+                .dependencies()
+                .iter()
+                .filter(|dependency| {
+                    dependency
+                        .node
+                        .key()
+                        .contains("const:8:main.rue:ConstCandidate:6:HUGE_N:")
+                })
+                .count(),
+            1,
+            "too-large conversion must follow the live HUGE_N lookup: {:?}",
+            huge_attempt.dependencies()
+        );
+    }
+
+    #[test]
+    fn direct_const_named_array_length_live_local_kinds_do_not_fall_through() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            SemanticNucleusFailure as Failure, SemanticNucleusKey as Key,
+            SemanticNucleusValue as Value,
+        };
+
+        let source = source_snapshot(
+            &[
+                (
+                    1,
+                    "/main.rue",
+                    "main.rue",
+                    "const N: i32 = 3;\n\
+                     fn BoolShadow(comptime N: bool) -> type { [i32; N] }\n\
+                     fn TypeShadow(comptime N: type) -> type { [i32; N] }\n\
+                     const BOOL: type = BoolShadow(true);\n\
+                     const TYPE: type = TypeShadow(i32);\n\
+                     const MODULE: type = { let N = @import(\"dep.rue\"); [i32; N] };\n\
+                     const TARGET: type = { let N = @target_arch(); [i32; N] };\n\
+                     const CYCLE_A: i32 = CYCLE_B;\n\
+                     const CYCLE_B: i32 = CYCLE_A;\n\
+                     const CYCLE: type = [i32; CYCLE_A];\n\
+                     fn main() -> i32 { 0 }\n",
+                ),
+                (2, "/dep.rue", "dep.rue", "pub const VALUE: i32 = 1;\n"),
+            ],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let discovered = crate::test_support::test_import_graph(&source).unwrap();
+        database.adopt_test_import_graph_for_revision(revision, discovered);
+        let revision = database.current_semantic_revision().unwrap();
+        let query = |name: &str| {
+            let declaration =
+                declaration_candidate(&database, revision, &module, Category::ConstCandidate, name);
+            request_semantic_nucleus_observed(
+                &database,
+                revision,
+                Key::ConstResolution(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration,
+                    configuration: semantic_configuration(),
+                }),
+            )
+        };
+
+        let expected = [
+            (
+                "BOOL",
+                Failure::Diagnostic(rue_error::ErrorKind::InvalidArrayLength {
+                    reason: "array length expression 'N' is not an integer".into(),
+                }),
+            ),
+            (
+                "TYPE",
+                Failure::Diagnostic(rue_error::ErrorKind::InvalidArrayLength {
+                    reason: "array length expression 'N' is not an integer".into(),
+                }),
+            ),
+            (
+                "MODULE",
+                Failure::Resolution("module used where a value is required".into()),
+            ),
+            (
+                "TARGET",
+                Failure::Resolution(
+                    "target descriptor used where a durable const value is required".into(),
+                ),
+            ),
+        ];
+        for (name, expected) in expected {
+            let (value, attempt) = query(name);
+            assert!(
+                matches!(value, Value::Failure(ref actual) if actual == &expected),
+                "{name} must preserve the exact live local-kind failure: {value:?}"
+            );
+            assert!(
+                attempt
+                    .dependencies()
+                    .iter()
+                    .all(|dependency| !dependency.node.key().contains(":ConstCandidate:1:N:")),
+                "{name} must not query the same-named global length: {:?}",
+                attempt.dependencies()
+            );
+        }
+
+        let (cycle, cycle_attempt) = query("CYCLE");
+        assert!(
+            matches!(cycle, Value::Failure(Failure::Cycle(_))),
+            "live evaluator cycle must remain an explicit terminal: {cycle:?}"
+        );
+        assert!(
+            cycle_attempt
+                .dependencies()
+                .iter()
+                .any(|dependency| dependency.node.key().contains("CYCLE_A")),
+            "cycle terminal should retain the exact named-length observation: {:?}",
+            cycle_attempt.dependencies()
+        );
+    }
+
+    #[test]
+    fn live_evaluator_named_global_cancellation_preserves_abort_channel() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::SemanticNucleusKey as Key;
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "const GLOBAL: i32 = 3;\n\
+                 const CANCELED: type = [i32; GLOBAL];\n\
+                 fn main() -> i32 { 0 }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let declaration = declaration_candidate(
+            &database,
+            revision,
+            &module,
+            Category::ConstCandidate,
+            "CANCELED",
+        );
+        let checks_before = TEST_NAMED_VALUE_CHECKS.with(std::cell::Cell::get);
+        let _cancel_named_value = TestSemanticComptimeNamedValueCancelGuard::set(true);
+        let attempt = database.runtime.request_registered(
+            &database.semantic_nucleus,
+            revision,
+            Key::ConstResolution(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration,
+                configuration: semantic_configuration(),
+            }),
+            CancellationToken::new(),
+        );
+        let checks_after = TEST_NAMED_VALUE_CHECKS.with(std::cell::Cell::get);
+        assert!(
+            checks_after > checks_before,
+            "the live evaluator must reach named-value evaluation before cancellation"
+        );
+        assert!(
+            matches!(attempt.abort(), Some(QueryAbort::Canceled)),
+            "named-global cancellation must remain the exact query abort: {:?}",
+            attempt.abort()
+        );
+        assert!(
+            attempt
+                .dependencies()
+                .iter()
+                .all(|dependency| !dependency.node.key().contains(":ConstCandidate:1:GLOBAL:")),
+            "cancellation before named-value conversion must publish no global dependency: {:?}",
+            attempt.dependencies()
+        );
+    }
+
+    #[test]
+    fn live_type_provider_named_array_length_cases_preserve_substitution_and_lookup_channels() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            SemanticNucleusFailure as Failure, SemanticNucleusKey as Key,
+            SemanticNucleusValue as Value,
+        };
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "const N: i32 = 3;\n\
+                 fn Global(value: [i32; N]) -> i32 { value[0] }\n\
+                 fn Good(comptime N: i32, value: [i32; N]) -> i32 { value[0] }\n\
+                 fn Bad(comptime N: bool, value: [i32; N]) -> i32 { value[0] }\n\
+                 const CYCLE_A: i32 = CYCLE_B;\n\
+                 const CYCLE_B: i32 = CYCLE_A;\n\
+                 fn Cycle(value: [i32; CYCLE_A]) -> i32 { value[0] }\n\
+                 fn main() -> i32 { 0 }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let signature = |name: &str| {
+            let declaration =
+                declaration_candidate(&database, revision, &module, Category::Function, name);
+            request_semantic_nucleus_observed(
+                &database,
+                revision,
+                Key::Signature(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration,
+                    configuration: semantic_configuration(),
+                }),
+            )
+        };
+
+        let (global, global_attempt) = signature("Global");
+        assert!(
+            matches!(global, Value::Signature(_)),
+            "unbound global integer length must resolve through the live provider: {global:?}"
+        );
+        assert_eq!(
+            global_attempt
+                .dependencies()
+                .iter()
+                .filter(|dependency| {
+                    dependency.node.family() == "compiler.semantic-nucleus"
+                        && dependency
+                            .node
+                            .key()
+                            .contains("const:8:main.rue:ConstCandidate:1:N:")
+                })
+                .count(),
+            1,
+            "global length must observe exactly one const dependency: {:?}",
+            global_attempt.dependencies()
+        );
+
+        let (good, good_attempt) = signature("Good");
+        assert!(
+            matches!(good, Value::Signature(_)),
+            "deferred integer substitution must remain a live provider result: {good:?}"
+        );
+        assert!(
+            !good_attempt
+                .dependencies()
+                .iter()
+                .any(|dependency| dependency.node.key().contains(":ConstCandidate:1:N:")),
+            "integer substitution must not fall through to the global const: {:?}",
+            good_attempt.dependencies()
+        );
+
+        let (bad, bad_attempt) = signature("Bad");
+        let bad_debug = format!("{bad:?}");
+        assert!(
+            bad_debug.contains("non-integer type") || bad_debug.contains("not an integer"),
+            "non-integer substitution must preserve the live provider diagnostic: {bad_debug}"
+        );
+        assert!(
+            !bad_attempt
+                .dependencies()
+                .iter()
+                .any(|dependency| dependency.node.key().contains(":ConstCandidate:1:N:")),
+            "non-integer substitution must not query the global const: {:?}",
+            bad_attempt.dependencies()
+        );
+
+        let (cycle, cycle_attempt) = signature("Cycle");
+        let cycle_debug = format!("{cycle:?}");
+        assert!(
+            matches!(cycle, Value::Failure(Failure::Cycle(_))),
+            "provider cycle/abort must remain a terminal rather than a global fallback: {cycle_debug}"
+        );
+        assert!(
+            cycle_attempt
+                .dependencies()
+                .iter()
+                .all(|dependency| !dependency.node.key().contains(":ConstCandidate:1:N:")),
+            "cycle failure must not perform an extra unrelated global lookup: {:?}",
+            cycle_attempt.dependencies()
+        );
+    }
+
+    #[test]
+    fn live_type_provider_array_length_adapter_preserves_integer_boundaries_without_rir() {
+        use crate::durable_semantics::{DurableConstValue as V, DurableType as T};
+        use crate::semantic_query_nucleus::SemanticNucleusFailure as Failure;
+        use rue_air::SemanticTypeSyntaxProvider;
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "const HUGE: u64 = 1;\n\
+                 const BOOL: i32 = 2;\n\
+                 const NEG: i32 = 3;\n\
+                 fn main() -> i32 { 0 }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let captured = std::cell::RefCell::new(None);
+        let attempt = database.runtime.query(
+            &database.provider_probe,
+            revision,
+            ProviderProbeKey {
+                label: Arc::from("live-array-length-boundaries"),
+            },
+            CancellationToken::new(),
+            |context| {
+                let mut value_substitutions = BTreeMap::new();
+                value_substitutions.insert(Arc::from("HUGE"), V::Integer(i128::from(u64::MAX) + 1));
+                value_substitutions.insert(Arc::from("BOOL"), V::Bool(true));
+                value_substitutions.insert(Arc::from("NEG"), V::Integer(-1));
+                let mut deferred_value_parameters = BTreeMap::new();
+                deferred_value_parameters.insert(Arc::from("DEFERRED_I"), T::I32);
+                deferred_value_parameters.insert(Arc::from("DEFERRED_B"), T::Bool);
+                let dependency_source = StableDefinitionKey::from_stable_parts(
+                    module.clone(),
+                    crate::StableDefinitionNamespace::Value,
+                    crate::StableDefinitionKind::Function,
+                    "probe",
+                    None,
+                );
+                let mut provider = SemanticNucleusTypeProvider {
+                    context,
+                    family: &database.semantic_nucleus,
+                    shells: &database.declaration_shells,
+                    names: &database.lookup_names,
+                    configuration: semantic_configuration(),
+                    substitutions: BTreeMap::new(),
+                    value_substitutions,
+                    deferred_value_parameters,
+                    anonymous_nominals: BTreeMap::new(),
+                    dependency_source,
+                    dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
+                    dependencies: BTreeSet::new(),
+                    deferred_ownership: BTreeSet::new(),
+                    ownership_properties: BTreeMap::new(),
+                };
+                let mut resolve = |name: &'static str| {
+                    <SemanticNucleusTypeProvider<'_> as SemanticTypeSyntaxProvider<
+                        ModuleId,
+                        ModuleId,
+                        StableDefinitionKey,
+                        StableDefinitionKey,
+                        Arc<str>,
+                        crate::DurableType,
+                        crate::DurableConstValue,
+                    >>::resolve_array_length(
+                        &mut provider,
+                        &module,
+                        rue_air::SemanticValueSyntax::Name(name),
+                    )
+                };
+                let values = (
+                    resolve("HUGE"),
+                    resolve("BOOL"),
+                    resolve("NEG"),
+                    resolve("DEFERRED_I"),
+                    resolve("DEFERRED_B"),
+                    provider.dependencies.clone(),
+                );
+                *captured.borrow_mut() = Some(values);
+                Ok(rue_query::QueryOutput::success(ProviderProbeValue))
+            },
+        );
+        let attempt = attempt.expect("live provider probe must publish");
+        assert!(
+            matches!(attempt.outcome(), rue_query::QueryOutcome::Success(_)),
+            "live provider probe must publish"
+        );
+        let (huge, bool_value, negative, deferred_integer, deferred_bool, dependencies) = captured
+            .into_inner()
+            .expect("provider probe captured its values");
+        assert!(matches!(
+            huge,
+            Err(rue_air::SemanticProviderError::Failure(Failure::Diagnostic(
+                rue_error::ErrorKind::InvalidArrayLength { ref reason }
+            ))) if reason == "array length 'HUGE' (18446744073709551616) is too large"
+        ));
+        assert!(matches!(
+            bool_value,
+            Err(rue_air::SemanticProviderError::Failure(Failure::Resolution(reason)))
+                if reason.as_ref() == "array length `BOOL` is not an integer"
+        ));
+        assert!(matches!(
+            negative,
+            Err(rue_air::SemanticProviderError::Failure(Failure::Diagnostic(
+                rue_error::ErrorKind::InvalidArrayLength { ref reason }
+            ))) if reason == "array length 'NEG' is negative (-1)"
+        ));
+        assert!(matches!(deferred_integer, Ok(None)));
+        assert!(matches!(
+            deferred_bool,
+            Err(rue_air::SemanticProviderError::Failure(Failure::Diagnostic(
+                rue_error::ErrorKind::InvalidArrayLength { ref reason }
+            ))) if reason == "array length expression 'DEFERRED_B' has non-integer type bool"
+        ));
+        assert!(
+            dependencies.is_empty(),
+            "all lexical substitutions must avoid global lookup/dependency: {dependencies:?}"
+        );
+
+        let cancellation = CancellationToken::new();
+        let cancel_in_closure = cancellation.clone();
+        let canceled_value = std::cell::RefCell::new(None);
+        let _canceled_attempt = database.runtime.query(
+            &database.provider_probe,
+            revision,
+            ProviderProbeKey {
+                label: Arc::from("live-array-length-canceled-global"),
+            },
+            cancellation,
+            |context| {
+                let dependency_source = StableDefinitionKey::from_stable_parts(
+                    module.clone(),
+                    crate::StableDefinitionNamespace::Value,
+                    crate::StableDefinitionKind::Function,
+                    "canceled_probe",
+                    None,
+                );
+                let mut provider = SemanticNucleusTypeProvider {
+                    context,
+                    family: &database.semantic_nucleus,
+                    shells: &database.declaration_shells,
+                    names: &database.lookup_names,
+                    configuration: semantic_configuration(),
+                    substitutions: BTreeMap::new(),
+                    value_substitutions: BTreeMap::new(),
+                    deferred_value_parameters: BTreeMap::new(),
+                    anonymous_nominals: BTreeMap::new(),
+                    dependency_source,
+                    dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
+                    dependencies: BTreeSet::new(),
+                    deferred_ownership: BTreeSet::new(),
+                    ownership_properties: BTreeMap::new(),
+                };
+                cancel_in_closure.cancel();
+                let result = <SemanticNucleusTypeProvider<'_> as SemanticTypeSyntaxProvider<
+                    ModuleId,
+                    ModuleId,
+                    StableDefinitionKey,
+                    StableDefinitionKey,
+                    Arc<str>,
+                    crate::DurableType,
+                    crate::DurableConstValue,
+                >>::resolve_array_length(
+                    &mut provider,
+                    &module,
+                    rue_air::SemanticValueSyntax::Name("UNBOUND"),
+                );
+                *canceled_value.borrow_mut() = Some(result);
+                Ok(rue_query::QueryOutput::success(ProviderProbeValue))
+            },
+        );
+        assert!(matches!(
+            canceled_value.into_inner(),
+            Some(Err(rue_air::SemanticProviderError::Abort(
+                QueryAbort::Canceled
+            )))
         ));
     }
 
