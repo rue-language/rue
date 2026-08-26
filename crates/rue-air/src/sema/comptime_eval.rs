@@ -55,8 +55,8 @@ use rue_rir::{InstData, InstRef};
 use rue_span::{FileId, Span};
 
 use super::comptime::{
-    ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallArgument,
-    ComptimeCallPreparation, ComptimeDiagnosticSite, ComptimeEngine,
+    ComptimeAnonymousKind, ComptimeArgMode, ComptimeArrayLengthBinding, ComptimeCallAdmission,
+    ComptimeCallArgument, ComptimeCallPreparation, ComptimeDiagnosticSite, ComptimeEngine,
     ComptimeEnv as GenericComptimeEnv, ComptimeFile, ComptimeFrame, ComptimeHost,
     ComptimeHostError, ComptimeHostResult, ComptimeIdentity, ComptimeMatchPattern,
     ComptimeMethodDescriptor, ComptimeName, ComptimeNamedValueResolution, ComptimeOutcome,
@@ -1801,7 +1801,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     type CallBinding = OrdinaryComptimeCallBinding;
     type BoundCall = OrdinaryComptimeBoundCall;
     type CompletionTicket = ();
-    type AnonymousStructId = crate::types::StructId;
     type StructuredTypeSuspension = crate::semantic_type_resolution::ComptimeStructuredTypeJob<
         (),
         (),
@@ -2027,10 +2026,14 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         name: &Spur,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
         values: Option<&AHashMap<Spur, ConstValue>>,
-    ) -> ComptimeHostResult<u64, Self::Failure> {
+        _binding: ComptimeArrayLengthBinding<ConstValue>,
+    ) -> ComptimeOutcome<u64, Self::Failure> {
         let name = self.body_interner().resolve(name).to_owned();
         OrdinaryBodyEngine::resolve_array_length(self, &ArrayLen::Named(name), site.span(), values)
-            .map_err(Into::into)
+            .map_or_else(
+                |error| ComptimeOutcome::HostFailure(error),
+                ComptimeOutcome::Known,
+            )
     }
     fn rir_type_named_symbol(
         &self,
@@ -2056,7 +2059,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         identity: Self::AnonymousIdentity,
         fields: &[super::comptime::ComptimeField<Spur, Type>],
         sigs: &[ComptimeMethodDescriptor<Spur, Type>],
-        captured: &AHashMap<Spur, ConstValue>,
+        _type_subst: &AHashMap<Spur, Type>,
+        value_subst: &AHashMap<Spur, ConstValue>,
     ) -> ComptimeHostResult<(Type, bool), Self::Failure> {
         let fields: Vec<StructField> = fields
             .iter()
@@ -2111,7 +2115,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
                 },
             })
             .collect();
-        OrdinaryBodyEngine::find_or_create_anon_struct(self, identity, &fields, &sigs, captured)
+        OrdinaryBodyEngine::find_or_create_anon_struct(self, identity, &fields, &sigs, value_subst)
             .map_err(Into::into)
     }
     fn find_or_create_anon_enum(
@@ -2119,26 +2123,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         identity: Self::AnonymousIdentity,
         names: &[String],
         payloads: &[Vec<Type>],
+        _type_subst: &AHashMap<Spur, Type>,
+        _value_subst: &AHashMap<Spur, ConstValue>,
     ) -> ComptimeHostResult<Type, Self::Failure> {
         OrdinaryBodyEngine::find_or_create_anon_enum(self, identity, names, payloads)
-            .map_err(Into::into)
-    }
-    fn anonymous_struct_id(&self, ty: &Type) -> Option<crate::types::StructId> {
-        ty.as_struct()
-    }
-    fn has_method(&self, key: &crate::types::StructId, method: Spur) -> bool {
-        OrdinaryBodyEngine::has_method(self, (*key, method))
-    }
-    fn check_unqualified_visibility(
-        &self,
-        kind: &str,
-        name: &Spur,
-        file: FileId,
-        is_pub: bool,
-        span: Span,
-    ) -> ComptimeHostResult<(), Self::Failure> {
-        let name = self.body_interner().resolve(name).to_owned();
-        OrdinaryBodyEngine::check_unqualified_visibility(self, kind, &name, file, is_pub, span)
             .map_err(Into::into)
     }
     fn check_require_droppable(
@@ -2183,6 +2171,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn resolve_named_type_value(
         &mut self,
+        _program: &Self::ProgramKey,
         name: Spur,
         span: Span,
     ) -> ComptimeHostResult<Option<Type>, Self::Failure> {
@@ -2355,13 +2344,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         OrdinaryBodyEngine::resolve_rir_type_for_comptime_with_subst_and_values_at_span(
             self, syntax, types, values, span,
         )
-    }
-    fn set_anon_struct_type_subst(
-        &mut self,
-        id: &crate::types::StructId,
-        subst: AHashMap<Spur, Type>,
-    ) {
-        OrdinaryBodyEngine::set_anon_struct_type_subst(self, *id, subst)
     }
 }
 

@@ -472,6 +472,17 @@ pub enum ComptimeAnonymousKind {
     Enum,
 }
 
+/// Lexical classification supplied with a named array-length lookup.
+///
+/// The engine owns precedence and the ordinary host may deliberately ignore
+/// this durable-only fact while retaining its historical substitution input.
+pub enum ComptimeArrayLengthBinding<V> {
+    LocalInteger(V),
+    Shadowed,
+    RuntimeDependent,
+    Unbound,
+}
+
 /// Lexical and substitution state shared by the canonical comptime engine.
 /// Name and file identities are supplied by the host; the evaluator does not
 /// depend on the local interner or file-id representation.
@@ -512,8 +523,10 @@ where
         for (name, val) in &self.locals {
             if let Some(t) = val.as_type() {
                 type_subst.insert(name.clone(), t);
+                value_subst.remove(name);
             } else {
                 value_subst.insert(name.clone(), val.clone());
+                type_subst.remove(name);
             }
         }
         (type_subst, value_subst)
@@ -588,6 +601,14 @@ mod value_domain_tests {
         static NAMED_VALUE_CALLS: Cell<usize> = const { Cell::new(0) };
         static REJECT_VISIBILITY: Cell<bool> = const { Cell::new(false) };
         static NAMED_TYPE_MISSING: Cell<bool> = const { Cell::new(false) };
+        static TYPE_VALUE_PROGRAMS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+        static ARRAY_LENGTH_CALLS: Cell<usize> = const { Cell::new(0) };
+        static ARRAY_LENGTH_INPUTS: RefCell<Vec<Option<i128>>> = const { RefCell::new(Vec::new()) };
+        static ARRAY_LENGTH_ABORT: Cell<bool> = const { Cell::new(false) };
+        static ANON_STRUCT_CAPTURES: RefCell<Vec<(Vec<(u32, FakeType)>, Vec<(u32, FakeValue)>)>> =
+            const { RefCell::new(Vec::new()) };
+        static ANON_ENUM_CAPTURES: RefCell<Vec<(Vec<(u32, FakeType)>, Vec<(u32, FakeValue)>)>> =
+            const { RefCell::new(Vec::new()) };
         static KEYED_FILE_RESOLUTION: Cell<bool> = const { Cell::new(false) };
         static FILE_RESOLUTION_CALLS: RefCell<Vec<(usize, u32)>> = const { RefCell::new(Vec::new()) };
         static TYPE_INTRINSIC_EVENTS: RefCell<Vec<(ComptimeTypeIntrinsic, FakeType)>> =
@@ -907,7 +928,6 @@ mod value_domain_tests {
 
     #[derive(Clone)]
     struct FakeConstInfo {
-        is_pub: bool,
         span: Span,
         value: Option<FakeValue>,
     }
@@ -942,6 +962,268 @@ mod value_domain_tests {
         NAMED_TYPE_MISSING.with(|missing| missing.set(false));
     }
 
+    #[test]
+    fn named_array_length_classifies_lexical_bindings_before_global_lookup() {
+        let name = FakeName { ordinal: 7 };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+
+        assert!(matches!(
+            ComptimeEngine::<FakeHost>::classify_array_length_binding(&env, &name),
+            ComptimeArrayLengthBinding::Unbound
+        ));
+        env.value_subst.insert(name.clone(), FakeValue::Integer(4));
+        assert!(matches!(
+            ComptimeEngine::<FakeHost>::classify_array_length_binding(&env, &name),
+            ComptimeArrayLengthBinding::LocalInteger(FakeValue::Integer(4))
+        ));
+        env.value_subst
+            .insert(name.clone(), FakeValue::Type(FakeType(1)));
+        assert!(matches!(
+            ComptimeEngine::<FakeHost>::classify_array_length_binding(&env, &name),
+            ComptimeArrayLengthBinding::Shadowed
+        ));
+        env.value_subst.clear();
+        env.runtime_local_names.insert(name.clone());
+        assert!(matches!(
+            ComptimeEngine::<FakeHost>::classify_array_length_binding(&env, &name),
+            ComptimeArrayLengthBinding::RuntimeDependent
+        ));
+        env.runtime_local_names.clear();
+        env.locals.insert(name.clone(), FakeValue::Integer(9));
+        assert!(matches!(
+            ComptimeEngine::<FakeHost>::classify_array_length_binding(&env, &name),
+            ComptimeArrayLengthBinding::LocalInteger(FakeValue::Integer(9))
+        ));
+        env.locals
+            .insert(name.clone(), FakeValue::Type(FakeType(2)));
+        assert!(matches!(
+            ComptimeEngine::<FakeHost>::classify_array_length_binding(&env, &name),
+            ComptimeArrayLengthBinding::Shadowed
+        ));
+    }
+
+    #[test]
+    fn named_array_length_dispatch_preserves_shadow_and_abort_channels() {
+        let interner = lasso::ThreadedRodeo::new();
+        let count_symbol = interner.get_or_intern("N");
+        let type_symbol = interner.get_or_intern("T");
+        let mut editor = rue_rir::RirEditor::new();
+        let type_syntax = editor.add_named_type(type_symbol).unwrap();
+        let element = editor.add_inst(rue_rir::Inst {
+            data: InstData::TypeConst {
+                type_name: type_syntax,
+            },
+            span: Span::new(0, 1),
+        });
+        let array = editor.add_inst(rue_rir::Inst {
+            data: InstData::ArrayRepeat {
+                value: element,
+                count: rue_rir::RepeatCount::Named(count_symbol),
+            },
+            span: Span::new(0, 2),
+        });
+        let mut host = FakeHost {
+            programs: vec![editor.finish()],
+            type_symbol: SymbolHandle::new(type_symbol),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        let name = FakeName {
+            ordinal: count_symbol.into_usize() as u32,
+        };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let eval = |host: &mut FakeHost,
+                    env: &mut ComptimeEnv<
+            '_,
+            FakeValue,
+            FakeType,
+            FakeName,
+            FakeFile,
+            FakeIdentity,
+        >| {
+            ComptimeEngine::new(host).evaluate(ComptimeFrame::expression(0, array), env)
+        };
+
+        ARRAY_LENGTH_CALLS.with(|calls| calls.set(0));
+        ARRAY_LENGTH_INPUTS.with(|inputs| inputs.borrow_mut().clear());
+        assert!(matches!(
+            eval(&mut host, &mut env),
+            ComptimeOutcome::Known(_)
+        ));
+        assert_eq!(ARRAY_LENGTH_CALLS.with(Cell::get), 1);
+        assert_eq!(
+            ARRAY_LENGTH_INPUTS.with(|inputs| inputs.borrow().clone()),
+            vec![None]
+        );
+
+        env.value_subst.insert(name.clone(), FakeValue::Integer(4));
+        assert!(matches!(
+            eval(&mut host, &mut env),
+            ComptimeOutcome::Known(_)
+        ));
+        assert_eq!(
+            ARRAY_LENGTH_INPUTS.with(|inputs| inputs.borrow().last().copied()),
+            Some(Some(4))
+        );
+
+        env.value_subst.clear();
+        env.locals
+            .insert(name.clone(), FakeValue::Type(FakeType(3)));
+        assert!(matches!(
+            eval(&mut host, &mut env),
+            ComptimeOutcome::HostFailure(FAKE_FAILURE)
+        ));
+
+        env.locals.insert(name.clone(), FakeValue::Boolean(true));
+        assert!(matches!(
+            eval(&mut host, &mut env),
+            ComptimeOutcome::HostFailure(FAKE_FAILURE)
+        ));
+
+        env.locals.clear();
+        env.runtime_local_names.insert(name.clone());
+        assert!(matches!(
+            eval(&mut host, &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+
+        env.runtime_local_names.clear();
+        env.runtime_binding_names.insert(name.clone());
+        assert!(matches!(
+            eval(&mut host, &mut env),
+            ComptimeOutcome::RuntimeDependent
+        ));
+
+        env.runtime_binding_names.clear();
+        env.value_subst.insert(name.clone(), FakeValue::Integer(6));
+        env.runtime_binding_names.insert(name.clone());
+        assert!(matches!(
+            eval(&mut host, &mut env),
+            ComptimeOutcome::Known(_)
+        ));
+        assert_eq!(
+            ARRAY_LENGTH_INPUTS.with(|inputs| inputs.borrow().last().copied()),
+            Some(Some(6))
+        );
+
+        env.runtime_binding_names.clear();
+        env.value_subst.clear();
+        env.type_subst.insert(name.clone(), FakeType(4));
+        assert!(matches!(
+            eval(&mut host, &mut env),
+            ComptimeOutcome::HostFailure(FAKE_FAILURE)
+        ));
+
+        env.type_subst.clear();
+        ARRAY_LENGTH_ABORT.with(|abort| abort.set(true));
+        assert!(matches!(
+            eval(&mut host, &mut env),
+            ComptimeOutcome::Abort(FAKE_FAILURE)
+        ));
+        ARRAY_LENGTH_ABORT.with(|abort| abort.set(false));
+    }
+
+    #[test]
+    fn local_capture_substitution_removes_the_shadowed_opposite_map() {
+        let name = FakeName { ordinal: 11 };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        env.type_subst.insert(name.clone(), FakeType(1));
+        env.value_subst.insert(name.clone(), FakeValue::Integer(2));
+
+        env.locals
+            .insert(name.clone(), FakeValue::Type(FakeType(3)));
+        let (types, values) = env.substs_with_locals();
+        assert_eq!(types.get(&name), Some(&FakeType(3)));
+        assert!(!values.contains_key(&name));
+
+        env.locals.insert(name.clone(), FakeValue::Integer(4));
+        let (types, values) = env.substs_with_locals();
+        assert!(!types.contains_key(&name));
+        assert_eq!(values.get(&name), Some(&FakeValue::Integer(4)));
+    }
+
+    #[test]
+    fn anonymous_struct_and_enum_hooks_receive_disjoint_type_and_value_captures() {
+        let mut struct_editor = rue_rir::RirEditor::new();
+        let struct_root = struct_editor
+            .add_anon_struct_type(
+                &[],
+                &[],
+                rue_rir::RirStructuralAnchor::new(vec![
+                    rue_rir::RirStructuralPathSegment::Statement(1),
+                ]),
+                Span::new(0, 1),
+            )
+            .unwrap();
+        let mut enum_editor = rue_rir::RirEditor::new();
+        let enum_root = enum_editor
+            .add_anon_enum_type(
+                &[],
+                &[],
+                rue_rir::RirStructuralAnchor::new(vec![
+                    rue_rir::RirStructuralPathSegment::Statement(2),
+                ]),
+                Span::new(0, 1),
+            )
+            .unwrap();
+        let mut host = FakeHost {
+            programs: vec![struct_editor.finish(), enum_editor.finish()],
+            type_symbol: SymbolHandle::new(lasso::ThreadedRodeo::new().get_or_intern("T")),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: None,
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        let type_name = FakeName { ordinal: 4 };
+        let value_name = FakeName { ordinal: 5 };
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        env.canonical_identity = Some(FakeIdentity { token: 9 });
+        env.type_subst.insert(type_name.clone(), FakeType(1));
+        env.value_subst
+            .insert(type_name.clone(), FakeValue::Integer(7));
+        env.value_subst
+            .insert(value_name.clone(), FakeValue::Integer(2));
+        env.type_subst.insert(value_name.clone(), FakeType(8));
+        env.locals
+            .insert(type_name.clone(), FakeValue::Type(FakeType(3)));
+        env.locals.insert(value_name.clone(), FakeValue::Integer(4));
+        ANON_STRUCT_CAPTURES.with(|captures| captures.borrow_mut().clear());
+        ANON_ENUM_CAPTURES.with(|captures| captures.borrow_mut().clear());
+
+        assert!(matches!(
+            ComptimeEngine::new(&mut host)
+                .evaluate(ComptimeFrame::expression(0, struct_root), &mut env,),
+            ComptimeOutcome::Known(FakeValue::Type(FakeType(20)))
+        ));
+        assert!(matches!(
+            ComptimeEngine::new(&mut host)
+                .evaluate(ComptimeFrame::expression(1, enum_root), &mut env,),
+            ComptimeOutcome::Known(FakeValue::Type(FakeType(21)))
+        ));
+        ANON_STRUCT_CAPTURES.with(|captures| {
+            assert_eq!(
+                *captures.borrow(),
+                vec![(vec![(4, FakeType(3))], vec![(5, FakeValue::Integer(4))])]
+            );
+        });
+        ANON_ENUM_CAPTURES.with(|captures| {
+            assert_eq!(
+                *captures.borrow(),
+                vec![(vec![(4, FakeType(3))], vec![(5, FakeValue::Integer(4))])]
+            );
+        });
+    }
+
     fn clear_type_intrinsic_observations() {
         TYPE_INTRINSIC_EVENTS.with(|events| events.borrow_mut().clear());
         TYPE_INTRINSIC_FAILURE.with(|failure| failure.set(false));
@@ -962,7 +1244,6 @@ mod value_domain_tests {
         type CallBinding = FakeCallBinding;
         type BoundCall = FakeBoundCall;
         type CompletionTicket = usize;
-        type AnonymousStructId = u32;
         type StructuredTypeSuspension = FakeStructuredSuspension;
         fn check_canceled(&self) -> ComptimeHostResult<(), Self::Failure> {
             let checkpoint = CHECKPOINTS.with(|count| {
@@ -1036,19 +1317,15 @@ mod value_domain_tests {
                 };
                 self.dependencies
                     .push((defining_file.clone(), name.clone()));
-                self.check_unqualified_visibility(
-                    "constant",
-                    &name,
-                    defining_file,
-                    info.is_pub,
-                    span,
-                )?;
+                if REJECT_VISIBILITY.with(Cell::get) {
+                    return Err(FAKE_FAILURE.into());
+                }
                 return Ok(match info.value {
                     Some(value) => ComptimeNamedValueResolution::Known(value),
                     None => ComptimeNamedValueResolution::RuntimeDependent,
                 });
             }
-            let resolved = self.resolve_named_type_value(name, span)?;
+            let resolved = self.resolve_named_type_value(&0, name, span)?;
             Ok(match resolved {
                 Some(ty) => ComptimeNamedValueResolution::Known(FakeValue::Type(ty)),
                 None => ComptimeNamedValueResolution::Missing,
@@ -1127,9 +1404,27 @@ mod value_domain_tests {
             &mut self,
             _name: &Self::Name,
             _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-            _values: Option<&AHashMap<Self::Name, Self::Value>>,
-        ) -> ComptimeHostResult<u64, Self::Failure> {
-            Ok(0)
+            values: Option<&AHashMap<Self::Name, Self::Value>>,
+            binding: ComptimeArrayLengthBinding<Self::Value>,
+        ) -> ComptimeOutcome<u64, Self::Failure> {
+            ARRAY_LENGTH_CALLS.with(|calls| calls.set(calls.get() + 1));
+            ARRAY_LENGTH_INPUTS.with(|inputs| {
+                inputs.borrow_mut().push(
+                    values.and_then(|values| {
+                        values.values().next().and_then(ComptimeValue::as_integer)
+                    }),
+                )
+            });
+            if matches!(binding, ComptimeArrayLengthBinding::Shadowed) {
+                return ComptimeOutcome::HostFailure(FAKE_FAILURE);
+            }
+            if ARRAY_LENGTH_ABORT.with(Cell::get) {
+                return ComptimeOutcome::Abort(FAKE_FAILURE);
+            }
+            if matches!(binding, ComptimeArrayLengthBinding::RuntimeDependent) {
+                return ComptimeOutcome::RuntimeDependent;
+            }
+            ComptimeOutcome::Known(0)
         }
         fn rir_type_named_symbol(
             &self,
@@ -1150,43 +1445,51 @@ mod value_domain_tests {
             format!("{syntax:?}")
         }
         fn get_or_create_array_type(&mut self, _element: Self::Type, _length: u64) -> Self::Type {
-            panic!("fake host does not construct array types")
+            FakeType(8)
         }
         fn find_or_create_anon_struct(
             &mut self,
             _identity: Self::AnonymousIdentity,
             _fields: &[ComptimeField<Self::Name, Self::Type>],
             _sigs: &[ComptimeMethodDescriptor<Self::Name, Self::Type>],
-            _captured: &AHashMap<Self::Name, Self::Value>,
+            type_subst: &AHashMap<Self::Name, Self::Type>,
+            value_subst: &AHashMap<Self::Name, Self::Value>,
         ) -> ComptimeHostResult<(Self::Type, bool), Self::Failure> {
-            panic!("fake host does not construct anonymous structs")
+            ANON_STRUCT_CAPTURES.with(|captures| {
+                captures.borrow_mut().push((
+                    type_subst
+                        .iter()
+                        .map(|(name, ty)| (name.ordinal, *ty))
+                        .collect(),
+                    value_subst
+                        .iter()
+                        .map(|(name, value)| (name.ordinal, value.clone()))
+                        .collect(),
+                ));
+            });
+            Ok((FakeType(20), true))
         }
         fn find_or_create_anon_enum(
             &mut self,
             _identity: Self::AnonymousIdentity,
             _names: &[String],
             _payloads: &[Vec<Self::Type>],
+            type_subst: &AHashMap<Self::Name, Self::Type>,
+            value_subst: &AHashMap<Self::Name, Self::Value>,
         ) -> ComptimeHostResult<Self::Type, Self::Failure> {
-            panic!("fake host does not construct anonymous enums")
-        }
-        fn anonymous_struct_id(&self, _ty: &Self::Type) -> Option<Self::AnonymousStructId> {
-            None
-        }
-        fn has_method(&self, _key: &Self::AnonymousStructId, _method: Self::Name) -> bool {
-            false
-        }
-        fn check_unqualified_visibility(
-            &self,
-            _item_kind: &str,
-            _name: &Self::Name,
-            _defining_file_id: Self::File,
-            _is_pub: bool,
-            _span: Span,
-        ) -> ComptimeHostResult<(), Self::Failure> {
-            if REJECT_VISIBILITY.with(Cell::get) {
-                return Err(FAKE_FAILURE.into());
-            }
-            Ok(())
+            ANON_ENUM_CAPTURES.with(|captures| {
+                captures.borrow_mut().push((
+                    type_subst
+                        .iter()
+                        .map(|(name, ty)| (name.ordinal, *ty))
+                        .collect(),
+                    value_subst
+                        .iter()
+                        .map(|(name, value)| (name.ordinal, value.clone()))
+                        .collect(),
+                ));
+            });
+            Ok(FakeType(21))
         }
         fn check_require_droppable(
             &mut self,
@@ -1280,9 +1583,11 @@ mod value_domain_tests {
         }
         fn resolve_named_type_value(
             &mut self,
+            program: &Self::ProgramKey,
             _name: Self::Name,
             _span: Span,
         ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+            TYPE_VALUE_PROGRAMS.with(|programs| programs.borrow_mut().push(*program));
             Ok((!NAMED_TYPE_MISSING.with(Cell::get)).then_some(FakeType(7)))
         }
         fn resolve_comptime_type_path(
@@ -1563,13 +1868,6 @@ mod value_domain_tests {
                 .with(|configured| configured.borrow().is_some())
                 .then_some(FakeType(7))
         }
-        fn set_anon_struct_type_subst(
-            &mut self,
-            _struct_id: &Self::AnonymousStructId,
-            _subst: AHashMap<Self::Name, Self::Type>,
-        ) {
-        }
-
         fn resolve_string_const(
             &mut self,
             content: Self::Name,
@@ -2911,10 +3209,17 @@ mod value_domain_tests {
             },
             span: Span::new(0, 0),
         });
+        let mut second_editor = rue_rir::RirEditor::new();
+        let second_type_const = second_editor.add_inst(rue_rir::Inst {
+            data: InstData::TypeConst {
+                type_name: rue_rir::RirTypeSyntaxRef::from_u32(0),
+            },
+            span: Span::new(0, 0),
+        });
         let interner = lasso::ThreadedRodeo::new();
         let type_symbol = SymbolHandle::new(interner.get_or_intern("T"));
         let mut host = FakeHost {
-            programs: vec![editor.finish()],
+            programs: vec![editor.finish(), second_editor.finish()],
             type_symbol,
             constant: None,
             dependencies: Vec::new(),
@@ -2926,14 +3231,22 @@ mod value_domain_tests {
             float_evaluations: Cell::new(0),
         };
         clear_named_value_observations();
+        TYPE_VALUE_PROGRAMS.with(|programs| programs.borrow_mut().clear());
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
         let value = ComptimeEngine::new(&mut host)
             .evaluate(ComptimeFrame::expression(0, type_const), &mut env)
             .into_result(|_| FAKE_FAILURE)
             .unwrap()
             .unwrap();
+        let second_value = ComptimeEngine::new(&mut host)
+            .evaluate(ComptimeFrame::expression(1, second_type_const), &mut env)
+            .into_result(|_| FAKE_FAILURE)
+            .unwrap()
+            .unwrap();
         assert_eq!(value, FakeValue::Type(FakeType(7)));
+        assert_eq!(second_value, FakeValue::Type(FakeType(7)));
         assert_eq!(NAMED_VALUE_CALLS.with(Cell::get), 0);
+        TYPE_VALUE_PROGRAMS.with(|programs| assert_eq!(*programs.borrow(), vec![0, 1]));
     }
 
     #[test]
@@ -2958,7 +3271,6 @@ mod value_domain_tests {
                 FakeFile { index: 0 },
                 name.clone(),
                 FakeConstInfo {
-                    is_pub: true,
                     span: Span::new(10, 11),
                     value: Some(FakeValue::Integer(99)),
                 },
@@ -3050,7 +3362,6 @@ mod value_domain_tests {
                 FakeFile { index: 3 },
                 name,
                 FakeConstInfo {
-                    is_pub: true,
                     span: Span::with_file(rue_span::FileId::new(9), 10, 11),
                     value: Some(FakeValue::Integer(42)),
                 },
@@ -3088,7 +3399,6 @@ mod value_domain_tests {
                 FakeFile { index: 3 },
                 name.clone(),
                 FakeConstInfo {
-                    is_pub: true,
                     span: Span::with_file(rue_span::FileId::new(9), 10, 11),
                     value: Some(FakeValue::Integer(42)),
                 },
@@ -3137,7 +3447,6 @@ mod value_domain_tests {
             file,
             name.clone(),
             FakeConstInfo {
-                is_pub: false,
                 span: Span::with_file(rue_span::FileId::new(9), 10, 11),
                 value: Some(FakeValue::Integer(7)),
             },
@@ -5111,7 +5420,6 @@ pub trait ComptimeHost {
     type BoundCall;
     /// Opaque host-owned completion state issued during ordered preparation.
     type CompletionTicket;
-    type AnonymousStructId: Clone;
     /// The sole continuation representation accepted by the engine for a
     /// structured type reduction. This is sealed below to prevent a peer
     /// resolver state machine from being hidden behind the host boundary.
@@ -5176,8 +5484,12 @@ pub trait ComptimeHost {
         &mut self,
         name: &Self::Name,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+        // The historical substitution view used by ordinary hosts. The
+        // engine separately supplies `binding`, which classifies lexical
+        // locals/runtime shadows before any host or global lookup.
         values: Option<&AHashMap<Self::Name, Self::Value>>,
-    ) -> ComptimeHostResult<u64, Self::Failure>;
+        binding: ComptimeArrayLengthBinding<Self::Value>,
+    ) -> ComptimeOutcome<u64, Self::Failure>;
     fn rir_type_named_symbol(
         &self,
         program: &Self::ProgramKey,
@@ -5197,24 +5509,17 @@ pub trait ComptimeHost {
         identity: Self::AnonymousIdentity,
         fields: &[ComptimeField<Self::Name, Self::Type>],
         sigs: &[ComptimeMethodDescriptor<Self::Name, Self::Type>],
-        captured: &AHashMap<Self::Name, Self::Value>,
+        type_subst: &AHashMap<Self::Name, Self::Type>,
+        value_subst: &AHashMap<Self::Name, Self::Value>,
     ) -> ComptimeHostResult<(Self::Type, bool), Self::Failure>;
     fn find_or_create_anon_enum(
         &mut self,
         identity: Self::AnonymousIdentity,
         names: &[String],
         payloads: &[Vec<Self::Type>],
+        type_subst: &AHashMap<Self::Name, Self::Type>,
+        value_subst: &AHashMap<Self::Name, Self::Value>,
     ) -> ComptimeHostResult<Self::Type, Self::Failure>;
-    fn anonymous_struct_id(&self, ty: &Self::Type) -> Option<Self::AnonymousStructId>;
-    fn has_method(&self, key: &Self::AnonymousStructId, method: Self::Name) -> bool;
-    fn check_unqualified_visibility(
-        &self,
-        item_kind: &str,
-        name: &Self::Name,
-        defining_file_id: Self::File,
-        is_pub: bool,
-        span: Span,
-    ) -> ComptimeHostResult<(), Self::Failure>;
     fn check_require_droppable(
         &mut self,
         ty: Self::Type,
@@ -5322,6 +5627,7 @@ pub trait ComptimeHost {
     ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure>;
     fn resolve_named_type_value(
         &mut self,
+        program: &Self::ProgramKey,
         _name: Self::Name,
         span: Span,
     ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure>;
@@ -5498,12 +5804,6 @@ pub trait ComptimeHost {
         ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
         Self::Failure,
     >;
-    fn set_anon_struct_type_subst(
-        &mut self,
-        struct_id: &Self::AnonymousStructId,
-        subst: AHashMap<Self::Name, Self::Type>,
-    );
-
     /// Resolve a string literal in a semantic context. The ordinary body
     /// value domain has no compile-time string value, so the default keeps
     /// string expressions runtime-dependent. Durable hosts may use this hook
@@ -5665,6 +5965,36 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         decode_comptime_match_pattern(pattern, |symbol| {
             self.host.name_from_symbol(program, symbol)
         })
+    }
+
+    fn classify_array_length_binding(
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+        name: &H::Name,
+    ) -> ComptimeArrayLengthBinding<H::Value> {
+        if let Some(value) = env.locals.get(name) {
+            return if value.as_integer().is_some() {
+                ComptimeArrayLengthBinding::LocalInteger(value.clone())
+            } else {
+                ComptimeArrayLengthBinding::Shadowed
+            };
+        }
+        if env.runtime_local_names.contains(name) {
+            return ComptimeArrayLengthBinding::RuntimeDependent;
+        }
+        if env.type_subst.contains_key(name) {
+            return ComptimeArrayLengthBinding::Shadowed;
+        }
+        if let Some(value) = env.value_subst.get(name) {
+            return if value.as_integer().is_some() {
+                ComptimeArrayLengthBinding::LocalInteger(value.clone())
+            } else {
+                ComptimeArrayLengthBinding::Shadowed
+            };
+        }
+        if env.runtime_binding_names.contains(name) {
+            return ComptimeArrayLengthBinding::RuntimeDependent;
+        }
+        ComptimeArrayLengthBinding::Unbound
     }
 
     #[cfg(test)]
@@ -7141,6 +7471,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     identity,
                     &struct_fields,
                     &method_sigs,
+                    &local_type_subst,
                     &local_value_subst,
                 ));
 
@@ -7206,6 +7537,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     identity,
                     &variant_names,
                     &variant_payloads,
+                    &enum_type_subst,
+                    &enum_value_subst,
                 ));
                 ComptimeOutcome::Known(H::Value::type_value(enum_ty))
             }
@@ -7222,9 +7555,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         return ComptimeOutcome::Known(H::Value::type_value(ty.clone()));
                     }
                     // A named type (primitive / struct / enum) resolves directly.
-                    if let Some(ty) =
-                        host_value!(self.host.resolve_named_type_value(type_symbol, span))
-                    {
+                    if let Some(ty) = host_value!(self.host.resolve_named_type_value(
+                        &self.program_key(),
+                        type_symbol,
+                        span,
+                    )) {
                         return ComptimeOutcome::Known(H::Value::type_value(ty));
                     }
                 }
@@ -7265,10 +7600,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     RepeatCount::Named(sym) => {
                         let name = self.name_from_rir(sym.into());
                         let site = self.diagnostic_site(span);
-                        host_value!(self.host.resolve_named_array_length(
+                        let binding = Self::classify_array_length_binding(env, &name);
+                        outcome_value!(self.host.resolve_named_array_length(
                             &name,
                             &site,
                             Some(&env.value_subst),
+                            binding,
                         ))
                     }
                 };

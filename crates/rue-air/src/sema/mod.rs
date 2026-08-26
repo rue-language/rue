@@ -60,16 +60,16 @@ pub use binding_manifest::{
     SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
 };
 pub use comptime::{
-    ComptimeAnonymousKind, ComptimeArgMode, ComptimeCallAdmission, ComptimeCallArgument,
-    ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCallPreparation, ComptimeCompletedCallMemo,
-    ComptimeEngine, ComptimeEnv, ComptimeField, ComptimeFile, ComptimeFrame, ComptimeHost,
-    ComptimeHostError, ComptimeHostResult, ComptimeIdentity, ComptimeIntegerBound,
-    ComptimeIntrinsicArgument, ComptimeMemoInsertError, ComptimeMemoizedOutcome,
-    ComptimeMethodDescriptor, ComptimeMethodParameter, ComptimeMethodType, ComptimeName,
-    ComptimeNamedValueResolution, ComptimeOutcome, ComptimeProgram, ComptimeProgramKey,
-    ComptimeProgramRegistrationError, ComptimeProgramRegistry, ComptimeSite, ComptimeSiteKind,
-    ComptimeStructuredTypeResolution, ComptimeStructuredTypeSuspension, ComptimeTrap, ComptimeType,
-    ComptimeTypeIntrinsic, ComptimeValue, MAX_COMPTIME_CALL_DEPTH,
+    ComptimeAnonymousKind, ComptimeArgMode, ComptimeArrayLengthBinding, ComptimeCallAdmission,
+    ComptimeCallArgument, ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCallPreparation,
+    ComptimeCompletedCallMemo, ComptimeEngine, ComptimeEnv, ComptimeField, ComptimeFile,
+    ComptimeFrame, ComptimeHost, ComptimeHostError, ComptimeHostResult, ComptimeIdentity,
+    ComptimeIntegerBound, ComptimeIntrinsicArgument, ComptimeMemoInsertError,
+    ComptimeMemoizedOutcome, ComptimeMethodDescriptor, ComptimeMethodParameter, ComptimeMethodType,
+    ComptimeName, ComptimeNamedValueResolution, ComptimeOutcome, ComptimeProgram,
+    ComptimeProgramKey, ComptimeProgramRegistrationError, ComptimeProgramRegistry, ComptimeSite,
+    ComptimeSiteKind, ComptimeStructuredTypeResolution, ComptimeStructuredTypeSuspension,
+    ComptimeTrap, ComptimeType, ComptimeTypeIntrinsic, ComptimeValue, MAX_COMPTIME_CALL_DEPTH,
 };
 pub use comptime::{ComptimeDiagnosticSite, ComptimeMatchPattern, decode_comptime_match_pattern};
 pub use context::ConstValue;

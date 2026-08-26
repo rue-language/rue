@@ -167,6 +167,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     for export in [
         "ComptimeAnonymousKind",
         "ComptimeArgMode",
+        "ComptimeArrayLengthBinding",
         "ComptimeCallAdmission",
         "ComptimeCallArgument",
         "ComptimeCallKey",
@@ -267,7 +268,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "anon_structs",
         "AnonymousNominalKey",
         "AnonymousNominalKind",
-        "ArrayLen",
+        "crate::types::ArrayLen",
         "SemanticBodyExportFailure",
         "CompileError",
         "CompileResult",
@@ -368,6 +369,103 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     assert!(!host_contract.contains("fn value_const("));
     assert!(!host_contract.contains("fn record_value_const_dependency("));
     assert!(!host_contract.contains("fn record_named_type_dependency("));
+    for removed in [
+        "fn anonymous_struct_id(",
+        "fn has_method(",
+        "fn check_unqualified_visibility(",
+        "fn set_anon_struct_type_subst(",
+    ] {
+        assert!(
+            !host_contract.contains(removed),
+            "obsolete engine-unused host hook remains: {removed}"
+        );
+    }
+    let named_type_hook = host_contract
+        .split("fn resolve_named_type_value(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn ").next())
+        .expect("keyed TypeConst host hook");
+    assert!(named_type_hook.contains("program: &Self::ProgramKey"));
+    for hook in [
+        "fn find_or_create_anon_struct(",
+        "fn find_or_create_anon_enum(",
+    ] {
+        let body = host_contract
+            .split(hook)
+            .nth(1)
+            .and_then(|source| source.split("\n    fn ").next())
+            .unwrap_or_else(|| panic!("missing anonymous nominal hook: {hook}"));
+        assert!(
+            body.contains("type_subst"),
+            "{hook} must receive type captures"
+        );
+        assert!(
+            body.contains("value_subst"),
+            "{hook} must receive value captures"
+        );
+    }
+    assert!(production.contains("enum ComptimeArrayLengthBinding"));
+    let array_dispatch = production
+        .split("InstData::ArrayRepeat { value, count } => {")
+        .nth(1)
+        .and_then(|source| source.split("InstData::VarRef { name, .. } => {").next())
+        .expect("array repeat dispatch");
+    assert!(array_dispatch.contains("classify_array_length_binding"));
+    let array_hook = host_contract
+        .split("fn resolve_named_array_length(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn ").next())
+        .expect("array-length host hook");
+    assert!(array_hook.contains("ComptimeArrayLengthBinding<Self::Value>"));
+    assert!(array_hook.contains("ComptimeOutcome<u64, Self::Failure>"));
+    assert!(array_dispatch.contains("outcome_value!(self.host.resolve_named_array_length"));
+    let struct_dispatch = production
+        .split("InstData::AnonStructType {")
+        .nth(1)
+        .and_then(|source| source.split("InstData::AnonEnumType {").next())
+        .expect("anonymous struct dispatch");
+    assert!(struct_dispatch.contains("local_type_subst"));
+    assert!(struct_dispatch.contains("local_value_subst"));
+    let enum_dispatch = production
+        .split("InstData::AnonEnumType {")
+        .nth(1)
+        .and_then(|source| source.split("InstData::TypeConst {").next())
+        .expect("anonymous enum dispatch");
+    assert!(enum_dispatch.contains("enum_type_subst"));
+    assert!(enum_dispatch.contains("enum_value_subst"));
+    let classifier = production
+        .split("fn classify_array_length_binding(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn ").next())
+        .expect("engine array-length classifier");
+    assert!(classifier.contains("ComptimeArrayLengthBinding::Unbound"));
+    assert!(classifier.contains("ComptimeArrayLengthBinding::Shadowed"));
+    assert!(classifier.contains("ComptimeArrayLengthBinding::RuntimeDependent"));
+    let classifier_order = [
+        "env.locals",
+        "env.runtime_local_names",
+        "env.type_subst",
+        "env.value_subst",
+        "env.runtime_binding_names",
+    ];
+    let mut previous = 0;
+    for needle in classifier_order {
+        let offset = classifier
+            .find(needle)
+            .unwrap_or_else(|| panic!("classifier missing {needle}"));
+        assert!(
+            offset >= previous,
+            "array-length precedence regressed at {needle}"
+        );
+        previous = offset;
+    }
+    let subst_helper = production
+        .split("fn substs_with_locals(")
+        .nth(1)
+        .and_then(|source| source.split("\n    pub fn new").next())
+        .expect("local substitution helper");
+    assert!(subst_helper.contains("value_subst.remove(name)"));
+    assert!(subst_helper.contains("type_subst.remove(name)"));
     let argument_start = production
         .find("pub struct ComptimeCallArgument<")
         .expect("engine-owned call argument provenance wrapper");
