@@ -24,6 +24,17 @@ pub fn fixed_string_capacity(name: &str) -> Option<u64> {
     (capacity.to_string() == digits).then_some(capacity)
 }
 
+/// Return the capacity of a compiler-generated fixed-string struct.
+///
+/// The spelling alone is not sufficient for nominal classification: a
+/// source-defined struct must not counterfeit `Str(N)`. Keep the builtin bit
+/// check beside the canonical spelling parser so semantic consumers agree.
+pub(crate) fn fixed_string_struct_capacity(def: &StructDef) -> Option<u64> {
+    def.is_builtin
+        .then(|| fixed_string_capacity(&def.name))
+        .flatten()
+}
+
 /// Whether `name` is the canonical spelling of a synthetic slice struct.
 pub fn is_slice_struct_name(name: &str) -> bool {
     name.starts_with('[') && name.ends_with(']') && !name.contains(';')

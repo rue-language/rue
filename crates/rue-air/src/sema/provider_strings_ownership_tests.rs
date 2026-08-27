@@ -961,13 +961,58 @@ fn provider_bodies_expected_string_type_reaches_only_structural_result_positions
     );
 }
 
-// Migrated from `tests::declared_enum_payload_and_ptr_write_pointee_contextualize_fixed_strings`,
-// reduced to the pointer-write half: a pointer write's pointee type
-// contextualizes its literal operand. The retired test's other half — a
-// declared enum's `Str(8)` payload contextualizing a construction literal —
-// currently fails on the provider path (the durable enum payload's fixed
-// string is not admitted into the string-literal contextualization set) and
-// is recorded as a migration finding instead of being weakened here.
+// Migrated from `tests::declared_enum_payload_and_ptr_write_pointee_contextualize_fixed_strings`.
+// A durable enum payload's fixed-string identity must contextualize the literal
+// passed to its variant constructor even when the provider materializes that
+// generated nominal during constraint generation.
+#[test]
+fn provider_body_enum_fixed_string_payload_contextualizes_literal() {
+    let mut fixture = ProviderFixture::new();
+    let message = fixture.declare_enum(
+        "Message",
+        vec![("Text", vec![fixed_str(8)]), ("Empty", vec![])],
+    );
+    fixture.declare_function("make", Vec::new(), SemanticImportType::Nominal(message));
+
+    fixture
+        .analyze(
+            r#"fn make() -> Message {
+    Message.Text("hello")
+}"#,
+            "make",
+        )
+        .expect("enum fixed-string payload contextualizes its construction literal");
+}
+
+#[test]
+fn provider_body_source_nominal_cannot_counterfeit_fixed_string_payload() {
+    let mut fixture = ProviderFixture::new();
+    let counterfeit = fixture.declare_struct("Str(8)", Vec::new(), true);
+    let message = fixture.declare_enum(
+        "Message",
+        vec![("Text", vec![SemanticImportType::Nominal(counterfeit)])],
+    );
+    fixture.declare_function("make", Vec::new(), SemanticImportType::Nominal(message));
+
+    let error = fixture
+        .analyze(
+            r#"fn make() -> Message {
+    Message.Text("hello")
+}"#,
+            "make",
+        )
+        .map(|_| ())
+        .expect_err("a source-defined Str(8) nominal must not accept a string literal");
+    assert!(
+        matches!(
+            &error.kind,
+            ErrorKind::TypeMismatch { expected, found }
+                if expected == "string type" && found == "Str(8)"
+        ),
+        "unexpected counterfeit fixed-string diagnostic: {error:?}"
+    );
+}
+
 #[test]
 fn provider_body_ptr_write_pointee_contextualizes_fixed_strings() {
     let mut fixture = ProviderFixture::new();

@@ -727,6 +727,21 @@ mod integration_tests {
         }
 
         #[test]
+        fn fixed_string_enum_payload_contextualizes_literal() {
+            let src = r#"
+                enum Message { Text(Str(8)), Empty }
+                fn main() -> i32 {
+                    let message = Message.Text("hello");
+                    match message {
+                        Message.Text(value) => @intCast(value.len()),
+                        Message.Empty => 0,
+                    }
+                }
+            "#;
+            assert!(test_air(src).is_ok());
+        }
+
+        #[test]
         fn enum_match() {
             let src = r#"
                 enum Color { Red, Green, Blue }

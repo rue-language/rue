@@ -2050,8 +2050,7 @@ where
                         name: name.clone(),
                         kind: *kind,
                     }
-                } else if def.is_builtin && crate::types::fixed_string_capacity(&def.name).is_some()
-                {
+                } else if crate::types::fixed_string_struct_capacity(&def).is_some() {
                     // `Str(N)` is registered lazily in the exact transaction
                     // pool. Its compiler-builtin bit plus canonical capacity
                     // spelling is the durable classification; unrelated source
