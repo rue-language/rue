@@ -1,0 +1,95 @@
+[section]
+id = "diagnostics.comptime_value_call"
+name = "Deferred comptime value-call diagnostics"
+description = "Value-returning comptime calls used in type signatures retain stable, value-oriented diagnostics (RUE-1540)."
+
+[[case]]
+name = "runtime_value_callee_in_array_length"
+source = """
+fn runtime(n: i32) -> i32 { n }
+fn make() -> [i32; runtime(3)] { [0; 3] }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+  "E1200",
+  "call `runtime(...)` is not a compile-time value",
+  "all parameters must be `comptime`",
+  "2:1",
+]
+
+[[case]]
+name = "missing_arity_value_returning_callee"
+source = """
+fn value(comptime n: i32) -> i32 { n }
+fn make() -> [i32; value()] { [0; 3] }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+  "E1200",
+  "value-returning comptime function `value` expects 1 comptime argument, but 0 were provided",
+  "2:1",
+]
+
+[[case]]
+name = "generic_value_callee_missing_value_argument"
+source = """
+fn generic(comptime T: type, comptime value: T) -> T { value }
+fn Buffer(comptime n: i32) -> type { struct { data: [i32; n] } }
+fn make() -> Buffer(generic(i32)) { Buffer(3) { data: [0; 3] } }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+  "E1200",
+  "value-returning comptime function `generic` expects 2 comptime arguments, but 1 was provided",
+  "3:1",
+]
+
+[[case]]
+name = "nested_imported_runtime_value_callee"
+source = """
+const lib = @import("lib.rue");
+fn Buffer(comptime n: i32) -> type { struct { data: [i32; n] } }
+fn make() -> Buffer(lib.runtime(3)) { Buffer(3) { data: [0; 3] } }
+fn main() -> i32 { 0 }
+"""
+aux_files = { "lib.rue" = "pub fn runtime(n: i32) -> i32 { n }\n" }
+compile_fail = true
+error_contains = [
+  "E1200",
+  "call `lib.runtime(...)` is not a compile-time value",
+  "all parameters must be `comptime`",
+  "3:1",
+]
+
+[[case]]
+name = "mixed_parameter_callee_wrong_arity"
+source = """
+fn mixed(comptime n: i32, runtime: i32) -> i32 { n + runtime }
+fn make() -> [i32; mixed(3)] { [0; 3] }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+  "E1200",
+  "call `mixed(...)` is not a compile-time value",
+  "all parameters must be `comptime`",
+  "2:1",
+]
+
+[[case]]
+name = "zero_parameter_value_callee"
+source = """
+fn zero() -> i32 { 3 }
+fn make() -> [i32; zero()] { [0; 3] }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+  "E1200",
+  "call `zero(...)` is not a compile-time value",
+  "must declare at least one `comptime` parameter",
+  "2:1",
+]
