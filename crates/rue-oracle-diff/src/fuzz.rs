@@ -69,6 +69,8 @@ enum GeneratorContractFailure {
     Compile(String),
     /// The source compiled, but evaluation reached an unmodeled construct.
     Unsupported(Unsupported),
+    /// The generated position-twin invariant itself failed in the oracle.
+    Invariant(String),
 }
 
 impl GeneratorContractFailure {
@@ -83,6 +85,7 @@ impl GeneratorContractFailure {
         match self {
             Self::Compile(_) => "compile",
             Self::Unsupported(_) => "unsupported",
+            Self::Invariant(_) => "invariant",
         }
     }
 
@@ -90,6 +93,7 @@ impl GeneratorContractFailure {
         match self {
             Self::Compile(detail) => detail,
             Self::Unsupported(unsupported) => unsupported.detail(),
+            Self::Invariant(detail) => detail,
         }
     }
 
@@ -97,8 +101,17 @@ impl GeneratorContractFailure {
         match self {
             Self::Compile(_) => None,
             Self::Unsupported(unsupported) => Some(unsupported.kind()),
+            Self::Invariant(_) => None,
         }
     }
+}
+
+/// Generated programs contain exactly one assertion site: the position-twin
+/// check, before any random snippets.  A failed assertion is therefore a
+/// generator invariant failure, not a result to compare against native code.
+fn generated_invariant_failure(oracle: &rue_oracle::Outcome) -> Option<GeneratorContractFailure> {
+    (oracle.panic == Some(TrapKind::AssertionFailure))
+        .then(|| GeneratorContractFailure::Invariant("position twin mismatch".to_string()))
 }
 
 struct GeneratorContractFinding {
@@ -277,6 +290,20 @@ pub fn run(args: &[String]) -> ExitCode {
             }
             Ok(o) => o,
         };
+
+        if let Some(failure) = generated_invariant_failure(&oracle) {
+            let finding = GeneratorContractFinding {
+                seed,
+                source: source.clone(),
+                failure,
+            };
+            eprintln!("{}", finding.render());
+            if let Err(error) = save_generator_contract_repro(&cfg.crash_dir, &finding) {
+                report_repro_write_error(&cfg.crash_dir, seed, &error);
+            }
+            generator_contract_failures.push(finding);
+            continue;
+        }
 
         let compiled = match compile_and_run(&rue, workdir.path(), &source, cfg.timeout) {
             Ok(c) => c,
@@ -1111,6 +1138,38 @@ mod tests {
             generator_contract_repro_contents(&finding)
                 .contains("// oracle cause: ExternalDependency(RandomU32)\n")
         );
+    }
+
+    #[test]
+    fn generated_position_assertion_is_a_contract_failure() {
+        let oracle = trap(TrapKind::AssertionFailure);
+        let failure = generated_invariant_failure(&oracle).expect("assertion must be classified");
+        assert!(matches!(
+            &failure,
+            GeneratorContractFailure::Invariant(detail) if detail == "position twin mismatch"
+        ));
+
+        let finding = GeneratorContractFinding {
+            seed: 41,
+            source: "fn main() -> i32 { @assert(false); 0 }\n".to_string(),
+            failure,
+        };
+        assert!(
+            finding
+                .render()
+                .contains("invariant: position twin mismatch")
+        );
+        let repro = generator_contract_repro_contents(&finding);
+        assert!(repro.contains("// failure kind: invariant\n"));
+        assert!(repro.contains("// detail: position twin mismatch\n"));
+        assert!(repro.ends_with("\n\nfn main() -> i32 { @assert(false); 0 }\n"));
+
+        // A native-only assertion failure is not a generated invariant: it is
+        // still an ordinary differential disagreement against a clean oracle.
+        assert!(is_disagree(classify(
+            &oc(0, ""),
+            &ran_trap("assertion failed\n")
+        )));
     }
 
     #[test]
