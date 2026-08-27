@@ -2608,8 +2608,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ///
     /// Returns `None` when no declared-linear container encloses the selected
     /// leaf; depth 0 means the root itself is the consumed place. Dynamic
-    /// index paths pass `false` to retain their pre-RUE-614 shallowest-place
-    /// fallback while RUE-1755 owns their future design.
+    /// index paths pass `false` so the shallowest declared-linear prefix can
+    /// still be identified for the E0904 rejection at the use site.
     fn declared_linear_destructure_depth(
         &self,
         trace: &PlaceTrace,
@@ -3137,6 +3137,30 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // path is still a use-after-move.
             let is_byref_arg_use = ctx.byref_arg_root == Some(trace.root_var);
 
+            // A value-context projection through an untrackable index cannot
+            // select a declared-linear place precisely.  Falling back to an
+            // ordinary Copy read would leave the selected sibling unknown to
+            // the linear obligation check, silently discharging it at scope
+            // exit.  Keep by-reference uses and the destructor's own `self`
+            // exemption unchanged, but reject every other declared-linear
+            // dynamic path through the established E0904 family.
+            if !is_byref_arg_use
+                && !is_destructor_self
+                && has_untrackable_index
+                && declared_depth.is_some()
+            {
+                return Err(CompileError::new(
+                    ErrorKind::MoveOutOfIndex {
+                        element_type: field_type.safe_name_with_pool(Some(self.body_type_pool())),
+                    },
+                    span,
+                )
+                .with_help(
+                    "moving a field out through an array index requires a \
+                     compile-time constant index",
+                ));
+            }
+
             // Moving a (non-Copy) field or the whole value out of a `for`-loop
             // element binder over a non-Copy collection would let the new owner
             // AND the collection both drop it (double-free): iteration is a
@@ -3177,10 +3201,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             } else if is_declared_linear {
                 // For a declared-linear struct, field access destructures and
                 // so consumes that struct's whole value (3.8:33).
-                // Dynamic/untrackable index paths intentionally retain the
-                // transitional whole-root fallback. RUE-1755 owns the design
-                // decision for making those paths precise; RUE-614 only adds
-                // residue semantics where the place is statically trackable.
+                // Dynamic/untrackable paths are rejected above when a
+                // declared-linear prefix exists, so this branch only performs
+                // the statically trackable RUE-614 destructure.
                 self.reject_accessor_place_move(&trace, field_type, span)?;
                 self.reject_field_move_out_of_destructor_type(&trace, span)?;
                 self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
@@ -3676,10 +3699,32 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let declared_depth = self.declared_linear_destructure_depth(&trace, true);
             let is_destructor_self =
                 ctx.is_destructor && ctx.params.iter().any(|param| param.name == trace.root_var);
-            // Dynamic/untrackable index paths retain their pre-RUE-614
-            // Copy/non-Copy behavior. RUE-1755 owns any future precise
-            // semantics; only constant-index paths enter the new
-            // declared-linear residue plan.
+            // A dynamic index cannot identify which declared-linear place is
+            // being destructured.  Reject value-context reads rather than
+            // treating a Copy leaf as an ordinary read and losing the
+            // selected element's sibling obligation (RUE-1755).  Explicit
+            // by-reference uses and a destructor's own `self` retain their
+            // existing behavior.
+            if !is_byref_arg_use
+                && !is_destructor_self
+                && trace.has_untrackable_index()
+                && declared_depth.is_some()
+            {
+                return Err(CompileError::new(
+                    ErrorKind::MoveOutOfIndex {
+                        element_type: elem_type.safe_name_with_pool(Some(self.body_type_pool())),
+                    },
+                    span,
+                )
+                .with_help(
+                    "moving an element out through an array index requires a \
+                     compile-time constant index",
+                ));
+            }
+            // Only statically trackable paths enter the RUE-614
+            // declared-linear residue plan. Dynamic paths with a
+            // declared-linear prefix were rejected above; other dynamic
+            // paths retain the ordinary Copy/move behavior.
             let trackable_declared_depth =
                 declared_depth.filter(|_| !is_destructor_self && !trace.has_untrackable_index());
             let mut element_move: Option<i64> = None;

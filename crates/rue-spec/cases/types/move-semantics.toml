@@ -2276,6 +2276,61 @@ fn main() -> i32 {
 exit_code = 3
 
 [[case]]
+name = "declared_linear_root_array_dynamic_element_rejected"
+spec = ["3.8:33", "3.8:68", "3.8:71"]
+description = "A dynamic index into a root array of declared-linear values cannot identify the destructured element, so the value use is rejected (RUE-1755)"
+source = """
+linear struct MustUse { value: i32 }
+
+fn pick() -> u64 { 0 }
+
+fn main() -> i32 {
+    let a = [MustUse { value: 1 }, MustUse { value: 2 }];
+    let index = pick();
+    a[index].value
+}
+"""
+compile_fail = true
+error_contains = ["cannot move out of indexed position", "moving a field out through an array index requires a compile-time constant index"]
+
+[[case]]
+name = "declared_linear_nested_dynamic_element_rejected"
+spec = ["3.8:33", "3.8:68", "3.8:71"]
+description = "A dynamic index into an array field of declared-linear values cannot identify the destructured element, so the value use is rejected (RUE-1755)"
+source = """
+linear struct MustUse { value: i32 }
+struct Holder { entries: [MustUse; 2] }
+
+fn pick() -> u64 { 0 }
+
+fn main() -> i32 {
+    let h = Holder { entries: [MustUse { value: 1 }, MustUse { value: 2 }] };
+    let index = pick();
+    h.entries[index].value
+}
+"""
+compile_fail = true
+error_contains = ["cannot move out of indexed position", "moving a field out through an array index requires a compile-time constant index"]
+
+[[case]]
+name = "declared_linear_dynamic_copy_element_rejected"
+spec = ["3.8:33", "7.1:26", "7.1:28"]
+description = "A direct dynamic Copy element read with a declared-linear prefix is a destructure whose target cannot be tracked (RUE-1755)"
+source = """
+linear struct Token { values: [i32; 2] }
+
+fn pick() -> u64 { 0 }
+
+fn main() -> i32 {
+    let token = Token { values: [7, 9] };
+    let index = pick();
+    token.values[index]
+}
+"""
+compile_fail = true
+error_contains = ["cannot move out of indexed position", "moving an element out through an array index requires a compile-time constant index"]
+
+[[case]]
 name = "declared_linear_element_destructure_scoped_to_the_element"
 spec = ["3.8:32", "3.8:33"]
 description = "Destructuring one declared-linear array element consumes that element only; the sibling element's obligation stands (RUE-1632)"

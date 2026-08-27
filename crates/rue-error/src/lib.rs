@@ -1839,12 +1839,14 @@ pub enum ErrorKind {
     IndexOutOfBounds { index: i128, length: u64 },
     #[error("type annotation required for empty array")]
     TypeAnnotationRequired,
-    /// Cannot move non-Copy element out of array index position.
-    /// Raised only for moves the per-element tracker cannot follow: dynamic
-    /// (non-constant) indices, and indexing that is not rooted directly at an
-    /// array variable. A constant index into an array variable moves just
-    /// that element out (spec 3.8:68, RUE-186).
-    #[error("cannot move out of indexed position: element type '{element_type}' is not Copy")]
+    /// Cannot move or destructure through an array index position that the
+    /// per-element ownership tracker cannot follow: dynamic (non-constant)
+    /// indices, and indexing that is not rooted directly at an array variable.
+    /// A constant index into an array variable moves just that element out
+    /// (spec 3.8:68, RUE-186). Declared-linear destructuring also uses this
+    /// diagnostic when a dynamic index makes its consumed place untrackable
+    /// (RUE-1755), including when the selected leaf is Copy.
+    #[error("cannot move out of indexed position")]
     MoveOutOfIndex { element_type: String },
     /// Array-repeat literal `[value; count]` whose element type is not Copy.
     /// A repeat literal materializes `count` copies of a single value, so the

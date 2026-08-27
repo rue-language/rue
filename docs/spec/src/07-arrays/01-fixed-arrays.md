@@ -317,7 +317,13 @@ Array indexing operates as a projection. Reading an element does not move the ar
 
 {{ rule(id="7.1:26", cat="normative") }}
 
-When reading an element of a Copy type (e.g., integers, booleans), the element is copied out.
+When reading an element of a Copy type (e.g., integers, booleans), the element
+is copied out unless the value-context projection destructures an enclosing
+place whose struct type is declared `linear` (3.8:33). Such a destructure
+consumes that enclosing place even when the selected element is Copy, and is
+subject to the index-trackability restriction in 7.1:28. A destructor's own
+`self` parameter retains its established exemption (3.8:62): Copy element reads
+inside the destructor observe the value without destructuring it.
 
 {{ rule(id="7.1:27") }}
 
@@ -332,7 +338,21 @@ fn main() -> i32 {
 
 {{ rule(id="7.1:28", cat="legality-rule") }}
 
-When reading an element of a non-Copy type, the read moves the element out of the array only when the index is a compile-time constant and the indexing applies directly to an array variable (per-element move tracking; see Array Element Moves in the Move Semantics chapter). Any other such read — a non-constant index, or an array reached through another projection or computed by an expression — is a compile-time error: with a runtime index the compiler cannot know which element moved, so neither use-after-move checking nor drop elaboration could remain sound.
+When reading an element of a non-Copy type, the read moves the element out of
+the array only when the index is a compile-time constant and the indexing
+applies directly to an array variable (per-element move tracking; see Array
+Element Moves in the Move Semantics chapter). Any other such read — a
+non-constant index, or an array reached through another projection or computed
+by an expression — is a compile-time error: with a runtime index the compiler
+cannot know which element moved, so neither use-after-move checking nor drop
+elaboration could remain sound. A value-context projection with a
+declared-linear prefix (3.8:33) likewise requires every index in its path to be
+a compile-time constant, including when its selected element is Copy: a runtime
+index cannot identify the declared-linear place whose destructure would consume
+and dispose of residue. Such an untrackable projection is rejected with E0904.
+This declared-linear-prefix restriction does not apply to a destructor's own
+`self`: its drop glue owns the value (3.8:62), Copy reads remain observations,
+and moving `self` or one of its fields is separately forbidden by 3.9:33–34.
 
 {{ rule(id="7.1:29") }}
 
