@@ -119,6 +119,113 @@ fn main() -> i32 { pick(0) }
 """ }]
 exit_code = 1
 
+# RUE-1775: selector arithmetic must use the declared i8 operand width. The
+# untaken `false` branch must not participate in HM's result join.
+[[case]]
+name = "comptime_i8_shift_selector_uses_declared_width"
+files = [{ path = "main.rue", source = """
+fn choose(comptime n: i8) -> i32 {
+    if n << 8 == n { 42 } else { false }
+}
+
+fn main() -> i32 { choose(1) }
+""" }]
+exit_code = 42
+
+[[case]]
+name = "comptime_selector_respects_lexical_shadowing"
+files = [{ path = "main.rue", source = """
+fn choose(comptime n: i32, value: i32) -> i32 {
+    let n = value;
+    if n == 0 { 1 } else { 2 }
+}
+
+fn main() -> i32 { choose(0, 1) }
+""" }]
+exit_code = 2
+
+[[case]]
+name = "comptime_match_checks_later_arm_legality"
+files = [{ path = "main.rue", source = """
+fn choose(comptime n: i32) -> i32 {
+    match n {
+        0 => 1,
+        true => false,
+        _ => 2,
+    }
+}
+
+fn main() -> i32 { choose(0) }
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
+
+[[case]]
+name = "comptime_match_payload_shadowing_is_lexical"
+files = [{ path = "main.rue", source = """
+enum E { Some(i32), None }
+
+fn choose(comptime n: i32, e: E) -> i32 {
+    match e {
+        E.Some(n) => if n == 0 { 1 } else { 2 },
+        E.None => 0,
+    }
+}
+
+fn main() -> i32 { choose(0, E.Some(1)) }
+""" }]
+exit_code = 2
+
+# A selector's fresh result variable must remain unconstrained until the
+# selected body is generated: the selected literal is refined by the i64
+# function result rather than defaulting to i32 during the selector probe.
+[[case]]
+name = "comptime_selector_default_i32_is_refined_by_return_type"
+files = [{ path = "main.rue", source = """
+fn choose(comptime n: i32) -> i64 {
+    if n == 1 { 42 } else { false }
+}
+
+fn main() -> i32 { @intCast(choose(1)) }
+""" }]
+exit_code = 42
+
+[[case]]
+name = "comptime_nested_typed_selectors_use_bounded_staging"
+files = [{ path = "main.rue", source = """
+fn choose(comptime n: i8) -> i32 {
+    if n == 1 {
+        if n << 8 == n {
+            if n == 1 { 7 } else { false }
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
+fn main() -> i32 { choose(1) }
+""" }]
+exit_code = 7
+
+[[case]]
+name = "comptime_four_deep_typed_selector_frontier"
+files = [{ path = "main.rue", source = """
+fn choose(comptime n: i8) -> i32 {
+    if n == 1 {
+        if n == 1 {
+            if n << 8 == n {
+                if n == 1 { 9 } else { false }
+            } else { false }
+        } else { false }
+    } else { false }
+}
+
+fn main() -> i32 { choose(1) }
+""" }]
+exit_code = 9
+
 # --- RUE-231: same, via `match` ----------------------------------------------
 [[case]]
 name = "comptime_match_untaken_arm_error_ignored"
@@ -133,6 +240,32 @@ fn pick(comptime n: i32) -> i32 {
 fn main() -> i32 { pick(0) }
 """ }]
 exit_code = 1
+
+[[case]]
+name = "comptime_width_sensitive_match_uses_declared_operand"
+files = [{ path = "main.rue", source = """
+fn choose(comptime n: i8) -> i32 {
+    match n << 8 {
+        -1 => 11,
+        _ => 22,
+    }
+}
+
+fn main() -> i32 { choose(-1) }
+""" }]
+exit_code = 11
+
+[[case]]
+name = "comptime_selector_trap_in_selected_arm_is_reported"
+files = [{ path = "main.rue", source = """
+fn choose(comptime n: i32) -> i32 {
+    if n == 1 / 0 { 1 } else { 2 }
+}
+
+fn main() -> i32 { choose(0) }
+""" }]
+compile_fail = true
+error_contains = ["E1200"]
 
 # --- RUE-231: the SELECTED branch's own error is still reported ---------------
 # Here the taken then-branch itself references an undefined name; pruning the
@@ -152,3 +285,91 @@ fn main() -> i32 { pick(0) }
 """ }]
 compile_fail = true
 error_contains = ["E0201", "undefined_in_taken"]
+
+# Named production regressions for the staged lexical checkpoint and selector
+# recursion paths. These cases intentionally mirror the smaller controls above
+# so their names remain stable in the CLI corpus and review reports.
+[[case]]
+name = "comptime_selector_unique_runtime_local_checkpoint"
+files = [{ path = "main.rue", source = """
+fn choose(comptime n: i32, value: i32) -> i32 {
+    let local = value;
+    if n == 0 { local } else { 0 }
+}
+
+fn main() -> i32 { choose(0, 7) }
+""" }]
+exit_code = 7
+
+[[case]]
+name = "comptime_selector_repeated_lexical_names"
+files = [{ path = "main.rue", source = """
+fn choose(comptime n: i32, value: i32) -> i32 {
+    let value = value;
+    {
+        let value = value + 1;
+        if n == 0 { value } else { 0 }
+    }
+}
+
+fn main() -> i32 { choose(0, 6) }
+""" }]
+exit_code = 7
+
+[[case]]
+name = "comptime_selector_parameter_local_shadow_matrix"
+files = [{ path = "main.rue", source = """
+fn choose(comptime n: i32, value: i32) -> i32 {
+    let n = value;
+    if n == 0 { 1 } else { 2 }
+}
+
+fn main() -> i32 { choose(0, 1) }
+""" }]
+exit_code = 2
+
+[[case]]
+name = "comptime_nested_selected_bool_in_i32"
+files = [{ path = "main.rue", source = """
+fn choose(comptime n: i8) -> i32 {
+    if n == 1 {
+        if n == 1 { 13 } else { false }
+    } else { false }
+}
+
+fn main() -> i32 { choose(1) }
+""" }]
+exit_code = 13
+
+[[case]]
+name = "comptime_ordered_comparison_recursion"
+files = [{ path = "main.rue", source = """
+fn choose(comptime n: i8) -> i32 {
+    if n < 2 {
+        if n <= 1 { 17 } else { 0 }
+    } else { 0 }
+}
+
+fn main() -> i32 { choose(1) }
+""" }]
+exit_code = 17
+
+[[case]]
+name = "comptime_match_payload_shadow_survives_nested_frontier"
+files = [{ path = "main.rue", source = """
+enum E { Some(i32), None }
+
+fn choose(comptime n: i32, e: E) -> i32 {
+    if n == 0 {
+        match e {
+            E.Some(n) => if n == 1 { 22 } else { 0 },
+            E.None => 0,
+        }
+    } else {
+        0
+    }
+}
+
+fn main() -> i32 { choose(0, E.Some(1)) }
+""" }]
+exit_code = 22

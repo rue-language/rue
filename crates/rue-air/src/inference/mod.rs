@@ -52,8 +52,8 @@ mod unify;
 pub use constraint::{Constraint, Substitution};
 pub(crate) use generate::LazyInferenceFacts;
 pub use generate::{
-    ConstraintContext, ConstraintGenerator, ExprInfo, FunctionSig, LocalVarInfo, MethodSig,
-    ParamVarInfo,
+    ConstraintContext, ConstraintGenerator, ExprInfo, FrontierParamOverlay, FunctionSig,
+    LocalVarInfo, MethodSig, ParamVarInfo,
 };
 pub use types::{InferType, TypeVarAllocator, TypeVarId};
 pub use unify::{UnificationError, Unifier, UnifyResult};

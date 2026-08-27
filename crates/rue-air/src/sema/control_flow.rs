@@ -66,7 +66,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 cond,
                 then_block,
                 else_block,
-            } => self.analyze_branch(air, *cond, *then_block, *else_block, inst.span, ctx),
+            } => self.analyze_branch(
+                air,
+                inst_ref,
+                *cond,
+                *then_block,
+                *else_block,
+                inst.span,
+                ctx,
+            ),
 
             InstData::Loop { cond, body } => {
                 self.analyze_while_loop(air, *cond, *body, inst.span, ctx)
@@ -77,7 +85,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
 
             InstData::Match { scrutinee, arms } => {
-                self.analyze_match(air, *scrutinee, arms, inst.span, ctx)
+                self.analyze_match(air, inst_ref, *scrutinee, arms, inst.span, ctx)
             }
 
             InstData::Try { operand } => self.analyze_try(air, *operand, inst.span, ctx),
@@ -186,6 +194,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     fn analyze_branch(
         &mut self,
         air: &mut Air,
+        branch_inst: InstRef,
         cond: InstRef,
         then_block: InstRef,
         else_block: Option<InstRef>,
@@ -207,64 +216,62 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // `fact(comptime n: i32)`, the body specialized for n == 1 must not
         // analyze the `fact(n - 1)` call in the dead else-branch, or
         // specialization would recurse until the depth cap.
-        if !ctx.comptime_value_vars.is_empty() {
-            if let Some(ConstValue::Bool(taken)) = self.try_evaluate_const_in_fn(cond, ctx) {
-                let taken_block = if taken { Some(then_block) } else { else_block };
-                return match taken_block {
-                    Some(block) => {
-                        ctx.push_scope();
-                        let boundary = ctx.enter_full_expression();
-                        let result = self.analyze_inst(air, block, ctx);
-                        let loans = ctx.nested_expression_loans(&boundary);
-                        ctx.exit_full_expression(boundary);
-                        let result = result?;
-                        let branch_divergence = ctx.divergence_kinds;
-                        ctx.pop_scope();
-                        ctx.divergence_kinds = prior_divergence.union(branch_divergence);
-                        // With an `else`, the selected branch is this `if`'s
-                        // value, so loans surviving its tail belong to the
-                        // enclosing full expression (RUE-1678), exactly as on
-                        // the ordinary two-armed path below.
-                        self.readmit_arm_accessor_loans(
-                            ctx,
-                            loans,
-                            else_block.is_some() && result.continues,
-                        )?;
-                        // An `if` without `else` is unit-typed, so its (taken)
-                        // then-branch must still be unit (spec 4.6:5).
-                        if else_block.is_none()
-                            && result.ty != Type::UNIT
-                            && !result.ty.is_never()
-                            && !result.ty.is_error()
-                        {
-                            return Err(CompileError::new(
-                                ErrorKind::TypeMismatch {
-                                    expected: "()".to_string(),
-                                    found: result
-                                        .ty
-                                        .safe_name_with_pool(Some(self.body_type_pool())),
-                                },
-                                self.body_rir_ref().get(block).span,
-                            )
-                            .with_help(
-                                "if expressions without else must have unit type; \
+        if let Some(crate::sema::ComptimeSelection::Branch { taken }) =
+            ctx.comptime_selections.get(&branch_inst)
+        {
+            let taken_block = if *taken { Some(then_block) } else { else_block };
+            return match taken_block {
+                Some(block) => {
+                    ctx.push_scope();
+                    let boundary = ctx.enter_full_expression();
+                    let result = self.analyze_inst(air, block, ctx);
+                    let loans = ctx.nested_expression_loans(&boundary);
+                    ctx.exit_full_expression(boundary);
+                    let result = result?;
+                    let branch_divergence = ctx.divergence_kinds;
+                    ctx.pop_scope();
+                    ctx.divergence_kinds = prior_divergence.union(branch_divergence);
+                    // With an `else`, the selected branch is this `if`'s
+                    // value, so loans surviving its tail belong to the
+                    // enclosing full expression (RUE-1678), exactly as on
+                    // the ordinary two-armed path below.
+                    self.readmit_arm_accessor_loans(
+                        ctx,
+                        loans,
+                        else_block.is_some() && result.continues,
+                    )?;
+                    // An `if` without `else` is unit-typed, so its (taken)
+                    // then-branch must still be unit (spec 4.6:5).
+                    if else_block.is_none()
+                        && result.ty != Type::UNIT
+                        && !result.ty.is_never()
+                        && !result.ty.is_error()
+                    {
+                        return Err(CompileError::new(
+                            ErrorKind::TypeMismatch {
+                                expected: "()".to_string(),
+                                found: result.ty.safe_name_with_pool(Some(self.body_type_pool())),
+                            },
+                            self.body_rir_ref().get(block).span,
+                        )
+                        .with_help(
+                            "if expressions without else must have unit type; \
                                  consider adding an else branch or making the body return ()",
-                            ));
-                        }
-                        Ok(result)
+                        ));
                     }
-                    // `if false { ... }` with no else: nothing runs; the
-                    // expression is unit.
-                    None => {
-                        let air_ref = air.add_inst(AirInst {
-                            data: AirInstData::UnitConst,
-                            ty: Type::UNIT,
-                            span,
-                        });
-                        Ok(AnalysisResult::new(air_ref, Type::UNIT))
-                    }
-                };
-            }
+                    Ok(result)
+                }
+                // `if false { ... }` with no else: nothing runs; the
+                // expression is unit.
+                None => {
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::UnitConst,
+                        ty: Type::UNIT,
+                        span,
+                    });
+                    Ok(AnalysisResult::new(air_ref, Type::UNIT))
+                }
+            };
         }
 
         // Condition must be bool
@@ -998,6 +1005,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     fn analyze_match(
         &mut self,
         air: &mut Air,
+        match_inst: InstRef,
         scrutinee: InstRef,
         arms: &rue_rir::RirMatchArmsRange,
         span: Span,
@@ -1019,125 +1027,125 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // patterns, mismatched pattern types) falls back to analyzing all
         // arms, as does a comptime value no arm matches (the normal path
         // then reports non-exhaustiveness).
-        if !ctx.comptime_value_vars.is_empty() {
-            if let Some(value) = self.try_evaluate_const_in_fn(scrutinee, ctx) {
-                let arms = self
-                    .body_rir_ref()
-                    .match_arms(arms)
-                    .iter()
-                    .map(|(pattern, body)| (pattern.to_owned(), body))
-                    .collect::<Vec<_>>();
-                let mut selected: Option<InstRef> = None;
-                let mut prunable = !arms.is_empty();
-                let mut has_wildcard = false;
-                let mut bool_true_covered = false;
-                let mut bool_false_covered = false;
-                for (pattern, body) in arms.iter() {
-                    let matched = match (&pattern, &value) {
-                        (RirPattern::Wildcard(_), _) => {
-                            has_wildcard = true;
-                            true
+        if let Some(crate::sema::ComptimeSelection::Match { arm: selected_arm }) =
+            ctx.comptime_selections.get(&match_inst)
+        {
+            let arms = self
+                .body_rir_ref()
+                .match_arms(arms)
+                .iter()
+                .map(|(pattern, body)| (pattern.to_owned(), body))
+                .collect::<Vec<_>>();
+            let selected = arms.get(*selected_arm).map(|(_, body)| *body);
+            let mut prunable = !arms.is_empty() && selected.is_some();
+            let mut has_wildcard = false;
+            let mut bool_true_covered = false;
+            let mut bool_false_covered = false;
+            for (pattern, _) in arms.iter() {
+                match pattern {
+                    RirPattern::Wildcard(_) => has_wildcard = true,
+                    RirPattern::Bool(b, _) => {
+                        if *b {
+                            bool_true_covered = true;
+                        } else {
+                            bool_false_covered = true;
                         }
-                        (
-                            RirPattern::Int {
-                                value: magnitude,
-                                negative,
-                                ..
-                            },
-                            ConstValue::Integer(n),
-                        ) => {
-                            let pat = if *negative {
-                                -(*magnitude as i128)
-                            } else {
-                                *magnitude as i128
-                            };
-                            pat == *n
-                        }
-                        (RirPattern::Bool(b, _), ConstValue::Bool(v)) => {
-                            if *b {
-                                bool_true_covered = true;
-                            } else {
-                                bool_false_covered = true;
-                            }
-                            b == v
-                        }
-                        _ => {
-                            prunable = false;
-                            break;
-                        }
-                    };
-                    if matched && selected.is_none() {
-                        selected = Some(*body);
+                    }
+                    RirPattern::Int { .. } => {}
+                    RirPattern::Path { .. } => {
+                        prunable = false;
+                        break;
                     }
                 }
-                // Exhaustiveness is a property of the pattern set, not of
-                // the arm bodies, so it stays checked even when the match
-                // value is comptime-known (spec 4.7:9): a wildcard, or
-                // both bool values for a bool scrutinee. A non-exhaustive
-                // match falls through to the normal path for the proper
-                // diagnostic (which also covers "no arm matched").
-                let exhaustive = has_wildcard
-                    || (matches!(value, ConstValue::Bool(_))
-                        && bool_true_covered
-                        && bool_false_covered);
-                if prunable && exhaustive {
-                    // Pattern *legality* is independent of arm *selection*.
-                    // Spec 4.14:19 exempts only the analysis of unselected arm
-                    // *bodies* (and reaffirms exhaustiveness) — it does NOT
-                    // exempt the per-pattern legality rules of 4.7. So before
-                    // pruning we still range-check every integer pattern
-                    // against the scrutinee's declared type, exactly as the
-                    // normal path below does via check_pattern_int: E0800 for
-                    // an out-of-range literal (4.7:23) and E0801 for a negative
-                    // pattern on an unsigned scrutinee (4.7:24). The comptime
-                    // value substituted for the scrutinee mistypes as i32 at
-                    // AIR emission (a known limitation), so we take the
-                    // scrutinee's true type from Hindley-Milner inference
-                    // (RUE-215).
-                    let scrutinee_type =
-                        Self::get_resolved_type(ctx, scrutinee, span, "match scrutinee")?;
-                    if scrutinee_type.is_integer() {
-                        for (pattern, _) in arms.iter() {
-                            if let RirPattern::Int {
-                                value: magnitude,
-                                negative,
-                                ..
-                            } = &pattern
-                            {
-                                self.check_pattern_int(
-                                    *magnitude,
-                                    *negative,
-                                    scrutinee_type,
-                                    pattern.span(),
-                                )?;
-                            }
+            }
+            // Exhaustiveness is a property of the pattern set, not of
+            // the arm bodies, so it stays checked even when the match
+            // value is comptime-known (spec 4.7:9): a wildcard, or
+            // both bool values for a bool scrutinee. A non-exhaustive
+            // match falls through to the normal path for the proper
+            // diagnostic (which also covers "no arm matched").
+            let exhaustive = has_wildcard || (bool_true_covered && bool_false_covered);
+            if prunable && exhaustive {
+                // Pattern *legality* is independent of arm *selection*.
+                // Spec 4.14:19 exempts only the analysis of unselected arm
+                // *bodies* (and reaffirms exhaustiveness) — it does NOT
+                // exempt the per-pattern legality rules of 4.7. So before
+                // pruning we still range-check every integer pattern
+                // against the scrutinee's declared type, exactly as the
+                // normal path below does via check_pattern_int: E0800 for
+                // an out-of-range literal (4.7:23) and E0801 for a negative
+                // pattern on an unsigned scrutinee (4.7:24). The comptime
+                // value substituted for the scrutinee mistypes as i32 at
+                // AIR emission (a known limitation), so we take the
+                // scrutinee's true type from Hindley-Milner inference
+                // (RUE-215).
+                let scrutinee_type =
+                    Self::get_resolved_type(ctx, scrutinee, span, "match scrutinee")?;
+                // Validate every scalar pattern before pruning. The selected
+                // body is exempt from analysis, but a malformed later pattern
+                // remains a source error (for example `0 => ..., true => ...`
+                // on an integer scrutinee).
+                for (pattern, _) in arms.iter() {
+                    match pattern {
+                        RirPattern::Int {
+                            value: magnitude,
+                            negative,
+                            ..
+                        } if scrutinee_type.is_integer() => {
+                            self.check_pattern_int(
+                                *magnitude,
+                                *negative,
+                                scrutinee_type,
+                                pattern.span(),
+                            )?;
                         }
+                        RirPattern::Int { .. } => {
+                            return Err(CompileError::new(
+                                ErrorKind::TypeMismatch {
+                                    expected: scrutinee_type
+                                        .safe_name_with_pool(Some(self.body_type_pool())),
+                                    found: "integer".to_string(),
+                                },
+                                pattern.span(),
+                            ));
+                        }
+                        RirPattern::Bool(_, _) if scrutinee_type != Type::BOOL => {
+                            return Err(CompileError::new(
+                                ErrorKind::TypeMismatch {
+                                    expected: scrutinee_type
+                                        .safe_name_with_pool(Some(self.body_type_pool())),
+                                    found: "bool".to_string(),
+                                },
+                                pattern.span(),
+                            ));
+                        }
+                        _ => {}
                     }
-                    // Unreachable-pattern diagnostics (spec 4.7:20) are a
-                    // property of the pattern *set*, not of which arm the
-                    // comptime value selects, so they must still fire even
-                    // though we prune to a single body below (RUE-555). The
-                    // normal per-arm loop that would otherwise emit them is
-                    // skipped by the early return, so run them here. Only
-                    // pattern shapes are inspected — no arm body is analyzed,
-                    // honoring 4.14:19.
-                    self.warn_unreachable_pruned_arms(arms.iter().cloned(), scrutinee_type, ctx);
-                    if let Some(body) = selected {
-                        ctx.push_scope();
-                        let boundary = ctx.enter_full_expression();
-                        let result = self.analyze_inst(air, body, ctx);
-                        let loans = ctx.nested_expression_loans(&boundary);
-                        ctx.exit_full_expression(boundary);
-                        let result = result?;
-                        let selected_divergence = ctx.divergence_kinds;
-                        ctx.pop_scope();
-                        ctx.divergence_kinds = prior_divergence.union(selected_divergence);
-                        // The selected arm is this `match`'s value, so loans
-                        // surviving its tail belong to the enclosing full
-                        // expression (RUE-1678).
-                        self.readmit_arm_accessor_loans(ctx, loans, result.continues)?;
-                        return Ok(result);
-                    }
+                }
+                // Unreachable-pattern diagnostics (spec 4.7:20) are a
+                // property of the pattern *set*, not of which arm the
+                // comptime value selects, so they must still fire even
+                // though we prune to a single body below (RUE-555). The
+                // normal per-arm loop that would otherwise emit them is
+                // skipped by the early return, so run them here. Only
+                // pattern shapes are inspected — no arm body is analyzed,
+                // honoring 4.14:19.
+                self.warn_unreachable_pruned_arms(arms.iter().cloned(), scrutinee_type, ctx);
+                if let Some(body) = selected {
+                    ctx.push_scope();
+                    let boundary = ctx.enter_full_expression();
+                    let result = self.analyze_inst(air, body, ctx);
+                    let loans = ctx.nested_expression_loans(&boundary);
+                    ctx.exit_full_expression(boundary);
+                    let result = result?;
+                    let selected_divergence = ctx.divergence_kinds;
+                    ctx.pop_scope();
+                    ctx.divergence_kinds = prior_divergence.union(selected_divergence);
+                    // The selected arm is this `match`'s value, so loans
+                    // surviving its tail belong to the enclosing full
+                    // expression (RUE-1678).
+                    self.readmit_arm_accessor_loans(ctx, loans, result.continues)?;
+                    return Ok(result);
                 }
             }
         }

@@ -21,8 +21,7 @@ use rue_target::{Arch, DataModel, Os};
 use super::InferenceContext;
 use super::context::{AnalysisContext, AnalysisResult, CallLoanKind, ConstValue};
 use crate::inference::{
-    Constraint, ConstraintContext, ConstraintGenerator, InferType, ParamVarInfo, Unifier,
-    UnifyResult,
+    Constraint, ConstraintContext, ConstraintGenerator, InferType, Unifier, UnifyResult,
 };
 use crate::inst::{
     Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPlaceBase, AirProjection, AirRef,

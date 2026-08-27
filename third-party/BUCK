@@ -4247,6 +4247,7 @@ rue_rust_library(
         "parsing",
         "printing",
         "proc-macro",
+        "visit",
         "visit-mut",
     ],
     visibility = [],
@@ -4255,6 +4256,12 @@ rue_rust_library(
         ":quote-1.0.42",
         ":unicode-ident-1.0.22",
     ],
+)
+
+rue_alias(
+    name = "syn",
+    actual = ":syn-2.0.111",
+    visibility = ["PUBLIC"],
 )
 
 rue_alias(

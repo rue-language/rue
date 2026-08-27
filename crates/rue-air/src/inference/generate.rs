@@ -11,16 +11,17 @@ use super::types::{InferType, TypeVarAllocator, TypeVarId};
 use crate::Type;
 use crate::intern_pool::TypeInternPool;
 use crate::scope::ScopedContext;
-use crate::sema::ConstValue;
+use crate::sema::{ComptimeSelection, ConstValue};
 #[cfg(test)]
 use crate::types::ArrayLen;
 use crate::types::{ModuleId, StructId, TypeKind};
-use lasso::{Spur, ThreadedRodeo};
+use lasso::{Key, Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, RepeatCount, Rir, RirTypeSyntaxNode, RirTypeSyntaxRef};
 use rue_span::{FileId, Span};
 
 use ahash::AHashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Information about a local variable during constraint generation.
 #[derive(Debug, Clone)]
@@ -42,6 +43,76 @@ pub struct ParamVarInfo {
     /// parameters are mutable; constraining an assignment to a normal,
     /// borrow, or comptime parameter would mask the primary mutability error.
     pub is_inout: bool,
+}
+
+/// A typed lexical overlay captured at a staged selector checkpoint.
+///
+/// The root is persistent: inserting a shadowing binding copies only the
+/// 32-bit key path, while cloning a checkpoint remains an `Arc` clone. This
+/// avoids making every name lookup walk the entire lexical prefix.
+#[derive(Debug, Clone)]
+pub struct FrontierParamOverlay {
+    root: Arc<FrontierParamTrieNode>,
+}
+
+#[derive(Debug, Clone)]
+struct FrontierParamTrieNode {
+    value: Option<ParamVarInfo>,
+    children: [Option<Arc<FrontierParamTrieNode>>; 2],
+}
+
+impl FrontierParamTrieNode {
+    fn empty() -> Arc<Self> {
+        Arc::new(Self {
+            value: None,
+            children: [None, None],
+        })
+    }
+
+    fn insert(node: &Arc<Self>, key: u32, bit: u32, value: ParamVarInfo) -> Arc<Self> {
+        if bit == 32 {
+            return Arc::new(Self {
+                value: Some(value),
+                children: node.children.clone(),
+            });
+        }
+        let child_index = ((key >> (31 - bit)) & 1) as usize;
+        let child = node.children[child_index]
+            .clone()
+            .unwrap_or_else(Self::empty);
+        let updated = Self::insert(&child, key, bit + 1, value);
+        let mut children = node.children.clone();
+        children[child_index] = Some(updated);
+        Arc::new(Self {
+            value: node.value.clone(),
+            children,
+        })
+    }
+
+    fn lookup(node: &Arc<Self>, key: u32, bit: u32) -> Option<&ParamVarInfo> {
+        if bit == 32 {
+            return node.value.as_ref();
+        }
+        let child_index = ((key >> (31 - bit)) & 1) as usize;
+        node.children[child_index]
+            .as_ref()
+            .and_then(|child| Self::lookup(child, key, bit + 1))
+    }
+}
+
+impl FrontierParamOverlay {
+    pub fn insert(parent: Option<&Arc<Self>>, name: Spur, info: ParamVarInfo) -> Arc<Self> {
+        let root = parent
+            .map(|overlay| overlay.root.clone())
+            .unwrap_or_else(FrontierParamTrieNode::empty);
+        Arc::new(Self {
+            root: FrontierParamTrieNode::insert(&root, name.into_usize() as u32, 0, info),
+        })
+    }
+
+    fn lookup(&self, name: Spur) -> Option<&ParamVarInfo> {
+        FrontierParamTrieNode::lookup(&self.root, name.into_usize() as u32, 0)
+    }
 }
 
 /// Information about a function during constraint generation.
@@ -142,6 +213,8 @@ pub struct ConstraintContext<'a> {
     pub locals: AHashMap<Spur, LocalVarInfo>,
     /// Function parameters.
     pub params: &'a AHashMap<Spur, ParamVarInfo>,
+    /// Bindings introduced after the function parameter checkpoint.
+    pub frontier_overlay: Option<Arc<FrontierParamOverlay>>,
     /// Return type of the current function.
     pub return_type: Type,
     /// How many loops we're nested inside (for break/continue validation).
@@ -182,12 +255,31 @@ impl<'a> ConstraintContext<'a> {
         Self {
             locals: AHashMap::new(),
             params,
+            frontier_overlay: None,
             return_type,
             loop_depth: 0,
             loop_break_stack: Vec::new(),
             checked_depth: 0,
             scope_stack: Vec::new(),
         }
+    }
+
+    pub fn with_frontier_overlay(mut self, overlay: Option<Arc<FrontierParamOverlay>>) -> Self {
+        self.frontier_overlay = overlay;
+        self
+    }
+
+    pub fn lookup_param(&self, name: Spur) -> Option<&ParamVarInfo> {
+        if let Some(overlay) = self.frontier_overlay.as_deref()
+            && let Some(info) = overlay.lookup(name)
+        {
+            return Some(info);
+        }
+        self.params.get(&name)
+    }
+
+    pub fn contains_param(&self, name: Spur) -> bool {
+        self.lookup_param(name).is_some()
     }
 }
 
@@ -383,11 +475,39 @@ pub struct ConstraintGenerator<'a> {
     /// unselected arm has a different type (RUE-268). `None` for ordinary
     /// (non-specialized) functions, where every match is treated as runtime.
     comptime_values: Option<&'a AHashMap<Spur, ConstValue>>,
+    /// Canonical selector facts produced by the staged inference probe.
+    comptime_selections: Option<&'a AHashMap<InstRef, ComptimeSelection>>,
+    /// During the probe, selector bodies are visited only for diagnostics and
+    /// their result joins are deferred until a canonical selection is known.
+    staged_comptime_selectors: bool,
+    /// A frontier pass advances exactly one source-graph segment.  Even when
+    /// a selector fact is already known, stop at that selector so its selected
+    /// body is enqueued as a separate checkpoint rather than regenerating the
+    /// descendant suffix in every ancestor pass.
+    comptime_frontier_mode: bool,
+    /// Canonically evaluated computed comptime arguments keyed by source node.
+    comptime_argument_values: Option<&'a AHashMap<InstRef, ConstValue>>,
+    /// Optional query-owned cancellation probe. It is checked at every
+    /// generated instruction so a canceled staged frontier cannot continue
+    /// producing constraints or publish partial facts.
+    cancel_check: Option<Box<dyn Fn() -> bool + 'a>>,
+    /// Test/host observation invoked immediately before each sibling operand
+    /// attempt. It is deliberately separate from cancellation visits so a
+    /// canceled tail cannot hide continued loop iteration.
+    sibling_attempt_hook: Option<Box<dyn Fn() + 'a>>,
+    canceled: bool,
     /// Type intern pool for creating pointer and array types during constraint generation.
     type_pool: &'a TypeInternPool,
 }
 
 impl<'a> ConstraintGenerator<'a> {
+    #[inline]
+    fn note_sibling_attempt(&self) {
+        if let Some(hook) = self.sibling_attempt_hook.as_ref() {
+            hook();
+        }
+    }
+
     /// Generate one operand in a left-to-right sequence. Later operands are
     /// still visited for diagnostics after an earlier operand diverges, but
     /// their break facts cannot reach the enclosing loop (RUE-1615).
@@ -397,6 +517,13 @@ impl<'a> ConstraintGenerator<'a> {
         ctx: &mut ConstraintContext,
         reachable: bool,
     ) -> ExprInfo {
+        self.note_sibling_attempt();
+        if self.canceled {
+            return ExprInfo::diverged(
+                InferType::Concrete(Type::ERROR),
+                self.rir.get(inst_ref).span,
+            );
+        }
         let reachable_facts = ctx.loop_break_stack.clone();
         let info = self.generate(inst_ref, ctx);
         if !reachable {
@@ -478,6 +605,13 @@ impl<'a> ConstraintGenerator<'a> {
             const_values: None,
             const_function_aliases: None,
             comptime_values: None,
+            comptime_selections: None,
+            staged_comptime_selectors: false,
+            comptime_frontier_mode: false,
+            comptime_argument_values: None,
+            cancel_check: None,
+            sibling_attempt_hook: None,
+            canceled: false,
             type_pool,
         }
     }
@@ -532,6 +666,13 @@ impl<'a> ConstraintGenerator<'a> {
             const_values: None,
             const_function_aliases: None,
             comptime_values: None,
+            comptime_selections: None,
+            staged_comptime_selectors: false,
+            comptime_frontier_mode: false,
+            comptime_argument_values: None,
+            cancel_check: None,
+            sibling_attempt_hook: None,
+            canceled: false,
             type_pool,
         }
     }
@@ -765,6 +906,49 @@ impl<'a> ConstraintGenerator<'a> {
     ) -> Self {
         self.comptime_values = comptime_values;
         self
+    }
+
+    pub fn with_comptime_selections(
+        mut self,
+        selections: Option<&'a AHashMap<InstRef, ComptimeSelection>>,
+        staged: bool,
+    ) -> Self {
+        self.comptime_selections = selections;
+        self.staged_comptime_selectors = staged;
+        self
+    }
+
+    /// Limit a staged body pass to the next unknown/known selector boundary.
+    /// The canonical selection map remains shared; this flag only controls
+    /// constraint generation's traversal frontier.
+    pub fn with_comptime_frontier_mode(mut self, enabled: bool) -> Self {
+        self.comptime_frontier_mode = enabled;
+        self
+    }
+
+    pub fn with_comptime_argument_values(
+        mut self,
+        values: Option<&'a AHashMap<InstRef, ConstValue>>,
+    ) -> Self {
+        self.comptime_argument_values = values;
+        self
+    }
+
+    /// Install a cheap query cancellation probe for a staged generation pass.
+    /// The callback is deliberately owned so it cannot outlive the generator
+    /// or borrow mutable semantic state while recursive generation proceeds.
+    pub fn with_cancellation_check(mut self, check: Box<dyn Fn() -> bool + 'a>) -> Self {
+        self.cancel_check = Some(check);
+        self
+    }
+
+    pub fn with_sibling_attempt_hook(mut self, hook: Box<dyn Fn() + 'a>) -> Self {
+        self.sibling_attempt_hook = Some(hook);
+        self
+    }
+
+    pub fn was_canceled(&self) -> bool {
+        self.canceled
     }
 
     /// Resolve an array-length component to a concrete length during constraint
@@ -1125,6 +1309,13 @@ impl<'a> ConstraintGenerator<'a> {
     pub fn generate(&mut self, inst_ref: InstRef, ctx: &mut ConstraintContext) -> ExprInfo {
         let inst = self.rir.get(inst_ref);
         let span = inst.span;
+        if self.canceled {
+            return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+        }
+        if self.cancel_check.as_ref().is_some_and(|check| check()) {
+            self.canceled = true;
+            return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+        }
         let mut continues = true;
 
         let ty = match &inst.data {
@@ -1301,7 +1492,7 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::VarRef { name, .. } => {
                 if let Some(local) = ctx.locals.get(name) {
                     local.ty.clone()
-                } else if let Some(param) = ctx.params.get(name) {
+                } else if let Some(param) = ctx.lookup_param(*name) {
                     param.ty.clone()
                 } else if let Some(binding_ty) = self.module_binding_type((span.file_id, *name)) {
                     // Module binding declared in this file (`const m =
@@ -1417,6 +1608,13 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                 }
 
+                // Keep the binding's inferred type available to staged
+                // frontier checkpoints.  Selected nested bodies may be
+                // generated independently of their prefix, so their lexical
+                // locals are supplied as synthetic parameters from this
+                // recorded type.
+                self.record_type(inst_ref, var_ty.clone());
+
                 // Alloc normally produces unit, but an initializer that
                 // cannot reach the binding never reaches that allocation.
                 // Preserve the declared binding type above while exposing
@@ -1460,7 +1658,13 @@ impl<'a> ConstraintGenerator<'a> {
 
             InstData::PlaceSet { place, value } => {
                 let value_info = self.generate(*value, ctx);
+                if self.was_canceled() {
+                    return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+                }
                 let place_info = self.generate_sequenced_operand(*place, ctx, value_info.continues);
+                if self.was_canceled() {
+                    return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+                }
                 continues &= place_info.continues && value_info.continues;
                 if value_info.continues {
                     self.add_constraint(Constraint::equal(place_info.ty, value_info.ty, span));
@@ -1535,6 +1739,9 @@ impl<'a> ConstraintGenerator<'a> {
                     for arg in args.iter() {
                         let info = self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
                         arg_diverged |= !info.continues;
+                        if self.was_canceled() {
+                            break;
+                        }
                     }
                     InferType::Concrete(Type::UNIT)
                 } else if let Some(func) = function_key.and_then(|key| self.func_sig(key)) {
@@ -1546,15 +1753,19 @@ impl<'a> ConstraintGenerator<'a> {
                     // semantic analysis instead (RUE-73, RUE-99).
                     if func.is_generic {
                         // Process all arguments once, collecting their inferred types
-                        let arg_infos: Vec<ExprInfo> = args
-                            .iter()
-                            .map(|arg| {
-                                let info =
-                                    self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
-                                arg_diverged |= !info.continues;
-                                info
-                            })
-                            .collect();
+                        let mut arg_infos = Vec::with_capacity(args.len());
+                        for arg in args.iter() {
+                            if self.was_canceled() {
+                                break;
+                            }
+                            let info =
+                                self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
+                            arg_diverged |= !info.continues;
+                            arg_infos.push(info);
+                            if self.was_canceled() {
+                                break;
+                            }
+                        }
 
                         // Build the type substitution map from comptime type arguments
                         let mut type_subst: AHashMap<lasso::Spur, Type> = AHashMap::new();
@@ -1564,6 +1775,9 @@ impl<'a> ConstraintGenerator<'a> {
                         // at this call (RUE-252).
                         let mut value_subst: AHashMap<lasso::Spur, i128> = AHashMap::new();
                         for (i, arg) in args.iter().enumerate() {
+                            if self.was_canceled() {
+                                break;
+                            }
                             if i >= func.param_comptime.len()
                                 || !func.param_comptime[i]
                                 || i >= func.param_names.len()
@@ -1571,12 +1785,18 @@ impl<'a> ConstraintGenerator<'a> {
                                 continue;
                             }
                             if func.param_comptime_type.get(i) == Some(&true) {
-                                if let Some(concrete_ty) =
+                                if let Some(ConstValue::Type(concrete_ty)) =
+                                    self.comptime_argument_value(arg.value)
+                                {
+                                    type_subst.insert(func.param_names[i], concrete_ty);
+                                } else if let Some(concrete_ty) =
                                     self.extract_type_argument(arg.value, ctx)
                                 {
                                     type_subst.insert(func.param_names[i], concrete_ty);
                                 }
-                            } else if let Some(v) = self.extract_int_argument(arg.value) {
+                            } else if let Some(ConstValue::Integer(v)) =
+                                self.comptime_argument_value(arg.value)
+                            {
                                 value_subst.insert(func.param_names[i], v);
                             }
                         }
@@ -1585,10 +1805,21 @@ impl<'a> ConstraintGenerator<'a> {
                         // type parameters substituted. Comptime type parameters (the
                         // `T: type` arguments themselves) are validated in sema.
                         for (i, arg_info) in arg_infos.iter().enumerate() {
+                            if self.was_canceled() {
+                                break;
+                            }
                             if i >= func.param_types.len() || i >= func.param_comptime.len() {
                                 break;
                             }
                             let declared = &func.param_types[i];
+                            if self.staged_comptime_selectors
+                                && self
+                                    .comptime_argument_values
+                                    .is_none_or(|values| values.is_empty())
+                                && *declared == InferType::Concrete(Type::COMPTIME_TYPE)
+                            {
+                                continue;
+                            }
                             if func.param_comptime_type.get(i) == Some(&true) {
                                 // Comptime TYPE parameter - the argument is a type value
                                 continue;
@@ -1667,7 +1898,7 @@ impl<'a> ConstraintGenerator<'a> {
                                                 Some(RirTypeSyntaxNode::TypeCall { .. })
                                             )
                                         });
-                                    if is_type_call {
+                                    if self.staged_comptime_selectors || is_type_call {
                                         InferType::Var(self.fresh_var())
                                     } else {
                                         func.return_type.clone()
@@ -1688,6 +1919,9 @@ impl<'a> ConstraintGenerator<'a> {
                             let info =
                                 self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
                             arg_diverged |= !info.continues;
+                            if self.was_canceled() {
+                                break;
+                            }
                         }
                         // Return the declared return type (error will be caught in sema)
                         func.return_type.clone()
@@ -1697,6 +1931,9 @@ impl<'a> ConstraintGenerator<'a> {
                             let arg_info =
                                 self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
                             arg_diverged |= !arg_info.continues;
+                            if self.was_canceled() {
+                                break;
+                            }
                             // Slice parameters coerce from an array argument
                             // (`borrow arr`); skip strict equality and let sema
                             // materialize the fat pointer (ADR-0043, RUE-322).
@@ -1716,6 +1953,9 @@ impl<'a> ConstraintGenerator<'a> {
                     for arg in args.iter() {
                         let info = self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
                         arg_diverged |= !info.continues;
+                        if self.was_canceled() {
+                            break;
+                        }
                     }
                     InferType::Concrete(Type::ERROR)
                 };
@@ -1734,7 +1974,19 @@ impl<'a> ConstraintGenerator<'a> {
                 let mut args_reachable = true;
                 macro_rules! generate_intrinsic_arg {
                     ($arg:expr) => {{
+                        if self.was_canceled() {
+                            return ExprInfo::diverged(
+                                InferType::Concrete(Type::ERROR),
+                                self.rir.get($arg).span,
+                            );
+                        }
                         let info = self.generate_sequenced_operand($arg, ctx, args_reachable);
+                        if self.was_canceled() {
+                            return ExprInfo::diverged(
+                                InferType::Concrete(Type::ERROR),
+                                self.rir.get($arg).span,
+                            );
+                        }
                         args_reachable &= info.continues;
                         info
                     }};
@@ -2206,7 +2458,15 @@ impl<'a> ConstraintGenerator<'a> {
                 let args = self.rir.internal_intrinsic_args(args);
                 let mut args_continue = true;
                 for arg_ref in args {
-                    args_continue &= self.generate(arg_ref, ctx).continues;
+                    self.note_sibling_attempt();
+                    if self.was_canceled() {
+                        break;
+                    }
+                    let info = self.generate(arg_ref, ctx);
+                    args_continue &= info.continues;
+                    if self.was_canceled() {
+                        break;
+                    }
                 }
                 continues &= args_continue;
                 match intrinsic {
@@ -2256,7 +2516,14 @@ impl<'a> ConstraintGenerator<'a> {
                 let mut diverged_break_stack: Option<Vec<LoopBreakFact>> = None;
                 let block_insts = self.rir.block_insts(instructions);
                 for block_inst_ref in block_insts.values() {
+                    self.note_sibling_attempt();
+                    if self.was_canceled() {
+                        break;
+                    }
                     let info = self.generate(block_inst_ref, ctx);
+                    if self.was_canceled() {
+                        break;
+                    }
                     // Keep visiting unreachable instructions so inference can
                     // report errors in them, but the first genuinely
                     // diverging instruction makes every later tail
@@ -2300,6 +2567,37 @@ impl<'a> ConstraintGenerator<'a> {
                     cond_info.span,
                 ));
 
+                // The first inference pass is a selector probe. Its purpose
+                // is only to solve the selector's operands; branch result
+                // joins are intentionally deferred until the canonical engine
+                // has supplied a selection fact.
+                if self.staged_comptime_selectors
+                    && self
+                        .comptime_selections
+                        .is_none_or(|facts| !facts.contains_key(&inst_ref))
+                    && self
+                        .comptime_values
+                        .is_some_and(|values| !values.is_empty())
+                {
+                    let result_ty = InferType::Var(self.fresh_var());
+                    self.record_type(inst_ref, result_ty.clone());
+                    return ExprInfo::with_continues(result_ty, span, cond_info.continues);
+                }
+
+                // A frontier pass must not descend through a selector whose
+                // fact is already known: doing so would replay every selected
+                // descendant once for each ancestor.  The fact walk enqueues
+                // that selected body as the next bounded checkpoint.
+                if self.comptime_frontier_mode
+                    && self
+                        .comptime_selections
+                        .is_some_and(|facts| facts.contains_key(&inst_ref))
+                {
+                    let result_ty = InferType::Var(self.fresh_var());
+                    self.record_type(inst_ref, result_ty.clone());
+                    return ExprInfo::with_continues(result_ty, span, cond_info.continues);
+                }
+
                 // Comptime-known condition (spec 4.14:17): inside a
                 // specialization whose comptime value params make the condition
                 // compile-time evaluable, only the taken branch is analyzed —
@@ -2310,9 +2608,11 @@ impl<'a> ConstraintGenerator<'a> {
                 // non-empty `comptime_value_vars`) keeps ordinary `if`s fully
                 // constrained even when the condition is a literal, and the
                 // cond above is still constrained to `bool` on every path.
-                if self.comptime_values.is_some()
-                    && let Some(ConstValue::Bool(taken)) = self.eval_comptime_value(*cond)
+                if let Some(ComptimeSelection::Branch { taken }) = self
+                    .comptime_selections
+                    .and_then(|facts| facts.get(&inst_ref))
                 {
+                    let taken = *taken;
                     let selected = if taken {
                         Some(*then_block)
                     } else {
@@ -2323,6 +2623,9 @@ impl<'a> ConstraintGenerator<'a> {
                             self.enter_scope(ctx);
                             let info = self.generate(block, ctx);
                             self.exit_scope(ctx);
+                            if self.was_canceled() {
+                                return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+                            }
                             info.ty
                         }
                         // `if false { .. }` with no else: nothing runs, unit.
@@ -2340,9 +2643,15 @@ impl<'a> ConstraintGenerator<'a> {
                 }
 
                 let then_info = self.generate(*then_block, ctx);
+                if self.was_canceled() {
+                    return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+                }
 
                 let branch_ty = if let Some(else_ref) = else_block {
                     let else_info = self.generate(*else_ref, ctx);
+                    if self.was_canceled() {
+                        return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+                    }
 
                     // Handle Never type coercion:
                     // - If one branch is Never, the if-else takes the other branch's type
@@ -2477,6 +2786,32 @@ impl<'a> ConstraintGenerator<'a> {
                 let reachable_facts_after_scrutinee = ctx.loop_break_stack.clone();
                 let arms = self.rir.match_arms(arms);
 
+                if self.staged_comptime_selectors
+                    && self
+                        .comptime_selections
+                        .is_none_or(|facts| !facts.contains_key(&inst_ref))
+                    && self
+                        .comptime_values
+                        .is_some_and(|values| !values.is_empty())
+                {
+                    let result_ty = InferType::Var(self.fresh_var());
+                    self.record_type(inst_ref, result_ty.clone());
+                    return ExprInfo::with_continues(result_ty, span, scrutinee_info.continues);
+                }
+
+                // See the branch case above.  A selected match arm is a
+                // separate source-graph frontier, never a recursive suffix of
+                // the current one.
+                if self.comptime_frontier_mode
+                    && self
+                        .comptime_selections
+                        .is_some_and(|facts| facts.contains_key(&inst_ref))
+                {
+                    let result_ty = InferType::Var(self.fresh_var());
+                    self.record_type(inst_ref, result_ty.clone());
+                    return ExprInfo::with_continues(result_ty, span, scrutinee_info.continues);
+                }
+
                 // Comptime-known scrutinee (spec 4.14:19): when the scrutinee
                 // is a comptime value known for this specialization, sema
                 // selects and analyzes only the matching arm's body. Inference
@@ -2489,10 +2824,18 @@ impl<'a> ConstraintGenerator<'a> {
                 // errors when arms disagree). This is a strict subset of the
                 // scrutinees sema prunes, so the selected arm always has an
                 // inferred type when sema later prunes to it.
-                if let Some(selected) = self.comptime_selected_arm(*scrutinee, arms.iter()) {
+                if let Some(ComptimeSelection::Match { arm }) = self
+                    .comptime_selections
+                    .and_then(|facts| facts.get(&inst_ref))
+                    && let Some((selected_pattern, selected)) = arms.iter().nth(*arm)
+                {
                     self.enter_scope(ctx);
+                    self.register_match_bindings(&selected_pattern, ctx);
                     let body_info = self.generate(selected, ctx);
                     self.exit_scope(ctx);
+                    if self.was_canceled() {
+                        return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+                    }
                     if !scrutinee_info.continues {
                         restore_reachable_break_facts(
                             &mut ctx.loop_break_stack,
@@ -2512,6 +2855,10 @@ impl<'a> ConstraintGenerator<'a> {
                 // Collect arm types, handling Never coercion
                 let mut arm_types: Vec<ExprInfo> = Vec::new();
                 for (pattern, body) in arms.iter() {
+                    self.note_sibling_attempt();
+                    if self.was_canceled() {
+                        break;
+                    }
                     // Patterns constrain the scrutinee type
                     let pattern_ty = self.pattern_type(&pattern);
                     self.add_constraint(Constraint::equal(
@@ -2526,70 +2873,15 @@ impl<'a> ConstraintGenerator<'a> {
                     // (RUE-221). Without this, `Circle(r) => r` leaves `r`
                     // unbound and its type poisons the match result.
                     self.enter_scope(ctx);
-                    if let rue_rir::RirPatternView::Path {
-                        module,
-                        ctor_head,
-                        type_name,
-                        variant,
-                        bindings,
-                        span: pat_span,
-                        ..
-                    } = &pattern
-                    {
-                        if !bindings.is_empty() {
-                            // An inline type-constructor pattern head
-                            // (`Result(i32,i32).Ok(v)`, RUE-596) has no comptime
-                            // interpreter in the inference engine, but sema
-                            // pre-reduced it in `inline_ctor_head_types`
-                            // (RUE-950/RUE-954) — consult that first so the
-                            // payload bindings are pre-typed and a sibling
-                            // arm's literal sees the join's expectation. Sema's
-                            // `materialize_match_bindings` stays authoritative
-                            // via `try_evaluate_const`.
-                            let enum_ty = ctor_head
-                                .and_then(|head| {
-                                    self.inline_ctor_head_types
-                                        .and_then(|heads| heads.get(&head).copied())
-                                })
-                                .or_else(|| {
-                                    module.and_then(|module_ref| {
-                                        self.enum_type_for_module(module_ref, type_name)
-                                    })
-                                })
-                                .or_else(|| self.enum_type_for(type_name, pat_span.file_id));
-                            if let Some(payload) = enum_ty
-                                .and_then(|ty| ty.as_enum())
-                                .map(|id| self.type_pool.enum_def(id))
-                                .and_then(|def| {
-                                    def.find_variant(self.interner.resolve(variant))
-                                        .map(|v| def.variant_payload(v).to_vec())
-                                })
-                            {
-                                for (i, bname) in bindings.iter().enumerate() {
-                                    // A `_` payload (RUE-601) binds nothing —
-                                    // skip registering a local for it.
-                                    if self.interner.resolve(&bname) == "_" {
-                                        continue;
-                                    }
-                                    if let Some(&pty) = payload.get(i) {
-                                        ctx.insert_local(
-                                            *bname,
-                                            LocalVarInfo {
-                                                ty: InferType::Concrete(pty),
-                                                is_mut: false,
-                                                span: *pat_span,
-                                            },
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    self.register_match_bindings(&pattern, ctx);
 
                     // Generate body and collect its type
                     let body_info = self.generate(body, ctx);
                     self.exit_scope(ctx);
                     arm_types.push(body_info);
+                    if self.was_canceled() {
+                        break;
+                    }
                 }
 
                 // Handle Never type coercion:
@@ -2680,6 +2972,9 @@ impl<'a> ConstraintGenerator<'a> {
                     for (field_name, value_ref) in fields.values() {
                         let value_info = self.generate_sequenced_operand(value_ref, ctx, continues);
                         continues &= value_info.continues;
+                        if self.was_canceled() {
+                            break;
+                        }
                         if let Some(field_ty) = self.field_type_of(struct_ty, field_name) {
                             let expected = self.type_to_infer(field_ty);
                             // A `str` field (ADR-0043 Phase 3, RUE-324) accepts a
@@ -2702,9 +2997,11 @@ impl<'a> ConstraintGenerator<'a> {
                     // with unresolved variables, which sema then reported as
                     // an internal compiler error (RUE-170).
                     for (_, value_ref) in fields.values() {
-                        continues &= self
-                            .generate_sequenced_operand(value_ref, ctx, continues)
-                            .continues;
+                        let value_info = self.generate_sequenced_operand(value_ref, ctx, continues);
+                        continues &= value_info.continues;
+                        if self.was_canceled() {
+                            break;
+                        }
                     }
                     InferType::Concrete(Type::ERROR)
                 }
@@ -2720,7 +3017,7 @@ impl<'a> ConstraintGenerator<'a> {
                 // type-variable local (typed `COMPTIME_TYPE`) is a type
                 // reference, not a runtime value shadow.
                 if let InstData::VarRef { name, .. } = self.rir.get(*base).data
-                    && !ctx.params.contains_key(&name)
+                    && !ctx.contains_param(name)
                     && ctx.locals.get(&name).is_none_or(
                         |l| matches!(l.ty, InferType::Concrete(t) if t == Type::COMPTIME_TYPE),
                     )
@@ -2765,6 +3062,9 @@ impl<'a> ConstraintGenerator<'a> {
 
                 let base_info = self.generate(*base, ctx);
                 continues &= base_info.continues;
+                if self.was_canceled() {
+                    return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+                }
                 // When the base's struct type is already concrete, the field's
                 // declared type is known here — yield it so downstream
                 // constraints see the real type instead of a free variable.
@@ -2818,7 +3118,13 @@ impl<'a> ConstraintGenerator<'a> {
             // Field assignment
             InstData::FieldSet { base, field, value } => {
                 let value_info = self.generate(*value, ctx);
+                if self.was_canceled() {
+                    return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+                }
                 let base_info = self.generate_sequenced_operand(*base, ctx, value_info.continues);
+                if self.was_canceled() {
+                    return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+                }
                 continues &= base_info.continues && value_info.continues;
                 // Constrain the assigned value against the field's declared
                 // type, so a literal RHS is range-checked at the field's width
@@ -2867,9 +3173,15 @@ impl<'a> ConstraintGenerator<'a> {
                     let first_info =
                         self.generate_sequenced_operand(elements.get(0).unwrap(), ctx, true);
                     continues &= first_info.continues;
+                    if self.was_canceled() {
+                        return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+                    }
                     for elem_ref in elements.values().skip(1) {
                         let elem_info = self.generate_sequenced_operand(elem_ref, ctx, continues);
                         continues &= elem_info.continues;
+                        if self.was_canceled() {
+                            break;
+                        }
                         self.add_constraint(Constraint::equal(
                             elem_info.ty,
                             first_info.ty.clone(),
@@ -2956,12 +3268,21 @@ impl<'a> ConstraintGenerator<'a> {
             // Array index assignment
             InstData::IndexSet { base, index, value } => {
                 let value_info = self.generate(*value, ctx);
+                if self.was_canceled() {
+                    return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+                }
                 let base_info = self.generate_sequenced_operand(*base, ctx, value_info.continues);
+                if self.was_canceled() {
+                    return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+                }
                 let index_info = self.generate_sequenced_operand(
                     *index,
                     ctx,
                     value_info.continues && base_info.continues,
                 );
+                if self.was_canceled() {
+                    return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+                }
                 // Index must be an integer type (signed or unsigned) per spec
                 // 7.1:7. Negative/out-of-range indices trap at runtime via the
                 // bounds check, not at compile time (RUE-81/RUE-87).
@@ -3009,7 +3330,7 @@ impl<'a> ConstraintGenerator<'a> {
                 // `COMPTIME_TYPE`) IS a type reference, so `O.Some(true)` resolves
                 // to its concrete enum and a wrong payload type is caught here.
                 if let InstData::VarRef { name, .. } = self.rir.get(*receiver).data
-                    && !ctx.params.contains_key(&name)
+                    && !ctx.contains_param(name)
                     && ctx.locals.get(&name).is_none_or(
                         |l| matches!(l.ty, InferType::Concrete(t) if t == Type::COMPTIME_TYPE),
                     )
@@ -3047,7 +3368,7 @@ impl<'a> ConstraintGenerator<'a> {
                 } = self.rir.get(*receiver).data
                     && !matches!(self.rir.get(module_ref).data,
                         InstData::VarRef { name, .. }
-                            if ctx.locals.contains_key(&name) || ctx.params.contains_key(&name))
+                            if ctx.locals.contains_key(&name) || ctx.contains_param(name))
                     && let Some(member_ty) = self
                         .struct_type_for_module(module_ref, &type_name)
                         .or_else(|| self.enum_type_for_module(module_ref, &type_name))
@@ -3094,6 +3415,9 @@ impl<'a> ConstraintGenerator<'a> {
                         let arg_info =
                             self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
                         arg_diverged |= !arg_info.continues;
+                        if self.was_canceled() {
+                            break;
+                        }
                         self.add_constraint(Constraint::equal(
                             arg_info.ty,
                             param_type.clone(),
@@ -3163,6 +3487,9 @@ impl<'a> ConstraintGenerator<'a> {
                                         !arg_diverged,
                                     );
                                     arg_diverged |= !arg_info.continues;
+                                    if self.was_canceled() {
+                                        break;
+                                    }
                                     // Slice and `borrow str` parameters coerce
                                     // from a `borrow` argument; skip strict
                                     // equality and let sema materialize the
@@ -3188,21 +3515,25 @@ impl<'a> ConstraintGenerator<'a> {
                                 // defaulted to i32, clashing with the instantiated
                                 // i64 parameter (the non-generic path above already
                                 // constrains, and same-file generic Calls do too).
-                                let arg_infos: Vec<ExprInfo> = call_args
-                                    .iter()
-                                    .map(|arg| {
-                                        let info = self.generate_sequenced_operand(
-                                            arg.value,
-                                            ctx,
-                                            !arg_diverged,
-                                        );
-                                        arg_diverged |= !info.continues;
-                                        info
-                                    })
-                                    .collect();
+                                let mut arg_infos = Vec::with_capacity(call_args.len());
+                                for arg in call_args.iter() {
+                                    let info = self.generate_sequenced_operand(
+                                        arg.value,
+                                        ctx,
+                                        !arg_diverged,
+                                    );
+                                    arg_diverged |= !info.continues;
+                                    arg_infos.push(info);
+                                    if self.was_canceled() {
+                                        break;
+                                    }
+                                }
                                 let mut type_subst: AHashMap<lasso::Spur, Type> = AHashMap::new();
                                 let mut value_subst: AHashMap<lasso::Spur, i128> = AHashMap::new();
                                 for (i, arg) in call_args.iter().enumerate() {
+                                    if self.was_canceled() {
+                                        break;
+                                    }
                                     if i >= func.param_comptime.len()
                                         || !func.param_comptime[i]
                                         || i >= func.param_names.len()
@@ -3215,11 +3546,16 @@ impl<'a> ConstraintGenerator<'a> {
                                         {
                                             type_subst.insert(func.param_names[i], concrete_ty);
                                         }
-                                    } else if let Some(v) = self.extract_int_argument(arg.value) {
+                                    } else if let Some(ConstValue::Integer(v)) =
+                                        self.comptime_argument_value(arg.value)
+                                    {
                                         value_subst.insert(func.param_names[i], v);
                                     }
                                 }
                                 for (i, arg_info) in arg_infos.iter().enumerate() {
+                                    if self.was_canceled() {
+                                        break;
+                                    }
                                     if i >= func.param_types.len() || i >= func.param_comptime.len()
                                     {
                                         break;
@@ -3228,6 +3564,12 @@ impl<'a> ConstraintGenerator<'a> {
                                         continue;
                                     }
                                     let declared = &func.param_types[i];
+                                    if self.staged_comptime_selectors
+                                        && value_subst.is_empty()
+                                        && *declared == InferType::Concrete(Type::COMPTIME_TYPE)
+                                    {
+                                        continue;
+                                    }
                                     let expected =
                                         if *declared == InferType::Concrete(Type::COMPTIME_TYPE) {
                                             match func.param_type_syntax.get(i).and_then(|syntax| {
@@ -3265,6 +3607,9 @@ impl<'a> ConstraintGenerator<'a> {
                                         !arg_diverged,
                                     );
                                     arg_diverged |= !info.continues;
+                                    if self.was_canceled() {
+                                        break;
+                                    }
                                 }
                             }
                             if func.return_type == InferType::Concrete(Type::COMPTIME_TYPE) {
@@ -3280,6 +3625,9 @@ impl<'a> ConstraintGenerator<'a> {
                                 let info =
                                     self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
                                 arg_diverged |= !info.continues;
+                                if self.was_canceled() {
+                                    break;
+                                }
                             }
                             InferType::Concrete(Type::ERROR)
                         }
@@ -3328,6 +3676,9 @@ impl<'a> ConstraintGenerator<'a> {
                                 let info =
                                     self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
                                 arg_diverged |= !info.continues;
+                                if self.was_canceled() {
+                                    break;
+                                }
                             }
                             InferType::Var(self.fresh_var())
                         }
@@ -3370,6 +3721,9 @@ impl<'a> ConstraintGenerator<'a> {
                                         !arg_diverged,
                                     );
                                     arg_diverged |= !arg_info.continues;
+                                    if self.was_canceled() {
+                                        break;
+                                    }
                                     if !defer_equality {
                                         self.add_constraint(Constraint::equal(
                                             arg_info.ty,
@@ -3389,6 +3743,9 @@ impl<'a> ConstraintGenerator<'a> {
                                         !arg_diverged,
                                     );
                                     arg_diverged |= !info.continues;
+                                    if self.was_canceled() {
+                                        break;
+                                    }
                                 }
                                 InferType::Concrete(Type::ERROR)
                             }
@@ -3398,6 +3755,9 @@ impl<'a> ConstraintGenerator<'a> {
                                 let info =
                                     self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
                                 arg_diverged |= !info.continues;
+                                if self.was_canceled() {
+                                    break;
+                                }
                             }
                             InferType::Concrete(Type::ERROR)
                         }
@@ -3434,6 +3794,9 @@ impl<'a> ConstraintGenerator<'a> {
                                 let info =
                                     self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
                                 arg_diverged |= !info.continues;
+                                if self.was_canceled() {
+                                    break;
+                                }
                             }
                             InferType::Var(self.fresh_var())
                         }
@@ -3491,8 +3854,20 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::AnonEnumType { .. } => InferType::Concrete(Type::COMPTIME_TYPE),
         };
 
-        // Record the type for this expression
-        self.record_type(inst_ref, ty.clone());
+        // A cancellation observed while generating a child must unwind before
+        // this instruction records a type or continues into enclosing sibling
+        // work.  The enclosing loop checks the same flag before its next item.
+        if self.canceled {
+            return ExprInfo::diverged(InferType::Concrete(Type::ERROR), span);
+        }
+
+        // Alloc's expression result is unit, but its binding type is the
+        // lexical checkpoint fact captured above.  Preserve that fact for
+        // staged frontier reconstruction instead of overwriting it with the
+        // statement result here.
+        if !matches!(inst.data, InstData::Alloc { .. }) {
+            self.record_type(inst_ref, ty.clone());
+        }
         continues &= self.expr_continues.get(&inst_ref).copied().unwrap_or(true);
         self.expr_continues.insert(inst_ref, continues);
         ExprInfo::with_continues(ty, span, continues)
@@ -3507,8 +3882,14 @@ impl<'a> ConstraintGenerator<'a> {
         ctx: &mut ConstraintContext,
     ) -> InferType {
         let lhs_info = self.generate(lhs, ctx);
+        if self.was_canceled() {
+            return InferType::Concrete(Type::ERROR);
+        }
         let reachable_facts_after_lhs = ctx.loop_break_stack.clone();
         let rhs_info = self.generate(rhs, ctx);
+        if self.was_canceled() {
+            return InferType::Concrete(Type::ERROR);
+        }
         if !lhs_info.continues {
             restore_reachable_break_facts(&mut ctx.loop_break_stack, &reachable_facts_after_lhs);
         }
@@ -3570,8 +3951,14 @@ impl<'a> ConstraintGenerator<'a> {
         ctx: &mut ConstraintContext,
     ) -> InferType {
         let lhs_info = self.generate(lhs, ctx);
+        if self.was_canceled() {
+            return InferType::Concrete(Type::ERROR);
+        }
         let reachable_facts_after_lhs = ctx.loop_break_stack.clone();
         let rhs_info = self.generate(rhs, ctx);
+        if self.was_canceled() {
+            return InferType::Concrete(Type::ERROR);
+        }
         if !lhs_info.continues {
             restore_reachable_break_facts(&mut ctx.loop_break_stack, &reachable_facts_after_lhs);
         }
@@ -3701,7 +4088,14 @@ impl<'a> ConstraintGenerator<'a> {
             // Method not found - sema reports the error; still process args.
             let args = self.rir.call_args(args);
             for arg in args.iter() {
+                self.note_sibling_attempt();
+                if self.was_canceled() {
+                    break;
+                }
                 self.generate(arg.value, ctx);
+                if self.was_canceled() {
+                    break;
+                }
             }
             return InferType::Concrete(Type::ERROR);
         }
@@ -3709,7 +4103,14 @@ impl<'a> ConstraintGenerator<'a> {
         // Type not found - sema reports the error; still process args.
         let args = self.rir.call_args(args);
         for arg in args.iter() {
+            self.note_sibling_attempt();
+            if self.was_canceled() {
+                break;
+            }
             self.generate(arg.value, ctx);
+            if self.was_canceled() {
+                break;
+            }
         }
         InferType::Concrete(Type::ERROR)
     }
@@ -3743,6 +4144,9 @@ impl<'a> ConstraintGenerator<'a> {
             for (i, arg) in args.iter().enumerate() {
                 let arg_info = self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
                 arg_diverged |= !arg_info.continues;
+                if self.was_canceled() {
+                    break;
+                }
                 if let Some(&pty) = payload.get(i) {
                     // Convert the declared payload type structurally so an array
                     // payload (`[i32; 2]`) unifies with an array-literal argument
@@ -3762,6 +4166,9 @@ impl<'a> ConstraintGenerator<'a> {
             let defer_equality = self.is_slice_struct_type(param_type.clone());
             let arg_info = self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
             arg_diverged |= !arg_info.continues;
+            if self.was_canceled() {
+                break;
+            }
             if !defer_equality {
                 self.add_constraint(Constraint::equal(
                     arg_info.ty,
@@ -3884,6 +4291,65 @@ impl<'a> ConstraintGenerator<'a> {
     fn module_file(&self, module_ty: Type) -> Option<FileId> {
         let module_id = module_ty.as_module()?;
         self.module_file_id(module_id)
+    }
+
+    /// Install the exact payload locals for a selected or ordinary match arm.
+    /// This is shared by both paths so pruning an unselected arm cannot change
+    /// lexical shadowing or payload typing in the selected arm.
+    fn register_match_bindings(
+        &mut self,
+        pattern: &rue_rir::RirPatternView<'_>,
+        ctx: &mut ConstraintContext,
+    ) {
+        let rue_rir::RirPatternView::Path {
+            module,
+            ctor_head,
+            type_name,
+            variant,
+            bindings,
+            span: pat_span,
+            ..
+        } = pattern
+        else {
+            return;
+        };
+        if bindings.is_empty() {
+            return;
+        }
+        let enum_ty = ctor_head
+            .and_then(|head| {
+                self.inline_ctor_head_types
+                    .and_then(|heads| heads.get(&head).copied())
+            })
+            .or_else(|| {
+                module.and_then(|module_ref| self.enum_type_for_module(module_ref, type_name))
+            })
+            .or_else(|| self.enum_type_for(type_name, pat_span.file_id));
+        let Some(payload) = enum_ty
+            .and_then(|ty| ty.as_enum())
+            .map(|id| self.type_pool.enum_def(id))
+            .and_then(|def| {
+                def.find_variant(self.interner.resolve(variant))
+                    .map(|v| def.variant_payload(v).to_vec())
+            })
+        else {
+            return;
+        };
+        for (index, binding) in bindings.iter().enumerate() {
+            if self.interner.resolve(&binding) == "_" {
+                continue;
+            }
+            if let Some(&ty) = payload.get(index) {
+                ctx.insert_local(
+                    *binding,
+                    LocalVarInfo {
+                        ty: InferType::Concrete(ty),
+                        is_mut: false,
+                        span: *pat_span,
+                    },
+                );
+            }
+        }
     }
 
     /// Get the inferred type for a pattern.
@@ -4011,7 +4477,7 @@ impl<'a> ConstraintGenerator<'a> {
                 // Forwarded type parameters (`T` inside a specialized generic
                 // body) are not in scope as runtime params/locals and resolve
                 // via `self.type_subst` above.
-                if ctx.locals.contains_key(name) || ctx.params.contains_key(name) {
+                if ctx.locals.contains_key(name) || ctx.contains_param(*name) {
                     return Some(Type::ERROR);
                 }
                 resolve_sym(name)
@@ -4020,232 +4486,17 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
-    /// Extract a comptime *value* argument as an integer constant, for
-    /// resolving an array length parameterized by a comptime value param
-    /// (`fn f(comptime N: i32) -> [i32; N]`, RUE-252/RUE-553). Evaluates any
-    /// compile-time-known integer expression — a literal, a `const`/comptime
-    /// value reference, and arithmetic over them (`make(1 + 2)`) — via
-    /// [`Self::eval_comptime_value`]; non-integer or non-comptime forms
-    /// (checked fully in sema) yield `None`.
-    fn extract_int_argument(&self, arg: InstRef) -> Option<i128> {
-        match self.eval_comptime_value(arg)? {
-            ConstValue::Integer(n) => Some(n),
-            _ => None,
-        }
-    }
-
-    /// Evaluate a compile-time-known integer/boolean expression against the
-    /// comptime value parameters (`comptime_values`) and file-level integer
-    /// constants (`const_values`) currently in scope, returning its
-    /// [`ConstValue`]. Handles literals, `const`/comptime references, unary
-    /// `-`/`!`, integer arithmetic (`+ - * / %`), the comparison operators,
-    /// and boolean `&& ||`.
-    ///
-    /// Returns `None` for any form not statically decidable here — a runtime
-    /// value, a call, an operation that could trap (division or modulo by
-    /// zero) or overflow `i128`, or a kind mismatch (comparing an integer to a
-    /// bool). This mirrors the *values* sema's comptime evaluator produces for
-    /// the same expressions so inference and sema agree on which branch/arm is
-    /// live (RUE-553/RUE-554); when in doubt it returns `None`, keeping it a
-    /// strict subset of what sema evaluates, so the caller safely falls back
-    /// to its runtime path.
-    fn eval_comptime_value(&self, inst: InstRef) -> Option<ConstValue> {
-        use ConstValue::{Bool, Integer};
-        match &self.rir.get(inst).data {
-            InstData::IntConst(v) => Some(Integer(*v as i128)),
-            InstData::BoolConst(b) => Some(Bool(*b)),
-            InstData::VarRef { name, .. } => self
-                .comptime_values
-                .and_then(|m| m.get(name).copied())
-                .or_else(|| {
-                    let file_id = self.rir.get(inst).span.file_id;
-                    self.const_value((file_id, *name)).map(Integer)
-                }),
-            InstData::Neg { operand } => match self.eval_comptime_value(*operand)? {
-                Integer(n) => Some(Integer(n.checked_neg()?)),
+    /// Return a comptime argument already evaluated by the canonical engine.
+    /// Bare value-parameter references remain available during the probe.
+    fn comptime_argument_value(&self, arg: InstRef) -> Option<ConstValue> {
+        self.comptime_argument_values
+            .and_then(|values| values.get(&arg).copied())
+            .or_else(|| match self.rir.get(arg).data {
+                InstData::VarRef { name, .. } => self
+                    .comptime_values
+                    .and_then(|values| values.get(&name).copied()),
                 _ => None,
-            },
-            InstData::Not { operand } => match self.eval_comptime_value(*operand)? {
-                Bool(b) => Some(Bool(!b)),
-                _ => None,
-            },
-            InstData::Add { lhs, rhs } => self.eval_int_binop(*lhs, *rhs, i128::checked_add),
-            InstData::Sub { lhs, rhs } => self.eval_int_binop(*lhs, *rhs, i128::checked_sub),
-            InstData::Mul { lhs, rhs } => self.eval_int_binop(*lhs, *rhs, i128::checked_mul),
-            // `checked_div`/`checked_rem` return `None` on divide-by-zero, so a
-            // trapping operation falls back to the runtime path rather than
-            // diverging from sema (which reports the error).
-            InstData::Div { lhs, rhs } => self.eval_int_binop(*lhs, *rhs, i128::checked_div),
-            InstData::Mod { lhs, rhs } => self.eval_int_binop(*lhs, *rhs, i128::checked_rem),
-            InstData::Eq { lhs, rhs } => self.eval_eq(*lhs, *rhs, true),
-            InstData::Ne { lhs, rhs } => self.eval_eq(*lhs, *rhs, false),
-            InstData::Lt { lhs, rhs } => self.eval_int_cmp(*lhs, *rhs, |a, b| a < b),
-            InstData::Gt { lhs, rhs } => self.eval_int_cmp(*lhs, *rhs, |a, b| a > b),
-            InstData::Le { lhs, rhs } => self.eval_int_cmp(*lhs, *rhs, |a, b| a <= b),
-            InstData::Ge { lhs, rhs } => self.eval_int_cmp(*lhs, *rhs, |a, b| a >= b),
-            InstData::And { lhs, rhs } => self.eval_bool_binop(*lhs, *rhs, |a, b| a && b),
-            InstData::Or { lhs, rhs } => self.eval_bool_binop(*lhs, *rhs, |a, b| a || b),
-            _ => None,
-        }
-    }
-
-    /// Evaluate both operands as comptime integers and combine them with a
-    /// checked arithmetic op; `None` if either operand isn't a comptime
-    /// integer or the op traps/overflows. See [`Self::eval_comptime_value`].
-    fn eval_int_binop(
-        &self,
-        lhs: InstRef,
-        rhs: InstRef,
-        f: fn(i128, i128) -> Option<i128>,
-    ) -> Option<ConstValue> {
-        let a = self.eval_comptime_int(lhs)?;
-        let b = self.eval_comptime_int(rhs)?;
-        f(a, b).map(ConstValue::Integer)
-    }
-
-    /// Evaluate both operands as comptime integers and compare them, yielding a
-    /// boolean. See [`Self::eval_comptime_value`].
-    fn eval_int_cmp(
-        &self,
-        lhs: InstRef,
-        rhs: InstRef,
-        f: fn(i128, i128) -> bool,
-    ) -> Option<ConstValue> {
-        let a = self.eval_comptime_int(lhs)?;
-        let b = self.eval_comptime_int(rhs)?;
-        Some(ConstValue::Bool(f(a, b)))
-    }
-
-    /// Evaluate both operands as comptime booleans and combine them. `None` if
-    /// either operand isn't a comptime bool. See [`Self::eval_comptime_value`].
-    fn eval_bool_binop(
-        &self,
-        lhs: InstRef,
-        rhs: InstRef,
-        f: fn(bool, bool) -> bool,
-    ) -> Option<ConstValue> {
-        let a = self.eval_comptime_bool(lhs)?;
-        let b = self.eval_comptime_bool(rhs)?;
-        Some(ConstValue::Bool(f(a, b)))
-    }
-
-    /// `==`/`!=` over two comptime values of the *same* kind (both integers or
-    /// both booleans). A kind mismatch — comparing an integer to a bool — is
-    /// ill-typed and left to sema, so this returns `None` rather than a
-    /// defined-but-misleading answer. See [`Self::eval_comptime_value`].
-    fn eval_eq(&self, lhs: InstRef, rhs: InstRef, want_equal: bool) -> Option<ConstValue> {
-        use ConstValue::{Bool, Integer};
-        let a = self.eval_comptime_value(lhs)?;
-        let b = self.eval_comptime_value(rhs)?;
-        let equal = match (a, b) {
-            (Integer(x), Integer(y)) => x == y,
-            (Bool(x), Bool(y)) => x == y,
-            _ => return None,
-        };
-        Some(Bool(equal == want_equal))
-    }
-
-    /// Evaluate `inst` as a comptime integer, or `None` if it isn't one.
-    fn eval_comptime_int(&self, inst: InstRef) -> Option<i128> {
-        match self.eval_comptime_value(inst)? {
-            ConstValue::Integer(n) => Some(n),
-            _ => None,
-        }
-    }
-
-    /// Evaluate `inst` as a comptime boolean, or `None` if it isn't one.
-    fn eval_comptime_bool(&self, inst: InstRef) -> Option<bool> {
-        match self.eval_comptime_value(inst)? {
-            ConstValue::Bool(b) => Some(b),
-            _ => None,
-        }
-    }
-
-    /// If `scrutinee` is a comptime value known for this specialization and the
-    /// arm patterns form an exhaustive set this understands (integer/boolean
-    /// literals plus a wildcard), return the body of the single arm the value
-    /// selects. Mirrors sema's comptime arm selection (`analyze_match`, spec
-    /// 4.14:19) so inference constrains only the selected arm; the constraint
-    /// generator otherwise cross-constrains every arm and rejects a valid
-    /// program whose statically-unselected arm has a different type (RUE-268).
-    ///
-    /// Returns `None` — meaning "constrain all arms as a runtime match" — for
-    /// any shape not understood (a scrutinee that isn't comptime-evaluable, an
-    /// enum pattern, a non-exhaustive set). A compound comptime scrutinee
-    /// (`match n + 0`) is handled the same as a bare `match n`, since both go
-    /// through [`Self::eval_comptime_value`] (RUE-554). The comptime cases
-    /// handled here are a strict subset of those sema prunes with the same
-    /// value and patterns, so whenever this prunes, sema also prunes to the
-    /// *same* arm — the only arm whose body inference generated a type for.
-    fn comptime_selected_arm<'r>(
-        &self,
-        scrutinee: InstRef,
-        arms: impl Iterator<Item = (rue_rir::RirPatternView<'r>, InstRef)>,
-    ) -> Option<InstRef> {
-        use rue_rir::RirPatternView as RirPattern;
-
-        // Only prune inside a specialization that has comptime value params in
-        // scope (mirrors sema's `!ctx.comptime_value_vars.is_empty()` gate in
-        // `analyze_match`); ordinary functions treat every match as runtime.
-        self.comptime_values?;
-        // Evaluate the scrutinee with the shared comptime evaluator, so a
-        // compound scrutinee (`match n + 0 { .. }`) prunes exactly like the
-        // bare `match n` form — matching sema's `try_evaluate_const_in_fn`
-        // rather than a syntax-specific extraction (RUE-554).
-        let value: ConstValue = self.eval_comptime_value(scrutinee)?;
-
-        let mut selected: Option<InstRef> = None;
-        let mut has_wildcard = false;
-        let mut bool_true_covered = false;
-        let mut bool_false_covered = false;
-        for (pattern, body) in arms {
-            let matched = match &pattern {
-                RirPattern::Wildcard(_) => {
-                    has_wildcard = true;
-                    true
-                }
-                RirPattern::Int {
-                    value: magnitude,
-                    negative,
-                    ..
-                } => match value {
-                    ConstValue::Integer(n) => {
-                        let pat = if *negative {
-                            -(*magnitude as i128)
-                        } else {
-                            *magnitude as i128
-                        };
-                        pat == n
-                    }
-                    // Value/pattern kind mismatch — fall back to runtime path.
-                    _ => return None,
-                },
-                RirPattern::Bool(b, _) => match value {
-                    ConstValue::Bool(v) => {
-                        if *b {
-                            bool_true_covered = true;
-                        } else {
-                            bool_false_covered = true;
-                        }
-                        *b == v
-                    }
-                    _ => return None,
-                },
-                // Enum patterns: not understood here — runtime path.
-                _ => return None,
-            };
-            if matched && selected.is_none() {
-                selected = Some(body);
-            }
-        }
-
-        // Exhaustiveness is a property of the pattern set (spec 4.7:9), still
-        // required when the value is comptime-known: a wildcard, or both bool
-        // values for a bool scrutinee. A non-exhaustive set falls back so sema
-        // reports the proper diagnostic on the runtime path.
-        let exhaustive = has_wildcard
-            || (matches!(value, ConstValue::Bool(_)) && bool_true_covered && bool_false_covered);
-        if exhaustive { selected } else { None }
+            })
     }
 
     /// Derive a best-effort constraint hint from parser-structured type syntax.

@@ -1206,6 +1206,11 @@ mod tests {
                         precompute_inline_scan_pops: 137,
                         precompute_inline_scan_child_edges: 139,
                         precompute_inline_eval_attempts: 149,
+                        staged_resolved_instructions: 151,
+                        staged_constraints_generated: 157,
+                        staged_fact_nodes: 163,
+                        staged_canonical_evaluations: 167,
+                        staged_probe_nodes: 173,
                         ..Default::default()
                     },
                     cfg_materialization: rue_perf_schema::CfgMaterializationWork {

@@ -69,6 +69,16 @@ pub(crate) struct ExpressionAnalysisBreakdown {
     pub(crate) precompute_work: super::comptime_eval::ComptimePrecomputeAttribution,
     pub(crate) constraint_generation_ns: u64,
     pub(crate) unification_resolution_ns: u64,
+    pub(crate) staged_frontier_bodies: u64,
+    pub(crate) staged_frontier_instructions: u64,
+    pub(crate) staged_fact_nodes: u64,
+    pub(crate) staged_canonical_evaluations: u64,
+    pub(crate) staged_constraints_generated: u64,
+    pub(crate) staged_binding_scope_nodes: u64,
+    pub(crate) staged_binding_materializations: u64,
+    pub(crate) staged_binding_trie_updates: u64,
+    pub(crate) staged_binding_trie_lookups: u64,
+    pub(crate) staged_probe_nodes: u64,
     pub(crate) air_emission_validation_ns: u64,
 }
 
@@ -79,6 +89,26 @@ pub(crate) struct ExpressionAnalysisBreakdown {
 /// by the ordinary expression engine. Transaction publication remains outside
 /// this extraction.
 pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
+    /// Check the owning query before bounded frontier work or canonical
+    /// comptime evaluation.  Standalone hosts explicitly return `Ok(())`.
+    fn check_canceled(&self) -> CompileResult<()>;
+
+    /// Borrowed query cancellation authority used by recursive constraint
+    /// generation. Standalone hosts use the explicit no-op default.
+    fn cancellation_probe(&self) -> Option<Box<dyn Fn() -> bool + '_>> {
+        None
+    }
+
+    /// Host observation immediately before a sibling operand is attempted.
+    /// Query-backed hosts use this only for cancellation-unwind tests.
+    fn sibling_attempt_hook(&self) -> Option<Box<dyn Fn() + '_>> {
+        None
+    }
+
+    /// Marks the beginning of a staged selector frontier. Query-backed hosts
+    /// use this only for test instrumentation; it has no semantic effect.
+    fn staged_frontier_started(&self) {}
+
     type InferenceFacts<'a>: LazyInferenceFacts
     where
         Self: 'a;
@@ -308,6 +338,22 @@ pub(crate) struct OrdinaryBodyEngine<'h, H: OrdinaryBodyAnalysisHost> {
 impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn new(storage: &'h mut H) -> Self {
         Self { storage }
+    }
+
+    pub(crate) fn check_canceled(&self) -> CompileResult<()> {
+        self.storage.check_canceled()
+    }
+
+    pub(crate) fn cancellation_probe(&self) -> Option<Box<dyn Fn() -> bool + '_>> {
+        self.storage.cancellation_probe()
+    }
+
+    pub(crate) fn sibling_attempt_hook(&self) -> Option<Box<dyn Fn() + '_>> {
+        self.storage.sibling_attempt_hook()
+    }
+
+    pub(crate) fn staged_frontier_started(&self) {
+        self.storage.staged_frontier_started();
     }
 
     pub(crate) fn body_rir_ref(&self) -> &Rir {
@@ -1955,7 +2001,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // for all expressions BEFORE emitting AIR.
         let expression_setup_ns =
             u64::try_from(expression_setup_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let (resolved_types, resolved_continues, inference_breakdown) = self.run_type_inference(
+        let (resolved_types, resolved_continues, comptime_selections, inference_breakdown) = self
+            .run_type_inference(
             infer_ctx,
             return_type,
             params,
@@ -2007,6 +2054,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             comptime_type_scope_stack: Vec::new(),
             resolved_types: &resolved_types,
             resolved_continues: &resolved_continues,
+            comptime_selections: &comptime_selections,
             divergence_kinds: DivergenceKinds::NONE,
             moved_vars: AHashMap::new(),
             warnings: Vec::new(),
@@ -2164,6 +2212,17 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 precompute_work: inference_breakdown.precompute_work,
                 constraint_generation_ns: inference_breakdown.constraint_generation_ns,
                 unification_resolution_ns: inference_breakdown.unification_resolution_ns,
+                staged_frontier_bodies: inference_breakdown.staged_frontier_bodies,
+                staged_frontier_instructions: inference_breakdown.staged_frontier_instructions,
+                staged_fact_nodes: inference_breakdown.staged_fact_nodes,
+                staged_canonical_evaluations: inference_breakdown.staged_canonical_evaluations,
+                staged_constraints_generated: inference_breakdown.staged_constraints_generated,
+                staged_binding_scope_nodes: inference_breakdown.staged_binding_scope_nodes,
+                staged_binding_materializations: inference_breakdown
+                    .staged_binding_materializations,
+                staged_binding_trie_updates: inference_breakdown.staged_binding_trie_updates,
+                staged_binding_trie_lookups: inference_breakdown.staged_binding_trie_lookups,
+                staged_probe_nodes: inference_breakdown.staged_probe_nodes,
                 air_emission_validation_ns,
             });
 

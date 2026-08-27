@@ -302,6 +302,18 @@ pub struct DropCopyMetadata {
 /// its own owned durable projections, keeping rue-air independent of the query
 /// runtime while still returning owned data.
 pub trait BodyFactProvider {
+    /// Query-owned cancellation checkpoint used by canonical body walks.
+    /// Standalone providers have no query authority and therefore retain the
+    /// explicit no-op default.
+    fn is_canceled(&self) -> bool;
+
+    fn staged_frontier_started(&self) {}
+
+    /// Observation immediately before a generated sibling operand. Ordinary
+    /// providers leave this as a no-op; query-backed tests use it to prove a
+    /// canceled tail was not iterated after the first canceled child.
+    fn staged_sibling_attempt(&self) {}
+
     /// The implementation's owned handle for a consulted module.
     type ModuleRef: Clone;
     /// The implementation's owned handle for a consulted declaration.

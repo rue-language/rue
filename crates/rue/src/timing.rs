@@ -104,6 +104,8 @@ const COMPILER_BUILD_PROFILE: &str = "release_thin_lto";
 const COMPILER_BUILD_PROFILE: &str = "debug";
 
 use ahash::AHashMap;
+#[cfg(test)]
+use rue_perf_schema::SemanticBodyStructureWork;
 use rue_perf_schema::{CompilerWork, DurationDistribution, Phase, PhaseAccounting};
 use serde::Serialize;
 
@@ -1199,6 +1201,16 @@ struct SemanticProviderBreakdownVisitor {
     inference_precompute_eval_provider_ns: Option<u64>,
     constraint_generation_ns: Option<u64>,
     unification_resolution_ns: Option<u64>,
+    staged_frontier_bodies: Option<u64>,
+    staged_frontier_instructions: Option<u64>,
+    staged_fact_nodes: Option<u64>,
+    staged_canonical_evaluations: Option<u64>,
+    staged_constraints_generated: Option<u64>,
+    staged_binding_scope_nodes: Option<u64>,
+    staged_binding_materializations: Option<u64>,
+    staged_binding_trie_updates: Option<u64>,
+    staged_binding_trie_lookups: Option<u64>,
+    staged_probe_nodes: Option<u64>,
     air_emission_validation_ns: Option<u64>,
     counters: AHashMap<&'static str, u64>,
 }
@@ -1270,8 +1282,16 @@ impl tracing::field::Visit for SemanticProviderBreakdownVisitor {
             }
             "constraint_generation_ns" => self.constraint_generation_ns = Some(value),
             "unification_resolution_ns" => self.unification_resolution_ns = Some(value),
+            "staged_frontier_bodies" => self.staged_frontier_bodies = Some(value),
+            "staged_frontier_instructions" => self.staged_frontier_instructions = Some(value),
+            "staged_fact_nodes" => self.staged_fact_nodes = Some(value),
+            "staged_canonical_evaluations" => self.staged_canonical_evaluations = Some(value),
+            "staged_constraints_generated" => self.staged_constraints_generated = Some(value),
+            "staged_binding_scope_nodes" => self.staged_binding_scope_nodes = Some(value),
+            "staged_binding_materializations" => self.staged_binding_materializations = Some(value),
+            "staged_probe_nodes" => self.staged_probe_nodes = Some(value),
             "air_emission_validation_ns" => self.air_emission_validation_ns = Some(value),
-            name if name.starts_with("precompute_") => {
+            name if name.starts_with("precompute_") || name.starts_with("staged_") => {
                 self.counters.insert(field.name(), value);
             }
             _ => {}
@@ -1463,6 +1483,8 @@ where
         {
             let mut visitor = SemanticProviderBreakdownVisitor::default();
             event.record(&mut visitor);
+            let staged_binding_trie_updates = visitor.staged_binding_trie_updates.unwrap_or(0);
+            let staged_binding_trie_lookups = visitor.staged_binding_trie_lookups.unwrap_or(0);
             let (
                 Some(host_setup_ns),
                 Some(expression_engine_ns),
@@ -1475,6 +1497,14 @@ where
                 Some(inference_precompute_eval_provider_ns),
                 Some(constraint_generation_ns),
                 Some(unification_resolution_ns),
+                Some(staged_frontier_bodies),
+                Some(staged_frontier_instructions),
+                Some(staged_fact_nodes),
+                Some(staged_canonical_evaluations),
+                Some(staged_constraints_generated),
+                Some(staged_binding_scope_nodes),
+                Some(staged_binding_materializations),
+                Some(staged_probe_nodes),
                 Some(air_emission_validation_ns),
             ) = (
                 visitor.host_setup_ns,
@@ -1488,6 +1518,14 @@ where
                 visitor.inference_precompute_eval_provider_ns,
                 visitor.constraint_generation_ns,
                 visitor.unification_resolution_ns,
+                visitor.staged_frontier_bodies,
+                visitor.staged_frontier_instructions,
+                visitor.staged_fact_nodes,
+                visitor.staged_canonical_evaluations,
+                visitor.staged_constraints_generated,
+                visitor.staged_binding_scope_nodes,
+                visitor.staged_binding_materializations,
+                visitor.staged_probe_nodes,
                 visitor.air_emission_validation_ns,
             )
             else {
@@ -1529,6 +1567,28 @@ where
                     .record_span(name, Duration::from_nanos(duration_ns), false, true);
             }
             self.data.record_counter("precompute_bodies", 1);
+            self.data
+                .record_counter("staged_frontier_bodies", staged_frontier_bodies);
+            self.data
+                .record_counter("staged_frontier_instructions", staged_frontier_instructions);
+            self.data
+                .record_counter("staged_fact_nodes", staged_fact_nodes);
+            self.data
+                .record_counter("staged_canonical_evaluations", staged_canonical_evaluations);
+            self.data
+                .record_counter("staged_constraints_generated", staged_constraints_generated);
+            self.data
+                .record_counter("staged_binding_scope_nodes", staged_binding_scope_nodes);
+            self.data.record_counter(
+                "staged_binding_materializations",
+                staged_binding_materializations,
+            );
+            self.data
+                .record_counter("staged_binding_trie_updates", staged_binding_trie_updates);
+            self.data
+                .record_counter("staged_binding_trie_lookups", staged_binding_trie_lookups);
+            self.data
+                .record_counter("staged_probe_nodes", staged_probe_nodes);
             for (name, value) in visitor.counters {
                 self.data.record_counter(name, value);
             }
@@ -2828,6 +2888,17 @@ mod phase_accounting_tests {
                 precompute_inline_scan_bodies = 1_u64,
                 constraint_generation_ns = 256_u64,
                 unification_resolution_ns = 512_u64,
+                staged_frontier_bodies = 3_u64,
+                staged_frontier_instructions = 12_u64,
+                staged_fact_nodes = 7_u64,
+                staged_canonical_evaluations = 2_u64,
+                staged_constraints_generated = 19_u64,
+                staged_binding_scope_nodes = 5_u64,
+                staged_binding_materializations = 3_u64,
+                staged_binding_trie_updates = 17_u64,
+                staged_binding_trie_lookups = 23_u64,
+                staged_probe_nodes = 11_u64,
+                staged_precompute_nodes = 13_u64,
                 air_emission_validation_ns = 1024_u64,
             );
         });
@@ -2853,6 +2924,17 @@ mod phase_accounting_tests {
         }
         assert_eq!(data.counter_total("precompute_bodies"), 1);
         assert_eq!(data.counter_total("precompute_alias_nodes_visited"), 7);
+        assert_eq!(data.counter_total("staged_frontier_bodies"), 3);
+        assert_eq!(data.counter_total("staged_frontier_instructions"), 12);
+        assert_eq!(data.counter_total("staged_fact_nodes"), 7);
+        assert_eq!(data.counter_total("staged_canonical_evaluations"), 2);
+        assert_eq!(data.counter_total("staged_constraints_generated"), 19);
+        assert_eq!(data.counter_total("staged_binding_scope_nodes"), 5);
+        assert_eq!(data.counter_total("staged_binding_materializations"), 3);
+        assert_eq!(data.counter_total("staged_binding_trie_updates"), 17);
+        assert_eq!(data.counter_total("staged_binding_trie_lookups"), 23);
+        assert_eq!(data.counter_total("staged_probe_nodes"), 11);
+        assert_eq!(data.counter_total("staged_precompute_nodes"), 13);
         assert_eq!(data.counter_total("precompute_inline_scan_bodies"), 1);
     }
 
@@ -3366,5 +3448,39 @@ mod phase_accounting_tests {
             "total_ms {} disagrees with compiler_root_ns {root_ms}",
             timing.total_ms
         );
+    }
+
+    #[test]
+    fn benchmark_json_publishes_staged_body_work() {
+        let data = TimingData::new();
+        let work = CompilerWork {
+            semantic_body_structure: SemanticBodyStructureWork {
+                staged_resolved_instructions: 23,
+                staged_constraints_generated: 29,
+                staged_fact_nodes: 31,
+                staged_canonical_evaluations: 37,
+                staged_binding_scope_nodes: 59,
+                staged_binding_materializations: 61,
+                staged_binding_trie_updates: 47,
+                staged_binding_trie_lookups: 53,
+                staged_probe_nodes: 41,
+                staged_precompute_nodes: 43,
+                ..SemanticBodyStructureWork::default()
+            },
+            ..CompilerWork::default()
+        };
+        let json = data.to_json_with_metrics("test-target", "test", None, Some(work), None);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let structure = &value["compiler_work"]["semantic_body_structure"];
+        assert_eq!(structure["staged_resolved_instructions"], 23);
+        assert_eq!(structure["staged_constraints_generated"], 29);
+        assert_eq!(structure["staged_fact_nodes"], 31);
+        assert_eq!(structure["staged_canonical_evaluations"], 37);
+        assert_eq!(structure["staged_binding_scope_nodes"], 59);
+        assert_eq!(structure["staged_binding_materializations"], 61);
+        assert_eq!(structure["staged_binding_trie_updates"], 47);
+        assert_eq!(structure["staged_binding_trie_lookups"], 53);
+        assert_eq!(structure["staged_probe_nodes"], 41);
+        assert_eq!(structure["staged_precompute_nodes"], 43);
     }
 }
