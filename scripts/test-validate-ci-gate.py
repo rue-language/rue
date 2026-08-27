@@ -341,6 +341,112 @@ class GateValidatorTests(unittest.TestCase):
     def test_declared_need_outputs_pass(self):
         self.assertEqual(self.validate_text(SOURCE.read_text()), [])
 
+    def test_future_narrowing_consumer_must_be_registered(self):
+        changed = SOURCE.read_text() + (
+            "\n  future-narrowed-lane:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    needs: affected-targets\n"
+            "    steps:\n"
+            "      - run: echo ${{ needs.affected-targets.outputs.impacted }}\n"
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("future-narrowed-lane consumes impacted narrowing", errors)
+
+    def test_direct_scope_operation_cannot_bypass_registry(self):
+        changed = SOURCE.read_text().replace(
+            "scripts/affected-targets narrow-scope linux-premerge-build \"$NARROW_FILE\"",
+            "scripts/affected-targets intersect \"$NARROW_FILE\" \"${targets[@]}\"",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("must use the registry-backed narrow-scope command", errors)
+
+    def test_second_raw_impacted_consumer_fails_closed(self):
+        changed = SOURCE.read_text().replace(
+            "RUE_TEST_TARGETS_FILE: ${{ steps.narrow.outputs.test_file }}",
+            'RUE_TEST_TARGETS_FILE: "$RUE_AFFECTED_IMPACTED"',
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("raw impacted-closure consumer", errors)
+        self.assertIn("registry-intersected target file", errors)
+
+    def test_second_raw_impacted_file_consumer_fails_closed(self):
+        changed = SOURCE.read_text().replace(
+            "NARROW_FILE: ${{ steps.narrow.outputs.file }}",
+            "NARROW_FILE: ${{ steps.narrow.outputs.file }}\n"
+            "          SECOND_RAW_FILE: ${{ steps.narrow.outputs.file }}",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("raw impacted file", errors)
+
+    def test_second_narrow_file_use_fails_closed(self):
+        changed = SOURCE.read_text().replace(
+            'elif ! scope="$(scripts/affected-targets narrow-scope '
+            'linux-premerge-build "$NARROW_FILE")"; then',
+            'head -n1 "$NARROW_FILE"\n'
+            '          elif ! scope="$(scripts/affected-targets narrow-scope '
+            'linux-premerge-build "$NARROW_FILE")"; then',
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("expose $NARROW_FILE only", errors)
+
+    def test_second_local_raw_file_use_fails_closed(self):
+        changed = SOURCE.read_text().replace(
+            'if scripts/affected-targets narrow-scope linux-premerge-tests '
+            '"$file" >"$test_file"; then',
+            'head -n1 "$file"\n'
+            '            if scripts/affected-targets narrow-scope linux-premerge-tests '
+            '"$file" >"$test_file"; then',
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("local raw impacted file only", errors)
+
+    def test_second_native_local_raw_file_use_fails_closed(self):
+        marker = 'file="${RUNNER_TEMP}/impacted-targets.txt"'
+        changed = SOURCE.read_text().replace(
+            marker,
+            marker + '\n          head -n1 "$file" >/dev/null',
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("native-platforms must use its local raw impacted file only", errors)
+
+    def test_each_registered_consumer_must_intersect(self):
+        changed = SOURCE.read_text().replace(
+            'scripts/affected-targets narrow-scope linux-premerge-tests "$file"',
+            'printf "%s\\n" "$RUE_AFFECTED_IMPACTED"',
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("linux-premerge-tests", errors)
+
+    def test_degraded_build_fallback_cannot_be_removed(self):
+        changed = SOURCE.read_text().replace(
+            'scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...',
+            "echo './buck2 build //crates/...'",
+            2,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("full-scope degraded fallback", errors)
+
+    def test_saved_share_summary_cannot_be_removed(self):
+        changed = SOURCE.read_text().replace("saved share", "scope share")
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("saved-share visibility", errors)
+
+    def test_impacted_reference_in_comment_is_not_a_consumer(self):
+        changed = SOURCE.read_text().replace(
+            "  ci-success:\n",
+            "  # needs.affected-targets.outputs.impacted is documented only\n"
+            "  ci-success:\n",
+            1,
+        )
+        self.assertEqual(self.validate_text(changed), [])
+
     def test_need_output_from_unknown_job_fails(self):
         self.assertIn(
             "references unknown job",
