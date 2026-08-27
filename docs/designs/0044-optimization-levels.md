@@ -54,12 +54,13 @@ but the mapping is:
 | `-O0` | Nothing. CFG passes straight to lowering (plus the always-on structural `verify()`). |
 | `-O1` | Constant folding ⇄ store-to-load constant propagation to a fixpoint, then dead-code elimination. |
 | `-O2` | `-O1` plus the conservative whole-program free-function inlining batch (RUE-930) and Phase 5 reachability elimination (RUE-933). |
-| `-O3` | `-O2` plus trap-free LICM (RUE-927) and bounded constant-trip unrolling (RUE-928); broader inlining thresholds and guarded hoisting remain planned. |
+| `-O3` | `-O2` plus trap-free LICM (RUE-927), bounded constant-trip unrolling (RUE-928), and larger-cap bounded non-leaf free-function inlining (RUE-931); guarded trapping-op hoisting remains planned. |
 
 The levels now have distinct behavior: `-O2`/`-O3` run the compiler's
 conservative whole-program inlining and reachability batch, and `-O3` adds the
-landed LICM and constant-trip unrolling passes. Broader inlining thresholds and
-guarded hoisting remain future work. RUE-245 asks us to *deliberately decide*
+landed LICM, constant-trip unrolling, and larger-cap bounded non-leaf inlining
+passes. Guarded trapping-op hoisting remains future work. RUE-245 asks us to
+*deliberately decide*
 what belongs at each level rather than leave the top two as accidental
 synonyms — both so users get the contract they expect from `-O` flags, and so
 that further passes already have a documented home.
@@ -67,11 +68,13 @@ that further passes already have a documented home.
 ### The current pipeline (ground truth)
 
 The optimizer lives entirely in `crates/rue-cfg/src/opt/` and runs as
-CFG → CFG transforms between CFG construction and MIR lowering. `optimize()` is
-the single choke point every build funnels through:
+CFG → CFG transforms between CFG construction and MIR lowering.
+`optimize_with_budget()` is the single choke point every build funnels through;
+the compiler batch later applies general inlining/DFE and calls it again for
+changed callers:
 
 ```
-AIR -> CfgBuilder -> CFG -> [opt::optimize(level)] -> [whole-program inlining/reachability at -O2/-O3] -> CfgLower -> MIR -> RegAlloc -> Emit
+AIR -> CfgBuilder -> CFG -> [opt::optimize_with_budget(level)] -> [whole-program inline/DFE batch] -> [changed-caller optimize_with_budget] -> CfgLower -> MIR -> RegAlloc -> Emit
 ```
 
 The passes that exist:
@@ -79,9 +82,9 @@ The passes that exist:
 - **`constfold.rs`** — folds arithmetic/comparison/bitwise/unary ops on
   `Const` operands (with overflow and div-by-zero guards). Complements the
   RIR-level `try_evaluate_const` from ADR-0003.
-- **`constprop.rs`** — store-to-load constant propagation for single-assignment
-  local slots, so constants flow through chains of `let`s (RUE-154). Interleaved
-  with `constfold` to a fixpoint.
+- **`constopt.rs`** — sparse store-to-load constant propagation and constant
+  folding for single-assignment local slots, revisiting dependent values to an
+  internal fixpoint (RUE-794).
 - **`dce.rs`** — liveness-based dead-code elimination: drops unused values and
   unreachable blocks, preserving side-effecting instructions (calls, stores,
   intrinsics, drops).
@@ -150,8 +153,9 @@ explicit and separate from the *optimization* dimension.
   reliably help without blowing up code size — CSE, peephole, better regalloc,
   conservative inlining. This is the level real software ships at.
 - **`-O3`** = `-O2` plus the *speculative* transforms that spend code size and
-  compile time to chase speed — aggressive inlining, loop unrolling, and
-  (eventually) vectorization — with no guarantee of a win on every program.
+  compile time to chase speed — bounded larger-cap non-leaf inlining, loop
+  unrolling, and (eventually) vectorization — with no guarantee of a win on
+  every program.
 - The size levels (`-Os`/`-Oz`) are a *separate* axis; Rue does not have them
   yet (see Future Work).
 
@@ -202,9 +206,9 @@ shapes each new pass targets (see Sequencing).
 | Level | Contract | Passes (today) | Passes (planned home) |
 |-------|----------|----------------|-----------------------|
 | `-O0` | No optimization. Codegen tracks source; fastest compile; best debugging. **Default.** | none (only always-on `verify()`) | stays empty |
-| `-O1` | Cheap, always-safe, compile-time-neutral-or-positive local cleanups. | sparse constfold/constprop (RUE-794) → peephole (RUE-912) → simplify-cfg (RUE-910/911) → DCE | complete for now |
+| `-O1` | Cheap, always-safe, compile-time-neutral-or-positive local cleanups. | sparse `constopt` (RUE-794) → peephole (RUE-912) → simplify-cfg (RUE-910/911) → DCE | complete for now |
 | `-O2` | **Release default.** All balanced optimizations that reliably help without a size blow-up. Superset of `-O1`. | `-O1` + copy propagation / store-to-load forwarding (RUE-914) → block-local CSE (RUE-913) → conservative whole-program inlining and Phase 5 reachability (RUE-930, RUE-933) | wider GVN; better regalloc |
-| `-O3` | `-O2` plus speculative, size-spending, speed-chasing transforms. Superset of `-O2`. | current O2 batch + trap-free LICM (RUE-927) + bounded constant-trip unrolling (RUE-928) | aggressive inlining; guarded trapping-op hoisting (RUE-934); later, vectorization |
+| `-O3` | `-O2` plus speculative, size-spending, speed-chasing transforms. Superset of `-O2`. | current O2 batch + trap-free LICM (RUE-927) + bounded constant-trip unrolling (RUE-928) + larger-cap bounded non-leaf inlining (RUE-931) | broader/profile-guided inlining; guarded trapping-op hoisting (RUE-934); later, vectorization |
 
 Rules that make the table a *contract* rather than a wishlist:
 
@@ -221,12 +225,13 @@ Rules that make the table a *contract* rather than a wishlist:
 
 ### How current passes map
 
-The local passes (`constfold`, `constprop`, `dce`) remain the cheap,
+The local passes (`constopt`, `dce`) remain the cheap,
 always-safe set at **`-O1`**. O2/O3 also run the canonical whole-program batch
 owned by `rue-compiler`, which performs conservative free-function inlining and
 post-inline reachability elimination while preserving O0/O1 source-faithful
-behavior. Broader O3 thresholds remain planned; the `mod.rs` level knob and
-these phase-specific additions are the current architecture.
+behavior. O3's larger-cap non-leaf inlining and constant-trip unrolling are
+bounded by their shared per-function growth budget; future profile-guided
+extensions remain separate policy decisions.
 
 ### How plausible future passes map
 
@@ -246,8 +251,8 @@ coverage. Placement follows the cost/risk triage above:
 - **Register-allocation quality improvements** (better spilling, coalescing):
   these live in `rue-codegen` (per-backend, post-CFG), but their *aggressiveness*
   is gated by the same level knob → tuned up at **`-O2`**.
-- **Aggressive inlining** (larger thresholds, hot call sites): may grow code →
-  **`-O3`**.
+- **Bounded larger-cap non-leaf inlining**: may grow code and compile time, so it
+  is gated at **`-O3`** and debited against the shared per-function budget.
 - **Loop optimizations** (invariant hoisting / LICM, unrolling): compile-time and
   size cost, speculative payoff → **`-O3`**.
 - **Range analysis / bounds-check elimination**: removes the dynamic test for
@@ -260,8 +265,8 @@ coverage. Placement follows the cost/risk triage above:
 ### Where the level knob lives
 
 `OptLevel` stays the single source of truth in `crates/rue-cfg/src/opt/mod.rs`,
-threaded through `optimize(cfg, level)`. As passes accrue, the `match` in
-`optimize()` gains per-level arms (e.g. `O2 | O3 => { cse::run(cfg); … }`)
+threaded through `optimize_with_budget(cfg, level, type_pool, budget)`. As passes
+accrue, its level match gains per-level arms (e.g. `O2 | O3 => { cse::run(cfg); … }`).
 layered on top of the `O1` set, preserving the monotonic-superset rule.
 Codegen-side knobs (regalloc aggressiveness) read the same `OptLevel` rather
 than inventing a parallel flag, so there is one dial for the whole pipeline.
@@ -281,9 +286,10 @@ phase-specific pieces are implemented in the current compiler.
   store-to-load forwarding (RUE-914), and conservative whole-program inlining
   plus Phase 5 reachability (RUE-930, RUE-933) have landed; broader GVN and
   other O2 tuning remain. (file RUE-NNN)
-- [ ] **Phase 4: `-O3` content** — partial: trap-free LICM (RUE-927) and bounded
-  constant-trip unrolling (RUE-928) have landed; aggressive inlining and guarded
-  trapping-op hoisting (RUE-934) remain. (file RUE-NNN)
+- [ ] **Phase 4: `-O3` content** — partial: trap-free LICM (RUE-927), bounded
+  constant-trip unrolling (RUE-928), and larger-cap bounded non-leaf inlining
+  (RUE-931) have landed; broader/profile-guided inlining and guarded trapping-op
+  hoisting (RUE-934) remain. (file RUE-NNN)
 - [ ] **Phase 5 (optional): size levels** — `-Os`/`-Oz` if a size-sensitive
   target (WASM/embedded) materializes. (file RUE-NNN)
 

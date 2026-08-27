@@ -207,6 +207,48 @@ struct Splice<'a> {
     redirects: &'a AHashMap<u32, ParamRedirect>,
 }
 
+/// The read-only shape of a splice. Both the growth preflight and the
+/// mutating splice consume this plan so call parsing, ABI arity, by-reference
+/// place validation, and materialization cannot drift apart.
+struct SpliceShape {
+    call_ty: Type,
+    call_span: Span,
+    call_args: Vec<CfgCallArg>,
+    is_accessor: bool,
+    params: Vec<CalleeParam>,
+    materialized_params: u64,
+}
+
+impl SpliceShape {
+    fn growth(&self, callee: &Cfg) -> Result<crate::opt::CodeGrowth, CfgInlineError> {
+        let callee_values = u64::try_from(callee.value_count()).map_err(|_| {
+            CfgInlineError::Edit(CfgEditError::ResourceLimitExceeded {
+                family: "inline growth",
+            })
+        })?;
+        let continuation_value = u64::from(!self.is_accessor && self.call_ty != Type::NEVER);
+        let storage_values =
+            self.materialized_params
+                .checked_mul(3)
+                .ok_or(CfgInlineError::Edit(CfgEditError::ResourceLimitExceeded {
+                    family: "inline growth",
+                }))?;
+        let values = callee_values
+            .checked_add(continuation_value)
+            .and_then(|growth| growth.checked_add(storage_values))
+            .ok_or(CfgInlineError::Edit(CfgEditError::ResourceLimitExceeded {
+                family: "inline growth",
+            }))?;
+        let blocks = u64::try_from(callee.block_count())
+            .ok()
+            .and_then(|blocks| blocks.checked_add(1))
+            .ok_or(CfgInlineError::Edit(CfgEditError::ResourceLimitExceeded {
+                family: "inline growth",
+            }))?;
+        Ok(crate::opt::CodeGrowth { values, blocks })
+    }
+}
+
 impl Splice<'_> {
     fn value(&self, value: CfgValue) -> CfgValue {
         CfgValue::from_raw(value.as_u32() + self.value_base)
@@ -275,6 +317,70 @@ pub fn inline_call_in_block(
         .map_err(CfgInlineError::Verification)
 }
 
+fn splice_shape(
+    caller: &Cfg,
+    call: CfgValue,
+    call_block: Option<BlockId>,
+    callee: &Cfg,
+) -> Result<SpliceShape, CfgInlineError> {
+    if call.as_u32() as usize >= caller.value_count() {
+        return Err(CfgInlineError::CallSiteNotFound { call });
+    }
+    let (call_ty, call_span, call_args, is_accessor) = {
+        let inst = caller.get_inst(call);
+        match &inst.data {
+            CfgInstData::Call { runtime, args, .. } => {
+                if runtime.is_some() {
+                    return Err(CfgInlineError::RuntimeCall { call });
+                }
+                (inst.ty, inst.span, caller.call_args(args).to_vec(), false)
+            }
+            CfgInstData::AccessorCall { args, .. } => {
+                (inst.ty, inst.span, caller.call_args(args).to_vec(), true)
+            }
+            _ => return Err(CfgInlineError::NotACall { call }),
+        }
+    };
+    if let Some(call_block) = call_block {
+        if call_block.as_u32() as usize >= caller.block_count()
+            || !caller.get_block(call_block).insts.contains(&call)
+        {
+            return Err(CfgInlineError::CallSiteNotFound { call });
+        }
+    }
+    if !callee.get_block(callee.entry).params.is_empty() {
+        return Err(CfgInlineError::CalleeEntryHasParams);
+    }
+    let params = callee_params(callee);
+    if params.len() != call_args.len() {
+        return Err(CfgInlineError::ArityMismatch {
+            call_args: call_args.len(),
+            callee_params: params.len(),
+        });
+    }
+    let mut materialized_params = 0u64;
+    for (index, (param, arg)) in params.iter().zip(&call_args).enumerate() {
+        if callee.is_param_by_ref(param.start_slot) {
+            byref_argument_place(caller, arg.value, index)?;
+        } else {
+            materialized_params =
+                materialized_params
+                    .checked_add(1)
+                    .ok_or(CfgInlineError::Edit(CfgEditError::ResourceLimitExceeded {
+                        family: "inline growth",
+                    }))?;
+        }
+    }
+    Ok(SpliceShape {
+        call_ty,
+        call_span,
+        call_args,
+        is_accessor,
+        params,
+        materialized_params,
+    })
+}
+
 /// Splice one call without minting the proof that the result is well formed.
 ///
 /// [`inline_call_in_block`] is this plus a verification, and a driver inlining
@@ -305,27 +411,12 @@ pub fn splice_call_in_block(
     let mut dst: Cfg = caller.clone();
 
     // -- Locate and validate the call site. ---------------------------------
-    if call.as_u32() as usize >= dst.value_count() {
-        return Err(CfgInlineError::CallSiteNotFound { call });
-    }
-    let (call_ty, call_span, call_args, is_accessor) = {
-        let inst = dst.get_inst(call);
-        match &inst.data {
-            CfgInstData::Call { runtime, args, .. } => {
-                if runtime.is_some() {
-                    return Err(CfgInlineError::RuntimeCall { call });
-                }
-                (inst.ty, inst.span, dst.call_args(args).to_vec(), false)
-            }
-            CfgInstData::AccessorCall { args, .. } => {
-                (inst.ty, inst.span, dst.call_args(args).to_vec(), true)
-            }
-            _ => return Err(CfgInlineError::NotACall { call }),
-        }
-    };
-    if call_block.as_u32() as usize >= dst.block_count() {
-        return Err(CfgInlineError::CallSiteNotFound { call });
-    }
+    let shape = splice_shape(&dst, call, Some(call_block), callee)?;
+    let call_ty = shape.call_ty;
+    let call_span = shape.call_span;
+    let call_args = shape.call_args;
+    let is_accessor = shape.is_accessor;
+    let params = shape.params;
     let Some(call_position) = dst
         .get_block(call_block)
         .insts
@@ -340,18 +431,7 @@ pub fn splice_call_in_block(
             callee_return_type: callee.return_type(),
         });
     }
-    if !callee.get_block(callee.entry).params.is_empty() {
-        return Err(CfgInlineError::CalleeEntryHasParams);
-    }
-
     // -- Lower each parameter by its physical ABI. --------------------------
-    let params = callee_params(callee);
-    if params.len() != call_args.len() {
-        return Err(CfgInlineError::ArityMismatch {
-            call_args: call_args.len(),
-            callee_params: params.len(),
-        });
-    }
     let mut redirects: AHashMap<u32, ParamRedirect> = AHashMap::new();
     // Materialized by-value parameter regions: (base slot, argument, type).
     let mut materialized: Vec<(u32, CfgValue, Type)> = Vec::new();
@@ -405,6 +485,11 @@ pub fn splice_call_in_block(
         };
         redirects.insert(param.start_slot, redirect);
     }
+    assert_eq!(
+        shape.materialized_params,
+        u64::try_from(materialized.len()).unwrap_or(u64::MAX),
+        "splice plan and materialization lowering must agree"
+    );
 
     // -- Rebase the callee's frame onto the caller's. -----------------------
     let local_base = if callee.num_locals() > 0 {
@@ -586,6 +671,22 @@ pub fn splice_call_in_block(
     }
 
     Ok(dst)
+}
+
+/// Return the exact value and basic-block growth that
+/// [`splice_call_in_block`] will append, without cloning or mutating either
+/// CFG. This is the canonical growth calculation for callers that need to
+/// apply a code-growth policy before importing metadata or constructing a
+/// candidate. It is derived from the same read-only splice shape consumed by
+/// the mutating primitive: the callee value arena already includes block
+/// parameters, so only the ordinary continuation value and materialization
+/// storage are added.
+pub fn splice_call_growth(
+    caller: &Cfg,
+    call: CfgValue,
+    callee: &Cfg,
+) -> Result<crate::opt::CodeGrowth, CfgInlineError> {
+    splice_shape(caller, call, None, callee)?.growth(callee)
 }
 
 fn substitute_accessor_places(
@@ -1098,7 +1199,21 @@ mod tests {
 
         fn try_inline(&self, caller: &str, callee: &str) -> Result<ValidatedCfg, CfgInlineError> {
             let call = self.find_call(caller, callee);
-            inline_call(self.cfg(caller), call, self.cfg(callee), &self.type_pool)
+            let caller_cfg = self.cfg(caller);
+            let callee_cfg = self.cfg(callee);
+            let growth = splice_call_growth(caller_cfg, call, callee_cfg)?;
+            let inlined = inline_call(caller_cfg, call, callee_cfg, &self.type_pool)?;
+            assert_eq!(
+                growth.values,
+                (inlined.value_count() - caller_cfg.value_count()) as u64,
+                "growth preflight must match every successful test splice"
+            );
+            assert_eq!(
+                growth.blocks,
+                (inlined.block_count() - caller_cfg.block_count()) as u64,
+                "block growth preflight must match every successful test splice"
+            );
+            Ok(inlined)
         }
     }
 
@@ -1588,6 +1703,179 @@ mod tests {
         );
         assert_eq!(count_calls(&inlined), 0);
         assert_all_blocks_terminated(&inlined);
+    }
+
+    #[test]
+    fn growth_preflight_matches_the_actual_splice_delta() {
+        let mut program = scalar_program();
+        program.add("callee", |_| scalar_increment_callee());
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::I64, 0, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let argument = cfg.append_inst(entry, inst(CfgInstData::Const(20), Type::I64));
+            cfg.append_call(
+                entry,
+                None,
+                interner.get_or_intern("callee"),
+                [CfgCallArg {
+                    value: argument,
+                    mode: CfgArgMode::Normal,
+                }],
+                Type::I64,
+                Span::new(0, 0),
+            )
+            .unwrap();
+            cfg.set_return(entry, Some(argument));
+            cfg
+        });
+        let caller = program.cfg("caller").clone();
+        let callee = program.cfg("callee").clone();
+        let call = program.find_call("caller", "callee");
+        let call_block = caller
+            .blocks()
+            .iter()
+            .find(|block| block.insts.contains(&call))
+            .map(|block| block.id)
+            .unwrap();
+        let growth = splice_call_growth(&caller, call, &callee).unwrap();
+        let inlined =
+            splice_call_in_block(&caller, call, call_block, &callee, &program.type_pool).unwrap();
+        assert_eq!(
+            growth.values,
+            (inlined.value_count() - caller.value_count()) as u64
+        );
+        assert_eq!(
+            growth.blocks,
+            (inlined.block_count() - caller.block_count()) as u64
+        );
+    }
+
+    #[test]
+    fn growth_plan_counts_block_params_once_and_keeps_boundary_exact() {
+        let mut program = scalar_program();
+        program.add("branch", |_| {
+            let mut cfg = Cfg::new(Type::I64, 0, 1, "branch".to_string(), vec![true]);
+            let entry = cfg.new_block();
+            let then_block = cfg.new_block();
+            let else_block = cfg.new_block();
+            let join = cfg.new_block();
+            cfg.entry = entry;
+            let cond = cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, Type::BOOL));
+            cfg.set_branch(entry, cond, then_block, [], else_block, []);
+            let one = cfg.append_inst(then_block, inst(CfgInstData::Const(1), Type::I64));
+            cfg.set_goto(then_block, join, [one]);
+            let zero = cfg.append_inst(else_block, inst(CfgInstData::Const(0), Type::I64));
+            cfg.set_goto(else_block, join, [zero]);
+            let result = cfg.add_block_param(join, Type::I64);
+            cfg.set_return(join, Some(result));
+            cfg
+        });
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::I64, 0, 1, "caller".to_string(), vec![false]);
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let cond = cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, Type::BOOL));
+            let call = cfg
+                .append_call(
+                    entry,
+                    None,
+                    interner.get_or_intern("branch"),
+                    [CfgCallArg {
+                        value: cond,
+                        mode: CfgArgMode::Normal,
+                    }],
+                    Type::I64,
+                    Span::default(),
+                )
+                .unwrap();
+            cfg.set_return(entry, Some(call));
+            cfg
+        });
+        let caller = program.cfg("caller");
+        let callee = program.cfg("branch");
+        let call = program.find_call("caller", "branch");
+        let growth = splice_call_growth(caller, call, callee).unwrap();
+        assert_eq!(growth.values, callee.value_count() as u64 + 1);
+        assert_eq!(growth.blocks, callee.block_count() as u64 + 1);
+        let inlined = inline_call(caller, call, callee, &program.type_pool).unwrap();
+        assert_eq!(
+            inlined.value_count() - caller.value_count(),
+            growth.values as usize
+        );
+        assert_eq!(
+            inlined.block_count() - caller.block_count(),
+            growth.blocks as usize
+        );
+
+        // A branch-heavy body at 255 values must fit exactly after its one
+        // ordinary continuation value; counting block parameters a second
+        // time would incorrectly refuse this 256-value charge.
+        let mut padded = (*callee).clone().into_editor();
+        while padded.value_count() < 255 {
+            let value = padded.append_inst(padded.entry, inst(CfgInstData::Const(0), Type::I64));
+            let _ = value;
+        }
+        let padded = padded.finish(&program.type_pool).unwrap();
+        let exact = splice_call_growth(caller, call, &padded).unwrap();
+        assert_eq!(exact.values, 256);
+        assert_eq!(exact.blocks, padded.block_count() as u64 + 1);
+        let mut budget = crate::opt::CodeGrowthBudget::o3();
+        assert!(budget.try_charge(crate::opt::CodeGrowthBudget::charge_for_growth(exact)));
+        assert!(
+            !budget.try_charge(crate::opt::CodeGrowthBudget::charge_for_growth(
+                crate::opt::CodeGrowth {
+                    values: 1,
+                    blocks: 1,
+                },
+            ))
+        );
+    }
+
+    #[test]
+    fn zero_value_block_heavy_shape_is_refused_before_splice() {
+        let mut program = scalar_program();
+        program.add("never_many_blocks", |_| {
+            let mut cfg = Cfg::new(
+                Type::NEVER,
+                0,
+                0,
+                "never_many_blocks".to_string(),
+                Vec::<bool>::new(),
+            );
+            cfg.entry = cfg.new_block();
+            cfg.set_unreachable(cfg.entry);
+            for _ in 0..257 {
+                cfg.new_block();
+            }
+            cfg
+        });
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::NEVER, 0, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_call(
+                entry,
+                None,
+                interner.get_or_intern("never_many_blocks"),
+                [],
+                Type::NEVER,
+                Span::default(),
+            )
+            .unwrap();
+            cfg.set_unreachable(entry);
+            cfg
+        });
+        let caller = program.cfg("caller");
+        let callee = program.cfg("never_many_blocks");
+        let call = program.find_call("caller", "never_many_blocks");
+        let growth = splice_call_growth(caller, call, callee).unwrap();
+        assert_eq!(growth.values, 0);
+        assert_eq!(growth.blocks, 259);
+        let charged = crate::opt::CodeGrowthBudget::charge_for_growth(growth);
+        assert_eq!(charged.values, 1);
+        assert_eq!(charged.blocks, 259);
+        assert!(!crate::opt::CodeGrowthBudget::o3().can_charge(charged));
     }
 
     // ------------------------------------------------------------------

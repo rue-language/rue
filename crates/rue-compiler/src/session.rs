@@ -5514,6 +5514,38 @@ impl CompilerSession {
         work.cfg.optimization_loops_analyzed += batch_work("cfg.optimize.loops-analyzed");
         work.cfg.optimization_loops_unrolled += batch_work("cfg.optimize.loops-unrolled");
         work.cfg.optimization_budget_refusals += batch_work("cfg.optimize.budget-refusals");
+        work.cfg.optimization_inline_budget_refusals +=
+            batch_work("cfg.general-inline-budget-refusals");
+        work.cfg.optimization_inline_importability_refusals +=
+            batch_work("cfg.general-inline-importability-refusals");
+        work.cfg.optimization_inline_importability_checks +=
+            batch_work("cfg.general-inline-importability-checks");
+        work.cfg.optimization_inline_import_attempts +=
+            batch_work("cfg.general-inline-import-attempts");
+        work.cfg.optimization_inline_interner_stages +=
+            batch_work("cfg.general-inline-interner-stages");
+        work.cfg.optimization_inline_growth_preflights +=
+            batch_work("cfg.general-inline-growth-preflights");
+        let optimizer_code_growth = batch_work("cfg.optimize.code-growth-used");
+        let optimizer_code_growth_blocks = batch_work("cfg.optimize.code-growth-blocks-used");
+        let reoptimization_code_growth = batch_work("cfg.reoptimize.code-growth-used");
+        let reoptimization_code_growth_blocks =
+            batch_work("cfg.reoptimize.code-growth-blocks-used");
+        let inline_code_growth = batch_work("cfg.general-inline-code-growth");
+        let inline_code_growth_blocks = batch_work("cfg.general-inline-code-growth-blocks");
+        work.cfg.optimization_code_growth_used +=
+            optimizer_code_growth + inline_code_growth + reoptimization_code_growth;
+        work.cfg.optimization_code_growth_blocks_used += optimizer_code_growth_blocks
+            + inline_code_growth_blocks
+            + reoptimization_code_growth_blocks;
+        work.cfg.optimization_inline_code_growth_used += inline_code_growth;
+        work.cfg.optimization_inline_code_growth_blocks_used += inline_code_growth_blocks;
+        work.cfg.optimization_reoptimization_attempts += batch_work("cfg.reoptimize.attempts");
+        work.cfg.optimization_reoptimization_completions +=
+            batch_work("cfg.reoptimize.completions");
+        work.cfg.optimization_reoptimization_code_growth_used += reoptimization_code_growth;
+        work.cfg.optimization_reoptimization_code_growth_blocks_used +=
+            reoptimization_code_growth_blocks;
         work.cfg.cfg_warnings_emitted += batch_work("cfg.warnings");
         let optimized_reuses = executions
             .iter()

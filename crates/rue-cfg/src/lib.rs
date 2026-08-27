@@ -29,14 +29,16 @@ mod verify;
 use rue_error::{CompileError, CompileWarning};
 
 pub use build::CfgBuilder;
-pub use inline::{CfgInlineError, inline_call, inline_call_in_block, splice_call_in_block};
+pub use inline::{
+    CfgInlineError, inline_call, inline_call_in_block, splice_call_growth, splice_call_in_block,
+};
 pub use inst::{
     BasicBlock, BlockId, Cfg, CfgArgMode, CfgCallArg, CfgDisplay, CfgEditError,
     CfgEditTransactionError, CfgEditor, CfgInst, CfgInstData, CfgPayloadStorageStats,
     CfgRemapError, CfgValue, MAX_CFG_ENTITIES_PER_FUNCTION, MAX_CFG_PAYLOAD_WORDS_PER_PROGRAM,
     Place, PlaceBase, Projection, Terminator, ValidatedCfg,
 };
-pub use opt::OptLevel;
+pub use opt::{CodeGrowth, CodeGrowthBudget, OptLevel};
 #[doc(hidden)]
 #[cfg(any(test, feature = "fuzz-support"))]
 pub use payload::fuzz_payload_corruption;

@@ -66,6 +66,23 @@ pub struct CfgConstructionWork {
     pub optimization_loops_analyzed: usize,
     pub optimization_loops_unrolled: usize,
     pub optimization_budget_refusals: usize,
+    pub optimization_inline_budget_refusals: usize,
+    pub optimization_inline_importability_refusals: usize,
+    pub optimization_inline_importability_checks: usize,
+    pub optimization_inline_import_attempts: usize,
+    pub optimization_inline_interner_stages: usize,
+    pub optimization_inline_growth_preflights: usize,
+    /// Total values charged by the shared O3 growth budget, including both
+    /// local unrolling and accepted general inlining.
+    pub optimization_code_growth_used: usize,
+    /// Total basic blocks charged by the shared O3 growth budget.
+    pub optimization_code_growth_blocks_used: usize,
+    pub optimization_inline_code_growth_used: usize,
+    pub optimization_inline_code_growth_blocks_used: usize,
+    pub optimization_reoptimization_attempts: usize,
+    pub optimization_reoptimization_completions: usize,
+    pub optimization_reoptimization_code_growth_used: usize,
+    pub optimization_reoptimization_code_growth_blocks_used: usize,
     pub cfg_warnings_emitted: usize,
     pub cfg_reuse_candidates: usize,
     pub cfg_reuses: usize,

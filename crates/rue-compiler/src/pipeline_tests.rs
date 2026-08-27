@@ -2853,6 +2853,367 @@ mod tests {
     }
 
     #[test]
+    fn phase3_admits_non_leaf_inlining_in_one_bounded_wave() {
+        let snapshot = SourceSnapshot::single(
+            "<phase3-non-leaf-inline>",
+            "fn leaf(x: i32) -> i32 { x + 1 } fn middle(x: i32) -> i32 { leaf(x) } fn main() -> i32 { middle(4) }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+
+        let main_call_count = |output: &RootedCfgOutput| {
+            output
+                .cfgs
+                .iter()
+                .find(|unit| unit.record.codegen.defined_symbol.ends_with("main"))
+                .map(|unit| {
+                    unit.record
+                        .cfg
+                        .blocks()
+                        .iter()
+                        .flat_map(|block| block.insts.iter())
+                        .filter(|value| {
+                            matches!(
+                                unit.record.cfg.get_inst(**value).data,
+                                rue_cfg::CfgInstData::Call { .. }
+                            )
+                        })
+                        .count()
+                })
+                .unwrap_or_default()
+        };
+        let has_unit = |output: &RootedCfgOutput, name: &str| {
+            output.cfgs.iter().any(|unit| {
+                matches!(
+                    &unit.function,
+                    FunctionInstanceKey::Definition(definition) if definition.name() == name
+                )
+            })
+        };
+
+        let o2 = session
+            .rooted_cfg(&CompileOptions {
+                opt_level: rue_cfg::OptLevel::O2,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(main_call_count(&o2), 1);
+        assert!(has_unit(&o2, "middle"));
+        assert_eq!(o2.work().cfg.optimization_code_growth_used, 0);
+        assert_eq!(o2.work().cfg.optimization_inline_code_growth_used, 0);
+
+        let o3 = session
+            .rooted_cfg(&CompileOptions {
+                opt_level: rue_cfg::OptLevel::O3,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(main_call_count(&o3), 1);
+        assert!(!has_unit(&o3, "middle"));
+        assert!(has_unit(&o3, "leaf"));
+        assert!(o3.work().cfg.optimization_code_growth_used > 0);
+        assert_eq!(
+            o3.work().cfg.optimization_code_growth_used,
+            o3.work().cfg.optimization_inline_code_growth_used
+        );
+
+        let o3_again = session
+            .rooted_cfg(&CompileOptions {
+                opt_level: rue_cfg::OptLevel::O3,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(main_call_count(&o3), main_call_count(&o3_again));
+        assert_eq!(has_unit(&o3, "middle"), has_unit(&o3_again, "middle"));
+    }
+
+    #[test]
+    fn phase3_preflights_many_sites_before_budgeted_splices() {
+        let calls = (0..80)
+            .map(|value| format!("leaf({value})"))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let source = format!("fn leaf(x: i32) -> i32 {{ x + 1 }} fn main() -> i32 {{ {calls} }}");
+        let snapshot = SourceSnapshot::single("<phase3-budgeted-sites>", source).unwrap();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let output = session
+            .rooted_cfg(&CompileOptions {
+                opt_level: rue_cfg::OptLevel::O3,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        let work = output.work().cfg;
+        assert_eq!(work.optimization_inline_growth_preflights, 80);
+        assert!(work.optimization_inline_budget_refusals > 0);
+        assert!(work.optimization_inline_code_growth_used > 0);
+        assert!(work.optimization_reoptimization_attempts > 0);
+        assert_eq!(
+            work.optimization_reoptimization_attempts,
+            work.optimization_reoptimization_completions
+        );
+        assert!(work.optimization_inline_code_growth_used <= 256);
+        assert!(work.optimization_inline_code_growth_blocks_used > 0);
+        assert!(work.optimization_inline_code_growth_blocks_used <= 256);
+        assert_eq!(
+            work.optimization_code_growth_used, work.optimization_inline_code_growth_used,
+            "this fixture has no loop growth, so total growth must be accepted inline growth"
+        );
+    }
+
+    #[test]
+    fn phase3_non_leaf_inlining_builds_for_both_backends() {
+        let snapshot = SourceSnapshot::single(
+            "<phase3-non-leaf-backends>",
+            "fn leaf(x: i32) -> i32 { x + 1 } fn middle(x: i32) -> i32 { leaf(x) } fn main() -> i32 { middle(4) }",
+        )
+        .unwrap();
+        for target in [Target::X86_64Linux, Target::Aarch64Linux] {
+            let mut session = CompilerSession::new();
+            session
+                .update_for_presentation(&snapshot)
+                .into_result()
+                .unwrap();
+            let output = session
+                .rooted_codegen(
+                    &CompileOptions {
+                        opt_level: rue_cfg::OptLevel::O3,
+                        target,
+                        ..CompileOptions::default()
+                    },
+                    rue_codegen::BackendArtifactRequest::default(),
+                )
+                .unwrap();
+            assert!(
+                !output.objects.is_empty(),
+                "O3 non-leaf backend object: {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn phase3_thresholds_are_real_optimized_cfg_boundaries() {
+        fn source_for(target_values: usize) -> String {
+            let operations = if target_values.is_multiple_of(2) {
+                (target_values - 2) / 2
+            } else {
+                (target_values - 1) / 2
+            };
+            let mut expression = String::from("x");
+            for _ in 0..operations {
+                expression.push_str(" + 1");
+            }
+            if target_values.is_multiple_of(2) {
+                expression = format!("-({expression})");
+            }
+            format!("fn target(x: i32) -> i32 {{ {expression} }} fn main() -> i32 {{ target(1) }}")
+        }
+
+        fn optimized_target_values(snapshot: &SourceSnapshot, level: rue_cfg::OptLevel) -> usize {
+            let mut session = CompilerSession::new();
+            session
+                .update_for_presentation(snapshot)
+                .into_result()
+                .unwrap();
+            let output = session
+                .rooted_cfg(&CompileOptions {
+                    opt_level: level,
+                    ..CompileOptions::default()
+                })
+                .unwrap();
+            output
+                .cfgs
+                .iter()
+                .find(|unit| {
+                    matches!(
+                        &unit.function,
+                        FunctionInstanceKey::Definition(definition) if definition.name() == "target"
+                    )
+                })
+                .map(|unit| unit.record.cfg.value_count())
+                .unwrap_or_default()
+        }
+
+        fn main_calls(snapshot: &SourceSnapshot, level: rue_cfg::OptLevel) -> usize {
+            let mut session = CompilerSession::new();
+            session
+                .update_for_presentation(snapshot)
+                .into_result()
+                .unwrap();
+            let output = session
+                .rooted_cfg(&CompileOptions {
+                    opt_level: level,
+                    ..CompileOptions::default()
+                })
+                .unwrap();
+            output
+                .cfgs
+                .iter()
+                .find(|unit| {
+                    matches!(
+                        &unit.function,
+                        FunctionInstanceKey::Definition(definition) if definition.name() == "main"
+                    )
+                })
+                .map(|unit| {
+                    unit.record
+                        .cfg
+                        .blocks()
+                        .iter()
+                        .flat_map(|block| block.insts.iter())
+                        .filter(|value| {
+                            matches!(
+                                unit.record.cfg.get_inst(**value).data,
+                                rue_cfg::CfgInstData::Call { .. }
+                            )
+                        })
+                        .count()
+                })
+                .unwrap_or_default()
+        }
+
+        for (expected_values, level, accepted) in [
+            (32, rue_cfg::OptLevel::O2, true),
+            (33, rue_cfg::OptLevel::O2, false),
+            (96, rue_cfg::OptLevel::O3, true),
+            (97, rue_cfg::OptLevel::O3, false),
+        ] {
+            let snapshot = SourceSnapshot::single(
+                format!("<phase3-threshold-{expected_values}>"),
+                source_for(expected_values),
+            )
+            .unwrap();
+            assert_eq!(
+                optimized_target_values(&snapshot, rue_cfg::OptLevel::O1),
+                expected_values,
+                "calibrated source must retain the exact optimized CFG size"
+            );
+            assert_eq!(main_calls(&snapshot, level), usize::from(!accepted));
+        }
+    }
+
+    #[test]
+    fn phase3_shared_budget_carries_unrolling_into_inlining() {
+        let snapshot = SourceSnapshot::single(
+            "<phase3-shared-budget>",
+            "fn counted(limit: i32) -> i32 { let mut i: i32 = 0; let mut y: i32 = 0; while i < limit { y = y + 1; i = i + 1; } y } fn main() -> i32 { let mut i: i32 = 0; let mut sum: i32 = 0; while i < 20 { sum = sum + counted(10) + 1; i = i + 1; } sum }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let output = session
+            .rooted_cfg(&CompileOptions {
+                opt_level: rue_cfg::OptLevel::O3,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        let work = output.work().cfg;
+        // The caller's 20-iteration loop clones 200 values/40 blocks. The
+        // first two inlined counted-loop bodies each cost 26 values/5 blocks;
+        // the third site is refused with four value units left. Inlining
+        // substitutes the constant `10` for `limit`, making the loop
+        // recognizable only during changed-caller reoptimization. Its exact
+        // 80-value/20-block growth fits a fresh budget but not the four-value
+        // remainder, so reoptimization must refuse it rather than resetting
+        // the shared budget.
+        const EXPECTED_INITIAL_UNROLL_VALUES: usize = 200;
+        const EXPECTED_INITIAL_UNROLL_BLOCKS: usize = 40;
+        const EXPECTED_INLINE_VALUES: usize = 52;
+        const EXPECTED_INLINE_BLOCKS: usize = 10;
+        const EXPECTED_REOPT_VALUES: usize = 0;
+        const EXPECTED_REOPT_BLOCKS: usize = 0;
+        const EXPECTED_REOPT_ATTEMPT_VALUES: u64 = 80;
+        const EXPECTED_REOPT_ATTEMPT_BLOCKS: u64 = 20;
+        const EXPECTED_TOTAL_VALUES: usize = 252;
+        const EXPECTED_TOTAL_BLOCKS: usize = 50;
+        assert_eq!(work.optimization_loops_unrolled, 1);
+        assert_eq!(
+            work.optimization_inline_code_growth_used,
+            EXPECTED_INLINE_VALUES
+        );
+        assert_eq!(
+            work.optimization_inline_code_growth_blocks_used,
+            EXPECTED_INLINE_BLOCKS
+        );
+        assert_eq!(
+            work.optimization_reoptimization_code_growth_used,
+            EXPECTED_REOPT_VALUES
+        );
+        assert_eq!(
+            work.optimization_reoptimization_code_growth_blocks_used,
+            EXPECTED_REOPT_BLOCKS
+        );
+        assert_eq!(work.optimization_code_growth_used, EXPECTED_TOTAL_VALUES);
+        assert_eq!(
+            work.optimization_code_growth_blocks_used,
+            EXPECTED_TOTAL_BLOCKS
+        );
+        assert_eq!(
+            work.optimization_code_growth_used,
+            EXPECTED_INITIAL_UNROLL_VALUES + EXPECTED_INLINE_VALUES + EXPECTED_REOPT_VALUES
+        );
+        assert_eq!(
+            work.optimization_code_growth_blocks_used,
+            EXPECTED_INITIAL_UNROLL_BLOCKS + EXPECTED_INLINE_BLOCKS + EXPECTED_REOPT_BLOCKS
+        );
+        assert_eq!(work.optimization_inline_budget_refusals, 18);
+        assert_eq!(work.optimization_budget_refusals, 2);
+        assert_eq!(work.optimization_loops_analyzed, 4);
+        assert_eq!(work.optimization_reoptimization_attempts, 1);
+        assert_eq!(
+            work.optimization_reoptimization_attempts,
+            work.optimization_reoptimization_completions
+        );
+        let mut fresh_budget = rue_cfg::opt::CodeGrowthBudget::o3();
+        assert!(fresh_budget.try_charge(rue_cfg::opt::CodeGrowth {
+            values: EXPECTED_REOPT_ATTEMPT_VALUES,
+            blocks: EXPECTED_REOPT_ATTEMPT_BLOCKS,
+        }));
+        assert_eq!(fresh_budget.used_values(), EXPECTED_REOPT_ATTEMPT_VALUES);
+        assert_eq!(fresh_budget.used_blocks(), EXPECTED_REOPT_ATTEMPT_BLOCKS);
+    }
+
+    #[test]
+    fn phase3_unimportable_sites_are_rejected_before_staging() {
+        let calls = (0..80)
+            .map(|value| format!("leaf({value})"))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let source = format!(
+            "struct Hidden {{ value: i32 }} fn leaf(x: i32) -> i32 {{ let hidden = Hidden {{ value: x }}; hidden.value }} fn main() -> i32 {{ {calls} }}"
+        );
+        let snapshot = SourceSnapshot::single("<phase3-unimportable-sites>", source).unwrap();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let output = session
+            .rooted_cfg(&CompileOptions {
+                opt_level: rue_cfg::OptLevel::O3,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        let work = output.work().cfg;
+        assert_eq!(work.optimization_inline_growth_preflights, 80);
+        assert_eq!(work.optimization_inline_importability_refusals, 80);
+        assert_eq!(work.optimization_inline_importability_checks, 1);
+        assert_eq!(work.optimization_inline_import_attempts, 0);
+        assert_eq!(work.optimization_inline_interner_stages, 0);
+        assert_eq!(work.optimization_inline_code_growth_used, 0);
+    }
+
+    #[test]
     fn phase2_excludes_methods_from_general_inlining() {
         let snapshot = SourceSnapshot::single(
             "<phase2-method-exclusion>",

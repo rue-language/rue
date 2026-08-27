@@ -582,6 +582,25 @@ impl CfgDomainProjection {
     /// an accessor CFG, then remap that CFG into the extended domain. Accessor
     /// splicing preserves the callee's source spans and stable local atoms;
     /// only dense string ids and live type/symbol ids are relocated.
+    pub(crate) fn check_importable(&self, old: &Self) -> Result<(), CfgDomainFailure> {
+        if old.incomplete_epoch.is_some() || self.incomplete_epoch.is_some() {
+            return Err(CfgDomainFailure::Missing);
+        }
+        // Mirror the type-domain portion of import_accessor_cfg without
+        // mutating or allocating for the caller projection. This is
+        // intentionally based on durable stable-type mappings, not live
+        // handles, so a repeated unimportable site can be refused before
+        // cloning staging resources.
+        for (_, stable) in &old.types {
+            if live_primitive(stable).is_none()
+                && !self.types.iter().any(|(_, current)| current == stable)
+            {
+                return Err(CfgDomainFailure::MissingStableType(stable.clone()));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn import_accessor_cfg(
         &mut self,
         old: &Self,

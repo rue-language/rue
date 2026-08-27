@@ -6,7 +6,7 @@ tags: [compiler, codegen, optimization]
 feature-flag: none
 created: 2026-07-16
 accepted:
-implemented: Phase 3 (RUE-928)
+implemented: Phase 3 (RUE-928, RUE-931)
 spec-sections: []
 superseded-by:
 ---
@@ -92,17 +92,16 @@ the CFG level is the correct, target-independent home and avoids a third copy.
 
 ### The passes that exist, and the pass "shape" convention
 
-The `-O1` set has grown well past the original three: `opt::optimize`
-(`crates/rue-cfg/src/opt/mod.rs:142`) runs `constopt::run` (the sparse worklist
+The `-O1` set has grown well past the original three: `opt::optimize_with_budget`
+runs `constopt::run` (the sparse worklist
 that interleaves constant folding — the `constfold` kernel — with store-to-load
 constant propagation to an internal fixpoint, RUE-794), then `peephole::run`
 (RUE-912), then `simplify::run` (CFG simplification, RUE-910/911), then `dce::run`.
 Two more passes are gated to `-O2`/`-O3` inside that same arm: `forward::run`
 (value forwarding / copy propagation, RUE-914) and `cse::run` (block-local CSE,
 RUE-913), each behind `if matches!(level, OptLevel::O2 | OptLevel::O3)`
-(`crates/rue-cfg/src/opt/mod.rs:184, 193`). So `-O2` already differs from `-O1`;
-`-O3` still aliases `-O2` (there is no distinct `O3` arm yet). Loop passes are
-`-O3` content and will be the first passes gated strictly above `-O2`.
+inside the same level match. So `-O2` already differs from `-O1`; `-O3` adds
+LICM, constant-trip unrolling, and bounded larger-cap non-leaf inlining.
 
 ### Work-counter discipline — what the codebase actually does
 
@@ -122,15 +121,15 @@ layers, and loop passes should follow it:
    returns `()` (`crates/rue-cfg/src/opt/dce.rs:77`). The fold/propagate
    **fixpoint now lives inside `constopt`'s sparse worklist** (an instruction is
    revisited only when one of its operands becomes constant, RUE-794); the old
-   outer `folded || propagated` loop in `opt::optimize` is gone. Passes are run
-   once, in the fixed order `opt::optimize` sets.
+   outer `folded || propagated` loop in `opt::optimize_with_budget` is gone.
+   Passes are run once, in the fixed order `opt::optimize_with_budget` sets.
 2. **Structured work counters at the orchestration layer.** The session records
    pass work in `CfgConstructionWork`
-   (`crates/rue-compiler/src/canonical_semantic.rs:282`) — fields like
+   — fields like
    `optimization_attempts`, `optimization_completions`, `optimized_level_attempts`
    (lines 290–292) — aggregated across the parallel function map in
-   `build_functions_and_cfgs` (`crates/rue-compiler/src/queries.rs:279-283`,
-   `382-384`). This is the "wide events / structured completion" discipline
+   the optimized-CFG query and compiler-owned whole-program batch. This is the
+   "wide events / structured completion" discipline
    AGENTS.md describes for `tracing`.
 
 Loop passes should therefore **expose their own `Stats` struct** with
@@ -353,7 +352,7 @@ test, and — once the post-unroll cleanup below runs — it collapses the
 now-constant induction variable.
 
 **Post-unroll cleanup is mandatory (constopt runs *before* unrolling).**
-`constopt` is the *first* pass in `opt::optimize` (`crates/rue-cfg/src/opt/mod.rs:160`),
+`constopt` is the *first* pass in `opt::optimize_with_budget`,
 running before `peephole`, `simplify`, `forward`, `cse`, and `dce`. A loop pass
 gated at `-O3` runs *after* that whole sequence, so the constants and dead
 control flow unrolling exposes — the per-iteration IV values, the now-dead trip
@@ -368,18 +367,26 @@ than the original loop. The cleanest placement is a small fixpoint or a fixed
 second cleanup pass in the `-O3` arm after the loop passes; the exact shape is an
 implementation detail, but the *requirement* is not optional.
 
-- **Budget knob.** A single integer `unroll_budget` = maximum *total instruction
-  count of the unrolled body* (`N × body_size`). Proposed `-O3` default: a modest
-  cap (a few hundred CFG instructions) — enough to unroll small fixed loops,
-  small enough to bound code growth. `-O0`/`-O1`/`-O2` = 0 (disabled). The count
-  source is the same `cfg.values`-based instruction count LICM and inlining use.
+- **Budget knob.** O3 uses one per-function `CodeGrowthBudget` capped at 256
+  values and 256 cloned blocks for both unrolling and general inlining. A charge
+  is the checked arena-value and basic-block count of the cloned body (including
+  block parameters), so the two passes use one growth authority and cannot
+  overflow or spend independently. Ordinary never-returning inlining applies a
+  minimum one-value charge when its exact value delta is zero; accessor calls
+  are excluded from general inlining. The block ceiling bounds block-heavy
+  zero-value site work while preserving ordinary fixed-loop unrolling.
+  Measurement of O0 CFG output with the checked-in compiler found 7/12/18/13/4
+  blocks in `life`, 4/4/7 in `collatz`, and 4/7/7/1 in `quicksort`; the larger
+  Lattice workload had 1,282 CFGs ranging from 1–68 blocks, with nearest-rank
+  p90=11, p95=16, p99=43. The 256-block ceiling is therefore a finite
+  per-function work bound well above the measured population and common fixed
+  loops.
 - **Interaction with inlining's thresholds (ADR-0049).** Both unrolling and
-  aggressive inlining are `-O3` code-growth transforms. They should share **one
-  code-growth budget per function**, debited by whichever runs, so a function
-  that inlines heavily does not *also* unroll into a size explosion (and vice
-  versa). This note proposes a shared per-function growth budget as the
-  coordination point; ADR-0049 Phase 3 is where the two meet. Absent
-  coordination, the two passes can multiply code size.
+  larger-cap bounded non-leaf inlining are `-O3` code-growth transforms. They share one
+  `CodeGrowthBudget` per function, debited by whichever runs. The per-function
+  optimizer carries unrolling's charge into the later whole-program batch;
+  each accepted splice is charged before the caller is re-optimized, so a
+  function cannot inline heavily and then unroll past the same 256-value cap.
 - **Out of scope initially:** partial unrolling, runtime-trip-count unrolling with
   a remainder loop, and unroll-and-jam. Each needs a remainder-loop construction
   and (for trap-safety) the same guard reasoning as LICM §2.
@@ -388,7 +395,7 @@ implementation detail, but the *requirement* is not optional.
 
 - **Differential coverage (ADR-0044).** Each pass lands with multi-case
   `differential_opt` CLI coverage (`run_case_differential`, RUE-236,
-  `crates/rue-cli-tests/src/main.rs:802`) for the shapes it rewrites, and keeps
+  differential CLI harness) for the shapes it rewrites, and keeps
   the full differential set green. For LICM the **mandatory** cases are the
   trap-safety ones: a zero-iteration loop containing an invariant trapping op
   (overflow, div-by-zero, invariant index read) must **not** trap after LICM —
@@ -401,16 +408,15 @@ implementation detail, but the *requirement* is not optional.
   `peephole`; see §"Work-counter discipline") and contributes structured counters
   (loops analyzed, invariants hoisted, loops unrolled, budget-rejected) into the
   `CfgConstructionWork` / session work surface
-  (`crates/rue-compiler/src/canonical_semantic.rs:282`,
-  `crates/rue-compiler/src/queries.rs:279-283`), per AGENTS.md tracing guidance.
-- **Placement.** Gated strictly above `-O2` in `opt::optimize` — today a new `O3`
-  case split out of the shared `O1 | O2 | O3` arm (which already carries the
-  `-O2`/`-O3`-gated forward/CSE passes), preserving ADR-0044's monotonic
-  superset rule. The post-optimization structural recheck
-  (`verify_after_optimization_with_type_pool`, `opt/mod.rs:206`) continues to run
-  after, as the
-  structural safety net for the block cloning and preheader insertion these
-  passes perform.
+  the optimized-CFG query and compiler-owned whole-program batch, per AGENTS.md
+  tracing guidance.
+- **Placement.** Constant-trip full unrolling runs only in the `OptLevel::O3`
+  arm of `rue_cfg::opt::optimize_with_budget`, after the ordinary local cleanup
+  passes. It debits the shared `CodeGrowthBudget`; the whole-program compiler
+  batch carries the remaining budget into general inlining and changed-caller
+  reoptimization. The post-optimization structural recheck
+  (`verify_after_optimization_with_type_pool`) remains the safety net for block
+  cloning and preheader insertion.
 
 ## Implementation Phases
 
@@ -425,9 +431,9 @@ implementation detail, but the *requirement* is not optional.
   July 2026)
 - [x] **Phase 3: Constant-trip full unrolling** — canonical shape only (single
   header, single latch, recognized IV, no unsupported exits); full CFG-subgraph
-  cloning; mandatory post-unroll const-fold/simplify/DCE cleanup; under the size
-  budget; shared code-growth budget with ADR-0049 inlining. `-O3`. (landed,
-  RUE-928, August 2026)
+  cloning; mandatory post-unroll const-fold/simplify/DCE cleanup; under the
+  shared 256-value/256-block code-growth budget with ADR-0049 inlining. `-O3`. (landed,
+  RUE-928, August 2026; budget coordination completed in RUE-931)
 - [ ] **Phase 4 (relaxation): guarded trapping-op hoisting** — after loop
   rotation/guard analysis exists. (file RUE-934)
 
@@ -464,9 +470,6 @@ implementation detail, but the *requirement* is not optional.
 - **Induction-variable recognition** for constant trip counts — how much IV
   analysis is needed, and how much constant folding/propagation (`constopt`) already exposes, before
   unrolling can read a constant `N` reliably.
-- **Shared code-growth budget shape** with ADR-0049 — one budget debited by both
-  passes, or independent caps with a combined ceiling? Resolve jointly with
-  ADR-0049 Phase 3.
 - **When (if ever) to cache dominators across passes** — deferred until profiling
   justifies the incremental-maintenance complexity.
 
