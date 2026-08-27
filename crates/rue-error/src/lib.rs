@@ -72,6 +72,7 @@ pub fn interner_error_kind(kind: lasso::LassoErrorKind, message: impl Into<Strin
 /// - **E1200-E1299**: Comptime errors
 /// - **E1300-E1399**: Unchecked-code errors (raw pointers, `checked` blocks)
 /// - **E1400-E1499**: Compiler-input errors
+/// - **E1500-E1599**: Driver/host errors (source loading and build environment)
 /// - **E9000-E9999**: Internal compiler errors
 ///
 /// Once assigned, error codes must never change to maintain stability for
@@ -537,6 +538,19 @@ impl ErrorCode {
     pub const COMPILER_RESOURCE_EXHAUSTION: Self = Self(1402);
     pub const OUTPUT_PUBLICATION: Self = Self(1403);
     pub const UNSATISFIED_TRUSTED_TOOLCHAIN_INPUT: Self = Self(1404);
+
+    // ========================================================================
+    // Driver/host errors (E1500-E1599)
+    // ========================================================================
+    // These codes classify failures raised outside the compiler diagnostic
+    // graph. They are used by the CLI/host's machine-readable source-load
+    // boundary and therefore do not map from an ErrorKind variant below.
+    /// An ordinary source-loading or driver I/O failure.
+    pub const DRIVER_SOURCE_LOAD: Self = Self(1500);
+    /// A required trusted toolchain input is missing, unreadable, or malformed.
+    pub const DRIVER_TOOLCHAIN_INTEGRITY: Self = Self(1501);
+    /// Hermetic policy denied a trusted toolchain input during acquisition.
+    pub const DRIVER_HERMETIC_DENIAL: Self = Self(1502);
 
     // ========================================================================
     // Internal compiler errors (E9000-E9999)
@@ -2653,11 +2667,13 @@ mod tests {
         );
     }
 
-    /// `ErrorKind::code()` must cover the declared ErrorCode constants without
+    /// `ErrorKind::code()` must cover the compiler-declared ErrorCode constants without
     /// accidental aliases. Intentional aliases (such as the two E0436
     /// duplicate-definition variants) share one match arm, and every constant
     /// must be used (a constant nobody maps to is dead, and usually a sign that
-    /// a variant was repointed at someone else's code).
+    /// a variant was repointed at someone else's code). Driver/host codes are
+    /// intentionally outside this mapping because they classify `SourceLoadError`
+    /// values at the CLI boundary rather than `ErrorKind` values.
     ///
     /// `test_error_codes_are_unique` (above) guards constant *values*; this
     /// test guards the variant -> constant *mapping*. It scans the body of
@@ -2667,7 +2683,8 @@ mod tests {
     fn test_error_kind_to_code_mapping_is_injective() {
         let src = include_str!("lib.rs");
 
-        // Collect all declared ErrorCode constant names.
+        // Collect all declared ErrorCode constant names. Driver/host codes are
+        // consumed by the CLI's SourceLoadError renderer, not ErrorKind::code().
         let mut declared: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for line in src.lines() {
             let Some(rest) = line.trim().strip_prefix("pub const ") else {
@@ -2682,6 +2699,20 @@ mod tests {
             "expected to find the ErrorCode constants (found {})",
             declared.len()
         );
+        let driver_codes: std::collections::HashSet<_> = declared
+            .iter()
+            .copied()
+            .filter(|name| name.starts_with("DRIVER_"))
+            .collect();
+        assert_eq!(
+            driver_codes,
+            std::collections::HashSet::from([
+                "DRIVER_SOURCE_LOAD",
+                "DRIVER_TOOLCHAIN_INTEGRITY",
+                "DRIVER_HERMETIC_DENIAL",
+            ])
+        );
+        declared.retain(|name| !name.starts_with("DRIVER_"));
 
         // Extract the body of `fn code()` by brace matching.
         let start = src
@@ -3583,6 +3614,21 @@ mod tests {
     fn test_error_code_equality() {
         assert_eq!(ErrorCode::TYPE_MISMATCH, ErrorCode(206));
         assert_ne!(ErrorCode::TYPE_MISMATCH, ErrorCode::UNDEFINED_VARIABLE);
+    }
+
+    #[test]
+    fn driver_error_codes_are_stable_and_distinct() {
+        assert_eq!(ErrorCode::DRIVER_SOURCE_LOAD, ErrorCode(1500));
+        assert_eq!(ErrorCode::DRIVER_TOOLCHAIN_INTEGRITY, ErrorCode(1501));
+        assert_eq!(ErrorCode::DRIVER_HERMETIC_DENIAL, ErrorCode(1502));
+        assert_ne!(
+            ErrorCode::DRIVER_SOURCE_LOAD,
+            ErrorCode::DRIVER_TOOLCHAIN_INTEGRITY
+        );
+        assert_ne!(
+            ErrorCode::DRIVER_TOOLCHAIN_INTEGRITY,
+            ErrorCode::DRIVER_HERMETIC_DENIAL
+        );
     }
 
     #[test]

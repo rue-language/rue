@@ -766,6 +766,19 @@ pub enum SourceLoadError {
     HermeticDenial(HermeticDenialError),
 }
 
+/// Turn a host-side contradiction into the canonical graceful ICE diagnostic.
+/// These failures are not environmental source-load/toolchain errors: they
+/// mean the compiler's own continuation protocol violated its invariant.
+pub(crate) fn source_load_internal_error(
+    snapshot: Option<SourceSnapshot>,
+    message: impl Into<String>,
+) -> SourceLoadError {
+    SourceLoadError::Compiler {
+        snapshot,
+        errors: CompileErrors::from(rue_error::ice_error!(message.into())),
+    }
+}
+
 pub(crate) fn load(
     request: SourceLoadRequest<'_>,
 ) -> Result<ImportDiscoveryResult, SourceLoadError> {
@@ -1711,8 +1724,9 @@ pub(crate) fn acquire_reached_toolchain_modules(
                 // The park just attached its exact demanded set to the closed
                 // continuation, so an authorizing token must be outstanding.
                 let token = closed_discovery_continuation(&result.session).ok_or_else(|| {
-                    SourceLoadError::Message(
-                        "Error: internal compiler invariant — a reached-body toolchain park issued no authorizing continuation".into(),
+                    source_load_internal_error(
+                        Some(result.source_snapshot.clone()),
+                        "a reached-body toolchain park issued no authorizing continuation",
                     )
                 })?;
                 let delta = publish_trusted_toolchain_successor(
@@ -1760,13 +1774,12 @@ pub(crate) fn acquire_reached_toolchain_modules(
         }
     }
     // Still parking after the bound: acquisition is not converging even though
-    // every round published a successor. Surface as a toolchain-integrity error
-    // rather than spinning.
-    Err(SourceLoadError::Toolchain(
-        ToolchainIntegrityError::UnsatisfiedAfterPublish {
-            logical_path: "<reached-body trusted-toolchain acquisition did not converge>"
-                .to_owned(),
-        },
+    // every round published a successor. This violates the host/compiler
+    // continuation contract, so preserve it as a graceful ICE rather than
+    // misclassifying it as toolchain integrity or spinning forever.
+    Err(source_load_internal_error(
+        Some(result.source_snapshot.clone()),
+        "reached-body trusted-toolchain acquisition did not converge after publishing successors",
     ))
 }
 
@@ -1931,8 +1944,9 @@ pub enum ToolchainIntegrityError {
         errors: CompileErrors,
     },
     /// The host published the successor but the demanded trusted module did not
-    /// appear in it — an internal contradiction, surfaced loudly rather than
-    /// looping forever.
+    /// appear in it — an internal contradiction. Production acquisition routes
+    /// this condition through the graceful E9000 ICE path rather than treating
+    /// it as a toolchain-integrity failure.
     UnsatisfiedAfterPublish { logical_path: String },
 }
 

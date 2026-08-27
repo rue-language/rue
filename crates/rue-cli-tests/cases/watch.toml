@@ -41,6 +41,7 @@ files = [
 
 [case.watch]
 kind = "delete"
+error_format = "json"
 expected_exit_codes = [1, 2]
 
 [[case.watch.edits]]

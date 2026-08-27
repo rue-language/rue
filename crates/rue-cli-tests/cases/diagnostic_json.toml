@@ -15,6 +15,66 @@ of that — they pass on malformed JSON as long as the bytes appear somewhere.
 """
 
 [[case]]
+name = "missing_root_source_load_is_json"
+description = "RUE-1323: an ordinary missing-root source-load failure uses the driver code and the same spanless schema as compiler diagnostics."
+files = []
+args = ["--error-format", "json", "missing.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E1500 -"]
+error_contains = [
+  '"code":"E1500"',
+  '"message":"Error reading ',
+  "missing.rue:",
+  '"spans":[]',
+]
+compile_stderr_not_contains = ["error: [", " --> "]
+
+[[case]]
+name = "missing_root_source_load_text_is_unchanged"
+description = "RUE-1323 control: ordinary source-load failures retain their established human text when JSON is not requested."
+files = []
+args = ["missing.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["Error reading ", "missing.rue:"]
+compile_stderr_not_contains = ['"code":"E1500"', '"severity":"error"']
+
+[[case]]
+name = "missing_trusted_toolchain_input_is_json"
+description = "RUE-1323: a reached fallible intrinsic with a missing trusted std module is classified as toolchain integrity, not ordinary source load or an ICE."
+files = [{ path = "main.rue", source = 'fn main() -> i32 { let _ = @parse_i64("1"); 0 }' }]
+env = { RUE_STD_PATH = "sdk" }
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E1501 -"]
+error_contains = [
+  '"code":"E1501"',
+  '"message":"Toolchain integrity error:',
+  '"spans":[]',
+]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "error: [", " --> "]
+
+[[case]]
+name = "hermetic_toolchain_denial_is_json"
+description = "RUE-1323: a source manifest denial while satisfying a trusted std demand is classified as hermetic build policy, distinct from toolchain integrity."
+files = [
+  { path = "sources.manifest", source = "main.rue\n" },
+  { path = "main.rue", source = 'fn main() -> i32 { let _ = @parse_i64("1"); 0 }' },
+]
+env = { RUE_STD_PATH = "sdk" }
+args = ["--error-format", "json", "--source-manifest", "sources.manifest", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E1502 -"]
+error_contains = [
+  '"code":"E1502"',
+  '"message":"Hermetic build configuration error:',
+  '"spans":[]',
+]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "Toolchain integrity error", "error: [", " --> "]
+
+[[case]]
 name = "empty_call_argument_is_at_comma"
 description = "The CLI JSON surface preserves the dedicated parser diagnostic and its comma span."
 files = [{ path = "main.rue", source = "fn helper() {} fn main() { helper(,); }" }]
