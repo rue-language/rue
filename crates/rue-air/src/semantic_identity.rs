@@ -330,7 +330,7 @@ pub enum StableProducerId<D, M> {
 /// the durable name encoding, the durable key encoding, structural equality,
 /// retained-size accounting -- doubled per level. A ten-deep `Pair(Pair(..))`
 /// cost a second, a twenty-deep one hung the compiler outright with no
-/// diagnostic, and the `MAX_SPECIALIZATION_ROUNDS` depth guard was permanently
+/// diagnostic, and the `MAX_COMPTIME_CALL_DEPTH` depth guard was permanently
 /// out of reach: `f(comptime T: type, ..)` calling `f(Pair(T), ..)` hung long
 /// before round 64 instead of reporting E1200 (RUE-1699).
 ///

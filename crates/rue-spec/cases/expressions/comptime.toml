@@ -2190,6 +2190,35 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
+name = "comptime_recursion_depth_portable_minimum"
+spec = ["4.14:18"]
+description = "The portable minimum comptime nesting depth of 64 is accepted"
+source = """
+fn count(comptime n: i32) -> i32 {
+    if n <= 0 { 0 } else { 1 + count(n - 1) }
+}
+fn main() -> i32 {
+    if count(64) == 64 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "comptime_recursion_depth_exact_next_rejected"
+spec = ["4.14:18"]
+description = "The first depth beyond Rue's portable boundary is diagnosed as a depth overrun"
+source = """
+fn count(comptime n: i32) -> i32 {
+    if n <= 0 { 0 } else { 1 + count(n - 1) }
+}
+fn main() -> i32 {
+    count(65)
+}
+"""
+compile_fail = true
+error_contains = "exceeded the maximum nesting depth (64)"
+
+[[case]]
 name = "comptime_recursion_depth_limit"
 spec = ["4.14:18"]
 description = "Comptime recursion without a compile-time-known base case is diagnosed, not an infinite loop"

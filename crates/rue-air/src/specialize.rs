@@ -26,7 +26,7 @@
 //! `CallGeneric` instructions and reports the demanded specialization keys,
 //! and [`analyze_one_specialization_with_host`] analyzes exactly one demanded
 //! specialized body. The compiler's query graph owns the cross-body fixed
-//! point and its expansion budget ([`MAX_SPECIALIZATION_ROUNDS`]).
+//! point and its expansion budget ([`MAX_COMPTIME_CALL_DEPTH`]).
 
 use crate::Node;
 use ahash::{AHashMap, AHashSet};
@@ -42,8 +42,8 @@ use crate::sema::{
     SemanticBodyExportHost,
 };
 
-// Compatibility export for the durable query path until its adapter is moved
-// to the frame engine. The canonical budget is owned by that engine.
+// The canonical budget is owned by the comptime frame engine and re-exported
+// here for callers that already import the sema surface.
 pub use crate::sema::MAX_COMPTIME_CALL_DEPTH;
 use crate::types::{StructId, Type};
 
@@ -68,34 +68,9 @@ struct SpecializationInfo {
     call_site_span: Span,
 }
 
-/// Maximum number of specialization rounds before giving up.
-///
-/// Each round creates the bodies for the specializations discovered in the
-/// previous round. The budget persists when specialization temporarily yields
-/// to sema's ordinary function/method worklists: otherwise a chain that
-/// alternates between a specialization and a newly registered method can reset
-/// the counter forever (RUE-580).
-///
-/// This is deliberately a conservative, program-wide expansion budget rather
-/// than exact causal-depth tracking. Independent branches can share the budget,
-/// but that tradeoff keeps every form of generic/comptime expansion bounded —
-/// including comptime-value recursion (`fact(comptime n)` calling
-/// `fact(n - 1)`, RUE-166) and ever-growing type instantiation such as
-/// `f(Pair(T), ...)` inside `f` — without threading provenance through every
-/// sema work queue.
-///
-/// The type-instantiation half of that was unreachable until RUE-1699. An
-/// anonymous nominal's identity named its comptime arguments twice, so the
-/// work of instantiating round `n` doubled with `n` and `f(Pair(T), ...)` hung
-/// well before round 64 rather than reporting E1200. A budget that cannot be
-/// reached is not a budget, so `cli.anonymous_identity_nesting` pins that this
-/// one is.
-pub const MAX_SPECIALIZATION_ROUNDS: usize = 64;
-
-/// Maximum nesting depth of a *comptime call* — one `comptime`-evaluated
-/// application of a function to compile-time arguments, as opposed to a round
-/// of the specialization worklist above.
-///
+/// Canonical maximum nesting depth for a comptime call. The compiler query
+/// scheduler re-exports this value while tracking the causal depth of its
+/// specialization worklist.
 fn collect_specializations(
     air: &Air,
     interner: &ThreadedRodeo,

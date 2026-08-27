@@ -6445,6 +6445,15 @@ fn schedule_body_instance<V>(
     Some((instance, true))
 }
 
+/// Reachability starts at the root body, while a comptime call depth starts at
+/// its first application. The scheduler records the root at depth zero and
+/// increments for every specialization edge, so the first specialization is
+/// scheduler-depth one but comptime-depth zero.
+#[inline]
+fn comptime_specialization_depth(scheduler_depth: usize) -> usize {
+    scheduler_depth.saturating_sub(1)
+}
+
 pub(crate) fn durable_type_from_instance_key(
     value: &crate::TypeInstanceKey,
 ) -> Option<crate::durable_semantics::DurableType> {
@@ -7623,29 +7632,24 @@ impl Drop for TestSemanticComptimeArrayLengthOverrideGuard {
     }
 }
 
-/// Comptime call-nesting budget for the durable (declaration-time) evaluator.
+/// Query-stack ticket for a durable comptime call.
 ///
-/// This is the *same* constant the in-body engine spends at its comptime-call
-/// site (`rue_air::sema::comptime_eval`), deliberately shared rather than
-/// duplicated: a comptime call must be accepted in both positions or rejected
-/// in both. The durable path used to stop at 32 while a body stopped at 64, so
-/// `let x: i64 = count(40)` compiled while `const X: i64 = count(40)` was
-/// rejected with a depth-exceeded E1200 (RUE-1733). See
-/// [`rue_air::specialize::MAX_COMPTIME_CALL_DEPTH`] for why the shared value is
-/// neither of the two old budgets.
-const SEMANTIC_COMPTIME_MAX_DEPTH: usize = rue_air::specialize::MAX_COMPTIME_CALL_DEPTH;
-
+/// The query boundary owns this ticket so cancellation and unwinding restore
+/// the caller's depth; the limit and diagnostic authority remain in AIR.
 struct SemanticComptimeCallDepthGuard(usize);
 
 impl SemanticComptimeCallDepthGuard {
     fn enter(name: &str) -> Result<Self, EvaluateSemanticConstError> {
         SEMANTIC_COMPTIME_CALL_DEPTH.with(|depth| {
             let current = depth.get();
-            if current >= SEMANTIC_COMPTIME_MAX_DEPTH {
+            // This guard wraps child query entries rather than the root AIR
+            // frame, so the first active query is propagated call depth one.
+            let propagated_depth = rue_air::next_comptime_depth(current);
+            if rue_air::comptime_depth_over_limit(propagated_depth) {
                 return Err(
                     crate::durable_comptime::DurableComptimeFailure::maximum_depth(
                         name,
-                        SEMANTIC_COMPTIME_MAX_DEPTH,
+                        rue_air::MAX_COMPTIME_CALL_DEPTH,
                     ),
                 );
             }
@@ -13328,11 +13332,14 @@ impl RevisionedQueryDatabase {
                                             .session
                                             .register_program(&core)
                                             .expect("callable program must register once");
-                                                let mut frame =
-                                                    rue_air::ComptimeFrame::expression(
-                                                        program_key.clone(),
-                                                        body,
-                                                    );
+                                                let root_identity = crate::durable_comptime::DurableComptimeIdentity::from(
+                                                    producer,
+                                                );
+                                                let mut frame = rue_air::ComptimeFrame::callable_body(
+                                                    program_key.clone(),
+                                                    body,
+                                                    root_identity.clone(),
+                                                );
                                                 frame.context = authority
                                                     .session
                                                     .file_for_program(&program_key)
@@ -13387,11 +13394,7 @@ impl RevisionedQueryDatabase {
                                                         )
                                                     })
                                                     .collect();
-                                                env.canonical_identity = Some(
-                                                    crate::durable_comptime::DurableComptimeIdentity::from(
-                                                        producer,
-                                                    ),
-                                                );
+                                                env.canonical_identity = Some(root_identity);
                                                 let outcome = evaluate_durable_comptime_root(
                                                     &mut authority,
                                                     frame,
@@ -14415,7 +14418,9 @@ impl RevisionedQueryDatabase {
                                     && (!matches!(
                                         instance.as_ref(),
                                         crate::FunctionInstanceKey::Specialization { .. }
-                                    ) || depth <= rue_air::specialize::MAX_SPECIALIZATION_ROUNDS);
+                                    ) || !rue_air::comptime_depth_over_limit(
+                                        comptime_specialization_depth(depth),
+                                    ));
                                 if ready {
                                     frontier.push((instance, depth));
                                 } else {
@@ -14583,7 +14588,9 @@ impl RevisionedQueryDatabase {
                             if matches!(
                                 instance.as_ref(),
                                 crate::FunctionInstanceKey::Specialization { .. }
-                            ) && current_depth > rue_air::specialize::MAX_SPECIALIZATION_ROUNDS
+                            ) && rue_air::comptime_depth_over_limit(
+                                comptime_specialization_depth(current_depth),
+                            )
                             {
                                 let name = function_definition_key(&instance)
                                     .map(crate::StableDefinitionKey::name)
@@ -14596,7 +14603,7 @@ impl RevisionedQueryDatabase {
                                             rue_error::ErrorKind::ComptimeEvaluationFailed {
                                                 reason: format!(
                                                     "specialization of '{name}' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
-                                                    rue_air::specialize::MAX_SPECIALIZATION_ROUNDS
+                                                    rue_air::MAX_COMPTIME_CALL_DEPTH
                                                 ),
                                             },
                                         ),
@@ -14627,7 +14634,9 @@ impl RevisionedQueryDatabase {
                         if matches!(
                             instance.as_ref(),
                             crate::FunctionInstanceKey::Specialization { .. }
-                        ) && current_depth > rue_air::specialize::MAX_SPECIALIZATION_ROUNDS
+                        ) && rue_air::comptime_depth_over_limit(
+                            comptime_specialization_depth(current_depth),
+                        )
                         {
                             let name = function_definition_key(&instance)
                                 .map(crate::StableDefinitionKey::name)
@@ -14639,7 +14648,7 @@ impl RevisionedQueryDatabase {
                                         rue_error::ErrorKind::ComptimeEvaluationFailed {
                                             reason: format!(
                                                 "specialization of '{name}' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
-                                                rue_air::specialize::MAX_SPECIALIZATION_ROUNDS
+                                                rue_air::MAX_COMPTIME_CALL_DEPTH
                                             ),
                                         },
                                     ),
@@ -21715,7 +21724,7 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
                             reason: format!(
                                 "specialization of '{}' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
                                 definition.name(),
-                                SEMANTIC_COMPTIME_MAX_DEPTH,
+                                rue_air::MAX_COMPTIME_CALL_DEPTH,
                             ),
                         },
                         span: None,
@@ -21771,7 +21780,7 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
                             reason: format!(
                                 "specialization of '{}' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
                                 definition.name(),
-                                SEMANTIC_COMPTIME_MAX_DEPTH,
+                                rue_air::MAX_COMPTIME_CALL_DEPTH,
                             ),
                         },
                         span: None,
@@ -25064,6 +25073,52 @@ mod tests {
     };
     use rue_span::FileId;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn semantic_comptime_call_depth_guard_restores_after_every_exit() {
+        SEMANTIC_COMPTIME_CALL_DEPTH.with(|depth| assert_eq!(depth.get(), 0));
+
+        let mut guards = Vec::new();
+        for _ in 0..rue_air::MAX_COMPTIME_CALL_DEPTH {
+            guards.push(
+                SemanticComptimeCallDepthGuard::enter("count")
+                    .expect("propagated depths one through 64 must be admitted"),
+            );
+        }
+        SEMANTIC_COMPTIME_CALL_DEPTH
+            .with(|depth| assert_eq!(depth.get(), rue_air::MAX_COMPTIME_CALL_DEPTH));
+        assert!(
+            SemanticComptimeCallDepthGuard::enter("count").is_err(),
+            "the exact next depth must be rejected"
+        );
+        while guards.pop().is_some() {}
+        SEMANTIC_COMPTIME_CALL_DEPTH.with(|depth| assert_eq!(depth.get(), 0));
+
+        let aborted: Result<(), QueryAbort> = (|| {
+            let _guard = SemanticComptimeCallDepthGuard::enter("count")
+                .expect("the root depth must be admitted");
+            Err(QueryAbort::Canceled)
+        })();
+        assert!(matches!(aborted, Err(QueryAbort::Canceled)));
+        SEMANTIC_COMPTIME_CALL_DEPTH.with(|depth| assert_eq!(depth.get(), 0));
+    }
+
+    struct AssertSemanticComptimeDepthZero;
+
+    impl Drop for AssertSemanticComptimeDepthZero {
+        fn drop(&mut self) {
+            SEMANTIC_COMPTIME_CALL_DEPTH.with(|depth| assert_eq!(depth.get(), 0));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "synthetic comptime query unwind")]
+    fn semantic_comptime_call_depth_guard_restores_while_unwinding() {
+        let _assert_after_guard = AssertSemanticComptimeDepthZero;
+        let _guard = SemanticComptimeCallDepthGuard::enter("count")
+            .expect("the root depth must be admitted");
+        panic!("synthetic comptime query unwind");
+    }
 
     /// ADR-0076 §1/§4: one append-only equality space per revision, shared by
     /// every body of that revision, and retired once the revision leaves the

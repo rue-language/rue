@@ -10291,15 +10291,40 @@ mod tests {
     }
 
     #[test]
+    fn comptime_depth_boundary_fits_an_eight_mib_worker_stack() {
+        let sources = [
+            "fn count(comptime n: i64) -> i64 { comptime { if n == 0 { 0 } else { count(n - 1) + 1 } } } const X: i64 = count(64); fn main() -> i32 { if X != 64 { return 1; } 0 }",
+            "fn count(comptime n: i64) -> i64 { if n <= 0 { 0 } else { 1 + count(n - 1) } } fn main() -> i32 { let x: i64 = comptime { count(64) }; if x != 64 { return 1; } 0 }",
+            "fn count(comptime n: i64) -> i64 { if n <= 0 { 0 } else { 1 + count(n - 1) } } fn main() -> i32 { let x: i64 = count(64); if x != 64 { return 1; } 0 }",
+        ];
+        std::thread::Builder::new()
+            .name("rue-comptime-depth-8mib".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                for source in sources {
+                    let mut session = CompilerSession::new();
+                    let input = snapshot(&[(1, "/p/main.rue", "main.rue", source)], 1);
+                    session.update(&input).into_result().unwrap();
+                    session
+                        .rooted_cfg(&CompileOptions::default())
+                        .expect("64-level comptime recursion fits an 8 MiB worker stack");
+                }
+            })
+            .expect("8 MiB comptime worker must spawn")
+            .join()
+            .expect("64-level comptime recursion must not overflow its worker stack");
+    }
+
+    #[test]
     fn many_shallow_specializations_compile() {
         // Regression (RUE-1083): breadth is not depth. A program may reach far
-        // more than `MAX_SPECIALIZATION_ROUNDS` distinct specializations as long
+        // more than `MAX_COMPTIME_CALL_DEPTH` distinct specializations as long
         // as each sits at a shallow instantiation depth. Here `tag` has a
         // compile-time-known base case, so every `tag(k)` is a leaf
         // specialization at nesting depth 1; `main` reaches
-        // `MAX_SPECIALIZATION_ROUNDS + 8` of them. The retired total-count budget
+        // `MAX_COMPTIME_CALL_DEPTH + 8` of them. The retired total-count budget
         // failed this program with E1200; the chain-depth budget compiles it.
-        let count = rue_air::specialize::MAX_SPECIALIZATION_ROUNDS + 8;
+        let count = rue_air::specialize::MAX_COMPTIME_CALL_DEPTH + 8;
         let mut body = String::from("fn main() -> i32 {\n    let mut total = 0;\n");
         for k in 0..count {
             body.push_str(&format!("    total = total + tag({k});\n"));
