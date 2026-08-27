@@ -161,6 +161,189 @@ def undeclared_need_outputs(workflow: str, jobs: dict[str, str]) -> list[str]:
 AFFECTED_TARGETS_SCRIPT = Path(__file__).with_name("affected-targets")
 
 
+def narrowing_scope_registry(script: Path = AFFECTED_TARGETS_SCRIPT) -> dict[str, tuple[str, str]]:
+    """Read the single registry that owns every impacted-lane scope."""
+    result = subprocess.run(
+        ["bash", str(script), "scope-registry"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return {}
+    registry: dict[str, tuple[str, str]] = {}
+    for line in result.stdout.splitlines():
+        fields = line.split("|")
+        if len(fields) != 3 or not all(fields):
+            return {}
+        lane, kind, scope = fields
+        if lane in registry:
+            return {}
+        registry[lane] = (kind, scope)
+    return registry
+
+
+def narrowing_contract_errors(
+    workflow: str, script: Path = AFFECTED_TARGETS_SCRIPT
+) -> list[str]:
+    """Require every impacted-closure consumer to use a registered scope.
+
+    The workflow may gate many jobs, but only jobs that consume the
+    determinator's ``narrowed``/``impacted`` outputs are narrowing consumers.
+    Their scope must be resolved by the registry-backed commands; direct
+    ``build-scope``/``intersect`` calls are deliberately rejected because they
+    can widen or drift without changing the registry.
+    """
+    registry = narrowing_scope_registry(script)
+    if not registry:
+        return ["narrowing scope registry is unavailable or malformed"]
+    jobs = job_blocks(workflow)
+    errors: list[str] = []
+    expected_by_job = {
+        "linux-premerge": {"linux-premerge-build", "linux-premerge-tests"},
+        "native-platforms": {"native-platforms-units"},
+    }
+    expected_command_lines = {
+        "linux-premerge-build": (
+            'elif ! scope="$(scripts/affected-targets narrow-scope '
+            'linux-premerge-build "$NARROW_FILE")"; then'
+        ),
+        "linux-premerge-tests": (
+            'if scripts/affected-targets narrow-scope linux-premerge-tests '
+            '"$file" >"$test_file"; then'
+        ),
+        "native-platforms-units": (
+            'if ! narrowed="$(scripts/affected-targets narrow-scope '
+            'native-platforms-units "$NARROW_FILE")"; then'
+        ),
+    }
+    used_scopes: set[str] = set()
+    for consumer, (kind, scope) in registry.items():
+        if kind not in {"pattern", "graph"} or not scope.strip():
+            errors.append(f"registered scope {consumer!r} has invalid metadata")
+
+    for job, block in jobs.items():
+        if job in {"affected-targets", "ci-success"}:
+            continue
+        executable = [line.split("#", 1)[0] for line in block.splitlines()]
+        stripped_lines = [line.strip() for line in executable if line.strip()]
+        executable_text = "\n".join(executable)
+        consumes_impacted = "needs.affected-targets.outputs.impacted" in executable_text
+        consumes_narrowed = "needs.affected-targets.outputs.narrowed" in executable_text
+        if not (consumes_narrowed or consumes_impacted):
+            continue
+        expected_scopes = expected_by_job.get(job)
+        if expected_scopes is None:
+            errors.append(
+                f"{job} consumes impacted narrowing but is absent from the scope registry"
+            )
+            continue
+        if executable_text.count("needs.affected-targets.outputs.impacted") != 1:
+            errors.append(f"{job} must materialize the impacted output exactly once")
+        raw_file_ref = "${{ steps.narrow.outputs.file }}"
+        if executable_text.count(raw_file_ref) != 1:
+            errors.append(f"{job} must expose its raw impacted file to exactly one scope preparer")
+        for line in executable:
+            if raw_file_ref in line and f"NARROW_FILE: {raw_file_ref}" not in line:
+                errors.append(
+                    f"{job} has a raw impacted-file consumer outside a registered narrow-scope preparer"
+                )
+        expected_narrow_file_line = {
+            "linux-premerge": expected_command_lines["linux-premerge-build"],
+            "native-platforms": expected_command_lines["native-platforms-units"],
+        }[job]
+        narrow_file_uses = [line for line in stripped_lines if "$NARROW_FILE" in line]
+        if narrow_file_uses != [expected_narrow_file_line]:
+            errors.append(
+                f"{job} must expose $NARROW_FILE only to its registered narrow-scope command"
+            )
+        allowed_local_file_uses = {
+            "linux-premerge": {
+                ': >"$file"',
+                'printf \'%s\\n\' "$RUE_AFFECTED_IMPACTED" | sed \'/^$/d\' >"$file"',
+                expected_command_lines["linux-premerge-tests"],
+                'count="$(wc -l <"$file" | tr -d \' \')"',
+                'echo "file=$file" >>"$GITHUB_OUTPUT"',
+            },
+            "native-platforms": {
+                ': >"$file"',
+                'printf \'%s\\n\' "$RUE_AFFECTED_IMPACTED" | sed \'/^$/d\' >"$file"',
+                'count="$(wc -l <"$file" | tr -d \' \')"',
+                'echo "file=$file" >>"$GITHUB_OUTPUT"',
+            },
+        }[job]
+        local_file_uses = [line for line in stripped_lines if "$file" in line]
+        if len(local_file_uses) != len(allowed_local_file_uses) or set(
+            local_file_uses
+        ) != allowed_local_file_uses:
+            errors.append(
+                f"{job} must use its local raw impacted file only for "
+                "materialization and registered scope preparation"
+            )
+        for line in executable:
+            if "$RUE_AFFECTED_IMPACTED" not in line:
+                continue
+            if "printf '%s\\n' \"$RUE_AFFECTED_IMPACTED\"" not in line:
+                errors.append(
+                    f"{job} has a raw impacted-closure consumer outside its materialization step"
+                )
+        if any(
+            "affected-targets build-scope" in line
+            or "affected-targets intersect" in line
+            for line in executable
+        ):
+            errors.append(
+                f"{job} must use the registry-backed narrow-scope command, not a direct scope operation"
+            )
+        for consumer in expected_scopes:
+            if consumer not in registry:
+                errors.append(f"{job} requires missing registered scope {consumer!r}")
+                continue
+            required_line = expected_command_lines[consumer]
+            if stripped_lines.count(required_line) != 1:
+                errors.append(
+                    f"{job} narrowing is not computed by registered scope {consumer!r}"
+                )
+            else:
+                used_scopes.add(consumer)
+        if job == "linux-premerge":
+            if stripped_lines.count(
+                'if scope="$(scripts/affected-targets scope-targets linux-premerge-build)"; then'
+            ) != 1:
+                errors.append(
+                    "linux-premerge must declare its unnarrowed build scope through the registry"
+                )
+            if "RUE_TEST_TARGETS_FILE: ${{ steps.narrow.outputs.test_file }}" not in executable_text:
+                errors.append(
+                    "linux-premerge tests must consume the registry-intersected target file"
+                )
+            if "RUE_TEST_TARGETS_STATUS: ${{ steps.narrow.outputs.test_status }}" not in executable_text:
+                errors.append(
+                    "linux-premerge tests must consume the final scope-verification status"
+                )
+            if stripped_lines.count(
+                'scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...'
+            ) != 2:
+                errors.append("linux-premerge must retain its full-scope degraded fallback")
+        elif job == "native-platforms":
+            # native-targets is the compatibility spelling for the graph
+            # allowlist; its implementation is registry-backed by the script.
+            if stripped_lines.count(
+                'native_targets="$(scripts/affected-targets native-targets)" || exit 1'
+            ) != 1:
+                errors.append(
+                    "native-platforms must declare its graph-owned scope through native-targets"
+                )
+            if stripped_lines.count('narrowed="$native_targets"') != 1:
+                errors.append("native-platforms must retain its full-scope degraded fallback")
+        if "GITHUB_STEP_SUMMARY" not in executable_text or "saved share" not in executable_text:
+            errors.append(f"{job} must publish final per-scope saved-share visibility")
+    unused = set(registry) - used_scopes
+    for consumer in sorted(unused):
+        errors.append(f"registered scope {consumer!r} has no workflow narrow-scope consumer")
+    return errors
+
+
 def lane_targets(lane: str, script: Path = AFFECTED_TARGETS_SCRIPT) -> set[str]:
     """The Buck targets the determinator believes a gated lane executes."""
     result = subprocess.run(
@@ -190,7 +373,7 @@ def lane_target_drift(workflow: str, script: Path = AFFECTED_TARGETS_SCRIPT) -> 
     # so explanatory target labels cannot become false positives.
     unit_invocation = './buck2 test "${targets[@]}"'
     native_query = 'native_targets="$(scripts/affected-targets native-targets)" || exit 1'
-    intersect_query = 'scripts/affected-targets intersect "$NARROW_FILE" "${targets[@]}"'
+    intersect_query = 'scripts/affected-targets narrow-scope native-platforms-units "$NARROW_FILE"'
     native_query_count = 0
     test_invocations = []
     direct_targets = set()
@@ -199,7 +382,10 @@ def lane_target_drift(workflow: str, script: Path = AFFECTED_TARGETS_SCRIPT) -> 
         code = line.split("#", 1)[0]
         stripped = code.strip()
         is_native_query = stripped == native_query
-        is_intersect_query = stripped == f'narrowed="$({intersect_query})"'
+        is_intersect_query = (
+            stripped == f'narrowed="$({intersect_query})"'
+            or stripped == f'if ! narrowed="$({intersect_query})"; then'
+        )
         if is_native_query:
             native_query_count += 1
         if "scripts/affected-targets" in code:
@@ -638,6 +824,7 @@ def validate(
 
     errors.extend(undeclared_need_outputs(workflow, jobs))
     errors.extend(lane_target_drift(workflow))
+    errors.extend(narrowing_contract_errors(workflow))
 
     if "  pull_request:\n" not in workflow or "  merge_group:\n" not in workflow:
         errors.append("CI must run on both pull_request and merge_group")

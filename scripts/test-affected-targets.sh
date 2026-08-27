@@ -246,6 +246,21 @@ expect_full "crates/rue-runtime-asan/Cargo.toml"
 
 # --- RUE-1130: narrowing a lane to the impacted closure ---------------------
 
+# The registry is the one source of truth for every narrowed-lane scope.
+TESTS=$((TESTS + 1))
+if [ "$(${AFFECTED[@]} scope-registry | tr '\n' ' ')" = \
+     "linux-premerge-build|pattern|//crates/... linux-premerge-tests|graph|rue_test_tier_premerge-minus-dedicated native-platforms-units|graph|rue_platform_native " ]; then
+  pass "narrow: scope registry declares every consumer"
+else
+  fail "narrow: scope registry drifted"
+fi
+TESTS=$((TESTS + 1))
+if ! "${AFFECTED[@]}" scope-targets future-lane >/dev/null 2>&1; then
+  pass "narrow: an unregistered future lane is rejected"
+else
+  fail "narrow: an unregistered future lane was accepted"
+fi
+
 # `intersect` is what turns a lane's fixed target list into the impacted subset.
 # Order follows the lane's own list so the runner's output stays stable.
 narrow_root="$(mktemp -d)"
@@ -272,12 +287,72 @@ else
   fail "narrow: empty impacted list did not intersect to nothing"
 fi
 
-# A missing file must not abort the caller mid-pipeline.
+# The graph lane is narrowed by intersecting its registered live allowlist.
+printf '%s\n' //crates/rue-codegen:rue-codegen-test //crates/rue-other:other-test >"$narrow_root/native-impacted"
 TESTS=$((TESTS + 1))
-if "${AFFECTED[@]}" intersect "$narrow_root/absent" //crates/rue-target:rue-target-test >/dev/null 2>&1; then
-  pass "narrow: missing impacted file exits cleanly"
+native_subset="$(RUE_AFFECTED_BUCK2="$native_graph_stub" "${AFFECTED[@]}" narrow-scope native-platforms-units "$narrow_root/native-impacted")"
+if [ "$native_subset" = "//crates/rue-codegen:rue-codegen-test" ]; then
+  pass "narrow: native output is an intersection of its registered scope"
 else
-  fail "narrow: missing impacted file did not exit cleanly"
+  fail "narrow: native output escaped its registered scope"
+fi
+TESTS=$((TESTS + 1))
+if ! RUE_AFFECTED_BUCK2="$narrow_root/absent" "${AFFECTED[@]}" narrow-scope native-platforms-units "$narrow_root/native-impacted" >/dev/null 2>&1; then
+  pass "narrow: unavailable native graph is not reported as verified"
+else
+  fail "narrow: unavailable native graph unexpectedly verified a subset"
+fi
+
+cat >"$narrow_root/native-two-buck" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' \
+  root//crates/rue-codegen:rue-codegen-test \
+  root//crates/rue-target:rue-target-test
+EOF
+chmod +x "$narrow_root/native-two-buck"
+scope_summary="$narrow_root/native-scope-summary"
+TESTS=$((TESTS + 1))
+if GITHUB_STEP_SUMMARY="$scope_summary" RUE_AFFECTED_BUCK2="$narrow_root/native-two-buck" \
+    "${AFFECTED[@]}" narrow-scope native-platforms-units "$narrow_root/native-impacted" >/dev/null && \
+    grep -Fq '**VERIFIED** subset; selected **1/2** targets; unweighted saved share **50.00%**' "$scope_summary"; then
+  pass "narrow: verified scope summary reports exact selected and saved shares"
+else
+  fail "narrow: verified scope summary omitted exact saved-share math"
+fi
+
+degraded_scope_summary="$narrow_root/degraded-scope-summary"
+TESTS=$((TESTS + 1))
+if ! GITHUB_STEP_SUMMARY="$degraded_scope_summary" RUE_AFFECTED_BUCK2="$narrow_root/absent" \
+    "${AFFECTED[@]}" narrow-scope native-platforms-units "$narrow_root/native-impacted" >/dev/null 2>&1 && \
+    grep -Fq '**DEGRADED**; saved share **not applicable**' "$degraded_scope_summary" && \
+    ! grep -Fq '**VERIFIED**' "$degraded_scope_summary"; then
+  pass "narrow: degraded scope summary cannot masquerade as verified"
+else
+  fail "narrow: degraded scope summary is missing or contradictory"
+fi
+
+# A missing file is an unavailable intersection, never a verified empty one.
+TESTS=$((TESTS + 1))
+if ! "${AFFECTED[@]}" intersect "$narrow_root/absent" //crates/rue-target:rue-target-test >/dev/null 2>&1; then
+  pass "narrow: missing impacted file rejects the intersection"
+else
+  fail "narrow: missing impacted file masqueraded as an empty intersection"
+fi
+
+# grep rc=1 is an ordinary non-member, but rc>1 means the intersection was not
+# computed. Pin that distinction without depending on a real filesystem fault.
+mkdir -p "$narrow_root/failing-grep-bin"
+cat >"$narrow_root/failing-grep-bin/grep" <<'EOF'
+#!/usr/bin/env bash
+exit 2
+EOF
+chmod +x "$narrow_root/failing-grep-bin/grep"
+TESTS=$((TESTS + 1))
+if ! PATH="$narrow_root/failing-grep-bin:$PATH" "${AFFECTED[@]}" intersect \
+    "$narrow_root/native-impacted" //crates/rue-codegen:rue-codegen-test >/dev/null 2>&1; then
+  pass "narrow: an intersection read error is not reported as verified empty"
+else
+  fail "narrow: an intersection read error was treated as an ordinary non-member"
 fi
 
 scope_root="$(mktemp -d)"
@@ -299,6 +374,12 @@ contains_target() {
 case "$1" in
   uquery)
     case "$2" in
+      set\(//...\ toolchains//...\))
+        printf '%s\n' \
+          root//:cli-tests-action \
+          root//:spec-tests-action \
+          root//crates/rue-compiler:rue-compiler \
+          root//crates/rue-span:rue-span-test ;;
       attrfilter*)
         # The premerge-tier selection. Deliberately omits `newthing-test`, so
         # that action is owned by no lane.
@@ -410,8 +491,8 @@ printf '%s\n' \
 TESTS=$((TESTS + 1))
 narrowed_scope="$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope "$narrow_root/mixed")"
 if [ "$(tr '\n' ' ' <<<"$narrowed_scope")" \
-     = "//crates/rue-compiler:rue-compiler //crates/rue-codegen:rue-codegen-test " ]; then
-  pass "narrow: build-scope keeps the crate scope and drops every corpus action"
+     = "//crates/rue-compiler:rue-compiler " ]; then
+  pass "narrow: build-scope is the exact impacted/live-scope intersection"
 else
   fail "narrow: build-scope did not restore the //crates/... scope"
 fi
@@ -461,15 +542,15 @@ fi
 # coverage.
 TESTS=$((TESTS + 1))
 degraded="$(RUE_AFFECTED_BUCK2="$scope_root/bin/absent" "${AFFECTED[@]}" build-scope "$narrow_root/unowned" 2>/dev/null | tr '\n' ' ')"
-if [ "$degraded" = "//crates/rue-oracle-diff:oracle-diff-test-action //crates/rue-newthing:newthing-test-action //crates/rue-span:rue-span-test " ]; then
-  pass "narrow: an unanswerable Buck query falls open to the unfiltered scope"
+if [ "$degraded" = "//crates/... " ]; then
+  pass "narrow: an unanswerable Buck query falls open to the full scope"
 else
   fail "narrow: a failed query did not fall open (got '$degraded')"
 fi
 
 # A successful ownership query followed by a failed configured closure query
-# must have the same conservative result. Exercise both scope spellings: the
-# narrowed list remains intact, and the unnarrowed pattern remains expanded.
+# must still fail open. Exercise both scope spellings: the narrowed request
+# falls back to the complete pattern, just like the unnarrowed request.
 cat >"$scope_root/bin/closure-fail-buck" <<'FAILING_CLOSURE'
 #!/usr/bin/env bash
 case "$1" in
@@ -499,16 +580,16 @@ chmod +x "$scope_root/bin/closure-fail-buck"
 TESTS=$((TESTS + 1))
 closure_failed_narrow="$(RUE_AFFECTED_BUCK2="$scope_root/bin/closure-fail-buck" \
   "${AFFECTED[@]}" build-scope "$narrow_root/unowned" 2>/dev/null | tr '\n' ' ')"
-if [ "$closure_failed_narrow" = "//crates/rue-oracle-diff:oracle-diff-test-action //crates/rue-newthing:newthing-test-action //crates/rue-span:rue-span-test " ]; then
-  pass "narrow: a failed configured closure keeps the narrowed scope"
+if [ "$closure_failed_narrow" = "//crates/... " ]; then
+  pass "narrow: a failed configured closure falls open to the full scope"
 else
   fail "narrow: a failed configured closure changed the narrowed scope (got '$closure_failed_narrow')"
 fi
 TESTS=$((TESTS + 1))
 closure_failed_unnarrowed="$(RUE_AFFECTED_BUCK2="$scope_root/bin/closure-fail-buck" \
   "${AFFECTED[@]}" build-scope 2>/dev/null | tr '\n' ' ')"
-if [ "$closure_failed_unnarrowed" = "//crates/rue-compiler:rue-compiler //crates/rue-oracle-diff:oracle-diff-test-action //crates/rue-newthing:newthing-test-action //crates/rue-span:rue-span-test " ]; then
-  pass "narrow: a failed configured closure keeps the unnarrowed scope"
+if [ "$closure_failed_unnarrowed" = "//crates/... " ]; then
+  pass "narrow: a failed configured closure falls open to the full unnarrowed scope"
 else
   fail "narrow: a failed configured closure changed the unnarrowed scope (got '$closure_failed_unnarrowed')"
 fi
@@ -522,6 +603,36 @@ if [ -z "$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build
   pass "narrow: build-scope on a corpus-only closure yields nothing to build"
 else
   fail "narrow: build-scope invented crate targets from a corpus-only closure"
+fi
+
+corpus_scope_summary="$narrow_root/corpus-scope-summary"
+TESTS=$((TESTS + 1))
+if [ -z "$(GITHUB_STEP_SUMMARY="$corpus_scope_summary" RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" \
+    "${AFFECTED[@]}" narrow-scope linux-premerge-build "$narrow_root/corpora-only")" ] && \
+    grep -Fq '**VERIFIED** subset; selected **0/3** targets; unweighted saved share **100.00%**' "$corpus_scope_summary"; then
+  pass "narrow: corpus-only closure takes the registered empty build subset"
+else
+  fail "narrow: corpus-only registered build subset or summary is wrong"
+fi
+
+TESTS=$((TESTS + 1))
+test_subset="$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" \
+  narrow-scope linux-premerge-tests "$narrow_root/corpora-only")"
+if [ -z "$test_subset" ]; then
+  pass "narrow: corpus-only closure takes the registered empty premerge test subset"
+else
+  fail "narrow: corpus-only premerge test scope invented a runnable test"
+fi
+
+strict_scope_summary="$narrow_root/strict-scope-summary"
+TESTS=$((TESTS + 1))
+if ! GITHUB_STEP_SUMMARY="$strict_scope_summary" RUE_AFFECTED_BUCK2="$scope_root/bin/absent" \
+    "${AFFECTED[@]}" narrow-scope linux-premerge-build "$narrow_root/unowned" >/dev/null 2>&1 && \
+    grep -Fq '`linux-premerge-build`: **DEGRADED**' "$strict_scope_summary" && \
+    ! grep -Fq '**VERIFIED**' "$strict_scope_summary"; then
+  pass "narrow: strict linux scope failure reports degraded full-scope fallback"
+else
+  fail "narrow: strict linux scope failure did not report an unverified fallback"
 fi
 
 # An unreadable list must fail loudly so the caller can fall open to the full
@@ -566,6 +677,12 @@ check_narrow "a readable list narrows the suite" \
 check_narrow "an empty list runs the full pattern" \
   "ARGS: //... toolchains//..." \
   "RUE_TEST_TARGETS_FILE=$narrow_root/none"
+TESTS=$((TESTS + 1))
+if [ -z "$(run_test_sh_args "RUE_TEST_TARGETS_FILE=$narrow_root/none" "RUE_TEST_TARGETS_STATUS=VERIFIED")" ]; then
+  pass "narrow: a verified empty test scope runs no tests"
+else
+  fail "narrow: a verified empty test scope fell back to the full pattern"
+fi
 check_narrow "an unreadable list runs the full pattern" \
   "ARGS: //... toolchains//..." \
   "RUE_TEST_TARGETS_FILE=$narrow_root/absent"
@@ -596,6 +713,10 @@ printf '   \n\t\n' >"$narrow_root/whitespace"
 check_narrow "a whitespace-only list runs the full pattern" \
   "ARGS: //... toolchains//..." \
   "RUE_TEST_TARGETS_FILE=$narrow_root/whitespace"
+check_narrow "a VERIFIED whitespace-only list still runs the full pattern" \
+  "ARGS: //... toolchains//..." \
+  "RUE_TEST_TARGETS_FILE=$narrow_root/whitespace" \
+  "RUE_TEST_TARGETS_STATUS=VERIFIED"
 
 # A file whose last line has no newline. `mapfile` keeps that line; a plain
 # `while read` loop silently drops it, dropping a target from the run.
@@ -701,7 +822,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 [ -n "$output" ]
-printf '{"target":"root//:spec-tests"}\n' >"$output"
+printf '%s\n' '{"target":"root//:spec-tests"}' '{"target":"root//:unimpacted"}' >"$output"
 EOF
 cat >"$integration_root/bin/fake-btd" <<'EOF'
 #!/usr/bin/env bash
@@ -713,7 +834,9 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 cmp -s "$changes" "${RUE_AFFECTED_EXPECTED_CHANGES:?}"
-printf '{"target":"root//:spec-tests"}\n'
+printf '%s\n' \
+  '{"target":"root//:spec-tests"}' \
+  '{"target":"root//crates/deleted:base-only"}'
 EOF
 chmod +x "$integration_root/bin/fake-buck" "$integration_root/bin/fake-btd"
 git -C "$integration_root" init -q
@@ -733,9 +856,17 @@ if (
   RUE_AFFECTED_BTD_ARGS="$integration_root/btd-args" \
   RUE_AFFECTED_EXPECTED_CHANGES="$integration_root/expected-changes" \
   GITHUB_OUTPUT="$integration_root/output" \
+  GITHUB_STEP_SUMMARY="$integration_root/summary" \
   scripts/affected-targets decide >/dev/null
 ) && grep -Fxq 'full=false' "$integration_root/output" && \
     grep -Fxq 'selected=//:spec-tests' "$integration_root/output" && \
+    grep -Fxq 'narrowing_status=CANDIDATE' "$integration_root/output" && \
+    grep -Fxq 'head_target_count=2' "$integration_root/output" && \
+    grep -Fxq 'impacted_target_count=1' "$integration_root/output" && \
+    ! grep -Fq '//crates/deleted:base-only' "$integration_root/output" && \
+    grep -Fq 'Live impacted closure: **1** targets (**50.00%' "$integration_root/summary" && \
+    grep -Fq 'exact saved share is reported after each registered lane scope' "$integration_root/summary" && \
+    grep -Fq 'Corpus lanes selected:' "$integration_root/summary" && \
     grep -Fxq -- '--vcs' "$integration_root/btd-args" && \
     grep -Fxq -- 'git' "$integration_root/btd-args" && \
     grep -Fxq -- '--buck' "$integration_root/btd-args" && \
@@ -774,11 +905,67 @@ if (
   RUE_AFFECTED_BTD_ARGS="$integration_root/failure-btd-args" \
   RUE_AFFECTED_EXPECTED_CHANGES="$integration_root/expected-changes" \
   GITHUB_OUTPUT="$failure_output" \
+  GITHUB_STEP_SUMMARY="$integration_root/degraded-summary" \
   scripts/affected-targets decide >/dev/null 2>&1
-) && grep -Fxq 'full=true' "$failure_output"; then
+) && grep -Fxq 'full=true' "$failure_output" && \
+    grep -Fxq 'narrowing_status=DEGRADED' "$failure_output" && \
+    grep -Fq 'Planner reach: **not applicable**' "$integration_root/degraded-summary"; then
   pass "decision: native graph query failure runs full suite"
 else
   fail "decision: native graph query failure did not fail open to full suite"
+fi
+
+cat >"$integration_root/bin/empty-head-buck" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "uquery" ]; then
+  printf 'root//:spec-tests\n'
+  exit 0
+fi
+output=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then output="$2"; shift 2; continue; fi
+  shift
+done
+[ -n "$output" ]
+: >"$output"
+EOF
+chmod +x "$integration_root/bin/empty-head-buck"
+TESTS=$((TESTS + 1))
+empty_head_output="$integration_root/empty-head-output"
+if (
+  cd "$integration_root" &&
+  RUE_AFFECTED_BASE_SHA=HEAD~1 \
+  RUE_AFFECTED_HEAD_SHA=HEAD \
+  RUE_AFFECTED_BTD="$integration_root/bin/fake-btd" \
+  RUE_AFFECTED_BUCK2="$integration_root/bin/empty-head-buck" \
+  RUE_AFFECTED_BTD_ARGS="$integration_root/empty-head-btd-args" \
+  RUE_AFFECTED_EXPECTED_CHANGES="$integration_root/expected-changes" \
+  GITHUB_OUTPUT="$empty_head_output" \
+  GITHUB_STEP_SUMMARY="$integration_root/empty-head-summary" \
+  scripts/affected-targets decide >/dev/null 2>&1
+) && grep -Fxq 'full=true' "$empty_head_output" && \
+    grep -Fxq 'narrowing_status=DEGRADED' "$empty_head_output"; then
+  pass "decision: an empty successful head dump degrades to full"
+else
+  fail "decision: an empty successful head dump was treated as selective"
+fi
+
+TESTS=$((TESTS + 1))
+full_output="$integration_root/full-output"
+full_summary="$integration_root/full-summary"
+if (
+  cd "$integration_root" &&
+  RUE_AFFECTED_EVENT=merge_group \
+  GITHUB_OUTPUT="$full_output" \
+  GITHUB_STEP_SUMMARY="$full_summary" \
+  scripts/affected-targets decide >/dev/null 2>&1
+) && grep -Fxq 'full=true' "$full_output" && \
+    grep -Fxq 'narrowing_status=DECLINED' "$full_output" && \
+    grep -Fq 'Planner reach: **not applicable**' "$full_summary"; then
+  pass "decision: authoritative full run reports no saved share"
+else
+  fail "decision: authoritative full run fabricated a saved share"
 fi
 
 # ---------------------------------------------------------------------------

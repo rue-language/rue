@@ -142,9 +142,10 @@ if [[ $# -eq 0 ]]; then
     # changing what membership means.
     #
     # FAIL-OPEN, in the same direction as the determinator: an unset variable,
-    # an unreadable file, or a file the determinator declined to narrow (empty)
-    # all fall back to the full pattern. Only a readable, non-empty list
-    # narrows, and merge_group never narrows because it never runs selectively.
+    # an unreadable file, or an empty file without an explicit VERIFIED status
+    # all fall back to the full pattern. A verified empty intersection means
+    # the registered live test scope has no impacted members, so it runs no
+    # tests rather than letting the empty-file fallback erase that proof.
     #
     # An explicit list that filters down to no tests is a legitimate outcome
     # (impacted libraries with no premerge tests of their own) and buck2 exits 0
@@ -153,6 +154,8 @@ if [[ $# -eq 0 ]]; then
     # left to be inferred from a silent green.
     local_targets=(//... toolchains//...)
     narrow_file="${RUE_TEST_TARGETS_FILE:-}"
+    narrow_status="${RUE_TEST_TARGETS_STATUS:-}"
+    skip_narrowed_tests=0
     if [[ -n "$narrow_file" ]]; then
         # A directory passes both -r and -s, and `read` fails on it without
         # assigning, so it is classified as unreadable here rather than left to
@@ -160,7 +163,12 @@ if [[ $# -eq 0 ]]; then
         if [[ ! -r "$narrow_file" || -d "$narrow_file" ]]; then
             echo "test.sh: RUE_TEST_TARGETS_FILE='$narrow_file' is unreadable; running the full pattern" >&2
         elif [[ ! -s "$narrow_file" ]]; then
-            echo "test.sh: no narrowed target list supplied; running the full pattern"
+            if [[ "$narrow_status" == "VERIFIED" ]]; then
+                skip_narrowed_tests=1
+                echo "test.sh: verified narrowed test scope is empty; no premerge tests are impacted"
+            else
+                echo "test.sh: no verified narrowed target list supplied; running the full pattern"
+            fi
         else
             # Read with `while read`, not `mapfile`: macOS ships Bash 3.2 as
             # /bin/bash, which has no `mapfile` builtin, so a narrowed run on a
@@ -192,7 +200,11 @@ if [[ $# -eq 0 ]]; then
                 narrowed+=("$narrowed_target")
             done <"$narrow_file"
             if [[ ${#narrowed[@]} -eq 0 ]]; then
-                echo "test.sh: no narrowed target list supplied; running the full pattern"
+                # Only the producer's genuinely zero-byte VERIFIED output is
+                # proof of an empty intersection. A non-empty file that yields
+                # no labels is malformed, so it fails open even if its status
+                # was accidentally left VERIFIED.
+                echo "test.sh: narrowed target list contained no valid labels; running the full pattern"
             else
                 local_targets=("${narrowed[@]}")
                 echo "test.sh: narrowed to ${#local_targets[@]} impacted target(s) by the affected-targets determinator"
@@ -200,21 +212,25 @@ if [[ $# -eq 0 ]]; then
         fi
     fi
 
-    test_args=("${local_targets[@]}" --always-exclude --ignore-tests-attribute --exclude rue_cli_shard)
-    if [[ "$test_tier" == standard ]]; then
-        test_args+=(--exclude rue_test_tier_stress)
-    elif [[ "$test_tier" != all ]]; then
-        test_args+=(--include "rue_test_tier_$test_tier")
-    fi
-    # Required CI gives these corpora their own platform-corpus job; the label
-    # is the only place that set is written down (scripts/validate-ci-gate.py
-    # fails if a labeled corpus has no job).
-    if [[ "${CI:-}" == "true" ]]; then
-        test_args+=(--exclude rue_ci_dedicated_lane)
-    fi
+    if [[ "$skip_narrowed_tests" -eq 1 ]]; then
+        echo "Running the $test_tier tier: NO TESTS RAN (verified empty intersection)"
+    else
+        test_args=("${local_targets[@]}" --always-exclude --ignore-tests-attribute --exclude rue_cli_shard)
+        if [[ "$test_tier" == standard ]]; then
+            test_args+=(--exclude rue_test_tier_stress)
+        elif [[ "$test_tier" != all ]]; then
+            test_args+=(--include "rue_test_tier_$test_tier")
+        fi
+        # Required CI gives these corpora their own platform-corpus job; the label
+        # is the only place that set is written down (scripts/validate-ci-gate.py
+        # fails if a labeled corpus has no job).
+        if [[ "${CI:-}" == "true" ]]; then
+            test_args+=(--exclude rue_ci_dedicated_lane)
+        fi
 
-    echo "Running the $test_tier tier..."
-    ./buck2 test "${test_args[@]}"
+        echo "Running the $test_tier tier..."
+        ./buck2 test "${test_args[@]}"
+    fi
 else
     # Unit tests live under //crates/...; the suite sh_tests are at the repo
     # root, so this scope keeps them out of the filtered unit step below. Keep

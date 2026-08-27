@@ -399,6 +399,7 @@ from the graph later, or gated so that drift fails closed rather than silently:
 | `SELECTABLE_CORPUS` | a new corpus job is ungated, so it always runs | fails open (runs); not yet gated |
 | `SELECTABLE_LANES` / `lane_targets` | a lane's job runs a target selection cannot see | **gated** (`lane_target_drift`) |
 | the native lanes' platform unit list | new platform-sensitive tests are not enrolled | graph-owned `rue_platform_native` query (RUE-1266) |
+| narrowed-lane scope registry and subset check | a narrowed lane silently widens beyond its unnarrowed work, or a new consumer bypasses the contract | **gated** (`narrowing_contract_errors`); every distinct build/test consumer is registered, its runnable list is an exact live-set intersection, and `VERIFIED`, `DECLINED`, or `DEGRADED` is reported only after the scope query |
 | `RUE_AFFECTED_NARROW_LIMIT` (600) | a threshold nobody revisits | unmeasured; should follow measurement |
 | the platform responsibility matrix | a responsibility silently moves | gated (`validate-ci-gate.py`) |
 | `shard-weights.json` refresh | weights go stale, shards skew | manual (RUE-1222); guard is vacuous (§6) |
@@ -422,13 +423,32 @@ completely.
       56–59% of the critical path, no new machinery, needs one coverage ruling.
 - [x] **Phase 2: Determination on every lane, by gating or by narrowing** —
       RUE-1130, whose "make it discriminate or remove it" question this ADR
-      answers with "keep it and extend it to everything." Six lanes are gated
-      (`native` ×2, `release`, `valgrind`, `asan`, `compiler-reproducibility`),
+      answers with "keep it and extend it to everything." Seven lanes are gated
+      (`native` ×2, `release`, `valgrind`, `asan`, `compiler-reproducibility`,
+      `rue-program-digests`),
       freeing **905–1034s of runner time** on each of four measured peripheral
       runs. `linux-premerge` and the native unit targets are narrowed to the
       impacted closure instead, so an unimpacted test binary is neither built
-      nor run. Reporting the saved share per run is still to do, and is what
-      turns the change-mix question from an argument into a measurement.
+      nor run. The narrowed-lane contract now makes each narrowed scope an
+      intersection with its declared unnarrowed scope; unavailable graph or
+      closure queries fall open and report `DEGRADED`, never a verified subset.
+      The determinator reports the head-graph denominator, live impacted
+      closure, and selected/deselected lanes and corpora. Each registered
+      consumer then reports its exact selected/unnarrowed target counts and
+      unweighted saved share in the step summary (explicitly not runner-time
+      savings); a planner candidate is not reported as verified. Dorian's recorded
+      post-#2160 real-run measurements are: compiler-touching run
+      `31348880780`, impacted closure **67**, build **4.5m**, premerge **7.9m**
+      versus **12.1m** pre-narrow baseline and **41.5m** regressed; **31** local
+      actions after versus **76** regressed, and zero root-level corpus actions
+      after. Peripheral run `31348882324` had **0** impacted targets, no corpora
+      or lanes, and a **1.7m** cache-served premerge; it does not measure the
+      cold full-pattern cost. Phases 5 and 6 remain, and these measurements do
+      not establish cold full-pattern cost or native-host wall-time savings.
+      A structural negative consequence remains: CI/workflow changes are
+      force-full, so a PR changing narrowing cannot exercise narrowing itself;
+      correctness therefore relies on hermetic contract tests and subsequent
+      real selective runs.
 - [x] **Phase 3: Duplication gate** — RUE-1265.
       `scripts/validate-test-duplication.py` enumerates each lane from the live
       graph, collects identities with `--list`, and fails on any test scheduled
@@ -620,12 +640,14 @@ premerge, because the canary measures a cold graph premerge never has.
 
 ### 3. The lever this evaluation found instead, worth ~8× what RE offers
 
-`crates/rue-oracle-diff/BUCK` declares both suites `tier = "slow"` and
-`rue_heavy_suite`, and `ci.yml` gives each its own dedicated lane. **Premerge
-builds them anyway**, on both branches of its build step: unnarrowed,
-`./buck2 build //crates/...` reaches them; narrowed,
-`scripts/affected-targets`' `build_scope()` filters with `grep '^//crates/'`,
-and these targets live at `//crates/rue-oracle-diff:…`.
+At the time of this evaluation, `crates/rue-oracle-diff/BUCK` declared both
+suites `tier = "slow"` and `rue_heavy_suite`, and `ci.yml` gave each its own
+dedicated lane, but **premerge built them anyway**. Its unnarrowed
+`./buck2 build //crates/...` reached them, while its narrowed `build_scope()`
+used a crate-prefix filter that also admitted them. RUE-1511 subsequently
+removed the owned corpus-action closure from both build-scope branches, and
+RUE-1292 made the narrowed result an exact intersection with that live
+unnarrowed scope so a deleted or base-only label cannot reintroduce widening.
 
 The comment directly above `build_scope()` explains that the filter exists
 precisely because building a `cached_corpus_suite` action *runs its corpus*, and
@@ -747,11 +769,12 @@ Adopting or declining RE neither enables nor pressures that decision.
   the cold premerge build *and* run twice per run against their dedicated lanes,
   with a 75s median overlap. The duplication gate cannot see it, because the
   gate compares test identities while this is a build action racing a lane.
-- **The accepted §5's remedies need correcting for this case.** These suites are *already*
-  re-tiered to `slow` with dedicated lanes; the defect is that premerge builds
-  them regardless, because `build_scope()`'s crate-prefix filter only excludes
-  root-level corpus actions. The remaining remedy is to fix the scope filter or
-  split the suites — not to re-tier something already tiered.
+- **The accepted §5's remedies needed correcting for this case.** These suites
+  were *already* re-tiered to `slow` with dedicated lanes; the defect was that
+  premerge built them regardless. RUE-1511 fixed the corpus-action exclusion,
+  and RUE-1292 now proves narrowed consumers are subsets of their registered
+  live scopes. Splitting the suites remains a future optimization, not a
+  correctness remedy and not part of Phase 2.
 - **The "compiler build is 286–317s" open question is refined.** That figure was
   the whole `Build all targets` step. The compiler *binary* is ~74s cold and
   locally built; the entire rue-crate chain is ~21% of the step.

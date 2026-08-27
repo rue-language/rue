@@ -320,13 +320,27 @@ jobs:
           RUE_AFFECTED_IMPACTED: ${{ needs.affected-targets.outputs.impacted }}
         run: |
           set -euo pipefail
-          file="${RUNNER_TEMP}/impacted-targets.txt"
+          file="${RUNNER_TEMP}/impacted-targets-raw.txt"
+          test_file="${RUNNER_TEMP}/impacted-premerge-test-targets.txt"
           : >"$file"
+          : >"$test_file"
+          test_status=DECLINED
           if [ "${RUE_AFFECTED_NARROWED:-}" = "true" ]; then
             printf '%s\n' "$RUE_AFFECTED_IMPACTED" | sed '/^$/d' >"$file"
+            if scripts/affected-targets narrow-scope linux-premerge-tests "$file" >"$test_file"; then
+              test_status=VERIFIED
+            else
+              : >"$test_file"
+              test_status=DEGRADED
+              echo "premerge test scope unavailable; running the full test pattern" >&2
+            fi
+          else
+            echo '- `linux-premerge-tests`: **DECLINED**; saved share **not applicable** (full scope used).' >>"$GITHUB_STEP_SUMMARY"
           fi
           count="$(wc -l <"$file" | tr -d ' ')"
           echo "file=$file" >>"$GITHUB_OUTPUT"
+          echo "test_file=$test_file" >>"$GITHUB_OUTPUT"
+          echo "test_status=$test_status" >>"$GITHUB_OUTPUT"
           echo "count=$count" >>"$GITHUB_OUTPUT"
           echo "impacted targets for this lane: $count"
 
@@ -355,15 +369,17 @@ jobs:
             # narrowed — so it needs the corpus-action subtraction just as much
             # as the narrowed one. `buck2 build` has no kind or label
             # exclusion, so build-scope expands the pattern and subtracts.
-            if scope="$(scripts/affected-targets build-scope)"; then
+            if scope="$(scripts/affected-targets scope-targets linux-premerge-build)"; then
+              echo '- `linux-premerge-build`: **DECLINED**; saved share **not applicable** (full scope used).' >>"$GITHUB_STEP_SUMMARY"
               mapfile -t targets <<<"$scope"
               scripts/ci-timed "linux-x64 build" -- ./buck2 build "${targets[@]}"
             else
               # Fail open, as below: over-building costs wall time, never coverage.
               echo "crate build scope unavailable; building the full crate pattern" >&2
+              echo '- `linux-premerge-build`: **DEGRADED**; saved share **not applicable** (scope query unavailable; full crate scope used).' >>"$GITHUB_STEP_SUMMARY"
               scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...
             fi
-          elif ! scope="$(scripts/affected-targets build-scope "$NARROW_FILE")"; then
+          elif ! scope="$(scripts/affected-targets narrow-scope linux-premerge-build "$NARROW_FILE")"; then
             # Fail open: an unreadable list costs wall time, never coverage.
             echo "narrowed build scope unavailable; building the full crate pattern" >&2
             scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...
@@ -406,7 +422,8 @@ jobs:
         # on the failure path and keep the complete record as an artifact.
         env:
           RUE_TEST_TIER: premerge
-          RUE_TEST_TARGETS_FILE: ${{ steps.narrow.outputs.file }}
+          RUE_TEST_TARGETS_FILE: ${{ steps.narrow.outputs.test_file }}
+          RUE_TEST_TARGETS_STATUS: ${{ steps.narrow.outputs.test_status }}
           RUE_PREMERGE_TEST_RESULTS: ${{ runner.temp }}/premerge-test-results.txt
         run: |
           # The default step shell runs with `-e`; the suite's status has to
@@ -847,7 +864,10 @@ jobs:
             # on empty-array expansion under `set -u`. Read the intersection
             # into a string, early-exit while `targets` is still non-empty,
             # and only then rebuild the array.
-            narrowed="$(scripts/affected-targets intersect "$NARROW_FILE" "${targets[@]}")"
+            if ! narrowed="$(scripts/affected-targets narrow-scope native-platforms-units "$NARROW_FILE")"; then
+              echo "native narrowing unavailable; running the full graph-owned native unit scope" >&2
+              narrowed="$native_targets"
+            fi
             if [ -z "$narrowed" ]; then
               echo "native units: no impacted unit targets on this diff; the merge-queue run covers them."
               exit 0
@@ -856,6 +876,8 @@ jobs:
             while IFS= read -r target; do
               targets+=("$target")
             done <<< "$narrowed"
+          else
+            echo '- `native-platforms-units`: **DECLINED**; saved share **not applicable** (full scope used).' >>"$GITHUB_STEP_SUMMARY"
           fi
           scripts/ci-timed "$LANE_NAME native units" -- ./buck2 test "${targets[@]}"
 
@@ -1018,6 +1040,9 @@ jobs:
       # nothing".
       narrowed: ${{ steps.decide.outputs.narrowed }}
       impacted: ${{ steps.decide.outputs.impacted }}
+      narrowing_status: ${{ steps.decide.outputs.narrowing_status }}
+      head_target_count: ${{ steps.decide.outputs.head_target_count }}
+      impacted_target_count: ${{ steps.decide.outputs.impacted_target_count }}
     steps:
       - uses: actions/checkout@v6
         # BTD compares the graph at the merge-base and at the head, so the base
