@@ -335,13 +335,15 @@ jobs:
               echo "premerge test scope unavailable; running the full test pattern" >&2
             fi
           else
-            echo '- `linux-premerge-tests`: **DECLINED**; saved share **not applicable** (full scope used).' >>"$GITHUB_STEP_SUMMARY"
+            echo "- \`linux-premerge-tests\`: **DECLINED**; saved share **not applicable** (full scope used)." >>"$GITHUB_STEP_SUMMARY"
           fi
           count="$(wc -l <"$file" | tr -d ' ')"
-          echo "file=$file" >>"$GITHUB_OUTPUT"
-          echo "test_file=$test_file" >>"$GITHUB_OUTPUT"
-          echo "test_status=$test_status" >>"$GITHUB_OUTPUT"
-          echo "count=$count" >>"$GITHUB_OUTPUT"
+          {
+            echo "file=$file"
+            echo "test_file=$test_file"
+            echo "test_status=$test_status"
+            echo "count=$count"
+          } >>"$GITHUB_OUTPUT"
           echo "impacted targets for this lane: $count"
 
       # Uses hermetic Rust toolchain downloaded by Buck2
@@ -370,13 +372,13 @@ jobs:
             # as the narrowed one. `buck2 build` has no kind or label
             # exclusion, so build-scope expands the pattern and subtracts.
             if scope="$(scripts/affected-targets scope-targets linux-premerge-build)"; then
-              echo '- `linux-premerge-build`: **DECLINED**; saved share **not applicable** (full scope used).' >>"$GITHUB_STEP_SUMMARY"
+              echo "- \`linux-premerge-build\`: **DECLINED**; saved share **not applicable** (full scope used)." >>"$GITHUB_STEP_SUMMARY"
               mapfile -t targets <<<"$scope"
               scripts/ci-timed "linux-x64 build" -- ./buck2 build "${targets[@]}"
             else
               # Fail open, as below: over-building costs wall time, never coverage.
               echo "crate build scope unavailable; building the full crate pattern" >&2
-              echo '- `linux-premerge-build`: **DEGRADED**; saved share **not applicable** (scope query unavailable; full crate scope used).' >>"$GITHUB_STEP_SUMMARY"
+              echo "- \`linux-premerge-build\`: **DEGRADED**; saved share **not applicable** (scope query unavailable; full crate scope used)." >>"$GITHUB_STEP_SUMMARY"
               scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...
             fi
           elif ! scope="$(scripts/affected-targets narrow-scope linux-premerge-build "$NARROW_FILE")"; then
@@ -877,7 +879,7 @@ jobs:
               targets+=("$target")
             done <<< "$narrowed"
           else
-            echo '- `native-platforms-units`: **DECLINED**; saved share **not applicable** (full scope used).' >>"$GITHUB_STEP_SUMMARY"
+            echo "- \`native-platforms-units\`: **DECLINED**; saved share **not applicable** (full scope used)." >>"$GITHUB_STEP_SUMMARY"
           fi
           scripts/ci-timed "$LANE_NAME native units" -- ./buck2 test "${targets[@]}"
 
