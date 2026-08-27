@@ -515,7 +515,10 @@ _CLI_TEST_ABSOLUTIZE = _CLI_TEST_BASE_ABSOLUTIZE + ["RUE_CLI_STAGED_PROGRAMS"]
 # flush against it, so restoring the ~100s of headroom 3700 was originally
 # chosen with is what keeps the next case addition from re-failing. Raising it
 # only to the derived value would spend that headroom immediately.
-_CLI_TESTS_TIMEOUT_SECONDS = 3800
+#
+# Raised 3800 -> 3900 after later corpus growth pushed the linux-arm64 derived
+# deadline to 3805, preserving that same headroom policy.
+_CLI_TESTS_TIMEOUT_SECONDS = 3900
 _CLI_SHARD_TIMEOUT_SECONDS = 1200
 
 # The bounded premerge CLI corpus in one invocation: the canonical target that a
