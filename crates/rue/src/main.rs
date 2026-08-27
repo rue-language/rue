@@ -1462,6 +1462,16 @@ fn benchmark_semantic_body_structure(
             .counter_total("precompute_inline_final_candidates"),
         precompute_inline_eval_attempts: timing.counter_total("precompute_inline_eval_attempts"),
         precompute_inline_type_successes: timing.counter_total("precompute_inline_type_successes"),
+        staged_resolved_instructions: timing.counter_total("staged_frontier_instructions"),
+        staged_constraints_generated: timing.counter_total("staged_constraints_generated"),
+        staged_fact_nodes: timing.counter_total("staged_fact_nodes"),
+        staged_canonical_evaluations: timing.counter_total("staged_canonical_evaluations"),
+        staged_binding_scope_nodes: timing.counter_total("staged_binding_scope_nodes"),
+        staged_binding_materializations: timing.counter_total("staged_binding_materializations"),
+        staged_binding_trie_updates: timing.counter_total("staged_binding_trie_updates"),
+        staged_binding_trie_lookups: timing.counter_total("staged_binding_trie_lookups"),
+        staged_probe_nodes: timing.counter_total("staged_probe_nodes"),
+        staged_precompute_nodes: timing.counter_total("staged_precompute_nodes"),
     }
 }
 
@@ -2032,6 +2042,7 @@ mod tests {
                 import_named_nominals_registered: 61,
                 import_nominal_type_edges_traversed: 67,
                 import_anonymous_nominals_registered: 71,
+                ..Default::default()
             },
             semantic: rue_compiler::unstable::SemanticMetrics {
                 cfg: rue_compiler::unstable::SemanticCfgMetrics {

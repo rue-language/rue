@@ -623,6 +623,10 @@ where
     pub value_subst: AHashMap<N, V>,
     pub resolved_types: Option<&'a AHashMap<InstRef, T>>,
     pub runtime_local_names: AHashSet<N>,
+    /// Optional persistent membership view supplied by staged inference. It
+    /// keeps the canonical evaluator from flattening a lexical checkpoint;
+    /// ordinary comptime frames continue to use `runtime_local_names`.
+    pub runtime_local_name_membership: Option<std::sync::Arc<dyn Fn(&N) -> bool + 'a>>,
     pub runtime_binding_names: AHashSet<N>,
     pub locals: AHashMap<N, V>,
     pub const_module_members: AHashMap<InstRef, V>,
@@ -666,6 +670,7 @@ where
             value_subst: AHashMap::new(),
             resolved_types: None,
             runtime_local_names: AHashSet::new(),
+            runtime_local_name_membership: None,
             runtime_binding_names: AHashSet::new(),
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),
@@ -681,12 +686,21 @@ where
             value_subst: value_subst.clone(),
             resolved_types: None,
             runtime_local_names: AHashSet::new(),
+            runtime_local_name_membership: None,
             runtime_binding_names: AHashSet::new(),
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),
             defining_file: None,
             expected_result: None,
         }
+    }
+
+    pub(crate) fn is_runtime_local_name(&self, name: &N) -> bool {
+        self.runtime_local_names.contains(name)
+            || self
+                .runtime_local_name_membership
+                .as_ref()
+                .is_some_and(|membership| membership(name))
     }
 }
 
@@ -897,7 +911,17 @@ mod value_domain_tests {
             float_evaluations: Cell::new(0),
         };
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let (scrutinee, arms) = match &host.programs[0].get(root0).data {
+            InstData::Match { scrutinee, arms } => (*scrutinee, arms.clone()),
+            _ => panic!("expected match instruction"),
+        };
         let mut engine = ComptimeEngine::new(&mut host);
+        assert!(matches!(
+            engine.select_match(0, scrutinee, &arms, &mut env),
+            ComptimeOutcome::Known(ComptimeSelection::Match { arm: 0 })
+        ));
+        MATCH_PATTERN_EVENTS.with(|events| events.borrow_mut().clear());
+        MATCH_SYMBOL_CALLS.with(|calls| calls.set(0));
         assert!(matches!(
             engine.evaluate(ComptimeFrame::expression(0, root0), &mut env),
             ComptimeOutcome::Known(FakeValue::Unit)
@@ -4134,6 +4158,10 @@ mod value_domain_tests {
             float_evaluations: Cell::new(0),
         };
         let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        assert!(matches!(
+            ComptimeEngine::new(&mut host).select_branch(0, condition, &mut env),
+            ComptimeOutcome::Known(ComptimeSelection::Branch { taken: true })
+        ));
         let value = ComptimeEngine::new(&mut host)
             .evaluate(ComptimeFrame::expression(0, branch), &mut env)
             .into_result(|_| FAKE_FAILURE)
@@ -6549,6 +6577,16 @@ pub enum ComptimeOutcome<V, F> {
     Abort(F),
 }
 
+/// A fact produced by the canonical evaluator for a control-flow selector.
+/// The index is the source-order arm index, rather than an instruction
+/// reference, so the fact remains valid for both inference and semantic AIR
+/// emission without exposing the evaluator's traversal state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeSelection {
+    Branch { taken: bool },
+    Match { arm: usize },
+}
+
 impl<V, F> ComptimeOutcome<V, F> {
     pub(crate) fn into_result(self, trap: impl FnOnce(ComptimeTrap) -> F) -> Result<Option<V>, F> {
         match self {
@@ -7373,7 +7411,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         if let Some(value) = env.locals.get(name) {
             return ComptimeArrayLengthBinding::LocalValue(value.clone());
         }
-        if env.runtime_local_names.contains(name) {
+        if env.is_runtime_local_name(name) {
             return ComptimeArrayLengthBinding::RuntimeDependent;
         }
         if env.type_subst.contains_key(name) {
@@ -7765,6 +7803,75 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         result
     }
 
+    /// Evaluate only an if selector and return the canonical selection fact.
+    /// This is used by staged inference so selector evaluation has exactly the
+    /// same typed arithmetic and diagnostic behavior as semantic analysis.
+    pub fn select_branch(
+        &mut self,
+        program: H::ProgramKey,
+        condition: InstRef,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<ComptimeSelection, H::Failure> {
+        match self.evaluate(ComptimeFrame::expression(program, condition), env) {
+            ComptimeOutcome::Known(value) => match value.as_boolean() {
+                Some(taken) => ComptimeOutcome::Known(ComptimeSelection::Branch { taken }),
+                None => ComptimeOutcome::RuntimeDependent,
+            },
+            ComptimeOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
+            ComptimeOutcome::NotReady => ComptimeOutcome::NotReady,
+            ComptimeOutcome::UnsupportedContext => ComptimeOutcome::UnsupportedContext,
+            ComptimeOutcome::Trap(trap) => ComptimeOutcome::Trap(trap),
+            ComptimeOutcome::HostFailure(error) => ComptimeOutcome::HostFailure(error),
+            ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
+        }
+    }
+
+    /// Evaluate only a match scrutinee and return the first matching source
+    /// arm. Pattern decoding and matching remain owned by this engine/host
+    /// boundary; callers never recreate the selector policy.
+    pub fn select_match(
+        &mut self,
+        program: H::ProgramKey,
+        scrutinee: InstRef,
+        arms: &rue_rir::RirMatchArmsRange,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<ComptimeSelection, H::Failure> {
+        let frame = ComptimeFrame::expression(program, scrutinee);
+        let body = frame.body;
+        let previous_expected = env.expected_result.clone();
+        env.expected_result = frame.expected_result.clone();
+        self.frames.push(frame);
+        let value = self.eval(body, env);
+        let selected = match value {
+            ComptimeOutcome::Known(value) => {
+                let patterns = self.program_rir().match_arms(arms).to_vec();
+                patterns
+                    .into_iter()
+                    .enumerate()
+                    .find_map(|(index, (pattern, _))| {
+                        let pattern = self.decode_match_pattern(&self.program_key(), &pattern);
+                        match self.host.match_pattern(&pattern, &value) {
+                            Some(true) => Some(ComptimeOutcome::Known(ComptimeSelection::Match {
+                                arm: index,
+                            })),
+                            Some(false) => None,
+                            None => Some(ComptimeOutcome::RuntimeDependent),
+                        }
+                    })
+                    .unwrap_or(ComptimeOutcome::RuntimeDependent)
+            }
+            ComptimeOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
+            ComptimeOutcome::NotReady => ComptimeOutcome::NotReady,
+            ComptimeOutcome::UnsupportedContext => ComptimeOutcome::UnsupportedContext,
+            ComptimeOutcome::Trap(trap) => ComptimeOutcome::Trap(trap),
+            ComptimeOutcome::HostFailure(error) => ComptimeOutcome::HostFailure(error),
+            ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
+        };
+        self.frames.pop();
+        env.expected_result = previous_expected;
+        selected
+    }
+
     /// Evaluate a named call through a child call. The body host receives
     /// only the semantically named call operation; recursive expression edges
     /// stay in this engine.
@@ -8097,7 +8204,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             }
         };
         if env.locals.contains_key(&root)
-            || env.runtime_local_names.contains(&root)
+            || env.is_runtime_local_name(&root)
             || env.runtime_binding_names.contains(&root)
             || env.type_subst.contains_key(&root)
             || env.value_subst.contains_key(&root)
@@ -8134,7 +8241,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             }
         };
         if env.locals.contains_key(&root)
-            || env.runtime_local_names.contains(&root)
+            || env.is_runtime_local_name(&root)
             || env.runtime_binding_names.contains(&root)
             || env.type_subst.contains_key(&root)
             || env.value_subst.contains_key(&root)
@@ -8214,14 +8321,17 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         rhs: &H::Value,
         span: Span,
     ) -> ComptimeOutcome<Option<H::Type>, H::Failure> {
-        let hint = self
-            .host
-            .const_expr_type(&self.program_key(), env, inst_ref)
+        // A declared/substituted parameter type is an explicit contract for
+        // this evaluation.  It must win over the probe's provisional i32
+        // expression type (notably for `use(Id(i8), 1 << 8)`).
+        let hint = env
+            .expected_result
+            .as_ref()
+            .filter(|ty| self.host.type_integer_semantics(ty).is_some())
+            .cloned()
             .or_else(|| {
-                env.expected_result
-                    .as_ref()
-                    .filter(|ty| self.host.type_integer_semantics(ty).is_some())
-                    .cloned()
+                self.host
+                    .const_expr_type(&self.program_key(), env, inst_ref)
             });
         let site = self.diagnostic_site(span);
         ComptimeOutcome::Known(host_value!(self.host.integer_operation_type(
@@ -8239,14 +8349,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         operand: &H::Value,
         span: Span,
     ) -> ComptimeOutcome<Option<H::Type>, H::Failure> {
-        let hint = self
-            .host
-            .const_expr_type(&self.program_key(), env, inst_ref)
+        let hint = env
+            .expected_result
+            .as_ref()
+            .filter(|ty| self.host.type_integer_semantics(ty).is_some())
+            .cloned()
             .or_else(|| {
-                env.expected_result
-                    .as_ref()
-                    .filter(|ty| self.host.type_integer_semantics(ty).is_some())
-                    .cloned()
+                self.host
+                    .const_expr_type(&self.program_key(), env, inst_ref)
             });
         let site = self.diagnostic_site(span);
         ComptimeOutcome::Known(host_value!(self.host.unary_integer_type(
@@ -9278,7 +9388,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 // 2. Runtime locals shadow comptime parameters and file-level
                 //    constants: a reference that resolves to one is not
                 //    compile-time evaluable (spec 4.14:6).
-                if env.runtime_local_names.contains(&name) {
+                if env.is_runtime_local_name(&name) {
                     return ComptimeOutcome::RuntimeDependent;
                 }
                 // 3. Comptime type parameters in scope

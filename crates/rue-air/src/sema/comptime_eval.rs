@@ -60,7 +60,8 @@ use super::comptime::{
     ComptimeEnv as GenericComptimeEnv, ComptimeFile, ComptimeFrame, ComptimeHost,
     ComptimeHostError, ComptimeHostResult, ComptimeIdentity, ComptimeMatchPattern,
     ComptimeMethodDescriptor, ComptimeName, ComptimeNamedValueResolution, ComptimeOutcome,
-    ComptimeSemanticRejection, ComptimeStructuredTypeResolution, ComptimeTrap, ComptimeType,
+    ComptimeSelection, ComptimeSemanticRejection, ComptimeStructuredTypeResolution, ComptimeTrap,
+    ComptimeType,
 };
 use super::context::{AnalysisContext, ConstValue};
 use super::info::FunctionCallInfo;
@@ -254,6 +255,7 @@ impl<'a>
             value_subst: ctx.comptime_value_vars.clone(),
             resolved_types: Some(ctx.resolved_types),
             runtime_local_names: ctx.locals.keys().copied().collect(),
+            runtime_local_name_membership: None,
             runtime_binding_names: ctx.params.iter().map(|param| param.name).collect(),
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),
@@ -323,6 +325,90 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> Option<ConstValue> {
         let mut env = ComptimeEnv::for_analysis(ctx);
         self.eval_const_expr(inst_ref, &mut env).ok().flatten()
+    }
+
+    pub(crate) fn try_evaluate_const_with_resolved_types_and_membership(
+        &mut self,
+        inst_ref: InstRef,
+        resolved_types: &AHashMap<InstRef, Type>,
+        type_subst: Option<&AHashMap<Spur, Type>>,
+        value_subst: Option<&AHashMap<Spur, ConstValue>>,
+        runtime_membership: std::sync::Arc<dyn Fn(&Spur) -> bool>,
+        expected_result: Option<Type>,
+    ) -> Option<ConstValue> {
+        let empty_types = AHashMap::new();
+        let empty_values = AHashMap::new();
+        let mut env = ComptimeEnv::with_subst(
+            type_subst.unwrap_or(&empty_types),
+            value_subst.unwrap_or(&empty_values),
+        );
+        env.resolved_types = Some(resolved_types);
+        env.runtime_local_name_membership = Some(runtime_membership);
+        env.defining_file = Some(self.body_rir_ref().get(inst_ref).span.file_id);
+        env.expected_result = expected_result;
+        env.canonical_identity = self.active_anonymous_producer().cloned();
+        self.eval_const_expr(inst_ref, &mut env).ok().flatten()
+    }
+
+    pub(crate) fn select_comptime_branch_with_resolved_types_and_membership(
+        &mut self,
+        condition: InstRef,
+        resolved_types: &AHashMap<InstRef, Type>,
+        type_subst: Option<&AHashMap<Spur, Type>>,
+        value_subst: Option<&AHashMap<Spur, ConstValue>>,
+        runtime_membership: std::sync::Arc<dyn Fn(&Spur) -> bool>,
+    ) -> CompileResult<Option<bool>> {
+        let empty_types = AHashMap::new();
+        let empty_values = AHashMap::new();
+        let mut env = ComptimeEnv::with_subst(
+            type_subst.unwrap_or(&empty_types),
+            value_subst.unwrap_or(&empty_values),
+        );
+        env.resolved_types = Some(resolved_types);
+        env.runtime_local_name_membership = Some(runtime_membership);
+        env.defining_file = Some(self.body_rir_ref().get(condition).span.file_id);
+        env.canonical_identity = self.active_anonymous_producer().cloned();
+        match ComptimeEngine::new(self).select_branch((), condition, &mut env) {
+            ComptimeOutcome::Known(crate::sema::ComptimeSelection::Branch { taken }) => {
+                Ok(Some(taken))
+            }
+            ComptimeOutcome::RuntimeDependent
+            | ComptimeOutcome::NotReady
+            | ComptimeOutcome::UnsupportedContext => Ok(None),
+            ComptimeOutcome::Trap(trap) => Err(self.trap_failure(trap)),
+            ComptimeOutcome::HostFailure(error) | ComptimeOutcome::Abort(error) => Err(error),
+            ComptimeOutcome::Known(ComptimeSelection::Match { .. }) => Ok(None),
+        }
+    }
+
+    pub(crate) fn select_comptime_match_with_resolved_types_and_membership(
+        &mut self,
+        scrutinee: InstRef,
+        arms: &rue_rir::RirMatchArmsRange,
+        resolved_types: &AHashMap<InstRef, Type>,
+        type_subst: Option<&AHashMap<Spur, Type>>,
+        value_subst: Option<&AHashMap<Spur, ConstValue>>,
+        runtime_membership: std::sync::Arc<dyn Fn(&Spur) -> bool>,
+    ) -> CompileResult<Option<usize>> {
+        let empty_types = AHashMap::new();
+        let empty_values = AHashMap::new();
+        let mut env = ComptimeEnv::with_subst(
+            type_subst.unwrap_or(&empty_types),
+            value_subst.unwrap_or(&empty_values),
+        );
+        env.resolved_types = Some(resolved_types);
+        env.runtime_local_name_membership = Some(runtime_membership);
+        env.defining_file = Some(self.body_rir_ref().get(scrutinee).span.file_id);
+        env.canonical_identity = self.active_anonymous_producer().cloned();
+        match ComptimeEngine::new(self).select_match((), scrutinee, arms, &mut env) {
+            ComptimeOutcome::Known(ComptimeSelection::Match { arm }) => Ok(Some(arm)),
+            ComptimeOutcome::RuntimeDependent
+            | ComptimeOutcome::NotReady
+            | ComptimeOutcome::UnsupportedContext => Ok(None),
+            ComptimeOutcome::Trap(trap) => Err(self.trap_failure(trap)),
+            ComptimeOutcome::HostFailure(error) | ComptimeOutcome::Abort(error) => Err(error),
+            ComptimeOutcome::Known(ComptimeSelection::Branch { .. }) => Ok(None),
+        }
     }
 
     /// Evaluate an expression in the current function while preserving hard
@@ -1261,7 +1347,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         value_subst: Option<&AHashMap<Spur, ConstValue>>,
         runtime_params: &[Spur],
         attribution_enabled: bool,
-    ) -> (AHashMap<InstRef, Type>, ComptimePrecomputeAttribution) {
+    ) -> CompileResult<(AHashMap<InstRef, Type>, ComptimePrecomputeAttribution)> {
         let mut attribution = ComptimePrecomputeAttribution {
             enabled: attribution_enabled,
             ..ComptimePrecomputeAttribution::default()
@@ -1279,8 +1365,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             &mut runtime_bindings,
             &mut root_frame,
             &mut attribution,
-        );
-        (discovered, attribution)
+        )?;
+        Ok((discovered, attribution))
     }
 
     /// In-order walk over statement positions for
@@ -1301,7 +1387,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         runtime_bindings: &mut AHashSet<Spur>,
         frame: &mut Vec<(Spur, Option<Type>, bool)>,
         attribution: &mut ComptimePrecomputeAttribution,
-    ) {
+    ) -> CompileResult<()> {
+        self.check_canceled()?;
         if attribution.enabled {
             attribution.alias_nodes_visited += 1;
         }
@@ -1326,7 +1413,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         runtime_bindings,
                         &mut inner_frame,
                         attribution,
-                    );
+                    )?;
                 }
                 for (name, old_type, was_runtime) in inner_frame.into_iter().rev() {
                     match old_type {
@@ -1400,7 +1487,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     runtime_bindings,
                     frame,
                     attribution,
-                );
+                )?;
                 if let Some(else_block) = else_block {
                     self.walk_comptime_type_locals(
                         else_block,
@@ -1410,7 +1497,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         runtime_bindings,
                         frame,
                         attribution,
-                    );
+                    )?;
                 }
             }
             InstData::Loop { body, .. } | InstData::InfiniteLoop { body, .. } => {
@@ -1423,7 +1510,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     runtime_bindings,
                     frame,
                     attribution,
-                );
+                )?;
             }
             InstData::Match { arms, .. } => {
                 let bodies: Vec<InstRef> = self
@@ -1441,11 +1528,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         runtime_bindings,
                         frame,
                         attribution,
-                    );
+                    )?;
                 }
             }
             _ => {}
         }
+        Ok(())
     }
 
     /// Evaluate a `let` initializer as a compile-time type value, if it is
@@ -1504,19 +1592,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         value_subst: Option<&AHashMap<Spur, ConstValue>>,
         comptime_local_types: &AHashMap<Spur, Type>,
         attribution_enabled: bool,
-    ) -> (AHashMap<InstRef, Type>, ComptimePrecomputeAttribution) {
+    ) -> CompileResult<(AHashMap<InstRef, Type>, ComptimePrecomputeAttribution)> {
         // The body RIR index walk already censused the whole arena for these
         // shapes. Zero occurrences anywhere proves the reachability scan below
         // — whose candidates are a subset of the arena's — would collect
         // nothing, so the common candidate-free body skips the scan outright.
         if self.body_inline_ctor_head_candidates() == 0 {
-            return (
+            return Ok((
                 AHashMap::new(),
                 ComptimePrecomputeAttribution {
                     enabled: attribution_enabled,
                     ..ComptimePrecomputeAttribution::default()
                 },
-            );
+            ));
         }
         // A head is the receiver of a `.NAME(..)` path whose receiver is
         // itself a call (`F(args).Ok(x)`, or module-qualified
@@ -1524,8 +1612,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // struct literal's explicit `ctor_head`. Runtime shapes like
         // `foo(x).bar()` are collected too but fail the reduction cheaply
         // (the comptime engine rejects callees with runtime parameters).
-        let (candidates, scan) =
-            inline_ctor_head_candidates_with_work(self.body_rir_ref(), body, attribution_enabled);
+        let (candidates, scan) = inline_ctor_head_candidates_with_work_checked(
+            self.body_rir_ref(),
+            body,
+            attribution_enabled,
+            || self.check_canceled(),
+        )?;
         let mut attribution = ComptimePrecomputeAttribution {
             enabled: attribution_enabled,
             inline_scan_bodies: u64::from(attribution_enabled),
@@ -1544,6 +1636,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let eval_values: AHashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
         let mut reduced = AHashMap::new();
         for head in candidates {
+            self.check_canceled()?;
             let started = attribution.enabled.then(Instant::now);
             if attribution.enabled {
                 attribution.inline_eval_attempts += 1;
@@ -1563,7 +1656,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 reduced.insert(head, ty);
             }
         }
-        (reduced, attribution)
+        Ok((reduced, attribution))
     }
 }
 
@@ -1702,16 +1795,31 @@ pub(super) fn inline_ctor_head_candidates(rir: &rue_rir::Rir, body: InstRef) -> 
     inline_ctor_head_candidates_with_work(rir, body, false).0
 }
 
+#[cfg(test)]
 fn inline_ctor_head_candidates_with_work(
     rir: &rue_rir::Rir,
     body: InstRef,
     attribution_enabled: bool,
 ) -> (Vec<InstRef>, InlineCtorScanWork) {
+    inline_ctor_head_candidates_with_work_checked(rir, body, attribution_enabled, || Ok(()))
+        .expect("the no-op inline constructor scan cannot be canceled")
+}
+
+fn inline_ctor_head_candidates_with_work_checked<F>(
+    rir: &rue_rir::Rir,
+    body: InstRef,
+    attribution_enabled: bool,
+    mut check_canceled: F,
+) -> CompileResult<(Vec<InstRef>, InlineCtorScanWork)>
+where
+    F: FnMut() -> CompileResult<()>,
+{
     let mut pending = vec![body];
     let mut candidates = Vec::new();
     let mut work = InlineCtorScanWork::default();
 
     while let Some(current) = pending.pop() {
+        check_canceled()?;
         if attribution_enabled {
             work.pops += 1;
         }
@@ -1782,7 +1890,7 @@ fn inline_ctor_head_candidates_with_work(
 
     candidates.sort_unstable_by_key(|candidate| candidate.as_u32());
     candidates.dedup();
-    (candidates, work)
+    Ok((candidates, work))
 }
 
 /// Local semantic adapter for the separated compile-time engine. The adapter only
@@ -1844,7 +1952,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         unreachable!("ordinary comptime type resolution is synchronous")
     }
     fn check_canceled(&self) -> ComptimeHostResult<(), Self::Failure> {
-        Ok(())
+        OrdinaryBodyEngine::check_canceled(self).map_err(ComptimeHostError::HostFailure)
     }
     fn program_rir(&self, _program: &Self::ProgramKey) -> &rue_rir::Rir {
         OrdinaryBodyEngine::body_rir_ref(self)

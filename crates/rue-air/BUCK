@@ -1,7 +1,20 @@
 load("//crates:defs.bzl", "rue_crate")
 
+# Keep the structural authority guard hermetic while deriving its inventory
+# from the same source glob as the crate itself. The manifest is mapped into
+# src/ for include_str! in the test binary; it is not a second source list.
+genrule(
+    name = "rue-air-source-manifest",
+    out = "rue_air_source_manifest.txt",
+    cmd = "printf '%s\\n' $SRCS > $OUT",
+    srcs = glob(["src/**/*.rs"]),
+)
+
 rue_crate(
     name = "rue-air",
+    mapped_srcs = {
+        ":rue-air-source-manifest": "src/rue_air_source_manifest.txt",
+    },
     deps = [
         "//third-party:ahash",
         "//crates/rue-builtins:rue-builtins",
@@ -16,6 +29,7 @@ rue_crate(
     test_deps = [
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
+        "//third-party:syn",
     ],
 )
 

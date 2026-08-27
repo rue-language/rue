@@ -951,6 +951,7 @@ impl BuildBoundaryEvidence {
                 != structure.precompute_inline_final_candidates
             || structure.precompute_inline_type_successes
                 > structure.precompute_inline_eval_attempts
+            || structure.staged_canonical_evaluations > structure.staged_fact_nodes
         {
             return Err("compiler body structural-work attribution is inconsistent".to_string());
         }

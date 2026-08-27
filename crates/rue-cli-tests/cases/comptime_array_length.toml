@@ -60,7 +60,7 @@ stdout = "42\n"
 
 [[case]]
 name = "comptime_param_function_arg"
-description = "A comptime value parameter takes precedence over a same-named file const in an array type length."
+description = "A computed comptime argument is evaluated at the declared parameter type before sizing an array."
 files = [{ path = "main.rue", source = """
 const N: i32 = 9;
 
@@ -69,11 +69,24 @@ fn first(comptime N: i32, arr: [i32; N]) -> i32 {
 }
 
 fn main() -> i32 {
-    @dbg(first(3, [42, 1, 2]));
+    @dbg(first(1 + 2, [42, 1, 2]));
     0
 }
 """ }]
 stdout = "42\n"
+
+[[case]]
+name = "substituted_generic_argument_uses_declared_width"
+files = [{ path = "main.rue", source = """
+fn Id(comptime T: type) -> type { T }
+
+fn use(comptime T: type, comptime n: T) -> i32 {
+    @intCast(n)
+}
+
+fn main() -> i32 { use(Id(i8), 1 << 8) }
+""" }]
+exit_code = 1
 
 [[case]]
 name = "runtime_length_rejected"

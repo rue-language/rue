@@ -82,20 +82,168 @@ struct TestBodyClosureAnonymousDigestForcing {
 pub(crate) struct TestBodyTransactionFailureGuard(Arc<std::sync::atomic::AtomicBool>);
 
 #[cfg(test)]
-impl Drop for TestBodyTransactionFailureGuard {
-    fn drop(&mut self) {
-        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+static TEST_CGEN_CANCEL_AFTER: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(usize::MAX);
+#[cfg(test)]
+static TEST_CGEN_VISITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static TEST_CGEN_ATTEMPTED_SIBLINGS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static TEST_CGEN_POST_CANCEL_ATTEMPTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static TEST_CGEN_FRONTIER_STARTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static TEST_CGEN_PHASE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+#[cfg(test)]
+static TEST_CGEN_FRONTIER_ONLY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct FrontierRendezvousState {
+    arrivals: usize,
+    frontier_arrivals: usize,
+    released: bool,
+    timed_out: bool,
+}
+
+#[cfg(test)]
+pub(crate) struct FrontierRendezvous {
+    state: Mutex<FrontierRendezvousState>,
+    changed: std::sync::Condvar,
+}
+
+#[cfg(test)]
+impl FrontierRendezvous {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(FrontierRendezvousState::default()),
+            changed: std::sync::Condvar::new(),
+        })
+    }
+
+    fn arrive_and_wait(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.arrivals = state.arrivals.saturating_add(1);
+        state.frontier_arrivals = state.frontier_arrivals.saturating_add(1);
+        self.changed.notify_all();
+        while !state.released {
+            let (next, timeout) = self
+                .changed
+                .wait_timeout(state, std::time::Duration::from_secs(5))
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+            if timeout.timed_out() {
+                state.timed_out = true;
+                state.released = true;
+                self.changed.notify_all();
+            }
+        }
+    }
+
+    pub(crate) fn wait_for_arrivals(&self, expected: usize) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while state.arrivals < expected {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                state.timed_out = true;
+                state.released = true;
+                self.changed.notify_all();
+                return false;
+            }
+            let (next, timeout) = self
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+            if timeout.timed_out() && state.arrivals < expected {
+                state.timed_out = true;
+                state.released = true;
+                self.changed.notify_all();
+                return false;
+            }
+        }
+        true
+    }
+
+    pub(crate) fn arrivals(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .arrivals
+    }
+
+    pub(crate) fn frontier_arrivals(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .frontier_arrivals
+    }
+
+    pub(crate) fn timed_out(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .timed_out
+    }
+
+    pub(crate) fn release(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.released = true;
+        self.changed.notify_all();
     }
 }
 
 #[cfg(test)]
-pub(crate) struct TestBodyMaterializationCancellationGuard(Arc<std::sync::atomic::AtomicUsize>);
+static TEST_FRONTIER_RENDEZVOUS: std::sync::OnceLock<Mutex<Option<Arc<FrontierRendezvous>>>> =
+    std::sync::OnceLock::new();
 
 #[cfg(test)]
-impl Drop for TestBodyMaterializationCancellationGuard {
+pub(crate) struct FrontierRendezvousGuard;
+
+#[cfg(test)]
+impl Drop for FrontierRendezvousGuard {
     fn drop(&mut self) {
-        self.0
-            .store(usize::MAX, std::sync::atomic::Ordering::SeqCst);
+        if let Some(rendezvous) = TEST_FRONTIER_RENDEZVOUS
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            rendezvous.release();
+        }
+    }
+}
+#[cfg(test)]
+pub(crate) struct TestConstraintGenerationCancellationGuard;
+
+#[cfg(test)]
+impl Drop for TestConstraintGenerationCancellationGuard {
+    fn drop(&mut self) {
+        TEST_CGEN_CANCEL_AFTER.store(usize::MAX, std::sync::atomic::Ordering::SeqCst);
+        TEST_CGEN_FRONTIER_STARTED.store(false, std::sync::atomic::Ordering::SeqCst);
+        TEST_CGEN_PHASE.store(0, std::sync::atomic::Ordering::SeqCst);
+        TEST_CGEN_FRONTIER_ONLY.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestBodyTransactionFailureGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -637,8 +785,6 @@ pub(crate) struct RevisionedQueryDatabase {
     /// and cross-test interference between independent compiler sessions.
     #[cfg(test)]
     inject_body_transaction_failure: Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(test)]
-    inject_body_materialization_cancel_after: Arc<std::sync::atomic::AtomicUsize>,
     /// Test-only witness that the rooted-publication promotion hook took its
     /// non-empty branch — i.e. entered the promotion path at all (RUE-1091). The
     /// hook checks the observed set for emptiness FIRST, before formatting the
@@ -835,6 +981,17 @@ pub(crate) struct ProviderObservationCounters {
     import_named_nominals_registered: std::sync::atomic::AtomicU64,
     import_nominal_type_edges_traversed: std::sync::atomic::AtomicU64,
     import_anonymous_nominals_registered: std::sync::atomic::AtomicU64,
+    staged_probe_nodes: std::sync::atomic::AtomicU64,
+    staged_frontier_bodies: std::sync::atomic::AtomicU64,
+    staged_resolved_instructions: std::sync::atomic::AtomicU64,
+    staged_fact_nodes: std::sync::atomic::AtomicU64,
+    staged_canonical_evaluations: std::sync::atomic::AtomicU64,
+    staged_constraints_generated: std::sync::atomic::AtomicU64,
+    staged_binding_scope_nodes: std::sync::atomic::AtomicU64,
+    staged_binding_materializations: std::sync::atomic::AtomicU64,
+    staged_binding_trie_updates: std::sync::atomic::AtomicU64,
+    staged_binding_trie_lookups: std::sync::atomic::AtomicU64,
+    staged_precompute_nodes: std::sync::atomic::AtomicU64,
 }
 
 impl ProviderObservationCounters {
@@ -856,6 +1013,28 @@ impl ProviderObservationCounters {
             .fetch_add(work.import_nominal_type_edges_traversed as u64, Relaxed);
         self.import_anonymous_nominals_registered
             .fetch_add(work.import_anonymous_nominals_registered as u64, Relaxed);
+        self.staged_probe_nodes
+            .fetch_add(work.staged_probe_nodes, Relaxed);
+        self.staged_frontier_bodies
+            .fetch_add(work.staged_frontier_bodies, Relaxed);
+        self.staged_resolved_instructions
+            .fetch_add(work.staged_resolved_instructions, Relaxed);
+        self.staged_fact_nodes
+            .fetch_add(work.staged_fact_nodes, Relaxed);
+        self.staged_canonical_evaluations
+            .fetch_add(work.staged_canonical_evaluations, Relaxed);
+        self.staged_constraints_generated
+            .fetch_add(work.staged_constraints_generated, Relaxed);
+        self.staged_binding_scope_nodes
+            .fetch_add(work.staged_binding_scope_nodes, Relaxed);
+        self.staged_binding_materializations
+            .fetch_add(work.staged_binding_materializations, Relaxed);
+        self.staged_binding_trie_updates
+            .fetch_add(work.staged_binding_trie_updates, Relaxed);
+        self.staged_binding_trie_lookups
+            .fetch_add(work.staged_binding_trie_lookups, Relaxed);
+        self.staged_precompute_nodes
+            .fetch_add(work.staged_precompute_nodes, Relaxed);
     }
 
     fn snapshot(&self) -> crate::unstable::ProviderObservationMetrics {
@@ -914,6 +1093,17 @@ impl ProviderObservationCounters {
             import_anonymous_nominals_registered: self
                 .import_anonymous_nominals_registered
                 .load(Relaxed),
+            staged_probe_nodes: self.staged_probe_nodes.load(Relaxed),
+            staged_frontier_bodies: self.staged_frontier_bodies.load(Relaxed),
+            staged_resolved_instructions: self.staged_resolved_instructions.load(Relaxed),
+            staged_fact_nodes: self.staged_fact_nodes.load(Relaxed),
+            staged_canonical_evaluations: self.staged_canonical_evaluations.load(Relaxed),
+            staged_constraints_generated: self.staged_constraints_generated.load(Relaxed),
+            staged_binding_scope_nodes: self.staged_binding_scope_nodes.load(Relaxed),
+            staged_binding_materializations: self.staged_binding_materializations.load(Relaxed),
+            staged_binding_trie_updates: self.staged_binding_trie_updates.load(Relaxed),
+            staged_binding_trie_lookups: self.staged_binding_trie_lookups.load(Relaxed),
+            staged_precompute_nodes: self.staged_precompute_nodes.load(Relaxed),
         }
     }
 }
@@ -14167,9 +14357,6 @@ impl RevisionedQueryDatabase {
             .expect("the backend-root publication family has one canonical name");
         #[cfg(test)]
         let inject_body_transaction_failure = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        #[cfg(test)]
-        let inject_body_materialization_cancel_after =
-            Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
         let transactions_for_analysis_bundle = body_transactions.clone();
         let produced_for_analysis_bundle = body_produced_anonymous.clone();
         let body_analysis_bundles = runtime
@@ -15491,9 +15678,6 @@ impl RevisionedQueryDatabase {
                     symbol_space: RevisionSymbolSpace::with_owner_bound(max_interner_entries),
                     #[cfg(test)]
                     inject_body_transaction_failure: inject_body_transaction_failure.clone(),
-                    #[cfg(test)]
-                    inject_body_materialization_cancel_after:
-                        inject_body_materialization_cancel_after.clone(),
                 })
                 .is_ok(),
             "BodyTransaction evaluator is installed once"
@@ -15606,8 +15790,6 @@ impl RevisionedQueryDatabase {
             #[cfg(test)]
             inject_body_transaction_failure,
             #[cfg(test)]
-            inject_body_materialization_cancel_after,
-            #[cfg(test)]
             provider_probe: runtime
                 .family_with_equality(
                     "compiler.body-fact-provider-probe",
@@ -15673,21 +15855,78 @@ impl RevisionedQueryDatabase {
     }
 
     #[cfg(test)]
-    pub(crate) fn cancel_body_materialization_after_checkpoints_for_test(
+    pub(crate) fn cancel_constraint_generation_after_nodes_for_test(
         &self,
-        checkpoints: usize,
-    ) -> TestBodyMaterializationCancellationGuard {
-        use std::sync::atomic::Ordering::SeqCst;
-
+        nodes: usize,
+    ) -> TestConstraintGenerationCancellationGuard {
+        TEST_CGEN_VISITS.store(0, std::sync::atomic::Ordering::SeqCst);
+        TEST_CGEN_ATTEMPTED_SIBLINGS.store(0, std::sync::atomic::Ordering::SeqCst);
+        TEST_CGEN_POST_CANCEL_ATTEMPTS.store(0, std::sync::atomic::Ordering::SeqCst);
+        TEST_CGEN_FRONTIER_STARTED.store(false, std::sync::atomic::Ordering::SeqCst);
+        TEST_CGEN_PHASE.store(0, std::sync::atomic::Ordering::SeqCst);
+        TEST_CGEN_FRONTIER_ONLY.store(false, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(
-            self.inject_body_materialization_cancel_after
-                .swap(checkpoints, SeqCst),
+            TEST_CGEN_CANCEL_AFTER.swap(nodes, std::sync::atomic::Ordering::SeqCst),
             usize::MAX,
-            "body materialization cancellation injection is not nestable"
+            "constraint-generation cancellation injection is not nestable"
         );
-        TestBodyMaterializationCancellationGuard(
-            self.inject_body_materialization_cancel_after.clone(),
-        )
+        TestConstraintGenerationCancellationGuard
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cancel_frontier_constraint_generation_after_nodes_for_test(
+        &self,
+        nodes: usize,
+    ) -> TestConstraintGenerationCancellationGuard {
+        TEST_CGEN_VISITS.store(0, std::sync::atomic::Ordering::SeqCst);
+        TEST_CGEN_ATTEMPTED_SIBLINGS.store(0, std::sync::atomic::Ordering::SeqCst);
+        TEST_CGEN_POST_CANCEL_ATTEMPTS.store(0, std::sync::atomic::Ordering::SeqCst);
+        TEST_CGEN_FRONTIER_STARTED.store(false, std::sync::atomic::Ordering::SeqCst);
+        TEST_CGEN_PHASE.store(0, std::sync::atomic::Ordering::SeqCst);
+        TEST_CGEN_FRONTIER_ONLY.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            TEST_CGEN_CANCEL_AFTER.swap(nodes, std::sync::atomic::Ordering::SeqCst),
+            usize::MAX,
+            "constraint-generation cancellation injection is not nestable"
+        );
+        TestConstraintGenerationCancellationGuard
+    }
+
+    #[cfg(test)]
+    pub(crate) fn arm_frontier_rendezvous_for_test(
+        &self,
+        rendezvous: Arc<FrontierRendezvous>,
+    ) -> FrontierRendezvousGuard {
+        let replaced = TEST_FRONTIER_RENDEZVOUS
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(rendezvous);
+        assert!(
+            replaced.is_none(),
+            "only one frontier rendezvous may be armed"
+        );
+        FrontierRendezvousGuard
+    }
+
+    #[cfg(test)]
+    pub(crate) fn constraint_generation_visits_for_test(&self) -> usize {
+        TEST_CGEN_VISITS.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn constraint_generation_attempted_siblings_for_test(&self) -> usize {
+        TEST_CGEN_ATTEMPTED_SIBLINGS.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn constraint_generation_post_cancel_attempts_for_test(&self) -> usize {
+        TEST_CGEN_POST_CANCEL_ATTEMPTS.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn constraint_generation_phase_for_test(&self) -> u8 {
+        TEST_CGEN_PHASE.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     #[cfg(test)]
@@ -16743,30 +16982,9 @@ struct BodyTransactionEvaluator {
     symbol_space: RevisionSymbolSpace,
     #[cfg(test)]
     inject_body_transaction_failure: Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(test)]
-    inject_body_materialization_cancel_after: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl BodyTransactionEvaluator {
-    fn materialization_checkpoint(
-        &self,
-        context: &rue_query::QueryContext,
-    ) -> Result<(), QueryAbort> {
-        #[cfg(test)]
-        {
-            use std::sync::atomic::Ordering::SeqCst;
-            let remaining = self.inject_body_materialization_cancel_after.load(SeqCst);
-            if remaining != usize::MAX {
-                if remaining == 0 {
-                    return Err(QueryAbort::Canceled);
-                }
-                self.inject_body_materialization_cancel_after
-                    .fetch_sub(1, SeqCst);
-            }
-        }
-        context.check_canceled()
-    }
-
     fn body_plan_failure(
         definition: &crate::StableDefinitionKey,
         failure: &DeclarationBodyPlanFailure,
@@ -17209,7 +17427,7 @@ impl BodyTransactionEvaluator {
                             input.source.file_id,
                             input.source.declaration_start,
                             input.source.source_length,
-                            || self.materialization_checkpoint(context),
+                            || context.check_canceled(),
                         )
                         .map(|(bundle, attribution)| (bundle, Some(attribution)))
                 } else {
@@ -17221,7 +17439,7 @@ impl BodyTransactionEvaluator {
                             input.source.file_id,
                             input.source.declaration_start,
                             input.source.source_length,
-                            || self.materialization_checkpoint(context),
+                            || context.check_canceled(),
                         )
                         .map(|bundle| (bundle, None))
                 };
@@ -17500,7 +17718,7 @@ impl BodyTransactionEvaluator {
                             input.source.file_id,
                             input.source.declaration_start,
                             input.source.source_length,
-                            || self.materialization_checkpoint(context),
+                            || context.check_canceled(),
                         )
                         .map(|(bundle, attribution)| (bundle, Some(attribution)))
                 } else {
@@ -17512,7 +17730,7 @@ impl BodyTransactionEvaluator {
                             input.source.file_id,
                             input.source.declaration_start,
                             input.source.source_length,
-                            || self.materialization_checkpoint(context),
+                            || context.check_canceled(),
                         )
                         .map(|bundle| (bundle, None))
                 };
@@ -17878,7 +18096,7 @@ impl BodyTransactionEvaluator {
                             input.source.file_id,
                             input.source.declaration_start,
                             input.source.source_length,
-                            || self.materialization_checkpoint(context),
+                            || context.check_canceled(),
                         )
                         .map(|(bundle, declaration, attribution)| {
                             (bundle, declaration, Some(attribution))
@@ -17892,7 +18110,7 @@ impl BodyTransactionEvaluator {
                             input.source.file_id,
                             input.source.declaration_start,
                             input.source.source_length,
-                            || self.materialization_checkpoint(context),
+                            || context.check_canceled(),
                         )
                         .map(|(bundle, declaration)| (bundle, declaration, None))
                 };
@@ -20836,6 +21054,8 @@ pub(crate) struct CompilerBodyFactProvider<'a> {
     nucleus_cache_hits: std::cell::Cell<u64>,
     #[cfg(test)]
     lookup_name_cache_hits: std::cell::Cell<u64>,
+    #[cfg(test)]
+    frontier_rendezvous_arrived: std::cell::Cell<bool>,
 }
 
 struct SemanticNucleusCacheEntry {
@@ -22571,6 +22791,8 @@ impl<'a> CompilerBodyFactProvider<'a> {
             nucleus_cache_hits: std::cell::Cell::new(0),
             #[cfg(test)]
             lookup_name_cache_hits: std::cell::Cell::new(0),
+            #[cfg(test)]
+            frontier_rendezvous_arrived: std::cell::Cell::new(false),
         }
     }
 
@@ -23146,6 +23368,61 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
     type AnonymousFacts = Arc<[crate::durable_semantics::DurableAnonymousNominal]>;
     type ProducerBodyFacts = crate::body_query::ProducedAnonymous;
     type ToolchainFacts = crate::BodyToolchainDemand;
+
+    fn is_canceled(&self) -> bool {
+        #[cfg(test)]
+        {
+            let remaining = TEST_CGEN_CANCEL_AFTER.load(std::sync::atomic::Ordering::SeqCst);
+            if remaining != usize::MAX
+                && (!TEST_CGEN_FRONTIER_ONLY.load(std::sync::atomic::Ordering::SeqCst)
+                    || TEST_CGEN_FRONTIER_STARTED.load(std::sync::atomic::Ordering::SeqCst))
+            {
+                let visit = TEST_CGEN_VISITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                TEST_CGEN_PHASE.store(1, std::sync::atomic::Ordering::SeqCst);
+                if visit >= remaining {
+                    self.observe_abort(QueryAbort::Canceled);
+                    return true;
+                }
+            }
+        }
+        if self.queries.context.check_canceled().is_err() {
+            // Preserve query abort semantics even when the cancellation is
+            // observed during a local AIR frontier walk rather than while a
+            // provider lookup is crossing a child query.
+            self.observe_abort(QueryAbort::Canceled);
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg(test)]
+    fn staged_frontier_started(&self) {
+        TEST_CGEN_FRONTIER_STARTED.store(true, std::sync::atomic::Ordering::SeqCst);
+        TEST_CGEN_PHASE.store(1, std::sync::atomic::Ordering::SeqCst);
+        if self.frontier_rendezvous_arrived.replace(true) {
+            return;
+        }
+        let rendezvous = TEST_FRONTIER_RENDEZVOUS
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(rendezvous) = rendezvous {
+            rendezvous.arrive_and_wait();
+        }
+    }
+
+    #[cfg(test)]
+    fn staged_sibling_attempt(&self) {
+        TEST_CGEN_ATTEMPTED_SIBLINGS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let cancel_after = TEST_CGEN_CANCEL_AFTER.load(std::sync::atomic::Ordering::SeqCst);
+        if cancel_after != usize::MAX
+            && TEST_CGEN_VISITS.load(std::sync::atomic::Ordering::SeqCst) >= cancel_after
+        {
+            TEST_CGEN_POST_CANCEL_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
 
     fn lookup_unqualified(
         &self,
@@ -42870,7 +43147,7 @@ fn main() -> i32 {
             .expect("producer artifact is warm before transaction materialization");
 
         {
-            let _injection = database.cancel_body_materialization_after_checkpoints_for_test(1);
+            let _injection = database.cancel_constraint_generation_after_nodes_for_test(12);
             let attempt = database.runtime.request_registered(
                 &database.body_transactions,
                 revision,
@@ -43156,7 +43433,7 @@ fn main() -> i32 {
             .expect("body input is warm before transaction materialization");
 
         {
-            let _injection = database.cancel_body_materialization_after_checkpoints_for_test(1);
+            let _injection = database.cancel_constraint_generation_after_nodes_for_test(12);
             let attempt = database.runtime.request_registered(
                 &database.body_transactions,
                 revision,
@@ -43164,8 +43441,18 @@ fn main() -> i32 {
                 CancellationToken::new(),
             );
             assert!(matches!(attempt.abort(), Some(QueryAbort::Canceled)));
+            assert_eq!(database.constraint_generation_phase_for_test(), 1);
+            assert!(database.constraint_generation_visits_for_test() >= 12);
+            assert!(
+                database.constraint_generation_visits_for_test() <= 24,
+                "frontier cancellation must unwind promptly rather than visit the tail"
+            );
             assert!(attempt.terminal().is_none());
             assert!(!database.body_transactions.contains_retained_key(&key));
+            assert!(
+                database.constraint_generation_visits_for_test() >= 12,
+                "the dedicated cancellation injector entered constraint generation"
+            );
         }
 
         let retry = database
@@ -43176,6 +43463,722 @@ fn main() -> i32 {
             rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success { .. })
         ));
         assert!(database.body_transactions.contains_retained_key(&key));
+    }
+
+    #[test]
+    fn staged_comptime_facts_are_repeated_and_parallel_deterministic() {
+        for iteration in 0..20 {
+            let source = source_snapshot(
+                &[(
+                    1,
+                    "/main.rue",
+                    "main.rue",
+                    "fn choose(comptime n: i8) -> i32 { if n == 1 { if n < 2 { 9 } else { 0 } } else { 0 } }\nfn main() -> i32 { choose(1) }\n",
+                )],
+                1,
+            );
+            let module = ModuleId::from_logical_path("main.rue").unwrap();
+            let crate::FunctionInstanceKey::Definition(base) =
+                free_function_instance(&module, "choose")
+            else {
+                unreachable!("free function helper returns a definition");
+            };
+            let key = crate::body_query::BodyQueryKey::new(
+                crate::FunctionInstanceKey::Specialization {
+                    base: Node::new(crate::FunctionInstanceKey::Definition(base)),
+                    arguments: crate::CanonicalArguments {
+                        types: Arc::from([]),
+                        values: Arc::from([crate::CanonicalArgumentValue::Integer(1)]),
+                    },
+                },
+                semantic_configuration(),
+            );
+
+            // Establish the sequential production baseline from a specialized
+            // transaction; this exercises staged selector facts and the emitted
+            // canonical body rather than only warming the input query.
+            let mut baseline_database = RevisionedQueryDatabase::default();
+            let baseline_revision = revision_for(&mut baseline_database, &source);
+            let baseline = baseline_database
+                .body_transaction(baseline_revision, key.clone(), CancellationToken::new())
+                .expect("sequential specialized baseline succeeds");
+            let baseline_metrics = baseline_database.provider_observation_metrics();
+
+            // Run two independent production databases through the in-evaluation
+            // rendezvous. Equal requests on one database would merely test query
+            // joining; this gate proves both providers reach staged evaluation.
+            let mut left_database = RevisionedQueryDatabase::with_query_concurrency(8);
+            let left_revision = revision_for(&mut left_database, &source);
+            let mut right_database = RevisionedQueryDatabase::with_query_concurrency(8);
+            let right_revision = revision_for(&mut right_database, &source);
+            let left_database = Arc::new(left_database);
+            let right_database = Arc::new(right_database);
+            let frontier_rendezvous = FrontierRendezvous::new();
+            let _frontier_gate =
+                left_database.arm_frontier_rendezvous_for_test(frontier_rendezvous.clone());
+            let left_key = key.clone();
+            let left_database_for_thread = left_database.clone();
+            let left_thread = std::thread::spawn(move || {
+                left_database_for_thread
+                    .body_transaction(left_revision, left_key, CancellationToken::new())
+                    .expect("left concurrent specialized query succeeds")
+            });
+            let right_database_for_thread = right_database.clone();
+            let right_thread = std::thread::spawn(move || {
+                right_database_for_thread
+                    .body_transaction(right_revision, key, CancellationToken::new())
+                    .expect("right concurrent specialized query succeeds")
+            });
+            assert!(
+                frontier_rendezvous.wait_for_arrivals(2),
+                "both providers must reach in-evaluation staged rendezvous (arrivals={}, timed_out={})",
+                frontier_rendezvous.arrivals(),
+                frontier_rendezvous.timed_out()
+            );
+            assert_eq!(frontier_rendezvous.arrivals(), 2);
+            assert_eq!(frontier_rendezvous.frontier_arrivals(), 2);
+            assert!(!frontier_rendezvous.timed_out());
+            frontier_rendezvous.release();
+            let left = left_thread.join().expect("left query thread joins");
+            let right = right_thread.join().expect("right query thread joins");
+            let left_metrics = left_database.provider_observation_metrics();
+            let right_metrics = right_database.provider_observation_metrics();
+
+            let rue_query::QueryOutcome::Success(baseline_transaction) = baseline.outcome() else {
+                panic!("sequential specialized baseline did not succeed");
+            };
+            let rue_query::QueryOutcome::Success(left_transaction) = left.outcome() else {
+                panic!("left concurrent specialized query did not succeed");
+            };
+            let rue_query::QueryOutcome::Success(right_transaction) = right.outcome() else {
+                panic!("right concurrent specialized query did not succeed");
+            };
+            assert!(crate::body_query::transaction_equal(
+                baseline_transaction,
+                left_transaction,
+            ));
+            assert!(crate::body_query::transaction_equal(
+                baseline_transaction,
+                right_transaction,
+            ));
+            assert_eq!(baseline_metrics, left_metrics);
+            assert_eq!(baseline_metrics, right_metrics);
+            assert_eq!(
+                frontier_rendezvous.arrivals(),
+                2,
+                "rendezvous iteration {iteration}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_selector_benchmark_has_zero_staged_work() {
+        let source = source_snapshot(
+            &[(1, "/main.rue", "main.rue", "fn main() -> i32 { 7 }\n")],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        let key = crate::body_query::BodyQueryKey::new(
+            free_function_instance(&module, "main"),
+            semantic_configuration(),
+        );
+        let result = database
+            .body_transaction(revision, key, CancellationToken::new())
+            .unwrap();
+        assert!(matches!(
+            result.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success { .. })
+        ));
+        let metrics = database.provider_observation_metrics();
+        assert_eq!(metrics.staged_probe_nodes, 0);
+        assert_eq!(metrics.staged_frontier_bodies, 0);
+        assert_eq!(metrics.staged_resolved_instructions, 0);
+        assert_eq!(metrics.staged_fact_nodes, 0);
+        assert_eq!(metrics.staged_canonical_evaluations, 0);
+        assert_eq!(metrics.staged_constraints_generated, 0);
+        assert_eq!(metrics.staged_binding_scope_nodes, 0);
+        assert_eq!(metrics.staged_binding_materializations, 0);
+        assert_eq!(metrics.staged_binding_trie_updates, 0);
+        assert_eq!(metrics.staged_binding_trie_lookups, 0);
+        assert_eq!(metrics.staged_precompute_nodes, 0);
+    }
+
+    #[test]
+    fn staged_local_and_selector_work_scales_linearly() {
+        let make_source = |locals: usize| {
+            let lets = (0..locals)
+                .map(|index| format!("let v{index}: i32 = {index};"))
+                .collect::<String>();
+            source_snapshot(
+                &[(
+                    1,
+                    "/main.rue",
+                    "main.rue",
+                    &format!(
+                        "fn choose(comptime n: i32) -> i32 {{ {lets} if n == 0 {{ 1 }} else {{ 0 }} }}\nfn main() -> i32 {{ choose(0) }}\n"
+                    ),
+                )],
+                1,
+            )
+        };
+        let measure = |source: SourceSnapshot| {
+            let module = ModuleId::from_logical_path("main.rue").unwrap();
+            let mut database = RevisionedQueryDatabase::default();
+            let revision = revision_for(&mut database, &source);
+            let crate::FunctionInstanceKey::Definition(base) =
+                free_function_instance(&module, "choose")
+            else {
+                unreachable!("free function helper returns a definition");
+            };
+            database
+                .body_transaction(
+                    revision,
+                    crate::body_query::BodyQueryKey::new(
+                        crate::FunctionInstanceKey::Specialization {
+                            base: Node::new(crate::FunctionInstanceKey::Definition(base)),
+                            arguments: crate::CanonicalArguments {
+                                types: Arc::from([]),
+                                values: Arc::from([crate::CanonicalArgumentValue::Integer(0)]),
+                            },
+                        },
+                        semantic_configuration(),
+                    ),
+                    CancellationToken::new(),
+                )
+                .unwrap();
+            database.provider_observation_metrics()
+        };
+        let small = measure(make_source(8));
+        let large = measure(make_source(16));
+        let work = |metrics: crate::unstable::ProviderObservationMetrics| {
+            metrics
+                .staged_probe_nodes
+                .saturating_add(metrics.staged_frontier_bodies)
+                .saturating_add(metrics.staged_resolved_instructions)
+                .saturating_add(metrics.staged_fact_nodes)
+                .saturating_add(metrics.staged_canonical_evaluations)
+                .saturating_add(metrics.staged_constraints_generated)
+                .saturating_add(metrics.staged_binding_scope_nodes)
+                .saturating_add(metrics.staged_binding_materializations)
+                .saturating_add(metrics.staged_binding_trie_updates)
+                .saturating_add(metrics.staged_binding_trie_lookups)
+                .saturating_add(metrics.staged_precompute_nodes)
+        };
+        assert_eq!(small.staged_frontier_bodies, 1);
+        assert_eq!(large.staged_frontier_bodies, 1);
+        assert_eq!(small.staged_binding_scope_nodes, 8);
+        assert_eq!(large.staged_binding_scope_nodes, 16);
+        assert_eq!(
+            large.staged_probe_nodes - small.staged_probe_nodes,
+            16,
+            "probe work charges each newly reachable local exactly once"
+        );
+        assert_eq!(
+            large.staged_constraints_generated - small.staged_constraints_generated,
+            8,
+            "frontier constraint work grows with the selected segment only"
+        );
+        assert_eq!(
+            work(small),
+            401,
+            "the eight-local production specialization has a stable staged-work total"
+        );
+        assert_eq!(
+            work(large),
+            713,
+            "the sixteen-local production specialization has a stable staged-work total"
+        );
+        assert!(
+            work(large) >= work(small),
+            "larger staged source must not do less work"
+        );
+        assert!(
+            work(large) <= work(small).saturating_mul(2),
+            "staged work must be linear: small={} large={}",
+            work(small),
+            work(large)
+        );
+    }
+
+    #[test]
+    fn staged_non_generic_calls_do_not_materialize_scope() {
+        let make_source = |locals_count: usize, calls_count: usize| {
+            let locals = (0..locals_count)
+                .map(|index| format!("let local_{index}: i32 = {index};"))
+                .collect::<String>();
+            let calls = (0..calls_count).map(|_| "leaf();").collect::<String>();
+            source_snapshot(
+                &[(
+                    1,
+                    "/main.rue",
+                    "main.rue",
+                    &format!(
+                        "fn leaf() -> i32 {{ 1 }}\nfn choose(comptime n: i32) -> i32 {{ if n == 0 {{ {locals}{calls} 1 }} else {{ 0 }} }}\nfn main() -> i32 {{ choose(0) }}\n"
+                    ),
+                )],
+                1,
+            )
+        };
+        let measure = |source: SourceSnapshot| {
+            let module = ModuleId::from_logical_path("main.rue").unwrap();
+            let mut database = RevisionedQueryDatabase::default();
+            let revision = revision_for(&mut database, &source);
+            let crate::FunctionInstanceKey::Definition(base) =
+                free_function_instance(&module, "choose")
+            else {
+                unreachable!("free function helper returns a definition");
+            };
+            let key = crate::body_query::BodyQueryKey::new(
+                crate::FunctionInstanceKey::Specialization {
+                    base: Node::new(crate::FunctionInstanceKey::Definition(base)),
+                    arguments: crate::CanonicalArguments {
+                        types: Arc::from([]),
+                        values: Arc::from([crate::CanonicalArgumentValue::Integer(0)]),
+                    },
+                },
+                semantic_configuration(),
+            );
+            let result = database
+                .body_transaction(revision, key, CancellationToken::new())
+                .unwrap();
+            assert!(matches!(
+                result.outcome(),
+                rue_query::QueryOutcome::Success(
+                    crate::body_query::BodyTransaction::Success { .. }
+                )
+            ));
+            database.provider_observation_metrics()
+        };
+        let small = measure(make_source(8, 8));
+        let more_calls = measure(make_source(8, 16));
+        let large = measure(make_source(16, 16));
+        assert_eq!(small.staged_binding_materializations, 2);
+        assert_eq!(more_calls.staged_binding_materializations, 2);
+        assert_eq!(large.staged_binding_materializations, 2);
+        assert_eq!(
+            small.staged_binding_trie_lookups, more_calls.staged_binding_trie_lookups,
+            "ordinary calls must not perform additional runtime-name membership lookups"
+        );
+        assert_eq!(
+            small.staged_binding_trie_updates, more_calls.staged_binding_trie_updates,
+            "ordinary calls must not update the persistent runtime-name scope"
+        );
+        assert_eq!(small.staged_binding_scope_nodes, 8);
+        assert_eq!(more_calls.staged_binding_scope_nodes, 8);
+        assert_eq!(large.staged_binding_scope_nodes, 16);
+        assert_eq!(small.staged_binding_trie_lookups, 66);
+        assert_eq!(more_calls.staged_binding_trie_lookups, 66);
+        assert_eq!(large.staged_binding_trie_lookups, 66);
+        assert_eq!(
+            more_calls.staged_probe_nodes - small.staged_probe_nodes,
+            8,
+            "adding eight ordinary calls charges only their own source nodes"
+        );
+        assert_eq!(
+            more_calls.staged_fact_nodes - small.staged_fact_nodes,
+            8,
+            "ordinary calls do not add a scope walk to staged fact collection"
+        );
+        assert_eq!(
+            large.staged_probe_nodes - more_calls.staged_probe_nodes,
+            16,
+            "doubling visible locals remains linear"
+        );
+        assert_eq!(
+            large.staged_binding_trie_updates - more_calls.staged_binding_trie_updates,
+            264,
+            "only the eight additional locals update the persistent scope"
+        );
+        assert!(
+            large.staged_probe_nodes > small.staged_probe_nodes,
+            "the extra locals are charged as actual source work"
+        );
+    }
+
+    #[test]
+    fn staged_nested_selector_prefix_work_scales_linearly() {
+        let make_source = |depth: usize| {
+            let mut expression = String::from("1");
+            for level in (0..depth).rev() {
+                expression = format!(
+                    "if n == 0 {{ let visible_{level}: i32 = {level}; {expression} }} else {{ 0 }}"
+                );
+            }
+            source_snapshot(
+                &[(
+                    1,
+                    "/main.rue",
+                    "main.rue",
+                    &format!(
+                        "fn choose(comptime n: i32) -> i32 {{ {expression} }}\nfn main() -> i32 {{ choose(0) }}\n"
+                    ),
+                )],
+                1,
+            )
+        };
+        let measure = |source: SourceSnapshot| {
+            let module = ModuleId::from_logical_path("main.rue").unwrap();
+            let mut database = RevisionedQueryDatabase::default();
+            let revision = revision_for(&mut database, &source);
+            let crate::FunctionInstanceKey::Definition(base) =
+                free_function_instance(&module, "choose")
+            else {
+                unreachable!("free function helper returns a definition");
+            };
+            let key = crate::body_query::BodyQueryKey::new(
+                crate::FunctionInstanceKey::Specialization {
+                    base: Node::new(crate::FunctionInstanceKey::Definition(base)),
+                    arguments: crate::CanonicalArguments {
+                        types: Arc::from([]),
+                        values: Arc::from([crate::CanonicalArgumentValue::Integer(0)]),
+                    },
+                },
+                semantic_configuration(),
+            );
+            let result = database
+                .body_transaction(revision, key, CancellationToken::new())
+                .unwrap();
+            assert!(matches!(
+                result.outcome(),
+                rue_query::QueryOutcome::Success(
+                    crate::body_query::BodyTransaction::Success { .. }
+                )
+            ));
+            database.provider_observation_metrics()
+        };
+        let small = measure(make_source(4));
+        let large = measure(make_source(8));
+        let work = |metrics: crate::unstable::ProviderObservationMetrics| {
+            metrics
+                .staged_probe_nodes
+                .saturating_add(metrics.staged_frontier_bodies)
+                .saturating_add(metrics.staged_resolved_instructions)
+                .saturating_add(metrics.staged_fact_nodes)
+                .saturating_add(metrics.staged_canonical_evaluations)
+                .saturating_add(metrics.staged_constraints_generated)
+                .saturating_add(metrics.staged_binding_scope_nodes)
+                .saturating_add(metrics.staged_binding_materializations)
+                .saturating_add(metrics.staged_binding_trie_updates)
+                .saturating_add(metrics.staged_binding_trie_lookups)
+                .saturating_add(metrics.staged_precompute_nodes)
+        };
+        let small_work = work(small);
+        let large_work = work(large);
+        assert_eq!(small.staged_frontier_bodies, 4);
+        assert_eq!(large.staged_frontier_bodies, 8);
+        assert_eq!(small.staged_binding_scope_nodes, 4);
+        assert_eq!(large.staged_binding_scope_nodes, 8);
+        assert_eq!(small_work, 524);
+        assert_eq!(large_work, 1048);
+        assert_eq!(large_work, small_work.saturating_mul(2));
+        assert!(
+            large_work <= small_work.saturating_mul(2),
+            "nested selector staging must be bounded-linear: small={small_work} large={large_work}"
+        );
+    }
+
+    #[test]
+    fn staged_runtime_parameter_scope_is_inserted_once() {
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn choose(comptime n: i32, value: i32) -> i32 { if n == 0 { value } else { 0 } }\nfn main() -> i32 { choose(0, 7) }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        let crate::FunctionInstanceKey::Definition(base) =
+            free_function_instance(&module, "choose")
+        else {
+            unreachable!("free function helper returns a definition");
+        };
+        let key = crate::body_query::BodyQueryKey::new(
+            crate::FunctionInstanceKey::Specialization {
+                base: Node::new(crate::FunctionInstanceKey::Definition(base)),
+                arguments: crate::CanonicalArguments {
+                    types: Arc::from([]),
+                    values: Arc::from([crate::CanonicalArgumentValue::Integer(0)]),
+                },
+            },
+            semantic_configuration(),
+        );
+        let result = database
+            .body_transaction(revision, key, CancellationToken::new())
+            .unwrap();
+        assert!(matches!(
+            result.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success { .. })
+        ));
+        let metrics = database.provider_observation_metrics();
+        assert_eq!(metrics.staged_binding_scope_nodes, 1);
+        assert_eq!(metrics.staged_binding_trie_updates, 33);
+        assert_eq!(metrics.staged_binding_materializations, 2);
+        assert_eq!(metrics.staged_binding_trie_lookups, 66);
+    }
+
+    #[test]
+    fn staged_frontier_constraint_cancellation_publishes_nothing_and_retry_is_identical() {
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn choose(comptime n: i8) -> i32 { if n == 1 { let a = 1; let b = 2; let c = 3; let d1 = 4; let d2 = 5; let d3 = 6; let d4 = 7; let d5 = 8; let d6 = 9; let d7 = 10; let d8 = 11; let d9 = 12; let d10 = 13; let d11 = 14; let d12 = 15; let d13 = 16; let d14 = 17; let d15 = 18; let d16 = 19; let d17 = 20; let d18 = 21; let d19 = 22; let d20 = 23; if n << 8 == n { a + b + c } else { 0 } } else { 0 } }\nfn main() -> i32 { choose(1) }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        let crate::FunctionInstanceKey::Definition(base) =
+            free_function_instance(&module, "choose")
+        else {
+            unreachable!("free function helper returns a definition")
+        };
+        let specialized = crate::FunctionInstanceKey::Specialization {
+            base: Node::new(crate::FunctionInstanceKey::Definition(base)),
+            arguments: crate::CanonicalArguments {
+                types: Arc::from([]),
+                values: Arc::from([crate::CanonicalArgumentValue::Integer(1)]),
+            },
+        };
+        let key = crate::body_query::BodyQueryKey::new(specialized, semantic_configuration());
+        database
+            .body_input(revision, key.clone(), CancellationToken::new())
+            .expect("the selector body input is available");
+        let short_visits;
+        let short_post_cancel_attempts;
+        {
+            let _injection =
+                database.cancel_frontier_constraint_generation_after_nodes_for_test(12);
+            let attempt = database.runtime.request_registered(
+                &database.body_transactions,
+                revision,
+                key.clone(),
+                CancellationToken::new(),
+            );
+            assert!(matches!(attempt.abort(), Some(QueryAbort::Canceled)));
+            assert_eq!(database.constraint_generation_phase_for_test(), 1);
+            assert!(database.constraint_generation_visits_for_test() >= 12);
+            assert!(
+                database.constraint_generation_visits_for_test() <= 24,
+                "frontier cancellation must unwind promptly rather than visit the tail"
+            );
+            assert!(attempt.terminal().is_none());
+            assert!(!database.body_transactions.contains_retained_key(&key));
+            short_visits = database.constraint_generation_visits_for_test();
+            short_post_cancel_attempts =
+                database.constraint_generation_post_cancel_attempts_for_test();
+        }
+        let retry = database
+            .body_transaction(revision, key.clone(), CancellationToken::new())
+            .expect("uncanceled staged retry succeeds");
+        assert!(matches!(
+            retry.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success { .. })
+        ));
+
+        // Compare the recovered transaction with a clean specialized query,
+        // rather than merely checking that the retry reached a green terminal.
+        let mut clean_database = RevisionedQueryDatabase::default();
+        let clean_revision = revision_for(&mut clean_database, &source);
+        let clean = clean_database
+            .body_transaction(clean_revision, key, CancellationToken::new())
+            .expect("clean specialized query succeeds");
+        let rue_query::QueryOutcome::Success(retry_transaction) = retry.outcome() else {
+            unreachable!("retry was checked above");
+        };
+        let rue_query::QueryOutcome::Success(clean_transaction) = clean.outcome() else {
+            unreachable!("clean query succeeds");
+        };
+        assert!(crate::body_query::transaction_equal(
+            retry_transaction,
+            clean_transaction,
+        ));
+
+        // A canceled frontier must unwind its enclosing sibling loop rather
+        // than continuing through an arbitrarily long unreachable tail.  The
+        // same production specialized transaction with a thousand locals is
+        // the adversarial source-sized witness for that bound.
+        let long_tail = (0..1000)
+            .map(|index| format!("let tail_{index}: i32 = {index};"))
+            .collect::<String>();
+        let long_source_text = format!(
+            "fn choose(comptime n: i8) -> i32 {{ if n == 1 {{ {long_tail} if n << 8 == n {{ 1 }} else {{ 0 }} }} else {{ 0 }} }}\nfn main() -> i32 {{ choose(1) }}\n"
+        );
+        let long_source = source_snapshot(&[(1, "/main.rue", "main.rue", &long_source_text)], 1);
+        let mut long_database = RevisionedQueryDatabase::default();
+        let long_revision = revision_for(&mut long_database, &long_source);
+        let crate::FunctionInstanceKey::Definition(long_base) =
+            free_function_instance(&module, "choose")
+        else {
+            unreachable!("free function helper returns a definition")
+        };
+        let long_key = crate::body_query::BodyQueryKey::new(
+            crate::FunctionInstanceKey::Specialization {
+                base: Node::new(crate::FunctionInstanceKey::Definition(long_base)),
+                arguments: crate::CanonicalArguments {
+                    types: Arc::from([]),
+                    values: Arc::from([crate::CanonicalArgumentValue::Integer(1)]),
+                },
+            },
+            semantic_configuration(),
+        );
+        long_database
+            .body_input(long_revision, long_key.clone(), CancellationToken::new())
+            .expect("the long-tail selector body input is available");
+        let long_visits;
+        let long_post_cancel_attempts;
+        {
+            let _injection =
+                long_database.cancel_frontier_constraint_generation_after_nodes_for_test(12);
+            let attempt = long_database.runtime.request_registered(
+                &long_database.body_transactions,
+                long_revision,
+                long_key,
+                CancellationToken::new(),
+            );
+            assert!(matches!(attempt.abort(), Some(QueryAbort::Canceled)));
+            assert!(attempt.terminal().is_none());
+            long_visits = long_database.constraint_generation_visits_for_test();
+            long_post_cancel_attempts =
+                long_database.constraint_generation_post_cancel_attempts_for_test();
+        }
+        assert!(
+            long_visits <= short_visits.saturating_add(2),
+            "frontier cancellation visits must be tail-independent: short={short_visits} long={long_visits}"
+        );
+        assert!(
+            long_post_cancel_attempts <= short_post_cancel_attempts.saturating_add(1),
+            "canceled block tails must not be attempted: short={short_post_cancel_attempts} long={long_post_cancel_attempts}"
+        );
+
+        // Exercise the same production frontier transaction with the other
+        // sibling-heavy generator paths.  Each case is canceled by the
+        // frontier cgen injector, then retried and compared with an entirely
+        // clean specialized transaction so cancellation cannot leave a tail
+        // diagnostic, fact, or cached partial result behind.
+        let run_frontier_case = |source_text: &str| -> (usize, usize) {
+            let source = source_snapshot(&[(1, "/main.rue", "main.rue", source_text)], 1);
+            let mut database = RevisionedQueryDatabase::default();
+            let revision = revision_for(&mut database, &source);
+            let crate::FunctionInstanceKey::Definition(base) =
+                free_function_instance(&module, "choose")
+            else {
+                unreachable!("free function helper returns a definition")
+            };
+            let key = crate::body_query::BodyQueryKey::new(
+                crate::FunctionInstanceKey::Specialization {
+                    base: Node::new(crate::FunctionInstanceKey::Definition(base)),
+                    arguments: crate::CanonicalArguments {
+                        types: Arc::from([]),
+                        values: Arc::from([crate::CanonicalArgumentValue::Integer(1)]),
+                    },
+                },
+                semantic_configuration(),
+            );
+            database
+                .body_input(revision, key.clone(), CancellationToken::new())
+                .expect("frontier case body input is available");
+            let (visits, post_cancel_attempts) = {
+                let _injection =
+                    database.cancel_frontier_constraint_generation_after_nodes_for_test(12);
+                let attempt = database.runtime.request_registered(
+                    &database.body_transactions,
+                    revision,
+                    key.clone(),
+                    CancellationToken::new(),
+                );
+                assert!(matches!(attempt.abort(), Some(QueryAbort::Canceled)));
+                assert_eq!(database.constraint_generation_phase_for_test(), 1);
+                assert!(database.constraint_generation_visits_for_test() >= 12);
+                assert!(
+                    database.constraint_generation_visits_for_test() <= 24,
+                    "frontier cgen cancellation must unwind sibling tails"
+                );
+                assert!(attempt.terminal().is_none());
+                assert!(!database.body_transactions.contains_retained_key(&key));
+                let _total_attempts = database.constraint_generation_attempted_siblings_for_test();
+                (
+                    database.constraint_generation_visits_for_test(),
+                    database.constraint_generation_post_cancel_attempts_for_test(),
+                )
+            };
+            let retry = database
+                .body_transaction(revision, key.clone(), CancellationToken::new())
+                .expect("frontier cancellation retry succeeds");
+
+            let mut clean_database = RevisionedQueryDatabase::default();
+            let clean_revision = revision_for(&mut clean_database, &source);
+            let clean = clean_database
+                .body_transaction(clean_revision, key, CancellationToken::new())
+                .expect("clean frontier case succeeds");
+            let rue_query::QueryOutcome::Success(retry_transaction) = retry.outcome() else {
+                unreachable!("frontier retry succeeds")
+            };
+            let rue_query::QueryOutcome::Success(clean_transaction) = clean.outcome() else {
+                unreachable!("clean frontier case succeeds")
+            };
+            assert!(crate::body_query::transaction_equal(
+                retry_transaction,
+                clean_transaction,
+            ));
+            (visits, post_cancel_attempts)
+        };
+
+        // A function call with a thousand well-typed arguments exercises the
+        // ordinary call argument loop (and keeps the source valid on retry).
+        let short_call_params = "a0: i32, a1: i32";
+        let short_call_args = "0, 0";
+        let short_call_source = format!(
+            "fn leaf({short_call_params}) -> i32 {{ 0 }}\nfn choose(comptime n: i8) -> i32 {{ if n == 1 {{ leaf({short_call_args}); 1 }} else {{ 0 }} }}\nfn main() -> i32 {{ choose(1) }}\n"
+        );
+        let long_call_params = (0..1000)
+            .map(|index| format!("a{index}: i32"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let long_call_args = (0..1000).map(|_| "0").collect::<Vec<_>>().join(", ");
+        let long_call_source = format!(
+            "fn leaf({long_call_params}) -> i32 {{ 0 }}\nfn choose(comptime n: i8) -> i32 {{ if n == 1 {{ leaf({long_call_args}); 1 }} else {{ 0 }} }}\nfn main() -> i32 {{ choose(1) }}\n"
+        );
+        let (short_call_visits, short_call_post_cancel) = run_frontier_case(&short_call_source);
+        let (long_call_visits, long_call_post_cancel) = run_frontier_case(&long_call_source);
+        assert!(
+            long_call_visits <= short_call_visits.saturating_add(2),
+            "frontier call cancellation visits must be tail-independent: short={short_call_visits} long={long_call_visits}"
+        );
+        assert!(
+            long_call_post_cancel <= short_call_post_cancel.saturating_add(1),
+            "canceled call argument tails must not be attempted: short={short_call_post_cancel} long={long_call_post_cancel}"
+        );
+
+        // Array literals use the aggregate element loop.  The first selected
+        // element is enough to enter the frontier; later elements must not be
+        // visited after the cgen cancellation token is set.
+        let short_elements = "0, 0";
+        let short_array_source = format!(
+            "fn choose(comptime n: i8) -> i32 {{ if n == 1 {{ let values = [{short_elements}]; 1 }} else {{ 0 }} }}\nfn main() -> i32 {{ choose(1) }}\n"
+        );
+        let long_elements = (0..1000).map(|_| "0").collect::<Vec<_>>().join(", ");
+        let long_array_source = format!(
+            "fn choose(comptime n: i8) -> i32 {{ if n == 1 {{ let values = [{long_elements}]; 1 }} else {{ 0 }} }}\nfn main() -> i32 {{ choose(1) }}\n"
+        );
+        let (short_array_visits, short_array_post_cancel) = run_frontier_case(&short_array_source);
+        let (long_array_visits, long_array_post_cancel) = run_frontier_case(&long_array_source);
+        assert!(
+            long_array_visits <= short_array_visits.saturating_add(2),
+            "frontier array cancellation visits must be tail-independent: short={short_array_visits} long={long_array_visits}"
+        );
+        assert!(
+            long_array_post_cancel <= short_array_post_cancel.saturating_add(1),
+            "canceled array tails must not be attempted: short={short_array_post_cancel} long={long_array_post_cancel}"
+        );
     }
 
     #[test]

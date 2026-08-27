@@ -606,6 +606,10 @@ pub(crate) struct AnalysisContext<'a> {
     /// as `resolved_types`. Semantic consumers use these facts rather than
     /// rediscovering divergence from a construct's surface result type.
     pub resolved_continues: &'a AHashMap<InstRef, bool>,
+    /// Canonical compile-time selector facts produced by the bounded inference
+    /// probe. Semantic control-flow analysis consumes these facts directly so
+    /// branch and match selection has one evaluator-owned decision path.
+    pub comptime_selections: &'a AHashMap<InstRef, super::ComptimeSelection>,
     /// Statically reachable divergence observed while analyzing the current
     /// expression. Multiple provenance bits may be present when different
     /// paths terminate in different ways; retaining that set prevents a later unreachable
@@ -1083,6 +1087,7 @@ impl<'a> AnalysisContext<'a> {
             comptime_type_scope_stack: self.comptime_type_scope_stack.clone(),
             resolved_types: self.resolved_types,
             resolved_continues: self.resolved_continues,
+            comptime_selections: self.comptime_selections,
             divergence_kinds: self.divergence_kinds,
             moved_vars: self.moved_vars.clone(),
             warnings: Vec::new(),

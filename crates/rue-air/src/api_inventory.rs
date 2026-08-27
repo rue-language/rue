@@ -1,5 +1,871 @@
 //! Structural guard for AIR's read-only canonical import consumption boundary.
 
+use std::collections::BTreeSet;
+
+use syn::{
+    BinOp, Expr, ExprCall, ExprField, ExprIf, ExprLet, ExprMatch, ExprMethodCall, ExprPath,
+    ExprStruct, File, ImplItem, Item, ItemFn, ItemImpl, ItemMod, PatStruct, PatTupleStruct,
+    visit::{self, Visit},
+};
+
+#[derive(Clone, Debug)]
+struct AstFunction {
+    module: String,
+    owner: Option<String>,
+    name: String,
+    test_only: bool,
+    dispatch: bool,
+    decode: bool,
+    operation: bool,
+    selection: bool,
+    direct_selection: bool,
+    canonical_selection_call: bool,
+    child_traversal: bool,
+    value_result: bool,
+    calls: Vec<AstCall>,
+}
+
+#[derive(Clone, Debug)]
+enum AstCall {
+    Path {
+        segments: Vec<String>,
+        method: bool,
+        receiver: Option<Vec<String>>,
+    },
+}
+
+struct FunctionBodyVisitor {
+    dispatch: bool,
+    control_dispatch: bool,
+    decode: bool,
+    operation: bool,
+    selection: bool,
+    direct_selection: bool,
+    canonical_selection_call: bool,
+    child_traversal: bool,
+    calls: Vec<AstCall>,
+}
+
+impl<'ast> Visit<'ast> for FunctionBodyVisitor {
+    fn visit_pat(&mut self, pattern: &'ast syn::Pat) {
+        self.decode |= pattern_has_const_value(pattern);
+        visit::visit_pat(self, pattern);
+    }
+
+    fn visit_expr_match(&mut self, expression: &'ast ExprMatch) {
+        self.dispatch = self.dispatch
+            || expression
+                .arms
+                .iter()
+                .any(|arm| pattern_comptime_instdata(&arm.pat));
+        self.control_dispatch |= self.dispatch;
+        visit::visit_expr_match(self, expression);
+    }
+
+    fn visit_expr_if(&mut self, expression: &'ast ExprIf) {
+        if let Expr::Let(ExprLet { pat, .. }) = &*expression.cond {
+            self.dispatch = self.dispatch || pattern_comptime_instdata(pat);
+            self.control_dispatch |= self.dispatch;
+        }
+        visit::visit_expr_if(self, expression);
+    }
+
+    fn visit_expr_path(&mut self, expression: &'ast ExprPath) {
+        self.decode |= expression
+            .path
+            .segments
+            .iter()
+            .any(|segment| segment.ident == "ConstValue");
+        visit::visit_expr_path(self, expression);
+    }
+
+    fn visit_expr_field(&mut self, expression: &'ast ExprField) {
+        visit::visit_expr_field(self, expression);
+    }
+
+    fn visit_expr_binary(&mut self, expression: &'ast syn::ExprBinary) {
+        self.operation |= matches!(
+            expression.op,
+            BinOp::Add(_)
+                | BinOp::Sub(_)
+                | BinOp::Mul(_)
+                | BinOp::Div(_)
+                | BinOp::Rem(_)
+                | BinOp::Shl(_)
+                | BinOp::Shr(_)
+                | BinOp::Lt(_)
+                | BinOp::Le(_)
+                | BinOp::Gt(_)
+                | BinOp::Ge(_)
+                | BinOp::Eq(_)
+                | BinOp::Ne(_)
+                | BinOp::And(_)
+                | BinOp::Or(_)
+        );
+        visit::visit_expr_binary(self, expression);
+    }
+
+    fn visit_expr_struct(&mut self, expression: &'ast ExprStruct) {
+        self.direct_selection |= expression.path.segments.iter().any(|segment| {
+            matches!(
+                segment.ident.to_string().as_str(),
+                "ComptimeOutcome" | "ComptimeSelection"
+            )
+        });
+        visit::visit_expr_struct(self, expression);
+    }
+
+    fn visit_expr_call(&mut self, expression: &'ast ExprCall) {
+        if let Expr::Path(path) = &*expression.func {
+            let names = path
+                .path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect::<Vec<_>>();
+            // Constructing a ConstValue is not decoding an input value.  A
+            // peer evaluator is identified by reading a value (the engine's
+            // `as_*`/integer kernels), while ordinary adapters may construct
+            // typed facts as part of their handoff.
+            self.decode |= names.iter().any(|name| {
+                matches!(
+                    name.as_str(),
+                    "as_integer"
+                        | "as_bool"
+                        | "as_string"
+                        | "as_type"
+                        | "as_function"
+                        | "to_i128"
+                        | "to_u128"
+                )
+            });
+            self.selection |= names
+                .iter()
+                .any(|name| matches!(name.as_str(), "ComptimeOutcome" | "ComptimeSelection"));
+            if path.path.segments.last().is_some() {
+                self.calls.push(AstCall::Path {
+                    segments: path
+                        .path
+                        .segments
+                        .iter()
+                        .map(|segment| segment.ident.to_string())
+                        .collect(),
+                    method: false,
+                    receiver: None,
+                });
+            }
+        }
+        visit::visit_expr_call(self, expression);
+    }
+
+    fn visit_expr_method_call(&mut self, expression: &'ast ExprMethodCall) {
+        self.decode |= matches!(
+            expression.method.to_string().as_str(),
+            "as_integer"
+                | "as_bool"
+                | "as_string"
+                | "as_type"
+                | "as_function"
+                | "to_i128"
+                | "to_u128"
+        );
+        self.child_traversal |= matches!(
+            expression.method.to_string().as_str(),
+            "iter" | "iter_mut" | "children" | "walk" | "visit" | "recurse" | "fold"
+        );
+        self.canonical_selection_call |= matches!(
+            expression.method.to_string().as_str(),
+            "select_branch" | "select_match"
+        );
+        if matches!(&*expression.receiver, Expr::Path(path) if path.path.is_ident("self")) {
+            self.calls.push(AstCall::Path {
+                segments: vec!["self".to_owned(), expression.method.to_string()],
+                method: true,
+                receiver: Some(vec!["self".to_owned()]),
+            });
+        } else {
+            // Keep every method edge in the scoped graph.  Calls on a nested
+            // expression (for example `ComptimeEngine::new(...).select`)
+            // still have a stable method identity even when their receiver is
+            // not a simple path.
+            let mut segments = match &*expression.receiver {
+                Expr::Path(path) => path
+                    .path
+                    .segments
+                    .iter()
+                    .map(|segment| segment.ident.to_string())
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            };
+            segments.push(expression.method.to_string());
+            self.calls.push(AstCall::Path {
+                segments,
+                method: true,
+                receiver: expression_receiver_shape(&expression.receiver),
+            });
+        }
+        visit::visit_expr_method_call(self, expression);
+    }
+
+    fn visit_macro(&mut self, macro_call: &'ast syn::Macro) {
+        if macro_call.path.is_ident("matches")
+            && comptime_instdata_syntax(&macro_call.tokens.to_string())
+        {
+            self.dispatch = true;
+            self.control_dispatch = true;
+        }
+        visit::visit_macro(self, macro_call);
+    }
+}
+
+/// Preserve enough receiver structure for adapter calls to be authorized by
+/// the exact object being used.  In particular, `self.get` must not become
+/// indistinguishable from the `.get` on `self.body_rir_ref()`.
+fn expression_receiver_shape(expression: &Expr) -> Option<Vec<String>> {
+    match expression {
+        Expr::Path(path) => Some(
+            path.path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect(),
+        ),
+        Expr::MethodCall(call) => {
+            let mut shape = expression_receiver_shape(&call.receiver)?;
+            shape.push(call.method.to_string());
+            Some(shape)
+        }
+        Expr::Call(call) => {
+            let Expr::Path(path) = &*call.func else {
+                return None;
+            };
+            Some(
+                path.path
+                    .segments
+                    .iter()
+                    .map(|segment| segment.ident.to_string())
+                    .collect(),
+            )
+        }
+        _ => None,
+    }
+}
+
+fn pattern_has_const_value(pattern: &syn::Pat) -> bool {
+    let path = match pattern {
+        syn::Pat::Path(path) => Some(&path.path),
+        syn::Pat::Struct(pattern) => Some(&pattern.path),
+        syn::Pat::TupleStruct(pattern) => Some(&pattern.path),
+        _ => None,
+    };
+    path.is_some_and(|path| {
+        path.segments
+            .iter()
+            .any(|segment| segment.ident == "ConstValue")
+    })
+}
+
+/// RIR consumers also match `InstData` for declaration and bookkeeping
+/// records.  Those are not value-evaluator dispatch.  Require a comptime
+/// value/control variant in the pattern so the graph tracks evaluator roots
+/// without treating every ordinary body projection as one.
+fn comptime_instdata_syntax(text: &str) -> bool {
+    const VARIANTS: &[&str] = &[
+        "IntConst",
+        "BoolConst",
+        "StringConst",
+        "UnitConst",
+        "FloatConst",
+        "Add",
+        "Sub",
+        "Mul",
+        "Div",
+        "Mod",
+        "BitAnd",
+        "BitOr",
+        "BitXor",
+        "Shl",
+        "Shr",
+        "Eq",
+        "Ne",
+        "Lt",
+        "Le",
+        "Gt",
+        "Ge",
+        "And",
+        "Or",
+        "Neg",
+        "Not",
+        "BitNot",
+        "Branch",
+        "Match",
+    ];
+    text.match_indices("InstData").any(|(offset, _)| {
+        let preceding_is_ident = text[..offset]
+            .chars()
+            .next_back()
+            .is_some_and(|character| character == '_' || character.is_ascii_alphanumeric());
+        if preceding_is_ident {
+            return false;
+        }
+        let suffix = &text[offset + "InstData".len()..];
+        let suffix = suffix.trim_start();
+        let Some(suffix) = suffix.strip_prefix("::") else {
+            return false;
+        };
+        VARIANTS.iter().any(|variant| {
+            suffix
+                .trim_start()
+                .strip_prefix(variant)
+                .is_some_and(|rest| {
+                    rest.chars().next().is_none_or(|character| {
+                        !(character == '_' || character.is_ascii_alphanumeric())
+                    })
+                })
+        })
+    })
+}
+
+struct PatternComptimeInstData {
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for PatternComptimeInstData {
+    fn visit_pat_struct(&mut self, pattern: &'ast PatStruct) {
+        self.found |= path_is_comptime_instdata(&pattern.path);
+        visit::visit_pat_struct(self, pattern);
+    }
+
+    fn visit_pat_tuple_struct(&mut self, pattern: &'ast PatTupleStruct) {
+        self.found |= path_is_comptime_instdata(&pattern.path);
+        visit::visit_pat_tuple_struct(self, pattern);
+    }
+}
+
+fn path_is_comptime_instdata(path: &syn::Path) -> bool {
+    let mut segments = path.segments.iter();
+    segments.any(|segment| segment.ident == "InstData")
+        && path.segments.iter().any(|segment| {
+            matches!(
+                segment.ident.to_string().as_str(),
+                "IntConst"
+                    | "BoolConst"
+                    | "StringConst"
+                    | "UnitConst"
+                    | "FloatConst"
+                    | "Add"
+                    | "Sub"
+                    | "Mul"
+                    | "Div"
+                    | "Mod"
+                    | "BitAnd"
+                    | "BitOr"
+                    | "BitXor"
+                    | "Shl"
+                    | "Shr"
+                    | "Eq"
+                    | "Ne"
+                    | "Lt"
+                    | "Le"
+                    | "Gt"
+                    | "Ge"
+                    | "And"
+                    | "Or"
+                    | "Neg"
+                    | "Not"
+                    | "BitNot"
+                    | "Branch"
+                    | "Match"
+            )
+        })
+}
+
+fn pattern_comptime_instdata(pattern: &syn::Pat) -> bool {
+    let mut visitor = PatternComptimeInstData { found: false };
+    match pattern {
+        syn::Pat::Path(pattern) => visitor.found = path_is_comptime_instdata(&pattern.path),
+        syn::Pat::Struct(pattern) => visitor.found = path_is_comptime_instdata(&pattern.path),
+        syn::Pat::TupleStruct(pattern) => visitor.found = path_is_comptime_instdata(&pattern.path),
+        _ => {}
+    }
+    visitor.visit_pat(pattern);
+    visitor.found
+}
+
+struct AstCollector {
+    module: String,
+    functions: Vec<AstFunction>,
+}
+
+impl AstCollector {
+    fn new(module: &str) -> Self {
+        Self {
+            module: module.to_owned(),
+            functions: Vec::new(),
+        }
+    }
+
+    fn visit_function(&mut self, function: &ItemFn, owner: Option<String>, test_only: bool) {
+        let mut body = FunctionBodyVisitor {
+            dispatch: false,
+            control_dispatch: false,
+            decode: false,
+            operation: false,
+            selection: false,
+            direct_selection: false,
+            canonical_selection_call: false,
+            child_traversal: false,
+            calls: Vec::new(),
+        };
+        body.visit_block(&function.block);
+        self.functions.push(AstFunction {
+            module: self.module.clone(),
+            owner,
+            name: function.sig.ident.to_string(),
+            test_only,
+            dispatch: body.dispatch && body.control_dispatch,
+            decode: body.decode,
+            operation: body.operation,
+            selection: body.selection
+                || return_mentions_direct(
+                    &function.sig.output,
+                    &["ComptimeOutcome", "ComptimeSelection"],
+                ),
+            direct_selection: body.direct_selection,
+            canonical_selection_call: body.canonical_selection_call,
+            child_traversal: body.child_traversal,
+            value_result: return_mentions_direct(&function.sig.output, &["ConstValue"])
+                && (body.decode || body.operation || body.selection),
+            calls: body.calls,
+        });
+    }
+
+    fn visit_impl(&mut self, item: &ItemImpl, test_only: bool) {
+        let owner = match &*item.self_ty {
+            syn::Type::Path(path) => path
+                .path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string()),
+            _ => None,
+        };
+        for item in &item.items {
+            if let ImplItem::Fn(function) = item {
+                let mut body = FunctionBodyVisitor {
+                    dispatch: false,
+                    control_dispatch: false,
+                    decode: false,
+                    operation: false,
+                    selection: false,
+                    direct_selection: false,
+                    canonical_selection_call: false,
+                    child_traversal: false,
+                    calls: Vec::new(),
+                };
+                body.visit_block(&function.block);
+                self.functions.push(AstFunction {
+                    module: self.module.clone(),
+                    owner: owner.clone(),
+                    name: function.sig.ident.to_string(),
+                    test_only,
+                    dispatch: body.dispatch && body.control_dispatch,
+                    decode: body.decode,
+                    operation: body.operation,
+                    selection: body.selection
+                        || return_mentions_direct(
+                            &function.sig.output,
+                            &["ComptimeOutcome", "ComptimeSelection"],
+                        ),
+                    direct_selection: body.direct_selection,
+                    canonical_selection_call: body.canonical_selection_call,
+                    child_traversal: body.child_traversal,
+                    value_result: return_mentions_direct(&function.sig.output, &["ConstValue"])
+                        && (body.decode || body.operation || body.selection),
+                    calls: body.calls,
+                });
+            }
+        }
+    }
+
+    fn visit_items(&mut self, items: &[Item], test_only: bool) {
+        for item in items {
+            match item {
+                Item::Fn(function) => self.visit_function(function, None, test_only),
+                Item::Impl(item) => self.visit_impl(item, test_only),
+                Item::Mod(ItemMod {
+                    content: Some((_, items)),
+                    ident,
+                    attrs,
+                    ..
+                }) => {
+                    let old = self.module.clone();
+                    self.module.push('/');
+                    self.module.push_str(&ident.to_string());
+                    let nested_test = test_only
+                        || attrs.iter().any(|attr| {
+                            attr.path().is_ident("cfg")
+                                && attr
+                                    .parse_args::<syn::Path>()
+                                    .is_ok_and(|path| path.is_ident("test"))
+                        });
+                    self.visit_items(items, nested_test);
+                    self.module = old;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn return_mentions_direct(output: &syn::ReturnType, names: &[&str]) -> bool {
+    let syn::ReturnType::Type(_, ty) = output else {
+        return false;
+    };
+    let mut visitor = ReturnTypeNameVisitor {
+        names,
+        found: false,
+        blocked: 0,
+    };
+    visitor.visit_type(ty);
+    visitor.found
+}
+
+struct ReturnTypeNameVisitor<'a> {
+    names: &'a [&'a str],
+    found: bool,
+    blocked: usize,
+}
+
+impl<'ast> Visit<'ast> for ReturnTypeNameVisitor<'_> {
+    fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
+        let is_container = ty.path.segments.iter().any(|segment| {
+            matches!(
+                segment.ident.to_string().as_str(),
+                "AHashMap" | "HashMap" | "BTreeMap" | "Vec" | "Tuple"
+            )
+        });
+        if self.blocked == 0
+            && ty
+                .path
+                .segments
+                .iter()
+                .any(|segment| self.names.iter().any(|name| segment.ident == *name))
+        {
+            self.found = true;
+        }
+        if is_container {
+            self.blocked += 1;
+        }
+        visit::visit_type_path(self, ty);
+        if is_container {
+            self.blocked -= 1;
+        }
+    }
+}
+
+fn ast_functions(module: &str, source: &str) -> Option<Vec<AstFunction>> {
+    let file: File = syn::parse_file(source).ok()?;
+    let mut collector = AstCollector::new(&normalize_manifest_module(module));
+    collector.visit_items(&file.items, false);
+    Some(collector.functions)
+}
+
+/// Convert a Buck source path to the semantic Rust module it contributes to.
+/// `lib.rs` is the crate root and `mod.rs` contributes to its parent; retaining
+/// those filenames as module segments makes `crate::`, `super::`, and
+/// cross-file paths resolve to different identities than the compiler sees.
+fn normalize_manifest_module(module: &str) -> String {
+    let mut segments = module
+        .replace('\\', "/")
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if let Some(last) = segments.last_mut() {
+        if last == "lib.rs" || last == "lib" {
+            segments.pop();
+        } else if last == "mod.rs" || last == "mod" {
+            segments.pop();
+        } else if let Some(stem) = last.strip_suffix(".rs") {
+            *last = stem.to_owned();
+        }
+    }
+    segments.join("/")
+}
+
+/// Apply the structural authority check to a manifest-wide, syntax-aware call
+/// graph. Function identity includes the complete module path, impl owner,
+/// name, and occurrence, so same-named free functions and methods remain
+/// distinct even when they delegate across source files.
+fn has_peer_comptime_evaluator(module: &str, source: &str) -> bool {
+    has_peer_comptime_evaluator_in_sources(&[(module, source)])
+}
+
+fn has_peer_comptime_evaluator_in_sources(sources: &[(&str, &str)]) -> bool {
+    let mut functions = Vec::new();
+    for (module, source) in sources {
+        let Some(mut parsed) = ast_functions(module, source) else {
+            continue;
+        };
+        functions.append(&mut parsed);
+    }
+    let mut edges = vec![Vec::new(); functions.len()];
+    for (index, function) in functions.iter().enumerate() {
+        if function.test_only {
+            continue;
+        }
+        for call in &function.calls {
+            let AstCall::Path {
+                segments, method, ..
+            } = call;
+            if segments.is_empty() {
+                continue;
+            }
+            let name = segments.last().expect("nonempty call path");
+            let prefix = &segments[..segments.len() - 1];
+            // A path can have both interpretations: `crate::helpers::decode`
+            // may name a free function in module `helpers`, or an associated
+            // method on a root-level type named `helpers`.  Resolve both, but
+            // only admit the associated interpretation when that owner exists
+            // in the module immediately before it.  Looking for an owner by
+            // name across the whole manifest would let an unrelated
+            // `other.rs` declaration suppress the real free-function edge.
+            let mut target_specs = Vec::<(String, Option<String>)>::new();
+            if *method {
+                // A method call keeps its caller module and impl owner.  The
+                // receiver is retained separately for adapter proof, but it
+                // must not become a synthetic module path in the graph.
+                target_specs.push((function.module.clone(), function.owner.clone()));
+            } else {
+                target_specs.push((resolve_call_module(&function.module, prefix), None));
+                for (owner_index, owner_segment) in prefix.iter().enumerate() {
+                    let owner = if owner_segment == "Self" {
+                        function.owner.clone()
+                    } else {
+                        Some(owner_segment.clone())
+                    };
+                    let Some(owner) = owner else {
+                        continue;
+                    };
+                    let target_module =
+                        resolve_call_module(&function.module, &prefix[..owner_index]);
+                    let owner_exists_here = functions.iter().any(|candidate| {
+                        candidate.name == *name
+                            && candidate.owner.as_deref() == Some(owner.as_str())
+                            && module_matches(&candidate.module, &target_module)
+                    });
+                    if owner_exists_here {
+                        target_specs.push((target_module, Some(owner)));
+                    }
+                }
+            }
+            for (target, candidate) in functions.iter().enumerate() {
+                if candidate.name == *name
+                    && target_specs.iter().any(|(target_module, target_owner)| {
+                        candidate.owner.as_deref() == target_owner.as_deref()
+                            && module_matches(&candidate.module, target_module)
+                    })
+                {
+                    edges[index].push(target);
+                }
+            }
+        }
+    }
+    let canonical = |function: &AstFunction| {
+        function.module == "sema/comptime" && function.owner.as_deref() == Some("ComptimeEngine")
+    };
+    // These are individually identified lowering adapters. They consume a
+    // canonical fact and hand it to the ordinary analyzer; unlike the engine
+    // they must not decode or compute values themselves.
+    let thin_adapter =
+        |function: &AstFunction| is_adapter_identity(function) && assert_thin_adapter(function);
+    for start in 0..functions.len() {
+        if functions[start].test_only {
+            continue;
+        }
+        let mut pending = vec![start];
+        let mut reachable = BTreeSet::new();
+        while let Some(current) = pending.pop() {
+            if !reachable.insert(current) {
+                continue;
+            }
+            pending.extend(edges[current].iter().copied());
+        }
+        // An allowlisted adapter is still analyzed before exemption. This
+        // catches mutations to the exact production identity even when the
+        // injected operation is not itself a selector root.
+        if reachable.iter().any(|&index| {
+            is_adapter_identity(&functions[index]) && !assert_thin_adapter(&functions[index])
+        }) {
+            return true;
+        }
+        // Traits may be split across a dispatcher, a decoder, an operator
+        // helper, and a return-value adapter.  The authority rule is about the
+        // reachable computation, not about any single function or a recursion
+        // cycle, so union each trait over the complete reachable component.
+        let noncanonical =
+            |index: usize| !canonical(&functions[index]) && !thin_adapter(&functions[index]);
+        let has_dispatch = reachable
+            .iter()
+            .any(|&index| noncanonical(index) && functions[index].dispatch);
+        let has_selection = reachable
+            .iter()
+            .any(|&index| noncanonical(index) && functions[index].selection);
+        let has_decode = reachable
+            .iter()
+            .any(|&index| noncanonical(index) && functions[index].decode);
+        let has_operation = reachable
+            .iter()
+            .any(|&index| noncanonical(index) && functions[index].operation);
+        let has_value_result = reachable
+            .iter()
+            .any(|&index| noncanonical(index) && functions[index].value_result);
+        if has_dispatch && (has_selection || (has_decode && has_operation && has_value_result)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// The ordinary analyzer may consume canonical facts, but it is not an
+/// evaluator. Keep the exception narrow and structural: an adapter cannot
+/// dispatch comptime `InstData`, decode a value, perform an operator, or
+/// construct a selection result in its own body. Any such addition must move
+/// to the canonical engine (and consequently makes this guard fail).
+fn assert_thin_adapter(function: &AstFunction) -> bool {
+    if !is_adapter_identity(function) {
+        return false;
+    }
+    // The allowlist is intentionally structural, not a naming exemption.
+    // These wrappers may prepare an environment and map the engine's fact,
+    // but may not inspect InstData, decode a value, perform an operation, or
+    // delegate to another evaluator.  The canonical selection call is the
+    // only evaluator-shaped operation permitted in the body.
+    let only_canonical_calls =
+        function.canonical_selection_call && function.calls.iter().all(adapter_call_is_allowed);
+    only_canonical_calls
+        && !function.dispatch
+        && !function.decode
+        && !function.operation
+        && !function.selection
+        && !function.direct_selection
+        && !function.value_result
+        && !function.child_traversal
+}
+
+/// Positive call authority for the two real semantic selector adapters.  The
+/// adapter may prepare the canonical environment, read its RIR/type facts,
+/// invoke the engine, and map the resulting selection.  No other call is
+/// allowed: in particular, calling a canonical method does not immunize a
+/// peer helper that also computes or traverses values.
+fn adapter_call_is_allowed(call: &AstCall) -> bool {
+    let AstCall::Path {
+        segments,
+        method,
+        receiver,
+    } = call;
+    let Some(name) = segments.last().map(String::as_str) else {
+        return false;
+    };
+    if *method {
+        let Some(receiver) = receiver.as_deref() else {
+            return false;
+        };
+        return match (receiver, name) {
+            ([receiver], method)
+                if receiver == "self"
+                    && matches!(
+                        method,
+                        "active_anonymous_producer" | "body_rir_ref" | "trap_failure"
+                    ) =>
+            {
+                true
+            }
+            (receiver, "unwrap_or")
+                if receiver.len() == 1
+                    && matches!(receiver[0].as_str(), "type_subst" | "value_subst") =>
+            {
+                true
+            }
+            (receiver, "get")
+                if receiver.len() == 2
+                    && receiver[0] == "self"
+                    && receiver[1] == "body_rir_ref" =>
+            {
+                true
+            }
+            (receiver, "cloned")
+                if receiver.len() == 2
+                    && receiver[0] == "self"
+                    && receiver[1] == "active_anonymous_producer" =>
+            {
+                true
+            }
+            (receiver, "select_branch" | "select_match")
+                if receiver.len() == 2
+                    && receiver[0] == "ComptimeEngine"
+                    && receiver[1] == "new" =>
+            {
+                true
+            }
+            _ => false,
+        };
+    }
+    (segments.len() == 2
+        && ((segments[0] == "AHashMap" && segments[1] == "new")
+            || (segments[0] == "ComptimeEnv" && segments[1] == "with_subst")
+            || (segments[0] == "ComptimeEngine" && segments[1] == "new")))
+        || (segments.len() == 1 && matches!(name, "Ok" | "Err" | "Some"))
+}
+
+/// Stable identities are intentionally the full semantic location. A peer
+/// with the same function name in another module or impl never inherits this
+/// exemption.
+fn is_adapter_identity(function: &AstFunction) -> bool {
+    matches!(
+        (
+            function.module.as_str(),
+            function.owner.as_deref(),
+            function.name.as_str()
+        ),
+        (
+            "sema/comptime_eval",
+            Some("OrdinaryBodyEngine"),
+            "select_comptime_branch_with_resolved_types_and_membership"
+        ) | (
+            "sema/comptime_eval",
+            Some("OrdinaryBodyEngine"),
+            "select_comptime_match_with_resolved_types_and_membership"
+        )
+    )
+}
+
+fn resolve_call_module(current: &str, prefix: &[String]) -> String {
+    let mut module = current.split('/').map(str::to_owned).collect::<Vec<_>>();
+    let mut index = 0;
+    if prefix.first().is_some_and(|segment| segment == "crate") {
+        module.clear();
+        index = 1;
+    }
+    while index < prefix.len() {
+        match prefix[index].as_str() {
+            "self" => {}
+            "super" => {
+                module.pop();
+            }
+            segment => module.push(segment.to_owned()),
+        }
+        index += 1;
+    }
+    module.join("/")
+}
+
+fn module_matches(candidate: &str, requested: &str) -> bool {
+    candidate == requested
+        || (requested.is_empty() && candidate.is_empty())
+        || candidate.ends_with(&format!("/{requested}"))
+}
+
 #[test]
 fn peer_one_body_authority_cannot_return() {
     let sources = [
@@ -30,6 +896,524 @@ fn integer_consumers_use_one_representation_independent_kernel() {
     assert!(semantics.contains("pub fn checked_add_report_i128"));
     assert!(semantics.contains("pub fn checked_neg_literal_i128"));
     assert!(comptime.contains("checked_neg_literal_report_i128"));
+}
+
+#[test]
+fn comptime_instdata_evaluation_has_one_production_authority() {
+    let inference = include_str!("inference/generate.rs");
+    let type_inference = include_str!("sema/analysis/type_inference.rs");
+    let control_flow = include_str!("sema/control_flow.rs");
+    let comptime_adapter = include_str!("sema/comptime_eval.rs");
+    let canonical = include_str!("sema/comptime.rs");
+    for (name, source) in [
+        ("inference", inference),
+        ("type inference", type_inference),
+        ("control flow", control_flow),
+    ] {
+        for retired in [
+            "fn eval_comptime_value(",
+            "fn extract_int_argument(",
+            "fn comptime_selected_arm(",
+            "fn eval_int_binop(",
+            "fn eval_int_cmp(",
+            "fn eval_bool_binop(",
+            "fn eval_eq(",
+        ] {
+            assert!(
+                !source.contains(retired),
+                "retired evaluator escaped {name}: {retired}"
+            );
+        }
+    }
+    assert!(!control_flow.contains("try_evaluate_const_in_fn"));
+    assert!(!control_flow.contains("ComptimeEngine::new"));
+    assert!(comptime_adapter.contains("ComptimeEngine::new(self).select_branch"));
+    assert!(comptime_adapter.contains("ComptimeEngine::new(self).select_match"));
+    assert!(control_flow.contains("comptime_selections"));
+    assert!(canonical.contains("pub enum ComptimeSelection"));
+    assert!(canonical.contains("pub fn select_branch("));
+    assert!(canonical.contains("pub fn select_match("));
+
+    // Keep this guard semantic rather than name-based. The inventory is the
+    // complete Buck-generated source inventory for this crate (including test
+    // modules); a future helper must not evade the guard by renaming
+    // itself. The AST visitor below tracks nested modules and lexical scopes,
+    // so nested matches/closures cannot hide a peer evaluator.
+    let production = [
+        ("api_inventory", include_str!("api_inventory.rs")),
+        ("call_abi", include_str!("call_abi.rs")),
+        (
+            "declaration_validation",
+            include_str!("declaration_validation.rs"),
+        ),
+        ("drop_glue_names", include_str!("drop_glue_names.rs")),
+        ("ffi_predicates", include_str!("ffi_predicates.rs")),
+        (
+            "inference/constraint",
+            include_str!("inference/constraint.rs"),
+        ),
+        ("inference/generate", include_str!("inference/generate.rs")),
+        ("inference/mod", include_str!("inference/mod.rs")),
+        ("inference/types", include_str!("inference/types.rs")),
+        ("inference/unify", include_str!("inference/unify.rs")),
+        ("inst", include_str!("inst.rs")),
+        (
+            "inst/payload_support",
+            include_str!("inst/payload_support.rs"),
+        ),
+        ("integer_semantics", include_str!("integer_semantics.rs")),
+        ("intern_pool", include_str!("intern_pool.rs")),
+        ("layout", include_str!("layout.rs")),
+        ("lib", include_str!("lib.rs")),
+        ("module_registry", include_str!("module_registry.rs")),
+        ("param_arena", include_str!("param_arena.rs")),
+        ("path_norm", include_str!("path_norm.rs")),
+        ("runtime_call", include_str!("runtime_call.rs")),
+        ("scope", include_str!("scope.rs")),
+        (
+            "sema/aggregate_resolution",
+            include_str!("sema/aggregate_resolution.rs"),
+        ),
+        ("sema/aggregates", include_str!("sema/aggregates.rs")),
+        ("sema/analysis", include_str!("sema/analysis.rs")),
+        (
+            "sema/analysis/builtin_ops",
+            include_str!("sema/analysis/builtin_ops.rs"),
+        ),
+        (
+            "sema/analysis/calls",
+            include_str!("sema/analysis/calls.rs"),
+        ),
+        (
+            "sema/analysis/instructions",
+            include_str!("sema/analysis/instructions.rs"),
+        ),
+        (
+            "sema/analysis/intrinsics",
+            include_str!("sema/analysis/intrinsics.rs"),
+        ),
+        (
+            "sema/analysis/ownership",
+            include_str!("sema/analysis/ownership.rs"),
+        ),
+        (
+            "sema/analysis/pointers",
+            include_str!("sema/analysis/pointers.rs"),
+        ),
+        (
+            "sema/analysis/type_inference",
+            include_str!("sema/analysis/type_inference.rs"),
+        ),
+        ("sema/analyze_ops", include_str!("sema/analyze_ops.rs")),
+        ("sema/anon_structs", include_str!("sema/anon_structs.rs")),
+        (
+            "sema/binding_manifest",
+            include_str!("sema/binding_manifest.rs"),
+        ),
+        ("sema/body_endpoint", include_str!("sema/body_endpoint.rs")),
+        ("sema/body_identity", include_str!("sema/body_identity.rs")),
+        (
+            "sema/call_resolution",
+            include_str!("sema/call_resolution.rs"),
+        ),
+        ("sema/comptime", include_str!("sema/comptime.rs")),
+        ("sema/comptime_eval", include_str!("sema/comptime_eval.rs")),
+        (
+            "sema/consistency_tests",
+            include_str!("sema/consistency_tests.rs"),
+        ),
+        ("sema/context", include_str!("sema/context.rs")),
+        ("sema/control_flow", include_str!("sema/control_flow.rs")),
+        (
+            "sema/declaration_index",
+            include_str!("sema/declaration_index.rs"),
+        ),
+        ("sema/declarations", include_str!("sema/declarations.rs")),
+        ("sema/fact_mode", include_str!("sema/fact_mode.rs")),
+        ("sema/inference_ctx", include_str!("sema/inference_ctx.rs")),
+        ("sema/info", include_str!("sema/info.rs")),
+        ("sema/known_symbols", include_str!("sema/known_symbols.rs")),
+        ("sema/mod", include_str!("sema/mod.rs")),
+        (
+            "sema/ordinary_engine",
+            include_str!("sema/ordinary_engine.rs"),
+        ),
+        ("sema/output", include_str!("sema/output.rs")),
+        ("sema/provider", include_str!("sema/provider.rs")),
+        (
+            "sema/provider_accessor_tests",
+            include_str!("sema/provider_accessor_tests.rs"),
+        ),
+        (
+            "sema/provider_body_host",
+            include_str!("sema/provider_body_host.rs"),
+        ),
+        (
+            "sema/provider_fixture",
+            include_str!("sema/provider_fixture.rs"),
+        ),
+        (
+            "sema/provider_fixture_tests",
+            include_str!("sema/provider_fixture_tests.rs"),
+        ),
+        (
+            "sema/provider_module_registry",
+            include_str!("sema/provider_module_registry.rs"),
+        ),
+        (
+            "sema/provider_semantics_tests",
+            include_str!("sema/provider_semantics_tests.rs"),
+        ),
+        (
+            "sema/provider_strings_ownership_tests",
+            include_str!("sema/provider_strings_ownership_tests.rs"),
+        ),
+        (
+            "sema/semantic_body_export",
+            include_str!("sema/semantic_body_export.rs"),
+        ),
+        ("sema/tests", include_str!("sema/tests.rs")),
+        ("sema/typeck", include_str!("sema/typeck.rs")),
+        ("sema/visibility", include_str!("sema/visibility.rs")),
+        ("semantic_body", include_str!("semantic_body.rs")),
+        ("semantic_identity", include_str!("semantic_identity.rs")),
+        ("semantic_import", include_str!("semantic_import.rs")),
+        (
+            "semantic_type_resolution",
+            include_str!("semantic_type_resolution.rs"),
+        ),
+        ("specialize", include_str!("specialize.rs")),
+        ("stable_digest", include_str!("stable_digest.rs")),
+        ("type_encoding", include_str!("type_encoding.rs")),
+        ("type_properties", include_str!("type_properties.rs")),
+        ("types", include_str!("types.rs")),
+    ];
+    // Keep the guard's source set tied to the same canonical Buck glob used by
+    // the crate. The mapped manifest is generated from that glob, so adding a
+    // production module necessarily enters this exact predicate.
+    let actual = include_str!("rue_air_source_manifest.txt")
+        .lines()
+        .map(|path| path.trim_start_matches("./").trim_end_matches(".rs"))
+        .map(|path| path.trim_start_matches("src/"))
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    let expected = production
+        .iter()
+        .map(|(module, _)| module.to_string())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual, expected,
+        "source inventory must match Buck's src glob"
+    );
+    assert!(
+        !has_peer_comptime_evaluator_in_sources(&production),
+        "transitive peer comptime evaluator/selector in the manifest"
+    );
+
+    // A renamed peer must fail the same semantic guard; this protects the
+    // invariant independently of the retired helper names above.
+    let renamed_peer = "fn fold(&mut self, inst: InstRef) -> (ConstValue, ComptimeSelection) { let value = ConstValue::Integer(1); let op = ComptimeIntegerOperation::Add; match &inst.data { InstData::IntConst(_) => self.fold(inst), _ => self.fold(inst) } }";
+    assert!(has_peer_comptime_evaluator("fixture", renamed_peer));
+    assert!(has_peer_comptime_evaluator(
+        "sema/comptime",
+        "fn fold(&mut self, inst: InstRef) -> ComptimeOutcome { let value = ConstValue::Integer(1); match &inst.data { InstData::IntConst(_) => self.fold(inst), _ => value == ConstValue::Integer(1) } }"
+    ));
+    for evil in ["EvilComptimeEngine", "ComptimeEnginePeer"] {
+        let fixture = format!(
+            "impl {evil} {{ fn fold(&mut self, inst: InstRef) -> ComptimeOutcome {{ match inst.data {{ InstData::IntConst(_) => self.fold(inst), _ => ConstValue::Bool(true) && true }} }} }}"
+        );
+        assert!(
+            has_peer_comptime_evaluator("sema/comptime", &fixture),
+            "near-miss canonical owners must not be exempted"
+        );
+    }
+    for fixture in [
+        "fn fold(&mut self, inst: InstRef) -> ComptimeOutcome { let value = ConstValue::Bool(true); if let InstData::Branch { .. } = inst.data { return self.fold(inst); } value && true }",
+        "fn decode(&mut self, inst: InstRef) -> ComptimeOutcome { let value = ConstValue::Integer(1); if matches!(inst.data, InstData::IntConst(_)) { self.decode(inst); } value == ConstValue::Integer(1) }",
+        "fn choose(&mut self, inst: InstRef) -> ComptimeOutcome { let value = ConstValue::Bool(true); match inst.data { InstData::Branch { .. } => self.choose(inst), _ => value && true } }",
+    ] {
+        assert!(
+            has_peer_comptime_evaluator("fixture", fixture),
+            "renamed/spelling variants must use the production predicate"
+        );
+    }
+    let split_and_mutual = "fn dispatch(inst: InstRef) -> ComptimeOutcome { match inst.data { InstData::Branch { .. } => op(inst), _ => op(inst) } } fn op(inst: InstRef) -> ComptimeOutcome { let value = ConstValue::Integer(1); dispatch(inst); value == ConstValue::Integer(1) }";
+    assert!(
+        has_peer_comptime_evaluator("fixture", split_and_mutual),
+        "split and mutually recursive evaluator helpers must be rejected"
+    );
+    let same_named_impl_and_free = "impl Decoder { fn fold(&mut self, inst: InstRef) -> ComptimeOutcome { match inst.data { InstData::IntConst(_) => self.fold(inst), _ => free_fold(inst) } } } fn free_fold(inst: InstRef) -> ComptimeOutcome { let value = ConstValue::Bool(true); value && matches!(inst.data, InstData::IntConst(_)) }";
+    assert!(
+        has_peer_comptime_evaluator("other/module", same_named_impl_and_free),
+        "same-named impl/free helpers must retain distinct call identities"
+    );
+}
+
+#[test]
+fn structural_guard_rejects_cross_file_dispatch_decode_and_operator() {
+    let sources = [
+        (
+            "lib.rs",
+            "fn dispatch(inst: InstRef) -> ComptimeOutcome { match inst.data { InstData::IntConst(_) => crate::helpers::fold(inst), _ => crate::helpers::fold(inst) } }",
+        ),
+        (
+            "helpers.rs",
+            "fn fold(inst: InstRef) -> Option<ConstValue> { let value = ConstValue::Integer(1); let _ = inst; value + ConstValue::Integer(1) }",
+        ),
+    ];
+    assert!(has_peer_comptime_evaluator_in_sources(&sources));
+}
+
+#[test]
+fn structural_guard_unions_split_traits_without_recursion() {
+    let sources = [
+        (
+            "lib.rs",
+            "fn dispatch(inst: InstRef) -> ComptimeOutcome { match inst.data { InstData::IntConst(_) => crate::decode::read(inst), _ => crate::decode::read(inst) } }",
+        ),
+        (
+            "decode.rs",
+            "fn read(inst: InstRef) -> Option<ConstValue> { let value = ConstValue::Integer(1); crate::operators::add(value, inst) }",
+        ),
+        (
+            "operators.rs",
+            "fn add(value: ConstValue, inst: InstRef) -> Option<ConstValue> { let _ = inst; value + ConstValue::Integer(1) }",
+        ),
+    ];
+    assert!(has_peer_comptime_evaluator_in_sources(&sources));
+}
+
+#[test]
+fn structural_guard_normalizes_lib_and_mod_modules() {
+    let sources = [
+        (
+            "lib.rs",
+            "fn dispatch(inst: InstRef) -> ComptimeOutcome { match inst.data { InstData::IntConst(_) => crate::helpers::fold(inst), _ => crate::helpers::fold(inst) } }",
+        ),
+        (
+            "helpers/mod.rs",
+            "fn fold(inst: InstRef) -> Option<ConstValue> { let value = ConstValue::Integer(1); let _ = inst; value + ConstValue::Integer(1) }",
+        ),
+    ];
+    assert!(has_peer_comptime_evaluator_in_sources(&sources));
+}
+
+#[test]
+fn structural_guard_resolves_self_and_type_name_calls() {
+    let self_call = "impl Peer { fn dispatch(&mut self, inst: InstRef) -> bool { match inst.data { InstData::IntConst(_) => Self::decode(self, inst).is_some(), _ => Self::decode(self, inst).is_some() } } fn decode(&mut self, inst: InstRef) -> Option<ConstValue> { let value = ConstValue::Integer(1); let _ = inst; Some(value + ConstValue::Integer(1)) } }";
+    assert!(has_peer_comptime_evaluator("sema/comptime", self_call));
+
+    let type_name_call = "impl Peer { fn dispatch(&mut self, inst: InstRef) -> bool { match inst.data { InstData::IntConst(_) => Peer::decode(self, inst).is_some(), _ => Peer::decode(self, inst).is_some() } } fn decode(&mut self, inst: InstRef) -> Option<ConstValue> { let value = ConstValue::Integer(1); let _ = inst; Some(value + ConstValue::Integer(1)) } }";
+    assert!(has_peer_comptime_evaluator("sema/comptime", type_name_call));
+}
+
+#[test]
+fn staged_selector_collection_uses_one_bounded_walk() {
+    let source = include_str!("sema/analysis/type_inference.rs");
+    let collector = source
+        .split("    fn collect_comptime_facts(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("    fn collect_generic_argument_facts(")
+                .next()
+        })
+        .expect("staged selector collector");
+    assert!(collector.contains("enum FactTask"));
+    assert!(collector.contains("let mut visited = ahash::AHashSet::new()"));
+    assert!(collector.contains("FactTask::SelectBranch"));
+    assert!(collector.contains("FactTask::SelectMatch"));
+    assert!(collector.contains("frontier.push_back(ComptimeInferenceFrontier"));
+    assert!(collector.contains("bindings: FrontierScope"));
+    assert!(!collector.contains("Vec<FrontierBinding>"));
+    assert!(
+        !collector.contains("inst_ref: selected,\n                                bindings"),
+        "a selected body must be a frontier checkpoint, not recursive collector work"
+    );
+    let driver = source
+        .split("    pub(crate) fn run_type_inference(")
+        .nth(1)
+        .and_then(|source| source.split("    fn has_comptime_fact_sites(").next())
+        .expect("inference staging driver");
+    assert!(driver.contains("if return_type != Type::COMPTIME_TYPE"));
+    assert!(driver.contains("loop {"));
+    assert!(driver.contains("let Some(front) = frontier.pop_front()"));
+    assert!(driver.contains("generated_frontier"));
+    assert!(source.contains("FrontierParamOverlay"));
+    assert!(driver.contains("staged_frontier_instructions"));
+    assert!(driver.contains("staged_fact_nodes"));
+    assert!(driver.contains("staged_canonical_evaluations"));
+    assert!(source.contains("staged_constraints_generated"));
+    assert!(source.contains("staged_binding_scope_nodes"));
+    assert!(source.contains("staged_binding_materializations"));
+    assert!(source.contains("staged_probe_nodes"));
+    assert!(!source.contains(concat!("frontier_", "params")));
+    assert!(!source.contains(concat!("materialize_", "scope")));
+    assert!(!source.contains(concat!("scope_", "names")));
+    assert!(
+        !collector.contains("body_rir_ref().iter()"),
+        "selector facts must not rescan the entire body for every selector"
+    );
+}
+
+#[test]
+fn structural_guard_rejects_same_module_peer_owner() {
+    let fixture = "impl ComptimeEnginePeer { fn fold(&mut self, inst: InstRef) -> ComptimeOutcome { match inst.data { InstData::IntConst(_) => ConstValue::Bool(true) && false, _ => ConstValue::Bool(false) } } }";
+    assert!(has_peer_comptime_evaluator("sema/comptime", fixture));
+}
+
+#[test]
+fn structural_guard_rejects_nonrecursive_bool_selector() {
+    let fixture = "fn choose(inst: InstRef) -> ComptimeSelection { if let InstData::Branch { .. } = inst.data { ComptimeSelection::Branch { taken: true } } else { ComptimeSelection::Branch { taken: false } } }";
+    assert!(has_peer_comptime_evaluator("sema/other", fixture));
+}
+
+#[test]
+fn structural_guard_rejects_split_direct_operator_helpers() {
+    let fixture = "fn fold(inst: InstRef) -> ComptimeOutcome { dispatch(inst) } fn dispatch(inst: InstRef) -> ComptimeOutcome { match inst.data { InstData::IntConst(_) => add(inst), _ => add(inst) } } fn add(_inst: InstRef) -> ComptimeOutcome { let value = ConstValue::Integer(1); let _ = value + value; ConstValue::Bool(true) && true }";
+    assert!(has_peer_comptime_evaluator("sema/other", fixture));
+}
+
+#[test]
+fn structural_guard_rejects_mutual_and_free_recursion() {
+    let fixture = "fn left(inst: InstRef) -> ComptimeOutcome { match inst.data { InstData::IntConst(_) => right(inst), _ => right(inst) } } fn right(inst: InstRef) -> ComptimeOutcome { left(inst); let value = ConstValue::Bool(true); value && true }";
+    assert!(has_peer_comptime_evaluator("sema/other", fixture));
+}
+
+#[test]
+fn structural_guard_distinguishes_same_named_self_and_free_calls() {
+    let fixture = "impl Decoder { fn fold(&mut self, inst: InstRef) -> ComptimeOutcome { self.fold(inst) } } fn fold(inst: InstRef) -> ComptimeOutcome { match inst.data { InstData::IntConst(_) => ConstValue::Bool(true) && true, _ => ConstValue::Bool(false) } }";
+    assert!(has_peer_comptime_evaluator("sema/other", fixture));
+}
+
+#[test]
+fn structural_guard_tracks_nested_module_placement() {
+    let fixture = "mod nested { fn fold(inst: InstRef) -> ComptimeOutcome { match inst.data { InstData::IntConst(_) => ConstValue::Bool(true) && true, _ => ConstValue::Bool(false) } } }";
+    assert!(has_peer_comptime_evaluator("sema/nested", fixture));
+}
+
+#[test]
+fn structural_guard_tracks_qualified_cross_source_edges() {
+    let caller = "fn fold(inst: InstRef) -> ComptimeOutcome { super::decode(inst) }";
+    let callee = "fn decode(inst: InstRef) -> ComptimeOutcome { match inst.data { InstData::IntConst(_) => ConstValue::Integer(1) + ConstValue::Integer(2), _ => ConstValue::Integer(0) } }";
+    assert!(has_peer_comptime_evaluator_in_sources(&[
+        ("sema/analysis/calls", caller),
+        ("sema/analysis", callee),
+    ]));
+
+    let crate_caller = "fn fold(inst: InstRef) -> ComptimeOutcome { crate::shared::decode(inst) }";
+    let crate_callee = "fn decode(inst: InstRef) -> ComptimeOutcome { match inst.data { InstData::IntConst(_) => ConstValue::Integer(1) + ConstValue::Integer(2), _ => ConstValue::Integer(0) } }";
+    assert!(has_peer_comptime_evaluator_in_sources(&[
+        ("sema/analysis", crate_caller),
+        ("shared", crate_callee),
+    ]));
+
+    // The dispatcher and value-producing associated method are deliberately
+    // split across files.  Only resolving the owner-qualified path through
+    // `helpers::Peer` exposes the complete dispatch/decode/operation graph.
+    let associated_caller = "fn dispatch(inst: InstRef) -> bool { match inst.data { InstData::IntConst(_) => crate::helpers::Peer::decode(inst).is_some(), _ => crate::helpers::Peer::decode(inst).is_some() } }";
+    let associated_callee = "impl Peer { fn decode(inst: InstRef) -> Option<ConstValue> { Some(ConstValue::Integer(1) + ConstValue::Integer(2)) } }";
+    assert!(has_peer_comptime_evaluator_in_sources(&[
+        ("lib.rs", associated_caller),
+        ("helpers.rs", associated_callee),
+    ]));
+
+    let super_associated_caller = "fn dispatch(inst: InstRef) -> bool { match inst.data { InstData::IntConst(_) => super::helpers::Peer::decode(inst).is_some(), _ => super::helpers::Peer::decode(inst).is_some() } }";
+    assert!(has_peer_comptime_evaluator_in_sources(&[
+        ("sema/calls/mod.rs", super_associated_caller),
+        ("sema/helpers.rs", associated_callee),
+    ]));
+
+    // A module/free-function path must remain reachable even when an
+    // unrelated source declares a same-named type.  The old global owner-name
+    // lookup incorrectly reinterpreted `crate::helpers::decode` as an
+    // associated call on that unrelated type and dropped the free edge.
+    let collision_dispatcher = "fn dispatch(inst: InstRef) -> bool { match inst.data { InstData::IntConst(_) => crate::helpers::decode(inst).is_some(), _ => crate::helpers::decode(inst).is_some() } }";
+    let collision_decoder = "fn decode(inst: InstRef) -> Option<ConstValue> { Some(ConstValue::Integer(1) + ConstValue::Integer(2)) }";
+    let unrelated_owner = "struct helpers; impl helpers { fn unrelated(&self) {} }";
+    assert!(has_peer_comptime_evaluator_in_sources(&[
+        ("lib.rs", collision_dispatcher),
+        ("helpers.rs", collision_decoder),
+        ("other.rs", unrelated_owner),
+    ]));
+}
+
+#[test]
+fn structural_guard_rejects_nonrecursive_value_operator_split() {
+    let caller = "fn fold(inst: InstRef) -> Option<ConstValue> { decode(inst) }";
+    let callee = "fn decode(inst: InstRef) -> Option<ConstValue> { match inst.data { InstData::IntConst(_) => Some(ConstValue::Integer(1) + ConstValue::Integer(2)), _ => None } }";
+    assert!(has_peer_comptime_evaluator_in_sources(&[
+        ("sema/analysis", caller),
+        ("sema/analysis", callee),
+    ]));
+}
+
+#[test]
+fn structural_guard_enforces_thin_adapter_mutations() {
+    let allowed = ast_functions("sema/comptime_eval", include_str!("sema/comptime_eval.rs"))
+        .expect("canonical adapter source");
+    for name in [
+        "select_comptime_branch_with_resolved_types_and_membership",
+        "select_comptime_match_with_resolved_types_and_membership",
+    ] {
+        let adapter = allowed
+            .iter()
+            .find(|function| function.name == name)
+            .expect("allowlisted adapter identity");
+        assert!(
+            assert_thin_adapter(adapter),
+            "canonical adapter must satisfy its AST proof: {name}"
+        );
+    }
+
+    let mutations = [
+        // InstData dispatch must never be hidden behind an allowlisted name.
+        "impl OrdinaryBodyEngine { fn select_comptime_branch_with_resolved_types_and_membership(&mut self, inst: InstRef) { match inst.data { InstData::Branch { .. } => self.select_branch(inst), _ => self.select_branch(inst) } } }",
+        // Value decoding is an engine responsibility.
+        "impl OrdinaryBodyEngine { fn select_comptime_branch_with_resolved_types_and_membership(&mut self, inst: InstRef) { let _ = inst.as_integer(); ComptimeEngine::new(self).select_branch((), inst, &mut env); } }",
+        // Arithmetic on a decoded/selector value is forbidden in adapters.
+        "impl OrdinaryBodyEngine { fn select_comptime_branch_with_resolved_types_and_membership(&mut self, inst: InstRef) { let _ = inst + inst; ComptimeEngine::new(self).select_branch((), inst, &mut env); } }",
+        // Recursive traversal/delegation cannot be smuggled through the name.
+        "impl OrdinaryBodyEngine { fn select_comptime_branch_with_resolved_types_and_membership(&mut self, inst: InstRef) { self.evaluate_const(inst); ComptimeEngine::new(self).select_branch((), inst, &mut env); } }",
+        // Positive call whitelisting rejects an otherwise unfamiliar peer
+        // helper even when it is adjacent to the canonical selection call.
+        "impl OrdinaryBodyEngine { fn select_comptime_branch_with_resolved_types_and_membership(&mut self, inst: InstRef) { self.compute(inst); ComptimeEngine::new(self).select_branch((), inst, &mut env); } }",
+        // Both a renamed recursive helper and a child walk are forbidden,
+        // even when no value operation appears in the adapter itself.
+        "impl OrdinaryBodyEngine { fn select_comptime_branch_with_resolved_types_and_membership(&mut self, inst: InstRef) { self.fold(inst); inst.children(); ComptimeEngine::new(self).select_branch((), inst, &mut env); } }",
+        // The match adapter has the same proof; its identity is not a second
+        // authority and receives the same mutation coverage.
+        "impl OrdinaryBodyEngine { fn select_comptime_match_with_resolved_types_and_membership(&mut self, inst: InstRef) { match inst.data { InstData::Match { .. } => self.select_match(inst), _ => self.select_match(inst) } } }",
+        // Receiver-sensitive method authorization: a matching method name on
+        // `self` (rather than the specific value returned by the wrapper) is
+        // not a permitted adapter operation.
+        "impl OrdinaryBodyEngine { fn select_comptime_branch_with_resolved_types_and_membership(&mut self, inst: InstRef) { self.get(inst); ComptimeEngine::new(self).select_branch((), inst, &mut env); } }",
+        "impl OrdinaryBodyEngine { fn select_comptime_branch_with_resolved_types_and_membership(&mut self, inst: InstRef) { self.unwrap_or(inst); ComptimeEngine::new(self).select_branch((), inst, &mut env); } }",
+        "impl OrdinaryBodyEngine { fn select_comptime_branch_with_resolved_types_and_membership(&mut self, inst: InstRef) { self.cloned(inst); ComptimeEngine::new(self).select_branch((), inst, &mut env); } }",
+        "impl OrdinaryBodyEngine { fn select_comptime_branch_with_resolved_types_and_membership(&mut self, inst: InstRef) { self.select_branch(inst); ComptimeEngine::new(self).select_branch((), inst, &mut env); } }",
+        "impl OrdinaryBodyEngine { fn select_comptime_branch_with_resolved_types_and_membership(&mut self, inst: InstRef) { self.select_match(inst); ComptimeEngine::new(self).select_branch((), inst, &mut env); } }",
+        // Likewise, a permitted method on an unrelated local is not enough;
+        // the receiver path is part of the authority proof.
+        "impl OrdinaryBodyEngine { fn select_comptime_branch_with_resolved_types_and_membership(&mut self, inst: InstRef) { other.unwrap_or(inst); ComptimeEngine::new(self).select_branch((), inst, &mut env); } }",
+    ];
+    for source in mutations {
+        let functions = ast_functions("sema/comptime_eval", source).expect("mutation parses");
+        let adapter = functions
+            .iter()
+            .find(|function| {
+                function.name == "select_comptime_branch_with_resolved_types_and_membership"
+                    || function.name == "select_comptime_match_with_resolved_types_and_membership"
+            })
+            .expect("mutation identity");
+        assert!(!assert_thin_adapter(adapter));
+        assert!(has_peer_comptime_evaluator("sema/comptime_eval", source));
+    }
+
+    // Calling the canonical engine is not an authority exemption for a peer
+    // which still dispatches and constructs a selection itself.
+    let peer = "impl Peer { fn fold(&mut self, inst: InstRef) -> ComptimeOutcome { match inst.data { InstData::Branch { .. } => ComptimeSelection::Branch { taken: true }, _ => ComptimeSelection::Branch { taken: false } }; ComptimeEngine::new(self).select_branch((), inst, &mut env) } }";
+    assert!(has_peer_comptime_evaluator("sema/comptime", peer));
 }
 
 #[test]
@@ -692,7 +2076,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     );
     let classifier_order = [
         "env.locals",
-        "env.runtime_local_names",
+        "env.is_runtime_local_name",
         "env.type_subst",
         "env.value_subst",
         "env.runtime_binding_names",

@@ -69,10 +69,10 @@ pub use comptime::{
     ComptimeIntegerOperation, ComptimeMemoInsertError, ComptimeMemoizedOutcome,
     ComptimeMethodDescriptor, ComptimeMethodParameter, ComptimeMethodType, ComptimeName,
     ComptimeNamedValueResolution, ComptimeOutcome, ComptimeProgram, ComptimeProgramKey,
-    ComptimeProgramRegistrationError, ComptimeProgramRegistry, ComptimeSite, ComptimeSiteKind,
-    ComptimeStructuredTypeResolution, ComptimeStructuredTypeSuspension, ComptimeTargetIntrinsic,
-    ComptimeTrap, ComptimeType, ComptimeTypeIntrinsic, ComptimeValue, MAX_COMPTIME_CALL_DEPTH,
-    comptime_depth_over_limit, next_comptime_depth,
+    ComptimeProgramRegistrationError, ComptimeProgramRegistry, ComptimeSelection, ComptimeSite,
+    ComptimeSiteKind, ComptimeStructuredTypeResolution, ComptimeStructuredTypeSuspension,
+    ComptimeTargetIntrinsic, ComptimeTrap, ComptimeType, ComptimeTypeIntrinsic, ComptimeValue,
+    MAX_COMPTIME_CALL_DEPTH, comptime_depth_over_limit, next_comptime_depth,
 };
 pub use comptime::{
     ComptimeDiagnosticSite, ComptimeMatchPattern, ComptimeSemanticRejection,

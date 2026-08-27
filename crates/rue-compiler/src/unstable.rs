@@ -430,6 +430,20 @@ pub struct ProviderObservationMetrics {
     pub import_nominal_type_edges_traversed: u64,
     /// Anonymous nominal identities installed through imported durable types.
     pub import_anonymous_nominals_registered: u64,
+    /// Staged selector work measured by the provider body transaction.
+    pub staged_probe_nodes: u64,
+    pub staged_frontier_bodies: u64,
+    pub staged_resolved_instructions: u64,
+    pub staged_fact_nodes: u64,
+    pub staged_canonical_evaluations: u64,
+    pub staged_constraints_generated: u64,
+    pub staged_binding_scope_nodes: u64,
+    pub staged_binding_materializations: u64,
+    /// Path-copied trie nodes written by persistent staged scopes.
+    pub staged_binding_trie_updates: u64,
+    /// Trie levels consulted by staged runtime-name membership.
+    pub staged_binding_trie_lookups: u64,
+    pub staged_precompute_nodes: u64,
 }
 
 /// A snapshot of the provider-op observation counters. See

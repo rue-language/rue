@@ -308,6 +308,10 @@ impl BodyFactProvider for UnconsultedFactProvider {
     type ProducerBodyFacts = ();
     type ToolchainFacts = ();
 
+    fn is_canceled(&self) -> bool {
+        false
+    }
+
     fn lookup_unqualified(
         &self,
         _module: &Self::ModuleRef,
