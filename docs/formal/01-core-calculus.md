@@ -348,11 +348,10 @@ syntactic contexts:
 > - if the plan is `Declared(d,π)`, the use applies
 >   `(Use-Declared-Linear-Destructure)` (§5.1), consuming `d` and producing the
 >   selected leaf;
-> - if the plan is `Untrackable(ShallowConsume(m))`, the use applies the
->   shallow/root fallback and consumes its recorded marker `m`, even when the
->   selected leaf `T` is `Copy`;
-> - otherwise, if the plan is `Untrackable(CopyRead)` or
->   `Untrackable(OrdinaryDynamic)` and `class(T) = Copy`, the use **copies** —
+> - if the plan is `Untrackable(DeclaredLinearDynamic)`, the use is ill-formed: an
+>   untrackable index cannot identify the declared-linear destructure target;
+> - otherwise, if the plan is `Untrackable(OrdinaryDynamic)` and `class(T) = Copy`,
+>   the use **copies** —
 >   the value at `p` is duplicated and `p` remains in whatever ownership state
 >   it had;
 > - otherwise, if `class(T) ∈ {Affine, Linear}`, the use **moves** (equivalently,
@@ -375,25 +374,21 @@ untracked/dynamic index makes it undefined. Thus `d` is the smallest enclosing
 declared-linear place, not necessarily the root binding. The selected path may
 pass through nested structs and constant-index arrays. The ordinary partial
 move rule remains in force when no declared-linear plan or applicable fallback
-plan is recorded, including for structs that are linear only by infection.
+plan is recorded, including for structs that are linear only by infection. A
+projection rooted at a destructor's own `self` never receives a declared-linear
+plan: Copy reads are ordinary observations, while moves of `self` or its fields
+are rejected by the destructor rules (3.9:33–34).
 
-For an untrackable path, elaboration records an explicit `uf(Γ,p)` fallback
-annotation instead of leaving the dynamic semantics to rediscover `Γ`. It
-contains the shallowest/root declared-linear prefix found by the current
-fallback walk, whether the final immediate parent is declared-linear, and the
-selected action: `CopyRead` (read the selected Copy value and keep the root
-live), `ShallowConsume(m)` (the existing shallowest/root consuming fallback,
-with `m` its consumed marker), or `OrdinaryDynamic` (the ordinary dynamic-index
-path, including its move rejection). If a dynamic prefix makes the intended
-declared place unnameable, `m` is the root place; otherwise `m` is that intended
-place. This is
-the RUE-1755 transitional behavior: a dynamic Copy read
-keeps its root live but still performs the full-prefix destructor check, while
-the consuming fallback is used only where the current ownership analysis
-selects it. The complete use plan is therefore
-`Declared(d,π)`, `Untrackable(uf(Γ,p))`, `Ordinary`, or `Borrowed` (for
-by-reference/equality place reads), and is carried into §6 as elaboration
-metadata.
+For an untrackable path, elaboration records an explicit `uf(Γ,p)` annotation
+instead of leaving the dynamic semantics to rediscover `Γ`. It records whether
+the path has an applicable declared-linear prefix; the destructor's own `self`
+is excluded as above. Such a prefix makes a value-context use ill-formed: the
+selected place cannot be identified precisely, so the existing E0904
+dynamic-index restriction applies. Without an applicable prefix, the path uses
+`OrdinaryDynamic` (including its existing move rejection). The
+complete use plan is therefore `Declared(d,π)`, `Untrackable(uf(Γ,p))`,
+`Ordinary`, or `Borrowed` (for by-reference/equality place reads), and is
+carried into §6 as elaboration metadata.
 
 Two static restrictions bound *which ordinary partial moves* may be made:
 
@@ -589,40 +584,21 @@ by the ordinary `(Use-Copy)` premise.
   Γ ; Σ ; Λ  ⊢  p  ⇒  T  ⊣  Σ[ p ↦ MovedOut,  and every path strictly under p removed ]
 ```
 
-Untrackable uses are typed from their elaborated fallback action. `m` below is
-a recorded place, not a value reconstructed after an index reduces;
-when a dynamic prefix makes the intended declared place unnameable, the
-annotation records `m = root(p)` and consumes that root. `m not loaned` means
-the same root/loan exclusion as the ordinary use rules.
-
-Write `full-prefix-destructor-safe(Γ,p)` when no proper prefix of the complete
-place path `p` has a user-defined destructor. This is the static form of the
-all-enclosing-value restriction in 3.9:34; the result is carried in `μ` for
-dynamic reduction.
-
 ```
-  Γ ⊢ p : T       planΓ(p) = Untrackable(CopyRead,T)
-  Σ(p) = Owned    p not exclusively loaned in Λ    full-prefix-destructor-safe(Γ,p)
-  ─────────────────────────────────────────────────────── (Use-Untrackable-CopyRead)
-  Γ ; Σ ; Λ ⊢ p ⇒ T ⊣ Σ
-
   Γ ⊢ p : T       planΓ(p) = Untrackable(OrdinaryDynamic,T)
   class(T) = Copy  Σ(p) = Owned    p not exclusively loaned in Λ
+  no applicable declared-linear prefix in p
   ─────────────────────────────────────────────────────── (Use-Untrackable-Dynamic-Copy)
   Γ ; Σ ; Λ ⊢ p ⇒ T ⊣ Σ
-
-  Γ ⊢ p : T       planΓ(p) = Untrackable(ShallowConsume(m),T)
-  Γ ⊢ m : U       fully-owned(Σ,m)       m is a statically recorded place
-  m not loaned in Λ       full-prefix-destructor-safe(Γ,p)
-  ─────────────────────────────────────────────────────── (Use-Untrackable-Shallow)
-  Γ ; Σ ; Λ ⊢ p ⇒ T ⊣ Σ[ m ↦ MovedOut, and every path strictly under m removed ]
 ```
 
 There is no successful static rule for `Untrackable(OrdinaryDynamic,T)` when
 `class(T) ∈ {Affine,Linear}`: the existing dynamic-index move restriction
-rejects that use. `Use-Untrackable-CopyRead` carries the full-prefix destructor
-gate required by the current declared-linear dynamic Copy path; the ordinary
-dynamic Copy rule has only the ordinary Copy-read premises.
+rejects that use. There is also no successful static rule when an untrackable
+path has an applicable declared-linear prefix: that use is rejected with E0904
+because its destructure target cannot be tracked without a compile-time index. The
+destructor-`self` exemption above classifies its Copy reads as
+`Untrackable(OrdinaryDynamic)` without a declared-linear plan.
 
 The ordinary rules above are selected only when elaboration records the
 corresponding `Ordinary` plan. They are overridden for a statically trackable projection
@@ -659,14 +635,14 @@ the same all-enclosing-value restriction as 3.9:34 applies even though only
 `d` is consumed. A destructor on a legally droppable unselected residue is run
 by its ordinary drop glue. The `linear-residue` premise rejects the access
 before any residue can be silently dropped. An untrackable path is not treated
-as ordinary merely because `dl` is undefined: its elaborated `Untrackable`
-fallback plan (§4.2) selects the current shallowest/root consuming fallback,
-the Copy-read fallback, or the ordinary dynamic-index rejection. By-reference
-and equality operands are `Borrowed` place uses and do not invoke this rule.
+as ordinary merely because `dl` is undefined: a declared-linear prefix selects
+the E0904 rejection, while a path without one uses
+`Untrackable(OrdinaryDynamic)`. By-reference and equality operands are
+`Borrowed` place uses and do not invoke this rule.
 
 The `(Use-Copy)` and `(Use-Move)` rules are read only with an `Ordinary` plan;
 this prevents overlap when a selected leaf is Copy inside a declared-linear
-destructure or an untrackable fallback.
+destructure or an ordinary untrackable dynamic read.
 The rule is intentionally distinct from infectious linearity: a struct that is
 linear only because a field carries a linear value follows ordinary partial
 move and residual checking.
@@ -1732,10 +1708,9 @@ signedness were resolved by elaboration (§5.8), so the machine stores the concr
 Using a place `p` in value context is the operational side of §4.2 / §5.1. At
 static elaboration, every such use receives a closed annotation `μ`; it is one
 of `Declared(d,π_s,T)`, `Untrackable(f,T)`, or `Ordinary(class(T),T)`. The
-`Untrackable` annotation contains the concrete `uf` fallback data from §4.2 —
-the shallowest/root declared-linear prefix, the immediate-parent flag, and its
-selected action (`CopyRead`, `ShallowConsume(m)`, or `OrdinaryDynamic`) — plus
-the already-checked full-prefix destructor-safety result. A place in a
+`Untrackable` annotation contains the concrete `uf` data from §4.2, including
+whether an applicable declared-linear prefix exists. Such a prefix is rejected
+during static checking; otherwise the action is `OrdinaryDynamic`. A place in a
 by-reference or equality context receives `Borrowed` instead. Thus the dynamic
 rules consume elaboration metadata; they never consult `Γ`, recompute a
 declared-linear prefix, or recover constant-index provenance after reduction.
@@ -1774,27 +1749,14 @@ not a value dropped by `destructure`. An untrackable path follows its closed
 ordinary path after reduction. A by-reference or equality projection is not a
 value-context use and never fires this rule.
 
-For the RUE-1755 fallback, `μ = Untrackable(f,T)` has the following dynamic
-images. `f = CopyRead` keeps the root and all enclosing places live, but its
-carried full-prefix destructor-safety check has already rejected any unsafe
-custom destructor. `f = ShallowConsume(m)` uses the existing shallowest/root
-fallback and consumes its recorded marker `m` without entering the constant-index
-residue plan; the selected value is transferred and `m` becomes `⊘`.
-`f = OrdinaryDynamic`
-retains the ordinary dynamic-index behavior: a Copy read leaves storage live,
-while a non-Copy move is rejected by the static dynamic-index rule.
+For an untrackable path with an applicable declared-linear prefix, static
+checking rejects the use with E0904 before evaluation: no dynamic redex may discharge an
+unidentified linear sibling obligation. Otherwise, `μ =
+Untrackable(OrdinaryDynamic,T)` retains the ordinary dynamic-index behavior: a
+Copy read leaves storage live, while a non-Copy move is rejected by the static
+dynamic-index rule.
 
 ```
-  ρ(root(p)) = ℓ      μ = Untrackable(CopyRead,T)      H(ℓ)@π = v
-  full-prefix-destructor-safe(μ)
-  ─────────────────────────────────────────────── (D-Use-Untrackable-Copy)
-  ⟨ H ; φ ; K ; p ⟩ → ⟨ H ; φ ; K ; v ⟩
-
-  ρ(root(p)) = ℓ      μ = Untrackable(ShallowConsume(m),T)
-  H(ℓ)@π = v          m resolves to ℓ@π_m
-  ─────────────────────────────────────────────── (D-Use-Untrackable-Move)
-  ⟨ H ; φ ; K ; p ⟩ → ⟨ H[ℓ@π_m ↦ ⊘] ; φ ; K ; v ⟩
-
   ρ(root(p)) = ℓ      μ = Untrackable(OrdinaryDynamic,T)
   class(T) = Copy      H(ℓ)@π = v
   ─────────────────────────────────────────────── (D-Use-Untrackable-Dynamic-Copy)
@@ -1944,8 +1906,9 @@ the corresponding aggregate value, owning every component (`StructInit`/
 Projection in value context is subsumed by the place-use rules of §6.3 (a
 projection `p.f` / `p[e]` is a place). A statically trackable projection from a
 declared-linear place uses `(D-Use-Declared-Linear)` there; an untrackable
-projection uses its elaborated RUE-1755 fallback, and only an `Ordinary` plan
-uses the ordinary copy/partial-move rules. An **array index is
+projection with an applicable declared-linear prefix is rejected by the E0904 rule above,
+and only an `OrdinaryDynamic` plan without such a prefix uses the ordinary
+copy/partial-move rules. An **array index is
 bounds-checked** at the moment the path is navigated, and an out-of-range or negative index traps
 (`resolve_path`/`place_read`):
 
@@ -2731,17 +2694,16 @@ neither claims anything about an uninhabited-parameter function such as
   variants `K1..Kn`, and the arms cover exactly those, so some arm always
   matches — a `match` is never stuck on an uncovered tag.
 
-- **No use-after-move.** In a well-typed program, no use redex — ordinary,
-  declared-linear, or untrackable fallback — is applied to a `MovedOut` place.
-  *Because:* the static plan requires `fully-owned(Σ,p)`, `fully-owned(Σ,d)`,
-  or `fully-owned(Σ,m)` for the consumed place, while `Borrowed` place reads
-  require an owned base;
+- **No use-after-move.** In a well-typed program, no ordinary, declared-linear,
+  or untrackable dynamic use redex is applied to a `MovedOut` place. *Because:*
+  the static plan requires `fully-owned(Σ,p)` or `fully-owned(Σ,d)` for a
+  consumed place, while `Borrowed` place reads require an owned base;
   preservation maintains the invariant that Σ faithfully tracks the store's
   initialization. The dynamic declared rule therefore cannot navigate through
   a hole before its `split`.
 
 - **No double-free.** Every stored value's destructor runs at most once. *Because:*
-  an ordinary or fallback move sets its consumed place to `MovedOut`, and the
+  an ordinary move sets its consumed place to `MovedOut`, and the
   declared-linear rule transfers its selected leaf, applies each planned
   droppable residue drop exactly once in order, then sets `d ↦ MovedOut`/`⊘`;
   the Drop rule (§6) skips that consumed place and its moved-out descendants.
@@ -2800,7 +2762,7 @@ neither claims anything about an uninhabited-parameter function such as
   residue before execution, transfers exactly its selected leaf, drops only the
   legally droppable residue once in the elaborated order, and then marks `d`
   `MovedOut`/`⊘`; its selected leaf is consequently the sole new owner. No
-  value is used twice (`Use-Move` or the fallback consuming action consumes it).
+  value is used twice (`Use-Move` consumes an ordinary moved value).
   Hence exactly once. This
   now covers **enums**: `class(E)` is the payload join (§3), so a `Linear`-payload
   enum is itself `Linear` and `carries_linear(E)` holds (§5.3); letting it reach
