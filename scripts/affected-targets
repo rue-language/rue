@@ -547,7 +547,7 @@ emit_scope_summary() {
     if [[ "$status" == "VERIFIED" && -n "$selected_count" && -n "$total_count" && "$total_count" -gt 0 ]]; then
         local saved_count=$((total_count - selected_count))
         local saved_share=$((saved_count * 10000 / total_count))
-        printf -- '- `%s`: **VERIFIED** subset; selected **%s/%s** targets; unweighted saved share **%s.%02s%%** (not runner-time savings).\n' \
+        printf -- '- `%s`: **VERIFIED** subset; selected **%s/%s** targets; unweighted saved share **%s.%02d%%** (not runner-time savings).\n' \
             "$consumer" "$selected_count" "$total_count" "$((saved_share / 100))" "$((saved_share % 100))" >>"$GITHUB_STEP_SUMMARY"
     else
         printf -- '- `%s`: **%s**; saved share **not applicable**%s.\n' \
@@ -616,7 +616,7 @@ emit_manifest() {
         echo
         if [[ "$narrowing_status" == "CANDIDATE" && -n "$head_count" && -n "$impacted_count" && "$head_count" -gt 0 ]]; then
             printf -- '- Head graph target denominator: **%s**\n' "$head_count"
-            printf -- '- Live impacted closure: **%s** targets (**%s.%02s%%** of denominator)\n' \
+            printf -- '- Live impacted closure: **%s** targets (**%s.%02d%%** of denominator)\n' \
                 "$impacted_count" "$((impacted_count * 100 / head_count))" "$(((impacted_count * 10000 / head_count) % 100))"
             echo '- This is planner reach only; exact saved share is reported after each registered lane scope is queried.'
         else
