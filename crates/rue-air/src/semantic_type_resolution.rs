@@ -779,15 +779,6 @@ where
                 site: head.site,
             }));
         }
-        if head.parameters.len() != argument_count {
-            return Err(E::Semantic(F::InvalidConstructorArity {
-                constructor,
-                site: head.site,
-                expected: head.parameters.len(),
-                found: argument_count,
-                expectation,
-            }));
-        }
         let eligible = head
             .parameters
             .iter()
@@ -795,6 +786,15 @@ where
             && (head.returns_type || !head.parameters.is_empty());
         if !eligible {
             return Err(E::Semantic(F::RuntimeConstructorParameter {
+                constructor,
+                site: head.site,
+                expected: head.parameters.len(),
+                found: argument_count,
+                expectation,
+            }));
+        }
+        if head.parameters.len() != argument_count {
+            return Err(E::Semantic(F::InvalidConstructorArity {
                 constructor,
                 site: head.site,
                 expected: head.parameters.len(),
