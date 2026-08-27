@@ -206,6 +206,23 @@ define_generated_shapes!(
     BoolAnd,
     BoolOr,
     BoolNot,
+    ComptimePositionTwin,
+    ComptimeTwinArithmetic,
+    ComptimeTwinComparison,
+    ComptimeTwinLogical,
+    ComptimeTwinBitwise,
+    ComptimeTwinShiftLeft,
+    ComptimeTwinShiftRight,
+    ComptimeTwinNegation,
+    ComptimeTwinI8,
+    ComptimeTwinI16,
+    ComptimeTwinI32,
+    ComptimeTwinI64,
+    ComptimeTwinU8,
+    ComptimeTwinU16,
+    ComptimeTwinU32,
+    ComptimeTwinU64,
+    ComptimeTwinBool,
     ExtraDbg,
 );
 
@@ -251,6 +268,7 @@ pub struct GeneratedProgram {
 }
 
 pub struct Program {
+    seed: u64,
     rng: Rng,
     counter: usize,
     structs: Vec<StructDef>,
@@ -275,6 +293,7 @@ pub fn generate(seed: u64) -> String {
 /// Generate source and report the coverage shapes actually emitted for it.
 pub fn generate_with_shapes(seed: u64) -> GeneratedProgram {
     let mut p = Program {
+        seed,
         rng: Rng::new(seed),
         counter: 0,
         structs: Vec::new(),
@@ -898,6 +917,150 @@ impl Program {
         self.shapes.record(GeneratedShape::String);
     }
 
+    /// Emit one expression in all three positions that use the independent
+    /// constant-evaluation paths: a durable file-level const, a `comptime`
+    /// block in the body, and a normal runtime call.  The runtime identity
+    /// function is deliberately non-comptime, so its argument remains a
+    /// runtime evaluation even though the expression has no runtime leaves.
+    fn emit_position_twin(&mut self, body: &mut Vec<String>, ty: Ty, expr: &str) {
+        let const_name = self.fresh("POSITION_CONST_");
+        let comptime_name = self.fresh("position_comptime_");
+        let runtime_name = self.fresh("position_runtime_");
+        let identity_name = self.fresh("position_identity_");
+        let type_name = ty.name();
+
+        self.top_level
+            .push(format!("const {const_name}: {type_name} = {expr};"));
+        self.top_level.push(format!(
+            "fn {identity_name}(x: {type_name}) -> {type_name} {{ x }}"
+        ));
+        body.push(format!(
+            "    let {comptime_name}: {type_name} = comptime {{ {expr} }};"
+        ));
+        body.push(format!(
+            "    let {runtime_name}: {type_name} = {identity_name}({expr});"
+        ));
+        body.push(format!(
+            "    @assert(({const_name} == {comptime_name}) && ({const_name} == {runtime_name}));"
+        ));
+        self.shapes.record(GeneratedShape::ComptimePositionTwin);
+    }
+
+    /// A closed scalar subset of the comptime-evaluable set (4.14:26–29).
+    /// Every operand is a typed-context literal or another value-forming
+    /// operator; no runtime binding, call, intrinsic, branch, or cast can
+    /// enter these expressions.  Small arithmetic operands avoid compile-time
+    /// traps, while shifts intentionally use an amount at the operand width
+    /// to exercise the specified masked-shift behavior on every integer type.
+    fn emit_comptime_position_twins(&mut self, body: &mut Vec<String>) {
+        // The first 48 seeds form a complete 8-width × 6-operator matrix for
+        // `~`, `<<`, `>>`, `&`, `|`, and `^`; this is intentional coverage,
+        // not a probabilistic bias.  The following slots cover arithmetic and
+        // unary negation, with the ordinary generated expressions continuing
+        // to provide deeper mixed trees.
+        let schedule = self.seed % 60;
+        let (ty, op) = if schedule < 48 {
+            (
+                INT_TYPES[(schedule / 6) as usize],
+                schedule % 6, // not, shl, shr, and, or, xor
+            )
+        } else {
+            let arithmetic = (schedule - 48) % 6;
+            let ty = if arithmetic == 5 {
+                Ty::I32
+            } else {
+                let reduced_seed = self.seed % INT_TYPES.len() as u64;
+                INT_TYPES[(reduced_seed * 5 % INT_TYPES.len() as u64) as usize]
+            };
+            (ty, arithmetic + 6) // add, sub, mul, div, rem, neg
+        };
+        let (expr, shape) = match op {
+            0 => ("(~1)".to_string(), GeneratedShape::ComptimeTwinBitwise),
+            1 => {
+                let width = self.integer_width(ty);
+                (
+                    format!("((1 << {width}) | (1 << {}))", width + 1),
+                    GeneratedShape::ComptimeTwinShiftLeft,
+                )
+            }
+            2 => {
+                let width = self.integer_width(ty);
+                let (operand, joiner) = if ty.is_signed() {
+                    ("-2", "&")
+                } else {
+                    ("3", "|")
+                };
+                (
+                    format!(
+                        "(({operand} >> {width}) {joiner} ({operand} >> {}))",
+                        width + 1
+                    ),
+                    GeneratedShape::ComptimeTwinShiftRight,
+                )
+            }
+            3 => ("(1 & 3)".to_string(), GeneratedShape::ComptimeTwinBitwise),
+            4 => ("(1 | 2)".to_string(), GeneratedShape::ComptimeTwinBitwise),
+            5 => ("(3 ^ 1)".to_string(), GeneratedShape::ComptimeTwinBitwise),
+            6 => (
+                "(1 + 2)".to_string(),
+                GeneratedShape::ComptimeTwinArithmetic,
+            ),
+            7 => (
+                "(2 - 1)".to_string(),
+                GeneratedShape::ComptimeTwinArithmetic,
+            ),
+            8 => (
+                "(2 * 3)".to_string(),
+                GeneratedShape::ComptimeTwinArithmetic,
+            ),
+            9 => (
+                "(3 / 2)".to_string(),
+                GeneratedShape::ComptimeTwinArithmetic,
+            ),
+            10 => (
+                "(3 % 2)".to_string(),
+                GeneratedShape::ComptimeTwinArithmetic,
+            ),
+            _ => ("(-1)".to_string(), GeneratedShape::ComptimeTwinNegation),
+        };
+        self.emit_position_twin(body, ty, &expr);
+        self.shapes.record(shape);
+        self.shapes.record(match ty {
+            Ty::I8 => GeneratedShape::ComptimeTwinI8,
+            Ty::I16 => GeneratedShape::ComptimeTwinI16,
+            Ty::I32 => GeneratedShape::ComptimeTwinI32,
+            Ty::I64 => GeneratedShape::ComptimeTwinI64,
+            Ty::U8 => GeneratedShape::ComptimeTwinU8,
+            Ty::U16 => GeneratedShape::ComptimeTwinU16,
+            Ty::U32 => GeneratedShape::ComptimeTwinU32,
+            Ty::U64 => GeneratedShape::ComptimeTwinU64,
+            Ty::Bool => unreachable!(),
+        });
+
+        // Add a bool twin periodically.  It covers the remaining scalar
+        // comptime operators while keeping every generated source bounded.
+        if self.seed % 4 == 0 {
+            let (bool_expr, bool_shape) = match (self.seed / 4) % 3 {
+                0 => ("(true && false)", GeneratedShape::ComptimeTwinLogical),
+                1 => ("(true == false)", GeneratedShape::ComptimeTwinComparison),
+                _ => ("(!false)", GeneratedShape::ComptimeTwinLogical),
+            };
+            self.emit_position_twin(body, Ty::Bool, bool_expr);
+            self.shapes.record(bool_shape);
+            self.shapes.record(GeneratedShape::ComptimeTwinBool);
+        }
+    }
+
+    fn integer_width(&self, ty: Ty) -> u32 {
+        match ty {
+            Ty::I8 | Ty::U8 => 8,
+            Ty::I16 | Ty::U16 => 16,
+            Ty::I32 | Ty::U32 => 32,
+            Ty::I64 | Ty::U64 => 64,
+            Ty::Bool => unreachable!(),
+        }
+    }
+
     fn build(&mut self) -> String {
         // Top-level items first (main refers to them; forward refs are fine).
         self.emit_structs();
@@ -907,6 +1070,7 @@ impl Program {
         let mut body: Vec<String> = Vec::new();
         let mut scope = Scope::default();
         self.seed_vars(&mut body, &mut scope);
+        self.emit_comptime_position_twins(&mut body);
 
         // A random sequence of feature snippets.
         let steps = 4 + self.rng.below(8);
@@ -963,6 +1127,71 @@ mod tests {
 
     const COMPILE_CONTRACT_SEEDS: u64 = 500;
 
+    fn position_entries(source: &str) -> Vec<(String, String, String)> {
+        let lines: Vec<&str> = source.lines().collect();
+        let consts: Vec<(String, String)> = lines
+            .iter()
+            .filter(|line| line.starts_with("const POSITION_CONST_"))
+            .map(|line| {
+                let (name, value) = line.split_once(" = ").expect("position const initializer");
+                (
+                    name.strip_prefix("const ")
+                        .expect("position const name")
+                        .to_string(),
+                    value
+                        .strip_suffix(';')
+                        .expect("position const terminator")
+                        .to_string(),
+                )
+            })
+            .collect();
+        let comptimes: Vec<String> = lines
+            .iter()
+            .filter(|line| line.trim_start().starts_with("let position_comptime_"))
+            .map(|line| {
+                line.split_once("comptime { ")
+                    .and_then(|(_, rest)| rest.strip_suffix(" };"))
+                    .expect("position comptime expression")
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(consts.len(), comptimes.len());
+
+        consts
+            .into_iter()
+            .enumerate()
+            .map(|(index, (const_name, const_expression))| {
+                let const_line = lines
+                    .iter()
+                    .position(|line| line.starts_with(&format!("const {const_name}")))
+                    .expect("position const line");
+                let identity_line = lines[const_line + 1..]
+                    .iter()
+                    .copied()
+                    .find(|line| line.starts_with("fn position_identity_"))
+                    .expect("position identity line");
+                let identity = identity_line
+                    .strip_prefix("fn ")
+                    .and_then(|line| line.split_once('('))
+                    .map(|(name, _)| name)
+                    .expect("position identity function");
+                assert!(identity_line.contains("(x: ") && identity_line.ends_with("{ x }"));
+                let runtime_expression = lines
+                    .iter()
+                    .find_map(|line| {
+                        let (_, rest) = line.split_once(&format!("= {identity}("))?;
+                        Some(rest.strip_suffix(");")?.to_string())
+                    })
+                    .expect("position runtime expression");
+                (
+                    const_expression,
+                    comptimes[index].clone(),
+                    runtime_expression,
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn deterministic_from_seed() {
         for seed in 0..50u64 {
@@ -973,6 +1202,19 @@ mod tests {
                 "seed {seed} not deterministic"
             );
             assert_eq!(generate(seed), generated.source);
+        }
+    }
+
+    #[test]
+    fn high_u64_seeds_remain_deterministic_and_panic_free() {
+        for seed in [u64::MAX - 12, u64::MAX - 1, u64::MAX] {
+            let first = generate_with_shapes(seed);
+            assert_eq!(
+                first,
+                generate_with_shapes(seed),
+                "seed {seed} not deterministic"
+            );
+            assert!(first.source.contains("fn main() -> i32 {"));
         }
     }
 
@@ -1028,6 +1270,107 @@ mod tests {
             saw_string_method_call,
             "compile-contract corpus did not exercise stable str method calls"
         );
+    }
+
+    #[test]
+    fn position_twins_repeat_one_closed_expression_in_three_positions() {
+        for seed in 0..65u64 {
+            let source = generate(seed);
+            let entries = position_entries(&source);
+            assert!(!entries.is_empty(), "seed {seed} has no position twin");
+
+            for (const_expression, comptime_expression, runtime_expression) in entries {
+                assert!(
+                    const_expression == comptime_expression
+                        && const_expression == runtime_expression,
+                    "seed {seed} did not repeat one expression: const={const_expression:?}, comptime={comptime_expression:?}, runtime={runtime_expression:?}"
+                );
+                assert!(
+                    !const_expression.contains("if ")
+                        && !const_expression.contains("match ")
+                        && !const_expression.contains('@')
+                        && !const_expression.contains("fn "),
+                    "seed {seed} position twin escaped the closed comptime subset: {const_expression}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn position_twin_smoke_covers_widths_and_operator_classes() {
+        let mut totals = ShapeCounts::default();
+        for seed in 0..65u64 {
+            let generated = generate_with_shapes(seed);
+            for (shape, count) in generated.shapes.iter() {
+                totals.counts[shape as usize] += count;
+            }
+        }
+
+        let required = [
+            GeneratedShape::ComptimePositionTwin,
+            GeneratedShape::ComptimeTwinArithmetic,
+            GeneratedShape::ComptimeTwinComparison,
+            GeneratedShape::ComptimeTwinLogical,
+            GeneratedShape::ComptimeTwinBitwise,
+            GeneratedShape::ComptimeTwinShiftLeft,
+            GeneratedShape::ComptimeTwinShiftRight,
+            GeneratedShape::ComptimeTwinNegation,
+            GeneratedShape::ComptimeTwinI8,
+            GeneratedShape::ComptimeTwinI16,
+            GeneratedShape::ComptimeTwinI32,
+            GeneratedShape::ComptimeTwinI64,
+            GeneratedShape::ComptimeTwinU8,
+            GeneratedShape::ComptimeTwinU16,
+            GeneratedShape::ComptimeTwinU32,
+            GeneratedShape::ComptimeTwinU64,
+            GeneratedShape::ComptimeTwinBool,
+        ];
+        for shape in required {
+            assert!(
+                totals.get(shape) > 0,
+                "position-twin smoke window did not emit {shape:?}"
+            );
+        }
+
+        for ty in ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"] {
+            let source = (0..65u64).map(generate).collect::<Vec<_>>().join("\n");
+            assert!(
+                source.contains(&format!(": {ty} = (~1);")),
+                "smoke window lacks bitwise-not twin for {ty}"
+            );
+            let width = match ty {
+                "i8" | "u8" => 8,
+                "i16" | "u16" => 16,
+                "i32" | "u32" => 32,
+                "i64" | "u64" => 64,
+                _ => unreachable!(),
+            };
+            assert!(
+                source.contains(&format!(
+                    ": {ty} = ((1 << {width}) | (1 << {}));",
+                    width + 1
+                )),
+                "smoke window lacks width-sensitive left shift for {ty}"
+            );
+            let right = if ty.starts_with('i') {
+                format!(": {ty} = ((-2 >> {width}) & (-2 >> {}));", width + 1)
+            } else {
+                format!(": {ty} = ((3 >> {width}) | (3 >> {}));", width + 1)
+            };
+            assert!(
+                source.contains(&right),
+                "smoke window lacks width-sensitive right shift for {ty}"
+            );
+        }
+    }
+
+    #[test]
+    fn position_twins_remain_inside_oracle_model() {
+        for seed in 0..65u64 {
+            let source = generate(seed);
+            rue_oracle::run_source(&source)
+                .unwrap_or_else(|error| panic!("seed {seed} left oracle model: {error:?}"));
+        }
     }
 
     #[test]
