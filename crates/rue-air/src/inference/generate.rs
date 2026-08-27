@@ -384,6 +384,13 @@ pub struct ConstraintGenerator<'a> {
     string_literal_vars: Vec<TypeVarId>,
     /// Concrete default for an otherwise-unconstrained string literal.
     string_literal_default: Type,
+    /// Fixed-string nominal identities used while generating constraints.
+    ///
+    /// These are carried separately from expression types because a provider
+    /// can materialize a fixed-string enum payload only while a construction
+    /// is being constrained. The identity must reach unification even when
+    /// the declaration is not present in the body's generated-name map.
+    fixed_string_types: Vec<Type>,
     /// Trusted standard-library growable string identity, when imported.
     strbuf_type: Option<Type>,
     /// Type substitutions for Self and type parameters (used in method bodies).
@@ -590,6 +597,7 @@ impl<'a> ConstraintGenerator<'a> {
             int_literal_vars: Vec::new(),
             string_literal_vars: Vec::new(),
             string_literal_default,
+            fixed_string_types: Vec::new(),
             strbuf_type,
             type_subst,
             const_types: None,
@@ -651,6 +659,7 @@ impl<'a> ConstraintGenerator<'a> {
             int_literal_vars: Vec::new(),
             string_literal_vars: Vec::new(),
             string_literal_default,
+            fixed_string_types: Vec::new(),
             strbuf_type,
             type_subst,
             const_types: None,
@@ -1205,7 +1214,39 @@ impl<'a> ConstraintGenerator<'a> {
 
     /// Add a constraint.
     pub fn add_constraint(&mut self, constraint: Constraint) {
+        self.record_fixed_string_types(&constraint);
         self.constraints.push(constraint);
+    }
+
+    /// Record every fixed-string nominal occurring in a constraint's type
+    /// shapes. The walk follows structural arrays so enum payloads such as
+    /// `[Str(8); 2]` carry the exact pool identity into unification.
+    fn record_fixed_string_types(&mut self, constraint: &Constraint) {
+        fn record_type(types: &mut Vec<Type>, pool: &TypeInternPool, ty: &InferType) {
+            match ty {
+                InferType::Concrete(ty) => {
+                    if let TypeKind::Struct(id) = ty.kind()
+                        && crate::types::fixed_string_struct_capacity(&pool.struct_def(id))
+                            .is_some()
+                    {
+                        types.push(*ty);
+                    }
+                }
+                InferType::Array { element, .. } => record_type(types, pool, element),
+                _ => {}
+            }
+        }
+        match constraint {
+            Constraint::Equal(lhs, rhs, _) => {
+                record_type(&mut self.fixed_string_types, self.type_pool, lhs);
+                record_type(&mut self.fixed_string_types, self.type_pool, rhs);
+            }
+            Constraint::IsInteger(ty, _)
+            | Constraint::IsSigned(ty, _)
+            | Constraint::IsUnsigned(ty, _) => {
+                record_type(&mut self.fixed_string_types, self.type_pool, ty)
+            }
+        }
     }
 
     /// Record the type of an expression.
@@ -1229,7 +1270,8 @@ impl<'a> ConstraintGenerator<'a> {
     }
 
     /// Consume the constraint generator and return its generated constraints,
-    /// literal variables, expression types, and allocated variable count.
+    /// literal variables, expression types, fixed-string identities, and
+    /// allocated variable count.
     ///
     /// This is useful when you need ownership of the expression types map.
     /// The `type_var_count` can be used to pre-size the unifier's substitution for better performance.
@@ -1243,6 +1285,7 @@ impl<'a> ConstraintGenerator<'a> {
         std::collections::HashMap<InstRef, InferType>,
         AHashMap<InstRef, bool>,
         u32,
+        Vec<Type>,
     ) {
         (
             self.constraints,
@@ -1252,6 +1295,7 @@ impl<'a> ConstraintGenerator<'a> {
             self.expr_types,
             self.expr_continues,
             self.type_vars.count(),
+            self.fixed_string_types,
         )
     }
 

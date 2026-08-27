@@ -602,6 +602,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             expr_types,
             expr_continues,
             type_var_count,
+            fixed_string_types,
         ) = {
             let facts = self.inference_facts(infer_ctx);
 
@@ -735,6 +736,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 expr_types,
                 expr_continues,
                 type_var_count,
+                fixed_string_types,
             ) = cgen.into_parts();
             (
                 constraints,
@@ -744,6 +746,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 expr_types,
                 expr_continues,
                 type_var_count,
+                fixed_string_types,
             )
         };
         let constraint_generation_ns = elapsed_ns(constraint_generation_started);
@@ -778,6 +781,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             InferType::Concrete(ty) if self.is_str_fixed_struct(*ty) => Some(*ty),
             _ => None,
         }));
+        // Provider-backed constraint generation may consult a generated
+        // fixed-string identity only through a structural payload shape (for
+        // example `Message.Text(Str(8))`). Carry those exact identities from
+        // the constraints into unification; the generated-name map is not a
+        // complete authority for demand-populated declarations.
+        string_literal_types.extend(fixed_string_types);
         string_literal_types.sort_unstable_by_key(Type::as_u32);
         string_literal_types.dedup();
         unifier.mark_string_literal_vars(&string_literal_vars, &string_literal_types);

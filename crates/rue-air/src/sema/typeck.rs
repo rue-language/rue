@@ -997,19 +997,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// Is `ty` a fixed-capacity string `Str(N)` (ADR-0043 Phase 5, RUE-326)?
-    /// Detected by the struct name matching `Str(<digits>)`, mirroring the
-    /// name-keyed detection used for `str` and slices.
+    /// Only compiler-generated builtin structs with the canonical `Str(N)`
+    /// spelling qualify; source-defined nominals cannot counterfeit one.
     pub(crate) fn is_str_fixed_struct(&self, ty: Type) -> bool {
         self.str_fixed_capacity(ty).is_some()
     }
 
     /// If `ty` is a fixed-capacity string `Str(N)`, return its capacity `N`
-    /// (ADR-0043 Phase 5, RUE-326); otherwise `None`. The capacity is parsed
-    /// back out of the canonical struct name `Str(<N>)`.
+    /// (ADR-0043 Phase 5, RUE-326); otherwise `None`. The builtin bit and
+    /// canonical spelling are checked by one shared classifier.
     pub(crate) fn str_fixed_capacity(&self, ty: Type) -> Option<u64> {
         if let TypeKind::Struct(struct_id) = ty.kind() {
-            let name = &self.body_type_pool().struct_def(struct_id).name;
-            crate::types::fixed_string_capacity(name)
+            crate::types::fixed_string_struct_capacity(&self.body_type_pool().struct_def(struct_id))
         } else {
             None
         }
