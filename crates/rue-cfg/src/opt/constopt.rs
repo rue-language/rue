@@ -25,25 +25,18 @@
 //! For each local slot with exactly ONE whole-slot write (its `Alloc`, or a
 //! single `Store`) whose value is or becomes a `Const`/`BoolConst`, and that
 //! is never written through any other channel, every `Load` of the slot is
-//! replaced by that constant.
-//!
-//! ## Safety argument
-//!
-//! - Slots written more than once (mutated variables) are skipped.
-//! - Partial or aliased writes disqualify the slot: projected `PlaceWrite`,
-//!   address-taking intrinsics (`@raw`/`@raw_mut`/`@field_ptr`, RUE-521), and
-//!   by-ref (`inout`/`borrow`) call arguments — those pass the slot's ADDRESS
-//!   to the callee, which may write through it, and the by-ref lowering
-//!   requires the argument to stay a place (`Load`) anyway.
-//! - Dominance: with a single write site, sema's definite-initialization
-//!   guarantee means every `Load` executes after (an execution of) the
-//!   write, and the write always stores the same constant.
+//! replaced by that constant. Which slots qualify — and the full safety
+//! argument for why (RUE-521 address escapes, by-ref call arguments,
+//! projected writes, multi-write slots, dominance) — is owned by
+//! [`super::slot_facts`], the classifier this pass shares with value
+//! forwarding.
 
 use std::collections::VecDeque;
 
-use crate::{Cfg, CfgInstData, CfgValue, PlaceBase};
+use crate::{Cfg, CfgInstData, CfgValue};
 
 use super::constfold;
+use super::slot_facts::{self, SlotWrites};
 
 /// Work counters for one run.
 ///
@@ -62,23 +55,6 @@ pub struct Stats {
     pub loads_rewritten: u64,
 }
 
-/// State of a local slot while scanning for writes.
-#[derive(Clone, Copy)]
-enum SlotWrite {
-    /// No write seen yet.
-    None,
-    /// Exactly one whole-slot write, initializing from this value.
-    ///
-    /// The value need not be constant yet: if the seed pass or a later event
-    /// turns it into one, the slot's loads are rewritten at that point. (The
-    /// old rescan loop re-derived slot constness from scratch every round;
-    /// deferring through `init_watchers` is the sparse equivalent.)
-    One(CfgValue),
-    /// Multiple writes, a non-whole-slot write, or an address escape.
-    /// Loads of this slot are never rewritten.
-    Disqualified,
-}
-
 /// Run sparse constant folding and store-to-load constant propagation to a
 /// fixpoint.
 pub fn run(cfg: &mut Cfg) -> Stats {
@@ -87,77 +63,20 @@ pub fn run(cfg: &mut Cfg) -> Stats {
     let mut stats = Stats::default();
 
     // ------------------------------------------------------------------
-    // Classify every local slot by the writes it receives. Only
-    // instructions still attached to a block matter; values orphaned by
-    // earlier passes never execute. Nothing here depends on which values
-    // are constant, so one scan suffices for the whole run.
+    // Classify every local slot by the writes it receives (the shared
+    // RUE-521 discipline, `super::slot_facts`). All blocks are scanned:
+    // this pass runs before simplify folds constant terminators and needs
+    // no reachability filter — see the classifier's docs. Nothing in the
+    // classification depends on which values are constant, so one scan
+    // suffices for the whole run.
+    //
+    // A slot's single written value need not be constant yet: if the seed
+    // pass or a later event turns it into one, the slot's loads are
+    // rewritten at that point. (The old rescan loop re-derived slot
+    // constness from scratch every round; deferring through
+    // `init_watchers` is the sparse equivalent.)
     // ------------------------------------------------------------------
-    let mut slot_writes = vec![SlotWrite::None; num_locals];
-
-    // Slots whose address escapes through an address-taking intrinsic
-    // (`@raw`/`@raw_mut`/`@field_ptr`, recorded by CfgBuilder) must keep
-    // their Loads as places: codegen lowers those intrinsics by taking the
-    // operand's address, so rewriting the Load into a Const would make the
-    // constant be dereferenced as an address (RUE-521 O1+ segfault). Same
-    // reasoning as the by-ref call-argument disqualification below.
-    for (slot, state) in slot_writes.iter_mut().enumerate() {
-        if cfg.is_address_taken(slot as u32) {
-            *state = SlotWrite::Disqualified;
-        }
-    }
-
-    // Zero-sized locals (`[T; 0]`, `()`, empty structs) occupy 0 slots, so a
-    // zero-sized local at the end of the frame is assigned a slot index equal
-    // to `num_locals` — out of range for `slot_writes`. Its Alloc/Load move
-    // no bytes, so there is nothing to track or rewrite: skip out-of-range
-    // slots (RUE-194).
-    fn record_write(slot_writes: &mut [SlotWrite], slot: u32, init: Option<CfgValue>) {
-        let Some(state) = slot_writes.get_mut(slot as usize) else {
-            return;
-        };
-        *state = match (*state, init) {
-            (SlotWrite::None, Some(v)) => SlotWrite::One(v),
-            _ => SlotWrite::Disqualified,
-        };
-    }
-
-    for block in cfg.blocks() {
-        for &value in &block.insts {
-            match &cfg.get_inst(value).data {
-                CfgInstData::Alloc { slot, init } | CfgInstData::Store { slot, value: init } => {
-                    record_write(&mut slot_writes, *slot, Some(*init));
-                }
-                CfgInstData::PlaceWrite { place, .. } => {
-                    if let PlaceBase::Local(slot) = place.base {
-                        record_write(&mut slot_writes, slot, None);
-                    }
-                }
-                // By-ref arguments on either call form pass the ADDRESS of
-                // the argument place: the callee may write through it
-                // (inout), and lowering needs the arg to remain a
-                // Load/PlaceRead. Disqualify any local the argument roots.
-                CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
-                    for arg in cfg.call_args(args) {
-                        if !arg.is_by_ref() {
-                            continue;
-                        }
-                        match &cfg.get_inst(arg.value).data {
-                            CfgInstData::Load { slot } => {
-                                record_write(&mut slot_writes, *slot, None);
-                            }
-                            CfgInstData::PlaceRead { place } => {
-                                if let PlaceBase::Local(slot) = place.base {
-                                    record_write(&mut slot_writes, slot, None);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
+    let slot_writes = slot_facts::classify_slot_writes(cfg, None);
 
     // ------------------------------------------------------------------
     // Build the sparse edges, over ALL values (matching the old passes,
@@ -212,7 +131,7 @@ pub fn run(cfg: &mut Cfg) -> Stats {
 
     let mut init_watchers: Vec<Vec<u32>> = vec![Vec::new(); value_count];
     for (slot, state) in slot_writes.iter().enumerate() {
-        if let SlotWrite::One(init) = state {
+        if let SlotWrites::One { value: init, .. } = state {
             init_watchers[init.as_u32() as usize].push(slot as u32);
         }
     }

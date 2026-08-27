@@ -90,6 +90,39 @@ fn cfg_uses_air_synthetic_type_identity_policy() {
 }
 
 #[test]
+fn slot_write_classification_has_one_owner() {
+    // The RUE-521 knowledge of which local slots may be store-to-load
+    // forwarded (write counting, address escapes, by-ref call arguments,
+    // projected writes, the RUE-194 out-of-range skip) is owned by
+    // opt/slot_facts.rs. Its consumers must go through the shared
+    // classifier, not restate the scan.
+    let owner = include_str!("opt/slot_facts.rs");
+    assert!(owner.contains("pub(super) fn classify_slot_writes("));
+    assert!(owner.contains("enum SlotWrites"));
+
+    for (name, source) in [
+        ("opt/constopt.rs", include_str!("opt/constopt.rs")),
+        ("opt/forward.rs", include_str!("opt/forward.rs")),
+    ] {
+        assert!(
+            source.contains("slot_facts::classify_slot_writes("),
+            "{name} no longer consumes the shared slot-write classifier"
+        );
+        for reimpl in [
+            "enum SlotWrite",
+            "enum SlotClass",
+            "fn record_write(",
+            "fn classify_slot_writes(",
+        ] {
+            assert!(
+                !source.contains(reimpl),
+                "{name} regained a local slot-write classification: {reimpl}"
+            );
+        }
+    }
+}
+
+#[test]
 fn constant_folding_uses_the_air_integer_semantics_kernel() {
     let source = include_str!("opt/constfold.rs");
     assert!(source.contains("integer_semantics()"));

@@ -15,15 +15,11 @@
 //! ## Rule 1 — global single-write forwarding
 //!
 //! Generalizes constant store-to-load propagation ([`super::constopt`]) from
-//! constants to arbitrary SSA values. A local slot *qualifies* when it has
-//! exactly ONE whole-slot write among block-attached instructions — its `Alloc`
-//! or a single `Store` — and is never written through any other channel:
-//!
-//! - no projected `PlaceWrite` whose base is that local,
-//! - never passed by-ref (`inout`/`borrow` call argument rooted at a `Load` or
-//!   `PlaceRead` of the slot — the callee may write through the pointer),
-//! - not address-taken (`@raw`/`@raw_mut`/`@field_ptr`, RUE-521 — a raw pointer
-//!   may write the slot behind the optimizer's back).
+//! constants to arbitrary SSA values. A local slot *qualifies* when the shared
+//! classifier ([`super::slot_facts`], the single owner of the RUE-521
+//! write/escape discipline) reports exactly ONE whole-slot write and no other
+//! write channel — no projected `PlaceWrite`, no by-ref call argument rooting
+//! the slot, not address-taken.
 //!
 //! For a qualifying slot every `Load` of it is replaced by the single write's
 //! stored value. No dominator tree is needed to justify this: with exactly one
@@ -79,6 +75,7 @@ use crate::{BlockId, Cfg, CfgInstData, CfgValue, PlaceBase};
 use ahash::AHashSet;
 
 use super::dce;
+use super::slot_facts::{self, SlotWrites};
 
 /// Work counters for one run (RUE-794 convention): one classification scan, one
 /// forward rewriting scan, and one batched use-rewrite. No fixpoint loop.
@@ -90,18 +87,6 @@ pub struct Stats {
     pub loads_forwarded_single_write: u64,
     /// Loads forwarded by Rule 2 (block-local last store of a multi-write slot).
     pub loads_forwarded_block_local: u64,
-}
-
-/// Classification of a local slot's whole-slot writes, for Rule 1.
-#[derive(Clone, Copy)]
-enum SlotClass {
-    /// No write seen yet.
-    None,
-    /// Exactly one whole-slot write storing this value, in this block.
-    One(CfgValue, BlockId),
-    /// Multiple writes, a partial/aliased write, an address escape, or a by-ref
-    /// pass. Never forwarded by Rule 1 (Rule 2 may still forward block-locally).
-    Disqualified,
 }
 
 /// Run value forwarding. Call at `-O2`/`-O3` after simplification and before
@@ -139,70 +124,13 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     }
 
     // ------------------------------------------------------------------
-    // Rule 1 classification. Exactly the discipline in `constopt`, but the
-    // stored value need not be constant. Only block-attached instructions
-    // matter; orphaned values never execute. Nothing here depends on later
-    // rewriting, so one scan suffices.
+    // Rule 1 classification: the shared RUE-521 discipline
+    // (`super::slot_facts`), restricted to reachable blocks as the
+    // dominance invariant requires. Address-taken slots never qualify (and
+    // are excluded from the Rule 2 table below too). Nothing here depends
+    // on later rewriting, so one scan suffices.
     // ------------------------------------------------------------------
-    let mut slot_class = vec![SlotClass::None; num_locals];
-
-    // Address-taken slots can be written behind the optimizer's back through a
-    // raw pointer, so they never qualify for Rule 1 (and are excluded from the
-    // Rule 2 table below too).
-    for (slot, class) in slot_class.iter_mut().enumerate() {
-        if cfg.is_address_taken(slot as u32) {
-            *class = SlotClass::Disqualified;
-        }
-    }
-
-    // Out-of-range slots (a trailing zero-sized local occupies 0 slots and is
-    // assigned index == num_locals) move no bytes: skip them (RUE-194).
-    fn record_write(slot_class: &mut [SlotClass], slot: u32, write: Option<(CfgValue, BlockId)>) {
-        let Some(class) = slot_class.get_mut(slot as usize) else {
-            return;
-        };
-        *class = match (&*class, write) {
-            (SlotClass::None, Some((v, block))) => SlotClass::One(v, block),
-            _ => SlotClass::Disqualified,
-        };
-    }
-
-    for block in cfg.blocks() {
-        if !reachable.contains(block.id.as_u32()) {
-            continue;
-        }
-        for &value in &block.insts {
-            match &cfg.get_inst(value).data {
-                CfgInstData::Alloc { slot, init } | CfgInstData::Store { slot, value: init } => {
-                    record_write(&mut slot_class, *slot, Some((*init, block.id)));
-                }
-                CfgInstData::PlaceWrite { place, .. } => {
-                    if let PlaceBase::Local(slot) = place.base {
-                        record_write(&mut slot_class, slot, None);
-                    }
-                }
-                CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
-                    for arg in cfg.call_args(args) {
-                        if !arg.is_by_ref() {
-                            continue;
-                        }
-                        match &cfg.get_inst(arg.value).data {
-                            CfgInstData::Load { slot } => {
-                                record_write(&mut slot_class, *slot, None);
-                            }
-                            CfgInstData::PlaceRead { place } => {
-                                if let PlaceBase::Local(slot) = place.base {
-                                    record_write(&mut slot_class, slot, None);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
+    let slot_class = slot_facts::classify_slot_writes(cfg, Some(&reachable));
 
     // ------------------------------------------------------------------
     // Forward rewriting walk. One pass over every block-attached instruction
@@ -241,8 +169,10 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                     if byref_arg_values.contains(&value) {
                         continue;
                     }
-                    if let Some(SlotClass::One(write_value, write_block)) =
-                        slot_class.get(slot as usize).copied()
+                    if let Some(SlotWrites::One {
+                        value: write_value,
+                        block: write_block,
+                    }) = slot_class.get(slot as usize).copied()
                     {
                         // Rule 1: global single-write forwarding.
                         subst[value.as_u32() as usize] = Some(write_value);
