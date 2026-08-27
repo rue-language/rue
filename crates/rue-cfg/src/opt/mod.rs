@@ -34,6 +34,7 @@ mod licm;
 mod loops;
 mod peephole;
 mod simplify;
+mod slot_facts;
 mod unroll;
 
 use crate::{CfgEditError, CfgVerificationError, ValidatedCfg};
