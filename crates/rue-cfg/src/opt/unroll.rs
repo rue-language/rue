@@ -17,17 +17,6 @@ use crate::{
 };
 use ahash::{AHashMap, AHashSet};
 
-/// Shared future code-growth policy (ADR-0049). Inlining can consume this same
-/// representation when its growth budget lands; this pass is the first user.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct CodeGrowthBudget {
-    pub max_total_instructions: u64,
-}
-
-pub(crate) const O3_CODE_GROWTH_BUDGET: CodeGrowthBudget = CodeGrowthBudget {
-    max_total_instructions: 256,
-};
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
     pub forest_computations: u64,
@@ -49,9 +38,17 @@ struct Trip {
     slot: u32,
 }
 
+#[cfg(test)]
 pub fn run(cfg: &mut Cfg) -> Result<Stats, CfgOptimizationError> {
+    let mut budget = super::CodeGrowthBudget::o3();
+    run_with_budget(cfg, &mut budget)
+}
+
+pub fn run_with_budget(
+    cfg: &mut Cfg,
+    budget: &mut super::CodeGrowthBudget,
+) -> Result<Stats, CfgOptimizationError> {
     let mut stats = Stats::default();
-    let mut budget_used = 0u64;
     loop {
         stats.forest_computations += 1;
         let dom = DominatorTree::compute(cfg);
@@ -74,21 +71,38 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, CfgOptimizationError> {
                 stats.shape_refusals += 1;
                 continue;
             };
+            // Charge the same value axis used by inlining: every cloned
+            // block parameter and instruction consumes one budget unit.
             let body_size: u64 = lp
                 .body
                 .iter()
-                .map(|&b| u64::try_from(cfg.get_block(b).insts.len()).unwrap_or(u64::MAX))
+                .map(|&b| {
+                    let block = cfg.get_block(b);
+                    u64::try_from(block.params.len())
+                        .ok()
+                        .and_then(|params| {
+                            params.checked_add(u64::try_from(block.insts.len()).ok()?)
+                        })
+                        .unwrap_or(u64::MAX)
+                })
                 .try_fold(0u64, |a, b| a.checked_add(b))
                 .unwrap_or(u64::MAX);
-            let Some(growth) = trip.count.checked_mul(body_size) else {
+            let Some(growth_values) = trip.count.checked_mul(body_size) else {
                 stats.budget_refusals += 1;
                 continue;
             };
-            let Some(new_used) = budget_used.checked_add(growth) else {
+            let Some(growth_blocks) = trip
+                .count
+                .checked_mul(u64::try_from(lp.body.len()).unwrap_or(u64::MAX))
+            else {
                 stats.budget_refusals += 1;
                 continue;
             };
-            if new_used > O3_CODE_GROWTH_BUDGET.max_total_instructions {
+            let growth = super::CodeGrowth {
+                values: growth_values,
+                blocks: growth_blocks,
+            };
+            if !budget.try_charge(growth) {
                 stats.budget_refusals += 1;
                 continue;
             }
@@ -96,7 +110,6 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, CfgOptimizationError> {
             match unroll_one(&mut edited, lp, trip) {
                 Ok((blocks, values, instructions)) => {
                     *cfg = edited;
-                    budget_used = new_used;
                     stats.loops_unrolled += 1;
                     stats.blocks_cloned += blocks;
                     stats.values_cloned += values;
@@ -1155,10 +1168,21 @@ mod tests {
 
     #[test]
     fn budget_is_bounded_and_consumer_neutral() {
-        assert_eq!(O3_CODE_GROWTH_BUDGET.max_total_instructions, 256);
-        let used = 12u64.checked_add(200).unwrap();
-        assert!(used <= O3_CODE_GROWTH_BUDGET.max_total_instructions);
-        assert!(used.checked_add(100).unwrap() > O3_CODE_GROWTH_BUDGET.max_total_instructions);
+        let mut budget = super::super::CodeGrowthBudget::o3();
+        assert!(budget.try_charge(super::super::CodeGrowth {
+            values: 12,
+            blocks: 4,
+        }));
+        assert!(budget.try_charge(super::super::CodeGrowth {
+            values: 200,
+            blocks: 20,
+        }));
+        assert_eq!(budget.used(), 212);
+        assert_eq!(budget.remaining(), 44);
+        assert!(!budget.try_charge(super::super::CodeGrowth {
+            values: 100,
+            blocks: 1,
+        }));
     }
 
     #[test]
@@ -1223,8 +1247,29 @@ mod tests {
     }
 
     #[test]
-    fn instruction_budget_boundary_excludes_block_parameters() {
-        // The fixture has ten body instructions and no block parameters:
+    fn run_respects_budget_carried_from_another_growth_pass() {
+        let mut cfg = slot_loop(0, 3, false);
+        let mut budget = super::super::CodeGrowthBudget::with_used(250, 0);
+        let stats = run_with_budget(&mut cfg, &mut budget).unwrap();
+        assert_eq!(stats.loops_unrolled, 0);
+        assert_eq!(stats.budget_refusals, 1);
+        assert_eq!(budget.used(), 250);
+    }
+
+    #[test]
+    fn run_refuses_block_growth_before_cloning() {
+        let mut cfg = slot_loop(0, 3, false);
+        let mut budget = super::super::CodeGrowthBudget::with_used(0, 256);
+        let stats = run_with_budget(&mut cfg, &mut budget).unwrap();
+        assert_eq!(stats.loops_unrolled, 0);
+        assert_eq!(stats.budget_refusals, 1);
+        assert_eq!(budget.used(), 0);
+        assert_eq!(budget.used_blocks(), 256);
+    }
+
+    #[test]
+    fn value_budget_boundary_includes_block_parameters() {
+        // The fixture has ten body values and no block parameters:
         // 25 iterations fit under 256, while 26 do not.
         let mut accepted = slot_loop(0, 25, false);
         let accepted_stats = run(&mut accepted).unwrap();

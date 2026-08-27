@@ -26,7 +26,9 @@ compiler's mandatory accessor splices
 (`crates/rue-compiler/src/cfg_query.rs`). RUE-930's conservative whole-program
 `-O2`/`-O3` free-function inlining batch is implemented in
 `crates/rue-compiler/src/cfg_query.rs`; this implementation also completes the
-accepted Phase 5 reachability step in that same batch. Phase 3/4 and the
+accepted Phase 5 reachability step in that same batch. Phase 3 is complete:
+O3 uses a 96-value callee cap, admits bounded non-leaf callees, and shares a
+256-value per-function growth budget with unrolling. Phase 4 and the
 method/destructor extension remain tracked separately.
 
 This note analyzes the architecture of function inlining and records the
@@ -34,12 +36,11 @@ accepted direction. ADR-0044 already fixed the *level*
 placement — conservative small/leaf-function inlining at `-O2`, aggressive
 thresholds at `-O3` — so this note answers the *architecture* questions that
 sit under that placement: where inlining runs, what it does mechanically to the
-CFG IR, how it integrates with the **already-landed durable CFG cache**, how it
+CFG IR, how it integrates with the **revisioned optimized-CFG query**, how it
 handles **parameter ownership and drop**, and how it stays inside the
-observable-behavior invariant. Since the durable CFG cache (`DurableCfgArtifact`)
-and the parameter-mode physical ABI both landed since the first draft, **durable
-caching and parameter ownership are core design constraints here, not deferred
-implementation details**. Tracks RUE-915.
+observable-behavior invariant. The query's terminal/cone retention boundary and
+the parameter-mode physical ABI are core design constraints here. Tracks
+RUE-915.
 
 ## Summary
 
@@ -47,60 +48,60 @@ Inlining replaces a `Call` to a suitable callee with a copy of the callee's body
 spliced into the caller, renumbered onto the caller's frame and value space, so
 that intra-procedural passes (constant folding/propagation, peephole, CFG
 simplification, value forwarding, CSE, DCE, and the future loop passes) can then
-see across the former call boundary. The central tension
-is that Rue's optimizer is today strictly **per-function**: `build_functions_and_cfgs`
-builds and optimizes each function's CFG independently and in parallel
-(`crates/rue-compiler/src/queries.rs:198`, `into_par_iter().map(...)`), whereas
-inlining is inherently **cross-function** — it needs the callee's body while
-optimizing the caller. This note recommends running inlining as a **dedicated
-inter-procedural stage orchestrated by `rue-compiler`, operating on already-built
-callee CFGs**, sequenced between CFG construction and the existing per-function
-`opt::optimize` pass. That choice keeps `rue-cfg`'s passes purely local and
-reuses the CFG the builder already produces.
+see across the former call boundary. The central tension is that Rue's local
+optimizer remains strictly **per-function** while general inlining is
+inherently **cross-function**. Each optimized-CFG query builds (or imports) one
+function, runs its local `rue_cfg::opt::optimize_with_budget`, and publishes that optimized
+record. The compiler then runs one deterministic whole-program batch over those
+records: it discovers call sites, applies the inline/DFE policy, and
+re-optimizes only changed callers with the carried O3 growth budget. The CFG
+splice primitive remains in `rue-cfg`; `rue-compiler` owns the callee map,
+policy, metadata, cache/query boundaries, and batch orchestration. This keeps
+local passes single-function while giving inlining the whole-program view it
+requires.
 
 Two consequences are load-bearing and are given their own decision sections:
 
-- **Durable cache integration is not optional and cannot be deferred.** Rue
-  already retains, imports, and exports optimized `DurableCfgArtifact`s keyed by
-  optimization level and target (`crates/rue-compiler/src/queries.rs:137`,
-  `217-232`, `330-343`). Inlining changes *what* a cached caller artifact
-  contains (foreign callee domains) and *what invalidates it* (callee body
-  edits). The ADR decides now: cached CFGs are **final optimized, post-inlining**
-  CFGs; caller cache keys must incorporate **callee body fingerprints**; and the
-  caller-only domain projection (`CfgDomainProjection::from_body`) must be
-  extended to carry **foreign callee domains** (§4).
-- **The inliner's call-site graph is a separate structure from the semantic
-  dependency manifest** (§5). Call-site multiplicity, leafness, candidate
+- **Durable reuse has an explicit current boundary and an accepted Phase 4
+  design.** The optimized-CFG query retains, imports, and publishes reusable
+  terminals for callers that have not been spliced. A caller changed by general
+  inlining is published with `durable_reuse_allowed: false`; it is recomputed on
+  the next request. Phase 4 will add callee-body fingerprints, policy versioning,
+  and multi-body domain projection before enabling reuse for those records (§4).
+- **The inliner's call-site graph is separate from the per-key body-reference
+  and query dependency graph** (§5). Call-site multiplicity, leafness, candidate
   lookup, and recursion SCCs are answered by **scanning CFG `Call`
-  instructions**; the deduplicated `body_dependencies` manifest
-  (`crates/rue-compiler/src/session.rs:596`, `619`) is used for invalidation and
-  durable reuse. They answer different questions and must not be conflated.
+  instructions**; revisioned query dependencies track which retained terminals
+  must be invalidated when their stable inputs change. They answer different
+  questions and must not be conflated.
 
 ## Context
 
 ### The optimizer is per-function today (ground truth)
 
 The optimizer lives entirely in `crates/rue-cfg/src/opt/` and runs as CFG → CFG
-transforms on **one function at a time**. `opt::optimize(cfg, level, type_pool)`
-(`crates/rue-cfg/src/opt/mod.rs:142`) takes a single `&mut Cfg` and has no access
+transforms on **one function at a time**. `opt::optimize_with_budget` takes one
+CFG and has no access
 to any other function. A `Cfg` is one function: it owns that function's
 `blocks`, `values`, `extra`, `call_args`, `num_locals`, `num_params`, `fn_name`,
 `param_modes`, and `address_taken_slots` (`crates/rue-cfg/src/inst.rs:536`).
 
-The production build seam is `build_functions_and_cfgs`
-(`crates/rue-compiler/src/queries.rs:156`). It:
+The production build seam is the optimized-CFG query and its compiler-owned
+whole-program batch. It:
 
 1. synthesizes drop-glue functions (`drop_glue::synthesize_drop_glue`, line 174);
-2. concatenates user functions + glue and **sorts them by machine symbol name**
-   (`all_functions.sort_by(|left, right| left.name.cmp(&right.name))`, line 194) —
+2. concatenates user functions + glue and sorts them by machine symbol name —
    the machine symbol is the stable semantic identity shared by user, specialized,
    destructor, and glue functions;
-3. maps each function through an **import-or-build-then-optimize** step in a
-   Rayon parallel map (`into_par_iter().map(...)`, lines 198–360): it tries to
-   reuse a cached `DurableCfgArtifact` (below), else runs `CfgBuilder::build`
-   (line 255) then `opt::optimize` (line 282), then exports the optimized CFG as
-   a fresh artifact (line 330). **No cross-function state is threaded through the
-   map** — each function is built and optimized in isolation.
+3. the optimized-CFG query performs import-or-build and local
+   `opt::optimize_with_budget`
+   for one function, then publishes that optimized query terminal (or reuses a
+   matching retained terminal);
+4. the compiler batch scans the complete optimized record set, performs
+   deterministic general inlining and DFE, and re-optimizes changed callers
+   before publishing the final batch results. **No cross-function state is
+   threaded through the local query**; the batch is the sole cross-function
+   orchestration boundary.
 
 A `Call` names its callee purely by interned symbol (`CfgInstData::Call { name:
 Spur, .. }`, `crates/rue-cfg/src/inst.rs:351`; lowered at
@@ -110,111 +111,60 @@ over the already-built function set — cheap to express, but it requires a stag
 that can see the *whole set*, which the current per-function parallel map
 deliberately cannot.
 
-### The durable CFG cache has landed (ground truth — supersedes the first draft)
+### Revisioned optimized-CFG query retention (current architecture)
 
-The first draft asserted "there is no CFG cache to invalidate today — every build
-rebuilds every CFG from AIR." **That is no longer true.** A durable, fail-closed
-CFG cache is now in production:
+The revisioned query database retains successful optimized-CFG query terminals
+and their observed dependency cones across revisions. A terminal is reusable
+only when its query key, target, optimization level, and stable function inputs
+match; otherwise the query rebuilds the function. The optimized-CFG query
+publishes one-function, locally optimized records, while the compiler-owned
+whole-program batch retains its observed terminals and applies general
+inlining/DFE to the batch result.
 
-- **Retention.** `CfgFrontendOutput` carries
-  `durable_cfgs: Arc<[DurableCfgArtifact]>` (`crates/rue-compiler/src/queries.rs:129`),
-  retained across semantic requests on the session as `last_successful_cfg_cache`
-  / `successful_cfg_cache` (`crates/rue-compiler/src/session.rs:1676`, `2243`) and
-  threaded back in as `durable_cfg_candidates`
-  (`crates/rue-compiler/src/canonical_semantic.rs:613`, `688`, `857`).
-- **Import (reuse).** `build_functions_and_cfgs` takes
-  `durable_candidates: &[DurableCfgArtifact]` and
-  `stable_inputs: &[StableCfgInput]` (`queries.rs:161-162`). Per function it
-  binary-searches a candidate by machine symbol (`queries.rs:210`) and reuses it
-  only when **every** key component matches:
-  `candidate.schema_version == DURABLE_CFG_SCHEMA_VERSION && candidate.opt_level
-  == opt_level && candidate.target == target` and the stable input agrees
-  (`input.body == candidate.input.body && input.specialization ==
-  candidate.input.specialization && input.type_inputs ==
-  candidate.input.type_inputs`), after which the stored CFG is re-projected into
-  the current domains via `CfgDomainProjection::import_cfg` (`queries.rs:217-232`).
-  Any mismatch falls back to a full build.
-- **Export.** After `opt::optimize` runs (`queries.rs:282`), the **optimized**
-  CFG is exported as a new `DurableCfgArtifact` — gated on the function producing
-  no warnings, no incomplete implicit-destructor edges, and a successful
-  `domains.validate_cfg(&cfg, input.body_span)` round-trip (`queries.rs:330-343`).
-- **Cache key contents.** `DurableCfgArtifact` (`queries.rs:137`) is
-  `{schema_version, input: StableCfgInput, opt_level, target, cfg, domains}`. The
-  key material is `schema_version`, `opt_level`, `target`, and `StableCfgInput`
-  = `{identity, body_span, body: DurableOrdinaryBodyPayload, specialization,
-  type_inputs}` (`crates/rue-compiler/src/durable_cfg.rs:11-17`). **Crucially,
-  `StableCfgInput` fingerprints only the caller's *own* body** — it has no field
-  for the bodies of callees the caller calls.
+General inlining marks every changed caller
+`durable_reuse_allowed: false`. Such a caller remains available in the current
+batch and codegen request, but is excluded from durable terminal/cone retention;
+the next request recomputes it and reruns the batch. This is the current cache
+boundary. Durable reuse of post-inline callers is specified only in the
+accepted RUE-932 Phase 4 design below.
 
-The consequence for inlining is the opposite of the first draft's: the cache is
-real, the exported CFGs are **already the final optimized CFGs**, and inlining
-must integrate with retention/import/export from day one (§4). A caller that
-inlines callee `f` (a) contains `f`'s domains inside its CFG, which the current
-caller-only projection cannot express, and (b) must be invalidated when `f`'s
-**body** changes, which the current caller-only key cannot detect.
+### Domain projection is caller-only by contract (ground truth)
 
-### `CfgDomainProjection::from_body` is caller-only by contract (ground truth)
+`CfgDomainProjection::from_local_body` builds the type/string/symbol/span
+remapping tables that make a function-local optimized-CFG terminal portable
+across revisions. It derives that mapping solely from the function's own AIR
+body and body span. `import_cfg` and `import_accessor_cfg` remap a retained or
+imported one-function CFG into the current live domain, while rejecting missing
+stable types, symbols, strings, spans, or incomplete domains.
 
-`CfgDomainProjection::from_body` (`crates/rue-compiler/src/durable_cfg.rs:223`)
-builds the type/string/symbol/span remapping tables that make a cached CFG
-portable across compilation sessions. It derives that mapping **solely from the
-caller's AIR body**: it zips `function.air.iter()` against
-`input.body.instructions` one-for-one (`durable_cfg.rs:235`), and it **rejects
-any instruction whose span falls outside the caller body's span range** —
-`current.span.file_id != input.body_span.file_id || current.span.start <
-input.body_span.start || current.span.end > input.body_span.end` returns
-`CfgDomainFailure::Unsupported` (`durable_cfg.rs:237-242`). The symbol table maps
-only `Call`/`Intrinsic` names that appear in the caller's own AIR
-(`durable_cfg.rs:268-278`); the string table maps only string constants in the
-caller's AIR (`durable_cfg.rs:251-260`).
+An inlined callee introduces foreign domains by definition: types, string
+constants, callee `Call`/`Intrinsic` symbols, and instruction spans that point
+into the callee's source range rather than the caller's. The current batch
+therefore marks every changed caller `durable_reuse_allowed: false` and excludes
+it from terminal/cone retention. Section 4 records the accepted Phase 4 design
+for making those post-inline records reusable.
 
-An inlined callee **introduces foreign domains by definition**: types, string
-constants, callee `Call`/`Intrinsic` symbols, and — fatally for the span check —
-instruction spans that point into the *callee's* source range, not the caller's.
-The existing export boundary therefore cannot treat an inlined CFG as an ordinary
-caller artifact: `from_body` would reject it on the span range check, so today
-inlining would simply make every caller *uncacheable*. §4 designs the fix.
+### Per-key body references and query dependencies (current architecture)
 
-### The semantic dependency manifest (ADR-0050) — what it is and is not
+Semantic body analysis publishes a canonical, sorted, duplicate-free
+`BodyReferences` value for each `BodyQueryKey`. A reference identifies the exact
+callable instance, stable definition, nominal type, or drop-glue type selected
+while analyzing that body. The body-closure scheduler consumes those typed
+references to demand callable bodies, type facts, and drop glue; it does not
+infer them from a second CFG scan.
 
-> **Historical architecture:** ADR-0063 superseded ADR-0050 and removed the
-> whole-program manifest and `semantic_invalidation_plan`. An inlining
-> implementation must express these dependencies through the canonical per-key
-> body-reference/query graph. The discussion below explains the distinction
-> that motivated this design; its named APIs and source locations are retired.
+The revisioned query database records the exact query terminals read while each
+body, CFG, and downstream artifact is evaluated. Those per-key dependency edges
+are the invalidation authority: a changed source, stable body input, target, or
+configuration invalidates the affected terminals and their dependents, while
+unchanged terminals remain reusable across revisions. Missing endpoints or
+incomplete observations fail closed. The optimized-CFG query and compiler batch
+therefore use this graph for retention correctness, while the inliner's CFG
+scan remains responsible only for structural call-site decisions (§5).
 
-The dependency-derived invalidation machinery is **ADR-0050 (Stable semantic
-dependency manifests)**, with session support in
-`crates/rue-compiler/src/session.rs`:
-
-- `CompilerSession::semantic_dependency_inputs`
-  (`crates/rue-compiler/src/session.rs:5337`) publishes an ordered definition
-  universe whose per-owner body dependencies are
-  `StableBodyDependencyInputRecord`s (`session.rs:596`). Each record's
-  `direct_dependency_inputs: Arc<[StableDefinitionInputFingerprint]>`
-  (`session.rs:601`, `619`) is the owner's dependency set — **sorted and
-  deduplicated** (`direct_dependencies.sort(); direct_dependencies.dedup();`,
-  `session.rs:6018-6019`) — merging call targets, named-method/destructor edges,
-  and declaration-type edges into one flat set of *definition* fingerprints.
-- `CompilerSession::semantic_invalidation_plan` (`session.rs:6373`) memoizes a
-  comparison of two manifests and computes a deterministic **reverse-dependency
-  closure** over those direct edges (`collect_reverse_dependencies`,
-  `session.rs:6561`; `reverse_closure_nodes_visited`, `session.rs:1455`), failing
-  closed (`IncompleteDependencyGraph`) when any endpoint is missing.
-
-The manifest is a **deduplicated definition-dependency graph**, not a call-site
-multigraph. It records *that* a caller depends on a callee's definition; it
-**cannot distinguish one call from ten**, and it folds calls together with type
-and destructor dependencies. This shape is exactly right for invalidation and
-durable reuse — a callee body edit must invalidate every caller that depends on
-it, regardless of call count — and exactly wrong for the inliner's structural
-questions (call multiplicity, leafness, recursion cycles). §5 makes the
-separation an explicit decision.
-
-The body-fingerprint partition ADR-0050 already draws (declaration/signature
-fingerprints vs body fingerprints) is what inlining's cache key needs: a caller
-that inlines callee `f` must be rebuilt when `f`'s **body** fingerprint changes,
-not merely its signature (§4b).
+The stable body-fingerprint partition is what inlining's future cache key needs:
+a caller that inlines callee `f` must be rebuilt when `f`'s **body** fingerprint
+changes, not merely its signature (§4b).
 
 ### Runtime traps carry no source location today (ground truth)
 
@@ -246,31 +196,31 @@ pre-control-flow IR; inlining there means re-implementing parameter binding,
 scope/drop insertion, and move analysis at the AIR level, duplicating what
 `CfgBuilder` already does (drop elaboration, `StorageLive`/`StorageDead`
 pairing, move pre-scan — `crates/rue-cfg/src/build.rs:292, 1124, 2495`). It also
-fights the durable-cache grain: `StableCfgInput` fingerprints an AIR body and
-`from_body` anchors its projection at AIR body boundaries; splicing AIR bodies
+fights the durable-query grain: stable query inputs fingerprint an AIR body and
+`from_local_body` anchors its projection at AIR body boundaries; splicing AIR bodies
 would disturb those anchors and the cache key. Rejected as the most invasive and
 the worst fit for the incremental model.
 
 **(b) CFG-level inlining as a `rue-cfg` pass with access to other CFGs.** Add a
-pass inside `opt::optimize` that reaches other functions' CFGs. *Cost:* this
+pass inside `opt::optimize_with_budget` that reaches other functions' CFGs. *Cost:* this
 breaks the defining property of `rue-cfg`'s optimizer — that a pass sees exactly
-one function — and forces `opt::optimize`'s signature to take the whole function
+one function — and forces `opt::optimize_with_budget`'s signature to take the whole function
 set, which then has to be threaded through the Rayon per-function map in
-`queries.rs:198`. It puts cross-function orchestration (callee lookup, recursion
+the optimized-CFG batch. It puts cross-function orchestration (callee lookup, recursion
 refusal, threshold policy, cache-key composition) inside `rue-cfg`, which has no
-view of the session, the manifest, or symbol resolution. Rejected:
+  view of the session, the query dependency graph, or symbol resolution. Rejected:
 it pushes orchestration to the wrong layer.
 
 **(c) A dedicated inter-procedural stage orchestrated by `rue-compiler`,
-operating on built CFGs — RECOMMENDED.** Keep `CfgBuilder::build` producing
-per-function CFGs exactly as today. Restructure the map in
-`build_functions_and_cfgs` (`crates/rue-compiler/src/queries.rs`) so that CFG
-**construction** (import-or-build) runs first for all functions, then a new
-inliner stage runs with the full `{symbol → Cfg}` map, then the existing
-per-function `opt::optimize` + export runs. The inliner itself is a self-contained
-CFG→CFG *splice* primitive that can live in `rue-cfg` (it is pure CFG surgery and
-belongs with the IR it edits), but it is *driven* by `rue-compiler`, which owns
-the callee map, the call-site graph, and the manifest.
+operating on optimized CFG records — RECOMMENDED.** Keep `CfgBuilder::build`
+and the local `rue_cfg::opt::optimize_with_budget` query single-function. Once the complete
+optimized record set is available, the compiler batch runs with the full
+`{FunctionInstanceKey → CfgRecord}` map, applies the call-site/recursion/size
+policy, splices accepted calls with the `rue-cfg` primitive, performs DFE, and
+re-optimizes changed callers with the carried budget. Unchanged records are
+retained. The inliner is self-contained CFG→CFG surgery in `rue-cfg`, but it is
+driven by `rue-compiler`, which owns the callee map, call-site graph, metadata,
+cache/query boundaries, and query dependency integration.
 
 Reasoning:
 
@@ -279,22 +229,13 @@ Reasoning:
   where the whole-program view already lives (the session).
 - It reuses the CFGs the builder already produces — no second lowering, no
   AIR-level re-implementation.
-- The one real cost it pays honestly: the per-function step can no longer *also*
-  optimize in the same parallel pass, because inlining needs all callee bodies to
-  exist before any caller is rewritten. Construction and optimization become two
-  phases (build/import-all, then inline+optimize+export) rather than one fused
-  parallel map. Optimization remains embarrassingly parallel *after* the inliner
-  has run (the splice is a batch step; per-caller `optimize` is still
-  independent). At `-O0`/`-O1` the inliner is skipped and the fused single-phase
-  map is retained.
-- Interaction with the cache import path: today import, build, optimize, and
-  export all happen inside the one per-function closure (`queries.rs:206-343`).
-  Two-phasing means **import/build** populates the callee map first; the inliner
-  rewrites callers; then **optimize+export** runs. A caller reused verbatim from
-  the cache (import success) still enters the inliner stage, because its cached
-  form is *already post-inlining* (§4a) — so a reused caller needs no
-  re-splice, and the inliner skips it. Whether that reuse is still valid is a
-  pure cache-key question (§4b).
+- The batch runs after local optimization, so changed callers pay one additional
+  local reoptimization while unchanged callers retain their query result. This
+  makes the shared budget's pass order explicit: local O3 unrolling charges
+  first, then accepted inlining and changed-caller reoptimization consume the
+  remaining budget. At `-O0`/`-O1` the batch is skipped.
+- Durable reuse applies only to the one-function optimized-CFG terminal today;
+  post-inline reuse is a Phase 4 design question (§4).
 
 ### 2. What inlining a call means mechanically in this IR
 
@@ -409,41 +350,34 @@ matrix (moved-out parameter, dropped-at-exit parameter, `Copy` parameter needing
 no drop) is the highest-risk correctness surface and needs a worked elaboration
 example plus differential coverage before Phase 1.
 
-### 4. Durable CFG cache integration — a core section
+### 4. Durable CFG cache integration — accepted Phase 4 design
 
 Inlining touches all three cache operations. The decisions:
 
-**(a) Cached CFGs represent FINAL optimized, post-inlining CFGs.** The export
-point is already *after* `opt::optimize` (`queries.rs:282, 330`), so cached
-artifacts are final optimized CFGs today. With inlining sequenced *before*
-`opt::optimize` (§1c), the exported CFG is naturally **post-inlining and
-post-optimization** — the single fully-transformed artifact. This is the right
-choice: it keeps one artifact per function with no "half-optimized, pre-inline"
-intermediate to store, version, or invalidate separately, and it means an import
-hit reproduces the complete transform for free. The cost is the invalidation
-obligation in (b): a post-inlining artifact depends on its inlined callees'
-bodies, so its key must say so. *Rejected alternative:* caching pre-inlining CFGs
-and re-inlining on every build would make a caller's cache hit useless (the
-expensive cross-function work reruns every time) and would still need the
-callee-body key for the inline decision itself — strictly worse.
+**(a) Future cached CFGs represent FINAL optimized, post-inlining CFGs.** The
+current retention boundary is the unspliced optimized-CFG query terminal; changed
+callers are explicitly excluded with `durable_reuse_allowed: false`. Phase 4
+will retain the post-inline, post-reoptimization CFG only after its callee-body
+dependency set and foreign-domain projection are durable. This keeps one
+artifact per function and avoids silently reusing a caller whose inlined body is
+stale.
 
 **(b) Caller cache keys incorporate callee body fingerprints and inlining
 policy.** `StableCfgInput` (`durable_cfg.rs:11`) today fingerprints only the
 caller's own `body`, `specialization`, and `type_inputs`, and the reuse check
-(`queries.rs:220-224`) compares exactly those. A post-inlining caller artifact is
+compares exactly those. A post-inlining caller artifact is
 invalidated by two more things:
 1. **Every inlined callee's body fingerprint.** The key must gain a set of
    `{callee identity → StableDefinitionInputFingerprint}` for each callee the
-   caller actually inlined, drawn from the ADR-0050 body-fingerprint partition
+   caller actually inlined, drawn from the stable body-fingerprint partition
    (`session.rs`, `StableDefinitionInputFingerprint`). Editing an inlined
    callee's body changes its body fingerprint, which changes the caller's key,
-   which forces a rebuild — exactly the reverse-dependency invalidation
-   `semantic_invalidation_plan` already computes (`session.rs:6373`), now keyed on
-   *body* rather than *signature*.
+   which forces a rebuild — exactly the per-key query dependency invalidation
+   required for a callee *body* change rather than merely a signature change.
 2. **The inlining policy revision.** A change to the threshold table or inlining
    algorithm must invalidate every inlined caller. Bump a coarse
    `inlining_policy_version` (companion to `DURABLE_CFG_SCHEMA_VERSION`,
-   `queries.rs:132`) into the key; the simplest correct form folds it into the
+   into the key; the simplest correct form folds it into the
    schema version so a policy change invalidates the whole CFG cache. A finer
    per-caller policy fingerprint is a later refinement.
 
@@ -452,7 +386,7 @@ whole dependency set — so a caller that inlined nothing keeps today's key
 unchanged and its cache behavior is untouched.
 
 **(c) Durable domain projection must carry foreign callee domains.** This is the
-sharpest constraint. `from_body`'s caller-only contract (Context) rejects any
+sharpest constraint. `from_local_body`'s caller-only contract rejects any
 CFG containing spans, symbols, strings, or types that do not originate in the
 caller's AIR body — which every inlined CFG does. The design:
 
@@ -461,79 +395,91 @@ caller's AIR body — which every inlined CFG does. The design:
   table**: for each callee type, string constant, `Call`/`Intrinsic` symbol, and
   span that lands in the caller CFG, record the callee-side stable identity the
   callee's *own* `CfgDomainProjection` already holds (each callee has one built
-  by `from_body` from its own body). The callee's projection is the authoritative
+  by `from_local_body` from its own body). The callee's projection is the
+  authoritative
   source of stable identities for its domains.
 - Extend `CfgDomainProjection` from a single caller-body projection to a
   **caller projection unioned with the projections of every inlined callee**,
   with callee spans anchored relative to the *callee's* `body_span` (the
-  `DurableBodyAnchor` mechanism `from_body` already uses,
-  `durable_cfg.rs:243-249`) plus a callee-identity tag so import can resolve each
-  foreign span against the right body. Concretely, the span check at
-  `durable_cfg.rs:237-242` must change from "reject spans outside the caller
+  existing stable span-anchor mechanism) plus a callee-identity tag so import can
+  resolve each foreign span against the right body. Concretely, current span
+  validation must change from "reject spans outside the caller
   body" to "resolve each span against the caller body *or* a recorded inlined
   callee body," and `import_cfg`'s span/symbol/string/type remappers
-  (`durable_cfg.rs:351-406`, driving `Cfg::try_remap_domains`,
-  `crates/rue-cfg/src/inst.rs:597`) must consult the unioned table.
+  (driving `Cfg::try_remap_domains`) must consult the unioned table.
 - `import_cfg` already remaps whole-CFG domains through `try_remap_domains`
   (type/struct/enum/symbol/string/span), so the *mechanism* to re-project a
   multi-body CFG exists; what must change is the *table construction*
-  (`from_body`) and the *span-range contract*. Until that lands, the safe
+  (`from_local_body`) and the *span-range contract*. Until that lands, the safe
   fallback is explicit and cheap: a caller that inlined anything **fails the
-  export gate** (`from_body`/`validate_cfg` returns `Unsupported`) and is simply
-  not cached — correct, just slower, and identical to today's behavior for any
-  function that fails validation. Phase 4 turns caching on for inlined callers.
+  export gate** (`from_local_body`/`validate_cfg` returns `Unsupported`) and is simply
+  not cached — correct, just slower, and identical to the current explicit
+  `durable_reuse_allowed: false` policy. Phase 4 turns caching on for inlined
+  callers after the key and projection changes above.
 
-**Sequencing note:** because import happens per-function (`queries.rs:214-249`), a
-cached post-inlining caller can be imported *without* rebuilding its callees — the
-stored CFG already contains the inlined bodies. The callee-body fingerprints in
-the key (4b) are what make that reuse sound; the multi-body projection (4c) is
-what makes it *expressible*.
+**Sequencing note:** Phase 4 may import a post-inlining caller without rebuilding
+its callees once the callee-body fingerprints in the key (4b) and multi-body
+projection (4c) make that reuse sound and expressible.
 
-### 5. Call-site graph vs semantic dependency manifest — an explicit separation
+### 5. Call-site graph and body-reference query roles
 
-The inliner needs a **call-site graph** and must build it by **scanning the CFG's
-`Call` instructions**, not by reading the ADR-0050 `body_dependencies` manifest.
-These are different structures answering different questions:
+The inliner needs a **call-site graph** and builds it by **scanning the CFG's
+`Call` instructions**. This graph and the per-key body-reference/query graph
+answer different questions:
 
 - **Call-site multiplicity** ("is this callee called once or ten times?"): count
-  `CfgInstData::Call` instructions naming a symbol across all caller CFGs. The
-  manifest **cannot** answer this — `direct_dependency_inputs` is deduplicated
-  (`session.rs:6018-6019`), so ten calls to `f` and one call to `f` produce the
-  identical single edge.
+  `CfgInstData::Call` instructions naming a symbol across all caller CFGs. Body
+  references are duplicate-free and cannot answer this, so ten calls to `f` and
+  one call to `f` produce the same callable reference.
 - **Leafness** ("does this callee contain any call?"): scan the callee's
-  `values` for `CfgInstData::Call`. The manifest folds calls together with type
-  and destructor dependencies, so it cannot cleanly report "contains a call."
+  `values` for `CfgInstData::Call`. Body references also include type and
+  drop-glue demands, so they cannot cleanly report "contains a call."
 - **Candidate lookup** ("what is the callee body for this call?"): the `Call`'s
   `name: Spur` is the symbol key into the `{symbol → Cfg}` map. This is
   CFG-native.
 - **Recursion / SCC refusal**: the recursion cycle must be computed over the
-  **actual call-site graph**, not the dependency manifest. Using the whole
-  deduplicated dependency graph for recursion analysis **can produce false
-  cycles**: because it merges calls with type and destructor edges, a
+  **actual call-site graph**, not all query dependency edges. Using the whole
+  dependency graph for recursion analysis **can produce false cycles**: because
+  it includes type and destructor demands, a
   non-recursive function that merely *mentions a type* whose destructor
   transitively references the function's own definition would appear in a cycle
   and be needlessly refused. The call-site graph contains only real call edges,
   so its SCCs are exactly the real recursion cycles.
 
-Conversely, the manifest — not the CFG scan — remains authoritative for
-**invalidation and durable reuse**: the reverse-dependency closure
-(`semantic_invalidation_plan`, `session.rs:6373`) and the caller cache key (§4b)
-consume `body_dependencies`. **Scanning the CFG is not a competing invalidation
-path**; it answers the inliner's structural questions, while the manifest answers
-"what must rebuild when a definition changes." Both exist; neither substitutes
-for the other.
+Conversely, the revisioned query dependency graph — not the CFG scan — remains
+authoritative for **invalidation and durable reuse**. Query keys and their
+recorded terminal reads determine what must rebuild when a stable input changes.
+**Scanning the CFG is not a competing invalidation path**; it answers the
+inliner's structural questions, while query dependencies answer retention
+correctness.
 
 ### 6. Threshold and candidate policy
 
-Initial, deliberately conservative criteria (concrete numbers are the maintainer
-knob to set; these are the proposed starting points):
+The current criteria are deliberately conservative:
 
 - **Callee instruction count** below a small budget. The counter is exact and
-  free: `callee.values.len()`. Proposed initial cap: small (≈ a few dozen
-  instructions) at `-O2`; larger at `-O3` per ADR-0044.
+  free: `callee.values.len()`. O2 keeps its 32-value cap; O3 uses a 96-value
+  cap. The reproducible measurement is an O0 CFG emission with the checked-in
+  compiler, followed by counting each `vN` line between `cfg` headers (for
+  example: `RUE_STD_PATH=$PWD/std $(scripts/rue path) --emit cfg -O0
+  performance/workloads/lattice/main.rue`). The standalone checked-in
+  programs `examples/life.rue`, `examples/collatz.rue`, and
+  `examples/quicksort.rue` produced per-function ranges 23–75 (5 functions),
+  13–43 (3), and 17–61 (4), respectively. The larger checked-in Lattice
+  workload produced 1,282 reachable CFGs ranging from 1–736 values, with
+  median 31, p90 56, p95 120, p99 272, and 1,199/1,282 (93.5%) at or below
+  96. Percentiles use the nearest-rank convention (the smallest sorted value
+  whose one-based rank is at least `ceil(p × 1,282)`); the exact count is
+  retained alongside the rounded percentile labels. Thus 96 is the next
+  conservative 32-value boundary above every small
+  standalone body while retaining the large workload's short-function majority;
+  128 would admit an additional long-tail band without a measurement-backed
+  need.
 - **Leaf-ness** from a CFG scan (§5): a callee containing no `CfgInstData::Call`
-  is a leaf and the safest first target. `-O2` = leaf callees under the small
-  cap; `-O3` relaxes to non-leaf and larger caps.
+  is a leaf and the safest first target. O2 remains leaf-only under its small
+  cap; O3 admits non-leaf callees under the larger cap, while refusing every
+  recursive SCC. The batch expands only the deterministic original call-site
+  set once, so copied non-leaf calls cannot recursively trigger more inlining.
 - **Single-call-site** callees (call multiplicity 1, from the §5 call-site graph)
   are the highest-value case: inlining them removes a call with no code-size cost
   at the inlined site. **But the callee is not deleted by the inliner.** Whether a
@@ -545,12 +491,16 @@ knob to set; these are the proposed starting points):
   reference. The inliner inlines; DFE (a separate, later pass over the whole
   function set) decides removal.
 - **Bounded code growth.** Inlining and `-O3` unrolling (ADR-0054) share one
-  per-function code-growth budget debited by whichever runs, so a function does
-  not both inline heavily and unroll into a size explosion. The budget source is
-  the same `values`-based instruction count.
+  per-function `CodeGrowthBudget` capped at 256 values and 256 cloned blocks,
+  debited by whichever runs. Unrolling's charge includes cloned block
+  parameters and instructions; inlining's charge is the checked value-arena and
+  basic-block delta from the actual splice. Ordinary never-returning bodies get
+  a minimum one-value policy charge even when their exact value delta is zero;
+  general inlining excludes accessor calls. The block ceiling bounds block-heavy
+  zero-value site work, with checked addition and refusal before publication.
 - **Counters' provenance.** Instruction counts and call-site multiplicity and
-  leafness all come from CFG scans (§5); no new counting infrastructure and no
-  manifest read are required for the inline *decision*.
+  leafness all come from CFG scans (§5); query dependency records are not read
+  for the inline *decision*.
 
 **Recursion — must refuse.** Direct recursion is refused by checking callee
 symbol == caller symbol. Mutual recursion is refused by detecting a
@@ -577,7 +527,7 @@ already synthesized.
   `-O2`/`-O3` must (a) place itself at the assigned level, (b) add multi-case
   differential CLI coverage for the shapes it rewrites, and (c) keep the full
   differential set green (`differential_opt = true`, `run_case_differential`,
-  RUE-236, `crates/rue-cli-tests/src/main.rs:802`). Inlining's differential
+  RUE-236, the differential CLI harness). Inlining's differential
   obligations specifically include: callees that trap (overflow / div-by-zero /
   bounds) — the trap must still fire post-inline exactly as pre-inline; callees
   with inout/borrow parameters and write-backs; **slice-borrow parameters passed
@@ -611,8 +561,11 @@ already synthesized.
   single-call-site inlining *without* callee removal; recursion refusal via
   call-site SCC; differential CLI coverage. Inlined callers are **not cached
   yet** (fail the export gate, §4c). (file RUE-930)
-- [ ] **Phase 3: `-O3` thresholds** — larger caps, non-leaf callees, shared
-  code-growth budget with unrolling (ADR-0054). (file RUE-931)
+- [x] **Phase 3: `-O3` thresholds** — a 96-value callee cap admits the measured
+  checked-in program bodies, non-leaf callees are admitted, and inlining shares
+  one 256-value/256-block per-function code-growth budget with unrolling
+  (ADR-0054).
+  (file RUE-931)
 - [ ] **Phase 4: Durable cache integration for inlined callers** — multi-body
   `CfgDomainProjection` (§4c), callee-body-fingerprint + policy-version cache key
   (§4b); turn caching on for inlined callers. (file RUE-932)
@@ -622,9 +575,8 @@ already synthesized.
   consumed) while retaining entry points, exports, calls, cleanup edges, and
   conservatively all units when dependency completeness is unknown. (file
   RUE-933)
-- [ ] **Phase 6: Methods/destructors** — extend as the ADR-0050 method/destructor
-  caller surfaces complete. (file RUE-NNN — awaits the ADR-0050 method/destructor
-  caller surfaces before it can be scoped and filed.)
+- [ ] **Phase 6: Methods/destructors** — extend when the stable body-reference
+  and query surfaces for methods/destructors are complete. (file RUE-NNN)
 
 ## Consequences
 
@@ -634,15 +586,15 @@ already synthesized.
   (CSE, copy-prop, loop opts) become far more effective across former call
   boundaries.
 - The call-site graph (§5) gives the inliner exact multiplicity/leafness/recursion
-  facts the deduplicated manifest cannot, while the manifest keeps one canonical
-  invalidation path.
-- Caching integration is designed up front (§4), so inlined callers become
-  cacheable rather than silently defeating the durable cache.
+  facts that typed body references cannot, while the revisioned query graph keeps
+  one canonical invalidation path.
+- Caching integration has an accepted Phase 4 design (§4); current inlined
+  callers are explicitly uncached rather than silently reused.
 
 ### Negative
 
-- CFG construction and optimization can no longer be one fused parallel map when
-  inlining is on; they split into build/import-all then inline+optimize+export.
+- The whole-program batch adds a deterministic inline/DFE step after local CFG
+  optimization and re-optimizes only changed callers.
 - The multi-body durable projection (§4c) is real work that must land before
   inlined callers cache; until Phase 4 they are recomputed every build.
 - The by-ref place-redirection, materialized-parameter drop rules (§3), and the
@@ -661,10 +613,8 @@ already synthesized.
   policy change) or key it per-caller (finer, more bookkeeping)? Decide when
   Phase 4 lands; the deciding criterion is whether policy changes are frequent
   enough that whole-cache invalidation hurts incremental builds.
-- **Materialized-parameter drop elaboration** — the exact instruction sequence
-  for §3's one-slot/one-live-range/one-drop rule needs a worked example and test
-  before Phase 1; deciding criterion is the differential trap/drop-order suite
-  staying green across moved-out, dropped-at-exit, and `Copy` parameters.
+- **Phase 4 cache policy** — choose the granularity of the policy revision in the
+  durable key when foreign-domain projection and callee-body dependencies land.
 - **Projected by-ref arguments** — excluded initially; the deciding criterion for
   admitting them is a proof that direct place substitution preserves
   address-formation timing and trap behavior.
@@ -674,7 +624,7 @@ already synthesized.
 ## Future Work
 
 - Broader whole-program reachability roots and method/destructor inlining remain
-  future work as described by Phases 3, 4, and 6.
+  future work as described by Phases 4 and 6.
 - Bounded recursive inlining under a size budget.
 - Profile-guided inlining once any profiling exists.
 
@@ -682,11 +632,11 @@ already synthesized.
 
 - [ADR-0044: Optimization Levels](0044-optimization-levels.md) — fixes the level
   placement and the observable-behavior invariant this note operates under.
-- [ADR-0050: Stable semantic dependency manifests](0050-semantic-dependency-manifest.md)
-  — the body-fingerprint partition and reverse-dependency closure inlining's
-  cache key consumes (but whose deduplicated graph is *not* the call-site graph).
+- [ADR-0063: Parallel demand-driven incremental compilation](0063-parallel-demand-driven-incremental-compilation.md)
+  — the per-key body-reference and revisioned query dependency graph inlining's
+  cache boundary consumes (but which is not the call-site graph).
 - [ADR-0053: Typed compiler query state](0053-typed-compiler-query-state.md) — the
-  durable CFG cache (`DurableCfgArtifact`) inlining must integrate with.
+  revisioned query terminals and retention cones inlining must integrate with.
 - [ADR-0012: Compiler Optimization Passes](0012-optimization-passes.md) — the CFG
   opt framework.
 - [ADR-0010: Destructors](0010-destructors.md), [ADR-0013: Borrowing Modes](0013-borrowing-modes.md),

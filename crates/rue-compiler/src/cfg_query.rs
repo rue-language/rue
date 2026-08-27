@@ -537,6 +537,10 @@ pub(crate) struct CfgRecord {
     pub(crate) num_locals: u32,
     pub(crate) num_param_slots: u32,
     pub(crate) cfg: rue_cfg::ValidatedCfg,
+    /// O3 growth already spent while producing this per-function CFG. The
+    /// whole-program batch carries this charge into general inlining.
+    pub(crate) code_growth_used: u64,
+    pub(crate) code_growth_blocks_used: u64,
     pub(crate) domains: crate::durable_cfg::CfgDomainProjection,
     pub(crate) type_pool: rue_air::FrozenTypeInternPool,
     pub(crate) interner: Arc<lasso::ThreadedRodeo>,
@@ -1696,6 +1700,8 @@ fn build_cfg(
         cfg: output
             .cfg
             .expect("successful CFG construction publishes a validated CFG"),
+        code_growth_used: 0,
+        code_growth_blocks_used: 0,
         domains,
         type_pool: materialized.type_pool,
         interner: materialized.interner,
@@ -1963,12 +1969,14 @@ pub(crate) fn evaluate_optimized_cfg(
         current,
         &record.type_pool,
         record.body_span,
-        move |cfg| CfgRecord {
+        move |cfg, code_growth_used, code_growth_blocks_used| CfgRecord {
             air: record.air.clone(),
             source_name: record.source_name.clone(),
             num_locals: record.num_locals,
             num_param_slots: record.num_param_slots,
             cfg,
+            code_growth_used,
+            code_growth_blocks_used,
             domains,
             type_pool: record.type_pool.clone(),
             interner,
@@ -2016,12 +2024,14 @@ fn optimize_cfg_without_accessors(
         record.cfg.clone(),
         &record.type_pool,
         record.body_span,
-        |cfg| CfgRecord {
+        |cfg, code_growth_used, code_growth_blocks_used| CfgRecord {
             air: record.air.clone(),
             source_name: record.source_name.clone(),
             num_locals: record.num_locals,
             num_param_slots: record.num_param_slots,
             cfg,
+            code_growth_used,
+            code_growth_blocks_used,
             domains: record.domains.clone(),
             type_pool: record.type_pool.clone(),
             interner: record.interner.clone(),
@@ -2173,6 +2183,10 @@ pub(crate) fn apply_general_inlining(
         })
         .collect::<std::collections::BTreeMap<_, _>>();
     let recursive = recursive_scc_nodes(&graph);
+    let batch_opt_level = keys
+        .first()
+        .map(|key| key.opt_level)
+        .unwrap_or(rue_cfg::OptLevel::O0);
     // Membership and by-key lookup only; `records` keeps its ordered iteration
     // above, and `recursive` its ordered construction. Both are probed once per
     // call site below, where a `BTree` probe means walking a recursive identity.
@@ -2192,13 +2206,18 @@ pub(crate) fn apply_general_inlining(
         let Some(record) = record_lookup.get(function).copied() else {
             return false;
         };
-        if recursive_set.contains(function)
-            || has_calls.get(function).copied().unwrap_or(true)
-            || !phase2_size_eligible(record.cfg.value_count())
-        {
+        if recursive_set.contains(function) || !is_true_free_function(function) {
             return false;
         }
-        if !is_true_free_function(function) {
+        let size_eligible = match batch_opt_level {
+            rue_cfg::OptLevel::O2 => {
+                !has_calls.get(function).copied().unwrap_or(true)
+                    && phase2_size_eligible(record.cfg.value_count())
+            }
+            rue_cfg::OptLevel::O3 => phase3_size_eligible(record.cfg.value_count()),
+            rue_cfg::OptLevel::O0 | rue_cfg::OptLevel::O1 => false,
+        };
+        if !size_eligible {
             return false;
         }
         matches!(
@@ -2249,7 +2268,7 @@ pub(crate) fn apply_general_inlining(
         };
         let mut domains = record.domains.clone();
         let mut strings = record.strings.to_vec();
-        let interner = match copy_interner_preserving_ordinals(&record.interner, || {
+        let mut interner = match copy_interner_preserving_ordinals(&record.interner, || {
             context.check_canceled()
         }) {
             Ok(interner) => Arc::new(interner),
@@ -2288,29 +2307,131 @@ pub(crate) fn apply_general_inlining(
         // it through this loop re-proved the whole caller after every splice,
         // over a caller each splice had just made bigger: 2,112 verifications
         // for 760 spliced functions, 150,324,778 instructions on a fresh
-        // Lattice compile. Nothing read those proofs -- `optimize` below
+        // Lattice compile. Nothing read those proofs -- `optimize_with_budget` below
         // demands a `ValidatedCfg` and mints its own, so the graph that
         // reaches a consumer is verified exactly as strictly as before.
         let mut current: rue_cfg::Cfg = (*record.cfg).clone();
+        let mut growth_budget = (key.opt_level == rue_cfg::OptLevel::O3).then(|| {
+            rue_cfg::opt::CodeGrowthBudget::with_used(
+                record.code_growth_used,
+                record.code_growth_blocks_used,
+            )
+        });
         let mut spliced = false;
         let mut failed = None;
+        let mut importability_cache = ahash::AHashMap::<
+            crate::FunctionInstanceKey,
+            Result<(), crate::durable_cfg::CfgDomainFailure>,
+        >::new();
         for (call, callee_function) in selected {
+            context.check_canceled()?;
             let Some(callee) = record_lookup.get(&callee_function).copied() else {
                 continue;
             };
-            let (callee_cfg, string_map) = match domains.import_accessor_cfg(
+            let growth = match rue_cfg::splice_call_growth(&current, call, &callee.cfg) {
+                Ok(growth) => growth,
+                Err(error) => {
+                    failed = Some(format!("general inline growth preflight failed: {error}"));
+                    break;
+                }
+            };
+            let growth_charge = rue_cfg::opt::CodeGrowthBudget::charge_for_growth(growth);
+            context.record_work(rue_query::WorkItem::new(
+                "cfg.general-inline-growth-preflights",
+                1,
+            ));
+            if growth_budget
+                .as_ref()
+                .is_some_and(|budget| !budget.can_charge(growth_charge))
+            {
+                context.record_work(rue_query::WorkItem::new(
+                    "cfg.general-inline-budget-refusals",
+                    1,
+                ));
+                continue;
+            }
+            let importability = if let Some(result) = importability_cache.get(&callee_function) {
+                result.clone()
+            } else {
+                context.record_work(rue_query::WorkItem::new(
+                    "cfg.general-inline-importability-checks",
+                    1,
+                ));
+                let result = domains.check_importable(&callee.domains);
+                importability_cache.insert(callee_function.clone(), result.clone());
+                result
+            };
+            if let Err(error) = importability {
+                if matches!(
+                    error,
+                    crate::durable_cfg::CfgDomainFailure::MissingStableType(_)
+                ) {
+                    context.record_work(rue_query::WorkItem::new(
+                        "cfg.general-inline-importability-refusals",
+                        1,
+                    ));
+                    continue;
+                }
+                failed = Some(format!(
+                    "general inline importability check failed: {error:?}"
+                ));
+                break;
+            }
+            let call_block = current
+                .blocks()
+                .iter()
+                .find(|block| block.insts.contains(&call))
+                .map(|block| block.id)
+                .ok_or_else(|| format!("general inline call site {call} is detached"));
+            let call_block = match call_block {
+                Ok(block) => block,
+                Err(error) => {
+                    failed = Some(error);
+                    break;
+                }
+            };
+            // Domain import allocates symbols/strings and mutates its
+            // projection before remapping the CFG. Keep those mutations in a
+            // candidate projection until the splice itself succeeds; a
+            // malformed or otherwise refused candidate must not publish
+            // metadata for a call that was never accepted.
+            let mut candidate_domains = domains.clone();
+            let mut candidate_strings = strings.clone();
+            // `import_accessor_cfg` interns symbols while it remaps the callee.
+            // Keep that resource mutation transactional too: a later remap or
+            // splice failure must not leave an unused symbol in a caller that
+            // nevertheless publishes an earlier accepted splice.
+            let candidate_interner =
+                match copy_interner_preserving_ordinals(&interner, || context.check_canceled()) {
+                    Ok(interner) => Arc::new(interner),
+                    Err(CfgInternerCopyFailure::Checkpoint(abort)) => return Err(abort),
+                    Err(error) => {
+                        failed = Some(format!("general inlining interner staging failed: {error}"));
+                        break;
+                    }
+                };
+            context.record_work(rue_query::WorkItem::new(
+                "cfg.general-inline-interner-stages",
+                1,
+            ));
+            context.record_work(rue_query::WorkItem::new(
+                "cfg.general-inline-import-attempts",
+                1,
+            ));
+            let (callee_cfg, string_map) = match candidate_domains.import_accessor_cfg(
                 &callee.domains,
                 &callee.cfg,
                 &callee.interner,
-                &interner,
-                &mut strings,
+                &candidate_interner,
+                &mut candidate_strings,
                 callee.body_span,
             ) {
                 Ok(value) => value,
                 Err(crate::durable_cfg::CfgDomainFailure::MissingStableType(_)) => {
                     // A body-local type domain that is not present in the
                     // caller cannot be imported without widening the caller's
-                    // immutable type pool. It is outside conservative Phase 2.
+                    // immutable type pool. It is outside the conservative
+                    // inlining domain.
                     continue;
                 }
                 Err(error) => {
@@ -2329,6 +2450,8 @@ pub(crate) fn apply_general_inlining(
                     break;
                 }
             };
+            let mut imported_atoms = Vec::new();
+            let mut imported_atom_identities = ahash::AHashSet::new();
             for atom in callee.local_atoms.iter() {
                 let Some(dense_id) = string_map.get(&atom.dense_id).copied() else {
                     failed = Some("general inline local atom has no imported string id".to_owned());
@@ -2336,12 +2459,44 @@ pub(crate) fn apply_general_inlining(
                 };
                 let mut atom = atom.clone();
                 atom.dense_id = dense_id;
-                if local_atom_identities.insert(atom.identity.clone()) {
-                    local_atoms.push(atom);
+                if !local_atom_identities.contains(&atom.identity)
+                    && imported_atom_identities.insert(atom.identity.clone())
+                {
+                    imported_atoms.push(atom);
                 }
             }
             if failed.is_some() {
                 break;
+            }
+            let candidate = match rue_cfg::splice_call_in_block(
+                &current,
+                call,
+                call_block,
+                &callee_cfg,
+                &record.type_pool,
+            ) {
+                Ok(cfg) => cfg,
+                Err(error) => {
+                    failed = Some(format!("general inline splice failed: {error}"));
+                    break;
+                }
+            };
+            if let Some(budget) = growth_budget.as_mut() {
+                assert!(
+                    budget.can_charge(growth_charge),
+                    "general inline growth preflight must precede the splice"
+                );
+                if !budget.try_charge(growth_charge) {
+                    failed = Some("general inline growth budget changed during splice".to_owned());
+                    break;
+                }
+            }
+            domains = candidate_domains;
+            strings = candidate_strings;
+            interner = candidate_interner;
+            for atom in imported_atoms {
+                local_atom_identities.insert(atom.identity.clone());
+                local_atoms.push(atom);
             }
             symbol_mappings.extend(
                 callee
@@ -2355,33 +2510,18 @@ pub(crate) fn apply_general_inlining(
             implicit_drop_glue_targets.extend(callee.implicit_drop_glue_targets.iter().cloned());
             implicit_destructor_dependencies_complete &=
                 callee.implicit_destructor_dependencies_complete;
-            let call_block = current
-                .blocks()
-                .iter()
-                .find(|block| block.insts.contains(&call))
-                .map(|block| block.id)
-                .ok_or_else(|| format!("general inline call site {call} is detached"));
-            let call_block = match call_block {
-                Ok(block) => block,
-                Err(error) => {
-                    failed = Some(error);
-                    break;
-                }
-            };
-            current = match rue_cfg::splice_call_in_block(
-                &current,
-                call,
-                call_block,
-                &callee_cfg,
-                &record.type_pool,
-            ) {
-                Ok(cfg) => cfg,
-                Err(error) => {
-                    failed = Some(format!("general inline splice failed: {error}"));
-                    break;
-                }
-            };
+            current = candidate;
             spliced = true;
+            if growth_budget.is_some() {
+                context.record_work(rue_query::WorkItem::new(
+                    "cfg.general-inline-code-growth",
+                    growth_charge.values,
+                ));
+                context.record_work(rue_query::WorkItem::new(
+                    "cfg.general-inline-code-growth-blocks",
+                    growth_charge.blocks,
+                ));
+            }
             context.record_work(rue_query::WorkItem::new("cfg.general-inline-splices", 1));
         }
         if let Some(error) = failed {
@@ -2402,8 +2542,15 @@ pub(crate) fn apply_general_inlining(
                 continue;
             }
         };
-        let current = match rue_cfg::opt::optimize(current, key.opt_level, &record.type_pool) {
-            Ok(cfg) => cfg,
+        let budget = growth_budget.unwrap_or_else(rue_cfg::opt::CodeGrowthBudget::o3);
+        context.record_work(rue_query::WorkItem::new("cfg.reoptimize.attempts", 1));
+        let (current, stats, budget) = match rue_cfg::opt::optimize_with_budget(
+            current,
+            key.opt_level,
+            &record.type_pool,
+            budget,
+        ) {
+            Ok(result) => result,
             Err(error) => {
                 output[index] = internal_failure(
                     format!("general inline reoptimization failed: {error:?}"),
@@ -2412,6 +2559,27 @@ pub(crate) fn apply_general_inlining(
                 continue;
             }
         };
+        context.record_work(rue_query::WorkItem::new(
+            "cfg.optimize.loops-analyzed",
+            stats.loops_analyzed,
+        ));
+        context.record_work(rue_query::WorkItem::new(
+            "cfg.optimize.loops-unrolled",
+            stats.loops_unrolled,
+        ));
+        context.record_work(rue_query::WorkItem::new(
+            "cfg.optimize.budget-refusals",
+            stats.budget_refusals,
+        ));
+        context.record_work(rue_query::WorkItem::new(
+            "cfg.reoptimize.code-growth-used",
+            stats.code_growth_used,
+        ));
+        context.record_work(rue_query::WorkItem::new(
+            "cfg.reoptimize.code-growth-blocks-used",
+            stats.code_growth_blocks_used,
+        ));
+        context.record_work(rue_query::WorkItem::new("cfg.reoptimize.completions", 1));
         let interner_retained_charge = frozen_interner_retained_charge(&interner);
         output[index] = CfgValue::Available(Arc::new(CfgRecord {
             air: record.air.clone(),
@@ -2419,6 +2587,8 @@ pub(crate) fn apply_general_inlining(
             num_locals: record.num_locals,
             num_param_slots: record.num_param_slots,
             cfg: current,
+            code_growth_used: budget.used(),
+            code_growth_blocks_used: budget.used_blocks(),
             domains,
             type_pool: record.type_pool.clone(),
             interner,
@@ -2656,9 +2826,17 @@ fn whole_program_unreachable_checked<
 }
 
 const PHASE2_VALUE_CAP: usize = 32;
+/// O3 admits larger bodies after measuring the checked-in standalone examples:
+/// their O0 CFG bodies range from 23 to 75 values. A 96-value cap covers that
+/// observed set while leaving room below the long-tail helpers.
+const PHASE3_VALUE_CAP: usize = 96;
 
 fn phase2_size_eligible(value_count: usize) -> bool {
     value_count <= PHASE2_VALUE_CAP
+}
+
+fn phase3_size_eligible(value_count: usize) -> bool {
+    value_count <= PHASE3_VALUE_CAP
 }
 
 fn is_true_free_function(function: &crate::FunctionInstanceKey) -> bool {
@@ -2750,15 +2928,20 @@ fn finish_cfg_optimization(
     cfg: rue_cfg::ValidatedCfg,
     type_pool: &rue_air::FrozenTypeInternPool,
     body_span: Span,
-    build_record: impl FnOnce(rue_cfg::ValidatedCfg) -> CfgRecord,
+    build_record: impl FnOnce(rue_cfg::ValidatedCfg, u64, u64) -> CfgRecord,
 ) -> QueryOutput<CfgValue> {
     context.record_work(rue_query::WorkItem::new("cfg.optimize.attempts", 1));
     context.record_work(rue_query::WorkItem::new(
         "cfg.optimize.nonzero-level",
         u64::from(key.opt_level != rue_cfg::OptLevel::O0),
     ));
-    match rue_cfg::opt::optimize_with_stats(cfg, key.opt_level, type_pool) {
-        Ok((cfg, stats)) => {
+    match rue_cfg::opt::optimize_with_budget(
+        cfg,
+        key.opt_level,
+        type_pool,
+        rue_cfg::opt::CodeGrowthBudget::o3(),
+    ) {
+        Ok((cfg, stats, budget)) => {
             context.record_work(rue_query::WorkItem::new("cfg.optimize.successes", 1));
             context.record_work(rue_query::WorkItem::new(
                 "cfg.optimize.loops-analyzed",
@@ -2772,7 +2955,19 @@ fn finish_cfg_optimization(
                 "cfg.optimize.budget-refusals",
                 stats.budget_refusals,
             ));
-            QueryOutput::success(CfgValue::Available(Arc::new(build_record(cfg))))
+            context.record_work(rue_query::WorkItem::new(
+                "cfg.optimize.code-growth-used",
+                stats.code_growth_used,
+            ));
+            context.record_work(rue_query::WorkItem::new(
+                "cfg.optimize.code-growth-blocks-used",
+                stats.code_growth_blocks_used,
+            ));
+            QueryOutput::success(CfgValue::Available(Arc::new(build_record(
+                cfg,
+                budget.used(),
+                budget.used_blocks(),
+            ))))
         }
         Err(error) => {
             context.record_work(rue_query::WorkItem::new("cfg.optimize.failures", 1));
@@ -3101,6 +3296,13 @@ mod accessor_graph_tests {
     fn phase2_policy_keeps_the_32_value_boundary_exact() {
         assert!(phase2_size_eligible(PHASE2_VALUE_CAP));
         assert!(!phase2_size_eligible(PHASE2_VALUE_CAP + 1));
+    }
+
+    #[test]
+    fn phase3_policy_is_larger_and_inclusive_at_96_values() {
+        assert!(phase3_size_eligible(PHASE2_VALUE_CAP + 1));
+        assert!(phase3_size_eligible(PHASE3_VALUE_CAP));
+        assert!(!phase3_size_eligible(PHASE3_VALUE_CAP + 1));
     }
 
     #[test]

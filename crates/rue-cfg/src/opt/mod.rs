@@ -125,6 +125,108 @@ pub struct OptimizationStats {
     pub loops_analyzed: u64,
     pub loops_unrolled: u64,
     pub budget_refusals: u64,
+    /// CFG values cloned by O3 growth transforms in this invocation.
+    pub code_growth_used: u64,
+    /// CFG blocks cloned by O3 growth transforms in this invocation.
+    pub code_growth_blocks_used: u64,
+}
+
+/// Exact growth attributed to one bounded transform operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodeGrowth {
+    pub values: u64,
+    pub blocks: u64,
+}
+
+/// The per-function budget shared by O3 inlining and constant-trip unrolling.
+///
+/// The budget counts values and basic blocks allocated by growth transforms.
+/// Keeping the consumed amounts in this small value object lets the
+/// whole-program batch carry unrolling's charge into the later inlining phase
+/// and lets the re-optimization after a splice spend only what remains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodeGrowthBudget {
+    max_total_values: u64,
+    max_total_blocks: u64,
+    used_values: u64,
+    used_blocks: u64,
+}
+
+impl CodeGrowthBudget {
+    pub const O3_MAX_TOTAL_VALUES: u64 = 256;
+    /// The measured Lattice population has at most 68 blocks per CFG; 256 is
+    /// a conservative bounded-work ceiling that preserves ordinary fixed-loop
+    /// unrolling while bounding block-heavy growth.
+    pub const O3_MAX_TOTAL_BLOCKS: u64 = 256;
+
+    pub const fn o3() -> Self {
+        Self {
+            max_total_values: Self::O3_MAX_TOTAL_VALUES,
+            max_total_blocks: Self::O3_MAX_TOTAL_BLOCKS,
+            used_values: 0,
+            used_blocks: 0,
+        }
+    }
+
+    pub const fn with_used(used_values: u64, used_blocks: u64) -> Self {
+        Self {
+            max_total_values: Self::O3_MAX_TOTAL_VALUES,
+            max_total_blocks: Self::O3_MAX_TOTAL_BLOCKS,
+            used_values,
+            used_blocks,
+        }
+    }
+
+    pub const fn used(self) -> u64 {
+        self.used_values
+    }
+
+    pub const fn used_values(self) -> u64 {
+        self.used_values
+    }
+
+    pub const fn used_blocks(self) -> u64 {
+        self.used_blocks
+    }
+
+    pub const fn remaining(self) -> u64 {
+        self.max_total_values.saturating_sub(self.used_values)
+    }
+
+    pub const fn remaining_blocks(self) -> u64 {
+        self.max_total_blocks.saturating_sub(self.used_blocks)
+    }
+
+    /// Convert an exact splice/unroll delta into a bounded policy charge.
+    /// Ordinary never-returning bodies can have no value delta while still
+    /// copying blocks and terminators, so every accepted zero-value site
+    /// consumes at least one value unit. Accessor calls are not general
+    /// inlining candidates.
+    pub const fn charge_for_growth(growth: CodeGrowth) -> CodeGrowth {
+        CodeGrowth {
+            values: if growth.values == 0 { 1 } else { growth.values },
+            blocks: growth.blocks,
+        }
+    }
+
+    pub const fn can_charge(self, growth: CodeGrowth) -> bool {
+        let Some(new_values) = self.used_values.checked_add(growth.values) else {
+            return false;
+        };
+        let Some(new_blocks) = self.used_blocks.checked_add(growth.blocks) else {
+            return false;
+        };
+        new_values <= self.max_total_values && new_blocks <= self.max_total_blocks
+    }
+
+    pub fn try_charge(&mut self, growth: CodeGrowth) -> bool {
+        if !self.can_charge(growth) {
+            return false;
+        }
+        self.used_values += growth.values;
+        self.used_blocks += growth.blocks;
+        true
+    }
 }
 
 impl std::fmt::Display for CfgOptimizationError {
@@ -217,6 +319,21 @@ pub fn optimize_with_stats(
     level: OptLevel,
     type_pool: &FrozenTypeInternPool,
 ) -> Result<(ValidatedCfg, OptimizationStats), CfgOptimizationError> {
+    let (cfg, stats, _) = optimize_with_budget(cfg, level, type_pool, CodeGrowthBudget::o3())?;
+    Ok((cfg, stats))
+}
+
+/// Optimize with an existing O3 growth budget. The returned budget includes
+/// all growth accepted by this invocation and is used by the batch driver to
+/// coordinate later interprocedural inlining with earlier unrolling.
+pub fn optimize_with_budget(
+    cfg: ValidatedCfg,
+    level: OptLevel,
+    type_pool: &FrozenTypeInternPool,
+    mut budget: CodeGrowthBudget,
+) -> Result<(ValidatedCfg, OptimizationStats, CodeGrowthBudget), CfgOptimizationError> {
+    let initial_values = budget.used_values();
+    let initial_blocks = budget.used_blocks();
     let mut cfg = cfg.into_editor();
     let mut stats = OptimizationStats::default();
 
@@ -287,10 +404,13 @@ pub fn optimize_with_stats(
                     // Full constant-trip unrolling follows LICM and is
                     // followed by a mandatory cleanup fixpoint. Analyses are
                     // recomputed by the pass after every CFG mutation.
-                    let unroll = unroll::run(&mut cfg)?;
+                    let unroll = unroll::run_with_budget(&mut cfg, &mut budget)?;
                     stats.loops_analyzed = unroll.loops_analyzed;
                     stats.loops_unrolled = unroll.loops_unrolled;
                     stats.budget_refusals = unroll.budget_refusals;
+                    stats.code_growth_used = budget.used_values().saturating_sub(initial_values);
+                    stats.code_growth_blocks_used =
+                        budget.used_blocks().saturating_sub(initial_blocks);
                     constopt::run(&mut cfg);
                     simplify::run(&mut cfg)?;
                     dce::run(&mut cfg);
@@ -303,7 +423,7 @@ pub fn optimize_with_stats(
         Ok(())
     })();
 
-    publish_optimization(cfg, pass_result, type_pool).map(|cfg| (cfg, stats))
+    publish_optimization(cfg, pass_result, type_pool).map(|cfg| (cfg, stats, budget))
 }
 
 fn publish_optimization(
@@ -375,5 +495,35 @@ mod tests {
     #[test]
     fn test_opt_level_default() {
         assert_eq!(OptLevel::default(), OptLevel::O0);
+    }
+
+    #[test]
+    fn code_growth_budget_is_checked_and_carries_usage() {
+        let mut budget = CodeGrowthBudget::o3();
+        let growth = CodeGrowth {
+            values: 200,
+            blocks: 20,
+        };
+        assert!(budget.try_charge(growth));
+        assert_eq!(budget.used(), 200);
+        assert_eq!(budget.remaining(), 56);
+        assert_eq!(budget.used_blocks(), 20);
+        assert_eq!(budget.remaining_blocks(), 236);
+        assert!(!budget.try_charge(CodeGrowth {
+            values: 57,
+            blocks: 1,
+        }));
+        assert_eq!(budget.used(), 200);
+        assert!(!budget.try_charge(CodeGrowth {
+            values: 1,
+            blocks: 237,
+        }));
+        assert!(!budget.try_charge(CodeGrowth {
+            values: u64::MAX,
+            blocks: 0,
+        }));
+        let carried = CodeGrowthBudget::with_used(budget.used(), budget.used_blocks());
+        assert_eq!(carried.remaining(), 56);
+        assert_eq!(carried.remaining_blocks(), 236);
     }
 }

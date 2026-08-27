@@ -37,6 +37,27 @@ fn main() -> i32 {
 stdout = ""
 exit_code = 42
 
+# RUE-931: -O3 admits `middle` despite its nested `leaf` call, while -O2 keeps
+# the non-leaf boundary. The untaken divide-by-zero arm pins trap preservation;
+# the two calls and debug output pin source evaluation order.
+[[case]]
+name = "o3_non_leaf_inlining_preserves_order_and_traps"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn leaf(x: i32) -> i32 { x + 1 }
+
+fn middle(x: i32) -> i32 {
+    if x == 0 { 1 / x } else { leaf(x) }
+}
+
+fn main() -> i32 {
+    @dbg(middle(4));
+    middle(5)
+}
+""" }]
+stdout = "5\n"
+exit_code = 6
+
 # Arithmetic: a spread of operators, widths, and folds. Constant-heavy so the
 # const-fold pass has plenty to chew on; the runtime baseline (-O0) must agree.
 [[case]]
