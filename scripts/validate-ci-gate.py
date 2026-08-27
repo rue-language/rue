@@ -263,7 +263,7 @@ def narrowing_contract_errors(
                 'printf \'%s\\n\' "$RUE_AFFECTED_IMPACTED" | sed \'/^$/d\' >"$file"',
                 expected_command_lines["linux-premerge-tests"],
                 'count="$(wc -l <"$file" | tr -d \' \')"',
-                'echo "file=$file" >>"$GITHUB_OUTPUT"',
+                'echo "file=$file"',
             },
             "native-platforms": {
                 ': >"$file"',
