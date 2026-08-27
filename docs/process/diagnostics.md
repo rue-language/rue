@@ -136,14 +136,38 @@ CLI cases pin this with `json_diagnostic_order`, which asserts the exact
 stream (an absent field renders as `-`) — see
 `crates/rue-cli-tests/cases/diagnostic_json.toml`.
 
-## Known gap
+## Driver and host failures
 
-Driver-level failures raised *before* a compilation snapshot exists — a missing
-root file, a broken toolchain, a hermetic-build denial — are still printed as
-plain text (`Error reading main.rue: No such file or directory`) even under
-`--error-format json`. They carry no error code today, so they have no schema
-to be rendered into. Consumers should treat a non-JSON stderr line as such a
-driver failure rather than a parse bug.
+Driver-level failures use the same structured schema and one-array-per-line
+framing as compiler diagnostics. They have no source location in the user's
+program, so they publish `"spans": []`, empty `suggestions`, `notes`, and
+`helps`. In one-shot mode they retain the established human-readable
+source-load or environmental message and exit with status `1`. In `--watch`, a
+failed cycle keeps the last successful executable and the watcher continues;
+the cycle status is progress text, not an additional diagnostic.
+
+Driver failures can occur before the initial compilation snapshot exists, or
+after a snapshot exists while a watch cycle reobserves inputs or acquires a
+reached trusted-toolchain module.
+
+The canonical driver/host registry is the E1500-E1599 range in
+`crates/rue-error`. The currently assigned classifications are:
+
+| Code | Class | Meaning |
+|------|-------|---------|
+| `E1500` | ordinary source load | Root/source discovery, ordinary filesystem I/O, or ordinary root/source policy setup failure. |
+| `E1501` | toolchain integrity | A required trusted standard-library input is missing, unreadable, malformed, or otherwise fails the toolchain contract. |
+| `E1502` | hermetic build denial | `SourceLoadError::HermeticDenial`: trusted toolchain acquisition is denied by the source manifest or canonical containment policy; the remedy is build configuration rather than toolchain repair. |
+
+These codes are stable consumer identifiers and are distinct from compiler
+input errors (`E1400-E1499`) and internal compiler errors
+(`E9000-E9999`). Compiler diagnostics that do have a snapshot continue through
+the normal compiler formatter, including their source spans and existing
+codes. Ordinary root/source manifest handling is not universally E1502: a root
+policy failure is ordinary source loading (E1500), while an import policy
+diagnostic with a source snapshot remains a compiler diagnostic. The one-shot
+and `--watch` source-load paths share one rendering helper, so a given
+`SourceLoadError` has identical JSON framing, code, and message in both modes.
 
 ## Testing the surface
 

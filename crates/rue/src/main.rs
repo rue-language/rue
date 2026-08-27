@@ -29,7 +29,9 @@ use rue_compiler::unstable::{
 };
 #[cfg(test)]
 use rue_compiler::unstable::{Span, update_for_presentation};
-use rue_driver::{FilesystemCompilerHost, HostOpenRequest, SourceLoadError};
+use rue_driver::{
+    FilesystemCompilerHost, HostOpenRequest, SourceLoadError, ToolchainIntegrityError,
+};
 
 use rue_compiler::{
     CompileErrors, CompileOptions, CompileWarning, FileId, ImportDiscoveryStatus, LinkerMode,
@@ -1522,22 +1524,34 @@ fn get_peak_memory_bytes() -> Option<u64> {
     }
 }
 
-/// Present a source-loading failure and exit. The four classes carry disjoint
-/// presentations: an ordinary message; a broken-toolchain (environmental) error;
-/// a hermetic build-configuration denial (distinct from a broken toolchain — the
-/// remedy is the source manifest, not the installation); and program diagnostics
-/// rendered against the failing snapshot's source views.
-fn report_source_load_error(error: SourceLoadError, error_format: ErrorFormat) -> ! {
+/// Render a source-loading failure through the same one-line diagnostic
+/// contract used by the one-shot and watch consumers. Driver failures have no
+/// source location, so their structured representation uses an empty `spans`
+/// array and no suggestions, notes, or helps. The text arms intentionally keep
+/// the established message byte-for-byte unchanged.
+pub(crate) fn render_source_load_error(
+    error: SourceLoadError,
+    error_format: ErrorFormat,
+) -> String {
     match error {
         SourceLoadError::Message(message) => {
-            eprintln!("{message}");
+            render_driver_error(ErrorCode::DRIVER_SOURCE_LOAD, message, error_format)
         }
-        SourceLoadError::Toolchain(error) => {
-            eprintln!("{error}");
-        }
-        SourceLoadError::HermeticDenial(error) => {
-            eprintln!("{error}");
-        }
+        SourceLoadError::Toolchain(error) => match error {
+            internal @ ToolchainIntegrityError::UnsatisfiedAfterPublish { .. } => {
+                render_internal_error(error_format, internal.to_string())
+            }
+            error => render_driver_error(
+                ErrorCode::DRIVER_TOOLCHAIN_INTEGRITY,
+                error.to_string(),
+                error_format,
+            ),
+        },
+        SourceLoadError::HermeticDenial(error) => render_driver_error(
+            ErrorCode::DRIVER_HERMETIC_DENIAL,
+            error.to_string(),
+            error_format,
+        ),
         SourceLoadError::Compiler { snapshot, errors } => {
             let infos = snapshot
                 .as_ref()
@@ -1548,9 +1562,49 @@ fn report_source_load_error(error: SourceLoadError, error_format: ErrorFormat) -
                         .collect()
                 })
                 .unwrap_or_default();
-            DiagnosticOutput::new(error_format, infos).print_errors(&errors);
+            let diagnostics = DiagnosticOutput::new(error_format, infos);
+            if errors.is_empty() {
+                render_internal_error(
+                    error_format,
+                    "source loader produced an empty compiler diagnostic batch",
+                )
+            } else {
+                diagnostics.render_errors(&errors)
+            }
         }
     }
+}
+
+fn render_driver_error(code: ErrorCode, message: String, format: ErrorFormat) -> String {
+    match format {
+        ErrorFormat::Text => message,
+        ErrorFormat::Json => {
+            let diagnostic = JsonDiagnostic {
+                code: code.to_string(),
+                message,
+                severity: "error",
+                spans: Vec::new(),
+                suggestions: Vec::new(),
+                notes: Vec::new(),
+                helps: Vec::new(),
+            };
+            format!("[{}]", diagnostic.to_json())
+        }
+    }
+}
+
+fn render_internal_error(format: ErrorFormat, message: impl Into<String>) -> String {
+    let diagnostics = DiagnosticOutput::new(format, Vec::new());
+    diagnostics.render_error(&rue_error::ice_error!(message.into()))
+}
+
+/// Present a source-loading failure and exit. The four classes carry disjoint
+/// presentations: an ordinary message; a broken-toolchain (environmental) error;
+/// a hermetic build-configuration denial (distinct from a broken toolchain — the
+/// remedy is the source manifest, not the installation); and program diagnostics
+/// rendered against the failing snapshot's source views.
+fn report_source_load_error(error: SourceLoadError, error_format: ErrorFormat) -> ! {
+    eprintln!("{}", render_source_load_error(error, error_format));
     std::process::exit(1);
 }
 
@@ -3146,6 +3200,80 @@ mod tests {
         let batch = batch.as_array().expect("a JSON array, not a bare object");
         assert_eq!(batch.len(), 1);
         assert_eq!(batch[0]["severity"], "error");
+    }
+
+    #[test]
+    fn source_load_errors_use_stable_driver_codes_in_json() {
+        let message = "Error reading missing.rue: No such file or directory";
+        let rendered = render_source_load_error(
+            SourceLoadError::Message(message.to_owned()),
+            ErrorFormat::Json,
+        );
+        let batch: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        let diagnostic = &batch[0];
+        assert_eq!(
+            diagnostic["code"],
+            ErrorCode::DRIVER_SOURCE_LOAD.to_string()
+        );
+        assert_eq!(diagnostic["message"], message);
+        assert_eq!(diagnostic["severity"], "error");
+        assert_eq!(diagnostic["spans"], serde_json::json!([]));
+        assert_eq!(diagnostic["suggestions"], serde_json::json!([]));
+        assert_eq!(diagnostic["notes"], serde_json::json!([]));
+        assert_eq!(diagnostic["helps"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn source_load_text_rendering_preserves_message() {
+        let message = "Error reading missing.rue: No such file or directory";
+        assert_eq!(
+            render_source_load_error(
+                SourceLoadError::Message(message.to_owned()),
+                ErrorFormat::Text,
+            ),
+            message
+        );
+    }
+
+    #[test]
+    fn source_load_internal_paths_use_ice_code_in_json() {
+        let rendered = [
+            render_internal_error(
+                ErrorFormat::Json,
+                "a reached-body toolchain park issued no authorizing continuation",
+            ),
+            render_source_load_error(
+                SourceLoadError::Toolchain(ToolchainIntegrityError::UnsatisfiedAfterPublish {
+                    logical_path: "internal-test".to_owned(),
+                }),
+                ErrorFormat::Json,
+            ),
+        ];
+        for rendered in rendered {
+            let batch: serde_json::Value = if let Ok(batch) = serde_json::from_str(&rendered) {
+                batch
+            } else {
+                panic!("expected valid JSON: {rendered}")
+            };
+            assert_eq!(batch[0]["code"], "E9000");
+            assert_ne!(batch[0]["code"], "E1500");
+            assert_ne!(batch[0]["code"], "E1501");
+            assert_eq!(batch[0]["spans"], serde_json::json!([]));
+        }
+    }
+
+    #[test]
+    fn empty_source_load_compiler_batch_is_a_graceful_ice() {
+        let rendered = render_source_load_error(
+            SourceLoadError::Compiler {
+                snapshot: None,
+                errors: CompileErrors::new(),
+            },
+            ErrorFormat::Json,
+        );
+        let batch: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        assert_eq!(batch[0]["code"], "E9000");
+        assert_eq!(batch[0]["spans"], serde_json::json!([]));
     }
 
     /// Two pressures decide diagnostic order, and only one of them picks a

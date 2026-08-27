@@ -19,7 +19,7 @@ use rue_driver::{
 
 use crate::compile::{CancellableCompileRequest, CompileCycleOutcome, execute_cancellable};
 use crate::output;
-use crate::{DiagnosticOutput, ErrorFormat};
+use crate::{DiagnosticOutput, ErrorFormat, render_source_load_error};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const MAX_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -137,9 +137,12 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
                 Err(error) => {
                     test_event("reobserve-error");
                     print_source_load_error(error, request.error_format);
-                    eprintln!(
-                        "Watch cycle failed after {} ms; keeping the last successful executable",
-                        cycle_started.elapsed().as_millis()
+                    print_watch_status(
+                        request.error_format,
+                        format!(
+                            "Watch cycle failed after {} ms; keeping the last successful executable",
+                            cycle_started.elapsed().as_millis()
+                        ),
                     );
                     thread::sleep(FAILED_REOBSERVE_RETRY);
                     continue;
@@ -151,9 +154,12 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
             {
                 test_event("acquire-error");
                 print_source_load_error(error, request.error_format);
-                eprintln!(
-                    "Watch cycle failed after {} ms; keeping the last successful executable",
-                    cycle_started.elapsed().as_millis()
+                print_watch_status(
+                    request.error_format,
+                    format!(
+                        "Watch cycle failed after {} ms; keeping the last successful executable",
+                        cycle_started.elapsed().as_millis()
+                    ),
                 );
                 thread::sleep(FAILED_REOBSERVE_RETRY);
                 continue;
@@ -175,9 +181,12 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
         ) {
             Ok(destination) => destination,
             Err(output::PublishError::WouldClobberSource) => {
-                eprintln!(
-                    "Error: output path '{}' is also an input source file; refusing to overwrite it",
-                    request.output_path
+                print_watch_status(
+                    request.error_format,
+                    format!(
+                        "Error: output path '{}' is also an input source file; refusing to overwrite it",
+                        request.output_path
+                    ),
                 );
                 wait_for_change(&inputs);
                 debounce(&inputs);
@@ -209,9 +218,12 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
         let mut publication_changed = false;
         if changed_before_publication {
             test_event("canceled-before-publication");
-            eprintln!(
-                "Watch cycle canceled after {} ms; a newer source revision is available",
-                cycle_started.elapsed().as_millis()
+            print_watch_status(
+                request.error_format,
+                format!(
+                    "Watch cycle canceled after {} ms; a newer source revision is available",
+                    cycle_started.elapsed().as_millis()
+                ),
             );
         } else {
             match outcome {
@@ -230,16 +242,22 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
                                 linker_name(&request.compile_options.linker),
                             );
                         }
-                        Err(output::PublishError::WouldClobberSource) => eprintln!(
-                            "Error: output path '{}' became an input source; keeping the last successful executable",
-                            request.output_path
+                        Err(output::PublishError::WouldClobberSource) => print_watch_status(
+                            request.error_format,
+                            format!(
+                                "Error: output path '{}' became an input source; keeping the last successful executable",
+                                request.output_path
+                            ),
                         ),
                         Err(output::PublishError::InputsChanged) => {
                             publication_changed = true;
                             test_event("canceled-at-publication");
-                            eprintln!(
-                                "Watch cycle canceled after {} ms; a newer source revision is available",
-                                cycle_started.elapsed().as_millis()
+                            print_watch_status(
+                                request.error_format,
+                                format!(
+                                    "Watch cycle canceled after {} ms; a newer source revision is available",
+                                    cycle_started.elapsed().as_millis()
+                                ),
                             );
                         }
                         Err(error) => diagnostics.print_error(&error.into_compile_error()),
@@ -247,17 +265,23 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
                 }
                 CompileCycleOutcome::Canceled => {
                     test_event("canceled");
-                    eprintln!(
-                        "Watch cycle canceled after {} ms",
-                        cycle_started.elapsed().as_millis()
+                    print_watch_status(
+                        request.error_format,
+                        format!(
+                            "Watch cycle canceled after {} ms",
+                            cycle_started.elapsed().as_millis()
+                        ),
                     );
                 }
                 CompileCycleOutcome::Errors(errors) => {
                     test_event("compile-error");
                     diagnostics.print_errors(&errors);
-                    eprintln!(
-                        "Watch cycle failed after {} ms; keeping the last successful executable",
-                        cycle_started.elapsed().as_millis()
+                    print_watch_status(
+                        request.error_format,
+                        format!(
+                            "Watch cycle failed after {} ms; keeping the last successful executable",
+                            cycle_started.elapsed().as_millis()
+                        ),
                     );
                 }
             }
@@ -293,22 +317,16 @@ fn linker_name(linker: &LinkerMode) -> &str {
 }
 
 fn print_source_load_error(error: SourceLoadError, error_format: ErrorFormat) {
-    match error {
-        SourceLoadError::Message(message) => eprintln!("{message}"),
-        SourceLoadError::Toolchain(error) => eprintln!("{error}"),
-        SourceLoadError::HermeticDenial(error) => eprintln!("{error}"),
-        SourceLoadError::Compiler { snapshot, errors } => {
-            let infos = snapshot
-                .as_ref()
-                .map(|snapshot| {
-                    snapshot
-                        .files()
-                        .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
-                        .collect()
-                })
-                .unwrap_or_default();
-            DiagnosticOutput::new(error_format, infos).print_errors(&errors);
-        }
+    eprintln!("{}", render_source_load_error(error, error_format));
+}
+
+/// Watch-cycle status is not a diagnostic. In JSON mode it must not share
+/// stderr with the diagnostic stream, where every non-empty line is a JSON
+/// array; text mode retains the established stderr wording and placement.
+fn print_watch_status(error_format: ErrorFormat, message: impl std::fmt::Display) {
+    match error_format {
+        ErrorFormat::Text => eprintln!("{message}"),
+        ErrorFormat::Json => println!("{message}"),
     }
 }
 

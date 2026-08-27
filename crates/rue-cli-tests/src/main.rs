@@ -1072,6 +1072,11 @@ struct HardLinkFixture {
 #[serde(deny_unknown_fields)]
 struct WatchScenario {
     kind: WatchScenarioKind,
+    /// Optional diagnostic format passed to the real watch process. JSON
+    /// scenarios additionally assert that every non-empty stderr line is a
+    /// non-empty diagnostic array.
+    #[serde(default)]
+    error_format: Option<String>,
     #[serde(default)]
     source_path: Option<String>,
     #[serde(default)]
@@ -2638,18 +2643,18 @@ fn run_watch_case(
         .ok_or_else(|| TestFailure::assertion("watch scenario has no root source"))?;
     let output_name = case.output.as_deref().unwrap_or("prog");
     let protocol = dir.join("watch.protocol");
-    let mut command = case_compiler_command(
-        rue_binary,
-        &[
-            source.to_string(),
-            "-o".to_string(),
-            output_name.to_string(),
-            "--watch".to_string(),
-        ],
-        dir,
-        &case.env,
-        real_std,
-    );
+    let mut compiler_args = Vec::with_capacity(6);
+    if let Some(error_format) = &scenario.error_format {
+        compiler_args.push("--error-format".to_owned());
+        compiler_args.push(error_format.clone());
+    }
+    compiler_args.extend([
+        source.to_string(),
+        "-o".to_string(),
+        output_name.to_string(),
+        "--watch".to_string(),
+    ]);
+    let mut command = case_compiler_command(rue_binary, &compiler_args, dir, &case.env, real_std);
     command
         .env("RUE_WATCH_TEST_PROTOCOL", &protocol)
         .stdin(Stdio::null())
@@ -2760,6 +2765,17 @@ fn run_watch_case(
     })();
 
     let (status, stdout_bytes, stderr_bytes) = finish_watch_child(child, stdout, stderr, true);
+    let result = result.and_then(|()| {
+        if scenario.error_format.as_deref() == Some("json") {
+            let diagnostics =
+                validate_json_diagnostic_stream(&String::from_utf8_lossy(&stderr_bytes))
+                    .map_err(|error| format!("watch JSON stderr validation failed: {error}"))?;
+            if diagnostics.is_empty() {
+                return Err("watch JSON stderr contained no diagnostics".to_string());
+            }
+        }
+        Ok(())
+    });
     result.map_err(|error| {
         TestFailure::assertion(format!(
             "{error}\nwatch process status: {status:?}\n--- watch stdout ---\n{}\n--- watch stderr ---\n{}",
