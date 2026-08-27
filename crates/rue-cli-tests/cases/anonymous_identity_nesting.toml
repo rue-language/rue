@@ -8,9 +8,9 @@
 # took a second, at sixteen fifteen seconds, and at twenty the compiler ran
 # out of patience before it ran out of work, with no diagnostic at all.
 #
-# The second casualty was the depth guard itself. `MAX_SPECIALIZATION_ROUNDS`
+# The second casualty was the depth guard itself. `MAX_COMPTIME_CALL_DEPTH`
 # is documented as bounding "ever-growing type instantiation such as
-# `f(Pair(T), ...)`", but a program shaped like that hung long before round 64,
+# `f(Pair(T), ...)`", but a program shaped like that hung long before depth 64,
 # so the guard could never fire. These cases pin both: deep nesting compiles,
 # and unbounded nesting is reported rather than hung on.
 

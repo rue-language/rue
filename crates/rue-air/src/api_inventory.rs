@@ -1009,6 +1009,33 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
 }
 
 #[test]
+fn comptime_depth_has_one_canonical_authority() {
+    let comptime = include_str!("sema/comptime.rs");
+    let sema = include_str!("sema/mod.rs");
+    let specialize = include_str!("specialize.rs");
+    assert_eq!(
+        comptime
+            .matches("pub const MAX_COMPTIME_CALL_DEPTH")
+            .count(),
+        1,
+        "the depth limit must have one definition"
+    );
+    assert!(
+        comptime.contains("pub const fn next_comptime_depth")
+            && comptime.contains("pub const fn comptime_depth_over_limit")
+            && comptime.contains("pub fn callable_body")
+            && comptime.contains("comptime_depth_over_limit(entered_depth)"),
+        "the evaluator must use its canonical depth predicate"
+    );
+    assert!(
+        sema.contains("comptime_depth_over_limit")
+            && specialize.contains("pub use crate::sema::MAX_COMPTIME_CALL_DEPTH")
+            && !specialize.contains("MAX_SPECIALIZATION_ROUNDS"),
+        "specialization must consume the canonical limit without a divergent guard"
+    );
+}
+
+#[test]
 fn type_syntax_dependency_admission_indexes_only_the_large_case() {
     let typeck = include_str!("sema/typeck.rs");
 

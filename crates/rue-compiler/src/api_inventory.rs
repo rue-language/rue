@@ -3073,6 +3073,28 @@ fn durable_const_integer_semantics_use_the_shared_kernel() {
 }
 
 #[test]
+fn comptime_depth_consumers_use_the_air_authority() {
+    let database = include_str!("revisioned_query_database.rs");
+    assert!(
+        !database.contains("SEMANTIC_COMPTIME_MAX_DEPTH"),
+        "durable queries must not define a competing comptime depth constant"
+    );
+    assert!(
+        !database.contains("MAX_SPECIALIZATION_ROUNDS"),
+        "specialization must not retain a separate depth budget"
+    );
+    assert!(
+        database.contains("comptime_specialization_depth")
+            && database.contains("rue_air::comptime_depth_over_limit")
+            && database.contains("rue_air::MAX_COMPTIME_CALL_DEPTH")
+            && database.contains("ComptimeFrame::callable_body")
+            && database.contains("!rue_air::comptime_depth_over_limit")
+            && !database.contains("<= rue_air::MAX_COMPTIME_CALL_DEPTH"),
+        "durable query scheduling must use the canonical AIR depth authority"
+    );
+}
+
+#[test]
 fn durable_named_array_length_consumers_share_one_conversion_kernel() {
     let durable = include_str!("durable_comptime.rs");
     let host = durable

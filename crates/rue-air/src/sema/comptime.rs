@@ -13,9 +13,24 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 use crate::integer_semantics::{CheckedIntegerResult, IntegerType};
-/// Maximum number of entered named comptime frames. Expression recursion does
-/// not spend this budget.
-pub const MAX_COMPTIME_CALL_DEPTH: usize = 48;
+/// Maximum propagated comptime call depth. Depth zero is the root call, and
+/// expression recursion does not spend this budget.
+pub const MAX_COMPTIME_CALL_DEPTH: usize = 64;
+
+/// Convert the number of active ancestor calls into the propagated depth of a
+/// child call. Root evaluation is depth zero, so its first child is depth one.
+#[inline]
+pub const fn next_comptime_depth(active_ancestors: usize) -> usize {
+    active_ancestors.saturating_add(1)
+}
+
+/// Return whether a propagated comptime call depth is beyond the language
+/// limit. Depth zero denotes the root call, so the normative boundary itself
+/// remains admissible and only the next frame is rejected.
+#[inline]
+pub const fn comptime_depth_over_limit(depth: usize) -> bool {
+    depth > MAX_COMPTIME_CALL_DEPTH
+}
 
 /// An owned RIR program available to one comptime evaluation.
 ///
@@ -2953,10 +2968,10 @@ mod value_domain_tests {
     }
 
     #[test]
-    fn structured_type_entries_share_the_48_frame_boundary() {
+    fn structured_type_entries_share_the_64_frame_boundary() {
         for (recursive_enters, succeeds) in [
-            (MAX_COMPTIME_CALL_DEPTH - 1, true),
-            (MAX_COMPTIME_CALL_DEPTH, false),
+            (MAX_COMPTIME_CALL_DEPTH, true),
+            (MAX_COMPTIME_CALL_DEPTH + 1, false),
         ] {
             let mut parent = rue_rir::RirEditor::new();
             let root = parent.add_inst(rue_rir::Inst {
@@ -5673,7 +5688,7 @@ mod value_domain_tests {
     }
 
     #[test]
-    fn entered_frames_use_the_real_48_frame_budget_and_memoized_bypasses_it() {
+    fn entered_frames_use_the_real_64_frame_budget_and_memoized_bypasses_it() {
         let mut editor = rue_rir::RirEditor::new();
         let interner = lasso::ThreadedRodeo::new();
         let symbol = interner.get_or_intern("loop");
@@ -5730,9 +5745,9 @@ mod value_domain_tests {
             engine.evaluate(ComptimeFrame::expression(0, root_call), &mut env),
             ComptimeOutcome::HostFailure(FAKE_FAILURE)
         ));
-        assert_eq!(host.enter_count, MAX_COMPTIME_CALL_DEPTH + 1);
+        assert_eq!(host.enter_count, MAX_COMPTIME_CALL_DEPTH + 2);
         TICKET_EVENTS.with(|events| {
-            assert_eq!(events.borrow().len(), MAX_COMPTIME_CALL_DEPTH * 2);
+            assert_eq!(events.borrow().len(), (MAX_COMPTIME_CALL_DEPTH + 1) * 2);
         });
         DIAGNOSTIC_SITES.with(|sites| {
             assert_eq!(
@@ -6495,6 +6510,16 @@ impl<V, T, N, F, P, I> ComptimeFrame<V, T, N, F, P, I> {
             name_bindings: AHashMap::new(),
             call_identity: None,
             expected_result: None,
+        }
+    }
+
+    /// Create a ticket-free root for a callable body whose canonical identity
+    /// was already established by the surrounding query. Keeping that root on
+    /// the explicit frame stack makes its depth contribution structural.
+    pub fn callable_body(program: P, body: InstRef, call_identity: I) -> Self {
+        Self {
+            call_identity: Some(call_identity),
+            ..Self::expression(program, body)
         }
     }
 }
@@ -7914,9 +7939,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let entered_depth = self
             .frames
             .iter()
-            .filter(|frame| frame.name.is_some())
+            .filter(|frame| frame.name.is_some() || frame.call_identity.is_some())
             .count();
-        if frame.name.is_some() && entered_depth >= MAX_COMPTIME_CALL_DEPTH {
+        if frame.name.is_some() && comptime_depth_over_limit(entered_depth) {
             let site = ComptimeDiagnosticSite::new(frame.program.clone(), frame.function_span);
             return ComptimeOutcome::HostFailure(self.host.depth_exceeded(
                 frame.name.as_ref().expect("named frame"),

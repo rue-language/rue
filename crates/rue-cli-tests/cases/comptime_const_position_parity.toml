@@ -1,12 +1,8 @@
-# Const position must reduce a comptime call exactly like body position
-# (RUE-1733).
-#
-# `const X = f(..)` is reduced by the durable, declaration-time evaluator;
-# `let x = f(..)` in a body is reduced by the in-body engine. They are one
-# language (4.14:3), so a program that mixes both must not be able to tell
-# them apart. The two evaluators spent different comptime call-depth budgets,
-# so a recursion 40 deep compiled in a body and was rejected as too deep in a
-# const initializer.
+# Every user-visible comptime position must reduce calls with one propagated
+# depth authority (4.14:3, 4.14:18). Declaration-time consts and explicit
+# blocks use durable queries; ordinary body calls use the in-body engine. The
+# canonical frame evaluator and query scheduler agree at the normative depth
+# boundary, so these positions cannot distinguish their depth budgets.
 #
 # The spec suite pins the semantics; these cases drive the real binary so the
 # reduced constants are checked as bytes on stdout, not just as exit codes.
@@ -16,27 +12,63 @@ id = "cli.comptime_const_position_parity"
 name = "Comptime const-position parity"
 description = "A comptime call reduced at declaration time accepts the same depths the in-body engine accepts."
 
-# RUE-1733: 40 sits between the two budgets the evaluators used to disagree on
-# (durable stopped at 32, in-body at 64). Both now spend the one shared
-# MAX_COMPTIME_CALL_DEPTH, so the const and the body call reduce alike.
+# RUE-1767: the normative 64-level case is reachable in both positions. The
+# root call is depth zero, so the exact next level (65) is the boundary failure.
 [[case]]
 name = "recursion_depth_agrees_between_positions"
 files = [{ path = "main.rue", source = """
 fn count(comptime n: i64) -> i64 { comptime { if n == 0 { 0 } else { count(n - 1) + 1 } } }
 
-const X: i64 = count(40);
+const X: i64 = count(64);
 
 fn main() -> i32 {
-    let y: i64 = count(40);
+    let y: i64 = count(64);
     if X != y { return 1; }
     @dbg(X);
     0
 }
 """ }]
-stdout = "40\n"
+stdout = "64\n"
 exit_code = 0
 
-# The shared budget must still fire -- in BOTH positions -- rather than run the
+[[case]]
+name = "exact_depth_boundary_agrees_in_body_position"
+files = [{ path = "main.rue", source = """
+fn count(comptime n: i64) -> i64 { if n <= 0 { 0 } else { 1 + count(n - 1) } }
+fn main() -> i32 { let x: i64 = count(64); @dbg(x); 0 }
+""" }]
+stdout = "64\n"
+exit_code = 0
+
+[[case]]
+name = "exact_next_depth_is_rejected_in_const_position"
+files = [{ path = "main.rue", source = """
+fn count(comptime n: i64) -> i64 { comptime { if n == 0 { 0 } else { count(n - 1) + 1 } } }
+const X: i64 = count(65);
+fn main() -> i32 { @dbg(X); 0 }
+""" }]
+compile_fail = true
+compile_stderr_contains = ["E1200", "exceeded the maximum nesting depth (64)"]
+
+[[case]]
+name = "exact_next_depth_is_rejected_in_block_position"
+files = [{ path = "main.rue", source = """
+fn count(comptime n: i64) -> i64 { if n <= 0 { 0 } else { 1 + count(n - 1) } }
+fn main() -> i32 { let x: i64 = comptime { count(65) }; @dbg(x); 0 }
+""" }]
+compile_fail = true
+compile_stderr_contains = ["E1200", "exceeded the maximum nesting depth (64)"]
+
+[[case]]
+name = "exact_next_depth_is_rejected_in_body_position"
+files = [{ path = "main.rue", source = """
+fn count(comptime n: i64) -> i64 { if n <= 0 { 0 } else { 1 + count(n - 1) } }
+fn main() -> i32 { let x: i64 = count(65); @dbg(x); 0 }
+""" }]
+compile_fail = true
+compile_stderr_contains = ["E1200", "exceeded the maximum nesting depth (64)"]
+
+# The shared budget must still fire in every position rather than run the
 # compiler out of stack. A runaway comptime recursion is a clean E1200 wherever
 # it is written.
 [[case]]
@@ -104,12 +136,12 @@ fn count(comptime n: i64) -> i64 {
 }
 
 fn main() -> i32 {
-    let x: i64 = comptime { count(40) };
+    let x: i64 = comptime { count(64) };
     @dbg(x);
     0
 }
 """ }]
-stdout = "40\n"
+stdout = "64\n"
 exit_code = 0
 
 # A direct Unit literal is the legacy type-value spelling accepted by the

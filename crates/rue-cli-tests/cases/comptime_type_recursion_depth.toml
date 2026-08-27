@@ -16,6 +16,36 @@ name = "Comptime type-recursion depth limit"
 description = "Unbounded `-> type` recursion is E1200, not a stack-overflow ICE; bounded composition still compiles (RUE-261)."
 
 [[case]]
+name = "recursive_type_function_accepts_exact_depth_boundary"
+description = "A direct `-> type` recursion accepts the canonical depth-64 boundary."
+files = [{ path = "main.rue", source = """
+fn Nest(comptime n: i32) -> type {
+    if n == 0 { struct { value: i32 } } else { Nest(n - 1) }
+}
+fn main() -> i32 {
+    let T = Nest(64);
+    let value: T = T { value: 42 };
+    value.value
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "recursive_type_function_rejects_exact_next_depth"
+description = "A direct `-> type` recursion rejects depth 65 with the canonical E1200 diagnostic."
+compile_fail = true
+error_contains = ["E1200", "exceeded the maximum nesting depth (64)"]
+files = [{ path = "main.rue", source = """
+fn Nest(comptime n: i32) -> type {
+    if n == 0 { struct { value: i32 } } else { Nest(n - 1) }
+}
+fn main() -> i32 {
+    let T = Nest(65);
+    0
+}
+""" }]
+
+[[case]]
 name = "no_arg_type_recursion_is_e1200"
 description = "`fn Bad() -> type { Bad() }` → clean E1200 (was SIGABRT 134)."
 compile_fail = true
