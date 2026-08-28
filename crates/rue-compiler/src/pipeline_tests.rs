@@ -3064,6 +3064,74 @@ mod tests {
     }
 
     #[test]
+    fn warm_general_inline_reanchors_reused_callee_spans_after_position_edit() {
+        let first_text = "fn main() -> i32 { add_one(4) } fn add_one(x: i32) -> i32 { x + 1 }";
+        let shifted_text = first_text.replace(
+            "fn add_one",
+            "// shift only the reused callee\n\nfn add_one",
+        );
+        let first = SourceSnapshot::single("<warm-inline-span>", first_text).unwrap();
+        let shifted = SourceSnapshot::single("<warm-inline-span>", shifted_text.clone()).unwrap();
+        let options = CompileOptions {
+            opt_level: rue_cfg::OptLevel::O2,
+            ..CompileOptions::default()
+        };
+        let spans = |output: &RootedCfgOutput| {
+            let main = output
+                .cfgs
+                .iter()
+                .find(|unit| unit.record.codegen.defined_symbol.ends_with("main"))
+                .expect("main reaches the optimized CFG batch");
+            let mut spans = main
+                .record
+                .cfg
+                .blocks()
+                .iter()
+                .flat_map(|block| block.insts.iter())
+                .map(|value| main.record.cfg.get_inst(*value).span)
+                .collect::<Vec<_>>();
+            spans.sort_by_key(|span| (span.file_id.index(), span.start, span.end));
+            spans
+        };
+
+        let mut warm_session = CompilerSession::new();
+        warm_session
+            .update_for_presentation(&first)
+            .into_result()
+            .unwrap();
+        warm_session.rooted_cfg(&options).unwrap();
+        warm_session
+            .update_for_presentation(&shifted)
+            .into_result()
+            .unwrap();
+        let warm = warm_session.rooted_cfg(&options).unwrap();
+        assert!(
+            warm_session
+                .rooted_cfg_executions()
+                .iter()
+                .any(|(function, execution)| matches!(
+                    function,
+                    FunctionInstanceKey::Definition(definition) if definition.name() == "add_one"
+                ) && *execution
+                    == rue_query::RequestExecution::Reused)
+        );
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session
+            .update_for_presentation(&shifted)
+            .into_result()
+            .unwrap();
+        let fresh = fresh_session.rooted_cfg(&options).unwrap();
+        assert_eq!(spans(&warm), spans(&fresh));
+        let shifted_expression = u32::try_from(shifted_text.find("x + 1").unwrap()).unwrap();
+        assert!(
+            spans(&warm)
+                .iter()
+                .any(|span| { span.start <= shifted_expression && shifted_expression < span.end })
+        );
+    }
+
+    #[test]
     fn phase3_admits_non_leaf_inlining_in_one_bounded_wave() {
         let snapshot = SourceSnapshot::single(
             "<phase3-non-leaf-inline>",

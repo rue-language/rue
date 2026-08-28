@@ -175,3 +175,17 @@ fn constant_folding_uses_the_air_integer_semantics_kernel() {
         );
     }
 }
+
+#[test]
+fn validated_cfg_consuming_editor_conversion_does_not_copy_payloads() {
+    let owner = include_str!("inst.rs");
+    let conversion = owner
+        .split_once("pub fn into_editor(self) -> CfgEditor {")
+        .expect("validated CFG consuming editor conversion")
+        .1
+        .split_once("    }")
+        .unwrap()
+        .0;
+    assert!(conversion.contains("self.0"));
+    assert!(!conversion.contains("clone("));
+}

@@ -51,15 +51,6 @@ impl<'a> CfgTypeAdmissionIndex<'a> {
     }
 }
 
-fn first_string_indices(strings: &[String]) -> Result<AHashMap<&str, u32>, CfgDomainFailure> {
-    let mut indices = AHashMap::with_capacity(strings.len());
-    for (index, value) in strings.iter().enumerate() {
-        let index = u32::try_from(index).map_err(|_| CfgDomainFailure::Shape)?;
-        indices.entry(value.as_str()).or_insert(index);
-    }
-    Ok(indices)
-}
-
 fn live_instruction_kind(data: &AirInstData) -> rue_air::SemanticBodyInstKind {
     use rue_air::SemanticBodyInstKind as K;
     match data {
@@ -364,6 +355,36 @@ fn deduplicate_type_mappings(
     Ok(unique)
 }
 
+fn validate_type_mappings(mappings: &[(Type, CanonicalType)]) -> Result<(), CfgDomainFailure> {
+    let mut stable_by_live = AHashMap::with_capacity(mappings.len());
+    for (live, stable) in mappings {
+        if let Some(previous) = stable_by_live.insert(*live, stable)
+            && previous != stable
+        {
+            return Err(CfgDomainFailure::Shape);
+        }
+    }
+    Ok(())
+}
+
+fn validate_symbol_mappings(mappings: &[(Spur, StableCfgSymbol)]) -> Result<(), CfgDomainFailure> {
+    let mut stable_by_live = AHashMap::with_capacity(mappings.len());
+    let mut live_by_stable = AHashMap::with_capacity(mappings.len());
+    for (live, stable) in mappings {
+        if let Some(previous) = stable_by_live.insert(*live, stable)
+            && previous != stable
+        {
+            return Err(CfgDomainFailure::ConflictingLiveSymbol);
+        }
+        if let Some(previous) = live_by_stable.insert(stable, *live)
+            && previous != *live
+        {
+            return Err(CfgDomainFailure::ConflictingStableSymbol);
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum StableCfgSymbol {
     Callable(rue_air::FunctionInstanceKey<crate::StableDefinitionKey, crate::ModuleId>),
@@ -440,6 +461,11 @@ pub(crate) struct CfgDomainProjection {
     incomplete_epoch: Option<Arc<()>>,
 }
 
+pub(crate) struct CfgDomainSplicePlan {
+    symbols: Vec<(Spur, StableCfgSymbol)>,
+    strings: Vec<(u32, Arc<str>)>,
+}
+
 struct CfgTypeDomainIndex<'a> {
     stable_by_live: AHashMap<Type, &'a CanonicalType>,
     live_by_stable: AHashMap<&'a CanonicalType, Type>,
@@ -513,10 +539,33 @@ pub(crate) enum CfgDomainFailure {
     MissingStableType(CanonicalType),
     MissingSymbol,
     MissingString,
+    ConflictingLiveSymbol,
+    ConflictingStableSymbol,
     Edit(rue_cfg::CfgEditError),
 }
 
 impl CfgDomainProjection {
+    #[cfg(test)]
+    pub(crate) fn inject_conflicting_live_symbol_for_test(&mut self) {
+        let Some((live, _)) = self.symbols.first().cloned() else {
+            return;
+        };
+        self.symbols.push((
+            live,
+            StableCfgSymbol::Intrinsic(Arc::from("__conflicting_live_symbol")),
+        ));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_conflicting_stable_symbol_for_test(&mut self) {
+        let Some((live, stable)) = self.symbols.first().cloned() else {
+            return;
+        };
+        let alternate = Spur::try_from_usize(live.into_usize().saturating_add(1))
+            .expect("test symbol remains in the Spur domain");
+        self.symbols.push((alternate, stable));
+    }
+
     pub(crate) fn stable_debug_snapshot(&self, air: &rue_air::ValidatedAir) -> String {
         let instruction_kinds = air
             .iter()
@@ -602,68 +651,79 @@ impl CfgDomainProjection {
     }
 
     pub(crate) fn import_accessor_cfg(
-        &mut self,
+        &self,
         old: &Self,
         cfg: &rue_cfg::Cfg,
         old_interner: &lasso::ThreadedRodeo,
-        new_interner: &lasso::ThreadedRodeo,
-        strings: &mut Vec<String>,
+        mut symbol_for: impl FnMut(&str) -> Result<Spur, CfgDomainFailure>,
+        mut string_for: impl FnMut(&str) -> Result<u32, CfgDomainFailure>,
         new_body_span: Span,
-    ) -> Result<(rue_cfg::CfgEditor, std::collections::BTreeMap<u32, u32>), CfgDomainFailure> {
+    ) -> Result<
+        (
+            rue_cfg::CfgEditor,
+            std::collections::BTreeMap<u32, u32>,
+            CfgDomainSplicePlan,
+        ),
+        CfgDomainFailure,
+    > {
         if old.incomplete_epoch.is_some() || self.incomplete_epoch.is_some() {
             return Err(CfgDomainFailure::Missing);
         }
-        self.types = deduplicate_type_mappings(std::mem::take(&mut self.types))?;
+        validate_symbol_mappings(&self.symbols)?;
+        validate_symbol_mappings(&old.symbols)?;
+        validate_type_mappings(&self.types)?;
         let type_index = CfgTypeDomainIndex::new(&old.types, &self.types);
         for (_, stable) in &old.types {
             type_index.current(stable)?;
         }
         let mut current_symbols = AHashMap::with_capacity(self.symbols.len() + old.symbols.len());
+        let mut current_stable_by_live =
+            AHashMap::with_capacity(self.symbols.len() + old.symbols.len());
         for (live, stable) in &self.symbols {
-            current_symbols.entry(stable.clone()).or_insert(*live);
+            current_symbols.insert(stable, *live);
+            current_stable_by_live.insert(*live, stable);
         }
+        let mut planned_symbols = Vec::new();
+        let mut planned_by_stable = AHashMap::new();
+        let mut planned_stable_by_live = AHashMap::new();
         for (live, stable) in &old.symbols {
-            if current_symbols.contains_key(stable) {
+            if current_symbols.contains_key(stable) || planned_by_stable.contains_key(stable) {
                 continue;
             }
-            let symbol = new_interner
-                .try_get_or_intern(old_interner.resolve(live))
-                .map_err(|error| CfgDomainFailure::Interner(error.kind()))?;
-            current_symbols.insert(stable.clone(), symbol);
-            self.symbols.push((symbol, stable.clone()));
+            let symbol = symbol_for(old_interner.resolve(live))?;
+            if current_stable_by_live
+                .get(&symbol)
+                .is_some_and(|previous| **previous != *stable)
+                || planned_stable_by_live
+                    .get(&symbol)
+                    .is_some_and(|previous| previous != stable)
+            {
+                return Err(CfgDomainFailure::ConflictingLiveSymbol);
+            }
+            planned_by_stable.insert(stable.clone(), symbol);
+            planned_stable_by_live.insert(symbol, stable.clone());
+            planned_symbols.push((symbol, stable.clone()));
         }
         let mut old_symbols = AHashMap::with_capacity(old.symbols.len());
         for (live, stable) in &old.symbols {
-            old_symbols.entry(*live).or_insert(stable);
+            old_symbols.insert(*live, stable);
         }
-        let mut indices = first_string_indices(strings)?;
-        let mut domain_strings = self.strings.iter().cloned().collect::<ahash::AHashSet<_>>();
-        let mut additions = Vec::new();
+        let mut planned_domain_strings = Vec::new();
         let mut string_map = std::collections::BTreeMap::new();
         for (old_index, stable) in &old.strings {
-            let new_index = if let Some(index) = indices.get(stable.as_ref()).copied() {
-                index
-            } else {
-                let index = strings
-                    .len()
-                    .checked_add(additions.len())
-                    .and_then(|index| u32::try_from(index).ok())
-                    .ok_or(CfgDomainFailure::Shape)?;
-                indices.insert(stable.as_ref(), index);
-                additions.push(stable.to_string());
-                index
-            };
+            let new_index = string_for(stable)?;
             string_map.insert(*old_index, new_index);
-            if domain_strings.insert((new_index, stable.clone())) {
-                self.strings.push((new_index, stable.clone()));
+            if !self
+                .strings
+                .iter()
+                .any(|current| current.0 == new_index && current.1 == *stable)
+                && !planned_domain_strings
+                    .iter()
+                    .any(|current: &(u32, Arc<str>)| current.0 == new_index && current.1 == *stable)
+            {
+                planned_domain_strings.push((new_index, stable.clone()));
             }
         }
-        drop(indices);
-        strings.extend(additions);
-        self.symbols.sort_by(|left, right| {
-            (left.0.into_usize(), &left.1).cmp(&(right.0.into_usize(), &right.1))
-        });
-        self.symbols.dedup();
 
         let imported = cfg
             .try_remap_domains(
@@ -684,6 +744,7 @@ impl CfgDomainProjection {
                     current_symbols
                         .get(stable)
                         .copied()
+                        .or_else(|| planned_by_stable.get(stable).copied())
                         .ok_or(CfgDomainFailure::MissingSymbol)
                 },
                 |value| {
@@ -698,7 +759,23 @@ impl CfgDomainProjection {
                 rue_cfg::CfgRemapError::Domain(error) => error,
                 rue_cfg::CfgRemapError::Edit(error) => CfgDomainFailure::Edit(error),
             })?;
-        Ok((imported, string_map))
+        Ok((
+            imported,
+            string_map,
+            CfgDomainSplicePlan {
+                symbols: planned_symbols,
+                strings: planned_domain_strings,
+            },
+        ))
+    }
+
+    pub(crate) fn apply_splice_plan(&mut self, plan: CfgDomainSplicePlan) {
+        self.symbols.extend(plan.symbols);
+        self.symbols.sort_by(|left, right| {
+            (left.0.into_usize(), &left.1).cmp(&(right.0.into_usize(), &right.1))
+        });
+        self.symbols.dedup();
+        self.strings.extend(plan.strings);
     }
 
     /// The stable anchor this domain recorded for `value`, falling back to an
@@ -1425,16 +1502,29 @@ mod tests {
         cfg.append_call(block, None, old_symbol, [], Type::I32, Span::new(4, 5))
             .unwrap();
 
-        let (_, string_map) = current
+        let (_, string_map, plan) = current
             .import_accessor_cfg(
                 &old,
                 &cfg,
                 &old_interner,
-                &new_interner,
-                &mut strings,
+                |spelling| {
+                    new_interner
+                        .try_get_or_intern(spelling)
+                        .map_err(|error| CfgDomainFailure::Interner(error.kind()))
+                },
+                |spelling| {
+                    if let Some(index) = strings.iter().position(|value| value == spelling) {
+                        return u32::try_from(index).map_err(|_| CfgDomainFailure::Shape);
+                    }
+                    let index =
+                        u32::try_from(strings.len()).map_err(|_| CfgDomainFailure::Shape)?;
+                    strings.push(spelling.to_owned());
+                    Ok(index)
+                },
                 Span::new(40, 50),
             )
             .unwrap();
+        current.apply_splice_plan(plan);
 
         assert_eq!(string_map, [(10, 0), (11, 0), (12, 3)].into());
         assert_eq!(strings, ["same", "other", "same", "added"]);
@@ -1480,6 +1570,57 @@ mod tests {
             ]),
             Err(CfgDomainFailure::Shape)
         );
+    }
+
+    #[test]
+    fn symbol_mapping_validation_rejects_both_non_injective_directions() {
+        let first = Spur::try_from_usize(1).unwrap();
+        let second = Spur::try_from_usize(2).unwrap();
+        let stable = StableCfgSymbol::Intrinsic(Arc::from("stable"));
+        let other = StableCfgSymbol::Intrinsic(Arc::from("other"));
+
+        assert_eq!(
+            validate_symbol_mappings(&[(first, stable.clone()), (first, other)]),
+            Err(CfgDomainFailure::ConflictingLiveSymbol)
+        );
+        assert_eq!(
+            validate_symbol_mappings(&[(first, stable.clone()), (second, stable)]),
+            Err(CfgDomainFailure::ConflictingStableSymbol)
+        );
+    }
+
+    #[test]
+    fn symbol_import_rejects_spelling_aliases_with_distinct_stable_identities() {
+        let old_interner = lasso::ThreadedRodeo::new();
+        let current_interner = lasso::ThreadedRodeo::new();
+        let old_live = old_interner.get_or_intern("same-spelling");
+        let current_live = current_interner.get_or_intern("same-spelling");
+        let old = projection_with(
+            old_live,
+            StableCfgSymbol::Intrinsic(Arc::from("old-identity")),
+        );
+        let current = projection_with(
+            current_live,
+            StableCfgSymbol::Intrinsic(Arc::from("current-identity")),
+        );
+        let before = current.symbols.clone();
+        let cfg = Cfg::new(Type::I32, 0, 0, "f".into(), Vec::<bool>::new());
+        assert!(matches!(
+            current.import_accessor_cfg(
+                &old,
+                &cfg,
+                &old_interner,
+                |spelling| {
+                    current_interner
+                        .try_get_or_intern(spelling)
+                        .map_err(|error| CfgDomainFailure::Interner(error.kind()))
+                },
+                |_| Err(CfgDomainFailure::MissingString),
+                Span::new(40, 50),
+            ),
+            Err(CfgDomainFailure::ConflictingLiveSymbol)
+        ));
+        assert_eq!(current.symbols, before);
     }
 
     #[test]
@@ -1638,16 +1779,21 @@ mod tests {
         cfg.append_call(block, None, old_symbol, [], Type::I32, Span::new(12, 13))
             .unwrap();
 
-        let (imported, _) = current
+        let (imported, _, plan) = current
             .import_accessor_cfg(
                 &old,
                 &cfg,
                 &old_interner,
-                &new_interner,
-                &mut Vec::new(),
+                |spelling| {
+                    new_interner
+                        .try_get_or_intern(spelling)
+                        .map_err(|error| CfgDomainFailure::Interner(error.kind()))
+                },
+                |_| Err(CfgDomainFailure::MissingString),
                 Span::new(50, 60),
             )
             .unwrap();
+        current.apply_splice_plan(plan);
 
         assert_eq!(
             imported.get_inst(rue_cfg::CfgValue::from_raw(0)).span,

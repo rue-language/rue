@@ -10,7 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, OnceLock};
 
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 use lasso::Key as _;
 use rue_query::{QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutcome, QueryOutput};
 use rue_span::Span;
@@ -1742,6 +1742,508 @@ fn build_cfg(
     Ok(value)
 }
 
+fn semantic_input_body_span(input: &CfgSemanticInput) -> Span {
+    match input {
+        CfgSemanticInput::Body { input, .. } => input.body_span,
+        CfgSemanticInput::DropGlue { body_span, .. } => *body_span,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpliceWarningPolicy {
+    Import,
+    Ignore,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpliceVerificationPolicy {
+    Immediate,
+    Deferred,
+}
+
+#[derive(Debug)]
+enum SpliceCalleeFailure {
+    Canceled(QueryAbort),
+    StringIndex,
+    Domain(crate::durable_cfg::CfgDomainFailure),
+    ImportedCfg(rue_cfg::CfgVerificationError),
+    MissingAtomString,
+    ConflictingAtom,
+    ConflictingSourceSymbol,
+    ConflictingMachineSymbol,
+    ConflictingForeignSymbol,
+    Splice(rue_cfg::CfgInlineError),
+    Verification(rue_cfg::CfgVerificationError),
+}
+
+impl std::fmt::Display for SpliceCalleeFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Canceled(_) => formatter.write_str("splice canceled"),
+            Self::StringIndex => formatter.write_str("string index is not representable"),
+            Self::Domain(error) => write!(formatter, "domain import failed: {error:?}"),
+            Self::ImportedCfg(error) => {
+                write!(formatter, "imported CFG failed verification: {error}")
+            }
+            Self::MissingAtomString => formatter.write_str("local atom has no imported string id"),
+            Self::ConflictingAtom => {
+                formatter.write_str("local atom identity has conflicting content")
+            }
+            Self::ConflictingSourceSymbol => {
+                formatter.write_str("source symbol maps to conflicting machine symbols")
+            }
+            Self::ConflictingMachineSymbol => {
+                formatter.write_str("machine symbol maps from conflicting source symbols")
+            }
+            Self::ConflictingForeignSymbol => {
+                formatter.write_str("machine symbol has conflicting foreign classification")
+            }
+            Self::Splice(error) => write!(formatter, "CFG splice failed: {error}"),
+            Self::Verification(error) => {
+                write!(formatter, "spliced CFG failed verification: {error}")
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+enum SpliceCfg {
+    Verified(rue_cfg::ValidatedCfg),
+    Deferred(rue_cfg::Cfg),
+}
+
+impl SpliceCfg {
+    fn as_cfg(&self) -> &rue_cfg::Cfg {
+        match self {
+            Self::Verified(cfg) => cfg,
+            Self::Deferred(cfg) => cfg,
+        }
+    }
+
+    fn into_validated(
+        self,
+        type_pool: &rue_air::FrozenTypeInternPool,
+    ) -> Result<rue_cfg::ValidatedCfg, rue_cfg::CfgVerificationError> {
+        match self {
+            Self::Verified(cfg) => Ok(cfg),
+            Self::Deferred(cfg) => cfg.finish_after_optimization(type_pool),
+        }
+    }
+}
+
+struct CfgSpliceState {
+    cfg: SpliceCfg,
+    domains: crate::durable_cfg::CfgDomainProjection,
+    interner: Arc<lasso::ThreadedRodeo>,
+    pending_interner_strings: Vec<String>,
+    symbol_by_spelling: AHashMap<String, lasso::Spur>,
+    strings: Vec<String>,
+    string_indices: AHashMap<String, u32>,
+    local_atoms: Vec<rue_air::LocalAtomRecord<crate::StableDefinitionKey, crate::ModuleId>>,
+    local_atom_positions:
+        AHashMap<rue_air::LocalAtomId<crate::StableDefinitionKey, crate::ModuleId>, usize>,
+    symbol_mappings: std::collections::BTreeMap<String, String>,
+    source_by_machine: std::collections::BTreeMap<String, String>,
+    foreign_symbols: std::collections::BTreeSet<String>,
+    materialization_warnings: Vec<rue_error::CompileWarning>,
+    warnings: Vec<rue_error::CompileWarning>,
+    implicit_destructor_targets: std::collections::BTreeSet<crate::TypeInstanceKey>,
+    implicit_drop_glue_targets: std::collections::BTreeSet<crate::TypeInstanceKey>,
+    implicit_destructor_dependencies_complete: bool,
+}
+
+impl CfgSpliceState {
+    fn new(
+        record: &CfgRecord,
+        verification_policy: SpliceVerificationPolicy,
+    ) -> Result<Self, SpliceCalleeFailure> {
+        let mut symbol_by_spelling = AHashMap::with_capacity(record.interner.len());
+        for (symbol, spelling) in record.interner.iter() {
+            symbol_by_spelling.insert(spelling.to_owned(), symbol);
+        }
+        let mut string_indices = AHashMap::with_capacity(record.strings.len());
+        for (index, spelling) in record.strings.iter().enumerate() {
+            let index = u32::try_from(index).map_err(|_| SpliceCalleeFailure::StringIndex)?;
+            string_indices.entry(spelling.clone()).or_insert(index);
+        }
+        let local_atom_positions = record
+            .local_atoms
+            .iter()
+            .enumerate()
+            .map(|(position, atom)| (atom.identity.clone(), position))
+            .collect();
+        let mut source_by_machine = std::collections::BTreeMap::new();
+        for (source, machine) in record.codegen.symbol_mappings.iter() {
+            if let Some(previous) = source_by_machine.insert(machine.clone(), source.clone())
+                && previous != *source
+            {
+                return Err(SpliceCalleeFailure::ConflictingMachineSymbol);
+            }
+        }
+        Ok(Self {
+            cfg: if verification_policy == SpliceVerificationPolicy::Immediate {
+                SpliceCfg::Verified(record.cfg.clone())
+            } else {
+                SpliceCfg::Deferred(record.cfg.clone().into_editor())
+            },
+            domains: record.domains.clone(),
+            interner: record.interner.clone(),
+            pending_interner_strings: Vec::new(),
+            symbol_by_spelling,
+            strings: record.strings.to_vec(),
+            string_indices,
+            local_atoms: record.local_atoms.to_vec(),
+            local_atom_positions,
+            symbol_mappings: record.codegen.symbol_mappings.as_ref().clone(),
+            source_by_machine,
+            foreign_symbols: record.codegen.foreign_symbols.as_ref().clone(),
+            materialization_warnings: record.materialization_warnings.to_vec(),
+            warnings: record.warnings.to_vec(),
+            implicit_destructor_targets: record
+                .implicit_destructor_targets
+                .iter()
+                .cloned()
+                .collect(),
+            implicit_drop_glue_targets: record.implicit_drop_glue_targets.iter().cloned().collect(),
+            implicit_destructor_dependencies_complete: record
+                .implicit_destructor_dependencies_complete,
+        })
+    }
+
+    fn resolve_symbol(&self, symbol: lasso::Spur) -> Option<&str> {
+        let ordinal = symbol.into_usize();
+        if ordinal < self.interner.len() {
+            self.interner.try_resolve(&symbol)
+        } else {
+            self.pending_interner_strings
+                .get(ordinal.checked_sub(self.interner.len())?)
+                .map(String::as_str)
+        }
+    }
+}
+
+struct SpliceCalleeOutcome {
+    callee_cfg: rue_cfg::ValidatedCfg,
+    callee_value_base: u32,
+    callee_block_base: u32,
+}
+
+fn plan_codegen_symbol_mappings(
+    current: &std::collections::BTreeMap<String, String>,
+    source_by_machine: &std::collections::BTreeMap<String, String>,
+    imported: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<(String, String)>, SpliceCalleeFailure> {
+    let mut additions = Vec::new();
+    let mut added_source_by_machine = std::collections::BTreeMap::<&str, &str>::new();
+    for (source, machine) in imported {
+        if let Some(previous) = current.get(source)
+            && previous != machine
+        {
+            return Err(SpliceCalleeFailure::ConflictingSourceSymbol);
+        }
+        if let Some(previous) = source_by_machine.get(machine)
+            && previous != source
+        {
+            return Err(SpliceCalleeFailure::ConflictingMachineSymbol);
+        }
+        if let Some(previous) = added_source_by_machine.insert(machine, source)
+            && previous != source
+        {
+            return Err(SpliceCalleeFailure::ConflictingMachineSymbol);
+        }
+        if !current.contains_key(source) {
+            additions.push((source.clone(), machine.clone()));
+        }
+    }
+    Ok(additions)
+}
+
+fn accessor_splice_failure_message(error: SpliceCalleeFailure) -> String {
+    match error {
+        SpliceCalleeFailure::Domain(error) => {
+            format!("accessor CFG domain import failed: {error:?}")
+        }
+        SpliceCalleeFailure::ImportedCfg(error) => {
+            format!("imported accessor CFG failed verification: {error}")
+        }
+        SpliceCalleeFailure::MissingAtomString => {
+            "accessor local atom has no imported string id".to_owned()
+        }
+        SpliceCalleeFailure::Splice(error) => {
+            format!("mandatory accessor CFG splice failed: {error}")
+        }
+        SpliceCalleeFailure::Verification(error) => {
+            format!("mandatory accessor CFG splice failed: {error}")
+        }
+        error => format!("accessor CFG splice merge failed: {error}"),
+    }
+}
+
+fn general_splice_failure_message(error: SpliceCalleeFailure) -> String {
+    match error {
+        SpliceCalleeFailure::Domain(error) => {
+            format!("general inline CFG domain import failed: {error:?}")
+        }
+        SpliceCalleeFailure::ImportedCfg(error) => {
+            format!("imported general inline CFG failed verification: {error}")
+        }
+        SpliceCalleeFailure::MissingAtomString => {
+            "general inline local atom has no imported string id".to_owned()
+        }
+        SpliceCalleeFailure::Splice(error) => format!("general inline splice failed: {error}"),
+        SpliceCalleeFailure::Verification(error) => {
+            format!("general inline splice failed: {error}")
+        }
+        error => format!("general inline splice merge failed: {error}"),
+    }
+}
+
+/// Import and splice one callee as a single transaction over every caller-owned
+/// surface. The drivers retain eligibility, order, and budget policy; this is
+/// the sole authority that mutates the accepted splice result.
+fn splice_callee(
+    state: &mut CfgSpliceState,
+    call: rue_cfg::CfgValue,
+    call_block: rue_cfg::BlockId,
+    callee: &CfgRecord,
+    current_callee_body_span: Span,
+    type_pool: &rue_air::FrozenTypeInternPool,
+    warning_policy: SpliceWarningPolicy,
+    verification_policy: SpliceVerificationPolicy,
+    mut checkpoint: impl FnMut() -> Result<(), QueryAbort>,
+) -> Result<SpliceCalleeOutcome, SpliceCalleeFailure> {
+    checkpoint().map_err(SpliceCalleeFailure::Canceled)?;
+    let mut added_interner_strings = Vec::<String>::new();
+    let mut added_symbols = AHashMap::<String, lasso::Spur>::new();
+    let mut added_strings = Vec::<String>::new();
+    let mut added_string_indices = AHashMap::<String, u32>::new();
+    let (callee_cfg, string_map, domain_plan) = state
+        .domains
+        .import_accessor_cfg(
+            &callee.domains,
+            &callee.cfg,
+            &callee.interner,
+            |spelling| {
+                if let Some(symbol) = state.symbol_by_spelling.get(spelling).copied() {
+                    return Ok(symbol);
+                }
+                if let Some(symbol) = added_symbols.get(spelling).copied() {
+                    return Ok(symbol);
+                }
+                let ordinal = state
+                    .interner
+                    .len()
+                    .checked_add(state.pending_interner_strings.len())
+                    .and_then(|value| value.checked_add(added_interner_strings.len()))
+                    .ok_or(crate::durable_cfg::CfgDomainFailure::Shape)?;
+                let symbol = lasso::Spur::try_from_usize(ordinal)
+                    .ok_or(crate::durable_cfg::CfgDomainFailure::Shape)?;
+                added_symbols.insert(spelling.to_owned(), symbol);
+                added_interner_strings.push(spelling.to_owned());
+                Ok(symbol)
+            },
+            |spelling| {
+                if let Some(index) = state.string_indices.get(spelling).copied() {
+                    return Ok(index);
+                }
+                if let Some(index) = added_string_indices.get(spelling).copied() {
+                    return Ok(index);
+                }
+                let index = state
+                    .strings
+                    .len()
+                    .checked_add(added_strings.len())
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or(crate::durable_cfg::CfgDomainFailure::Shape)?;
+                added_string_indices.insert(spelling.to_owned(), index);
+                added_strings.push(spelling.to_owned());
+                Ok(index)
+            },
+            current_callee_body_span,
+        )
+        .map_err(SpliceCalleeFailure::Domain)?;
+    let callee_cfg = callee_cfg
+        .finish_after_optimization(type_pool)
+        .map_err(SpliceCalleeFailure::ImportedCfg)?;
+
+    let mut added_atoms = Vec::new();
+    let mut added_atom_positions = AHashMap::new();
+    for atom in callee.local_atoms.iter() {
+        let dense_id = string_map
+            .get(&atom.dense_id)
+            .copied()
+            .ok_or(SpliceCalleeFailure::MissingAtomString)?;
+        let mut imported = atom.clone();
+        imported.dense_id = dense_id;
+        let imported_string = state
+            .strings
+            .get(dense_id as usize)
+            .map(String::as_str)
+            .or_else(|| {
+                usize::try_from(dense_id)
+                    .ok()
+                    .and_then(|index| index.checked_sub(state.strings.len()))
+                    .and_then(|index| added_strings.get(index))
+                    .map(String::as_str)
+            });
+        if imported_string != Some(imported.content.as_ref()) {
+            return Err(SpliceCalleeFailure::ConflictingAtom);
+        }
+        if let Some(position) = state.local_atom_positions.get(&imported.identity).copied() {
+            let previous = &state.local_atoms[position];
+            if previous.content != imported.content
+                || state
+                    .strings
+                    .get(previous.dense_id as usize)
+                    .map(String::as_str)
+                    != imported_string
+            {
+                return Err(SpliceCalleeFailure::ConflictingAtom);
+            }
+        } else if let Some(position) = added_atom_positions.get(&imported.identity).copied() {
+            let previous: &rue_air::LocalAtomRecord<_, _> = &added_atoms[position];
+            if previous.content != imported.content || previous.dense_id != imported.dense_id {
+                return Err(SpliceCalleeFailure::ConflictingAtom);
+            }
+        } else {
+            added_atom_positions.insert(imported.identity.clone(), added_atoms.len());
+            added_atoms.push(imported);
+        }
+    }
+    for (source, machine) in callee.codegen.symbol_mappings.iter() {
+        if state.symbol_mappings.get(source) == Some(machine)
+            && state.foreign_symbols.contains(machine)
+                != callee.codegen.foreign_symbols.contains(machine)
+        {
+            return Err(SpliceCalleeFailure::ConflictingForeignSymbol);
+        }
+    }
+    let mapping_additions = plan_codegen_symbol_mappings(
+        &state.symbol_mappings,
+        &state.source_by_machine,
+        &callee.codegen.symbol_mappings,
+    )?;
+    let foreign_additions = callee
+        .codegen
+        .foreign_symbols
+        .iter()
+        .filter(|symbol| !state.foreign_symbols.contains(*symbol))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut materialization_warning_additions = Vec::new();
+    let mut warning_additions = Vec::new();
+    if warning_policy == SpliceWarningPolicy::Import {
+        for warning in import_warnings(
+            &callee.materialization_warnings,
+            callee.body_span,
+            current_callee_body_span,
+        ) {
+            if !state.materialization_warnings.contains(&warning)
+                && !materialization_warning_additions.contains(&warning)
+            {
+                materialization_warning_additions.push(warning);
+            }
+        }
+        for warning in import_warnings(&callee.warnings, callee.body_span, current_callee_body_span)
+        {
+            if !state.warnings.contains(&warning) && !warning_additions.contains(&warning) {
+                warning_additions.push(warning);
+            }
+        }
+    }
+    let destructor_additions = callee
+        .implicit_destructor_targets
+        .iter()
+        .filter(|target| !state.implicit_destructor_targets.contains(*target))
+        .cloned()
+        .collect::<Vec<_>>();
+    let drop_glue_additions = callee
+        .implicit_drop_glue_targets
+        .iter()
+        .filter(|target| !state.implicit_drop_glue_targets.contains(*target))
+        .cloned()
+        .collect::<Vec<_>>();
+    let dependencies_complete = state.implicit_destructor_dependencies_complete
+        && callee.implicit_destructor_dependencies_complete;
+
+    let callee_value_base = state.cfg.as_cfg().value_count() as u32;
+    let callee_block_base = state.cfg.as_cfg().block_count() as u32;
+    let spliced =
+        rue_cfg::splice_call_in_block(state.cfg.as_cfg(), call, call_block, &callee_cfg, type_pool)
+            .map_err(SpliceCalleeFailure::Splice)?;
+    let spliced = if verification_policy == SpliceVerificationPolicy::Immediate {
+        SpliceCfg::Verified(
+            spliced
+                .finish_after_optimization(type_pool)
+                .map_err(SpliceCalleeFailure::Verification)?,
+        )
+    } else {
+        SpliceCfg::Deferred(spliced)
+    };
+
+    state.domains.apply_splice_plan(domain_plan);
+    for spelling in added_interner_strings {
+        let symbol = added_symbols[&spelling];
+        state.symbol_by_spelling.insert(spelling.clone(), symbol);
+        state.pending_interner_strings.push(spelling);
+    }
+    for spelling in added_strings {
+        let index = added_string_indices[&spelling];
+        state.string_indices.insert(spelling.clone(), index);
+        state.strings.push(spelling);
+    }
+    for atom in added_atoms {
+        state
+            .local_atom_positions
+            .insert(atom.identity.clone(), state.local_atoms.len());
+        state.local_atoms.push(atom);
+    }
+    for (source, machine) in mapping_additions {
+        state
+            .source_by_machine
+            .insert(machine.clone(), source.clone());
+        state.symbol_mappings.insert(source, machine);
+    }
+    state.foreign_symbols.extend(foreign_additions);
+    state
+        .materialization_warnings
+        .extend(materialization_warning_additions);
+    state.warnings.extend(warning_additions);
+    state
+        .implicit_destructor_targets
+        .extend(destructor_additions);
+    state.implicit_drop_glue_targets.extend(drop_glue_additions);
+    state.implicit_destructor_dependencies_complete = dependencies_complete;
+    state.cfg = spliced;
+    Ok(SpliceCalleeOutcome {
+        callee_cfg,
+        callee_value_base,
+        callee_block_base,
+    })
+}
+
+fn materialize_splice_interner(
+    state: &CfgSpliceState,
+    mut checkpoint: impl FnMut() -> Result<(), QueryAbort>,
+) -> Result<Arc<lasso::ThreadedRodeo>, CfgInternerCopyFailure<QueryAbort>> {
+    let interner = copy_interner_preserving_ordinals(&state.interner, || checkpoint())?;
+    for (index, spelling) in state.pending_interner_strings.iter().enumerate() {
+        if index % 64 == 0 {
+            checkpoint().map_err(CfgInternerCopyFailure::Checkpoint)?;
+        }
+        let expected = lasso::Spur::try_from_usize(state.interner.len() + index).ok_or(
+            CfgInternerCopyFailure::InvalidSourceOrdinal(state.interner.len() + index),
+        )?;
+        let actual = interner
+            .try_get_or_intern(spelling)
+            .map_err(|error| CfgInternerCopyFailure::Capacity(error.kind()))?;
+        if actual != expected {
+            return Err(CfgInternerCopyFailure::OrdinalMismatch { expected, actual });
+        }
+    }
+    Ok(Arc::new(interner))
+}
+
 pub(crate) fn evaluate_optimized_cfg(
     context: &QueryContext,
     cfgs: &QueryFamily<CfgQueryKey, CfgValue>,
@@ -1760,27 +2262,6 @@ pub(crate) fn evaluate_optimized_cfg(
     if key.accessor_dependencies.is_empty() {
         return Ok(optimize_cfg_without_accessors(context, key, record));
     }
-    let mut current = record.cfg.clone();
-    let mut domains = record.domains.clone();
-    let mut strings = record.strings.to_vec();
-    let mut local_atoms = record.local_atoms.to_vec();
-    let mut local_atom_identities = None;
-    let mut symbol_mappings = record.codegen.symbol_mappings.as_ref().clone();
-    let mut foreign_symbols = record.codegen.foreign_symbols.as_ref().clone();
-    let mut materialization_warnings = record.materialization_warnings.to_vec();
-    let mut warnings = record.warnings.to_vec();
-    let mut implicit_destructor_targets = record
-        .implicit_destructor_targets
-        .iter()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut implicit_drop_glue_targets = record
-        .implicit_drop_glue_targets
-        .iter()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut implicit_destructor_dependencies_complete =
-        record.implicit_destructor_dependencies_complete;
     let accessor_terminals =
         context.query_registered_adaptive_batch_refs(cfgs, key.accessor_dependencies.iter())?;
     let mut accessor_cfgs = std::collections::BTreeMap::new();
@@ -1788,10 +2269,7 @@ pub(crate) fn evaluate_optimized_cfg(
         let QueryOutcome::Success(value) = terminal.outcome() else {
             unreachable!("Cfg publishes typed values")
         };
-        let dependency_body_span = match &dependency.semantic_input {
-            CfgSemanticInput::Body { input, .. } => input.body_span,
-            CfgSemanticInput::DropGlue { body_span, .. } => *body_span,
-        };
+        let dependency_body_span = semantic_input_body_span(&dependency.semantic_input);
         let CfgValue::Available(callee) = value else {
             let CfgValue::Failure {
                 errors,
@@ -1814,39 +2292,34 @@ pub(crate) fn evaluate_optimized_cfg(
             (callee.clone(), dependency_body_span),
         );
     }
-    let interner =
-        match copy_interner_preserving_ordinals(&record.interner, || context.check_canceled()) {
-            Ok(interner) => Arc::new(interner),
-            Err(CfgInternerCopyFailure::Checkpoint(abort)) => return Err(abort),
-            Err(CfgInternerCopyFailure::Capacity(kind)) => {
-                return Ok(QueryOutput::success(interner_copy_capacity_failure(
-                    kind,
-                    record.body_span,
-                ))
-                .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
-            }
-            Err(error) => {
-                return Ok(QueryOutput::success(internal_failure(
-                    format!("CFG interner isolation failed: {error}"),
-                    record.body_span,
-                ))
-                .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
-            }
-        };
-    context.record_work(rue_query::WorkItem::new(
-        "cfg.accessor-interner-copy-symbols",
-        interner.len() as u64,
-    ));
+    let mut state = match CfgSpliceState::new(record, SpliceVerificationPolicy::Immediate) {
+        Ok(state) => state,
+        Err(error) => {
+            return Ok(QueryOutput::success(internal_failure(
+                format!("accessor CFG splice merge failed: {error}"),
+                record.body_span,
+            ))
+            .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+        }
+    };
     let mut accessor_calls: std::collections::VecDeque<_> =
-        attached_accessor_calls(&current, 0, 0).into();
+        attached_accessor_calls(state.cfg.as_cfg(), 0, 0).into();
     let mut splice_block_redirects = AHashMap::new();
     while let Some((call, call_block)) = accessor_calls.pop_front() {
         let call_block = resolve_splice_block(call_block, &mut splice_block_redirects);
-        let rue_cfg::CfgInstData::AccessorCall { name, .. } = current.get_inst(call).data else {
+        let rue_cfg::CfgInstData::AccessorCall { name, .. } =
+            state.cfg.as_cfg().get_inst(call).data
+        else {
             unreachable!()
         };
-        let source_name = record.interner.resolve(&name);
-        let Some(identity) = domains.callable_for_symbol(name) else {
+        let Some(source_name) = state.resolve_symbol(name) else {
+            return Ok(QueryOutput::success(internal_failure(
+                "accessor call symbol has no interned spelling",
+                record.body_span,
+            ))
+            .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+        };
+        let Some(identity) = state.domains.callable_for_symbol(name) else {
             return Ok(QueryOutput::success(internal_failure(
                 format!("accessor call '{source_name}' has no stable callable identity"),
                 record.body_span,
@@ -1860,109 +2333,72 @@ pub(crate) fn evaluate_optimized_cfg(
             ))
             .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
         };
-        let (callee_cfg, string_map) = match domains.import_accessor_cfg(
-            &callee.domains,
-            &callee.cfg,
-            &callee.interner,
-            &interner,
-            &mut strings,
-            *callee_body_span,
-        ) {
-            Ok(value) => value,
-            Err(error) => {
-                return Ok(QueryOutput::success(internal_failure(
-                    format!("accessor CFG domain import failed: {error:?}"),
-                    record.body_span,
-                ))
-                .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
-            }
-        };
-        let callee_cfg = match callee_cfg.finish_after_optimization(&record.type_pool) {
-            Ok(cfg) => cfg,
-            Err(error) => {
-                return Ok(QueryOutput::success(internal_failure(
-                    format!("imported accessor CFG failed verification: {error}"),
-                    record.body_span,
-                ))
-                .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
-            }
-        };
-        for atom in callee.local_atoms.iter() {
-            let mut atom = atom.clone();
-            let Some(dense_id) = string_map.get(&atom.dense_id).copied() else {
-                return Ok(QueryOutput::success(internal_failure(
-                    "accessor local atom has no imported string id",
-                    record.body_span,
-                ))
-                .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
-            };
-            atom.dense_id = dense_id;
-            let local_atom_identities = local_atom_identities.get_or_insert_with(|| {
-                local_atoms
-                    .iter()
-                    .map(|atom| atom.identity.clone())
-                    .collect::<AHashSet<_>>()
-            });
-            if local_atom_identities.insert(atom.identity.clone()) {
-                local_atoms.push(atom);
-            }
-        }
-        symbol_mappings.extend(
-            callee
-                .codegen
-                .symbol_mappings
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone())),
-        );
-        foreign_symbols.extend(callee.codegen.foreign_symbols.iter().cloned());
-        for warning in import_warnings(
-            &callee.materialization_warnings,
-            callee.body_span,
-            *callee_body_span,
-        ) {
-            if !materialization_warnings.contains(&warning) {
-                materialization_warnings.push(warning);
-            }
-        }
-        for warning in import_warnings(&callee.warnings, callee.body_span, *callee_body_span) {
-            if !warnings.contains(&warning) {
-                warnings.push(warning);
-            }
-        }
-        implicit_destructor_targets.extend(callee.implicit_destructor_targets.iter().cloned());
-        implicit_drop_glue_targets.extend(callee.implicit_drop_glue_targets.iter().cloned());
-        implicit_destructor_dependencies_complete &=
-            callee.implicit_destructor_dependencies_complete;
-        let callee_value_base = current.value_count() as u32;
-        // `inline_call_in_block` appends copied callee blocks before its
-        // continuation so projected-place definitions dominate continuation
-        // consumers during lazy backend materialization.
-        let callee_block_base = current.block_count() as u32;
-        let continuation =
-            rue_cfg::BlockId::from_raw(callee_block_base + callee_cfg.block_count() as u32);
-        let introduced_calls =
-            attached_accessor_calls(&callee_cfg, callee_value_base, callee_block_base);
-        current = match rue_cfg::inline_call_in_block(
-            &current,
+        let splice = match splice_callee(
+            &mut state,
             call,
             call_block,
-            &callee_cfg,
+            callee,
+            *callee_body_span,
             &record.type_pool,
+            SpliceWarningPolicy::Import,
+            SpliceVerificationPolicy::Immediate,
+            || context.check_canceled(),
         ) {
-            Ok(cfg) => cfg,
+            Ok(outcome) => outcome,
+            Err(SpliceCalleeFailure::Canceled(abort)) => return Err(abort),
             Err(error) => {
                 return Ok(QueryOutput::success(internal_failure(
-                    format!("mandatory accessor CFG splice failed: {error}"),
+                    accessor_splice_failure_message(error),
                     record.body_span,
                 ))
                 .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
             }
         };
+        let continuation = rue_cfg::BlockId::from_raw(
+            splice.callee_block_base + splice.callee_cfg.block_count() as u32,
+        );
+        let introduced_calls = attached_accessor_calls(
+            &splice.callee_cfg,
+            splice.callee_value_base,
+            splice.callee_block_base,
+        );
         splice_block_redirects.insert(call_block, continuation);
         accessor_calls.extend(introduced_calls);
         context.record_work(rue_query::WorkItem::new("cfg.accessor-splices", 1));
     }
+    let interner = match materialize_splice_interner(&state, || context.check_canceled()) {
+        Ok(interner) => interner,
+        Err(CfgInternerCopyFailure::Checkpoint(abort)) => return Err(abort),
+        Err(CfgInternerCopyFailure::Capacity(kind)) => {
+            return Ok(QueryOutput::success(interner_copy_capacity_failure(
+                kind,
+                record.body_span,
+            ))
+            .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+        }
+        Err(error) => {
+            return Ok(QueryOutput::success(internal_failure(
+                format!("CFG interner isolation failed: {error}"),
+                record.body_span,
+            ))
+            .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+        }
+    };
+    context.record_work(rue_query::WorkItem::new(
+        "cfg.accessor-interner-copy-symbols",
+        record.interner.len() as u64,
+    ));
     let interner_retained_charge = frozen_interner_retained_charge(&interner);
+    let current = match state.cfg.into_validated(&record.type_pool) {
+        Ok(cfg) => cfg,
+        Err(error) => {
+            return Ok(QueryOutput::success(internal_failure(
+                format!("mandatory accessor splice batch failed verification: {error}"),
+                record.body_span,
+            ))
+            .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+        }
+    };
     Ok(finish_cfg_optimization(
         context,
         key,
@@ -1977,31 +2413,34 @@ pub(crate) fn evaluate_optimized_cfg(
             cfg,
             code_growth_used,
             code_growth_blocks_used,
-            domains,
+            domains: state.domains,
             type_pool: record.type_pool.clone(),
             interner,
             interner_retained_charge,
-            strings: strings.into(),
-            local_atoms: local_atoms.into(),
+            strings: state.strings.into(),
+            local_atoms: state.local_atoms.into(),
             local_aggregate_type_aliases: record.local_aggregate_type_aliases,
             local_materialized_type_handles: record.local_materialized_type_handles,
             codegen: Arc::new(CfgCodegenDomain {
                 defined_symbol: record.codegen.defined_symbol.clone(),
-                symbol_mappings: Arc::new(symbol_mappings),
-                foreign_symbols: Arc::new(foreign_symbols),
+                symbol_mappings: Arc::new(state.symbol_mappings),
+                foreign_symbols: Arc::new(state.foreign_symbols),
             }),
-            materialization_warnings: materialization_warnings.into(),
+            materialization_warnings: state.materialization_warnings.into(),
             body_span: record.body_span,
-            warnings: warnings.into(),
-            implicit_destructor_targets: implicit_destructor_targets
+            warnings: state.warnings.into(),
+            implicit_destructor_targets: state
+                .implicit_destructor_targets
                 .into_iter()
                 .collect::<Vec<_>>()
                 .into(),
-            implicit_drop_glue_targets: implicit_drop_glue_targets
+            implicit_drop_glue_targets: state
+                .implicit_drop_glue_targets
                 .into_iter()
                 .collect::<Vec<_>>()
                 .into(),
-            implicit_destructor_dependencies_complete,
+            implicit_destructor_dependencies_complete: state
+                .implicit_destructor_dependencies_complete,
             durable_reuse_allowed: record.durable_reuse_allowed,
         },
     ))
@@ -2266,42 +2705,16 @@ pub(crate) fn apply_general_inlining(
         let CfgValue::Available(record) = &output[index] else {
             continue;
         };
-        let mut domains = record.domains.clone();
-        let mut strings = record.strings.to_vec();
-        let mut interner = match copy_interner_preserving_ordinals(&record.interner, || {
-            context.check_canceled()
-        }) {
-            Ok(interner) => Arc::new(interner),
-            Err(CfgInternerCopyFailure::Checkpoint(abort)) => return Err(abort),
+        let mut state = match CfgSpliceState::new(record, SpliceVerificationPolicy::Deferred) {
+            Ok(state) => state,
             Err(error) => {
                 output[index] = internal_failure(
-                    format!("general inlining interner isolation failed: {error}"),
+                    format!("general inline splice merge failed: {error}"),
                     record.body_span,
                 );
                 continue;
             }
         };
-        let mut local_atoms = record.local_atoms.to_vec();
-        let mut local_atom_identities = local_atoms
-            .iter()
-            .map(|atom| atom.identity.clone())
-            .collect::<AHashSet<_>>();
-        let mut symbol_mappings = record.codegen.symbol_mappings.as_ref().clone();
-        let mut foreign_symbols = record.codegen.foreign_symbols.as_ref().clone();
-        let materialization_warnings = record.materialization_warnings.to_vec();
-        let warnings = record.warnings.to_vec();
-        let mut implicit_destructor_targets = record
-            .implicit_destructor_targets
-            .iter()
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
-        let mut implicit_drop_glue_targets = record
-            .implicit_drop_glue_targets
-            .iter()
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
-        let mut implicit_destructor_dependencies_complete =
-            record.implicit_destructor_dependencies_complete;
         // Splices run against a plain `Cfg` and the batch is verified once,
         // below. `ValidatedCfg` can only be minted by verifying, so threading
         // it through this loop re-proved the whole caller after every splice,
@@ -2310,7 +2723,6 @@ pub(crate) fn apply_general_inlining(
         // Lattice compile. Nothing read those proofs -- `optimize_with_budget` below
         // demands a `ValidatedCfg` and mints its own, so the graph that
         // reaches a consumer is verified exactly as strictly as before.
-        let mut current: rue_cfg::Cfg = (*record.cfg).clone();
         let mut growth_budget = (key.opt_level == rue_cfg::OptLevel::O3).then(|| {
             rue_cfg::opt::CodeGrowthBudget::with_used(
                 record.code_growth_used,
@@ -2328,7 +2740,7 @@ pub(crate) fn apply_general_inlining(
             let Some(callee) = record_lookup.get(&callee_function).copied() else {
                 continue;
             };
-            let growth = match rue_cfg::splice_call_growth(&current, call, &callee.cfg) {
+            let growth = match rue_cfg::splice_call_growth(state.cfg.as_cfg(), call, &callee.cfg) {
                 Ok(growth) => growth,
                 Err(error) => {
                     failed = Some(format!("general inline growth preflight failed: {error}"));
@@ -2357,7 +2769,7 @@ pub(crate) fn apply_general_inlining(
                     "cfg.general-inline-importability-checks",
                     1,
                 ));
-                let result = domains.check_importable(&callee.domains);
+                let result = state.domains.check_importable(&callee.domains);
                 importability_cache.insert(callee_function.clone(), result.clone());
                 result
             };
@@ -2377,7 +2789,9 @@ pub(crate) fn apply_general_inlining(
                 ));
                 break;
             }
-            let call_block = current
+            let call_block = state
+                .cfg
+                .as_cfg()
                 .blocks()
                 .iter()
                 .find(|block| block.insts.contains(&call))
@@ -2390,26 +2804,6 @@ pub(crate) fn apply_general_inlining(
                     break;
                 }
             };
-            // Domain import allocates symbols/strings and mutates its
-            // projection before remapping the CFG. Keep those mutations in a
-            // candidate projection until the splice itself succeeds; a
-            // malformed or otherwise refused candidate must not publish
-            // metadata for a call that was never accepted.
-            let mut candidate_domains = domains.clone();
-            let mut candidate_strings = strings.clone();
-            // `import_accessor_cfg` interns symbols while it remaps the callee.
-            // Keep that resource mutation transactional too: a later remap or
-            // splice failure must not leave an unused symbol in a caller that
-            // nevertheless publishes an earlier accepted splice.
-            let candidate_interner =
-                match copy_interner_preserving_ordinals(&interner, || context.check_canceled()) {
-                    Ok(interner) => Arc::new(interner),
-                    Err(CfgInternerCopyFailure::Checkpoint(abort)) => return Err(abort),
-                    Err(error) => {
-                        failed = Some(format!("general inlining interner staging failed: {error}"));
-                        break;
-                    }
-                };
             context.record_work(rue_query::WorkItem::new(
                 "cfg.general-inline-interner-stages",
                 1,
@@ -2418,16 +2812,27 @@ pub(crate) fn apply_general_inlining(
                 "cfg.general-inline-import-attempts",
                 1,
             ));
-            let (callee_cfg, string_map) = match candidate_domains.import_accessor_cfg(
-                &callee.domains,
-                &callee.cfg,
-                &callee.interner,
-                &candidate_interner,
-                &mut candidate_strings,
-                callee.body_span,
+            let Some(callee_key) = key_by_function.get(&callee_function).copied() else {
+                failed = Some("general inline callee query key is unavailable".to_owned());
+                break;
+            };
+            let current_callee_body_span = semantic_input_body_span(&callee_key.cfg.semantic_input);
+            match splice_callee(
+                &mut state,
+                call,
+                call_block,
+                callee,
+                current_callee_body_span,
+                &record.type_pool,
+                SpliceWarningPolicy::Ignore,
+                SpliceVerificationPolicy::Deferred,
+                || context.check_canceled(),
             ) {
-                Ok(value) => value,
-                Err(crate::durable_cfg::CfgDomainFailure::MissingStableType(_)) => {
+                Ok(_) => {}
+                Err(SpliceCalleeFailure::Canceled(abort)) => return Err(abort),
+                Err(SpliceCalleeFailure::Domain(
+                    crate::durable_cfg::CfgDomainFailure::MissingStableType(_),
+                )) => {
                     // A body-local type domain that is not present in the
                     // caller cannot be imported without widening the caller's
                     // immutable type pool. It is outside the conservative
@@ -2435,52 +2840,10 @@ pub(crate) fn apply_general_inlining(
                     continue;
                 }
                 Err(error) => {
-                    failed = Some(format!(
-                        "general inline CFG domain import failed: {error:?}"
-                    ));
+                    failed = Some(general_splice_failure_message(error));
                     break;
-                }
-            };
-            let callee_cfg = match callee_cfg.finish_after_optimization(&record.type_pool) {
-                Ok(cfg) => cfg,
-                Err(error) => {
-                    failed = Some(format!(
-                        "imported general inline CFG failed verification: {error}"
-                    ));
-                    break;
-                }
-            };
-            let mut imported_atoms = Vec::new();
-            let mut imported_atom_identities = ahash::AHashSet::new();
-            for atom in callee.local_atoms.iter() {
-                let Some(dense_id) = string_map.get(&atom.dense_id).copied() else {
-                    failed = Some("general inline local atom has no imported string id".to_owned());
-                    break;
-                };
-                let mut atom = atom.clone();
-                atom.dense_id = dense_id;
-                if !local_atom_identities.contains(&atom.identity)
-                    && imported_atom_identities.insert(atom.identity.clone())
-                {
-                    imported_atoms.push(atom);
                 }
             }
-            if failed.is_some() {
-                break;
-            }
-            let candidate = match rue_cfg::splice_call_in_block(
-                &current,
-                call,
-                call_block,
-                &callee_cfg,
-                &record.type_pool,
-            ) {
-                Ok(cfg) => cfg,
-                Err(error) => {
-                    failed = Some(format!("general inline splice failed: {error}"));
-                    break;
-                }
-            };
             if let Some(budget) = growth_budget.as_mut() {
                 assert!(
                     budget.can_charge(growth_charge),
@@ -2491,26 +2854,6 @@ pub(crate) fn apply_general_inlining(
                     break;
                 }
             }
-            domains = candidate_domains;
-            strings = candidate_strings;
-            interner = candidate_interner;
-            for atom in imported_atoms {
-                local_atom_identities.insert(atom.identity.clone());
-                local_atoms.push(atom);
-            }
-            symbol_mappings.extend(
-                callee
-                    .codegen
-                    .symbol_mappings
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone())),
-            );
-            foreign_symbols.extend(callee.codegen.foreign_symbols.iter().cloned());
-            implicit_destructor_targets.extend(callee.implicit_destructor_targets.iter().cloned());
-            implicit_drop_glue_targets.extend(callee.implicit_drop_glue_targets.iter().cloned());
-            implicit_destructor_dependencies_complete &=
-                callee.implicit_destructor_dependencies_complete;
-            current = candidate;
             spliced = true;
             if growth_budget.is_some() {
                 context.record_work(rue_query::WorkItem::new(
@@ -2531,8 +2874,19 @@ pub(crate) fn apply_general_inlining(
         if !spliced {
             continue;
         }
+        let interner = match materialize_splice_interner(&state, || context.check_canceled()) {
+            Ok(interner) => interner,
+            Err(CfgInternerCopyFailure::Checkpoint(abort)) => return Err(abort),
+            Err(error) => {
+                output[index] = internal_failure(
+                    format!("general inlining interner isolation failed: {error}"),
+                    record.body_span,
+                );
+                continue;
+            }
+        };
         // The whole batch is proved here, once.
-        let current = match current.finish_after_optimization(&record.type_pool) {
+        let current = match state.cfg.into_validated(&record.type_pool) {
             Ok(cfg) => cfg,
             Err(error) => {
                 output[index] = internal_failure(
@@ -2589,31 +2943,34 @@ pub(crate) fn apply_general_inlining(
             cfg: current,
             code_growth_used: budget.used(),
             code_growth_blocks_used: budget.used_blocks(),
-            domains,
+            domains: state.domains,
             type_pool: record.type_pool.clone(),
             interner,
             interner_retained_charge,
-            strings: strings.into(),
-            local_atoms: local_atoms.into(),
+            strings: state.strings.into(),
+            local_atoms: state.local_atoms.into(),
             local_aggregate_type_aliases: record.local_aggregate_type_aliases,
             local_materialized_type_handles: record.local_materialized_type_handles,
             codegen: Arc::new(CfgCodegenDomain {
                 defined_symbol: record.codegen.defined_symbol.clone(),
-                symbol_mappings: Arc::new(symbol_mappings),
-                foreign_symbols: Arc::new(foreign_symbols),
+                symbol_mappings: Arc::new(state.symbol_mappings),
+                foreign_symbols: Arc::new(state.foreign_symbols),
             }),
-            materialization_warnings: materialization_warnings.into(),
+            materialization_warnings: state.materialization_warnings.into(),
             body_span: record.body_span,
-            warnings: warnings.into(),
-            implicit_destructor_targets: implicit_destructor_targets
+            warnings: state.warnings.into(),
+            implicit_destructor_targets: state
+                .implicit_destructor_targets
                 .into_iter()
                 .collect::<Vec<_>>()
                 .into(),
-            implicit_drop_glue_targets: implicit_drop_glue_targets
+            implicit_drop_glue_targets: state
+                .implicit_drop_glue_targets
                 .into_iter()
                 .collect::<Vec<_>>()
                 .into(),
-            implicit_destructor_dependencies_complete,
+            implicit_destructor_dependencies_complete: state
+                .implicit_destructor_dependencies_complete,
             durable_reuse_allowed: false,
         }));
         changed.insert(function.clone());
@@ -2983,7 +3340,7 @@ fn finish_cfg_optimization(
 }
 
 fn attached_accessor_calls(
-    cfg: &rue_cfg::ValidatedCfg,
+    cfg: &rue_cfg::Cfg,
     value_base: u32,
     block_base: u32,
 ) -> Vec<(rue_cfg::CfgValue, rue_cfg::BlockId)> {
@@ -3051,6 +3408,183 @@ mod accessor_graph_tests {
         assert!(source.get("callee-only").is_none());
         assert_eq!(frozen_interner_retained_charge(&source), published_charge);
         assert!(frozen_interner_retained_charge(&copy) > published_charge);
+    }
+
+    #[test]
+    fn splice_state_indexes_each_spelling_by_its_actual_interner_key() {
+        let mut source = String::new();
+        for index in 0..16 {
+            source.push_str(&format!("fn varied_{index}() -> i32 {{ {index} }} "));
+        }
+        source.push_str("fn main() -> i32 { ");
+        for index in 0..16 {
+            source.push_str(&format!("varied_{index}() + "));
+        }
+        source.push_str("0 }");
+        let snapshot = crate::SourceSnapshot::single("<splice-symbol-index>", source).unwrap();
+        let mut session = crate::CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let raw = session
+            .rooted_pre_optimization_cfg(&crate::CompileOptions::default())
+            .unwrap();
+        let main = raw
+            .functions()
+            .iter()
+            .find(|unit| unit.definition_source_name() == Some("main"))
+            .unwrap()
+            .record
+            .clone();
+        assert!(main.interner.len() >= 16, "fixture must exercise many keys");
+
+        let state = CfgSpliceState::new(&main, SpliceVerificationPolicy::Deferred).unwrap();
+        assert_eq!(state.symbol_by_spelling.len(), main.interner.len());
+        for (symbol, spelling) in main.interner.iter() {
+            assert_eq!(main.interner.get(spelling), Some(symbol));
+            assert_eq!(state.symbol_by_spelling.get(spelling), Some(&symbol));
+            assert_eq!(state.resolve_symbol(symbol), Some(spelling));
+        }
+    }
+
+    #[test]
+    fn nested_accessor_splices_materialize_successive_symbol_and_string_placeholders() {
+        let snapshot = crate::SourceSnapshot::single(
+            "<nested-splice-placeholders>",
+            r#"
+                fn outer_helper() -> i32 { 1 }
+                fn inner_helper() -> i32 { 2 }
+                struct P {
+                    x: i32,
+                    fn link(borrow self) -> borrow i32 {
+                        @dbg(inner_helper());
+                        @dbg("inner-marker");
+                        yield self.x;
+                    }
+                    fn xr(borrow self) -> borrow i32 {
+                        @dbg(outer_helper());
+                        @dbg("outer-marker");
+                        yield self.link();
+                    }
+                }
+                fn main() -> i32 {
+                    let p = P { x: 7 };
+                    @dbg("caller-marker");
+                    if p.xr() == 7 { 0 } else { 1 }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut session = crate::CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let raw = session
+            .rooted_pre_optimization_cfg(&crate::CompileOptions::default())
+            .unwrap();
+        let find = |name: &str| {
+            raw.functions()
+                .iter()
+                .find(|unit| {
+                    matches!(
+                        &unit.function,
+                        crate::FunctionInstanceKey::Definition(definition)
+                            if definition.name() == name
+                    )
+                })
+                .unwrap()
+        };
+        let main = find("main").record.clone();
+        let outer = find("xr").record.clone();
+        let inner_unit = find("link");
+        let inner = inner_unit.record.clone();
+        let inner_identity = inner_unit.function.clone();
+        let (outer_call, outer_block) = attached_accessor_calls(&main.cfg, 0, 0)
+            .into_iter()
+            .next()
+            .unwrap();
+        let mut state = CfgSpliceState::new(&main, SpliceVerificationPolicy::Immediate).unwrap();
+        let base_string_len = state.strings.len();
+
+        let outer_splice = splice_callee(
+            &mut state,
+            outer_call,
+            outer_block,
+            &outer,
+            outer.body_span,
+            &main.type_pool,
+            SpliceWarningPolicy::Import,
+            SpliceVerificationPolicy::Immediate,
+            || Ok(()),
+        )
+        .unwrap();
+        let outer_pending_len = state.pending_interner_strings.len();
+        let outer_string_len = state.strings.len();
+        assert!(outer_pending_len > 0, "outer splice must plan new symbols");
+        assert!(
+            outer_string_len > base_string_len,
+            "outer splice must add strings"
+        );
+
+        let introduced = attached_accessor_calls(
+            &outer_splice.callee_cfg,
+            outer_splice.callee_value_base,
+            outer_splice.callee_block_base,
+        );
+        assert_eq!(introduced.len(), 1);
+        let (inner_call, inner_block) = introduced[0];
+        let rue_cfg::CfgInstData::AccessorCall { name, .. } =
+            state.cfg.as_cfg().get_inst(inner_call).data
+        else {
+            panic!("nested call must remain an accessor call")
+        };
+        let nested_spelling = state.resolve_symbol(name).unwrap();
+        assert_eq!(state.symbol_by_spelling.get(nested_spelling), Some(&name));
+        assert_eq!(
+            state.domains.callable_for_symbol(name),
+            Some(inner_identity)
+        );
+
+        splice_callee(
+            &mut state,
+            inner_call,
+            inner_block,
+            &inner,
+            inner.body_span,
+            &main.type_pool,
+            SpliceWarningPolicy::Import,
+            SpliceVerificationPolicy::Immediate,
+            || Ok(()),
+        )
+        .unwrap();
+        assert!(
+            state.pending_interner_strings.len() > outer_pending_len,
+            "inner splice must plan another symbol"
+        );
+        assert!(
+            state.strings.len() > outer_string_len,
+            "inner splice must plan another string"
+        );
+        assert!(state.string_indices.contains_key("outer-marker"));
+        assert!(state.string_indices.contains_key("inner-marker"));
+
+        let planned = state
+            .pending_interner_strings
+            .iter()
+            .map(|spelling| {
+                (
+                    spelling.clone(),
+                    state.symbol_by_spelling.get(spelling).copied().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let materialized = materialize_splice_interner(&state, || Ok(())).unwrap();
+        for (spelling, symbol) in planned {
+            assert_eq!(materialized.get(&spelling), Some(symbol));
+            assert_eq!(materialized.resolve(&symbol), spelling);
+        }
     }
 
     #[test]
@@ -3134,6 +3668,237 @@ mod accessor_graph_tests {
             interner.strings().map(str::len).sum::<usize>(),
             interner.utf8_bytes()
         );
+    }
+
+    #[test]
+    fn splice_failure_leaves_every_caller_surface_unchanged() {
+        let snapshot = crate::SourceSnapshot::single(
+            "<atomic-splice>",
+            "fn callee() -> i32 { @dbg(\"callee\"); 1 } fn main() -> i32 { @dbg(\"caller\"); callee() }",
+        )
+        .unwrap();
+        let options = crate::CompileOptions {
+            opt_level: rue_cfg::OptLevel::O0,
+            ..crate::CompileOptions::default()
+        };
+        let mut session = crate::CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let rooted = session.rooted_cfg(&options).unwrap();
+        let main = rooted
+            .cfgs
+            .iter()
+            .find(|unit| unit.definition_source_name() == Some("main"))
+            .unwrap()
+            .record
+            .clone();
+        let callee = rooted
+            .cfgs
+            .iter()
+            .find(|unit| unit.definition_source_name() == Some("callee"))
+            .unwrap()
+            .record
+            .clone();
+        let (call, call_block) = main
+            .cfg
+            .blocks()
+            .iter()
+            .find_map(|block| {
+                block.insts.iter().find_map(|value| {
+                    matches!(
+                        main.cfg.get_inst(*value).data,
+                        rue_cfg::CfgInstData::Call { runtime: None, .. }
+                    )
+                    .then_some((*value, block.id))
+                })
+            })
+            .unwrap();
+        let mut state = CfgSpliceState::new(&main, SpliceVerificationPolicy::Deferred).unwrap();
+        let cfg_before = format!("{:?}", state.cfg);
+        let domains_before = state.domains.stable_debug_snapshot(&main.air);
+        let interner_before = state
+            .interner
+            .strings()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let pending_interner_before = state.pending_interner_strings.clone();
+        let symbol_index_before = state.symbol_by_spelling.clone();
+        let strings_before = state.strings.clone();
+        let string_indices_before = state.string_indices.clone();
+        let atoms_before = state.local_atoms.clone();
+        let atom_positions_before = state.local_atom_positions.clone();
+        let mappings_before = state.symbol_mappings.clone();
+        let reverse_mappings_before = state.source_by_machine.clone();
+        let foreign_before = state.foreign_symbols.clone();
+        let materialization_warnings_before = state.materialization_warnings.clone();
+        let warnings_before = state.warnings.clone();
+        let destructors_before = state.implicit_destructor_targets.clone();
+        let drop_glue_before = state.implicit_drop_glue_targets.clone();
+        let completeness_before = state.implicit_destructor_dependencies_complete;
+
+        let mut poisoned = (*callee).clone();
+        let (source, machine) = state
+            .symbol_mappings
+            .iter()
+            .next()
+            .map(|(source, machine)| (source.clone(), machine.clone()))
+            .unwrap();
+        poisoned.codegen = Arc::new(CfgCodegenDomain {
+            defined_symbol: poisoned.codegen.defined_symbol.clone(),
+            symbol_mappings: Arc::new(std::collections::BTreeMap::from([(
+                source.clone(),
+                format!("{machine}__conflict"),
+            )])),
+            foreign_symbols: Arc::new(std::collections::BTreeSet::from([
+                "__staged_foreign".to_owned()
+            ])),
+        });
+        poisoned.implicit_destructor_targets = Arc::from([crate::TypeInstanceKey::I32]);
+        poisoned.implicit_drop_glue_targets = Arc::from([crate::TypeInstanceKey::I64]);
+        poisoned.implicit_destructor_dependencies_complete = false;
+        poisoned.warnings = Arc::from([rue_error::CompileWarning::new(
+            rue_error::WarningKind::UnreachableCode,
+            poisoned.body_span,
+        )]);
+
+        assert!(matches!(
+            splice_callee(
+                &mut state,
+                call,
+                call_block,
+                &poisoned,
+                poisoned.body_span,
+                &main.type_pool,
+                SpliceWarningPolicy::Import,
+                SpliceVerificationPolicy::Deferred,
+                || Ok(()),
+            ),
+            Err(SpliceCalleeFailure::ConflictingSourceSymbol)
+        ));
+        assert_eq!(format!("{:?}", state.cfg), cfg_before);
+        assert_eq!(
+            state.domains.stable_debug_snapshot(&main.air),
+            domains_before
+        );
+        assert_eq!(
+            state
+                .interner
+                .strings()
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+            interner_before
+        );
+        assert_eq!(state.pending_interner_strings, pending_interner_before);
+        assert_eq!(state.symbol_by_spelling, symbol_index_before);
+        assert_eq!(state.strings, strings_before);
+        assert_eq!(state.string_indices, string_indices_before);
+        assert_eq!(state.local_atoms, atoms_before);
+        assert_eq!(state.local_atom_positions, atom_positions_before);
+        assert_eq!(state.symbol_mappings, mappings_before);
+        assert_eq!(state.source_by_machine, reverse_mappings_before);
+        assert_eq!(state.foreign_symbols, foreign_before);
+        assert_eq!(
+            state.materialization_warnings,
+            materialization_warnings_before
+        );
+        assert_eq!(state.warnings, warnings_before);
+        assert_eq!(state.implicit_destructor_targets, destructors_before);
+        assert_eq!(state.implicit_drop_glue_targets, drop_glue_before);
+        assert_eq!(
+            state.implicit_destructor_dependencies_complete,
+            completeness_before
+        );
+
+        let mut poisoned = (*callee).clone();
+        let foreign_conflict = !state.foreign_symbols.contains(&machine);
+        poisoned.codegen = Arc::new(CfgCodegenDomain {
+            defined_symbol: poisoned.codegen.defined_symbol.clone(),
+            symbol_mappings: Arc::new(std::collections::BTreeMap::from([(
+                source.clone(),
+                machine.clone(),
+            )])),
+            foreign_symbols: if foreign_conflict {
+                Arc::new(std::collections::BTreeSet::from([machine.clone()]))
+            } else {
+                Arc::new(std::collections::BTreeSet::new())
+            },
+        });
+        assert!(matches!(
+            splice_callee(
+                &mut state,
+                call,
+                call_block,
+                &poisoned,
+                poisoned.body_span,
+                &main.type_pool,
+                SpliceWarningPolicy::Ignore,
+                SpliceVerificationPolicy::Deferred,
+                || Ok(()),
+            ),
+            Err(SpliceCalleeFailure::ConflictingForeignSymbol)
+        ));
+        assert_eq!(format!("{:?}", state.cfg), cfg_before);
+        assert_eq!(state.foreign_symbols, foreign_before);
+
+        for stable_collision in [false, true] {
+            let mut poisoned = (*callee).clone();
+            if stable_collision {
+                poisoned.domains.inject_conflicting_stable_symbol_for_test();
+            } else {
+                poisoned.domains.inject_conflicting_live_symbol_for_test();
+            }
+            assert!(matches!(
+                splice_callee(
+                    &mut state,
+                    call,
+                    call_block,
+                    &poisoned,
+                    poisoned.body_span,
+                    &main.type_pool,
+                    SpliceWarningPolicy::Ignore,
+                    SpliceVerificationPolicy::Deferred,
+                    || Ok(()),
+                ),
+                Err(SpliceCalleeFailure::Domain(
+                    crate::durable_cfg::CfgDomainFailure::ConflictingLiveSymbol
+                        | crate::durable_cfg::CfgDomainFailure::ConflictingStableSymbol
+                ))
+            ));
+            assert_eq!(format!("{:?}", state.cfg), cfg_before);
+            assert_eq!(
+                state.domains.stable_debug_snapshot(&main.air),
+                domains_before
+            );
+            assert_eq!(state.strings, strings_before);
+            assert_eq!(state.symbol_mappings, mappings_before);
+        }
+    }
+
+    #[test]
+    fn codegen_mapping_merge_rejects_source_and_machine_collisions() {
+        let current =
+            std::collections::BTreeMap::from([("source".to_owned(), "machine".to_owned())]);
+        let reverse =
+            std::collections::BTreeMap::from([("machine".to_owned(), "source".to_owned())]);
+        assert!(matches!(
+            plan_codegen_symbol_mappings(
+                &current,
+                &reverse,
+                &std::collections::BTreeMap::from([("source".to_owned(), "other".to_owned(),)]),
+            ),
+            Err(SpliceCalleeFailure::ConflictingSourceSymbol)
+        ));
+        let imported = std::collections::BTreeMap::from([
+            ("added-first".to_owned(), "added-machine".to_owned()),
+            ("other".to_owned(), "machine".to_owned()),
+        ]);
+        assert!(matches!(
+            plan_codegen_symbol_mappings(&current, &reverse, &imported),
+            Err(SpliceCalleeFailure::ConflictingMachineSymbol)
+        ));
+        assert_eq!(current.len(), 1);
     }
 
     fn chain(size: usize) -> std::collections::BTreeMap<usize, Vec<usize>> {
@@ -3306,31 +4071,89 @@ mod accessor_graph_tests {
     }
 
     #[test]
-    fn accessor_splicing_discovers_attached_calls_once() {
+    fn canonical_splice_helper_has_exactly_two_driver_calls_and_no_bypasses() {
         let source = include_str!("cfg_query.rs");
-        let evaluator = source
+        let production = source
+            .split_once("#[cfg(test)]\nmod accessor_graph_tests")
+            .unwrap()
+            .0;
+        let helper = source
+            .split_once("fn splice_callee(")
+            .unwrap()
+            .1
+            .split_once("fn materialize_splice_interner(")
+            .unwrap()
+            .0;
+        let accessor_driver = source
             .split_once("pub(crate) fn evaluate_optimized_cfg(")
             .unwrap()
             .1
-            .split_once("fn attached_accessor_calls(")
+            .split_once("fn optimize_cfg_without_accessors(")
+            .unwrap()
+            .0;
+        let general_driver = source
+            .split_once("pub(crate) fn apply_general_inlining(")
+            .unwrap()
+            .1
+            .split_once("fn recursive_scc_nodes<")
             .unwrap()
             .0;
         assert_eq!(
-            evaluator
-                .matches("attached_accessor_calls(&current, 0, 0)")
+            accessor_driver
+                .matches("attached_accessor_calls(state.cfg.as_cfg(), 0, 0)")
                 .count(),
             1
         );
-        assert!(evaluator.contains("accessor_calls.pop_front()"));
-        assert!(evaluator.contains("accessor_calls.extend(introduced_calls)"));
-        assert!(evaluator.contains("resolve_splice_block("));
-        assert!(evaluator.contains("inline_call_in_block("));
-        assert!(!evaluator.contains("rue_cfg::inline_call(&current"));
-        assert!(!evaluator.contains("loop {\n        let call = current.blocks()"));
-        assert!(evaluator.contains("let mut local_atom_identities = None"));
-        assert!(evaluator.contains("local_atom_identities.get_or_insert_with("));
-        assert!(evaluator.contains("local_atom_identities.insert("));
-        assert!(!evaluator.contains("local_atoms.iter().any("));
+        assert!(accessor_driver.contains("accessor_calls.pop_front()"));
+        assert!(accessor_driver.contains("accessor_calls.extend(introduced_calls)"));
+        assert!(accessor_driver.contains("resolve_splice_block("));
+        assert_eq!(accessor_driver.matches("splice_callee(").count(), 1);
+        assert_eq!(general_driver.matches("splice_callee(").count(), 1);
+        assert_eq!(production.matches("fn splice_callee(").count(), 1);
+        assert_eq!(production.matches(".import_accessor_cfg(").count(), 1);
+        assert_eq!(
+            production.matches("rue_cfg::splice_call_in_block(").count(),
+            1
+        );
+        assert!(helper.contains("plan_codegen_symbol_mappings("));
+        assert!(helper.contains("implicit_destructor_targets"));
+        assert!(helper.contains("implicit_drop_glue_targets"));
+        assert!(helper.contains("state.domains.apply_splice_plan(domain_plan)"));
+        assert!(!helper.contains("copy_interner_preserving_ordinals("));
+        assert!(!helper.contains("state.clone()"));
+        assert!(!helper.contains("symbol_mappings.clone()"));
+        for driver in [accessor_driver, general_driver] {
+            for bypass in [
+                ".import_accessor_cfg(",
+                "rue_cfg::splice_call_in_block(",
+                "rue_cfg::inline_call_in_block(",
+                "symbol_mappings.extend(",
+                "foreign_symbols.extend(",
+                "local_atoms.extend(",
+                "implicit_destructor_targets.extend(",
+                "implicit_drop_glue_targets.extend(",
+            ] {
+                assert!(
+                    !driver.contains(bypass),
+                    "driver bypasses helper via {bypass}"
+                );
+            }
+        }
+        assert!(!accessor_driver.contains("loop {\n        let call = current.blocks()"));
+        assert!(!accessor_driver.contains("local_atoms.iter().any("));
+
+        for legacy_message in [
+            "accessor CFG domain import failed: {error:?}",
+            "imported accessor CFG failed verification: {error}",
+            "accessor local atom has no imported string id",
+            "mandatory accessor CFG splice failed: {error}",
+            "general inline CFG domain import failed: {error:?}",
+            "imported general inline CFG failed verification: {error}",
+            "general inline local atom has no imported string id",
+            "general inline splice failed: {error}",
+        ] {
+            assert!(production.contains(legacy_message));
+        }
 
         let domains = include_str!("durable_cfg.rs");
         let lookup = domains

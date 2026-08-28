@@ -426,8 +426,22 @@ fn cfg_queries_own_local_semantic_materialization_and_terminal_domains() {
         .unwrap()
         .0;
     assert!(
-        optimization.contains("copy_interner_preserving_ordinals(&record.interner"),
+        optimization.contains("materialize_splice_interner(&state"),
         "accessor optimization must isolate the published CFG symbol universe"
+    );
+    let materialization = production
+        .split_once("fn materialize_splice_interner(")
+        .unwrap()
+        .1
+        .split_once("pub(crate) fn evaluate_optimized_cfg(")
+        .unwrap()
+        .0;
+    assert_eq!(
+        materialization
+            .matches("copy_interner_preserving_ordinals(&state.interner")
+            .count(),
+        1,
+        "splice interner isolation must copy the base universe exactly once at publication"
     );
     for forbidden in [
         "InternerChargeRefresh",
