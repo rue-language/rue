@@ -1019,10 +1019,7 @@ where
                 let def = self.type_pool.enum_def(id);
                 if let Some(identity) = self.issued_anonymous_identity_for_type(ty) {
                     T::AnonymousNominal(identity)
-                } else if rue_builtins::BUILTIN_ENUMS
-                    .iter()
-                    .any(|builtin| builtin.name == &*def.name)
-                {
+                } else if crate::builtin_universe::BuiltinUniverse::builtin_enum_name(&def.name) {
                     T::BuiltinNominal {
                         name: def.name.clone(),
                         kind: crate::SemanticImportNominalKind::Enum,
@@ -1076,10 +1073,7 @@ where
     > {
         let ty = Type::new_enum(id);
         let def = self.type_pool.enum_def(id);
-        if rue_builtins::BUILTIN_ENUMS
-            .iter()
-            .any(|builtin| builtin.name == &*def.name)
-        {
+        if crate::builtin_universe::BuiltinUniverse::builtin_enum_name(&def.name) {
             return Ok(crate::NominalInstanceKey::Builtin {
                 kind: crate::AnonymousNominalKind::Enum,
                 name: def.name.clone(),

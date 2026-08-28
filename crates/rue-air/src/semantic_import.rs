@@ -14,6 +14,7 @@ use lasso::{LassoErrorKind, Spur, ThreadedRodeo};
 use rue_span::FileId;
 
 use crate::Node;
+use crate::builtin_universe::BuiltinUniverse;
 use crate::{
     Air, AirCallArg, AirInst, AirInstData, AirPattern, AirProjection, AirRef, AnonymousNominalKey,
     ConstValue, EnumDef, EnumId, FunctionInstanceKey, ModuleId, ModuleRegistry, NominalInstanceKey,
@@ -1216,24 +1217,12 @@ where
         let interner = symbol_space.interner().clone();
         let type_pool = TypeInternPool::new();
         let module_registry = ModuleRegistry::new();
+        let mut universe = BuiltinUniverse::begin(&type_pool, &symbol_space)
+            .map_err(SemanticImportFailure::Interner)?;
         let mut builtins = BTreeMap::new();
-        for builtin in rue_builtins::BUILTIN_ENUMS {
-            let symbol = symbol_space
-                .try_intern(builtin.name)
-                .map_err(SemanticImportFailure::Interner)?;
-            let (id, _) = type_pool.register_enum(
-                symbol,
-                EnumDef {
-                    name: Arc::from(builtin.name),
-                    variants: builtin.variants.iter().map(|v| Arc::from(*v)).collect(),
-                    variant_payloads: Vec::new(),
-                    is_pub: true,
-                    is_non_exhaustive: false,
-                    file_id: FileId::DEFAULT,
-                },
-            );
+        for (name, id) in universe.enum_entries() {
             builtins.insert(
-                (Arc::from(builtin.name), SemanticImportNominalKind::Enum),
+                (Arc::clone(name), SemanticImportNominalKind::Enum),
                 LocalNominal::Enum(id),
             );
         }
@@ -1339,35 +1328,14 @@ where
         // stable core `str` identity. Preserve that order so a fresh epoch's
         // packed nominal IDs match exported AIR exactly. StrBuf is deliberately
         // absent: it is an ordinary source nominal supplied by std.
-        let str_symbol = symbol_space
-            .try_intern("str")
+        universe
+            .finish_core_str(&type_pool, &symbol_space)
             .map_err(SemanticImportFailure::Interner)?;
-        let ptr_id = type_pool.intern_ptr_const_from_type(Type::U8);
-        let (str_id, _) = type_pool.register_struct(
-            str_symbol,
-            StructDef {
-                name: Arc::from("str"),
-                fields: vec![
-                    StructField {
-                        name: "ptr".to_owned(),
-                        ty: Type::new_ptr_const(ptr_id),
-                    },
-                    StructField {
-                        name: "len".to_owned(),
-                        ty: Type::U64,
-                    },
-                ],
-                is_copy: true,
-                is_linear: false,
-                declared_linear: false,
-                destructor: None,
-                is_builtin: true,
-                is_pub: true,
-                file_id: FileId::DEFAULT,
-            },
-        );
+        let (str_name, str_id) = universe
+            .core_str_entry()
+            .expect("builtin universe always finishes core str");
         builtins.insert(
-            (Arc::from("str"), SemanticImportNominalKind::Struct),
+            (str_name, SemanticImportNominalKind::Struct),
             LocalNominal::Struct(str_id),
         );
         let mut epoch = Self {
@@ -1429,8 +1397,8 @@ where
             let NominalInstanceKey::Builtin { name, .. } = &nominal.key else {
                 return false;
             };
-            name.as_ref() == "str"
-                || rue_builtins::get_builtin_enum(name).is_some()
+            name.as_ref() == BuiltinUniverse::CORE_STR_NAME
+                || BuiltinUniverse::builtin_enum_name(name)
                 || crate::types::fixed_string_capacity(name).is_some()
         }) {
             return Err(SemanticImportFailure::BuiltinNominalShadow);
@@ -4097,7 +4065,55 @@ mod tests {
             kind: SemanticImportNominalKind::Struct,
         };
         let local = epoch.import_type(&str_ty).unwrap();
+        let str_id = local.value.as_struct().expect("builtin str is a struct");
         assert_eq!(epoch.export_type(local).unwrap(), str_ty);
+        assert_eq!(str_id, crate::StructId(4));
+        let str_def = epoch.type_pool().struct_def(str_id);
+        assert_eq!(str_def.name.as_ref(), "str");
+        assert_eq!(
+            str_def
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["ptr", "len"]
+        );
+        assert!(str_def.is_copy && str_def.is_builtin && str_def.is_pub);
+        assert!(!str_def.is_linear && !str_def.declared_linear);
+        assert_eq!(str_def.file_id, FileId::DEFAULT);
+        assert_eq!(epoch.type_pool().struct_lang_item(str_id), None);
+        assert_eq!(str_def.fields[1].ty, Type::U64);
+        assert!(matches!(
+            str_def.fields[0].ty.kind(),
+            crate::TypeKind::PtrConst(_)
+        ));
+
+        for (id, (name, variants)) in [
+            (crate::EnumId(0), ("Arch", ["X86_64", "Aarch64"].as_slice())),
+            (crate::EnumId(1), ("Os", ["Linux", "Macos"].as_slice())),
+            (
+                crate::EnumId(2),
+                ("DataModel", ["Ilp32", "Lp64", "Llp64"].as_slice()),
+            ),
+        ] {
+            let enum_ty = epoch
+                .import_type(&SemanticImportType::BuiltinNominal {
+                    name: Arc::from(name),
+                    kind: SemanticImportNominalKind::Enum,
+                })
+                .unwrap();
+            assert_eq!(enum_ty.value.as_enum(), Some(id));
+            let def = epoch.type_pool().enum_def(id);
+            assert_eq!(
+                def.variants
+                    .iter()
+                    .map(|variant| variant.as_ref())
+                    .collect::<Vec<_>>(),
+                variants
+            );
+            assert!(def.variant_payloads.is_empty() && def.is_pub);
+            assert_eq!(def.file_id, FileId::DEFAULT);
+        }
 
         assert!(matches!(
             epoch.import_type(&SemanticImportType::BuiltinNominal {

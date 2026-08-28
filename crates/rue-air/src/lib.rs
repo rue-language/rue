@@ -12,6 +12,7 @@
 
 #[cfg(test)]
 mod api_inventory;
+mod builtin_universe;
 pub mod call_abi;
 pub mod declaration_validation;
 pub mod drop_glue_names;

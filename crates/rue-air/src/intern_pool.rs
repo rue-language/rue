@@ -33,6 +33,7 @@ use std::sync::{Arc, LazyLock, PoisonError, RwLock};
 use lasso::Spur;
 use rue_span::FileId;
 
+use crate::builtin_universe::BuiltinUniverse;
 use crate::layout::{Layout, LayoutKind, PaddingRange};
 use crate::path_norm::{mangle_symbol_component, normalize_module_path};
 use crate::type_encoding;
@@ -2423,7 +2424,7 @@ impl TypeInternPoolInner {
         // See `struct_symbol_name`: unconditional qualification, with the
         // reserved built-in enums and the registry-marked generated anonymous
         // enums (`__anon_enum_<digest>`) keeping their bare names.
-        if rue_builtins::is_reserved_enum_name(&data.def.name) || self.is_anonymous_enum(id) {
+        if BuiltinUniverse::builtin_enum_name(&data.def.name) || self.is_anonymous_enum(id) {
             return data.def.name.to_string();
         }
         format!(

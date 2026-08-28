@@ -87,6 +87,7 @@ use super::ConstValue;
 use super::declaration_index::{RirDeclarationIndex, RirDestructorDeclaration};
 use super::info::{ConstInfo, FunctionInfo, MethodInfo};
 use super::provider_module_registry::ProviderModuleRegistry;
+use crate::builtin_universe::BuiltinUniverse;
 use crate::types::{EnumDef, EnumId, LangItem, StructDef, StructField, StructId, Type};
 use crate::{
     AnonymousNominalKey, FunctionInstanceKey, ParamArena, ParamRange, SemanticImportConstValue,
@@ -953,57 +954,20 @@ where
     ) -> Result<Self, lasso::LassoErrorKind> {
         let interner = Arc::clone(space.interner());
         let type_pool = Rc::new(TypeInternPool::new());
+        let mut universe = BuiltinUniverse::begin(&type_pool, &space)?;
         let mut builtins = AHashMap::new();
-
-        for builtin in rue_builtins::BUILTIN_ENUMS {
-            let symbol = space.try_intern(builtin.name)?;
-            let (id, _) = type_pool.register_enum(
-                symbol,
-                EnumDef {
-                    name: Arc::from(builtin.name),
-                    variants: builtin.variants.iter().map(|v| Arc::from(*v)).collect(),
-                    variant_payloads: Vec::new(),
-                    is_pub: true,
-                    is_non_exhaustive: false,
-                    file_id: FileId::DEFAULT,
-                },
-            );
+        for (name, id) in universe.enum_entries() {
             builtins.insert(
-                (Arc::from(builtin.name), SemanticImportNominalKind::Enum),
+                (Arc::clone(name), SemanticImportNominalKind::Enum),
                 PoolNominal::Enum(id),
             );
         }
-
-        // The core `str` identity: an ordinary builtin struct paired with a
-        // runtime definition. Registered exactly as `SemanticImportedProgram::new`
-        // registers it.
-        let str_symbol = space.try_intern("str")?;
-        let ptr_id = type_pool.intern_ptr_const_from_type(Type::U8);
-        let (str_id, _) = type_pool.register_struct(
-            str_symbol,
-            StructDef {
-                name: Arc::from("str"),
-                fields: vec![
-                    StructField {
-                        name: "ptr".to_owned(),
-                        ty: Type::new_ptr_const(ptr_id),
-                    },
-                    StructField {
-                        name: "len".to_owned(),
-                        ty: Type::U64,
-                    },
-                ],
-                is_copy: true,
-                is_linear: false,
-                declared_linear: false,
-                destructor: None,
-                is_builtin: true,
-                is_pub: true,
-                file_id: FileId::DEFAULT,
-            },
-        );
+        universe.finish_core_str(&type_pool, &space)?;
+        let (str_name, str_id) = universe
+            .core_str_entry()
+            .expect("builtin universe always finishes core str");
         builtins.insert(
-            (Arc::from("str"), SemanticImportNominalKind::Struct),
+            (str_name, SemanticImportNominalKind::Struct),
             PoolNominal::Struct(str_id),
         );
 
@@ -4564,7 +4528,7 @@ mod tests {
         let mut pool = pool([]);
 
         // The three `@target_*` builtin enums (`Arch`/`Os`/`DataModel`, the
-        // `rue_builtins::BUILTIN_ENUMS` set the `@target_arch`/`@target_os`/
+        // The builtin target-enum set drives the `@target_arch`/`@target_os`/
         // `@target_data_model` intrinsics consume) all resolve to the
         // pre-registered enum — the provider-era answer for the target-config
         // family is the pre-registered builtin plus body-local target
@@ -4600,6 +4564,27 @@ mod tests {
             "str",
             "builtin keeps its bare name"
         );
+        let str_id = str_ty.as_struct().unwrap();
+        assert_eq!(str_id, StructId(4));
+        let str_def = pool.type_pool().struct_def(str_id);
+        assert_eq!(str_def.name.as_ref(), "str");
+        assert_eq!(
+            str_def
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["ptr", "len"]
+        );
+        assert!(str_def.is_copy && str_def.is_builtin && str_def.is_pub);
+        assert!(!str_def.is_linear && !str_def.declared_linear);
+        assert_eq!(str_def.file_id, FileId::DEFAULT);
+        assert_eq!(pool.type_pool().struct_lang_item(str_id), None);
+        assert_eq!(str_def.fields[1].ty, Type::U64);
+        assert!(matches!(
+            str_def.fields[0].ty.kind(),
+            crate::TypeKind::PtrConst(_)
+        ));
 
         // Wrong kind and unknown builtin fail closed.
         assert_eq!(
@@ -4616,6 +4601,108 @@ mod tests {
             }),
             Err(IdentityMintError::UnknownBuiltinNominal)
         );
+    }
+
+    #[test]
+    fn builtin_universe_parity_holds_between_body_and_import_consumers() {
+        let mut body = pool([]);
+        let epoch = crate::SemanticImportEpoch::<Key, Module>::new(vec![], vec![], vec![]).unwrap();
+
+        for (id, (name, variants)) in [
+            (EnumId(0), ("Arch", ["X86_64", "Aarch64"].as_slice())),
+            (EnumId(1), ("Os", ["Linux", "Macos"].as_slice())),
+            (
+                EnumId(2),
+                ("DataModel", ["Ilp32", "Lp64", "Llp64"].as_slice()),
+            ),
+        ] {
+            let fact = DType::BuiltinNominal {
+                name: Arc::from(name),
+                kind: SemanticImportNominalKind::Enum,
+            };
+            let body_ty = body.resolve(&fact).unwrap();
+            let imported = epoch.import_type(&fact).unwrap();
+            assert_eq!(epoch.export_type(imported).unwrap(), fact);
+            assert_eq!(body_ty, Type::new_enum(id));
+            let body_def = body.type_pool().enum_def(id);
+            let epoch_def = epoch.type_pool().enum_def(id);
+            assert_eq!(body_def.name, epoch_def.name);
+            assert_eq!(body_def.variants, epoch_def.variants);
+            assert_eq!(
+                body_def
+                    .variants
+                    .iter()
+                    .map(|variant| variant.as_ref())
+                    .collect::<Vec<_>>(),
+                variants
+            );
+            assert_eq!(body_def.variant_payloads, epoch_def.variant_payloads);
+            assert!(body_def.variant_payloads.is_empty());
+            assert_eq!(body_def.is_pub, epoch_def.is_pub);
+            assert_eq!(body_def.is_non_exhaustive, epoch_def.is_non_exhaustive);
+            assert_eq!(body_def.file_id, epoch_def.file_id);
+            assert_eq!(body_def.file_id, FileId::DEFAULT);
+        }
+
+        let str_fact = DType::BuiltinNominal {
+            name: Arc::from("str"),
+            kind: SemanticImportNominalKind::Struct,
+        };
+        let body_str = body.resolve(&str_fact).unwrap();
+        let imported_str = epoch.import_type(&str_fact).unwrap();
+        assert_eq!(epoch.export_type(imported_str).unwrap(), str_fact);
+        assert_eq!(body_str, Type::new_struct(StructId(4)));
+        let body_def = body.type_pool().struct_def(StructId(4));
+        let epoch_def = epoch.type_pool().struct_def(StructId(4));
+        assert_eq!(body_def.name, epoch_def.name);
+        assert_eq!(body_def.fields.len(), epoch_def.fields.len());
+        for (body_field, epoch_field) in body_def.fields.iter().zip(&epoch_def.fields) {
+            assert_eq!(body_field.name, epoch_field.name);
+            assert_eq!(body_field.ty, epoch_field.ty);
+        }
+        assert_eq!(body_def.is_copy, epoch_def.is_copy);
+        assert_eq!(body_def.is_linear, epoch_def.is_linear);
+        assert_eq!(body_def.declared_linear, epoch_def.declared_linear);
+        assert_eq!(body_def.destructor, epoch_def.destructor);
+        assert_eq!(body_def.is_builtin, epoch_def.is_builtin);
+        assert_eq!(body_def.is_pub, epoch_def.is_pub);
+        assert_eq!(body_def.file_id, epoch_def.file_id);
+        assert_eq!(body_def.file_id, FileId::DEFAULT);
+        assert_eq!(body.type_pool().struct_lang_item(StructId(4)), None);
+        assert_eq!(epoch.type_pool().struct_lang_item(StructId(4)), None);
+
+        let wrong_kind_facts = [
+            DType::BuiltinNominal {
+                name: Arc::from("Arch"),
+                kind: SemanticImportNominalKind::Struct,
+            },
+            DType::BuiltinNominal {
+                name: Arc::from("str"),
+                kind: SemanticImportNominalKind::Enum,
+            },
+        ];
+        for fact in wrong_kind_facts {
+            assert_eq!(
+                body.resolve(&fact),
+                Err(IdentityMintError::BuiltinNominalKindMismatch)
+            );
+            assert!(matches!(
+                epoch.import_type(&fact),
+                Err(crate::SemanticImportFailure::BuiltinNominalKindMismatch)
+            ));
+        }
+        let unknown = DType::BuiltinNominal {
+            name: Arc::from("UnknownBuiltin"),
+            kind: SemanticImportNominalKind::Enum,
+        };
+        assert_eq!(
+            body.resolve(&unknown),
+            Err(IdentityMintError::UnknownBuiltinNominal)
+        );
+        assert!(matches!(
+            epoch.import_type(&unknown),
+            Err(crate::SemanticImportFailure::UnknownBuiltinNominal)
+        ));
     }
 
     #[test]
@@ -4761,7 +4848,7 @@ mod tests {
         };
         let mut durable = source([]);
         durable.anonymous_shapes.insert(key.clone(), shape);
-        let bootstrap_entries = rue_builtins::BUILTIN_ENUMS.len() + 1; // + core `str`
+        let bootstrap_entries = BuiltinUniverse::bootstrap_symbol_count();
         let mut pool = BodyIdentityPool::new(
             durable,
             SharedSymbolSpace::with_owner_bound(bootstrap_entries),

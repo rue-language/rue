@@ -472,8 +472,7 @@ where
         AggregateFacts::aggregate_builtin_struct(self, symbol).map(Type::new_struct)
     }
 
-    /// (P) The builtin enum for a bare name (one of `BUILTIN_ENUMS`), as a pool
-    /// [`Type`].
+    /// (P) The builtin target enum for a bare name, as a pool [`Type`].
     pub fn builtin_enum(&self, name: &str) -> Option<Type> {
         let Ok(symbol) = self.identity.pool().intern_name(name) else {
             return None;

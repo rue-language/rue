@@ -3,8 +3,10 @@
 use std::collections::BTreeSet;
 
 use syn::{
-    BinOp, Expr, ExprCall, ExprField, ExprIf, ExprLet, ExprMatch, ExprMethodCall, ExprPath,
-    ExprStruct, File, ImplItem, Item, ItemFn, ItemImpl, ItemMod, PatStruct, PatTupleStruct,
+    BinOp, Expr, ExprCall, ExprField, ExprIf, ExprLet, ExprLit, ExprMatch, ExprMethodCall,
+    ExprPath, ExprStruct, File, ImplItem, Item, ItemFn, ItemImpl, ItemMod, Lit, PatStruct,
+    PatTupleStruct,
+    parse::Parser,
     visit::{self, Visit},
 };
 
@@ -570,6 +572,495 @@ fn ast_functions(module: &str, source: &str) -> Option<Vec<AstFunction>> {
     Some(collector.functions)
 }
 
+fn is_test_only_attrs(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("test")
+            || (attr.path().is_ident("cfg")
+                && attr
+                    .parse_args::<syn::Path>()
+                    .is_ok_and(|path| path.is_ident("test")))
+    })
+}
+
+/// Identify a hand-spelled core string definition by its semantic shape, not
+/// by the spelling `str`.  Generated `Str(N)` and slice views deliberately use
+/// this same fat-pointer shape, so their canonical names are exempted.
+fn has_core_str_definition(module: &str, source: &str) -> bool {
+    fn string_literal(expression: &Expr) -> Option<String> {
+        match expression {
+            Expr::Lit(ExprLit {
+                lit: Lit::Str(value),
+                ..
+            }) => Some(value.value()),
+            Expr::Call(call) => call.args.first().and_then(string_literal),
+            Expr::MethodCall(call) => string_literal(&call.receiver),
+            Expr::Macro(expression) if expression.mac.path.is_ident("format") => expression
+                .mac
+                .tokens
+                .clone()
+                .into_iter()
+                .next()
+                .and_then(|token| syn::parse_str::<syn::LitStr>(&token.to_string()).ok())
+                .map(|value| value.value()),
+            Expr::Paren(paren) => string_literal(&paren.expr),
+            Expr::Reference(reference) => string_literal(&reference.expr),
+            _ => None,
+        }
+    }
+    fn literal_name(expression: &Expr, bindings: &BTreeSet<(String, String)>) -> Option<String> {
+        string_literal(expression).or_else(|| {
+            let Expr::Path(path) = expression else {
+                return None;
+            };
+            let mut segments = path.path.segments.iter();
+            let Some(ident) = segments.next() else {
+                return None;
+            };
+            if segments.next().is_some() {
+                return None;
+            }
+            let name = ident.ident.to_string();
+            bindings
+                .iter()
+                .find(|(binding, _)| binding == &name)
+                .map(|(_, value)| value.clone())
+        })
+    }
+    fn field_expressions(expression: &Expr) -> Option<Vec<Expr>> {
+        match expression {
+            Expr::Array(array) => Some(array.elems.iter().cloned().collect()),
+            Expr::Macro(expression) if expression.mac.path.is_ident("vec") => {
+                syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated
+                    .parse2(expression.mac.tokens.clone())
+                    .ok()
+                    .map(|fields| fields.into_iter().collect())
+            }
+            _ => None,
+        }
+    }
+    struct Visitor {
+        found: bool,
+        test_only: bool,
+        bindings: BTreeSet<(String, String)>,
+        module: String,
+        owner: Option<String>,
+        function: Option<String>,
+    }
+    impl<'ast> Visit<'ast> for Visitor {
+        fn visit_item_fn(&mut self, item: &'ast ItemFn) {
+            let was_test_only = self.test_only;
+            let previous_function = self.function.replace(item.sig.ident.to_string());
+            let previous_owner = self.owner.take();
+            self.test_only |= is_test_only_attrs(&item.attrs);
+            visit::visit_item_fn(self, item);
+            self.test_only = was_test_only;
+            self.function = previous_function;
+            self.owner = previous_owner;
+        }
+
+        fn visit_item_impl(&mut self, item: &'ast ItemImpl) {
+            let previous_owner = self.owner.take();
+            self.owner = match &*item.self_ty {
+                syn::Type::Path(path) => path
+                    .path
+                    .segments
+                    .last()
+                    .map(|segment| segment.ident.to_string()),
+                _ => None,
+            };
+            visit::visit_item_impl(self, item);
+            self.owner = previous_owner;
+        }
+
+        fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+            let previous_function = self.function.replace(item.sig.ident.to_string());
+            visit::visit_impl_item_fn(self, item);
+            self.function = previous_function;
+        }
+
+        fn visit_local(&mut self, local: &'ast syn::Local) {
+            if !self.test_only {
+                if let syn::Pat::Ident(pattern) = &local.pat {
+                    if let Some(value) = local
+                        .init
+                        .as_ref()
+                        .and_then(|init| literal_name(&init.expr, &self.bindings))
+                    {
+                        self.bindings.replace((pattern.ident.to_string(), value));
+                    }
+                }
+            }
+            visit::visit_local(self, local);
+        }
+
+        fn visit_item_mod(&mut self, item: &'ast ItemMod) {
+            let was_test_only = self.test_only;
+            self.test_only |= is_test_only_attrs(&item.attrs);
+            visit::visit_item_mod(self, item);
+            self.test_only = was_test_only;
+        }
+
+        fn visit_expr_struct(&mut self, expression: &'ast ExprStruct) {
+            if self.test_only
+                || self.found
+                || !expression
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "StructDef")
+            {
+                visit::visit_expr_struct(self, expression);
+                return;
+            }
+            let field = |name: &str| {
+                expression
+                    .fields
+                    .iter()
+                    .find(|field| {
+                        matches!(&field.member, syn::Member::Named(member) if member == name)
+                    })
+                    .map(|field| &field.expr)
+            };
+            let Some(Expr::Lit(lit)) = field("is_builtin") else {
+                visit::visit_expr_struct(self, expression);
+                return;
+            };
+            let syn::Lit::Bool(is_builtin) = &lit.lit else {
+                visit::visit_expr_struct(self, expression);
+                return;
+            };
+            if !is_builtin.value {
+                visit::visit_expr_struct(self, expression);
+                return;
+            }
+            let Some(fields) = field("fields").and_then(field_expressions) else {
+                visit::visit_expr_struct(self, expression);
+                return;
+            };
+            let names = fields
+                .iter()
+                .filter_map(|field| {
+                    let Expr::Struct(field) = field else {
+                        return None;
+                    };
+                    let name = field
+                        .fields
+                        .iter()
+                        .find(|field| {
+                            matches!(&field.member, syn::Member::Named(member) if member == "name")
+                        })?;
+                    string_literal(&name.expr)
+                })
+                .collect::<Vec<_>>();
+            if names != ["ptr", "len"] {
+                visit::visit_expr_struct(self, expression);
+                return;
+            }
+            let generated =
+                field("name").and_then(|expression| literal_name(expression, &self.bindings));
+            // A computed name is how generated `Str(N)` and slice views are
+            // built; only the four production constructors below may emit
+            // that shape. A literal (including `Arc::from("...")`) is a
+            // hand-spelled candidate and is rejected everywhere else.
+            let legitimate_generated_owner = matches!(
+                (
+                    self.module.as_str(),
+                    self.owner.as_deref(),
+                    self.function.as_deref()
+                ),
+                (
+                    "sema/body_identity",
+                    Some("BodyIdentityPool"),
+                    Some("get_or_create_str_fixed")
+                ) | (
+                    "sema/body_identity",
+                    Some("BodyIdentityPool"),
+                    Some("resolve")
+                ) | (
+                    "semantic_import",
+                    Some("SemanticImportEpoch"),
+                    Some("resolve_builtin_nominal_in_pool")
+                ) | (
+                    "semantic_import",
+                    Some("SemanticImportEpoch"),
+                    Some("import_type_local_with")
+                )
+            );
+            let generated_view_name = generated.as_ref().is_some_and(|name| {
+                name.starts_with("Str(") || (name.starts_with('[') && name.ends_with(']'))
+            });
+            let exempt = legitimate_generated_owner && (generated_view_name || generated.is_none());
+            self.found = !exempt;
+            visit::visit_expr_struct(self, expression);
+        }
+    }
+    let parsed = if let Ok(file) = syn::parse_file(source) {
+        let mut visitor = Visitor {
+            found: false,
+            test_only: false,
+            bindings: BTreeSet::new(),
+            module: normalize_manifest_module(module),
+            owner: None,
+            function: None,
+        };
+        visitor.visit_file(&file);
+        if visitor.found {
+            return true;
+        }
+        true
+    } else {
+        false
+    };
+    if parsed {
+        return false;
+    }
+    // For malformed fixture text that cannot be parsed, keep a conservative
+    // lexical fallback for a direct literal definition: this is the spelling
+    // variation an authority guard must reject, and it also makes the
+    // adversarial fixture independent of formatting details in syn's
+    // expression representation.
+    let compact = source.split_whitespace().collect::<String>();
+    compact.contains("StructDef{name:")
+        && compact.contains("is_builtin:true")
+        && compact.contains("name:\"ptr\"")
+        && compact.contains("name:\"len\"")
+}
+
+fn has_builtin_enum_membership(source: &str) -> bool {
+    struct Visitor {
+        found: bool,
+    }
+    impl<'ast> Visit<'ast> for Visitor {
+        fn visit_path(&mut self, path: &'ast syn::Path) {
+            self.found |= path.segments.last().is_some_and(|segment| {
+                segment.ident == "BUILTIN_ENUMS"
+                    || segment.ident == "get_builtin_enum"
+                    || segment.ident == "is_reserved_enum_name"
+            });
+            visit::visit_path(self, path);
+        }
+    }
+    let Ok(file) = syn::parse_file(source) else {
+        return false;
+    };
+    let mut visitor = Visitor { found: false };
+    visitor.visit_file(&file);
+    visitor.found
+}
+
+/// Identify a production bootstrap of the target builtin-enum universe by its
+/// definition shape. Ordinary source/anonymous enums use non-public or
+/// non-empty payload metadata, while the target universe is public,
+/// exhaustive, and payload-free. The registration evidence is tracked per
+/// function, so an unrelated `register_enum` elsewhere cannot turn a source
+/// declaration into a bootstrap match.
+fn has_builtin_enum_bootstrap(source: &str) -> bool {
+    struct Visitor {
+        found: bool,
+        test_only: bool,
+        function: Option<(bool, bool)>,
+    }
+    impl<'ast> Visit<'ast> for Visitor {
+        fn visit_item_fn(&mut self, item: &'ast ItemFn) {
+            let was_test_only = self.test_only;
+            let previous_function = self.function.take();
+            self.test_only |= is_test_only_attrs(&item.attrs);
+            self.function = Some((false, false));
+            visit::visit_item_fn(self, item);
+            let (candidate, registered) = self.function.take().unwrap();
+            self.found |= !self.test_only && candidate && registered;
+            self.test_only = was_test_only;
+            self.function = previous_function;
+        }
+
+        fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+            let previous_function = self.function.take();
+            let was_test_only = self.test_only;
+            self.test_only |= is_test_only_attrs(&item.attrs);
+            self.function = Some((false, false));
+            visit::visit_impl_item_fn(self, item);
+            let (candidate, registered) = self.function.take().unwrap();
+            self.found |= !self.test_only && candidate && registered;
+            self.test_only = was_test_only;
+            self.function = previous_function;
+        }
+
+        fn visit_item_mod(&mut self, item: &'ast ItemMod) {
+            let was_test_only = self.test_only;
+            self.test_only |= is_test_only_attrs(&item.attrs);
+            visit::visit_item_mod(self, item);
+            self.test_only = was_test_only;
+        }
+
+        fn visit_expr_struct(&mut self, expression: &'ast ExprStruct) {
+            if self.test_only
+                || !expression
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "EnumDef")
+            {
+                visit::visit_expr_struct(self, expression);
+                return;
+            }
+            let field = |name: &str| {
+                expression
+                    .fields
+                    .iter()
+                    .find(|field| {
+                        matches!(&field.member, syn::Member::Named(member) if member == name)
+                    })
+                    .map(|field| &field.expr)
+            };
+            let bool_field = |name: &str, expected: bool| {
+                matches!(
+                    field(name),
+                    Some(Expr::Lit(ExprLit {
+                        lit: Lit::Bool(value),
+                        ..
+                    })) if value.value == expected
+                )
+            };
+            let empty_payloads = match field("variant_payloads") {
+                Some(Expr::Array(array)) => array.elems.is_empty(),
+                Some(Expr::Call(call)) => {
+                    call.args.is_empty()
+                        && matches!(&*call.func, Expr::Path(path)
+                            if path.path.segments.last().is_some_and(|segment| segment.ident == "new"))
+                }
+                _ => false,
+            };
+            if bool_field("is_pub", true)
+                && bool_field("is_non_exhaustive", false)
+                && empty_payloads
+            {
+                if let Some((candidate, _)) = &mut self.function {
+                    *candidate = true;
+                }
+            }
+            visit::visit_expr_struct(self, expression);
+        }
+
+        fn visit_expr_call(&mut self, expression: &'ast ExprCall) {
+            if matches!(&*expression.func, Expr::Path(path)
+                if path.path.segments.last().is_some_and(|segment| segment.ident == "register_enum"))
+            {
+                if let Some((_, registered)) = &mut self.function {
+                    *registered = true;
+                }
+            }
+            visit::visit_expr_call(self, expression);
+        }
+
+        fn visit_expr_method_call(&mut self, expression: &'ast ExprMethodCall) {
+            if expression.method == "register_enum" {
+                if let Some((_, registered)) = &mut self.function {
+                    *registered = true;
+                }
+            }
+            visit::visit_expr_method_call(self, expression);
+        }
+    }
+    let Ok(file) = syn::parse_file(source) else {
+        return false;
+    };
+    let mut visitor = Visitor {
+        found: false,
+        test_only: false,
+        function: None,
+    };
+    visitor.visit_file(&file);
+    visitor.found
+}
+
+fn builtin_authority_call_sites(
+    module: &str,
+    source: &str,
+) -> Vec<(String, Option<String>, String, String)> {
+    let Some(functions) = ast_functions(module, source) else {
+        return Vec::new();
+    };
+    let mut sites = Vec::new();
+    for function in functions.into_iter().filter(|function| !function.test_only) {
+        for call in function.calls {
+            let AstCall::Path {
+                segments, method, ..
+            } = call;
+            let Some(name) = segments.last() else {
+                continue;
+            };
+            let qualified_authority = !method
+                && segments
+                    .iter()
+                    .rev()
+                    .nth(1)
+                    .is_some_and(|segment| segment == "BuiltinUniverse");
+            let target = if qualified_authority {
+                matches!(
+                    name.as_str(),
+                    "begin" | "finish_core_str" | "register_core_str_with_symbol"
+                )
+                .then(|| name.clone())
+            } else if method && name == "finish_core_str" {
+                Some(name.clone())
+            } else {
+                None
+            };
+            if let Some(target) = target {
+                sites.push((
+                    function.module.clone(),
+                    function.owner.clone(),
+                    function.name.clone(),
+                    target,
+                ));
+            }
+        }
+    }
+    sites
+}
+
+fn has_exact_builtin_authority_inventory(sources: &[(&str, &str)]) -> bool {
+    let mut actual = sources
+        .iter()
+        .flat_map(|(module, source)| builtin_authority_call_sites(module, source))
+        .collect::<Vec<_>>();
+    actual.sort();
+    let mut expected = vec![
+        (
+            "sema/body_identity".to_owned(),
+            Some("BodyIdentityPool".to_owned()),
+            "try_new".to_owned(),
+            "begin".to_owned(),
+        ),
+        (
+            "sema/body_identity".to_owned(),
+            Some("BodyIdentityPool".to_owned()),
+            "try_new".to_owned(),
+            "finish_core_str".to_owned(),
+        ),
+        (
+            "semantic_import".to_owned(),
+            Some("SemanticImportEpoch".to_owned()),
+            "new_in_space".to_owned(),
+            "begin".to_owned(),
+        ),
+        (
+            "semantic_import".to_owned(),
+            Some("SemanticImportEpoch".to_owned()),
+            "new_in_space".to_owned(),
+            "finish_core_str".to_owned(),
+        ),
+        (
+            "sema/ordinary_engine".to_owned(),
+            Some("OrdinaryBodyEngine".to_owned()),
+            "get_or_create_str_struct".to_owned(),
+            "register_core_str_with_symbol".to_owned(),
+        ),
+    ];
+    expected.sort();
+    actual == expected
+}
+
 /// Convert a Buck source path to the semantic Rust module it contributes to.
 /// `lib.rs` is the crate root and `mod.rs` contributes to its parent; retaining
 /// those filenames as module segments makes `crate::`, `super::`, and
@@ -941,6 +1432,7 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
     // so nested matches/closures cannot hide a peer evaluator.
     let production = [
         ("api_inventory", include_str!("api_inventory.rs")),
+        ("builtin_universe", include_str!("builtin_universe.rs")),
         ("call_abi", include_str!("call_abi.rs")),
         (
             "declaration_validation",
@@ -1110,6 +1602,121 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
         !has_peer_comptime_evaluator_in_sources(&production),
         "transitive peer comptime evaluator/selector in the manifest"
     );
+
+    // Builtin nominal construction has one authority.  Scan the complete
+    // Buck inventory by semantic shape so a renamed `str` definition cannot
+    // evade the guard, while generated `Str(N)` and slice fat pointers remain
+    // legitimate consumers of the same shape.
+    for (module, source) in &production {
+        if *module != "builtin_universe" {
+            assert!(
+                !has_core_str_definition(module, source),
+                "core str StructDef construction escaped builtin_universe: {module}"
+            );
+            assert!(
+                !has_builtin_enum_bootstrap(source),
+                "builtin enum bootstrap escaped builtin_universe: {module}"
+            );
+            assert!(
+                !has_builtin_enum_membership(source),
+                "builtin enum membership escaped builtin_universe: {module}"
+            );
+        }
+    }
+    assert!(
+        has_exact_builtin_authority_inventory(&production),
+        "builtin universe authority calls must have exactly one owner-qualified site per phase"
+    );
+    assert!(has_core_str_definition(
+        "fixture",
+        "let value = StructDef { name: \"StringView\", fields: [StructField { name: \"ptr\", ty: Type::U8 }, StructField { name: \"len\", ty: Type::U64 }], is_builtin: true };"
+    ));
+    assert!(has_core_str_definition(
+        "fixture",
+        "let value = StructDef { name: \"Str(32)\", fields: [StructField { name: \"ptr\", ty: Type::U8 }, StructField { name: \"len\", ty: Type::U64 }], is_builtin: true };"
+    ));
+    assert!(has_core_str_definition(
+        "fixture",
+        "let value = StructDef { name: \"[i32]\", fields: [StructField { name: \"ptr\", ty: Type::U8 }, StructField { name: \"len\", ty: Type::U64 }], is_builtin: true };"
+    ));
+    assert!(has_core_str_definition(
+        "fixture",
+        "fn fixture() { let hidden = helper(); let value = StructDef { name: hidden, fields: vec![StructField { name: \"ptr\", ty: Type::U8 }, StructField { name: \"len\", ty: Type::U64 }], is_builtin: true }; }"
+    ));
+    assert!(has_core_str_definition(
+        "fixture",
+        "fn fixture() { let hidden = helper(); let value = crate::types::StructDef { name: hidden, fields: vec![crate::types::StructField { name: \"ptr\", ty: Type::U8 }, crate::types::StructField { name: \"len\", ty: Type::U64 }], is_builtin: true }; }"
+    ));
+    assert!(has_core_str_definition(
+        "fixture",
+        "fn fixture() { let value = crate::types::StructDef { name: \"Str(32)\", fields: vec![crate::types::StructField { name: \"ptr\", ty: Type::U8 }, crate::types::StructField { name: \"len\", ty: Type::U64 }], is_builtin: true }; }"
+    ));
+    assert!(has_builtin_enum_bootstrap(
+        "fn fixture() { let value = EnumDef { name: \"RenamedArch\", variants: vec![\"X\"], variant_payloads: Vec::new(), is_pub: true, is_non_exhaustive: false, file_id: FileId::DEFAULT }; type_pool.register_enum(symbol, value); }"
+    ));
+    assert!(has_builtin_enum_bootstrap(
+        "fn fixture() { let value = EnumDef { name: \"RenamedArch\", variants: [\"X\"], variant_payloads: [], is_pub: true, is_non_exhaustive: false, file_id: FileId::DEFAULT }; type_pool.register_enum(symbol, value); }"
+    ));
+    assert!(has_builtin_enum_bootstrap(
+        "fn fixture() { let value = crate::EnumDef { name: \"RenamedArch\", variants: vec![\"X\"], variant_payloads: Vec::new(), is_pub: true, is_non_exhaustive: false, file_id: FileId::DEFAULT }; type_pool.register_enum(symbol, value); }"
+    ));
+    assert!(!has_builtin_enum_bootstrap(
+        "fn fixture() { let value = EnumDef { name: \"PublicSourceEnum\", variants: vec![\"X\"], variant_payloads: Vec::new(), is_pub: true, is_non_exhaustive: false, file_id: FileId::DEFAULT }; }"
+    ));
+    assert!(!has_builtin_enum_bootstrap(
+        "fn candidate() { let value = EnumDef { name: \"PublicSourceEnum\", variants: vec![\"X\"], variant_payloads: Vec::new(), is_pub: true, is_non_exhaustive: false, file_id: FileId::DEFAULT }; } fn unrelated() { type_pool.register_enum(symbol, value); }"
+    ));
+    assert!(has_builtin_enum_membership(
+        "fn fixture() { alias::get_builtin_enum(name); let _ = alias::BUILTIN_ENUMS; alias::is_reserved_enum_name(name); }"
+    ));
+    assert!(!has_exact_builtin_authority_inventory(&[(
+        "sema/body_identity",
+        "impl BodyIdentityPool { fn try_new() { BuiltinUniverse::begin(pool, space); BuiltinUniverse::begin(pool, space); let mut universe = BuiltinUniverse::begin(pool, space); universe.finish_core_str(pool, space); } }"
+    ),]));
+    assert!(!has_exact_builtin_authority_inventory(&[
+        (
+            "sema/body_identity",
+            "impl BodyIdentityPool { fn try_new() { let mut universe = BuiltinUniverse::begin(pool, space); universe.finish_core_str(pool, space); } }"
+        ),
+        (
+            "semantic_import",
+            "impl SemanticImportEpoch { fn new_in_space() { let mut universe = BuiltinUniverse::begin(pool, space); universe.finish_core_str(pool, space); universe.finish_core_str(pool, space); } }"
+        ),
+        (
+            "sema/ordinary_engine",
+            "impl OrdinaryBodyEngine { fn get_or_create_str_struct() { BuiltinUniverse::register_core_str_with_symbol(pool, symbols, symbol); } }"
+        ),
+    ]));
+    let qualified_exact = [
+        (
+            "sema/body_identity",
+            "impl BodyIdentityPool { fn try_new() { let mut universe = crate::builtin_universe::BuiltinUniverse::begin(pool, space); universe.finish_core_str(pool, space); } }",
+        ),
+        (
+            "semantic_import",
+            "impl SemanticImportEpoch { fn new_in_space() { let mut universe = crate::builtin_universe::BuiltinUniverse::begin(pool, space); universe.finish_core_str(pool, space); } }",
+        ),
+        (
+            "sema/ordinary_engine",
+            "impl OrdinaryBodyEngine { fn get_or_create_str_struct() { crate::builtin_universe::BuiltinUniverse::register_core_str_with_symbol(pool, symbols, symbol); } }",
+        ),
+    ];
+    assert!(has_exact_builtin_authority_inventory(&qualified_exact));
+    let qualified_exact = [
+        (
+            "sema/body_identity",
+            "impl BodyIdentityPool { fn try_new() { crate::builtin_universe::BuiltinUniverse::begin(pool, space); let mut universe = crate::builtin_universe::BuiltinUniverse::begin(pool, space); universe.finish_core_str(pool, space); } }",
+        ),
+        (
+            "semantic_import",
+            "impl SemanticImportEpoch { fn new_in_space() { crate::builtin_universe::BuiltinUniverse::begin(pool, space); let mut universe = crate::builtin_universe::BuiltinUniverse::begin(pool, space); universe.finish_core_str(pool, space); } }",
+        ),
+        (
+            "sema/ordinary_engine",
+            "impl OrdinaryBodyEngine { fn get_or_create_str_struct() { crate::builtin_universe::BuiltinUniverse::register_core_str_with_symbol(pool, symbols, symbol); } }",
+        ),
+    ];
+    assert!(!has_exact_builtin_authority_inventory(&qualified_exact));
 
     // A renamed peer must fail the same semantic guard; this protects the
     // invariant independently of the retired helper names above.

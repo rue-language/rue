@@ -733,39 +733,21 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         self.body_type_pool().type_carries_linear(ty)
     }
     pub(crate) fn get_or_create_str_struct(&mut self, _span: Span) -> CompileResult<Type> {
-        use crate::types::{StructDef, StructField};
-        let type_sym = self.intern_body_symbol("str")?;
+        use crate::builtin_universe::BuiltinUniverse;
+        let type_sym = self.intern_body_symbol(BuiltinUniverse::CORE_STR_NAME)?;
         if let Some(struct_id) = self.storage.struct_id_for_name(type_sym) {
             return Ok(Type::new_struct(struct_id));
         }
-        let ptr_type_id = self
-            .storage
-            .body_type_pool()
-            .intern_ptr_const_from_type(Type::U8);
-        let struct_def = StructDef {
-            name: Arc::from("str"),
-            fields: vec![
-                StructField {
-                    name: "ptr".to_owned(),
-                    ty: Type::new_ptr_const(ptr_type_id),
-                },
-                StructField {
-                    name: "len".to_owned(),
-                    ty: Type::U64,
-                },
-            ],
-            is_copy: true,
-            is_linear: false,
-            declared_linear: false,
-            destructor: None,
-            is_builtin: true,
-            is_pub: true,
-            file_id: FileId::new(0),
-        };
-        let (struct_id, _) = self
-            .storage
-            .body_type_pool()
-            .register_struct(type_sym, struct_def);
+        let struct_id = BuiltinUniverse::register_core_str_with_symbol(
+            self.storage.body_type_pool(),
+            self.body_interner(),
+            type_sym,
+        )
+        .map_err(|error| {
+            CompileError::without_span(ErrorKind::InternalError(format!(
+                "builtin core str registration failed: {error:?}"
+            )))
+        })?;
         self.storage
             .generated_structs_mut()
             .insert(type_sym, struct_id);
