@@ -434,10 +434,10 @@ pub struct AccessorPlaceIndex {
 }
 
 impl AccessorPlaceIndex {
-    /// Index every accessor-rooted place currently in `cfg`.
-    pub fn build(cfg: &Cfg) -> Self {
+    /// Index every accessor-rooted place currently in `caller`.
+    pub fn build(caller: &Cfg) -> Self {
         let mut index = Self::default();
-        index.note_appended(cfg, 0);
+        index.note_appended(caller, 0);
         index
     }
 
