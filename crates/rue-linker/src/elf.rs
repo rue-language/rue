@@ -143,6 +143,126 @@ fn read_cstring(data: &[u8]) -> String {
     String::from_utf8_lossy(&data[..end]).to_string()
 }
 
+fn check_parse_cancellation(cancellation: &mut impl FnMut() -> bool) -> Result<(), ParseError> {
+    if cancellation() {
+        Err(ParseError::Canceled)
+    } else {
+        Ok(())
+    }
+}
+
+fn clone_bytes_with_cancellation(
+    data: &[u8],
+    cancellation: &mut impl FnMut() -> bool,
+) -> Result<Vec<u8>, ParseError> {
+    let mut bytes = Vec::with_capacity(data.len());
+    for chunk in data.chunks(64 * 1024) {
+        check_parse_cancellation(cancellation)?;
+        bytes.extend_from_slice(chunk);
+    }
+    Ok(bytes)
+}
+
+fn read_cstring_with_cancellation(
+    data: &[u8],
+    cancellation: &mut impl FnMut() -> bool,
+) -> Result<String, ParseError> {
+    let mut end = 0;
+    for chunk in data.chunks(64 * 1024) {
+        check_parse_cancellation(cancellation)?;
+        if let Some(relative) = chunk.iter().position(|&byte| byte == 0) {
+            end += relative;
+            break;
+        }
+        end += chunk.len();
+    }
+    let bytes = &data[..end];
+    let mut output = String::with_capacity(bytes.len());
+    let mut offset = 0_usize;
+    while offset < bytes.len() {
+        check_parse_cancellation(cancellation)?;
+        let mut chunk_end = bytes.len().min(offset.saturating_add(64 * 1024));
+        loop {
+            match std::str::from_utf8(&bytes[offset..chunk_end]) {
+                Ok(valid) => {
+                    output.push_str(valid);
+                    offset = chunk_end;
+                    break;
+                }
+                Err(error) => {
+                    let valid_end = offset + error.valid_up_to();
+                    if let Some(error_len) = error.error_len() {
+                        // SAFETY: `valid_up_to` identifies the valid UTF-8 prefix.
+                        output.push_str(unsafe {
+                            std::str::from_utf8_unchecked(&bytes[offset..valid_end])
+                        });
+                        output.push('\u{FFFD}');
+                        offset = valid_end + error_len;
+                        break;
+                    }
+                    if chunk_end == bytes.len() {
+                        // SAFETY: `valid_up_to` identifies the valid UTF-8 prefix.
+                        output.push_str(unsafe {
+                            std::str::from_utf8_unchecked(&bytes[offset..valid_end])
+                        });
+                        output.push('\u{FFFD}');
+                        offset = bytes.len();
+                        break;
+                    }
+                    // Complete a scalar split at the artificial chunk edge.
+                    // Rechecking at most a few extra bytes preserves the exact
+                    // whole-slice lossy conversion while remaining bounded.
+                    chunk_end = bytes.len().min(chunk_end.saturating_add(3));
+                }
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn read_utf8_cstring_with_cancellation(
+    data: &[u8],
+    offset: usize,
+    cancellation: &mut impl FnMut() -> bool,
+) -> Result<String, ParseError> {
+    if offset > data.len() {
+        return Err(ParseError::InvalidStringTable);
+    }
+    let mut end = offset;
+    for chunk in data[offset..].chunks(64 * 1024) {
+        check_parse_cancellation(cancellation)?;
+        if let Some(relative) = chunk.iter().position(|&byte| byte == 0) {
+            end += relative;
+            break;
+        }
+        end += chunk.len();
+    }
+    let bytes = clone_bytes_with_cancellation(&data[offset..end], cancellation)?;
+    let mut validated = 0_usize;
+    while validated < bytes.len() {
+        check_parse_cancellation(cancellation)?;
+        let mut chunk_end = bytes.len().min(validated.saturating_add(64 * 1024));
+        loop {
+            match std::str::from_utf8(&bytes[validated..chunk_end]) {
+                Ok(_) => break,
+                Err(error) if error.error_len().is_some() || chunk_end == bytes.len() => {
+                    return Err(ParseError::InvalidStringTable);
+                }
+                Err(_) => {
+                    // The chunk ended inside a valid scalar. Extend by at most
+                    // the UTF-8 continuation width so validation remains
+                    // byte-bounded without changing whole-string semantics.
+                    chunk_end = bytes.len().min(chunk_end.saturating_add(3));
+                }
+            }
+        }
+        validated = chunk_end;
+    }
+    check_parse_cancellation(cancellation)?;
+    // Every byte range above was validated from a scalar boundary.
+    Ok(unsafe { String::from_utf8_unchecked(bytes) })
+}
+
 /// A parsed ELF64 relocatable object file.
 #[derive(Debug)]
 pub struct ObjectFile {
@@ -545,6 +665,8 @@ impl RelocationType {
 /// Error type for object file parsing.
 #[derive(Debug)]
 pub enum ParseError {
+    /// Cooperative cancellation was requested by the caller.
+    Canceled,
     /// File is too short.
     TooShort,
     /// Invalid ELF magic number.
@@ -580,6 +702,7 @@ pub enum ParseError {
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ParseError::Canceled => write!(f, "object parsing canceled"),
             ParseError::TooShort => write!(f, "file is too short to be a valid object file"),
             ParseError::InvalidMagic => write!(f, "invalid ELF magic number"),
             ParseError::Not64Bit => write!(f, "not a 64-bit ELF file"),
@@ -614,6 +737,15 @@ impl ObjectFile {
     /// to the appropriate parser.
     #[must_use = "parsing returns a Result that must be checked"]
     pub fn parse(data: &[u8]) -> Result<Self, ParseError> {
+        Self::parse_with_cancellation(data, || false)
+    }
+
+    /// Parse an object with bounded caller-owned cancellation checkpoints.
+    pub fn parse_with_cancellation(
+        data: &[u8],
+        mut cancellation: impl FnMut() -> bool,
+    ) -> Result<Self, ParseError> {
+        check_parse_cancellation(&mut cancellation)?;
         // Need at least 4 bytes to check magic
         if data.len() < 4 {
             return Err(ParseError::TooShort);
@@ -621,9 +753,9 @@ impl ObjectFile {
 
         // Dispatch based on magic bytes
         if data[0..4] == ELF_MAGIC {
-            Self::parse_elf(data)
+            Self::parse_elf(data, &mut cancellation)
         } else if data.len() >= 4 && read_u32(data, 0) == MH_MAGIC_64 {
-            Self::parse_macho(data)
+            Self::parse_macho(data, &mut cancellation)
         } else {
             Err(ParseError::UnknownFormat)
         }
@@ -632,7 +764,10 @@ impl ObjectFile {
     /// Parse a Mach-O 64-bit relocatable object file.
     ///
     /// Extracts sections, symbols, and relocations from a Mach-O object file.
-    fn parse_macho(data: &[u8]) -> Result<Self, ParseError> {
+    fn parse_macho(
+        data: &[u8],
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<Self, ParseError> {
         // Minimum size check for Mach-O header
         if data.len() < MACHO64_HEADER_SIZE {
             return Err(ParseError::TooShort);
@@ -681,6 +816,7 @@ impl ObjectFile {
 
         let mut cmd_offset = MACHO64_HEADER_SIZE;
         for _ in 0..ncmds {
+            check_parse_cancellation(cancellation)?;
             if cmd_offset + 8 > data.len() {
                 return Err(ParseError::TooShort);
             }
@@ -704,6 +840,7 @@ impl ObjectFile {
                     // Parse sections in this segment
                     let mut sect_offset = cmd_offset + MACHO64_SEGMENT_CMD_SIZE;
                     for _ in 0..nsects {
+                        check_parse_cancellation(cancellation)?;
                         if sect_offset + MACHO64_SECTION_SIZE > data.len() {
                             return Err(ParseError::TooShort);
                         }
@@ -777,7 +914,7 @@ impl ObjectFile {
                             if end > data.len() {
                                 return Err(ParseError::SectionOutOfBounds(full_name.clone()));
                             }
-                            data[offset..end].to_vec()
+                            clone_bytes_with_cancellation(&data[offset..end], cancellation)?
                         } else {
                             Vec::new()
                         };
@@ -852,6 +989,7 @@ impl ObjectFile {
             let strtab = &data[strtab_offset..strtab_end];
 
             for i in 0..symtab_count {
+                check_parse_cancellation(cancellation)?;
                 let sym_offset = symtab_offset + i * MACHO64_NLIST_SIZE;
 
                 // nlist_64 structure:
@@ -868,7 +1006,7 @@ impl ObjectFile {
 
                 // Read symbol name from string table
                 let mut name = if n_strx < strtab.len() {
-                    read_cstring(&strtab[n_strx..])
+                    read_cstring_with_cancellation(&strtab[n_strx..], cancellation)?
                 } else {
                     String::new()
                 };
@@ -966,6 +1104,7 @@ impl ObjectFile {
 
         // Parse relocations for each section
         for (section_index, nreloc, reloff) in section_reloc_info {
+            check_parse_cancellation(cancellation)?;
             if nreloc == 0 {
                 continue;
             }
@@ -989,6 +1128,7 @@ impl ObjectFile {
             let mut pending_addend: i64 = 0;
 
             for i in 0..nreloc {
+                check_parse_cancellation(cancellation)?;
                 let rel_offset = reloff + i * MACHO64_RELOC_SIZE;
 
                 // relocation_info structure:
@@ -1144,7 +1284,8 @@ impl ObjectFile {
     }
 
     /// Parse an ELF64 relocatable object file.
-    fn parse_elf(data: &[u8]) -> Result<Self, ParseError> {
+    fn parse_elf(data: &[u8], cancellation: &mut impl FnMut() -> bool) -> Result<Self, ParseError> {
+        check_parse_cancellation(cancellation)?;
         // Check minimum size for ELF header
         if data.len() < ELF64_EHDR_SIZE {
             return Err(ParseError::TooShort);
@@ -1221,6 +1362,7 @@ impl ObjectFile {
         let mut raw_sections = Vec::with_capacity(section_capacity);
 
         for i in 0..e_shnum {
+            check_parse_cancellation(cancellation)?;
             let sh_offset = e_shoff + i * e_shentsize;
             if sh_offset + e_shentsize > data.len() {
                 return Err(ParseError::InvalidSection(
@@ -1273,29 +1415,14 @@ impl ObjectFile {
         }
         let shstrtab_data = &data[shstrtab.offset as usize..shstrtab_end as usize];
 
-        // Helper to read null-terminated string.
-        //
-        // `offset` is a file-controlled u32 (a symbol's `st_name` or a section's
-        // `sh_name`), so it must be checked against the table before slicing:
-        // Rust panics on a range whose START is past the slice, and a malformed
-        // object must produce an Err, not a panic (RUE-1645). An offset exactly
-        // at the end is the empty name and stays valid.
-        let read_string = |strtab: &[u8], offset: usize| -> Result<String, ParseError> {
-            if offset > strtab.len() {
-                return Err(ParseError::InvalidStringTable);
-            }
-            let start = offset;
-            let mut end = start;
-            while end < strtab.len() && strtab[end] != 0 {
-                end += 1;
-            }
-            String::from_utf8(strtab[start..end].to_vec())
-                .map_err(|_| ParseError::InvalidStringTable)
-        };
-
         // Second pass: create sections with names
         for (i, raw) in raw_sections.iter().enumerate() {
-            let name = read_string(shstrtab_data, raw.name_offset as usize)?;
+            check_parse_cancellation(cancellation)?;
+            let name = read_utf8_cstring_with_cancellation(
+                shstrtab_data,
+                raw.name_offset as usize,
+                cancellation,
+            )?;
 
             // Skip null section, symtab, strtab, rela sections (we'll handle them separately)
             if raw.sh_type == SHT_NULL
@@ -1329,7 +1456,10 @@ impl ObjectFile {
                 if section_end as usize > data.len() {
                     return Err(ParseError::SectionOutOfBounds(name.clone()));
                 }
-                data[raw.offset as usize..section_end as usize].to_vec()
+                clone_bytes_with_cancellation(
+                    &data[raw.offset as usize..section_end as usize],
+                    cancellation,
+                )?
             } else {
                 Vec::new()
             };
@@ -1409,6 +1539,7 @@ impl ObjectFile {
                 }
             }
             for i in 0..sym_count {
+                check_parse_cancellation(cancellation)?;
                 let sym_offset = (i * symtab.entsize) as usize;
                 if sym_offset + ELF64_SYM_SIZE > symtab_data.len() {
                     return Err(ParseError::InvalidSymbol(
@@ -1425,7 +1556,11 @@ impl ObjectFile {
                 let st_value = read_u64(sym, 8);
                 let st_size = read_u64(sym, 16);
 
-                let mut name = read_string(strtab_data, st_name as usize)?;
+                let mut name = read_utf8_cstring_with_cancellation(
+                    strtab_data,
+                    st_name as usize,
+                    cancellation,
+                )?;
 
                 // For section symbols (STT_SECTION), the name in the string table is empty.
                 // Use the section name instead, which is needed for resolving relocations
@@ -1438,7 +1573,11 @@ impl ObjectFile {
                 {
                     // Get the section name
                     let sec = &raw_sections[st_shndx as usize];
-                    if let Ok(section_name) = read_string(shstrtab_data, sec.name_offset as usize) {
+                    if let Ok(section_name) = read_utf8_cstring_with_cancellation(
+                        shstrtab_data,
+                        sec.name_offset as usize,
+                        cancellation,
+                    ) {
                         name = section_name;
                     }
                 }
@@ -1486,6 +1625,7 @@ impl ObjectFile {
 
         // Parse relocations
         for raw in raw_sections.iter() {
+            check_parse_cancellation(cancellation)?;
             if raw.sh_type != SHT_RELA {
                 continue;
             }
@@ -1518,6 +1658,7 @@ impl ObjectFile {
             }
 
             for j in 0..rela_count {
+                check_parse_cancellation(cancellation)?;
                 let rela_offset = (j * raw.entsize) as usize;
                 if rela_offset + ELF64_RELA_SIZE > rela_data.len() {
                     return Err(ParseError::RelocationOutOfBounds);
@@ -1575,6 +1716,46 @@ impl ObjectFile {
 mod tests {
     use super::*;
     use crate::constants::{EI_CLASS, EI_DATA, EI_VERSION, ELF64_SHDR_SIZE as TEST_SHDR_SIZE};
+
+    #[test]
+    fn chunked_cstring_conversion_matches_whole_slice_at_utf8_boundaries() {
+        const CHUNK: usize = 64 * 1024;
+        for suffix in [
+            "€tail".as_bytes(),
+            &[0xE2, 0x28, 0xA1, b'x'][..],
+            &[0xF0, 0x9F, 0x92][..],
+        ] {
+            let mut data = vec![b'a'; CHUNK - 1];
+            data.extend_from_slice(suffix);
+            data.push(0);
+            data.extend_from_slice(b"ignored");
+            let expected_end = data.iter().position(|byte| *byte == 0).unwrap();
+            let expected = String::from_utf8_lossy(&data[..expected_end]);
+            assert_eq!(
+                read_cstring_with_cancellation(&data, &mut || false).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn strict_chunked_cstring_preserves_utf8_boundary_validation() {
+        const CHUNK: usize = 64 * 1024;
+        let mut valid = vec![b'a'; CHUNK - 1];
+        valid.extend_from_slice("€tail".as_bytes());
+        valid.push(0);
+        assert_eq!(
+            read_utf8_cstring_with_cancellation(&valid, 0, &mut || false).unwrap(),
+            std::str::from_utf8(&valid[..valid.len() - 1]).unwrap()
+        );
+
+        let mut invalid = vec![b'a'; CHUNK - 1];
+        invalid.extend_from_slice(&[0xE2, 0x28, 0xA1, 0]);
+        assert!(matches!(
+            read_utf8_cstring_with_cancellation(&invalid, 0, &mut || false),
+            Err(ParseError::InvalidStringTable)
+        ));
+    }
 
     #[test]
     fn structured_object_preserves_arc_atom_ownership() {

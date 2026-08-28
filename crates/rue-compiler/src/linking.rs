@@ -28,6 +28,79 @@ fn io_link_error(context: &str, err: std::io::Error) -> CompileError {
     CompileError::without_span(ErrorKind::LinkError(format!("{}: {}", context, err)))
 }
 
+type CancellableLinkResult<T> = Result<T, crate::session::PipelineRequestControl>;
+
+#[cfg(test)]
+thread_local! {
+    static LINK_CANCELLATION_TRIPWIRE: std::cell::RefCell<Option<(rue_query::CancellationToken, usize)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_link_cancellation_tripwire(
+    cancellation: Option<(rue_query::CancellationToken, usize)>,
+) {
+    LINK_CANCELLATION_TRIPWIRE.with(|slot| *slot.borrow_mut() = cancellation);
+}
+
+fn check_cancellation(cancellation: &rue_query::CancellationToken) -> CancellableLinkResult<()> {
+    #[cfg(test)]
+    LINK_CANCELLATION_TRIPWIRE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some((token, remaining)) = slot.as_mut() else {
+            return;
+        };
+        *remaining = remaining.saturating_sub(1);
+        if *remaining == 0 {
+            token.cancel();
+            *slot = None;
+        }
+    });
+    if cancellation.is_canceled() {
+        Err(crate::session::PipelineRequestControl::Abort(
+            rue_query::QueryAbort::Canceled,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn compile_control(errors: impl Into<CompileErrors>) -> crate::session::PipelineRequestControl {
+    crate::session::PipelineRequestControl::Compile(errors.into())
+}
+
+fn map_linker_control(err: rue_linker::LinkError) -> crate::session::PipelineRequestControl {
+    if matches!(err, rue_linker::LinkError::Canceled) {
+        crate::session::PipelineRequestControl::Abort(rue_query::QueryAbort::Canceled)
+    } else {
+        compile_control(link_error(err))
+    }
+}
+
+fn uncancellable<T>(result: CancellableLinkResult<T>, context: &str) -> MultiErrorResult<T> {
+    result.map_err(|control| match control {
+        crate::session::PipelineRequestControl::Compile(errors) => errors,
+        crate::session::PipelineRequestControl::Abort(abort) => {
+            crate::session::pipeline_abort_errors(context, abort)
+        }
+        crate::session::PipelineRequestControl::Parked(park) => {
+            crate::session::unresolved_toolchain_park_errors(&park)
+        }
+    })
+}
+
+fn clone_warnings_with_cancellation(
+    warnings: &[CompileWarning],
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableLinkResult<Vec<CompileWarning>> {
+    let mut cloned = Vec::with_capacity(warnings.len());
+    for warning in warnings {
+        check_cancellation(cancellation)?;
+        cloned.push(warning.clone());
+    }
+    Ok(cloned)
+}
+
 /// A temporary directory for linking that automatically cleans up on drop.
 ///
 /// The `TempDir` is the ownership token for the workspace: it is created
@@ -80,10 +153,19 @@ impl TempLinkDir {
         options.open(path).map_err(|e| io_link_error(context, e))
     }
 
+    fn create_capture_leaf(path: &Path, context: &str) -> CompileResult<std::fs::File> {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        options.open(path).map_err(|e| io_link_error(context, e))
+    }
+
     /// Write object files to the temporary directory.
     ///
     /// Each object file is written to a file named `obj{N}.o` where N is
     /// the index. The paths are stored in `self.obj_paths`.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn write_object_files(&mut self, object_files: &[Vec<u8>]) -> CompileResult<()> {
         for (i, obj_bytes) in object_files.iter().enumerate() {
             let obj_path = self.directory.path().join(format!("obj{}.o", i));
@@ -95,11 +177,49 @@ impl TempLinkDir {
         Ok(())
     }
 
+    fn write_object_files_with_cancellation(
+        &mut self,
+        object_files: &[Vec<u8>],
+        cancellation: &rue_query::CancellationToken,
+    ) -> CancellableLinkResult<()> {
+        for (i, obj_bytes) in object_files.iter().enumerate() {
+            check_cancellation(cancellation)?;
+            let obj_path = self.directory.path().join(format!("obj{}.o", i));
+            let mut file = Self::create_leaf(&obj_path, "failed to create temp object file")
+                .map_err(compile_control)?;
+            write_all_with_cancellation(
+                &mut file,
+                obj_bytes,
+                cancellation,
+                "failed to write temp object file",
+            )?;
+            self.obj_paths.push(obj_path);
+        }
+        Ok(())
+    }
+
     /// Write the runtime archive to the temporary directory.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn write_runtime(&self, runtime_bytes: &[u8]) -> CompileResult<()> {
         let mut file = Self::create_leaf(&self.runtime_path, "failed to create runtime archive")?;
         file.write_all(runtime_bytes)
             .map_err(|e| io_link_error("failed to write runtime archive", e))
+    }
+
+    fn write_runtime_with_cancellation(
+        &self,
+        runtime_bytes: &[u8],
+        cancellation: &rue_query::CancellationToken,
+    ) -> CancellableLinkResult<()> {
+        check_cancellation(cancellation)?;
+        let mut file = Self::create_leaf(&self.runtime_path, "failed to create runtime archive")
+            .map_err(compile_control)?;
+        write_all_with_cancellation(
+            &mut file,
+            runtime_bytes,
+            cancellation,
+            "failed to write runtime archive",
+        )
     }
 
     /// Reserve the output leaf so a pre-existing file of any kind is rejected.
@@ -109,6 +229,7 @@ impl TempLinkDir {
     }
 
     /// Read the linked executable from the output path.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn read_output(&self) -> CompileResult<Vec<u8>> {
         let mut options = std::fs::OpenOptions::new();
         options.read(true);
@@ -130,6 +251,186 @@ impl TempLinkDir {
         file.read_to_end(&mut output)
             .map_err(|e| io_link_error("failed to read linked executable", e))?;
         Ok(output)
+    }
+
+    fn read_output_with_cancellation(
+        &self,
+        cancellation: &rue_query::CancellationToken,
+    ) -> CancellableLinkResult<Vec<u8>> {
+        check_cancellation(cancellation)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW);
+        let mut file = options
+            .open(&self.output_path)
+            .map_err(|e| compile_control(io_link_error("failed to open linked executable", e)))?;
+        if !file
+            .metadata()
+            .map_err(|e| compile_control(io_link_error("failed to inspect linked executable", e)))?
+            .is_file()
+        {
+            return Err(compile_control(CompileError::without_span(
+                ErrorKind::LinkError("linked executable is not a regular file".to_string()),
+            )));
+        }
+        let mut output = Vec::new();
+        let mut chunk = [0_u8; 64 * 1024];
+        loop {
+            check_cancellation(cancellation)?;
+            let read = file.read(&mut chunk).map_err(|e| {
+                compile_control(io_link_error("failed to read linked executable", e))
+            })?;
+            if read == 0 {
+                break;
+            }
+            output.extend_from_slice(&chunk[..read]);
+        }
+        Ok(output)
+    }
+}
+
+fn write_all_with_cancellation(
+    file: &mut std::fs::File,
+    bytes: &[u8],
+    cancellation: &rue_query::CancellationToken,
+    context: &str,
+) -> CancellableLinkResult<()> {
+    for chunk in bytes.chunks(64 * 1024) {
+        check_cancellation(cancellation)?;
+        file.write_all(chunk)
+            .map_err(|e| compile_control(io_link_error(context, e)))?;
+    }
+    Ok(())
+}
+
+fn read_capture_with_cancellation(
+    file: &mut std::fs::File,
+    cancellation: &rue_query::CancellationToken,
+    context: &str,
+) -> CancellableLinkResult<Vec<u8>> {
+    check_cancellation(cancellation)?;
+    file.seek(std::io::SeekFrom::Start(0))
+        .map_err(|error| compile_control(io_link_error(context, error)))?;
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        check_cancellation(cancellation)?;
+        let read = file
+            .read(&mut chunk)
+            .map_err(|error| compile_control(io_link_error(context, error)))?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    Ok(bytes)
+}
+
+struct LinkerJob {
+    child: std::process::Child,
+    reaped: bool,
+}
+
+impl LinkerJob {
+    fn spawn(command: &mut Command) -> std::io::Result<Self> {
+        // Rue's supported compiler hosts are Unix. A fresh process group makes
+        // the driver and every normally spawned ld/lld descendant one owned
+        // job that can be terminated before TempLinkDir is dropped. Keep the
+        // direct-child fallback narrowly cfg'd for other hosts where std does
+        // not expose a portable process-tree/job primitive.
+        #[cfg(unix)]
+        command.process_group(0);
+        Ok(Self {
+            child: command.spawn()?,
+            reaped: false,
+        })
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        let status = self.child.try_wait()?;
+        if status.is_some() {
+            self.reaped = true;
+        }
+        Ok(status)
+    }
+
+    fn terminate_and_reap(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        let mut termination_error = None;
+        #[cfg(unix)]
+        {
+            let process_group = -(self.child.id() as libc::pid_t);
+            if unsafe { libc::kill(process_group, libc::SIGKILL) } != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    termination_error = Some(error);
+                    let _ = self.child.kill();
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        if let Err(error) = self.child.kill() {
+            if error.kind() != std::io::ErrorKind::InvalidInput {
+                termination_error = Some(error);
+            }
+        }
+
+        let status = self.child.wait();
+        if status.is_ok() {
+            self.reaped = true;
+        }
+        let status = status?;
+        if let Some(error) = termination_error {
+            return Err(error);
+        }
+        Ok(status)
+    }
+}
+
+impl Drop for LinkerJob {
+    fn drop(&mut self) {
+        if !self.reaped {
+            let _ = self.terminate_and_reap();
+        }
+    }
+}
+
+fn wait_for_linker(
+    job: &mut LinkerJob,
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableLinkResult<std::process::ExitStatus> {
+    loop {
+        // An already-observed exit wins the child-lifecycle race. Overall
+        // compilation still checks cancellation while constructing and before
+        // publishing the final bytes.
+        match job.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) if cancellation.is_canceled() => {
+                job.terminate_and_reap().map_err(|e| {
+                    compile_control(io_link_error(
+                        "failed to terminate and reap canceled linker job",
+                        e,
+                    ))
+                })?;
+                return Err(crate::session::PipelineRequestControl::Abort(
+                    rue_query::QueryAbort::Canceled,
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(err) => {
+                if let Err(cleanup_error) = job.terminate_and_reap() {
+                    return Err(compile_control(CompileError::without_span(
+                        ErrorKind::LinkError(format!(
+                            "failed to wait for linker: {err}; also failed to terminate and reap linker job: {cleanup_error}"
+                        )),
+                    )));
+                }
+                return Err(compile_control(io_link_error(
+                    "failed to wait for linker",
+                    err,
+                )));
+            }
+        }
     }
 }
 
@@ -159,6 +460,7 @@ pub(crate) fn validate_runtime(target: Target) -> Result<(), String> {
     validate_runtime_archive(runtime_for_target(target), target).map(|_| ())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn parse_runtime_archive(runtime_bytes: &[u8]) -> Result<Archive, String> {
     let archive = Archive::parse_strict_objects(runtime_bytes)
         .map_err(|e| format!("embedded rue-runtime archive is invalid: {}", e))?;
@@ -170,21 +472,44 @@ pub(crate) fn parse_runtime_archive(runtime_bytes: &[u8]) -> Result<Archive, Str
     Ok(archive)
 }
 
-/// Read and parse a user-supplied static archive passed with `--link-archive`
-/// (ADR-0064 C FFI). Its object members satisfy undefined `extern "C"` symbols.
-fn read_user_archive(path: &Path) -> Result<Archive, ErrorKind> {
-    let bytes = std::fs::read(path).map_err(|e| {
-        ErrorKind::LinkError(format!(
+fn read_user_archive_with_cancellation(
+    path: &Path,
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableLinkResult<Archive> {
+    check_cancellation(cancellation)?;
+    let mut file = std::fs::File::open(path).map_err(|e| {
+        compile_control(CompileError::without_span(ErrorKind::LinkError(format!(
             "failed to read link archive `{}`: {e}",
             path.display()
-        ))
+        ))))
     })?;
-    Archive::parse_strict_objects(&bytes).map_err(|e| {
-        ErrorKind::LinkError(format!(
-            "failed to parse link archive `{}`: {e}",
-            path.display()
-        ))
-    })
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        check_cancellation(cancellation)?;
+        let read = file.read(&mut chunk).map_err(|e| {
+            compile_control(CompileError::without_span(ErrorKind::LinkError(format!(
+                "failed to read link archive `{}`: {e}",
+                path.display()
+            ))))
+        })?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    Archive::parse_strict_objects_with_cancellation(&bytes, || cancellation.is_canceled()).map_err(
+        |error| {
+            if matches!(error, rue_linker::ArchiveError::Canceled) {
+                crate::session::PipelineRequestControl::Abort(rue_query::QueryAbort::Canceled)
+            } else {
+                compile_control(CompileError::without_span(ErrorKind::LinkError(format!(
+                    "failed to parse link archive `{}`: {error}",
+                    path.display()
+                ))))
+            }
+        },
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +535,47 @@ struct RuntimeDefinedSymbol {
 struct RuntimeArchiveInventory {
     object_targets: Vec<rue_runtime_abi::RuntimeTarget>,
     symbols: Vec<RuntimeDefinedSymbol>,
+}
+
+#[derive(Debug)]
+enum RuntimeArchiveWorkError {
+    Canceled,
+    Invalid(String),
+}
+
+#[cfg(test)]
+thread_local! {
+    static RUNTIME_ARCHIVE_CANCELLATION_TRIPWIRE: std::cell::RefCell<Option<(rue_query::CancellationToken, usize)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_runtime_archive_cancellation_tripwire(
+    cancellation: Option<(rue_query::CancellationToken, usize)>,
+) {
+    RUNTIME_ARCHIVE_CANCELLATION_TRIPWIRE.with(|slot| *slot.borrow_mut() = cancellation);
+}
+
+fn check_runtime_archive_work(
+    cancellation: &rue_query::CancellationToken,
+) -> Result<(), RuntimeArchiveWorkError> {
+    #[cfg(test)]
+    RUNTIME_ARCHIVE_CANCELLATION_TRIPWIRE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some((token, remaining)) = slot.as_mut() else {
+            return;
+        };
+        *remaining = remaining.saturating_sub(1);
+        if *remaining == 0 {
+            token.cancel();
+            *slot = None;
+        }
+    });
+    if cancellation.is_canceled() {
+        Err(RuntimeArchiveWorkError::Canceled)
+    } else {
+        Ok(())
+    }
 }
 
 fn runtime_target(target: Target) -> rue_runtime_abi::RuntimeTarget {
@@ -238,14 +604,30 @@ fn parsed_object_target(
 }
 
 fn runtime_archive_inventory(archive: &Archive) -> Result<RuntimeArchiveInventory, String> {
+    match runtime_archive_inventory_with_cancellation(archive, &rue_query::CancellationToken::new())
+    {
+        Ok(inventory) => Ok(inventory),
+        Err(RuntimeArchiveWorkError::Invalid(error)) => Err(error),
+        Err(RuntimeArchiveWorkError::Canceled) => unreachable!("fresh token cannot be canceled"),
+    }
+}
+
+fn runtime_archive_inventory_with_cancellation(
+    archive: &Archive,
+    cancellation: &rue_query::CancellationToken,
+) -> Result<RuntimeArchiveInventory, RuntimeArchiveWorkError> {
+    check_runtime_archive_work(cancellation)?;
     use rue_linker::{ObjectFormat, SectionFlags, SymbolBinding, SymbolType};
 
     let mut inventory = RuntimeArchiveInventory::default();
     for (object_index, object) in archive.objects.iter().enumerate() {
-        let object_target = parsed_object_target(object, object_index)?;
+        check_runtime_archive_work(cancellation)?;
+        let object_target =
+            parsed_object_target(object, object_index).map_err(RuntimeArchiveWorkError::Invalid)?;
         inventory.object_targets.push(object_target);
 
         for symbol in &object.symbols {
+            check_runtime_archive_work(cancellation)?;
             if symbol.section_index.is_none()
                 || matches!(symbol.binding, SymbolBinding::Local)
                 || symbol.name.is_empty()
@@ -255,10 +637,10 @@ fn runtime_archive_inventory(archive: &Archive) -> Result<RuntimeArchiveInventor
 
             let section_index = symbol.section_index.expect("checked above");
             let section = object.sections.get(section_index).ok_or_else(|| {
-                format!(
+                RuntimeArchiveWorkError::Invalid(format!(
                     "embedded rue-runtime archive symbol `{}` has invalid section index {}",
                     symbol.name, section_index
-                )
+                ))
             })?;
             let bytes_from_symbol = u64::try_from(section.data.len())
                 .unwrap_or(u64::MAX)
@@ -266,16 +648,15 @@ fn runtime_archive_inventory(archive: &Archive) -> Result<RuntimeArchiveInventor
             let format_size = match object.format {
                 ObjectFormat::Elf => symbol.size,
                 ObjectFormat::MachO => {
-                    let next_symbol = object
-                        .symbols
-                        .iter()
-                        .filter(|candidate| {
-                            candidate.section_index == symbol.section_index
-                                && candidate.value > symbol.value
-                        })
-                        .map(|candidate| candidate.value)
-                        .min()
-                        .unwrap_or(section.size);
+                    let mut next_symbol = section.size;
+                    for candidate in &object.symbols {
+                        check_runtime_archive_work(cancellation)?;
+                        if candidate.section_index == symbol.section_index
+                            && candidate.value > symbol.value
+                        {
+                            next_symbol = next_symbol.min(candidate.value);
+                        }
+                    }
                     next_symbol.saturating_sub(symbol.value)
                 }
             };
@@ -304,9 +685,7 @@ fn runtime_archive_inventory(archive: &Archive) -> Result<RuntimeArchiveInventor
             });
         }
     }
-    inventory
-        .symbols
-        .sort_by(|left, right| left.name.cmp(&right.name));
+    check_runtime_archive_work(cancellation)?;
     Ok(inventory)
 }
 
@@ -314,49 +693,79 @@ fn validate_runtime_inventory(
     inventory: &RuntimeArchiveInventory,
     target: rue_runtime_abi::RuntimeTarget,
 ) -> Result<(), String> {
+    match validate_runtime_inventory_with_cancellation(
+        inventory,
+        target,
+        &rue_query::CancellationToken::new(),
+    ) {
+        Ok(()) => Ok(()),
+        Err(RuntimeArchiveWorkError::Invalid(error)) => Err(error),
+        Err(RuntimeArchiveWorkError::Canceled) => unreachable!("fresh token cannot be canceled"),
+    }
+}
+
+fn runtime_definitions_with_cancellation<'a>(
+    inventory: &'a RuntimeArchiveInventory,
+    name: &str,
+    cancellation: &rue_query::CancellationToken,
+) -> Result<Vec<&'a RuntimeDefinedSymbol>, RuntimeArchiveWorkError> {
+    let mut definitions = Vec::new();
+    for symbol in &inventory.symbols {
+        check_runtime_archive_work(cancellation)?;
+        if symbol.name == name {
+            definitions.push(symbol);
+        }
+    }
+    Ok(definitions)
+}
+
+fn validate_runtime_inventory_with_cancellation(
+    inventory: &RuntimeArchiveInventory,
+    target: rue_runtime_abi::RuntimeTarget,
+    cancellation: &rue_query::CancellationToken,
+) -> Result<(), RuntimeArchiveWorkError> {
+    check_runtime_archive_work(cancellation)?;
     use rue_runtime_abi::{
         RUNTIME_ABI_VERSION_SYMBOL, ReservedExportId, ReservedExportKind, RuntimeHelperId,
         classify_export,
     };
 
-    let mut errors = Vec::new();
+    let mut errors = std::collections::BTreeSet::new();
     for (object_index, object_target) in inventory.object_targets.iter().copied().enumerate() {
+        check_runtime_archive_work(cancellation)?;
         if object_target != target {
-            errors.push(format!(
+            errors.insert(format!(
                 "object {object_index} targets {object_target:?}, expected {target:?}"
             ));
         }
     }
 
-    let definitions = |name: &str| {
-        inventory
-            .symbols
-            .iter()
-            .filter(|symbol| symbol.name == name)
-            .collect::<Vec<_>>()
-    };
-
     for id in RuntimeHelperId::ALL {
+        check_runtime_archive_work(cancellation)?;
         let helper = id.helper();
-        let found = definitions(helper.symbol);
+        let found = runtime_definitions_with_cancellation(inventory, helper.symbol, cancellation)?;
         if helper.availability.contains(target) {
             match found.len() {
-                0 => errors.push(format!("missing runtime helper `{}`", helper.symbol)),
+                0 => {
+                    errors.insert(format!("missing runtime helper `{}`", helper.symbol));
+                }
                 1 => {
                     if found[0].kind != RuntimeSymbolKind::Function {
-                        errors.push(format!(
+                        errors.insert(format!(
                             "runtime helper `{}` is not callable code",
                             helper.symbol
                         ));
                     }
                 }
-                count => errors.push(format!(
-                    "runtime helper `{}` is defined {count} times",
-                    helper.symbol
-                )),
+                count => {
+                    errors.insert(format!(
+                        "runtime helper `{}` is defined {count} times",
+                        helper.symbol
+                    ));
+                }
             }
         } else if !found.is_empty() {
-            errors.push(format!(
+            errors.insert(format!(
                 "runtime helper `{}` is not available for {target:?}",
                 helper.symbol
             ));
@@ -364,18 +773,21 @@ fn validate_runtime_inventory(
     }
 
     for id in ReservedExportId::ALL {
+        check_runtime_archive_work(cancellation)?;
         let export = id.export();
-        let found = definitions(export.symbol);
+        let found = runtime_definitions_with_cancellation(inventory, export.symbol, cancellation)?;
         if export.availability.contains(target) {
             match found.len() {
-                0 => errors.push(format!(
-                    "missing reserved runtime export `{}`",
-                    export.symbol
-                )),
+                0 => {
+                    errors.insert(format!(
+                        "missing reserved runtime export `{}`",
+                        export.symbol
+                    ));
+                }
                 1 => match export.kind {
                     ReservedExportKind::Function(_) => {
                         if found[0].kind != RuntimeSymbolKind::Function {
-                            errors.push(format!(
+                            errors.insert(format!(
                                 "reserved runtime export `{}` is not callable code",
                                 export.symbol
                             ));
@@ -384,13 +796,13 @@ fn validate_runtime_inventory(
                     ReservedExportKind::ReadOnlyData { size } => {
                         let marker = found[0];
                         if marker.kind != RuntimeSymbolKind::Data {
-                            errors.push(format!(
+                            errors.insert(format!(
                                 "runtime ABI marker `{}` is not an object symbol",
                                 export.symbol
                             ));
                         }
                         if marker.size != u64::from(size) {
-                            errors.push(format!(
+                            errors.insert(format!(
                                 "runtime ABI marker `{}` has size {}, expected {} byte",
                                 export.symbol, marker.size, size
                             ));
@@ -399,32 +811,34 @@ fn validate_runtime_inventory(
                             || marker.section_writable
                             || marker.section_executable
                         {
-                            errors.push(format!(
+                            errors.insert(format!(
                                 "runtime ABI marker `{}` is not retained read-only data",
                                 export.symbol
                             ));
                         }
                         if marker.bytes_from_symbol < u64::from(size) {
-                            errors.push(format!(
+                            errors.insert(format!(
                                 "runtime ABI marker `{}` has no accessible marker byte",
                                 export.symbol
                             ));
                         }
                         if marker.first_byte != Some(0) {
-                            errors.push(format!(
+                            errors.insert(format!(
                                 "runtime ABI marker `{}` does not contain the required zero byte",
                                 export.symbol
                             ));
                         }
                     }
                 },
-                count => errors.push(format!(
-                    "reserved runtime export `{}` is defined {count} times",
-                    export.symbol
-                )),
+                count => {
+                    errors.insert(format!(
+                        "reserved runtime export `{}` is defined {count} times",
+                        export.symbol
+                    ));
+                }
             }
         } else if !found.is_empty() {
-            errors.push(format!(
+            errors.insert(format!(
                 "reserved runtime export `{}` is not available for {target:?}",
                 export.symbol
             ));
@@ -432,6 +846,7 @@ fn validate_runtime_inventory(
     }
 
     for symbol in &inventory.symbols {
+        check_runtime_archive_work(cancellation)?;
         let abi_owned_name = symbol.name.starts_with("__rue_");
         if abi_owned_name && classify_export(&symbol.name).is_none() {
             let message = if symbol.name.starts_with("__rue_runtime_abi_v") {
@@ -442,24 +857,115 @@ fn validate_runtime_inventory(
             } else {
                 format!("unknown runtime ABI export `{}`", symbol.name)
             };
-            errors.push(message);
+            errors.insert(message);
         }
     }
 
-    errors.sort();
-    errors.dedup();
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(format!(
+        Err(RuntimeArchiveWorkError::Invalid(format!(
             "embedded rue-runtime archive does not match the typed ABI manifest:\n  - {}",
-            errors.join("\n  - ")
-        ))
+            errors.into_iter().collect::<Vec<_>>().join("\n  - ")
+        )))
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn validate_runtime_archive(runtime_bytes: &[u8], target: Target) -> Result<Archive, String> {
     let archive = parse_runtime_archive(runtime_bytes)?;
+    validate_parsed_runtime_archive(archive, runtime_bytes, target)
+}
+
+fn validate_runtime_archive_with_cancellation(
+    runtime_bytes: &[u8],
+    target: Target,
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableLinkResult<Archive> {
+    check_cancellation(cancellation)?;
+    let archive = Archive::parse_strict_objects_with_cancellation(runtime_bytes, || {
+        cancellation.is_canceled()
+    })
+    .map_err(|error| {
+        if matches!(error, rue_linker::ArchiveError::Canceled) {
+            crate::session::PipelineRequestControl::Abort(rue_query::QueryAbort::Canceled)
+        } else {
+            compile_control(link_error(format!(
+                "embedded rue-runtime archive is invalid: {error}"
+            )))
+        }
+    })?;
+    if archive.is_empty() {
+        return Err(compile_control(link_error(
+            "embedded rue-runtime archive contains no object files",
+        )));
+    }
+    check_cancellation(cancellation)?;
+    let embedded_runtime = runtime_for_target(target);
+    let embedded_validation = match target {
+        Target::X86_64Linux => &RUNTIME_X86_64_LINUX_VALIDATION,
+        Target::Aarch64Linux => &RUNTIME_AARCH64_LINUX_VALIDATION,
+        Target::Aarch64Macos => &RUNTIME_AARCH64_MACOS_VALIDATION,
+    };
+    if std::ptr::eq(runtime_bytes, embedded_runtime) {
+        if let Some(validation) = embedded_validation.get() {
+            validation
+                .clone()
+                .map_err(|error| compile_control(link_error(error)))?;
+        } else {
+            let validation = (|| {
+                let inventory =
+                    runtime_archive_inventory_with_cancellation(&archive, cancellation)?;
+                validate_runtime_inventory_with_cancellation(
+                    &inventory,
+                    runtime_target(target),
+                    cancellation,
+                )
+            })();
+            let validation = match validation {
+                Ok(()) => Ok(()),
+                Err(RuntimeArchiveWorkError::Invalid(error)) => Err(error),
+                Err(RuntimeArchiveWorkError::Canceled) => {
+                    return Err(crate::session::PipelineRequestControl::Abort(
+                        rue_query::QueryAbort::Canceled,
+                    ));
+                }
+            };
+            embedded_validation
+                .get_or_init(|| validation)
+                .clone()
+                .map_err(|error| compile_control(link_error(error)))?;
+        }
+    } else {
+        let inventory = runtime_archive_inventory_with_cancellation(&archive, cancellation)
+            .map_err(map_runtime_archive_work_control)?;
+        validate_runtime_inventory_with_cancellation(
+            &inventory,
+            runtime_target(target),
+            cancellation,
+        )
+        .map_err(map_runtime_archive_work_control)?;
+    }
+    check_cancellation(cancellation)?;
+    Ok(archive)
+}
+
+fn map_runtime_archive_work_control(
+    error: RuntimeArchiveWorkError,
+) -> crate::session::PipelineRequestControl {
+    match error {
+        RuntimeArchiveWorkError::Canceled => {
+            crate::session::PipelineRequestControl::Abort(rue_query::QueryAbort::Canceled)
+        }
+        RuntimeArchiveWorkError::Invalid(error) => compile_control(link_error(error)),
+    }
+}
+
+fn validate_parsed_runtime_archive(
+    archive: Archive,
+    runtime_bytes: &[u8],
+    target: Target,
+) -> Result<Archive, String> {
     let validate = || {
         let inventory = runtime_archive_inventory(&archive)?;
         validate_runtime_inventory(&inventory, runtime_target(target))
@@ -506,11 +1012,31 @@ pub(crate) fn link_internal_with_warnings(
 }
 
 fn finish_internal_link(
-    mut linker: Linker,
+    linker: Linker,
     options: &CompileOptions,
     object_count: usize,
     warnings: &[CompileWarning],
 ) -> MultiErrorResult<CompileOutput> {
+    uncancellable(
+        finish_internal_link_with_cancellation(
+            linker,
+            options,
+            object_count,
+            warnings,
+            &rue_query::CancellationToken::new(),
+        ),
+        "internal link",
+    )
+}
+
+fn finish_internal_link_with_cancellation(
+    mut linker: Linker,
+    options: &CompileOptions,
+    object_count: usize,
+    warnings: &[CompileWarning],
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableLinkResult<CompileOutput> {
+    check_cancellation(cancellation)?;
     let runtime_bytes = runtime_for_target(options.target);
     let entry_point = if options.target.is_macho() {
         "__main"
@@ -521,39 +1047,42 @@ fn finish_internal_link(
     {
         let _span = info_span!("link_archive_resolve").entered();
         for archive_path in &options.link_archives {
-            let archive = read_user_archive(archive_path)
-                .map_err(CompileError::without_span)
-                .map_err(CompileErrors::from)?;
+            check_cancellation(cancellation)?;
+            let archive = read_user_archive_with_cancellation(archive_path, cancellation)?;
             linker
-                .add_archive(archive)
-                .map_err(link_error)
-                .map_err(CompileErrors::from)?;
+                .add_archive_with_cancellation(archive, &mut || cancellation.is_canceled())
+                .map_err(map_linker_control)?;
         }
-        let runtime = validate_runtime_archive(runtime_bytes, options.target)
-            .map_err(link_error)
-            .map_err(CompileErrors::from)?;
+        check_cancellation(cancellation)?;
+        let runtime = validate_runtime_archive_with_cancellation(
+            runtime_bytes,
+            options.target,
+            cancellation,
+        )?;
         linker
-            .add_archive(runtime)
-            .map_err(link_error)
-            .map_err(CompileErrors::from)?;
+            .add_archive_with_cancellation(runtime, &mut || cancellation.is_canceled())
+            .map_err(map_linker_control)?;
     }
     let executable = linker
-        .link(entry_point)
+        .link_with_cancellation(entry_point, || cancellation.is_canceled())
         .map_err(|err| match &err {
+            rue_linker::LinkError::Canceled => {
+                crate::session::PipelineRequestControl::Abort(rue_query::QueryAbort::Canceled)
+            }
             rue_linker::LinkError::UndefinedSymbol(symbol) => {
                 let mut searched = vec!["the bundled rue-runtime archive".to_string()];
                 for archive_path in &options.link_archives {
                     searched.push(format!("`{}`", archive_path.display()));
                 }
-                CompileError::without_span(ErrorKind::LinkError(format!(
+                compile_control(CompileError::without_span(ErrorKind::LinkError(format!(
                     "undefined symbol `{symbol}`: no supplied archive defines it \
                      (searched {})",
                     searched.join(", ")
-                )))
+                ))))
             }
-            _ => link_error(err),
-        })
-        .map_err(CompileErrors::from)?;
+            _ => compile_control(link_error(err)),
+        })?;
+    check_cancellation(cancellation)?;
     info!(
         object_count,
         output_bytes = executable.len(),
@@ -561,7 +1090,7 @@ fn finish_internal_link(
     );
     Ok(CompileOutput {
         elf: executable,
-        warnings: warnings.to_vec(),
+        warnings: clone_warnings_with_cancellation(warnings, cancellation)?,
         source_stats: SourceStats::default(),
         work: PipelineWork::default(),
         query_runtime: crate::unstable::QueryRuntimeMetrics::default(),
@@ -573,51 +1102,61 @@ fn finish_internal_link(
 
 /// Link retained compiler units directly. Export thunks remain serialized
 /// because they are synthesized outside the retained CodegenUnit query.
-pub(crate) fn link_internal_structured_with_warnings(
+pub(crate) fn link_internal_structured_with_warnings_and_cancellation(
     options: &CompileOptions,
     objects: &[crate::object_query::CollectedObjectProjection],
     export_thunk_objects: &[Vec<u8>],
     warnings: &[CompileWarning],
-) -> MultiErrorResult<CompileOutput> {
-    link_internal_structured_admission(
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableLinkResult<CompileOutput> {
+    link_internal_structured_admission_with_cancellation(
         options,
         objects.len(),
         export_thunk_objects,
         warnings,
+        cancellation,
         |linker| {
-            objects.iter().try_for_each(|collected| {
-                admit_structured_unit(linker, &collected.unit, options.target)
-            })
+            for collected in objects {
+                check_cancellation(cancellation)?;
+                admit_structured_unit(linker, &collected.unit, options.target, cancellation)?;
+            }
+            Ok(())
         },
     )
 }
 
-pub(crate) fn link_internal_structured_units_with_warnings(
+pub(crate) fn link_internal_structured_units_with_warnings_and_cancellation(
     options: &CompileOptions,
     units: &[crate::codegen_query::CollectedCodegenUnit],
     export_thunk_objects: &[Vec<u8>],
     warnings: &[CompileWarning],
-) -> MultiErrorResult<CompileOutput> {
-    link_internal_structured_admission(
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableLinkResult<CompileOutput> {
+    link_internal_structured_admission_with_cancellation(
         options,
         units.len(),
         export_thunk_objects,
         warnings,
+        cancellation,
         |linker| {
-            units.iter().try_for_each(|collected| {
-                admit_structured_unit(linker, &collected.unit, options.target)
-            })
+            for collected in units {
+                check_cancellation(cancellation)?;
+                admit_structured_unit(linker, &collected.unit, options.target, cancellation)?;
+            }
+            Ok(())
         },
     )
 }
 
-fn link_internal_structured_admission(
+fn link_internal_structured_admission_with_cancellation(
     options: &CompileOptions,
     object_count: usize,
     export_thunk_objects: &[Vec<u8>],
     warnings: &[CompileWarning],
-    mut admit: impl FnMut(&mut Linker) -> MultiErrorResult<()>,
-) -> MultiErrorResult<CompileOutput> {
+    cancellation: &rue_query::CancellationToken,
+    mut admit: impl FnMut(&mut Linker) -> CancellableLinkResult<()>,
+) -> CancellableLinkResult<CompileOutput> {
+    check_cancellation(cancellation)?;
     let _span = info_span!("linker", mode = "internal", phase = "linking").entered();
     let mut linker = Linker::new(options.target);
     {
@@ -628,30 +1167,32 @@ fn link_internal_structured_admission(
         )
         .entered();
         admit(&mut linker)?;
-        add_export_thunks(&mut linker, export_thunk_objects)?;
+        add_export_thunks(&mut linker, export_thunk_objects, cancellation)?;
     }
-    finish_internal_link(
+    finish_internal_link_with_cancellation(
         linker,
         options,
         object_count + export_thunk_objects.len(),
         warnings,
+        cancellation,
     )
 }
 
 fn add_export_thunks(
     linker: &mut Linker,
     export_thunk_objects: &[Vec<u8>],
-) -> MultiErrorResult<()> {
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableLinkResult<()> {
     // C-ABI entry thunks are not retained CodegenUnits; preserve their
     // established byte-container path and diagnostics.
     for bytes in export_thunk_objects {
+        check_cancellation(cancellation)?;
         let object = ObjectFile::parse(bytes)
             .map_err(link_error)
-            .map_err(CompileErrors::from)?;
+            .map_err(compile_control)?;
         linker
-            .add_object(object)
-            .map_err(link_error)
-            .map_err(CompileErrors::from)?;
+            .add_object_with_cancellation(object, &mut || cancellation.is_canceled())
+            .map_err(map_linker_control)?;
     }
     Ok(())
 }
@@ -660,22 +1201,46 @@ fn admit_structured_unit(
     linker: &mut Linker,
     unit: &crate::codegen_query::CodegenUnit,
     target: Target,
-) -> MultiErrorResult<()> {
-    let object = crate::backend::project_backend_structured_object(unit, target)
-        .map_err(CompileErrors::from)?;
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableLinkResult<()> {
+    let object = crate::backend::project_backend_structured_object_with_cancellation(
+        unit,
+        target,
+        cancellation,
+    )?;
     linker
-        .add_structured_object(object)
-        .map_err(link_error)
-        .map_err(CompileErrors::from)
+        .add_structured_object_with_cancellation(object, &mut || cancellation.is_canceled())
+        .map_err(map_linker_control)
 }
 
 /// Link using an external system linker.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn link_system_with_warnings(
     options: &CompileOptions,
     object_files: &[Vec<u8>],
     linker_cmd: &str,
     warnings: &[CompileWarning],
 ) -> MultiErrorResult<CompileOutput> {
+    uncancellable(
+        link_system_with_warnings_and_cancellation(
+            options,
+            object_files,
+            linker_cmd,
+            warnings,
+            &rue_query::CancellationToken::new(),
+        ),
+        "system link",
+    )
+}
+
+pub(crate) fn link_system_with_warnings_and_cancellation(
+    options: &CompileOptions,
+    object_files: &[Vec<u8>],
+    linker_cmd: &str,
+    warnings: &[CompileWarning],
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableLinkResult<CompileOutput> {
+    check_cancellation(cancellation)?;
     let _span = info_span!(
         "linker",
         mode = "system",
@@ -687,19 +1252,15 @@ pub(crate) fn link_system_with_warnings(
     let runtime_bytes = runtime_for_target(options.target);
     // The system linker consumes the archive bytes directly, so validate the
     // embedded target and typed ABI before writing them to disk.
-    validate_runtime_archive(runtime_bytes, options.target)
-        .map_err(link_error)
-        .map_err(CompileErrors::from)?;
+    validate_runtime_archive_with_cancellation(runtime_bytes, options.target, cancellation)?;
+    check_cancellation(cancellation)?;
 
     // Set up temporary directory with object files and runtime
-    let mut temp_dir = TempLinkDir::new().map_err(CompileErrors::from)?;
-    temp_dir
-        .write_object_files(object_files)
-        .map_err(CompileErrors::from)?;
-    temp_dir
-        .write_runtime(runtime_bytes)
-        .map_err(CompileErrors::from)?;
-    temp_dir.create_output().map_err(CompileErrors::from)?;
+    let mut temp_dir = TempLinkDir::new().map_err(compile_control)?;
+    temp_dir.write_object_files_with_cancellation(object_files, cancellation)?;
+    temp_dir.write_runtime_with_cancellation(runtime_bytes, cancellation)?;
+    temp_dir.create_output().map_err(compile_control)?;
+    check_cancellation(cancellation)?;
 
     // Build the linker command
     let mut cmd = Command::new(linker_cmd);
@@ -738,24 +1299,54 @@ pub(crate) fn link_system_with_warnings(
         cmd.arg("-lSystem");
     }
 
-    // Run the linker
-    let output = cmd.output().map_err(|e| {
-        CompileErrors::from(CompileError::without_span(ErrorKind::LinkError(format!(
+    // Redirect output into owner-only workspace leaves. This preserves
+    // `Command::output` diagnostics without risking a full pipe blocking the
+    // child while the parent polls its lifecycle.
+    let stdout_path = temp_dir.directory.path().join("linker.stdout");
+    let stderr_path = temp_dir.directory.path().join("linker.stderr");
+    let stdout = TempLinkDir::create_leaf(&stdout_path, "failed to create linker stdout")
+        .map_err(compile_control)?;
+    let mut stderr =
+        TempLinkDir::create_capture_leaf(&stderr_path, "failed to create linker stderr")
+            .map_err(compile_control)?;
+    let stderr_for_child = stderr.try_clone().map_err(|error| {
+        compile_control(io_link_error(
+            "failed to duplicate linker stderr capture",
+            error,
+        ))
+    })?;
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::from(stdout));
+    cmd.stderr(Stdio::from(stderr_for_child));
+
+    let mut job = LinkerJob::spawn(&mut cmd).map_err(|e| {
+        compile_control(CompileError::without_span(ErrorKind::LinkError(format!(
             "failed to execute linker '{}': {}",
             linker_cmd, e
         ))))
     })?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    let status = wait_for_linker(&mut job, cancellation)?;
+
+    check_cancellation(cancellation)?;
+    if !status.success() {
+        // Read the capture inode we created, not the pathname the arbitrary
+        // linker could have unlinked and replaced while it owned the workspace.
+        let stderr_bytes = read_capture_with_cancellation(
+            &mut stderr,
+            cancellation,
+            "failed to read linker stderr",
+        )?;
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
         // temp_dir is dropped here, cleaning up automatically
-        return Err(CompileErrors::from(CompileError::without_span(
+        return Err(compile_control(CompileError::without_span(
             ErrorKind::LinkError(format!("linker '{}' failed: {}", linker_cmd, stderr)),
         )));
     }
 
     // Read the resulting executable
-    let elf = temp_dir.read_output().map_err(CompileErrors::from)?;
+    let elf = temp_dir.read_output_with_cancellation(cancellation)?;
+    check_cancellation(cancellation)?;
     info!(
         object_count = object_files.len(),
         output_bytes = elf.len(),
@@ -765,7 +1356,7 @@ pub(crate) fn link_system_with_warnings(
     // temp_dir is dropped here, cleaning up automatically
     Ok(CompileOutput {
         elf,
-        warnings: warnings.to_vec(),
+        warnings: clone_warnings_with_cancellation(warnings, cancellation)?,
         source_stats: SourceStats::default(),
         work: PipelineWork::default(),
         query_runtime: crate::unstable::QueryRuntimeMetrics::default(),
@@ -774,12 +1365,15 @@ pub(crate) fn link_system_with_warnings(
         publication: crate::unstable::PublicationMetrics::default(),
     })
 }
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use tracing::{info, info_span};
 
@@ -790,6 +1384,171 @@ mod temp_link_dir_tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     use super::*;
+
+    fn write_mock_linker(directory: &tempfile::TempDir, body: &str) -> PathBuf {
+        let path = directory.path().join("mock-linker");
+        std::fs::write(&path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
+        let mut permissions = path.metadata().unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+
+    fn mock_output_argument() -> &'static str {
+        "out=''\nprev=''\nfor arg in \"$@\"; do\n  if [ \"$prev\" = '-o' ]; then out=$arg; break; fi\n  prev=$arg\ndone\n"
+    }
+
+    #[test]
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_system_link_cancellation_reaps_child_and_cleans_workspace() {
+        let directory = tempfile::tempdir().unwrap();
+        let ready = directory.path().join("ready");
+        let pid_path = directory.path().join("pid");
+        let descendant_pid_path = directory.path().join("descendant-pid");
+        let workspace_path = directory.path().join("workspace");
+        let body = format!(
+            "{}printf '%s\\n' \"$$\" > '{}'\nsleep 30 &\nprintf '%s\\n' \"$!\" > '{}'\nprintf '%s\\n' \"$(dirname \"$out\")\" > '{}'\n: > '{}'\nwait",
+            mock_output_argument(),
+            pid_path.display(),
+            descendant_pid_path.display(),
+            workspace_path.display(),
+            ready.display(),
+        );
+        let linker = write_mock_linker(&directory, &body);
+        let cancellation = rue_query::CancellationToken::new();
+        let canceler = cancellation.clone();
+        let ready_for_thread = ready.clone();
+        let cancel_thread = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !ready_for_thread.exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "mock linker never started"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            canceler.cancel();
+        });
+        let mut options = CompileOptions::default();
+        options.target = Target::host().unwrap();
+        let started = std::time::Instant::now();
+        let result = link_system_with_warnings_and_cancellation(
+            &options,
+            &[],
+            linker.to_str().unwrap(),
+            &[],
+            &cancellation,
+        );
+        cancel_thread.join().unwrap();
+
+        assert!(matches!(
+            result,
+            Err(crate::session::PipelineRequestControl::Abort(
+                rue_query::QueryAbort::Canceled
+            ))
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let workspace = std::fs::read_to_string(&workspace_path).unwrap();
+        assert!(!Path::new(workspace.trim()).exists());
+        for pid_path in [&pid_path, &descendant_pid_path] {
+            let pid: libc::pid_t = std::fs::read_to_string(pid_path)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                if unsafe { libc::kill(pid, 0) } == -1
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "linker process {pid} survived process-group termination"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_system_link_preserves_ordinary_success_and_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let success = write_mock_linker(
+            &directory,
+            &format!("{}printf 'linked' > \"$out\"", mock_output_argument()),
+        );
+        let mut options = CompileOptions::default();
+        options.target = Target::host().unwrap();
+        let output =
+            link_system_with_warnings(&options, &[], success.to_str().unwrap(), &[]).unwrap();
+        assert_eq!(output.elf, b"linked");
+
+        let failure_dir = tempfile::tempdir().unwrap();
+        let failure = write_mock_linker(&failure_dir, "printf 'ordinary failure\\n' >&2\nexit 23");
+        let error =
+            link_system_with_warnings(&options, &[], failure.to_str().unwrap(), &[]).unwrap_err();
+        assert!(error.to_string().contains("ordinary failure"));
+    }
+
+    #[test]
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_system_link_reads_only_the_owned_stderr_capture() {
+        for replacement in ["symlink", "fifo"] {
+            let directory = tempfile::tempdir().unwrap();
+            let secret = directory.path().join("secret");
+            std::fs::write(&secret, "pathname replacement must not be read").unwrap();
+            let replacement_command = if replacement == "symlink" {
+                format!("ln -s '{}' \"$workspace/linker.stderr\"", secret.display())
+            } else {
+                "mkfifo \"$workspace/linker.stderr\"".to_owned()
+            };
+            let linker = write_mock_linker(
+                &directory,
+                &format!(
+                    "{}workspace=$(dirname \"$out\")\nprintf 'retained diagnostic\\n' >&2\nrm \"$workspace/linker.stderr\"\n{}\nexit 23",
+                    mock_output_argument(),
+                    replacement_command,
+                ),
+            );
+            let mut options = CompileOptions::default();
+            options.target = Target::host().unwrap();
+            let started = std::time::Instant::now();
+            let error = link_system_with_warnings(&options, &[], linker.to_str().unwrap(), &[])
+                .unwrap_err();
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "{replacement} replacement blocked stderr capture"
+            );
+            let diagnostic = error.to_string();
+            assert!(diagnostic.contains("retained diagnostic"));
+            assert!(!diagnostic.contains("pathname replacement must not be read"));
+        }
+    }
+
+    #[test]
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_observed_system_link_exit_wins_child_lifecycle_race() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "exit 0"]);
+        let mut job = LinkerJob::spawn(&mut command).unwrap();
+        while job.try_wait().unwrap().is_none() {
+            std::thread::yield_now();
+        }
+        let cancellation = rue_query::CancellationToken::new();
+        cancellation.cancel();
+
+        let status = wait_for_linker(&mut job, &cancellation).unwrap();
+        assert!(status.success());
+        assert!(matches!(
+            check_cancellation(&cancellation),
+            Err(crate::session::PipelineRequestControl::Abort(
+                rue_query::QueryAbort::Canceled
+            ))
+        ));
+    }
 
     #[test]
     #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
@@ -931,6 +1690,28 @@ mod runtime_archive_validation_tests {
 
     fn error(inventory: &RuntimeArchiveInventory, target: RuntimeTarget) -> String {
         validate_runtime_inventory(inventory, target).expect_err("inventory must be rejected")
+    }
+
+    #[test]
+    fn large_runtime_inventory_cancellation_maps_to_query_abort() {
+        let target = RuntimeTarget::X86_64Linux;
+        let mut inventory = valid_inventory(target, 1);
+        inventory
+            .symbols
+            .extend((0..4_096).map(|index| function(&format!("foreign_{index}"))));
+        let cancellation = rue_query::CancellationToken::new();
+        set_runtime_archive_cancellation_tripwire(Some((cancellation.clone(), 128)));
+
+        let result =
+            validate_runtime_inventory_with_cancellation(&inventory, target, &cancellation);
+
+        let error = result.unwrap_err();
+        assert!(matches!(error, RuntimeArchiveWorkError::Canceled));
+        assert!(matches!(
+            map_runtime_archive_work_control(error),
+            crate::session::PipelineRequestControl::Abort(rue_query::QueryAbort::Canceled)
+        ));
+        set_runtime_archive_cancellation_tripwire(None);
     }
 
     fn archive_with_member(name: &str, member: &[u8]) -> Vec<u8> {

@@ -23,6 +23,97 @@ use crate::{
     object_query::CollectedObjectProjection,
 };
 
+type CancellableImageResult<T> = Result<T, crate::session::PipelineRequestControl>;
+
+fn check_cancellation(cancellation: &rue_query::CancellationToken) -> CancellableImageResult<()> {
+    if cancellation.is_canceled() {
+        Err(crate::session::PipelineRequestControl::Abort(
+            rue_query::QueryAbort::Canceled,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn cancellable_sort_by<T>(
+    values: &mut Vec<T>,
+    cancellation: &rue_query::CancellationToken,
+    mut compare: impl FnMut(&T, &T) -> std::cmp::Ordering,
+) -> CancellableImageResult<()> {
+    const RUN: usize = 256;
+    let mut source = Vec::with_capacity(values.len());
+    for index in 0..values.len() {
+        if index % RUN == 0 {
+            check_cancellation(cancellation)?;
+        }
+        source.push(index);
+    }
+    for chunk in source.chunks_mut(RUN) {
+        check_cancellation(cancellation)?;
+        chunk.sort_by(|left, right| compare(&values[*left], &values[*right]));
+        check_cancellation(cancellation)?;
+    }
+
+    let mut destination = Vec::with_capacity(source.len());
+    let mut width = RUN;
+    while width < source.len() {
+        check_cancellation(cancellation)?;
+        destination.clear();
+        for start in (0..source.len()).step_by(width.saturating_mul(2)) {
+            let middle = source.len().min(start.saturating_add(width));
+            let end = source
+                .len()
+                .min(start.saturating_add(width.saturating_mul(2)));
+            let (mut left, mut right) = (start, middle);
+            while left < middle || right < end {
+                check_cancellation(cancellation)?;
+                if right == end
+                    || (left < middle
+                        && compare(&values[source[left]], &values[source[right]])
+                            != std::cmp::Ordering::Greater)
+                {
+                    destination.push(source[left]);
+                    left += 1;
+                } else {
+                    destination.push(source[right]);
+                    right += 1;
+                }
+            }
+        }
+        std::mem::swap(&mut source, &mut destination);
+        width = width.saturating_mul(2);
+    }
+
+    check_cancellation(cancellation)?;
+    let original = std::mem::take(values);
+    let mut slots = Vec::with_capacity(original.len());
+    for (index, value) in original.into_iter().enumerate() {
+        if index % RUN == 0 {
+            check_cancellation(cancellation)?;
+        }
+        slots.push(Some(value));
+    }
+    values.reserve(slots.len());
+    for index in source {
+        check_cancellation(cancellation)?;
+        values.push(slots[index].take().expect("sort permutation is unique"));
+    }
+    check_cancellation(cancellation)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn uncancellable<T>(result: CancellableImageResult<T>, context: &str) -> MultiErrorResult<T> {
+    result.map_err(|control| match control {
+        crate::session::PipelineRequestControl::Compile(errors) => errors,
+        crate::session::PipelineRequestControl::Abort(abort) => {
+            crate::session::pipeline_abort_errors(context, abort)
+        }
+        crate::session::PipelineRequestControl::Parked(park) => {
+            crate::session::unresolved_toolchain_park_errors(&park)
+        }
+    })
+}
+
 /// Stable, link-relevant identity for one reached codegen terminal.
 #[derive(Debug, Clone)]
 pub(crate) struct ProgramImageUnit {
@@ -183,33 +274,55 @@ type ProgramImageInputs = Vec<CollectedObjectProjection>;
 impl ProgramImage {
     /// Construct the production image directly from rooted codegen terminals
     /// and their exact C-export projections.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn from_rooted(
         objects: Vec<CollectedObjectProjection>,
         exports: Vec<RootedExportThunk>,
         options: &CompileOptions,
     ) -> MultiErrorResult<Self> {
+        uncancellable(
+            Self::from_rooted_with_cancellation(
+                objects,
+                exports,
+                options,
+                &rue_query::CancellationToken::new(),
+            ),
+            "program image",
+        )
+    }
+
+    pub(crate) fn from_rooted_with_cancellation(
+        objects: Vec<CollectedObjectProjection>,
+        exports: Vec<RootedExportThunk>,
+        options: &CompileOptions,
+        cancellation: &rue_query::CancellationToken,
+    ) -> CancellableImageResult<Self> {
         // Aggregating link inputs is compiler-root work like any other pass. It
         // stayed outside every phase span until RUE-1257, so ADR-0067's
         // taxonomy could only report its cost as `unattributed`.
         let _span = info_span!("program_image_plan", phase = "object_generation").entered();
-        let unit_identities = validate_rooted_program_image_inputs(&objects, &exports)?;
-        let export_thunk_objects: Vec<Vec<u8>> = exports
-            .iter()
-            .map(|export| {
-                backend::generate_export_thunk_object(
-                    options.target,
-                    &export.exported_symbol,
-                    &export.native_symbol,
-                    &export.param_types,
-                )
-            })
-            .collect();
-        let plan = ProgramImagePlan::from_rooted_inputs(
+        let unit_identities = validate_rooted_program_image_inputs_with_cancellation(
+            &objects,
+            &exports,
+            cancellation,
+        )?;
+        let mut export_thunk_objects = Vec::with_capacity(exports.len());
+        for export in &exports {
+            check_cancellation(cancellation)?;
+            export_thunk_objects.push(backend::generate_export_thunk_object(
+                options.target,
+                &export.exported_symbol,
+                &export.native_symbol,
+                &export.param_types,
+            ));
+        }
+        let plan = ProgramImagePlan::from_rooted_inputs_with_cancellation(
             &objects,
             unit_identities,
             &exports,
             options,
             &export_thunk_objects,
+            cancellation,
         )?;
         Ok(Self {
             plan,
@@ -279,98 +392,160 @@ impl ProgramImage {
 
     /// Collect the already-projected per-unit bytes for system linking and
     /// object-output consumers. Internal links use `units` directly.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn fresh_objects(&self, options: &CompileOptions) -> MultiErrorResult<Vec<Vec<u8>>> {
+        uncancellable(
+            self.fresh_objects_with_cancellation(options, &rue_query::CancellationToken::new()),
+            "fresh object materialization",
+        )
+    }
+
+    pub(crate) fn fresh_objects_with_cancellation(
+        &self,
+        options: &CompileOptions,
+        cancellation: &rue_query::CancellationToken,
+    ) -> CancellableImageResult<Vec<Vec<u8>>> {
+        check_cancellation(cancellation)?;
         let _span =
             info_span!("fresh_object_materialization", phase = "object_generation").entered();
         if self.plan.target != options.target {
-            return Err(CompileErrors::from(CompileError::without_span(
-                ErrorKind::InvalidCompilerInput(
+            return Err(crate::session::PipelineRequestControl::Compile(
+                CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
                     "program image target differs from the fresh-link target".into(),
-                ),
-            )));
+                ))),
+            ));
         }
-        let mut objects = self
-            .inputs
-            .iter()
-            .map(|collected| collected.object.bytes.to_vec())
-            .collect::<Vec<_>>();
+        let mut objects = Vec::with_capacity(self.inputs.len() + self.export_thunk_objects.len());
+        for collected in &self.inputs {
+            check_cancellation(cancellation)?;
+            objects.push(clone_bytes_with_cancellation(
+                &collected.object.bytes,
+                cancellation,
+            )?);
+        }
         info!(
             function_count = self.inputs.len(),
             object_bytes = objects.iter().map(Vec::len).sum::<usize>(),
             "codegen complete"
         );
-        objects.extend(self.export_thunk_objects.iter().cloned());
+        for thunk in &self.export_thunk_objects {
+            check_cancellation(cancellation)?;
+            objects.push(clone_bytes_with_cancellation(thunk, cancellation)?);
+        }
         Ok(objects)
     }
 
     /// Invoke the existing fresh linker. Warnings are intentionally attached
     /// only here, after the diagnostic-free plan has been constructed.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn fresh_link(
         &self,
         options: &CompileOptions,
         warnings: &[CompileWarning],
     ) -> MultiErrorResult<CompileOutput> {
+        uncancellable(
+            self.fresh_link_with_cancellation(
+                options,
+                warnings,
+                &rue_query::CancellationToken::new(),
+            ),
+            "fresh link",
+        )
+    }
+
+    pub(crate) fn fresh_link_with_cancellation(
+        &self,
+        options: &CompileOptions,
+        warnings: &[CompileWarning],
+        cancellation: &rue_query::CancellationToken,
+    ) -> CancellableImageResult<CompileOutput> {
+        check_cancellation(cancellation)?;
         if self.plan.target != options.target {
-            return Err(CompileErrors::from(CompileError::without_span(
-                ErrorKind::InvalidCompilerInput(
+            return Err(crate::session::PipelineRequestControl::Compile(
+                CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
                     "program image target differs from the fresh-link target".into(),
-                ),
-            )));
+                ))),
+            ));
         }
         match &options.linker {
-            LinkerMode::Internal => linking::link_internal_structured_with_warnings(
-                options,
-                &self.inputs,
-                &self.export_thunk_objects,
-                warnings,
-            ),
+            LinkerMode::Internal => {
+                linking::link_internal_structured_with_warnings_and_cancellation(
+                    options,
+                    &self.inputs,
+                    &self.export_thunk_objects,
+                    warnings,
+                    cancellation,
+                )
+            }
             LinkerMode::System(command) => {
-                let objects = self.fresh_objects(options)?;
-                linking::link_system_with_warnings(options, &objects, command, warnings)
+                let objects = self.fresh_objects_with_cancellation(options, cancellation)?;
+                linking::link_system_with_warnings_and_cancellation(
+                    options,
+                    &objects,
+                    command,
+                    warnings,
+                    cancellation,
+                )
             }
         }
     }
 }
 
+fn clone_bytes_with_cancellation(
+    bytes: &[u8],
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableImageResult<Vec<u8>> {
+    let mut cloned = Vec::with_capacity(bytes.len());
+    for chunk in bytes.chunks(64 * 1024) {
+        check_cancellation(cancellation)?;
+        cloned.extend_from_slice(chunk);
+    }
+    Ok(cloned)
+}
+
 impl ProgramImagePlan {
-    fn from_rooted_inputs(
+    fn from_rooted_inputs_with_cancellation(
         units: &[CollectedObjectProjection],
         unit_identities: Vec<String>,
         exports: &[RootedExportThunk],
         options: &CompileOptions,
         export_thunk_objects: &[Vec<u8>],
-    ) -> MultiErrorResult<Self> {
-        let mut plan_units = units
-            .iter()
-            .zip(unit_identities)
-            .map(|(collected, identity)| ProgramImageUnit {
+        cancellation: &rue_query::CancellationToken,
+    ) -> CancellableImageResult<Self> {
+        let mut plan_units = Vec::with_capacity(units.len());
+        for (collected, identity) in units.iter().zip(unit_identities) {
+            check_cancellation(cancellation)?;
+            plan_units.push(ProgramImageUnit {
                 function: collected.function.clone(),
                 identity,
                 defined_symbol: collected.unit.defined_symbol.clone(),
                 object: Arc::clone(&collected.object),
-            })
-            .collect::<Vec<_>>();
-        plan_units.sort_by(|left, right| left.identity.cmp(&right.identity));
+            });
+        }
+        cancellable_sort_by(&mut plan_units, cancellation, |left, right| {
+            left.identity.cmp(&right.identity)
+        })?;
 
-        let mut export_thunks = exports
-            .iter()
-            .zip(export_thunk_objects)
-            .map(|(export, bytes)| ProgramImageExportThunk {
+        let mut export_thunks = Vec::with_capacity(exports.len());
+        for (export, bytes) in exports.iter().zip(export_thunk_objects) {
+            check_cancellation(cancellation)?;
+            export_thunks.push(ProgramImageExportThunk {
                 exported_symbol: export.exported_symbol.clone(),
                 native_symbol: export.native_symbol.clone(),
                 content_digest: bytes_digest(b"rue.program-image.export-thunk\0v1\0", bytes),
-            })
-            .collect::<Vec<_>>();
-        export_thunks.sort_by(|left, right| {
+            });
+        }
+        cancellable_sort_by(&mut export_thunks, cancellation, |left, right| {
             left.exported_symbol
                 .cmp(&right.exported_symbol)
                 .then_with(|| left.native_symbol.cmp(&right.native_symbol))
-        });
-        Self::finish(
+        })?;
+        Self::finish_with_cancellation(
             plan_units,
             export_thunks,
             units.iter().map(|unit| unit.unit.as_ref()),
             options,
+            cancellation,
         )
     }
 
@@ -428,12 +603,33 @@ impl ProgramImagePlan {
         )
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn finish<'a>(
         plan_units: Vec<ProgramImageUnit>,
         export_thunks: Vec<ProgramImageExportThunk>,
         units: impl IntoIterator<Item = &'a crate::codegen_query::CodegenUnit>,
         options: &CompileOptions,
     ) -> MultiErrorResult<Self> {
+        uncancellable(
+            Self::finish_with_cancellation(
+                plan_units,
+                export_thunks,
+                units,
+                options,
+                &rue_query::CancellationToken::new(),
+            ),
+            "program image plan",
+        )
+    }
+
+    fn finish_with_cancellation<'a>(
+        plan_units: Vec<ProgramImageUnit>,
+        export_thunks: Vec<ProgramImageExportThunk>,
+        units: impl IntoIterator<Item = &'a crate::codegen_query::CodegenUnit>,
+        options: &CompileOptions,
+        cancellation: &rue_query::CancellationToken,
+    ) -> CancellableImageResult<Self> {
+        check_cancellation(cancellation)?;
         let entry_point = if options.target.is_macho() {
             "__main"
         } else {
@@ -443,7 +639,9 @@ impl ProgramImagePlan {
         required_runtime_symbols.insert(entry_point.to_owned());
         required_runtime_symbols.insert(rue_runtime_abi::RUNTIME_ABI_VERSION_SYMBOL.to_owned());
         for unit in units {
+            check_cancellation(cancellation)?;
             for relocation in unit.relocations.iter() {
+                check_cancellation(cancellation)?;
                 let symbol = &relocation.symbol;
                 if rue_runtime_abi::classify_export(symbol).is_some() {
                     required_runtime_symbols.insert(symbol.to_string());
@@ -469,6 +667,7 @@ impl ProgramImagePlan {
         // Both private construction paths validate their raw unit and export
         // identities before translating them into this canonical plan.
         // Retained-plan deltas independently validate both compared plans.
+        check_cancellation(cancellation)?;
         Ok(plan)
     }
 }
@@ -551,24 +750,40 @@ fn validate_program_image_inputs(
     Ok(())
 }
 
-fn validate_rooted_program_image_inputs(
+fn validate_rooted_program_image_inputs_with_cancellation(
     units: &[CollectedObjectProjection],
     exports: &[RootedExportThunk],
-) -> MultiErrorResult<Vec<String>> {
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableImageResult<Vec<String>> {
+    check_cancellation(cancellation)?;
     let mut units_by_identity = BTreeMap::new();
     let mut defined_symbols = BTreeSet::new();
     let mut unit_identities = Vec::with_capacity(units.len());
     for collected in units {
+        check_cancellation(cancellation)?;
         let identity = stable_function_identity(&collected.function);
         if units_by_identity
             .insert(identity.clone(), collected.unit.defined_symbol.as_ref())
             .is_some()
         {
-            return duplicate_plan_input("codegen unit identity", &identity);
+            return Err(
+                CompileErrors::from(CompileError::without_span(ErrorKind::InternalError(
+                    format!("program image has duplicate codegen unit identity `{identity}`"),
+                )))
+                .into(),
+            );
         }
         unit_identities.push(identity);
         if !defined_symbols.insert(collected.unit.defined_symbol.as_ref()) {
-            return duplicate_plan_input("defined symbol", &collected.unit.defined_symbol);
+            return Err(
+                CompileErrors::from(CompileError::without_span(ErrorKind::InternalError(
+                    format!(
+                        "program image has duplicate defined symbol `{}`",
+                        collected.unit.defined_symbol
+                    ),
+                )))
+                .into(),
+            );
         }
     }
     if !units
@@ -579,25 +794,36 @@ fn validate_rooted_program_image_inputs(
     }
     let mut exported_symbols = BTreeSet::new();
     for export in exports {
+        check_cancellation(cancellation)?;
         if !exported_symbols.insert(export.exported_symbol.as_str()) {
-            return duplicate_plan_input("C-ABI export symbol", &export.exported_symbol);
+            return Err(duplicate_plan_input_errors(
+                "C-ABI export symbol",
+                &export.exported_symbol,
+            )
+            .into());
         }
         let identity = stable_function_identity(&export.function);
         let Some(defined) = units_by_identity.get(&identity) else {
-            return Err(CompileErrors::from(CompileError::without_span(
-                ErrorKind::InternalError(format!(
-                    "C-ABI export `{}` has no rooted codegen unit",
-                    export.exported_symbol
-                )),
-            )));
+            return Err(
+                CompileErrors::from(CompileError::without_span(ErrorKind::InternalError(
+                    format!(
+                        "C-ABI export `{}` has no rooted codegen unit",
+                        export.exported_symbol
+                    ),
+                )))
+                .into(),
+            );
         };
         if **defined != export.native_symbol {
-            return Err(CompileErrors::from(CompileError::without_span(
-                ErrorKind::InternalError(format!(
-                    "C-ABI export `{}` names a foreign native symbol",
-                    export.exported_symbol
-                )),
-            )));
+            return Err(
+                CompileErrors::from(CompileError::without_span(ErrorKind::InternalError(
+                    format!(
+                        "C-ABI export `{}` names a foreign native symbol",
+                        export.exported_symbol
+                    ),
+                )))
+                .into(),
+            );
         }
     }
     Ok(unit_identities)
@@ -615,8 +841,12 @@ fn stable_function_identity(function: &crate::FunctionInstanceKey) -> String {
 }
 
 fn duplicate_plan_input<T>(kind: &str, identity: &str) -> MultiErrorResult<T> {
-    Err(CompileErrors::from(CompileError::without_span(
-        ErrorKind::InternalError(format!("program image has duplicate {kind} `{identity}`")),
+    Err(duplicate_plan_input_errors(kind, identity))
+}
+
+fn duplicate_plan_input_errors(kind: &str, identity: &str) -> CompileErrors {
+    CompileErrors::from(CompileError::without_span(ErrorKind::InternalError(
+        format!("program image has duplicate {kind} `{identity}`"),
     )))
 }
 
@@ -697,6 +927,62 @@ impl RuntimeArchiveIdentity {
 mod tests {
     use super::*;
     use rue_air::Node;
+
+    #[test]
+    fn plan_sort_is_stable_and_cancels_after_a_bounded_run() {
+        let input = (0..2_048)
+            .map(|index| (index % 17, index))
+            .rev()
+            .collect::<Vec<_>>();
+        let mut expected = input.clone();
+        expected.sort_by_key(|value| value.0);
+
+        let mut actual = input.clone();
+        cancellable_sort_by(
+            &mut actual,
+            &rue_query::CancellationToken::new(),
+            |left, right| left.0.cmp(&right.0),
+        )
+        .unwrap();
+        assert_eq!(actual, expected);
+
+        let cancellation = rue_query::CancellationToken::new();
+        let cancellation_from_compare = cancellation.clone();
+        let comparisons = std::cell::Cell::new(0_usize);
+        let mut canceled = input;
+        let result = cancellable_sort_by(&mut canceled, &cancellation, |left, right| {
+            let next = comparisons.get() + 1;
+            comparisons.set(next);
+            if next == 300 {
+                cancellation_from_compare.cancel();
+            }
+            left.0.cmp(&right.0)
+        });
+        assert!(matches!(
+            result,
+            Err(crate::session::PipelineRequestControl::Abort(
+                rue_query::QueryAbort::Canceled
+            ))
+        ));
+        assert!(comparisons.get() >= 300);
+        assert!(comparisons.get() < 4_096);
+
+        let precanceled = rue_query::CancellationToken::new();
+        precanceled.cancel();
+        let mut untouched = expected.clone();
+        let comparisons = std::cell::Cell::new(0_usize);
+        let result = cancellable_sort_by(&mut untouched, &precanceled, |left, right| {
+            comparisons.set(comparisons.get() + 1);
+            left.0.cmp(&right.0)
+        });
+        assert!(matches!(
+            result,
+            Err(crate::session::PipelineRequestControl::Abort(
+                rue_query::QueryAbort::Canceled
+            ))
+        ));
+        assert_eq!(comparisons.get(), 0);
+    }
 
     fn image_for(
         source: &str,

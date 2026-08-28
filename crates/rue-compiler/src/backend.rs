@@ -192,24 +192,66 @@ fn canonical_codegen_sections(
 /// Adapt one retained codegen terminal directly to the linker's structured
 /// input. Atom `Arc`s are passed through unchanged; only the final merged
 /// executable receives a contiguous copy.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn project_backend_structured_object(
     unit: &crate::codegen_query::CodegenUnit,
     target: Target,
 ) -> CompileResult<rue_linker::StructuredObject> {
+    match project_backend_structured_object_with_cancellation(
+        unit,
+        target,
+        &rue_query::CancellationToken::new(),
+    ) {
+        Ok(object) => Ok(object),
+        Err(crate::session::PipelineRequestControl::Compile(errors)) => {
+            Err(errors.into_iter().next().unwrap_or_else(|| {
+                CompileError::without_span(ErrorKind::InternalCodegenError(
+                    "structured object projection failed without a diagnostic".into(),
+                ))
+            }))
+        }
+        Err(crate::session::PipelineRequestControl::Abort(abort)) => {
+            Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+                format!("uncancellable structured object projection aborted: {abort:?}"),
+            )))
+        }
+        Err(crate::session::PipelineRequestControl::Parked(_)) => {
+            unreachable!("structured object projection does not demand toolchain modules")
+        }
+    }
+}
+
+pub(crate) fn project_backend_structured_object_with_cancellation(
+    unit: &crate::codegen_query::CodegenUnit,
+    target: Target,
+    cancellation: &rue_query::CancellationToken,
+) -> Result<rue_linker::StructuredObject, crate::session::PipelineRequestControl> {
+    if cancellation.is_canceled() {
+        return Err(crate::session::PipelineRequestControl::Abort(
+            rue_query::QueryAbort::Canceled,
+        ));
+    }
     let [text, rodata, data, bss] = canonical_codegen_sections(unit)?;
     let _ = (data, bss);
-    let relocations = unit
-        .relocations
-        .iter()
-        .map(|relocation| {
-            Ok(rue_linker::StructuredRelocation {
-                offset: relocation.offset,
-                symbol: relocation.symbol.to_string(),
-                rel_type: map_linker_relocation(target, relocation.kind)?,
-                addend: relocation.addend,
-            })
-        })
-        .collect::<CompileResult<Vec<_>>>()?;
+    let mut relocations = Vec::with_capacity(unit.relocations.len());
+    for relocation in unit.relocations.iter() {
+        if cancellation.is_canceled() {
+            return Err(crate::session::PipelineRequestControl::Abort(
+                rue_query::QueryAbort::Canceled,
+            ));
+        }
+        relocations.push(rue_linker::StructuredRelocation {
+            offset: relocation.offset,
+            symbol: relocation.symbol.to_string(),
+            rel_type: map_linker_relocation(target, relocation.kind)?,
+            addend: relocation.addend,
+        });
+    }
+    if cancellation.is_canceled() {
+        return Err(crate::session::PipelineRequestControl::Abort(
+            rue_query::QueryAbort::Canceled,
+        ));
+    }
     Ok(rue_linker::StructuredObject::function(
         target,
         unit.defined_symbol.to_string(),
