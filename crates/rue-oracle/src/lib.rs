@@ -56,13 +56,10 @@
 //! is valid and reports every one as a generator-contract failure.
 //!
 //! - **All other CFG intrinsics.** The `Intrinsic` arm models `@dbg`, `@panic`,
-//!   `@assert`, and compiler-inserted slice bounds checks; every other intrinsic
-//!   that is allowed to survive to the CFG
-//!   is a typed model gap: the
-//!   non-deterministic `@read_line`, `@random_u32`/`@random_u64`, `@syscall`;
-//!   the heap intrinsics `@alloc`/`@free`/`@realloc`; the raw-pointer intrinsics
-//!   `@raw`/`@raw_mut`/`@field_ptr`/`@ptr_read`/`@ptr_write`/`@ptr_offset`/
-//!   `@ptr_to_int`/`@int_to_ptr` (heap-/layout-dependent, and `checked`-only).
+//!   `@assert`, compiler-inserted slice bounds checks, and the deterministic
+//!   heap/raw-pointer representation paths. Nondeterministic input and host
+//!   effects (`@read_line`, `@random_*`, and `@syscall`) remain typed gaps, as
+//!   do unsupported layout and external-effect boundaries.
 //! - **`String::capacity`/`reserve`/`with_capacity` capacity behavior** — the
 //!   exact capacity value is implementation-defined, so `capacity` is reported
 //!   as a typed gap rather than guessed. Specified bounds and growth/preservation
@@ -70,7 +67,7 @@
 //! - **Deeply-nested `inout` field writes** (non-zero inner offset).
 
 use lasso::ThreadedRodeo;
-use rue_air::{FrozenTypeInternPool, RuntimeCallKind, Type, TypeKind};
+use rue_air::{FrozenTypeInternPool, LayoutKind, RuntimeCallKind, Type, TypeKind};
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator};
 use rue_compiler::{
     CompileErrors, CompileOptions, CompilerSession, PreviewFeatures, SourceSnapshot,
@@ -78,6 +75,7 @@ use rue_compiler::{
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -717,6 +715,7 @@ fn run_state_with_output_limits(
                     budget,
                     depth: 0,
                     heap: Vec::new(),
+                    heap_metadata_bytes: 0,
                 }
                 .run()
             })
@@ -778,6 +777,13 @@ const MAX_ALLOC_BYTES: u128 = 1 << 40;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Value {
     Int(i128),
+    /// An integer produced from a pointer address. Numeric operations observe
+    /// only `value`; the identity token is retained privately so
+    /// `@int_to_ptr` cannot mint provenance from a matching literal.
+    AddressInt {
+        value: i128,
+        provenance: AddressProvenance,
+    },
     Bool(bool),
     Unit,
     /// A struct or array value: its fields (declaration order) or elements
@@ -796,61 +802,70 @@ enum Value {
     Ptr(Option<PtrTarget>),
 }
 
-/// A provenance-carrying pointer value: the allocation it addresses plus a
-/// positional path to the pointee cell.
-///
-/// Struct fields and array elements share the interpreter's positional
-/// `Aggregate` layout, so a single `Vec<usize>` path plus a trailing `index`
-/// navigates both. `@ptr_offset` (and byte-address arithmetic) move `index`;
-/// `@field_ptr` sets `path`/`index` from the source place's projection.
+/// A provenance-carrying pointer value: allocation identity plus canonical
+/// representation-byte offset. Typed views are supplied by each CFG operation
+/// from its current function's type authority and never cross call boundaries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PtrTarget {
     /// Index of the owning [`Allocation`] in [`Interp::heap`].
     alloc: usize,
-    /// Positional navigation into the allocation root reaching the *container*
-    /// aggregate whose element `index` is the pointee.
-    path: Vec<usize>,
-    /// Position of the pointee within its container. Signed so an out-of-range
-    /// `@ptr_offset` is detectable rather than silently wrapping.
-    index: i128,
+    /// Physical byte offset from the allocation base. This is the sole
+    /// addressing authority for the representation-byte heap.
+    byte_offset: u64,
+}
+
+/// Hidden provenance attached to an integer address. It is deliberately
+/// ignored by value equality so numeric observables remain unchanged.
+#[derive(Debug, Clone)]
+struct AddressProvenance(PtrTarget);
+
+impl PartialEq for AddressProvenance {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for AddressProvenance {}
+
+#[derive(Clone, Copy)]
+enum AddressArithmetic {
+    Add,
+    Sub,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AllocationOrigin {
+    Heap,
+    Promoted,
+    Text,
 }
 
 /// One abstract heap allocation.
 ///
-/// The backing store is always a positional [`Value::Aggregate`] of *cells* —
-/// array elements, struct fields, or individual bytes. A promoted stack place
-/// wraps a bare scalar in a one-cell aggregate so every pointee is uniformly a
-/// cell of some container.
+/// The backing store is the target's canonical little-endian representation
+/// bytes. Typed views are decoded and encoded on demand through the compiler's
+/// layout authority; there is no peer typed-cell store to drift from bytes.
 #[derive(Debug, Clone)]
 struct Allocation {
-    /// Backing cells as a positional aggregate.
-    root: Value,
-    /// Byte size of one addressable element. Used only to synthesize a stable
-    /// `@ptr_to_int` address so an integer round-trips back to the same cell.
-    elem_stride: u64,
-    /// This allocation backs a promoted whole scalar (`@raw(x)` with no
-    /// projection): its single cell is the scalar, and a redirected `Load` of
-    /// the owning slot must unwrap `root[0]` rather than return the aggregate.
-    wrapped_scalar: bool,
+    /// Canonical target representation bytes.
+    bytes: Vec<u8>,
+    /// Initialization is tracked per byte. Reading an uninitialized typed
+    /// value is a typed gap; byte copies preserve this state byte-for-byte.
+    initialized: Vec<bool>,
+    /// Provenance markers for pointer representations. Partial or arbitrary
+    /// integer bytes therefore fail closed on typed pointer decode.
+    provenance: Vec<Option<PtrTarget>>,
+    /// Root type for promoted typed storage, or `None` for raw byte blocks.
+    root_ty: Option<Type>,
     /// `@free` released this allocation. Pointer access checks the flag so
     /// undefined use-after-free remains a typed oracle gap rather than
     /// receiving a deterministic value that native execution does not promise.
     freed: bool,
-    /// The block came from `@alloc`/`@alloc_zeroed`, which reserve raw physical
-    /// bytes and carry no element type (ADR-0059 Phase 3, RUE-961). Such a block
-    /// starts out as one-byte cells; the first typed pointer formed over an
-    /// **untouched** one reinterprets it as cells of that pointee. That is
-    /// exactly the shape `std/rawbuf.rue` gives a block when it turns
-    /// `cap * @size_of(T)` bytes into `cap` cells of `T`, and it lets the
-    /// interpreter keep modeling typed containers now that the compiler no
-    /// longer knows an allocation's element type. Reinterpreting clears the
-    /// flag.
-    untyped_bytes: bool,
-    /// Some cell of this allocation has been written. A touched block is never
-    /// reinterpreted, because its existing cells hold values a reinterpretation
-    /// would silently discard. Reads do not set this: an untouched block reads
-    /// as zero bytes whatever shape its cells are given.
-    touched: bool,
+    /// Allocator family and contract metadata. Promoted stack/text backing is
+    /// never eligible for `@free`/`@realloc`/`@resize`.
+    origin: AllocationOrigin,
+    declared_alignment: u64,
+    owner_depth: Option<u32>,
 }
 
 impl Value {
@@ -867,6 +882,7 @@ impl Value {
     fn as_int(&self) -> i128 {
         match self {
             Value::Int(n) => *n,
+            Value::AddressInt { value, .. } => *value,
             Value::Bool(b) => *b as i128,
             // Unreachable for a well-typed program (aggregates/pointers never
             // reach a bare scalar context; a pointer becomes an integer only
@@ -879,6 +895,7 @@ impl Value {
         match self {
             Value::Bool(b) => *b,
             Value::Int(n) => *n != 0,
+            Value::AddressInt { value, .. } => *value != 0,
             Value::Unit | Value::Aggregate(_) | Value::Ptr(_) => false,
         }
     }
@@ -1049,6 +1066,7 @@ struct Interp<'a> {
     /// the interpreter (not a frame) so a pointer read across a call boundary
     /// still resolves after the address is passed to a callee.
     heap: Vec<Allocation>,
+    heap_metadata_bytes: usize,
 }
 
 /// Per-call activation record. `cache` preserves values produced along the
@@ -1087,6 +1105,13 @@ enum WritebackPlace<'a> {
 }
 
 impl<'a> Interp<'a> {
+    fn canonical_null_marker() -> PtrTarget {
+        PtrTarget {
+            alloc: usize::MAX,
+            byte_offset: 0,
+        }
+    }
+
     fn function(&self) -> &OracleFunction {
         &self.state.functions[self.state.current_function.load(Ordering::Relaxed)]
     }
@@ -1095,7 +1120,7 @@ impl<'a> Interp<'a> {
         &self.function().type_pool
     }
 
-    fn string_literal_value(&mut self, text: String, ty: Type) -> Value {
+    fn string_literal_value(&mut self, text: String, ty: Type) -> Step<Value> {
         // A source string literal materializes as a real text header over an
         // (immortal) heap byte allocation (RUE-1010 §6.13.2). The ABI slot width
         // comes from the compiler's `abi_slot_count` authority: a str/Str(N)
@@ -1229,20 +1254,31 @@ impl<'a> Interp<'a> {
     /// `StrBuf` `{core: {buf, cap}, len}` (RUE-1066 nested layout). An empty
     /// value keeps a null buffer (no allocation), matching the source's empty
     /// state. `cap` is the capacity word stored in an owned header.
-    fn materialize_text(&mut self, bytes: Vec<u8>, slots: usize, cap: i128) -> Value {
+    fn materialize_text(&mut self, bytes: Vec<u8>, slots: usize, cap: i128) -> Step<Value> {
         let len = bytes.len() as i128;
         let ptr = if bytes.is_empty() {
             Value::Ptr(None)
         } else {
-            let cells = bytes.into_iter().map(|b| Value::Int(b as i128)).collect();
-            let alloc = self.heap_alloc(Value::Aggregate(cells), 1, false);
+            let len = bytes.len();
+            self.reserve_heap_metadata(bytes.len())?;
+            let alloc = self.heap_alloc_bytes(
+                bytes,
+                vec![true; len],
+                vec![None; len],
+                None,
+                if slots >= 3 && cap > 0 {
+                    AllocationOrigin::Heap
+                } else {
+                    AllocationOrigin::Text
+                },
+                1,
+            );
             Value::Ptr(Some(PtrTarget {
                 alloc,
-                path: Vec::new(),
-                index: 0,
+                byte_offset: 0,
             }))
         };
-        if slots >= 3 {
+        let value = if slots >= 3 {
             // Owned `StrBuf`: `{core: {buf, cap}, len}`.
             Value::Aggregate(vec![
                 Value::Aggregate(vec![ptr, Value::Int(cap)]),
@@ -1251,7 +1287,8 @@ impl<'a> Interp<'a> {
         } else {
             // `str`/`Str(N)` view: `{ptr, len}`.
             Value::Aggregate(vec![ptr, Value::Int(len)])
-        }
+        };
+        Ok(value)
     }
 
     /// Allocate `bytes` into the heap and return a raw pointer to cell 0, for
@@ -1259,12 +1296,17 @@ impl<'a> Interp<'a> {
     /// pair) directly.
     #[cfg(test)]
     fn test_alloc_str_ptr(&mut self, bytes: &[u8]) -> Value {
-        let cells = bytes.iter().map(|b| Value::Int(*b as i128)).collect();
-        let alloc = self.heap_alloc(Value::Aggregate(cells), 1, false);
+        let alloc = self.heap_alloc_bytes(
+            bytes.to_vec(),
+            vec![true; bytes.len()],
+            vec![None; bytes.len()],
+            None,
+            AllocationOrigin::Text,
+            1,
+        );
         Value::Ptr(Some(PtrTarget {
             alloc,
-            path: Vec::new(),
-            index: 0,
+            byte_offset: 0,
         }))
     }
 
@@ -2104,6 +2146,7 @@ impl<'a> Interp<'a> {
         self.depth += 1;
         let caller = self.state.current_function.load(Ordering::Relaxed);
         let result = self.call_inner(name, args);
+        self.retire_promoted_allocations(self.depth);
         self.state.current_function.store(caller, Ordering::Relaxed);
         self.depth -= 1;
         result
@@ -2124,6 +2167,7 @@ impl<'a> Interp<'a> {
         self.depth += 1;
         let caller = self.state.current_function.load(Ordering::Relaxed);
         let result = self.call_inner_with_places(name, args, param_places, true);
+        self.retire_promoted_allocations(self.depth);
         self.state.current_function.store(caller, Ordering::Relaxed);
         self.depth -= 1;
         let (value, _) = result?;
@@ -2133,6 +2177,16 @@ impl<'a> Interp<'a> {
                 UnsupportedKind::ContractViolation(ContractViolationKind::UnsplicedAccessor),
                 "accessor execution did not return a live place",
             )),
+        }
+    }
+
+    fn retire_promoted_allocations(&mut self, owner_depth: u32) {
+        for allocation in &mut self.heap {
+            if allocation.origin == AllocationOrigin::Promoted
+                && allocation.owner_depth == Some(owner_depth)
+            {
+                allocation.freed = true;
+            }
         }
     }
 
@@ -2266,7 +2320,20 @@ impl<'a> Interp<'a> {
                         (false, Some(v)) => self.eval(cfg, &mut frame, *v)?,
                         (false, None) => Value::Unit,
                     };
-                    return Ok((ret, std::mem::take(&mut frame.params)));
+                    let mut final_params = std::mem::take(&mut frame.params);
+                    // A normal `inout` call copies its final parameter value
+                    // out at return. If the callee took the parameter's
+                    // address, its canonical bytes (rather than the copy-in
+                    // snapshot) are authoritative for that writeback.
+                    for (&key, &alloc) in &frame.promoted {
+                        if key >> 32 == 1 {
+                            let slot = (key & u32::MAX as u64) as usize;
+                            if let Some(value) = final_params.get_mut(slot) {
+                                *value = Some(self.promoted_slot_value(alloc)?);
+                            }
+                        }
+                    }
+                    return Ok((ret, final_params));
                 }
                 Terminator::Goto { target, .. } => {
                     let ce = cfg.get_goto_args(term).to_vec();
@@ -2471,12 +2538,12 @@ impl<'a> Interp<'a> {
             RuntimeCallKind::ToString => {
                 let digits = (args[0].as_int() as i64).to_string().into_bytes();
                 let cap = digits.len() as i128;
-                self.materialize_text(digits, self.text_value_slot_width(result_ty), cap)
+                self.materialize_text(digits, self.text_value_slot_width(result_ty), cap)?
             }
             RuntimeCallKind::ToStringUnsigned => {
                 let digits = (args[0].as_int() as u64).to_string().into_bytes();
                 let cap = digits.len() as i128;
-                self.materialize_text(digits, self.text_value_slot_width(result_ty), cap)
+                self.materialize_text(digits, self.text_value_slot_width(result_ty), cap)?
             }
             RuntimeCallKind::StrByteAt => {
                 let bytes = self.text_bytes(&args[0])?;
@@ -2667,7 +2734,7 @@ impl<'a> Interp<'a> {
                             "string const index",
                         )
                     })?;
-                self.string_literal_value(text, ty)
+                self.string_literal_value(text, ty)?
             }
             CfgInstData::Param { index } => {
                 if self.is_zero_sized(ty) {
@@ -2683,6 +2750,7 @@ impl<'a> Interp<'a> {
                     // accessor splicing for whole-parameter reads.
                     self.ptr_cell_read(
                         &target,
+                        ty,
                         UnsupportedKind::ContractViolation(
                             ContractViolationKind::UnsplicedAccessor,
                         ),
@@ -2692,7 +2760,7 @@ impl<'a> Interp<'a> {
                 {
                     // The parameter's address was taken; read through its heap
                     // allocation so a `@ptr_write` is observed on re-read.
-                    self.promoted_slot_value(a)
+                    self.promoted_slot_value(a)?
                 } else {
                     match frame.params.get(*index as usize) {
                         Some(Some(value)) => value.clone(),
@@ -2726,14 +2794,26 @@ impl<'a> Interp<'a> {
                 })?
             }
 
-            CfgInstData::Add(a, b) => {
-                self.arith(cfg, frame, *a, *b, ty, |x, y| x.checked_add(y))?
-            }
-            CfgInstData::Sub(a, b) => {
-                self.arith(cfg, frame, *a, *b, ty, |x, y| x.checked_sub(y))?
-            }
+            CfgInstData::Add(a, b) => self.arith(
+                cfg,
+                frame,
+                *a,
+                *b,
+                ty,
+                Some(AddressArithmetic::Add),
+                |x, y| x.checked_add(y),
+            )?,
+            CfgInstData::Sub(a, b) => self.arith(
+                cfg,
+                frame,
+                *a,
+                *b,
+                ty,
+                Some(AddressArithmetic::Sub),
+                |x, y| x.checked_sub(y),
+            )?,
             CfgInstData::Mul(a, b) => {
-                self.arith(cfg, frame, *a, *b, ty, |x, y| x.checked_mul(y))?
+                self.arith(cfg, frame, *a, *b, ty, None, |x, y| x.checked_mul(y))?
             }
             CfgInstData::WrappingAdd(a, b) => {
                 self.wrapping_arith(cfg, frame, *a, *b, ty, |x, y| x.wrapping_add(y))?
@@ -2786,13 +2866,13 @@ impl<'a> Interp<'a> {
 
             CfgInstData::Alloc { slot, init } => {
                 let val = self.eval(cfg, frame, *init)?;
-                self.store_local(frame, *slot, val);
+                self.store_local(frame, *slot, val)?;
                 Value::Unit
             }
             CfgInstData::Load { slot } => self.load_local(frame, *slot)?,
             CfgInstData::Store { slot, value } => {
                 let val = self.eval(cfg, frame, *value)?;
-                self.store_local(frame, *slot, val);
+                self.store_local(frame, *slot, val)?;
                 Value::Unit
             }
             CfgInstData::PlaceRead { place } => {
@@ -2905,6 +2985,7 @@ impl<'a> Interp<'a> {
                     // CFG performs the same redirection.
                     self.ptr_cell_write(
                         &target,
+                        cfg.get_inst(*value).ty,
                         val,
                         UnsupportedKind::ContractViolation(
                             ContractViolationKind::UnsplicedAccessor,
@@ -2932,6 +3013,7 @@ impl<'a> Interp<'a> {
                             param_places.insert(base as u32, target.clone());
                             self.ptr_cell_read(
                                 &target,
+                                arg_types[index],
                                 UnsupportedKind::ContractViolation(
                                     ContractViolationKind::UnsplicedAccessor,
                                 ),
@@ -3164,11 +3246,31 @@ impl<'a> Interp<'a> {
         a: CfgValue,
         b: CfgValue,
         ty: Type,
+        address_operation: Option<AddressArithmetic>,
         op: impl Fn(i128, i128) -> Option<i128>,
     ) -> Step<Value> {
-        let x = self.eval(cfg, frame, a)?.as_int();
-        let y = self.eval(cfg, frame, b)?.as_int();
-        range_check(op(x, y), ty)
+        let left = self.eval(cfg, frame, a)?;
+        let right = self.eval(cfg, frame, b)?;
+        let x = left.as_int();
+        let y = right.as_int();
+        let result = range_check(op(x, y), ty)?;
+        let provenance = match (address_operation, &left, &right) {
+            (Some(AddressArithmetic::Add), Value::AddressInt { provenance, .. }, Value::Int(_))
+            | (Some(AddressArithmetic::Add), Value::Int(_), Value::AddressInt { provenance, .. })
+            | (Some(AddressArithmetic::Sub), Value::AddressInt { provenance, .. }, Value::Int(_)) => {
+                Some(provenance)
+            }
+            _ => None,
+        };
+        if let Some(provenance) = provenance
+            && let Some(target) = self.address_target(result.as_int() as u64 as u128, &provenance.0)
+        {
+            return Ok(Value::AddressInt {
+                value: result.as_int(),
+                provenance: AddressProvenance(target),
+            });
+        }
+        Ok(result)
     }
 
     /// Wrapping `Add`/`Sub`/`Mul` (`@wrapping_*`, RUE-647): the true result
@@ -3229,6 +3331,21 @@ impl<'a> Interp<'a> {
     fn values_equal_typed(&self, x: &Value, y: &Value, ty: Type) -> Step<bool> {
         if self.is_text_type(ty) {
             return Ok(self.text_bytes(x)? == self.text_bytes(y)?);
+        }
+        if matches!(
+            ty.kind(),
+            TypeKind::I8
+                | TypeKind::I16
+                | TypeKind::I32
+                | TypeKind::I64
+                | TypeKind::U8
+                | TypeKind::U16
+                | TypeKind::U32
+                | TypeKind::U64
+        ) {
+            // Address provenance is intentionally invisible to numeric
+            // observables, including integer fields nested in aggregates.
+            return Ok(x.as_int() == y.as_int());
         }
         match ty.kind() {
             TypeKind::Struct(sid) => {
@@ -3426,19 +3543,69 @@ impl<'a> Interp<'a> {
                     if i < 0 {
                         return Err(Flow::Panic(Panic::runtime(TrapKind::IndexOutOfBounds)));
                     }
-                    path.push((i as usize, p));
+                    let i = usize::try_from(i)
+                        .map_err(|_| Flow::Panic(Panic::runtime(TrapKind::IndexOutOfBounds)))?;
+                    path.push((i, p));
                 }
             }
         }
         Ok((place.base, path))
     }
 
-    fn compose_pointer_path(mut target: PtrTarget, path: &[(usize, Projection)]) -> PtrTarget {
-        for (index, _) in path {
-            target.path.push(target.index as usize);
-            target.index = *index as i128;
+    fn projection_offset(&self, mut ty: Type, path: &[(usize, Projection)]) -> Option<(u64, Type)> {
+        if !self.is_materializable_type(ty) {
+            return None;
         }
-        target
+        let mut offset = 0u64;
+        for (index, projection) in path {
+            let layout = self.try_layout(ty)?;
+            match (ty.kind(), &layout.kind, projection) {
+                (
+                    TypeKind::Struct(id),
+                    LayoutKind::Struct { field_offsets, .. },
+                    Projection::Field { .. },
+                ) => {
+                    let field = self.type_pool().try_struct_def(id)?.fields.get(*index)?;
+                    offset = offset.checked_add(*field_offsets.get(*index)?)?;
+                    ty = field.ty;
+                }
+                (
+                    TypeKind::Array(id),
+                    LayoutKind::Array { element, .. },
+                    Projection::Index { .. },
+                ) => {
+                    let (element_ty, count) = self.type_pool().try_array_def(id)?;
+                    if *index as u64 >= count {
+                        return None;
+                    }
+                    offset = offset.checked_add((*index as u64).checked_mul(element.stride)?)?;
+                    ty = element_ty;
+                }
+                // A payload projection is variant-dependent. The place
+                // metadata alone does not carry the active discriminant, so
+                // never guess variant zero: callers that need such a pointer
+                // remain a typed gap until the value-aware path supplies it.
+                (TypeKind::Enum(_), LayoutKind::Enum { .. }, Projection::Field { .. }) => {
+                    return None;
+                }
+                _ => return None,
+            }
+        }
+        Some((offset, ty))
+    }
+
+    fn compose_pointer_path(
+        &self,
+        mut target: PtrTarget,
+        base_type: Type,
+        path: &[(usize, Projection)],
+    ) -> Option<PtrTarget> {
+        if let Some((offset, _)) = self.projection_offset(base_type, path) {
+            target.byte_offset = target.byte_offset.checked_add(offset)?;
+        } else if !path.is_empty() {
+            return None;
+        }
+        Some(target)
     }
 
     fn external_place_target(
@@ -3446,6 +3613,8 @@ impl<'a> Interp<'a> {
         cfg: &'a Cfg,
         frame: &mut Frame,
         base: PlaceBase,
+        base_type: Type,
+        _view_type: Type,
         path: &[(usize, Projection)],
     ) -> Step<Option<PtrTarget>> {
         let target = match base {
@@ -3467,7 +3636,26 @@ impl<'a> Interp<'a> {
             },
             PlaceBase::Local(_) => None,
         };
-        Ok(target.map(|target| Self::compose_pointer_path(target, path)))
+        match target {
+            Some(target) => {
+                // Physical by-reference targets cross function-local type
+                // pools. Retype the root view from this function's Place
+                // metadata before composing projections; the byte allocation
+                // and provenance remain unchanged.
+                let projection_base = base_type;
+                self.compose_pointer_path(target, projection_base, path)
+                    .map(|target| Some(target))
+                    .ok_or_else(|| {
+                        unsupported(
+                            UnsupportedKind::ContractViolation(
+                                ContractViolationKind::PlaceProjectionMetadata,
+                            ),
+                            "pointer projection layout",
+                        )
+                    })
+            }
+            None => Ok(None),
+        }
     }
 
     fn returned_place_target(
@@ -3514,9 +3702,16 @@ impl<'a> Interp<'a> {
 
     fn place_read(&mut self, cfg: &'a Cfg, frame: &mut Frame, place: &Place) -> Step<Value> {
         let (base, path) = self.resolve_path(cfg, frame, place)?;
-        if let Some(target) = self.external_place_target(cfg, frame, base, &path)? {
+        let view_type = self
+            .projection_offset(place.base_type, &path)
+            .map(|(_, ty)| ty)
+            .unwrap_or(place.base_type);
+        if let Some(target) =
+            self.external_place_target(cfg, frame, base, place.base_type, view_type, &path)?
+        {
             return self.ptr_cell_read(
                 &target,
+                view_type,
                 UnsupportedKind::ContractViolation(ContractViolationKind::UnsplicedAccessor),
             );
         }
@@ -3524,15 +3719,61 @@ impl<'a> Interp<'a> {
             PlaceBase::Indirect(pointer) => {
                 let pointer = self.eval(cfg, frame, pointer)?;
                 let target = self.expect_ptr(pointer, unsupported_intrinsic_kind("ptr_read"))?;
-                self.ptr_cell_read(&target, unsupported_intrinsic_kind("ptr_read"))?
+                self.ptr_cell_read(&target, view_type, unsupported_intrinsic_kind("ptr_read"))?
             }
             _ => self.base_value_of(frame, base)?,
         };
-        for (idx, _projection) in path {
+        let mut current_ty = place.base_type;
+        for (position, (idx, projection)) in path.iter().copied().enumerate() {
+            let one_projection = (idx, projection);
+            let next_ty = self
+                .projection_offset(current_ty, std::slice::from_ref(&one_projection))
+                .map(|(_, ty)| ty);
             cur = match cur {
                 Value::Aggregate(mut v) if idx < v.len() => v.swap_remove(idx),
                 Value::Aggregate(_) => {
                     return Err(Flow::Panic(Panic::runtime(TrapKind::IndexOutOfBounds)));
+                }
+                // A pre-splice accessor may materialize a valid place pointer
+                // in a local slot while retaining the logical aggregate place
+                // metadata. Compose the remaining projections directly on that
+                // canonical target; decoding an intermediate aggregate would
+                // lose the place's byte/provenance authority.
+                Value::Ptr(Some(mut target)) => {
+                    // Pointer views cross function-local type pools. Retype
+                    // the recovered allocation using this place's canonical
+                    // view before asking the layout authority for offsets.
+                    // The pointer's pointee is the canonical type of the
+                    // materialized place. The surrounding Place metadata can
+                    // carry a generic/recovery handle that is not identical
+                    // to that type, so use the pointer view as the layout
+                    // authority while composing the remaining path.
+                    let (offset, pointee) = self
+                        .projection_offset(current_ty, &path[position..])
+                        .ok_or_else(|| {
+                        unsupported(
+                            UnsupportedKind::ContractViolation(
+                                ContractViolationKind::PlaceProjectionMetadata,
+                            ),
+                            "pointer-valued place projection layout",
+                        )
+                    })?;
+                    target.byte_offset =
+                        target.byte_offset.checked_add(offset).ok_or_else(|| {
+                            unsupported(
+                                UnsupportedKind::ContractViolation(
+                                    ContractViolationKind::PlaceProjectionMetadata,
+                                ),
+                                "pointer-valued place projection offset overflow",
+                            )
+                        })?;
+                    return self.ptr_cell_read(
+                        &target,
+                        pointee,
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::UnsplicedAccessor,
+                        ),
+                    );
                 }
                 // Text values (str/StrBuf) are now ordinary aggregate headers
                 // over a real byte allocation (RUE-1010 §6.13), so their
@@ -3547,6 +3788,9 @@ impl<'a> Interp<'a> {
                     ));
                 }
             };
+            if let Some(next_ty) = next_ty {
+                current_ty = next_ty;
+            }
         }
         Ok(cur)
     }
@@ -3559,9 +3803,16 @@ impl<'a> Interp<'a> {
         val: Value,
     ) -> Step<()> {
         let (base, path) = self.resolve_path(cfg, frame, place)?;
-        if let Some(target) = self.external_place_target(cfg, frame, base, &path)? {
+        let view_type = self
+            .projection_offset(place.base_type, &path)
+            .map(|(_, ty)| ty)
+            .unwrap_or(place.base_type);
+        if let Some(target) =
+            self.external_place_target(cfg, frame, base, place.base_type, view_type, &path)?
+        {
             return self.ptr_cell_write(
                 &target,
+                view_type,
                 val,
                 UnsupportedKind::ContractViolation(ContractViolationKind::UnsplicedAccessor),
             );
@@ -3571,10 +3822,19 @@ impl<'a> Interp<'a> {
             let target = self.expect_ptr(pointer, unsupported_intrinsic_kind("ptr_write"))?;
             if path.is_empty() {
                 return self
-                    .ptr_cell_write(&target, val, unsupported_intrinsic_kind("ptr_write"))
+                    .ptr_cell_write(
+                        &target,
+                        view_type,
+                        val,
+                        unsupported_intrinsic_kind("ptr_write"),
+                    )
                     .map_err(Flow::from);
             }
-            let mut root = self.ptr_cell_read(&target, unsupported_intrinsic_kind("ptr_write"))?;
+            let mut root = self.ptr_cell_read(
+                &target,
+                place.base_type,
+                unsupported_intrinsic_kind("ptr_write"),
+            )?;
             let mut cur = &mut root;
             for (idx, _) in &path {
                 cur = match cur {
@@ -3594,25 +3854,39 @@ impl<'a> Interp<'a> {
             }
             *cur = val;
             return self
-                .ptr_cell_write(&target, root, unsupported_intrinsic_kind("ptr_write"))
+                .ptr_cell_write(
+                    &target,
+                    place.base_type,
+                    root,
+                    unsupported_intrinsic_kind("ptr_write"),
+                )
                 .map_err(Flow::from);
         }
-        // Select the storage root. A promoted (address-taken) base writes through
-        // its heap allocation so the mutation is observed by both a later direct
-        // read and any live pointer. Otherwise write frame storage directly;
-        // writing through an `inout` parameter place targets the param slot
-        // (copied back to the caller on return).
-        let root: &mut Value = if let Some(&a) = frame.promoted.get(&promotion_key(base)) {
-            let alloc = &mut self.heap[a];
-            if alloc.wrapped_scalar {
-                match &mut alloc.root {
-                    Value::Aggregate(cells) if !cells.is_empty() => &mut cells[0],
-                    other => other,
-                }
-            } else {
-                &mut alloc.root
-            }
-        } else {
+        // A promoted base writes through the canonical byte allocation. The
+        // unpromoted path can still mutate the frame's logical value directly.
+        if let Some(&a) = frame.promoted.get(&promotion_key(base)) {
+            let (byte_offset, pointee) = self
+                .projection_offset(place.base_type, &path)
+                .ok_or_else(|| {
+                    unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::PlaceProjectionMetadata,
+                        ),
+                        "promoted place layout",
+                    )
+                })?;
+            let target = PtrTarget {
+                alloc: a,
+                byte_offset,
+            };
+            return self.ptr_cell_write(
+                &target,
+                pointee,
+                val,
+                unsupported_intrinsic_kind("ptr_write"),
+            );
+        }
+        let root: &mut Value = {
             let (store, slot) = match base {
                 PlaceBase::Local(slot) => (&mut frame.locals, slot as usize),
                 PlaceBase::Param(slot) => (&mut frame.params, slot as usize),
@@ -3777,57 +4051,504 @@ impl<'a> Interp<'a> {
     /// a later direct read of the same slot.
     fn base_value_of(&self, frame: &Frame, base: PlaceBase) -> Step<Value> {
         if let Some(&a) = frame.promoted.get(&promotion_key(base)) {
-            return Ok(self.promoted_slot_value(a));
+            return self.promoted_slot_value(a);
         }
         Self::base_value(frame, base)
     }
 
     /// The logical value a promoted slot holds: the wrapped scalar unwrapped, or
     /// the aggregate root as-is.
-    fn promoted_slot_value(&self, alloc: usize) -> Value {
-        let allocation = &self.heap[alloc];
-        if allocation.wrapped_scalar {
-            match &allocation.root {
-                Value::Aggregate(cells) if !cells.is_empty() => cells[0].clone(),
-                other => other.clone(),
-            }
-        } else {
-            allocation.root.clone()
+    fn promoted_slot_value(&self, alloc: usize) -> Step<Value> {
+        let allocation = self.heap.get(alloc).ok_or_else(|| {
+            unsupported(
+                unsupported_intrinsic_kind("ptr_read"),
+                "promoted allocation is missing",
+            )
+        })?;
+        if allocation.freed {
+            return Err(unsupported(
+                unsupported_intrinsic_kind("ptr_read"),
+                "promoted allocation was freed",
+            ));
         }
+        let ty = allocation.root_ty.ok_or_else(|| {
+            unsupported(
+                unsupported_intrinsic_kind("ptr_read"),
+                "raw allocation has no typed view",
+            )
+        })?;
+        self.decode_value(
+            &allocation.bytes,
+            &allocation.initialized,
+            &allocation.provenance,
+            ty,
+        )
     }
 
     /// Write the logical value of a promoted slot back into its allocation,
     /// preserving the scalar wrap.
-    fn set_promoted_slot(&mut self, alloc: usize, val: Value) {
-        if self.heap[alloc].wrapped_scalar {
-            self.heap[alloc].root = Value::Aggregate(vec![val]);
-        } else {
-            self.heap[alloc].root = val;
+    fn set_promoted_slot(&mut self, alloc: usize, val: Value) -> Step<()> {
+        let ty = self
+            .heap
+            .get(alloc)
+            .and_then(|allocation| allocation.root_ty)
+            .ok_or_else(|| {
+                unsupported(
+                    unsupported_intrinsic_kind("ptr_write"),
+                    "raw allocation has no typed view",
+                )
+            })?;
+        if self
+            .heap
+            .get(alloc)
+            .is_some_and(|allocation| allocation.freed)
+        {
+            return Err(unsupported(
+                unsupported_intrinsic_kind("ptr_write"),
+                "promoted allocation was freed",
+            ));
         }
+        let (bytes, initialized, provenance) = self.encode_value(&val, ty)?;
+        let allocation = &mut self.heap[alloc];
+        if bytes.len() != allocation.bytes.len() {
+            return Err(unsupported(
+                unsupported_intrinsic_kind("ptr_write"),
+                "promoted value layout changed",
+            ));
+        }
+        allocation.bytes.copy_from_slice(&bytes);
+        allocation.initialized.copy_from_slice(&initialized);
+        allocation.provenance.clone_from_slice(&provenance);
+        Ok(())
     }
 
     /// Read a local slot, honoring promotion.
     fn load_local(&self, frame: &Frame, slot: u32) -> Step<Value> {
         if let Some(&a) = frame.promoted.get(&promotion_key(PlaceBase::Local(slot))) {
-            return Ok(self.promoted_slot_value(a));
+            return self.promoted_slot_value(a);
         }
         Self::get_local(frame, slot)
     }
 
     /// Write a local slot, honoring promotion.
-    fn store_local(&mut self, frame: &mut Frame, slot: u32, val: Value) {
+    fn store_local(&mut self, frame: &mut Frame, slot: u32, val: Value) -> Step<()> {
         if let Some(&a) = frame.promoted.get(&promotion_key(PlaceBase::Local(slot))) {
-            self.set_promoted_slot(a, val);
+            self.set_promoted_slot(a, val)
         } else {
             Self::set_local(frame, slot, val);
+            Ok(())
         }
     }
 
-    /// A deterministic image for storage that Rue specifies as uninitialized.
-    /// Valid modeled programs initialize cells before observing them.
-    fn zeroed_value(&self, ty: Type) -> Value {
+    /// Query the canonical layout authority without allowing malformed CFG
+    /// handles to panic the oracle. A complete semantic type normally makes
+    /// this infallible; the checked wrapper is required at the oracle boundary
+    /// because generated/corpus inputs may contain stale recovery handles.
+    fn try_layout(&self, ty: Type) -> Option<rue_air::Layout> {
+        if !self.is_materializable_type(ty) {
+            return None;
+        }
+        catch_unwind(AssertUnwindSafe(|| self.type_pool().layout(ty))).ok()
+    }
+
+    /// Byte size of one value of `ty` from the compact-layout authority.
+    fn try_type_byte_size(&self, ty: Type) -> Option<u64> {
+        self.try_layout(ty).map(|layout| layout.size)
+    }
+
+    fn is_materializable_type(&self, ty: Type) -> bool {
         match ty.kind() {
-            TypeKind::Bool => Value::Bool(false),
+            TypeKind::Error | TypeKind::Never | TypeKind::ComptimeType | TypeKind::Module(_) => {
+                false
+            }
+            TypeKind::Struct(id) => self.type_pool().try_struct_def(id).is_some_and(|def| {
+                def.fields
+                    .iter()
+                    .all(|field| self.is_materializable_type(field.ty))
+            }),
+            TypeKind::Array(id) => self
+                .type_pool()
+                .try_array_def(id)
+                .is_some_and(|(element, _)| self.is_materializable_type(element)),
+            TypeKind::Enum(id) => self.type_pool().try_enum_def(id).is_some_and(|def| {
+                def.variant_payloads
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .all(|field| self.is_materializable_type(field))
+            }),
+            _ => true,
+        }
+    }
+
+    /// Push a canonical raw allocation. `root_ty` is retained only as the
+    /// minimum metadata needed to decode promoted typed views; bytes remain the
+    /// sole storage authority.
+    fn heap_alloc_bytes(
+        &mut self,
+        bytes: Vec<u8>,
+        initialized: Vec<bool>,
+        provenance: Vec<Option<PtrTarget>>,
+        root_ty: Option<Type>,
+        origin: AllocationOrigin,
+        declared_alignment: u64,
+    ) -> usize {
+        debug_assert_eq!(bytes.len(), initialized.len());
+        debug_assert_eq!(bytes.len(), provenance.len());
+        self.heap.push(Allocation {
+            bytes,
+            initialized,
+            provenance,
+            root_ty,
+            freed: false,
+            origin,
+            declared_alignment,
+            owner_depth: (origin == AllocationOrigin::Promoted).then_some(self.depth),
+        });
+        self.heap.len() - 1
+    }
+
+    /// Encode one typed value using Rue's target representation. All integer
+    /// and pointer words are explicitly little-endian; host memory is never
+    /// inspected or transmuted.
+    fn encode_value(
+        &self,
+        value: &Value,
+        ty: Type,
+    ) -> Step<(Vec<u8>, Vec<bool>, Vec<Option<PtrTarget>>)> {
+        if !self.is_materializable_type(ty) {
+            return Err(unsupported(
+                unsupported_intrinsic_kind("ptr_write"),
+                "type has no target representation",
+            ));
+        }
+        let size = usize::try_from(self.try_type_byte_size(ty).ok_or_else(|| {
+            unsupported(
+                unsupported_intrinsic_kind("ptr_write"),
+                "type has no target layout",
+            )
+        })?)
+        .map_err(|_| {
+            unsupported(
+                unsupported_intrinsic_kind("ptr_write"),
+                "layout exceeds host range",
+            )
+        })?;
+        let mut bytes = vec![0; size];
+        // Padding bytes are not an observable part of a typed value. Keep them
+        // uninitialized; recursive decodes validate only field bytes.
+        let mut initialized = vec![false; size];
+        let mut provenance = vec![None; size];
+        let layout = self.try_layout(ty).ok_or_else(|| {
+            unsupported(
+                unsupported_intrinsic_kind("ptr_write"),
+                "type has no target layout",
+            )
+        })?;
+        match (ty.kind(), value) {
+            (TypeKind::Bool, Value::Bool(b)) => {
+                bytes[0] = u8::from(*b);
+                initialized[0] = true;
+            }
+            (
+                TypeKind::I8
+                | TypeKind::I16
+                | TypeKind::I32
+                | TypeKind::I64
+                | TypeKind::U8
+                | TypeKind::U16
+                | TypeKind::U32
+                | TypeKind::U64,
+                v,
+            ) => {
+                let (bits, _) = int_shape(ty)?;
+                initialized.fill(true);
+                let mut raw = to_bits(v.as_int(), bits);
+                for byte in &mut bytes {
+                    *byte = raw as u8;
+                    raw >>= 8;
+                }
+            }
+            (TypeKind::PtrConst(_) | TypeKind::PtrMut(_), Value::Ptr(ptr)) => {
+                let address = ptr.as_ref().map_or(0, |target| self.ptr_address(target));
+                initialized.fill(true);
+                bytes[..size.min(8)].copy_from_slice(&address.to_le_bytes()[..size.min(8)]);
+                if let Some(target) = ptr {
+                    for marker in &mut provenance[..size] {
+                        *marker = Some(target.clone());
+                    }
+                } else {
+                    let marker = Self::canonical_null_marker();
+                    for slot in &mut provenance[..size] {
+                        *slot = Some(marker.clone());
+                    }
+                }
+            }
+            (TypeKind::Unit | TypeKind::Never, Value::Unit) => {}
+            (TypeKind::Struct(id), Value::Aggregate(fields)) => {
+                initialized.fill(true);
+                let def = self.type_pool().try_struct_def(id).ok_or_else(|| {
+                    unsupported(
+                        unsupported_intrinsic_kind("ptr_write"),
+                        "struct type metadata",
+                    )
+                })?;
+                let LayoutKind::Struct { field_offsets, .. } = layout.kind else {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_write"),
+                        "struct layout kind",
+                    ));
+                };
+                if fields.len() != def.fields.len() {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_write"),
+                        "struct value shape",
+                    ));
+                }
+                for ((field, value), offset) in def.fields.iter().zip(fields).zip(field_offsets) {
+                    let (field_bytes, field_init, field_prov) =
+                        self.encode_value(value, field.ty)?;
+                    let start = usize::try_from(offset).map_err(|_| {
+                        unsupported(
+                            unsupported_intrinsic_kind("ptr_write"),
+                            "field offset exceeds host range",
+                        )
+                    })?;
+                    let end = start.checked_add(field_bytes.len()).ok_or_else(|| {
+                        unsupported(
+                            unsupported_intrinsic_kind("ptr_write"),
+                            "field representation offset overflow",
+                        )
+                    })?;
+                    if end > bytes.len() {
+                        return Err(unsupported(
+                            unsupported_intrinsic_kind("ptr_write"),
+                            "field representation exceeds layout",
+                        ));
+                    }
+                    bytes[start..end].copy_from_slice(&field_bytes);
+                    initialized[start..end].copy_from_slice(&field_init);
+                    provenance[start..end].clone_from_slice(&field_prov);
+                }
+            }
+            (TypeKind::Array(id), Value::Aggregate(elements)) => {
+                initialized.fill(true);
+                let (element_ty, count) = self.type_pool().try_array_def(id).ok_or_else(|| {
+                    unsupported(
+                        unsupported_intrinsic_kind("ptr_write"),
+                        "array type metadata",
+                    )
+                })?;
+                let LayoutKind::Array { element, .. } = layout.kind else {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_write"),
+                        "array layout kind",
+                    ));
+                };
+                let count = usize::try_from(count).map_err(|_| {
+                    unsupported(
+                        unsupported_intrinsic_kind("ptr_write"),
+                        "array count exceeds host range",
+                    )
+                })?;
+                if elements.len() != count {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_write"),
+                        "array value shape",
+                    ));
+                }
+                let stride = usize::try_from(element.stride).map_err(|_| {
+                    unsupported(
+                        unsupported_intrinsic_kind("ptr_write"),
+                        "array stride exceeds host range",
+                    )
+                })?;
+                for (index, value) in elements.iter().enumerate() {
+                    let (field_bytes, field_init, field_prov) =
+                        self.encode_value(value, element_ty)?;
+                    let start = index.checked_mul(stride).ok_or_else(|| {
+                        unsupported(
+                            unsupported_intrinsic_kind("ptr_write"),
+                            "array representation offset overflow",
+                        )
+                    })?;
+                    let end = start.checked_add(field_bytes.len()).ok_or_else(|| {
+                        unsupported(
+                            unsupported_intrinsic_kind("ptr_write"),
+                            "array representation offset overflow",
+                        )
+                    })?;
+                    if end > bytes.len() {
+                        return Err(unsupported(
+                            unsupported_intrinsic_kind("ptr_write"),
+                            "array element exceeds layout",
+                        ));
+                    }
+                    bytes[start..end].copy_from_slice(&field_bytes);
+                    initialized[start..end].copy_from_slice(&field_init);
+                    provenance[start..end].clone_from_slice(&field_prov);
+                }
+            }
+            (TypeKind::Enum(id), value) => {
+                initialized.fill(true);
+                let def = self.type_pool().try_enum_def(id).ok_or_else(|| {
+                    unsupported(
+                        unsupported_intrinsic_kind("ptr_write"),
+                        "enum type metadata",
+                    )
+                })?;
+                let (tag, fields) = match value {
+                    Value::Int(tag) => (*tag as usize, &[][..]),
+                    Value::Aggregate(values) if !values.is_empty() => {
+                        (values[0].as_int() as usize, &values[1..])
+                    }
+                    _ => {
+                        return Err(unsupported(
+                            unsupported_intrinsic_kind("ptr_write"),
+                            "enum value shape",
+                        ));
+                    }
+                };
+                let tag_value = match value {
+                    Value::Int(tag) => *tag,
+                    Value::Aggregate(values) => values[0].as_int(),
+                    _ => unreachable!(),
+                };
+                let LayoutKind::Enum {
+                    tag: tag_layout,
+                    variants,
+                    payload_offset,
+                    ..
+                } = layout.kind
+                else {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_write"),
+                        "enum layout kind",
+                    ));
+                };
+                let tag_size = usize::try_from(tag_layout.size).map_err(|_| {
+                    unsupported(
+                        unsupported_intrinsic_kind("ptr_write"),
+                        "enum tag exceeds host range",
+                    )
+                })?;
+                if tag_size > bytes.len() {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_write"),
+                        "enum tag exceeds layout",
+                    ));
+                }
+                if tag >= def.variant_count() || tag >= variants.len() {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_write"),
+                        "enum discriminant outside representation",
+                    ));
+                }
+                let mut raw = tag_value as u128;
+                initialized[..tag_size].fill(true);
+                for byte in &mut bytes[..tag_size] {
+                    *byte = raw as u8;
+                    raw >>= 8;
+                }
+                let Some(payload) = def.variant_payloads.get(tag) else {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_write"),
+                        "enum payload metadata is incomplete",
+                    ));
+                };
+                if payload.len() != fields.len() {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_write"),
+                        "enum payload shape",
+                    ));
+                }
+                for ((field_ty, value), offset) in payload.iter().zip(fields).zip(&variants[tag]) {
+                    let (field_bytes, field_init, field_prov) =
+                        self.encode_value(value, *field_ty)?;
+                    let start = usize::try_from(*offset).map_err(|_| {
+                        unsupported(
+                            unsupported_intrinsic_kind("ptr_write"),
+                            "enum field offset exceeds host range",
+                        )
+                    })?;
+                    let end = start.checked_add(field_bytes.len()).ok_or_else(|| {
+                        unsupported(
+                            unsupported_intrinsic_kind("ptr_write"),
+                            "enum field offset overflow",
+                        )
+                    })?;
+                    if end > bytes.len() {
+                        return Err(unsupported(
+                            unsupported_intrinsic_kind("ptr_write"),
+                            "enum field exceeds layout",
+                        ));
+                    }
+                    bytes[start..end].copy_from_slice(&field_bytes);
+                    initialized[start..end].copy_from_slice(&field_init);
+                    provenance[start..end].clone_from_slice(&field_prov);
+                }
+                let _ = payload_offset;
+            }
+            _ => {
+                return Err(unsupported(
+                    unsupported_intrinsic_kind("ptr_write"),
+                    "value/type representation mismatch",
+                ));
+            }
+        }
+        Ok((bytes, initialized, provenance))
+    }
+
+    /// Decode one complete typed value from canonical bytes. The initialized
+    /// and provenance checks make partial pointer/value observations typed gaps.
+    fn decode_value(
+        &self,
+        bytes: &[u8],
+        initialized: &[bool],
+        provenance: &[Option<PtrTarget>],
+        ty: Type,
+    ) -> Step<Value> {
+        let size = usize::try_from(self.try_type_byte_size(ty).ok_or_else(|| {
+            unsupported(
+                unsupported_intrinsic_kind("ptr_read"),
+                "type has no target layout",
+            )
+        })?)
+        .map_err(|_| {
+            unsupported(
+                unsupported_intrinsic_kind("ptr_read"),
+                "layout exceeds host range",
+            )
+        })?;
+        if bytes.len() < size || initialized.len() < size || provenance.len() < size {
+            return Err(unsupported(
+                unsupported_intrinsic_kind("ptr_read"),
+                "typed view exceeds allocation",
+            ));
+        }
+        let layout = self.try_layout(ty).ok_or_else(|| {
+            unsupported(
+                unsupported_intrinsic_kind("ptr_read"),
+                "type has no target layout",
+            )
+        })?;
+        match ty.kind() {
+            TypeKind::Bool => {
+                if !initialized[0] {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "read of uninitialized bool",
+                    ));
+                }
+                match bytes[0] {
+                    0 => Ok(Value::Bool(false)),
+                    1 => Ok(Value::Bool(true)),
+                    _ => Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "invalid bool representation",
+                    )),
+                }
+            }
             TypeKind::I8
             | TypeKind::I16
             | TypeKind::I32
@@ -3835,157 +4556,330 @@ impl<'a> Interp<'a> {
             | TypeKind::U8
             | TypeKind::U16
             | TypeKind::U32
-            | TypeKind::U64 => Value::Int(0),
-            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => Value::Ptr(None),
-            TypeKind::Struct(sid) => {
-                if self.is_str_like_struct(sid) || self.is_owned_string_struct(sid) {
-                    // Empty text header: a null buffer with zero length and
-                    // capacity (RUE-1010 §6.13). A str/Str(N) view is
-                    // `{ptr, len}`; an owned StrBuf is `{core: {buf, cap}, len}`.
-                    if self.text_value_slot_width(ty) >= 3 {
-                        Value::Aggregate(vec![
-                            Value::Aggregate(vec![Value::Ptr(None), Value::Int(0)]),
-                            Value::Int(0),
-                        ])
-                    } else {
-                        Value::Aggregate(vec![Value::Ptr(None), Value::Int(0)])
-                    }
-                } else {
-                    let sd = self.type_pool().struct_def(sid);
-                    Value::Aggregate(sd.fields.iter().map(|f| self.zeroed_value(f.ty)).collect())
+            | TypeKind::U64 => {
+                if initialized[..size].iter().any(|ready| !ready) {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "read of uninitialized integer representation",
+                    ));
                 }
+                let (bits, kind) = int_shape(ty)?;
+                let mut raw = 0u128;
+                for (index, byte) in bytes[..size].iter().enumerate() {
+                    raw |= (*byte as u128) << (index * 8);
+                }
+                Ok(Value::Int(from_bits(raw, bits, kind_signed(kind))))
             }
-            TypeKind::Array(aid) => {
-                let (elem, len) = self.type_pool().array_def(aid);
-                Value::Aggregate((0..len).map(|_| self.zeroed_value(elem)).collect())
+            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => {
+                if initialized[..size].iter().any(|ready| !ready) {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "read of uninitialized pointer representation",
+                    ));
+                }
+                let mut raw = 0u128;
+                for (index, byte) in bytes[..size.min(16)].iter().enumerate() {
+                    raw |= (*byte as u128) << (index * 8);
+                }
+                if raw == 0 {
+                    // A complete initialized zero representation is the
+                    // canonical null pointer, even when it has no provenance
+                    // marker (spec 9.2:6c). Partial words were rejected above;
+                    // nonzero words still require copied allocation identity.
+                    return Ok(Value::Ptr(None));
+                }
+                let Some(first) = provenance[..size].first().and_then(|p| p.clone()) else {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "pointer representation lacks provenance",
+                    ));
+                };
+                if provenance[..size]
+                    .iter()
+                    .any(|p| p.as_ref() != Some(&first))
+                    || self.ptr_address(&first) != raw
+                {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "pointer representation provenance mismatch",
+                    ));
+                }
+                let Some((pointee, _)) = self.pointer_pointee(ty) else {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "pointer representation has no pointee type",
+                    ));
+                };
+                let _ = pointee;
+                Ok(Value::Ptr(Some(first)))
             }
-            // A zeroed enum is discriminant 0; a bare tag under the interpreter's
-            // model (payload cells are only reached after a variant write).
-            TypeKind::Enum(_) => Value::Int(0),
-            _ => Value::Unit,
+            TypeKind::Unit | TypeKind::Never => Ok(Value::Unit),
+            TypeKind::Struct(id) => {
+                let def = self.type_pool().try_struct_def(id).ok_or_else(|| {
+                    unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "struct type metadata",
+                    )
+                })?;
+                let LayoutKind::Struct { field_offsets, .. } = layout.kind else {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "struct layout kind",
+                    ));
+                };
+                let mut fields = Vec::with_capacity(def.fields.len());
+                for (field, offset) in def.fields.iter().zip(field_offsets) {
+                    let start = usize::try_from(offset).map_err(|_| {
+                        unsupported(
+                            unsupported_intrinsic_kind("ptr_read"),
+                            "struct field offset exceeds host range",
+                        )
+                    })?;
+                    if start > size {
+                        return Err(unsupported(
+                            unsupported_intrinsic_kind("ptr_read"),
+                            "struct field offset outside representation",
+                        ));
+                    }
+                    fields.push(self.decode_value(
+                        &bytes[start..],
+                        &initialized[start..],
+                        &provenance[start..],
+                        field.ty,
+                    )?);
+                }
+                Ok(Value::Aggregate(fields))
+            }
+            TypeKind::Array(id) => {
+                let (element_ty, count) = self.type_pool().try_array_def(id).ok_or_else(|| {
+                    unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "array type metadata",
+                    )
+                })?;
+                let LayoutKind::Array { element, .. } = layout.kind else {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "array layout kind",
+                    ));
+                };
+                let count = usize::try_from(count).map_err(|_| {
+                    unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "array count exceeds host range",
+                    )
+                })?;
+                let stride = usize::try_from(element.stride).map_err(|_| {
+                    unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "array stride exceeds host range",
+                    )
+                })?;
+                let mut values = Vec::with_capacity(count);
+                for index in 0..count {
+                    let start = index.checked_mul(stride).ok_or_else(|| {
+                        unsupported(
+                            unsupported_intrinsic_kind("ptr_read"),
+                            "array element offset overflow",
+                        )
+                    })?;
+                    if start > size {
+                        return Err(unsupported(
+                            unsupported_intrinsic_kind("ptr_read"),
+                            "array element offset outside representation",
+                        ));
+                    }
+                    values.push(self.decode_value(
+                        &bytes[start..],
+                        &initialized[start..],
+                        &provenance[start..],
+                        element_ty,
+                    )?);
+                }
+                Ok(Value::Aggregate(values))
+            }
+            TypeKind::Enum(id) => {
+                let def = self.type_pool().try_enum_def(id).ok_or_else(|| {
+                    unsupported(unsupported_intrinsic_kind("ptr_read"), "enum type metadata")
+                })?;
+                let LayoutKind::Enum { tag, variants, .. } = layout.kind else {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "enum layout kind",
+                    ));
+                };
+                let tag_size = usize::try_from(tag.size).map_err(|_| {
+                    unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "enum tag exceeds host range",
+                    )
+                })?;
+                if tag_size > size {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "enum tag exceeds layout",
+                    ));
+                }
+                if initialized[..tag_size].iter().any(|ready| !ready) {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "read of uninitialized enum discriminant",
+                    ));
+                }
+                let mut raw = 0usize;
+                for (index, byte) in bytes[..tag_size].iter().enumerate() {
+                    raw |= (*byte as usize) << (index * 8);
+                }
+                if raw >= def.variant_count() || raw >= variants.len() {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "enum discriminant outside representation",
+                    ));
+                }
+                let Some(payload) = def.variant_payloads.get(raw) else {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "enum payload metadata is incomplete",
+                    ));
+                };
+                if payload.is_empty() {
+                    return Ok(Value::Int(raw as i128));
+                }
+                let mut values = vec![Value::Int(raw as i128)];
+                for (field_ty, offset) in payload.iter().zip(&variants[raw]) {
+                    let start = usize::try_from(*offset).map_err(|_| {
+                        unsupported(
+                            unsupported_intrinsic_kind("ptr_read"),
+                            "enum field offset exceeds host range",
+                        )
+                    })?;
+                    let field_end = start
+                        .checked_add(
+                            usize::try_from(self.try_type_byte_size(*field_ty).ok_or_else(
+                                || {
+                                    unsupported(
+                                        unsupported_intrinsic_kind("ptr_read"),
+                                        "enum field has no target layout",
+                                    )
+                                },
+                            )?)
+                            .map_err(|_| {
+                                unsupported(
+                                    unsupported_intrinsic_kind("ptr_read"),
+                                    "enum field layout exceeds host range",
+                                )
+                            })?,
+                        )
+                        .ok_or_else(|| {
+                            unsupported(
+                                unsupported_intrinsic_kind("ptr_read"),
+                                "enum field offset overflow",
+                            )
+                        })?;
+                    if field_end > size {
+                        return Err(unsupported(
+                            unsupported_intrinsic_kind("ptr_read"),
+                            "enum field offset outside representation",
+                        ));
+                    }
+                    values.push(self.decode_value(
+                        &bytes[start..],
+                        &initialized[start..],
+                        &provenance[start..],
+                        *field_ty,
+                    )?);
+                }
+                Ok(Value::Aggregate(values))
+            }
+            _ => Err(unsupported(
+                unsupported_intrinsic_kind("ptr_read"),
+                "unsupported typed representation",
+            )),
         }
     }
 
-    /// Byte size of one value of `ty` from the compact-layout authority.
-    fn type_byte_size(&self, ty: Type) -> u64 {
-        self.type_pool().layout(ty).size
-    }
-
-    /// Push a new allocation, returning its index.
-    fn heap_alloc(&mut self, root: Value, elem_stride: u64, wrapped_scalar: bool) -> usize {
-        self.heap_alloc_with(root, elem_stride, wrapped_scalar, false)
-    }
-
-    /// Push a new allocation, optionally marking it as a raw byte block whose
-    /// element type is not yet known (see [`Allocation::untyped_bytes`]).
-    fn heap_alloc_with(
-        &mut self,
-        root: Value,
-        elem_stride: u64,
-        wrapped_scalar: bool,
-        untyped_bytes: bool,
-    ) -> usize {
-        self.heap.push(Allocation {
-            root,
-            elem_stride: elem_stride.max(1),
-            wrapped_scalar,
-            freed: false,
-            untyped_bytes,
-            touched: false,
-        });
-        self.heap.len() - 1
-    }
-
-    /// Reinterpret an untouched raw byte block as cells of `pointee`.
-    ///
-    /// `std/rawbuf.rue` allocates `count * @size_of(T)` bytes and immediately
-    /// casts the result to `ptr mut T`; this is where that cast becomes the
-    /// interpreter's cell shape. Only an untouched block whose byte size is a
-    /// whole number of `pointee`s is reinterpreted — anything else keeps its
-    /// byte cells, so a genuinely byte-addressed block (`std/strbuf.rue`) is
-    /// never disturbed.
-    fn retype_untyped_bytes(&mut self, alloc: usize, pointee: Type) -> bool {
-        let stride = self.type_byte_size(pointee).max(1);
-        let Some(allocation) = self.heap.get(alloc) else {
-            return false;
-        };
-        if !allocation.untyped_bytes
-            || allocation.touched
-            || allocation.freed
-            || stride == allocation.elem_stride
-        {
-            return false;
-        }
-        let Value::Aggregate(cells) = &allocation.root else {
-            return false;
-        };
-        let bytes = cells.len() as u64;
-        if stride == 0 || bytes % stride != 0 {
-            return false;
-        }
-        let count = (bytes / stride) as usize;
-        let cells = (0..count).map(|_| self.zeroed_value(pointee)).collect();
-        let allocation = &mut self.heap[alloc];
-        allocation.root = Value::Aggregate(cells);
-        allocation.elem_stride = stride;
-        allocation.untyped_bytes = false;
-        true
+    fn heap_alloc_value(&mut self, root: Value, ty: Type, _wrapped_scalar: bool) -> Step<usize> {
+        let size = usize::try_from(self.try_type_byte_size(ty).ok_or_else(|| {
+            unsupported(
+                unsupported_intrinsic_kind("ptr_write"),
+                "type has no target layout",
+            )
+        })?)
+        .map_err(|_| {
+            unsupported(
+                unsupported_intrinsic_kind("ptr_write"),
+                "layout exceeds host range",
+            )
+        })?;
+        self.materialize_cells_guard(size as i128)?;
+        self.reserve_heap_metadata(size)?;
+        let (bytes, initialized, provenance) = self.encode_value(&root, ty)?;
+        let alignment = self
+            .try_layout(ty)
+            .map_or(1, |layout| layout.alignment.max(1));
+        Ok(self.heap_alloc_bytes(
+            bytes,
+            initialized,
+            provenance,
+            Some(ty),
+            AllocationOrigin::Promoted,
+            alignment,
+        ))
     }
 
     /// Synthesize a stable non-null address for `target`, used by `@ptr_to_int`.
     fn ptr_address(&self, target: &PtrTarget) -> u128 {
-        let stride = self.heap[target.alloc].elem_stride as u128;
-        HEAP_BASE + (target.alloc as u128) * HEAP_SEG + target.index.max(0) as u128 * stride
+        HEAP_BASE + (target.alloc as u128) * HEAP_SEG + target.byte_offset as u128
     }
 
     /// Decode a synthetic address back to a pointer target, honoring byte-offset
     /// arithmetic performed on a `@ptr_to_int` value. Returns `None` for an
     /// address that names no known allocation (an arbitrary integer, which stays
     /// an unsupported `@int_to_ptr`).
-    fn address_target(&self, addr: u128, pointee: Type) -> Option<PtrTarget> {
+    fn address_target(&self, addr: u128, provenance: &PtrTarget) -> Option<PtrTarget> {
         if addr < HEAP_BASE {
             return None;
         }
         let n = addr - HEAP_BASE;
-        let alloc = (n / HEAP_SEG) as usize;
-        if alloc >= self.heap.len() {
+        let alloc = usize::try_from(n / HEAP_SEG).ok()?;
+        if alloc != provenance.alloc || alloc >= self.heap.len() {
             return None;
         }
-        let byte_off = n % HEAP_SEG;
-        let stride = self.type_byte_size(pointee).max(1) as u128;
+        let allocation = self.heap.get(alloc)?;
+        if allocation.freed {
+            return None;
+        }
+        let byte_off = u64::try_from(n % HEAP_SEG).ok()?;
+        if byte_off > u64::try_from(allocation.bytes.len()).ok()? {
+            return None;
+        }
         Some(PtrTarget {
             alloc,
-            path: Vec::new(),
-            index: (byte_off / stride) as i128,
+            byte_offset: byte_off,
         })
     }
 
-    fn nav<'v>(root: &'v Value, path: &[usize]) -> Option<&'v Value> {
-        let mut cur = root;
-        for &p in path {
-            match cur {
-                Value::Aggregate(cells) => cur = cells.get(p)?,
-                _ => return None,
-            }
-        }
-        Some(cur)
+    /// Read the typed view at `target` from canonical bytes.
+    fn ptr_cell_read(&self, target: &PtrTarget, ty: Type, gap: UnsupportedKind) -> Step<Value> {
+        self.ptr_cell_read_impl(target, ty, gap, true)
     }
 
-    fn nav_mut<'v>(root: &'v mut Value, path: &[usize]) -> Option<&'v mut Value> {
-        let mut cur = root;
-        for &p in path {
-            match cur {
-                Value::Aggregate(cells) => cur = cells.get_mut(p)?,
-                _ => return None,
-            }
-        }
-        Some(cur)
+    fn ptr_cell_read_unaligned(
+        &self,
+        target: &PtrTarget,
+        ty: Type,
+        gap: UnsupportedKind,
+    ) -> Step<Value> {
+        self.ptr_cell_read_impl(target, ty, gap, false)
     }
 
-    /// Read the pointee cell of `target`. `gap` is the model-gap kind reported if
-    /// the access is out of bounds or malformed (unmodelable UB, kept as a typed
-    /// gap rather than a false agreement).
-    fn ptr_cell_read(&self, target: &PtrTarget, gap: UnsupportedKind) -> Step<Value> {
+    fn ptr_cell_read_impl(
+        &self,
+        target: &PtrTarget,
+        ty: Type,
+        gap: UnsupportedKind,
+        aligned: bool,
+    ) -> Step<Value> {
         let alloc = self
             .heap
             .get(target.alloc)
@@ -3993,21 +4887,86 @@ impl<'a> Interp<'a> {
         if alloc.freed {
             return Err(unsupported(gap, "pointer read after free"));
         }
-        let container = Self::nav(&alloc.root, &target.path)
-            .ok_or_else(|| unsupported(gap, "pointer path escapes allocation"))?;
-        match container {
-            Value::Aggregate(cells) => {
-                if target.index < 0 || target.index as usize >= cells.len() {
-                    return Err(unsupported(gap, "pointer read out of bounds"));
-                }
-                Ok(cells[target.index as usize].clone())
-            }
-            _ => Err(unsupported(gap, "pointer to non-aggregate cell")),
+        let layout = self
+            .try_layout(ty)
+            .ok_or_else(|| unsupported(gap, "pointee has no target layout"))?;
+        let alignment = layout.alignment.max(1);
+        if aligned && !target.byte_offset.is_multiple_of(alignment) {
+            return Err(unsupported(gap, "misaligned typed read"));
         }
+        let start = usize::try_from(target.byte_offset)
+            .map_err(|_| unsupported(gap, "pointer read offset exceeds host range"))?;
+        let end = start
+            .checked_add(
+                usize::try_from(
+                    self.try_type_byte_size(ty)
+                        .ok_or_else(|| unsupported(gap, "pointee has no target layout"))?,
+                )
+                .map_err(|_| unsupported(gap, "pointee layout exceeds host range"))?,
+            )
+            .ok_or_else(|| unsupported(gap, "pointer read offset overflow"))?;
+        if end > alloc.bytes.len() {
+            return Err(unsupported(gap, "pointer read out of bounds"));
+        }
+        self.decode_value(
+            &alloc.bytes[start..end],
+            &alloc.initialized[start..end],
+            &alloc.provenance[start..end],
+            ty,
+        )
+        .map_err(|flow| match flow {
+            Flow::Unsupported(mut u) => {
+                u.kind = gap;
+                Flow::Unsupported(u)
+            }
+            other => other,
+        })
     }
 
-    /// Write the pointee cell of `target`.
-    fn ptr_cell_write(&mut self, target: &PtrTarget, val: Value, gap: UnsupportedKind) -> Step<()> {
+    /// Encode a typed value directly into canonical bytes.
+    fn ptr_cell_write(
+        &mut self,
+        target: &PtrTarget,
+        ty: Type,
+        val: Value,
+        gap: UnsupportedKind,
+    ) -> Step<()> {
+        self.ptr_cell_write_impl(target, ty, val, gap, true)
+    }
+
+    fn ptr_cell_write_unaligned(
+        &mut self,
+        target: &PtrTarget,
+        ty: Type,
+        val: Value,
+        gap: UnsupportedKind,
+    ) -> Step<()> {
+        self.ptr_cell_write_impl(target, ty, val, gap, false)
+    }
+
+    fn ptr_cell_write_impl(
+        &mut self,
+        target: &PtrTarget,
+        ty: Type,
+        val: Value,
+        gap: UnsupportedKind,
+        aligned: bool,
+    ) -> Step<()> {
+        let layout = self
+            .try_layout(ty)
+            .ok_or_else(|| unsupported(gap, "pointee has no target layout"))?;
+        let (bytes, initialized, provenance) =
+            self.encode_value(&val, ty).map_err(|flow| match flow {
+                Flow::Unsupported(mut u) => {
+                    u.kind = gap;
+                    Flow::Unsupported(u)
+                }
+                other => other,
+            })?;
+        let alignment = layout.alignment.max(1);
+        if aligned && !target.byte_offset.is_multiple_of(alignment) {
+            return Err(unsupported(gap, "misaligned typed write"));
+        }
         let alloc = self
             .heap
             .get_mut(target.alloc)
@@ -4015,34 +4974,65 @@ impl<'a> Interp<'a> {
         if alloc.freed {
             return Err(unsupported(gap, "pointer write after free"));
         }
-        // The block now carries meaningful values, which retires it from
-        // reinterpretation (see `Allocation::untyped_bytes`).
-        alloc.touched = true;
-        let container = Self::nav_mut(&mut alloc.root, &target.path)
-            .ok_or_else(|| unsupported(gap, "pointer path escapes allocation"))?;
-        match container {
-            Value::Aggregate(cells) => {
-                if target.index < 0 || target.index as usize >= cells.len() {
-                    return Err(unsupported(gap, "pointer write out of bounds"));
-                }
-                cells[target.index as usize] = val;
-                Ok(())
-            }
-            _ => Err(unsupported(gap, "pointer to non-aggregate cell")),
+        let start = usize::try_from(target.byte_offset)
+            .map_err(|_| unsupported(gap, "pointer write offset exceeds host range"))?;
+        let end = start
+            .checked_add(bytes.len())
+            .ok_or_else(|| unsupported(gap, "pointer write offset overflow"))?;
+        if end > alloc.bytes.len() {
+            return Err(unsupported(gap, "pointer write out of bounds"));
         }
+        alloc.bytes[start..end].copy_from_slice(&bytes);
+        alloc.initialized[start..end].copy_from_slice(&initialized);
+        alloc.provenance[start..end].clone_from_slice(&provenance);
+        Ok(())
     }
 
-    /// Read one byte from a byte-store allocation at `target.index + offset`.
+    /// Read one byte from a byte-store allocation at `target.byte_offset + offset`.
     fn byte_at(&self, target: &PtrTarget, offset: i128, gap: UnsupportedKind) -> Step<u8> {
-        let at = PtrTarget {
-            alloc: target.alloc,
-            path: target.path.clone(),
-            index: target.index + offset,
-        };
-        match self.ptr_cell_read(&at, gap)? {
-            Value::Int(n) => Ok((n & 0xFF) as u8),
-            _ => Err(unsupported(gap, "byte access of non-byte allocation")),
+        let alloc = self
+            .heap
+            .get(target.alloc)
+            .ok_or_else(|| unsupported(gap, "pointer to unknown allocation"))?;
+        if alloc.freed {
+            return Err(unsupported(gap, "byte read after free"));
         }
+        let at = (target.byte_offset as i128)
+            .checked_add(offset)
+            .ok_or_else(|| unsupported(gap, "byte offset overflow"))?;
+        let at = usize::try_from(at)
+            .map_err(|_| unsupported(gap, "byte read offset exceeds host range"))?;
+        if at >= alloc.bytes.len() {
+            return Err(unsupported(gap, "byte read out of bounds"));
+        }
+        if !alloc.initialized[at] {
+            return Err(unsupported(gap, "byte read of uninitialized storage"));
+        }
+        Ok(alloc.bytes[at])
+    }
+
+    fn byte_range(
+        &self,
+        target: &PtrTarget,
+        count: usize,
+        gap: UnsupportedKind,
+    ) -> Step<(usize, usize, usize)> {
+        let allocation = self
+            .heap
+            .get(target.alloc)
+            .ok_or_else(|| unsupported(gap, "pointer to unknown allocation"))?;
+        if allocation.freed {
+            return Err(unsupported(gap, "byte access after free"));
+        }
+        let start = usize::try_from(target.byte_offset)
+            .map_err(|_| unsupported(gap, "byte offset exceeds host range"))?;
+        let end = start
+            .checked_add(count)
+            .ok_or_else(|| unsupported(gap, "byte range overflow"))?;
+        if end > allocation.bytes.len() {
+            return Err(unsupported(gap, "byte range out of bounds"));
+        }
+        Ok((target.alloc, start, end))
     }
 
     /// Ensure the place's owning slot is heap-backed (promoted) and return a
@@ -4056,39 +5046,59 @@ impl<'a> Interp<'a> {
         pointee: Type,
     ) -> Step<PtrTarget> {
         let (base, path) = self.resolve_path(cfg, frame, place)?;
-        if let Some(target) = self.external_place_target(cfg, frame, base, &path)? {
+        if let Some(target) =
+            self.external_place_target(cfg, frame, base, place.base_type, pointee, &path)?
+        {
             return Ok(target);
         }
         let key = promotion_key(base);
+        // A pre-splice accessor can represent a borrowed receiver as the
+        // canonical pointer value itself rather than in `param_places`. In
+        // that form, a nested place such as `self.values` must stay rooted at
+        // the pointer's allocation; promoting the base again would interpret
+        // the pointer representation as the enclosing aggregate and lose the
+        // receiver path.
+        if let Value::Ptr(Some(mut target)) = self.base_value_of(frame, base)? {
+            let (offset, view) =
+                self.projection_offset(place.base_type, &path)
+                    .ok_or_else(|| {
+                        unsupported(
+                            UnsupportedKind::ContractViolation(
+                                ContractViolationKind::PlaceProjectionMetadata,
+                            ),
+                            "pointer-backed place projection layout",
+                        )
+                    })?;
+            target.byte_offset = target.byte_offset.checked_add(offset).ok_or_else(|| {
+                unsupported(
+                    UnsupportedKind::ContractViolation(
+                        ContractViolationKind::PlaceProjectionMetadata,
+                    ),
+                    "pointer-backed place projection offset overflow",
+                )
+            })?;
+            debug_assert_eq!(view, pointee);
+            return Ok(target);
+        }
         let alloc = if let Some(&a) = frame.promoted.get(&key) {
             a
         } else {
             let value = self.base_value_of(frame, base)?;
-            // A whole-local address (no projection) wraps its value in a single
-            // cell so every pointee is uniformly a cell of some container; a
-            // projected address keeps the aggregate root and navigates into it.
-            let (root, wrapped) = if path.is_empty() {
-                (Value::Aggregate(vec![value]), true)
-            } else {
-                (value, false)
-            };
-            let stride = self.type_byte_size(pointee);
-            let a = self.heap_alloc(root, stride, wrapped);
+            let a = self.heap_alloc_value(value, place.base_type, false)?;
             frame.promoted.insert(key, a);
             a
         };
-        match path.last().copied() {
-            Some((last, _)) => Ok(PtrTarget {
-                alloc,
-                path: path[..path.len() - 1].iter().map(|(i, _)| *i).collect(),
-                index: last as i128,
-            }),
-            None => Ok(PtrTarget {
-                alloc,
-                path: Vec::new(),
-                index: 0,
-            }),
-        }
+        let (byte_offset, _) = self
+            .projection_offset(place.base_type, &path)
+            .ok_or_else(|| {
+                unsupported(
+                    UnsupportedKind::ContractViolation(
+                        ContractViolationKind::PlaceProjectionMetadata,
+                    ),
+                    "place projection layout",
+                )
+            })?;
+        Ok(PtrTarget { alloc, byte_offset })
     }
 
     /// `@bitCast` (RUE-952, spec 4.13:118): reinterpret the operand's
@@ -4172,39 +5182,28 @@ impl<'a> Interp<'a> {
                 };
                 Ok(Some(Value::Ptr(Some(target))))
             }
-            // `@alloc(size, align)` and `@alloc_zeroed(size, align)` both
-            // reserve `size` raw bytes. The interpreter's cells always read as
-            // zero, so the two differ only in what a program may rely on;
-            // modeling them identically never reports a false agreement,
-            // because reading uninitialized `@alloc` storage is undefined
-            // behavior a corpus program must not depend on.
+            // `@alloc(size, align)` and `@alloc_zeroed(size, align)` reserve
+            // representation bytes; only the latter marks those bytes
+            // initialized. Typed reads from ordinary `@alloc` therefore stay
+            // fail-closed until the program writes the representation.
             "alloc" | "alloc_zeroed" => {
                 let size = self.eval(cfg, frame, args[0])?.as_int();
-                let _align = self.eval(cfg, frame, args[1])?.as_int();
-                Ok(Some(self.do_alloc(size)?))
+                let align = self.eval(cfg, frame, args[1])?.as_int();
+                Ok(Some(self.do_alloc(size, name == "alloc_zeroed", align)?))
             }
             "free" => {
-                // Evaluate every operand before releasing the allocation.
                 let p = self.eval(cfg, frame, args[0])?;
-                for a in &args[1..] {
-                    self.eval(cfg, frame, *a)?;
-                }
-                if let Value::Ptr(Some(t)) = p {
-                    if let Some(alloc) = self.heap.get_mut(t.alloc) {
-                        if alloc.freed {
-                            return Err(unsupported(gap, "double free"));
-                        }
-                        alloc.freed = true;
-                    }
-                }
+                let size = self.eval(cfg, frame, args[1])?.as_int();
+                let align = self.eval(cfg, frame, args[2])?.as_int();
+                self.do_free(p, size, align, gap)?;
                 Ok(Some(Value::Unit))
             }
             "realloc" => {
                 let p = self.eval(cfg, frame, args[0])?;
                 let old_size = self.eval(cfg, frame, args[1])?.as_int();
-                let _align = self.eval(cfg, frame, args[2])?.as_int();
+                let align = self.eval(cfg, frame, args[2])?.as_int();
                 let new_size = self.eval(cfg, frame, args[3])?.as_int();
-                Ok(Some(self.do_realloc(p, old_size, new_size)?))
+                Ok(Some(self.do_realloc(p, old_size, align, new_size)?))
             }
             // `@resize` is in-place-only and the interpreter's allocator has no
             // size classes to grow into, so the honest model is "never resizes
@@ -4214,29 +5213,45 @@ impl<'a> Interp<'a> {
             // internals the language does not promise.
             "resize" => {
                 let p = self.eval(cfg, frame, args[0])?;
-                for a in &args[1..] {
-                    self.eval(cfg, frame, *a)?;
+                let old_size = self.eval(cfg, frame, args[1])?.as_int();
+                let align = self.eval(cfg, frame, args[2])?.as_int();
+                let new_size = self.eval(cfg, frame, args[3])?.as_int();
+                if matches!(p, Value::Ptr(None)) {
+                    return Err(unsupported(gap, "resize of null pointer"));
                 }
-                if let Value::Ptr(Some(target)) = p
-                    && self
-                        .heap
-                        .get(target.alloc)
-                        .is_some_and(|allocation| allocation.freed)
-                {
-                    return Err(unsupported(gap, "resize after free"));
+                self.validate_allocator_contract(p, old_size, align, gap)?;
+                if new_size < 0 {
+                    return Err(unsupported(gap, "negative resize size"));
                 }
                 Ok(Some(Value::Bool(false)))
             }
             "ptr_read" | "ptr_read_unaligned" => {
                 let p = self.eval(cfg, frame, args[0])?;
                 let target = self.expect_ptr(p, gap)?;
-                Ok(Some(self.ptr_cell_read(&target, gap)?))
+                let pointee = self
+                    .pointer_pointee(cfg.get_inst(args[0]).ty)
+                    .map(|(ty, _)| ty)
+                    .ok_or_else(|| unsupported(gap, "pointer read operand type"))?;
+                let value = if name == "ptr_read_unaligned" {
+                    self.ptr_cell_read_unaligned(&target, pointee, gap)?
+                } else {
+                    self.ptr_cell_read(&target, pointee, gap)?
+                };
+                Ok(Some(value))
             }
             "ptr_write" | "ptr_write_unaligned" => {
                 let p = self.eval(cfg, frame, args[0])?;
                 let val = self.eval(cfg, frame, args[1])?;
                 let target = self.expect_ptr(p, gap)?;
-                self.ptr_cell_write(&target, val, gap)?;
+                let pointee = self
+                    .pointer_pointee(cfg.get_inst(args[0]).ty)
+                    .map(|(ty, _)| ty)
+                    .ok_or_else(|| unsupported(gap, "pointer write operand type"))?;
+                if name == "ptr_write_unaligned" {
+                    self.ptr_cell_write_unaligned(&target, pointee, val, gap)?;
+                } else {
+                    self.ptr_cell_write(&target, pointee, val, gap)?;
+                }
                 Ok(Some(Value::Unit))
             }
             "ptr_offset" => {
@@ -4244,7 +5259,34 @@ impl<'a> Interp<'a> {
                 let by = self.eval(cfg, frame, args[1])?.as_int();
                 match p {
                     Value::Ptr(Some(mut t)) => {
-                        t.index += by;
+                        let allocation = self
+                            .heap
+                            .get(t.alloc)
+                            .ok_or_else(|| unsupported(gap, "pointer offset allocation missing"))?;
+                        if allocation.freed {
+                            return Err(unsupported(gap, "pointer offset after free"));
+                        }
+                        let operand_ty = cfg.get_inst(args[0]).ty;
+                        let (pointee_ty, _) = self
+                            .pointer_pointee(operand_ty)
+                            .ok_or_else(|| unsupported(gap, "pointer offset operand type"))?;
+                        let stride = self
+                            .try_type_byte_size(pointee_ty)
+                            .ok_or_else(|| unsupported(gap, "pointee has no target layout"))?
+                            as i128;
+                        let delta = by
+                            .checked_mul(stride)
+                            .ok_or_else(|| unsupported(gap, "pointer offset overflow"))?;
+                        let next = (t.byte_offset as i128)
+                            .checked_add(delta)
+                            .ok_or_else(|| unsupported(gap, "pointer offset overflow"))?;
+                        if next < 0 || next > u64::MAX as i128 {
+                            return Err(unsupported(gap, "pointer offset outside address range"));
+                        }
+                        if next > allocation.bytes.len() as i128 {
+                            return Err(unsupported(gap, "pointer offset outside live allocation"));
+                        }
+                        t.byte_offset = next as u64;
                         Ok(Some(Value::Ptr(Some(t))))
                     }
                     Value::Ptr(None) => Ok(Some(Value::Ptr(None))),
@@ -4253,48 +5295,38 @@ impl<'a> Interp<'a> {
             }
             "ptr_to_int" => {
                 let p = self.eval(cfg, frame, args[0])?;
-                let addr = match p {
-                    Value::Ptr(Some(t)) => self.ptr_address(&t),
-                    Value::Ptr(None) => 0,
+                let value = match p {
+                    Value::Ptr(Some(t)) => Value::AddressInt {
+                        value: self.ptr_address(&t) as i128,
+                        provenance: AddressProvenance(t),
+                    },
+                    Value::Ptr(None) => Value::Int(0),
                     _ => return Err(unsupported(gap, "@ptr_to_int of non-pointer")),
                 };
-                Ok(Some(Value::Int((addr as u64) as i128)))
+                Ok(Some(value))
             }
             "int_to_ptr" => {
-                let addr = self.eval(cfg, frame, args[0])?.as_int() as u64 as u128;
+                let address = self.eval(cfg, frame, args[0])?;
+                let (addr, provenance) = match address {
+                    Value::AddressInt { value, provenance } => {
+                        (value as u64 as u128, Some(provenance.0))
+                    }
+                    other => (other.as_int() as u64 as u128, None),
+                };
                 if addr == 0 {
                     return Ok(Some(Value::Ptr(None)));
                 }
-                let (pointee, _) = self
-                    .pointer_pointee(result_ty)
-                    .expect("validated @int_to_ptr result is a pointer");
-                // A `ptr mut u8` from `@alloc` becomes a typed pointer through
-                // this round trip; reinterpret the block's cells first so the
-                // decoded index is in the pointee's units (ADR-0059 Phase 3).
-                if let Some(target) = self.address_target(addr, pointee) {
-                    self.retype_untyped_bytes(target.alloc, pointee);
-                }
-                match self.address_target(addr, pointee) {
+                let Some((_pointee, _)) = self.pointer_pointee(result_ty) else {
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::IntrinsicSignature,
+                        ),
+                        "@int_to_ptr result is not a pointer",
+                    ));
+                };
+                match provenance.and_then(|p| self.address_target(addr, &p)) {
                     // A pointer-derived integer round-trips to its allocation.
-                    Some(target) => {
-                        // If the block's cells are still a different width than
-                        // the pointee, this pointer would read and write cells
-                        // of the wrong shape. A one-byte pointee is exempt: that
-                        // is the `ptr mut u8` base view `std/rawbuf.rue` forms to
-                        // pass a typed block back to `@realloc`/`@free`, which
-                        // never dereferences it. Anything wider is a genuine
-                        // reinterpretation the cell model cannot express, so it
-                        // stays a typed gap rather than a false agreement.
-                        let stride = self.type_byte_size(pointee).max(1);
-                        let cell_stride = self
-                            .heap
-                            .get(target.alloc)
-                            .map_or(stride, |allocation| allocation.elem_stride);
-                        if stride != cell_stride && stride > 1 {
-                            return Ok(None);
-                        }
-                        Ok(Some(Value::Ptr(Some(target))))
-                    }
+                    Some(target) => Ok(Some(Value::Ptr(Some(target)))),
                     // An arbitrary integer names no allocation: unmodelable,
                     // stays the typed `IntToPointer` model gap.
                     None => Ok(None),
@@ -4304,39 +5336,66 @@ impl<'a> Interp<'a> {
                 let dst = self.eval(cfg, frame, args[0])?;
                 let src = self.eval(cfg, frame, args[1])?;
                 let count = self.eval(cfg, frame, args[2])?.as_int();
+                if count < 0 {
+                    return Err(unsupported(gap, "negative byte count"));
+                }
+                if count == 0 {
+                    return Ok(Some(Value::Unit));
+                }
                 let dst = self.expect_ptr(dst, gap)?;
                 let src = self.expect_ptr(src, gap)?;
-                // Read all source bytes first. That is `@byte_move`'s defining
-                // semantics (memmove: copy as if through a temporary), and for
-                // `@byte_copy` it keeps a same-allocation copy sane even though
-                // overlap there is undefined behavior a corpus program avoids.
-                let mut buf = Vec::with_capacity(count.max(0) as usize);
-                for k in 0..count {
-                    buf.push(self.byte_at(&src, k, gap)?);
+                let count = usize::try_from(count)
+                    .map_err(|_| unsupported(gap, "byte count exceeds host range"))?;
+                let (src_alloc, src_start, src_end) = self.byte_range(&src, count, gap)?;
+                let (dst_alloc, dst_start, dst_end) = self.byte_range(&dst, count, gap)?;
+                if name == "byte_copy"
+                    && src_alloc == dst_alloc
+                    && src_start < dst_end
+                    && dst_start < src_end
+                {
+                    return Err(unsupported(gap, "byte_copy source and destination overlap"));
                 }
-                for (k, byte) in buf.into_iter().enumerate() {
-                    let at = PtrTarget {
-                        alloc: dst.alloc,
-                        path: dst.path.clone(),
-                        index: dst.index + k as i128,
-                    };
-                    self.ptr_cell_write(&at, Value::Int(byte as i128), gap)?;
-                }
+                let (bytes, initialized, provenance) = {
+                    let allocation = self
+                        .heap
+                        .get(src_alloc)
+                        .ok_or_else(|| unsupported(gap, "source allocation missing"))?;
+                    (
+                        allocation.bytes[src_start..src_end].to_vec(),
+                        allocation.initialized[src_start..src_end].to_vec(),
+                        allocation.provenance[src_start..src_end].to_vec(),
+                    )
+                };
+                let allocation = self
+                    .heap
+                    .get_mut(dst_alloc)
+                    .ok_or_else(|| unsupported(gap, "destination allocation missing"))?;
+                allocation.bytes[dst_start..dst_end].copy_from_slice(&bytes);
+                allocation.initialized[dst_start..dst_end].copy_from_slice(&initialized);
+                allocation.provenance[dst_start..dst_end].clone_from_slice(&provenance);
                 Ok(Some(Value::Unit))
             }
             "byte_set" => {
                 let p = self.eval(cfg, frame, args[0])?;
                 let val = self.eval(cfg, frame, args[1])?.as_int();
                 let count = self.eval(cfg, frame, args[2])?.as_int();
-                let target = self.expect_ptr(p, gap)?;
-                for k in 0..count {
-                    let at = PtrTarget {
-                        alloc: target.alloc,
-                        path: target.path.clone(),
-                        index: target.index + k,
-                    };
-                    self.ptr_cell_write(&at, Value::Int(val & 0xFF), gap)?;
+                if count < 0 {
+                    return Err(unsupported(gap, "negative byte count"));
                 }
+                if count == 0 {
+                    return Ok(Some(Value::Unit));
+                }
+                let target = self.expect_ptr(p, gap)?;
+                let count = usize::try_from(count)
+                    .map_err(|_| unsupported(gap, "byte count exceeds host range"))?;
+                let (alloc, start, end) = self.byte_range(&target, count, gap)?;
+                let allocation = self
+                    .heap
+                    .get_mut(alloc)
+                    .ok_or_else(|| unsupported(gap, "allocation missing"))?;
+                allocation.bytes[start..end].fill((val & 0xFF) as u8);
+                allocation.initialized[start..end].fill(true);
+                allocation.provenance[start..end].fill(None);
                 Ok(Some(Value::Unit))
             }
             _ => Ok(None),
@@ -4353,35 +5412,140 @@ impl<'a> Interp<'a> {
         }
     }
 
-    /// `@alloc(size, align)`: `size` zeroed byte cells, or null on allocator
-    /// failure (zero size or a size beyond [`MAX_ALLOC_BYTES`]). The block is
-    /// marked untyped so the first typed pointer over it can reinterpret its
-    /// cells (see [`Allocation::untyped_bytes`]).
-    fn do_alloc(&mut self, size: i128) -> Step<Value> {
+    fn checked_alignment(&self, align: i128, gap: UnsupportedKind) -> Step<u64> {
+        let align =
+            u64::try_from(align).map_err(|_| unsupported(gap, "invalid allocation alignment"))?;
+        if align == 0 || !align.is_power_of_two() {
+            return Err(unsupported(gap, "invalid allocation alignment"));
+        }
+        Ok(align)
+    }
+
+    fn validate_allocator_contract(
+        &self,
+        p: Value,
+        size: i128,
+        align: i128,
+        gap: UnsupportedKind,
+    ) -> Step<()> {
+        let align = self.checked_alignment(align, gap)?;
+        if size < 0 {
+            return Err(unsupported(gap, "negative allocation size"));
+        }
+        let Value::Ptr(Some(target)) = p else {
+            return Ok(());
+        };
+        if target.byte_offset != 0 {
+            return Err(unsupported(
+                gap,
+                "allocator operation requires base ptr mut u8",
+            ));
+        }
+        let allocation = self
+            .heap
+            .get(target.alloc)
+            .ok_or_else(|| unsupported(gap, "allocation missing"))?;
+        if allocation.origin != AllocationOrigin::Heap {
+            return Err(unsupported(gap, "allocation is not allocator-owned"));
+        }
+        if allocation.freed {
+            return Err(unsupported(gap, "allocation was already freed"));
+        }
+        if allocation.bytes.len() as i128 != size {
+            return Err(unsupported(
+                gap,
+                "allocation size does not match live extent",
+            ));
+        }
+        if allocation.declared_alignment != align {
+            return Err(unsupported(
+                gap,
+                "allocation alignment does not match original",
+            ));
+        }
+        Ok(())
+    }
+
+    fn do_free(&mut self, p: Value, size: i128, align: i128, gap: UnsupportedKind) -> Step<()> {
+        if let Value::Ptr(Some(target)) = &p {
+            if let Some(allocation) = self.heap.get(target.alloc)
+                && allocation.origin == AllocationOrigin::Text
+                && size == 0
+                && target.byte_offset == 0
+                && allocation.declared_alignment == self.checked_alignment(align, gap)?
+            {
+                // A literal-backed header carries cap=0 and its text storage
+                // is static/non-owning. The drop glue's zero-size release is
+                // therefore a canonical no-op, not a free.
+                return Ok(());
+            }
+        }
+        self.validate_allocator_contract(p.clone(), size, align, gap)?;
+        if let Value::Ptr(Some(target)) = p {
+            self.heap
+                .get_mut(target.alloc)
+                .ok_or_else(|| unsupported(gap, "allocation missing"))?
+                .freed = true;
+        }
+        Ok(())
+    }
+
+    /// `@alloc(size, align)`: reserve canonical representation bytes. Ordinary
+    /// allocation bytes are uninitialized; `alloc_zeroed` marks them ready.
+    fn do_alloc(&mut self, size: i128, zeroed: bool, align: i128) -> Step<Value> {
+        let align = self.checked_alignment(align, unsupported_intrinsic_kind("alloc"))?;
         let Some(_bytes) = self.alloc_byte_size(size, 1)? else {
             return Ok(Value::Ptr(None));
         };
         self.materialize_cells_guard(size)?;
-        let cells = (0..size).map(|_| Value::Int(0)).collect();
-        let alloc = self.heap_alloc_with(Value::Aggregate(cells), 1, false, true);
+        let count = usize::try_from(size).map_err(|_| {
+            unsupported(
+                unsupported_intrinsic_kind("alloc"),
+                "allocation exceeds host range",
+            )
+        })?;
+        self.reserve_heap_metadata(count)?;
+        let alloc = self.heap_alloc_bytes(
+            vec![0; count],
+            vec![zeroed; count],
+            vec![None; count],
+            None,
+            AllocationOrigin::Heap,
+            align,
+        );
         Ok(Value::Ptr(Some(PtrTarget {
             alloc,
-            path: Vec::new(),
-            index: 0,
+            byte_offset: 0,
         })))
     }
 
     /// `@realloc`: grow/shrink an allocation, preserving the
-    /// first `min(old, new)` cells and deterministically filling growth. This
+    /// first `min(old, new)` representation bytes and leaving growth
+    /// uninitialized. This
     /// model keeps shrink-in-place and move-on-grow behavior; native pointer
     /// identity is deliberately unspecified. Returns null on `new == 0` or allocator failure, leaving the
     /// original allocation valid (spec 8.6:3), and traps on a `new * stride`
     /// overflow like the compiled size arithmetic (spec 8.6:1).
-    fn do_realloc(&mut self, p: Value, old_size: i128, new_size: i128) -> Step<Value> {
+    fn do_realloc(&mut self, p: Value, old_size: i128, align: i128, new_size: i128) -> Step<Value> {
+        let align = self.checked_alignment(align, unsupported_intrinsic_kind("realloc"))?;
+        if old_size < 0 || new_size < 0 {
+            return Err(unsupported(
+                unsupported_intrinsic_kind("realloc"),
+                "negative realloc size",
+            ));
+        }
         let target = match p {
             Value::Ptr(Some(t)) => t,
             // realloc(null, .., new_size) behaves like a fresh allocation.
-            Value::Ptr(None) => return self.do_alloc(new_size),
+            Value::Ptr(None) => {
+                if old_size != 0 {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("realloc"),
+                        "null realloc requires old size zero",
+                    ));
+                }
+                return self.do_alloc(new_size, false, i128::from(align));
+            }
             _ => return Ok(Value::Ptr(None)),
         };
         if self
@@ -4394,6 +5558,37 @@ impl<'a> Interp<'a> {
                 "realloc after free",
             ));
         }
+        if target.byte_offset != 0 {
+            return Err(unsupported(
+                unsupported_intrinsic_kind("realloc"),
+                "realloc requires the allocation base as ptr mut u8",
+            ));
+        }
+        let Some(allocation) = self.heap.get(target.alloc) else {
+            return Err(unsupported(
+                unsupported_intrinsic_kind("realloc"),
+                "realloc allocation missing",
+            ));
+        };
+        if allocation.origin != AllocationOrigin::Heap {
+            return Err(unsupported(
+                unsupported_intrinsic_kind("realloc"),
+                "realloc requires an allocator-owned allocation",
+            ));
+        }
+        if allocation.declared_alignment != align {
+            return Err(unsupported(
+                unsupported_intrinsic_kind("realloc"),
+                "realloc alignment does not match the live allocation",
+            ));
+        }
+        let actual_old_size = allocation.bytes.len() as i128;
+        if old_size != actual_old_size {
+            return Err(unsupported(
+                unsupported_intrinsic_kind("realloc"),
+                "realloc old size does not match the live allocation",
+            ));
+        }
         if new_size == 0 {
             if let Some(alloc) = self.heap.get_mut(target.alloc) {
                 alloc.freed = true;
@@ -4404,54 +5599,62 @@ impl<'a> Interp<'a> {
             return Ok(Value::Ptr(None));
         }
         if new_size <= old_size {
-            // No move needed; the original block already holds the data.
+            let new_len = usize::try_from(new_size).map_err(|_| {
+                unsupported(
+                    unsupported_intrinsic_kind("realloc"),
+                    "realloc size exceeds host range",
+                )
+            })?;
+            let allocation = &mut self.heap[target.alloc];
+            allocation.bytes.truncate(new_len);
+            allocation.initialized.truncate(new_len);
+            allocation.provenance.truncate(new_len);
             return Ok(Value::Ptr(Some(PtrTarget {
                 alloc: target.alloc,
-                path: Vec::new(),
-                index: 0,
+                byte_offset: 0,
             })));
         }
-        // Sizes are physical bytes but the block's cells may already have been
-        // reinterpreted as a wider element type (see
-        // [`Allocation::untyped_bytes`]), so convert through its stride. A byte
-        // size that is not a whole number of cells cannot be modeled against
-        // this cell-shaped heap and stays a typed gap rather than a guess.
-        let (stride, untyped) = match self.heap.get(target.alloc) {
-            Some(allocation) => (allocation.elem_stride.max(1), allocation.untyped_bytes),
-            None => (1, true),
-        };
-        let stride_i128 = stride as i128;
-        if new_size % stride_i128 != 0 {
-            return Err(unsupported(
+        let new_count = usize::try_from(new_size).map_err(|_| {
+            unsupported(
                 unsupported_intrinsic_kind("realloc"),
-                "realloc to a size that is not a whole number of elements",
-            ));
-        }
-        let new_count = new_size / stride_i128;
-        let old_count = old_size / stride_i128;
-        self.materialize_cells_guard(new_count)?;
-        let old_cells = match self.heap.get(target.alloc).map(|a| &a.root) {
-            Some(Value::Aggregate(cells)) => cells.clone(),
-            _ => Vec::new(),
+                "allocation exceeds host range",
+            )
+        })?;
+        self.materialize_cells_guard(new_size)?;
+        self.reserve_heap_metadata(new_count)?;
+        let (old_bytes, old_initialized, old_provenance) = {
+            let old = self.heap.get(target.alloc).ok_or_else(|| {
+                unsupported(
+                    unsupported_intrinsic_kind("realloc"),
+                    "realloc allocation missing",
+                )
+            })?;
+            (
+                old.bytes.clone(),
+                old.initialized.clone(),
+                old.provenance.clone(),
+            )
         };
-        // Growth is uninitialized storage; the interpreter fills it with a
-        // zeroed value shaped like the cells already there so a later typed
-        // read finds a well-formed cell rather than a shape mismatch.
-        let fill = old_cells.first().map_or(Value::Int(0), zeroed_like);
-        let mut cells: Vec<Value> = Vec::with_capacity(new_count as usize);
-        for i in 0..new_count {
-            if (i as usize) < old_cells.len() && i < old_count {
-                cells.push(old_cells[i as usize].clone());
-            } else {
-                cells.push(fill.clone());
-            }
-        }
-        let alloc = self.heap_alloc_with(Value::Aggregate(cells), stride, false, untyped);
+        let keep = old_size.max(0).min(new_size) as usize;
+        let mut bytes = vec![0; new_count];
+        let mut initialized = vec![false; new_count];
+        let mut provenance = vec![None; new_count];
+        let copy = keep.min(old_bytes.len());
+        bytes[..copy].copy_from_slice(&old_bytes[..copy]);
+        initialized[..copy].copy_from_slice(&old_initialized[..copy]);
+        provenance[..copy].clone_from_slice(&old_provenance[..copy]);
+        let alloc = self.heap_alloc_bytes(
+            bytes,
+            initialized,
+            provenance,
+            None,
+            AllocationOrigin::Heap,
+            align,
+        );
         self.heap[target.alloc].freed = true;
         Ok(Value::Ptr(Some(PtrTarget {
             alloc,
-            path: Vec::new(),
-            index: 0,
+            byte_offset: 0,
         })))
     }
 
@@ -4477,35 +5680,55 @@ impl<'a> Interp<'a> {
         Ok(Some(product))
     }
 
-    /// Bound the number of cells the interpreter will materialize for one
+    /// Bound the number of bytes the interpreter will materialize for one
     /// allocation. A satisfiable-but-enormous request (only reachable from a
     /// synthetic fuzz program, never the differential corpus) resolves to a typed
     /// resource limit rather than exhausting harness memory building cells.
     fn materialize_cells_guard(&self, count: i128) -> Step<()> {
-        const MAX_MATERIALIZED_CELLS: i128 = 1 << 24;
-        if count > MAX_MATERIALIZED_CELLS {
+        const MAX_MATERIALIZED_BYTES: i128 = 1 << 24;
+        if count > MAX_MATERIALIZED_BYTES {
             return Err(unsupported(
                 UnsupportedKind::ResourceLimit(ResourceLimitKind::InterpreterSteps),
-                "allocation cell count exceeds the interpreter materialization bound",
+                "allocation byte count exceeds the interpreter materialization bound",
             ));
         }
         Ok(())
     }
-}
 
-/// A zeroed value with the same shape as `value`.
-///
-/// Reallocation growth is uninitialized storage, but the interpreter's cells
-/// are typed values, so a grown block's new cells must at least have the shape
-/// its existing cells do. Cloning the shape avoids having to rediscover the
-/// element type the compiler no longer records at the allocation site
-/// (ADR-0059 Phase 3, RUE-961).
-fn zeroed_like(value: &Value) -> Value {
-    match value {
-        Value::Aggregate(cells) => Value::Aggregate(cells.iter().map(zeroed_like).collect()),
-        Value::Bool(_) => Value::Bool(false),
-        Value::Ptr(_) => Value::Ptr(None),
-        _ => Value::Int(0),
+    fn reserve_heap_metadata(&mut self, bytes: usize) -> Step<()> {
+        const MAX_HEAP_METADATA_BYTES: usize = 128 * 1024 * 1024;
+        let per_byte = 1usize
+            .checked_add(std::mem::size_of::<bool>())
+            .and_then(|n| n.checked_add(std::mem::size_of::<Option<PtrTarget>>()))
+            .ok_or_else(|| {
+                unsupported(
+                    UnsupportedKind::ResourceLimit(ResourceLimitKind::InterpreterSteps),
+                    "heap metadata footprint overflow",
+                )
+            })?;
+        let footprint = bytes.checked_mul(per_byte).ok_or_else(|| {
+            unsupported(
+                UnsupportedKind::ResourceLimit(ResourceLimitKind::InterpreterSteps),
+                "heap metadata footprint overflow",
+            )
+        })?;
+        let next = self
+            .heap_metadata_bytes
+            .checked_add(footprint)
+            .ok_or_else(|| {
+                unsupported(
+                    UnsupportedKind::ResourceLimit(ResourceLimitKind::InterpreterSteps),
+                    "cumulative heap metadata footprint overflow",
+                )
+            })?;
+        if next > MAX_HEAP_METADATA_BYTES {
+            return Err(unsupported(
+                UnsupportedKind::ResourceLimit(ResourceLimitKind::InterpreterSteps),
+                "cumulative heap metadata footprint exceeds interpreter limit",
+            ));
+        }
+        self.heap_metadata_bytes = next;
+        Ok(())
     }
 }
 

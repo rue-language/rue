@@ -1379,6 +1379,438 @@ fn byte_family_roundtrip() {
     assert_eq!(run(src).stdout, "100\n");
 }
 
+#[test]
+fn byte_move_overlapping_forward_and_backward_matches_memmove() {
+    let forward = r#"fn main() -> i32 {
+        checked {
+            let p: ptr mut u8 = @alloc(6, 1);
+            let mut i: u64 = 0;
+            while i < 6 { let b: u8 = @intCast(i + 1); @ptr_write(@ptr_offset(p, i), b); i = i + 1; }
+            @byte_move(@ptr_offset(p, 1), p, 5);
+            let mut sum: i32 = 0; i = 0;
+            while i < 6 { sum = sum + @intCast(@ptr_read(@ptr_offset(p, i))); i = i + 1; }
+            @free(p, 6, 1); sum
+        }
+    }"#;
+    let backward = r#"fn main() -> i32 {
+        checked {
+            let p: ptr mut u8 = @alloc(6, 1);
+            let mut i: u64 = 0;
+            while i < 6 { let b: u8 = @intCast(i + 1); @ptr_write(@ptr_offset(p, i), b); i = i + 1; }
+            @byte_move(p, @ptr_offset(p, 1), 5);
+            let mut sum: i32 = 0; i = 0;
+            while i < 6 { sum = sum + @intCast(@ptr_read(@ptr_offset(p, i))); i = i + 1; }
+            @free(p, 6, 1); sum
+        }
+    }"#;
+    assert_eq!(exit(forward), 16);
+    assert_eq!(exit(backward), 26);
+}
+
+#[test]
+fn byte_copy_overlap_is_a_typed_gap() {
+    let source = r#"fn main() -> i32 {
+        checked {
+            let p: ptr mut u8 = @alloc(4, 1);
+            @byte_copy(@ptr_offset(p, 1), p, 3);
+            0
+        }
+    }"#;
+    assert_eq!(
+        expect_unsupported(source).kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::ByteCopy
+        ))
+    );
+}
+
+#[test]
+fn byte_copy_cross_stride_copies_representation_bytes() {
+    let source = r#"fn main() -> i32 {
+        checked {
+            let src: ptr mut u8 = @alloc(8, 1);
+            let dst: ptr mut u8 = @alloc(8, 1);
+            @byte_set(src, 0xA5, 8);
+            @byte_copy(dst, src, 8);
+            let wide: ptr mut i64 = @int_to_ptr(@ptr_to_int(dst));
+            let value: i64 = @ptr_read(wide);
+            @free(src, 8, 1); @free(dst, 8, 1);
+            if value == -6510615555426900571 { 0 } else { 1 }
+        }
+    }"#;
+    assert_eq!(exit(source), 0);
+}
+
+#[test]
+fn zero_length_byte_operations_accept_null_without_dereference() {
+    let source = r#"fn main() -> i32 {
+        checked {
+            let zero: u64 = 0;
+            let null: ptr mut u8 = @int_to_ptr(zero);
+            @byte_set(null, 0, 0);
+            @byte_copy(null, null, 0);
+            @byte_move(null, null, 0);
+        };
+        0
+    }"#;
+    assert_eq!(exit(source), 0);
+}
+
+#[test]
+fn byte_set_bounds_and_misaligned_typed_read_are_typed_gaps() {
+    let bounds = r#"fn main() -> i32 {
+        checked { let p: ptr mut u8 = @alloc(4, 1); @byte_set(p, 1, 5); };
+        0
+    }"#;
+    assert_eq!(
+        expect_unsupported(bounds).kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::ByteSet
+        ))
+    );
+
+    let misaligned = r#"fn main() -> i32 {
+        checked {
+            let raw: ptr mut u8 = @alloc(8, 1);
+            let p: ptr mut i32 = @int_to_ptr(@ptr_to_int(raw) + 1);
+            @ptr_read(p)
+        };
+        0
+    }"#;
+    assert_eq!(
+        expect_unsupported(misaligned).kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::PointerRead
+        ))
+    );
+}
+
+#[test]
+fn partial_initialization_is_gap_but_zeroed_aggregate_padding_is_ignored() {
+    let partial = r#"fn main() -> i32 {
+        checked {
+            let raw: ptr mut u8 = @alloc(8, 8);
+            let p: ptr mut i64 = @int_to_ptr(@ptr_to_int(raw));
+            let value: i64 = @ptr_read(p);
+            let result: i32 = @intCast(value);
+            result
+        };
+        0
+    }"#;
+    assert_eq!(
+        expect_unsupported(partial).kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::PointerRead
+        ))
+    );
+
+    let aggregate = r#"struct P { a: u8, b: u64 }
+    fn main() -> i32 {
+        checked {
+            let size: u64 = @intCast(@size_of(P));
+            let align: u64 = @intCast(@align_of(P));
+            let raw: ptr mut u8 = @alloc_zeroed(size, align);
+            let p: ptr mut P = @int_to_ptr(@ptr_to_int(raw));
+            let value: P = @ptr_read(p);
+            @free(raw, size, align);
+            if value.a == 0 && value.b == 0 { 0 } else { 1 }
+        }
+    }"#;
+    assert_eq!(exit(aggregate), 0);
+}
+
+#[test]
+fn realloc_shrink_drops_the_tail_and_rejects_bad_contracts() {
+    let shrink = r#"fn main() -> i32 {
+        let result: i32 = checked {
+            let mut raw: ptr mut u8 = @alloc(8, 1);
+            @byte_set(raw, 7, 8);
+            raw = @realloc(raw, 8, 1, 4);
+            let p: ptr mut i32 = @int_to_ptr(@ptr_to_int(raw));
+            @ptr_read(@ptr_offset(p, 1))
+        };
+        result
+    }"#;
+    assert_eq!(
+        expect_unsupported(shrink).kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::PointerRead
+        ))
+    );
+
+    let bad_size = r#"fn main() -> i32 {
+        checked { let p: ptr mut u8 = @alloc(4, 1); @realloc(p, 3, 1, 8); };
+        0
+    }"#;
+    assert_eq!(
+        expect_unsupported(bad_size).kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::Reallocate
+        ))
+    );
+}
+
+#[test]
+fn nested_enum_aggregate_representation_round_trips_deterministically() {
+    let source = r#"enum Choice { Empty, One(i32), Pair(i32, i32) }
+    struct Boxed { choice: Choice, tail: i16 }
+    fn main() -> i32 {
+        checked {
+            let size: u64 = @intCast(@size_of(Boxed));
+            let align: u64 = @intCast(@align_of(Boxed));
+            let raw: ptr mut u8 = @alloc(size, align);
+            let p: ptr mut Boxed = @int_to_ptr(@ptr_to_int(raw));
+            @ptr_write(p, Boxed { choice: Choice.Pair(7, 35), tail: 2 });
+            let value: Boxed = @ptr_read(p);
+            @free(raw, size, align);
+            if value.choice == Choice.Pair(7, 35) && value.tail == 2 { 0 } else { 1 }
+        }
+    }"#;
+    let first = run(source);
+    let second = run(source);
+    assert_eq!(first, second);
+    assert_eq!(first.exit_code, 0);
+}
+
+/// Keep the representation authority honest against test-only mutations: a
+/// little-endian byte change must be visible to decode, and changing the
+/// encoded value must not be hidden by a parallel typed-cell cache.
+#[test]
+fn representation_encode_decode_detects_planted_byte_mutation() {
+    let state = query_cfg_state("fn main() -> i32 { 0 }").expect("test state compiles");
+    let interp = Interp {
+        state: &state,
+        stdout: String::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+        heap: Vec::new(),
+        heap_metadata_bytes: 0,
+    };
+    let (mut bytes, initialized, provenance) =
+        match interp.encode_value(&Value::Int(0x0102_0304), Type::I32) {
+            Ok(encoded) => encoded,
+            Err(_) => panic!("i32 has a target representation"),
+        };
+    assert_eq!(bytes, [0x04, 0x03, 0x02, 0x01]);
+    bytes[0] = 0x05;
+    let decoded = match interp.decode_value(&bytes, &initialized, &provenance, Type::I32) {
+        Ok(value) => value,
+        Err(_) => panic!("mutated initialized bytes still decode"),
+    };
+    assert_eq!(decoded, Value::Int(0x0102_0305));
+}
+
+#[test]
+fn pointer_bytes_retype_only_the_view_and_preserve_provenance() {
+    let source = r#"fn main() -> i32 {
+        checked {
+            let raw: ptr mut u8 = @alloc(8, 8);
+            let p: ptr mut i64 = @int_to_ptr(@ptr_to_int(raw));
+            @ptr_write(p, 42);
+            let ptr_size: u64 = @intCast(@size_of(ptr mut i64));
+            let ptr_align: u64 = @intCast(@align_of(ptr mut i64));
+            let bytes: ptr mut u8 = @alloc(ptr_size, ptr_align);
+            let stored: ptr mut ptr mut u8 = @int_to_ptr(@ptr_to_int(bytes));
+            @ptr_write(stored, @int_to_ptr(@ptr_to_int(p)));
+            let retyped: ptr mut ptr mut i64 = @int_to_ptr(@ptr_to_int(bytes));
+            let recovered: ptr mut i64 = @ptr_read(retyped);
+            let answer: i64 = @ptr_read(recovered);
+            @free(bytes, ptr_size, ptr_align);
+            @free(raw, 8, 8);
+            @intCast(answer)
+        }
+    }"#;
+    assert_eq!(exit(source), 42);
+}
+
+#[test]
+fn partial_pointer_bytes_gap_but_complete_zero_fill_is_null() {
+    let partial = r#"fn main() -> i32 {
+        checked {
+            let target: ptr mut u8 = @alloc(1, 1);
+            let source: ptr mut u8 = @alloc(8, 8);
+            let stored: ptr mut ptr mut u8 = @int_to_ptr(@ptr_to_int(source));
+            @ptr_write(stored, target);
+            let copy: ptr mut u8 = @alloc(8, 8);
+            @byte_copy(copy, source, 4);
+            let view: ptr mut ptr mut u8 = @int_to_ptr(@ptr_to_int(copy));
+            @intCast(@ptr_to_int(@ptr_read(view)))
+        }
+    }"#;
+    assert_eq!(
+        expect_unsupported(partial).kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::PointerRead
+        ))
+    );
+
+    let zeroed = r#"fn main() -> i32 {
+        checked {
+            let raw: ptr mut u8 = @alloc(8, 8);
+            @byte_set(raw, 0, 8);
+            let view: ptr mut ptr mut u8 = @int_to_ptr(@ptr_to_int(raw));
+            @intCast(@ptr_to_int(@ptr_read(view)))
+        }
+    }"#;
+    assert_eq!(exit(zeroed), 0);
+}
+
+#[test]
+fn allocator_contracts_reject_non_heap_and_mismatched_handles() {
+    for (source, kind) in [
+        (
+            r#"fn main() -> i32 { checked { let p: ptr mut u8 = @alloc(4, 8); @free(p, 4, 1); }; 0 }"#,
+            UnsupportedIntrinsicKind::Free,
+        ),
+        (
+            r#"fn main() -> i32 { checked { let p: ptr mut u8 = @alloc(4, 1); @free(@ptr_offset(p, 1), 3, 1); }; 0 }"#,
+            UnsupportedIntrinsicKind::Free,
+        ),
+        (
+            r#"fn main() -> i32 { checked { let p: ptr mut u8 = @alloc(4, 1); @free(p, 4, 1); @free(p, 4, 1); }; 0 }"#,
+            UnsupportedIntrinsicKind::Free,
+        ),
+        (
+            r#"fn main() -> i32 { let mut p: ptr mut u8 = checked { @alloc(4, 1) }; checked { @resize(p, 3, 1, 4); }; 0 }"#,
+            UnsupportedIntrinsicKind::Resize,
+        ),
+        (
+            r#"fn main() -> i32 { checked { let zero: u64 = 0; let null: ptr mut u8 = @int_to_ptr(zero); @resize(null, 0, 1, 4); }; 0 }"#,
+            UnsupportedIntrinsicKind::Resize,
+        ),
+    ] {
+        assert_eq!(
+            expect_unsupported(source).kind(),
+            UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(kind))
+        );
+    }
+}
+
+#[test]
+fn address_literals_need_pointer_integer_provenance() {
+    let source = r#"fn main() -> i32 {
+        checked {
+            let address: u64 = 17592186044416;
+            let fake: ptr mut i32 = @int_to_ptr(address);
+            @ptr_read(fake)
+        }
+    }"#;
+    assert_eq!(
+        expect_unsupported(source).kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::IntToPointer
+        ))
+    );
+}
+
+#[test]
+fn matching_literal_stays_unprovenanced_after_pointer_address_exposure() {
+    let source = r#"fn main() -> i32 {
+        checked {
+            let x: i32 = 7;
+            let p: ptr mut i32 = @raw_mut(x);
+            let exposed: u64 = @ptr_to_int(p);
+            @dbg(exposed);
+            let matching_literal: u64 = 17592186044416;
+            let forged: ptr mut i32 = @int_to_ptr(matching_literal);
+            @ptr_read(forged)
+        }
+    }"#;
+    assert_eq!(
+        expect_unsupported(source).kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::IntToPointer
+        ))
+    );
+}
+
+#[test]
+fn address_provenance_is_not_preserved_through_reverse_subtraction() {
+    let source = r#"fn main() -> i32 {
+        checked {
+            let x: i32 = 7;
+            let p: ptr mut i32 = @raw_mut(x);
+            let address: u64 = @ptr_to_int(p);
+            let candidate: u64 = address * 2 + 1;
+            let forged: ptr mut i32 = @int_to_ptr(candidate - address);
+            @ptr_read(forged)
+        }
+    }"#;
+    assert_eq!(
+        expect_unsupported(source).kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::IntToPointer
+        ))
+    );
+}
+
+#[test]
+fn nested_integer_equality_ignores_address_provenance() {
+    let source = r#"struct AddressPair { values: [u64; 2] }
+    fn main() -> i32 {
+        checked {
+            let x: i32 = 7;
+            let p: ptr mut i32 = @raw_mut(x);
+            let address: u64 = @ptr_to_int(p);
+            let ordinary: u64 = address * 1;
+            let with_provenance: AddressPair = AddressPair { values: [address, address] };
+            let without_provenance: AddressPair = AddressPair { values: [ordinary, ordinary] };
+            if with_provenance == without_provenance { 0 } else { 1 }
+        }
+    }"#;
+    assert_eq!(exit(source), 0);
+}
+
+#[test]
+fn pointer_offsets_allow_one_past_but_reject_outside_live_extent() {
+    let before_base = r#"fn main() -> i32 {
+        checked {
+            let p: ptr mut u8 = @alloc(4, 1);
+            let bad: ptr mut u8 = @ptr_offset(@ptr_offset(p, 1), -2);
+            @intCast(@ptr_read(bad))
+        }
+    }"#;
+    assert_eq!(
+        expect_unsupported(before_base).kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::PointerOffset
+        ))
+    );
+
+    let one_past = r#"fn main() -> i32 {
+        checked {
+            let p: ptr mut u8 = @alloc(4, 1);
+            let end: ptr mut u8 = @ptr_offset(p, 4);
+            @intCast(@ptr_read(end))
+        }
+    }"#;
+    assert_eq!(
+        expect_unsupported(one_past).kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::PointerRead
+        ))
+    );
+}
+
+#[test]
+fn heap_metadata_budget_fails_before_materializing_large_allocations() {
+    let source = r#"fn main() -> i32 {
+        checked {
+            let n: u64 = 16777216;
+            let p: ptr mut u8 = @alloc(n, 1);
+            @ptr_to_int(p);
+        };
+        0
+    }"#;
+    assert_eq!(
+        expect_unsupported(source).kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::InterpreterSteps)
+    );
+}
+
 /// Byte offsets folded into the address via `@ptr_to_int`/`@int_to_ptr`
 /// (never `@ptr_offset`) address a byte-aliased sub-range.
 #[test]

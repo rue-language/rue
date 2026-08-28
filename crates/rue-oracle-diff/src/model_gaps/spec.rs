@@ -90,86 +90,9 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
         &[],
     ),
-    // Source-defined StrBuf methods expose their first unmodeled ordinary
-    // projection, allocation, pointer, or inout operation to the oracle.
-    Entry::new(
-        "expressions.intrinsics",
-        "dbg_string_borrows_not_consumed",
-        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
-        &[],
-    ),
-    Entry::new(
-        "expressions.intrinsics",
-        "dbg_string_dropped_exactly_once",
-        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
-        &[],
-    ),
-    Entry::new(
-        "items.general",
-        "fn_builtin_method_name_allowed",
-        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
-        &[],
-    ),
-    Entry::new(
-        "types.destructors",
-        "codegen_nontrivial_drop_call",
-        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
-        &[],
-    ),
-    Entry::new(
-        "types.destructors",
-        "struct_with_destructor_field",
-        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
-        &[],
-    ),
-    Entry::new(
-        "types.destructors",
-        "struct_with_string_fields_dropped",
-        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
-        &[],
-    ),
-    Entry::new(
-        "types.destructors",
-        "type_with_destructor",
-        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
-        &[],
-    ),
-    Entry::new(
-        "types.mutable_strings",
-        "string_building_message",
-        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
-        &[],
-    ),
-    Entry::new(
-        "types.mutable_strings",
-        "string_byte_semantics",
-        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
-        &[],
-    ),
-    Entry::new(
-        "types.mutable_strings",
-        "string_equality_after_mutation",
-        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
-        &[],
-    ),
-    Entry::new(
-        "types.mutable_strings",
-        "string_push_byte",
-        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
-        &[],
-    ),
-    Entry::new(
-        "types.mutable_strings",
-        "string_push_str_basic",
-        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
-        &[],
-    ),
-    Entry::new(
-        "types.mutable_strings",
-        "string_push_str_multiple",
-        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
-        &[],
-    ),
+    // Source-defined StrBuf methods may still expose an unsupported target or
+    // runtime boundary; their ordinary projection, allocation, pointer, and
+    // inout representation paths are modeled.
     Entry::new(
         "expressions.intrinsics",
         "parse_empty_string_yields_none",
@@ -362,20 +285,10 @@ const ENTRIES: &[Entry] = &[
     // ADR-0059 phase 5 (RUE-963): the typed-access width and unaligned round
     // trip cases anchor their pointers via @int_to_ptr, which the oracle does
     // not model.
-    Entry::new(
-        "runtime.pointers",
-        "ptr_write_i32_touches_exactly_size_of_bytes",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "ptr_unaligned_round_trip_at_an_odd_address",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    // ADR-0052 phase 7 (RUE-978): the unaligned-access round trip allocates
-    // through @alloc, which the oracle model does not model.
+
+    // ADR-0052 phase 7 (RUE-978): these cases still depend on an unaligned
+    // access outcome that is outside the modeled contract; allocation and
+    // typed byte access themselves are modeled by the oracle.
     Entry::new(
         "runtime.syscall",
         "syscall_basic_aarch64",
@@ -431,18 +344,6 @@ const ENTRIES: &[Entry] = &[
         "types.move-semantics",
         "linear_consumed_before_try_accepted",
         intrinsic(UnsupportedIntrinsicKind::ParseI64),
-        &[],
-    ),
-    Entry::new(
-        "types.mutable_strings",
-        "string_growth_on_append",
-        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
-        &[],
-    ),
-    Entry::new(
-        "types.mutable_strings",
-        "string_reserve",
-        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
