@@ -19,6 +19,7 @@ pub use crate::import_discovery::{
     ImportDemandRoots, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportDiscoveryWave,
     ImportInputRevision, ImportObservation, ImportObservationLedger, ImportObservationStatus,
 };
+pub use crate::warm_fresh_parity::ParityObservation;
 /// A diagnostic's source location, as the diagnostic types already hand it out.
 ///
 /// `CompileError::span` is public and returns one of these, so a consumer that
@@ -914,6 +915,19 @@ pub fn rooted_cfg(
     options: &crate::CompileOptions,
 ) -> Result<RootedCfgOutput, crate::CompileErrors> {
     session.rooted_cfg(options)
+}
+
+/// Assert warm/fresh parity for one retained source revision. This is an
+/// explicitly unstable fuzz/test-support surface: it compares the canonical
+/// semantic query graph, deterministic diagnostics, retained body identities,
+/// and linked executable bytes.
+pub fn assert_warm_fresh_parity(
+    label: &str,
+    warm_session: &mut crate::CompilerSession,
+    source: &crate::SourceSnapshot,
+    options: &crate::CompileOptions,
+) -> crate::warm_fresh_parity::ParityObservation {
+    crate::warm_fresh_parity::assert_warm_fresh_parity(label, warm_session, source, options)
 }
 
 pub fn rir_payload_storage_stats(view: &crate::RirView) -> rue_rir::RirPayloadStorageStats {

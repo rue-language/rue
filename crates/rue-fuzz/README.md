@@ -26,6 +26,7 @@ Fuzz testing infrastructure for the Rue compiler. This crate helps find edge cas
 | `parser` | Lexing + parsing | ~6,500 exec/s |
 | `sema` | Semantic analysis (type checking, inference) | ~4,000-8,000 exec/s |
 | `compiler` | Full frontend (through sema) | ~4,000-8,000 exec/s |
+| `warm_session` | Bounded retained-session edit sequences with warm/fresh parity | bounded |
 | `payload_schemas` | Production RIR/AIR/CFG payload validation path | ~4,000-8,000 exec/s |
 | `emitter` | x86-64 instruction encoding | ~15,000 exec/s |
 | `emitter_sequence` | Instruction sequences with labels/jumps | ~10,000 exec/s |
@@ -144,7 +145,7 @@ To run fuzzing locally for a limited time:
 
 ```bash
 # Run each target for 5 minutes
-for target in lexer parser sema compiler payload_schemas emitter emitter_sequence; do
+for target in lexer parser sema compiler warm_session payload_schemas emitter emitter_sequence; do
     ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 $target crates/rue-fuzz/corpus
 done
 ```

@@ -76,6 +76,12 @@ jobs:
           path: crates/rue-fuzz/nightly-restored/compiler
           key: rue-fuzz-corpus-v3-compiler-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: rue-fuzz-corpus-v3-compiler-
+      - name: Restore warm-session corpus
+        uses: actions/cache/restore@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/warm_session
+          key: rue-fuzz-corpus-v3-warm_session-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: rue-fuzz-corpus-v3-warm_session-
       - name: Restore compiler AArch64 corpus
         uses: actions/cache/restore@v5
         with:
@@ -202,6 +208,12 @@ jobs:
         timeout-minutes: 10
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/compiler compiler crates/rue-fuzz/nightly-input/compiler
 
+      - name: Fuzz warm session (5 minutes)
+        id: fuzz-warm-session
+        continue-on-error: true
+        timeout-minutes: 10
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/warm_session warm_session crates/rue-fuzz/nightly-input/warm_session
+
       # These source-level variants stay on the x86-64 runner: they compile
       # deterministic source inputs to finished images but never execute the
       # generated AArch64 bytes. Keeping each configuration as its own target
@@ -283,6 +295,7 @@ jobs:
           steps.fuzz-parser.outcome == 'failure' ||
           steps.fuzz-sema.outcome == 'failure' ||
           steps.fuzz-compiler.outcome == 'failure' ||
+          steps.fuzz-warm-session.outcome == 'failure' ||
           steps.fuzz-compiler-aarch64.outcome == 'failure' ||
           steps.fuzz-compiler-x86-64-o1.outcome == 'failure' ||
           steps.fuzz-payload-schemas.outcome == 'failure' ||
@@ -325,6 +338,7 @@ jobs:
           record parser '${{ steps.fuzz-parser.outcome }}'
           record sema '${{ steps.fuzz-sema.outcome }}'
           record compiler '${{ steps.fuzz-compiler.outcome }}'
+          record warm_session '${{ steps.fuzz-warm-session.outcome }}'
           record compiler_aarch64 '${{ steps.fuzz-compiler-aarch64.outcome }}'
           record compiler_x86_64_o1 '${{ steps.fuzz-compiler-x86-64-o1.outcome }}'
           record payload_schemas '${{ steps.fuzz-payload-schemas.outcome }}'
@@ -389,6 +403,13 @@ jobs:
         with:
           path: crates/rue-fuzz/nightly-restored/compiler
           key: rue-fuzz-corpus-v3-compiler-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save warm-session corpus
+        if: always() && steps.publish_clean_corpus.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: crates/rue-fuzz/nightly-restored/warm_session
+          key: rue-fuzz-corpus-v3-warm_session-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Save compiler AArch64 corpus
         if: always() && steps.publish_clean_corpus.outcome == 'success'
         continue-on-error: true

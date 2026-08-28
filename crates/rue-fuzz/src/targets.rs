@@ -38,10 +38,14 @@ use rue_codegen::x86_64::{Emitter as X86Emitter, Operand, Reg, X86Inst, X86Mir};
 /// dedup signature. Legitimate user-facing errors pass through silently.
 fn assert_no_ice<T>(result: &rue_compiler::MultiErrorResult<T>) {
     if let Err(errors) = result {
-        for e in errors.iter() {
-            if is_ice(&e.kind) {
-                panic!("graceful ICE: {e}");
-            }
+        assert_no_ice_errors(errors);
+    }
+}
+
+fn assert_no_ice_errors(errors: &rue_compiler::CompileErrors) {
+    for e in errors.iter() {
+        if is_ice(&e.kind) {
+            panic!("graceful ICE: {e}");
         }
     }
 }
@@ -238,6 +242,229 @@ impl FuzzTarget for CompilerTarget {
             let result = query_full_compile(source);
             assert_no_ice(&result);
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SequenceMutation {
+    Body(u8),
+    Signature(u8),
+    Declaration(u8),
+    ImportGraph(u8),
+    Rename(u8),
+    Invalid,
+    NoOp,
+    Revert,
+}
+
+impl SequenceMutation {
+    fn decode(kind: u8, parameter: u8) -> Self {
+        match kind % 8 {
+            0 => Self::Body(parameter),
+            1 => Self::Signature(parameter),
+            2 => Self::Declaration(parameter),
+            3 => Self::ImportGraph(parameter),
+            4 => Self::Rename(parameter),
+            5 => Self::Invalid,
+            6 => Self::NoOp,
+            _ => Self::Revert,
+        }
+    }
+
+    #[cfg(test)]
+    fn label(self) -> &'static str {
+        match self {
+            Self::Body(_) => "body",
+            Self::Signature(_) => "signature",
+            Self::Declaration(_) => "declaration",
+            Self::ImportGraph(_) => "import-graph",
+            Self::Rename(_) => "rename",
+            Self::Invalid => "invalid",
+            Self::NoOp => "no-op",
+            Self::Revert => "revert",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EditSequence(Vec<SequenceMutation>);
+
+impl EditSequence {
+    const MAX_STEPS: usize = 12;
+
+    fn decode(input: &[u8]) -> Self {
+        if input.is_empty() {
+            return Self(Vec::new());
+        }
+        let count = (input[0] as usize % (Self::MAX_STEPS + 1)).max(1);
+        Self(
+            (0..count)
+                .map(|step| {
+                    let offset = 1 + step * 3;
+                    SequenceMutation::decode(
+                        input.get(offset).copied().unwrap_or(step as u8),
+                        input.get(offset + 1).copied().unwrap_or(0)
+                            ^ input.get(offset + 2).copied().unwrap_or(0),
+                    )
+                })
+                .collect(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SequenceSources {
+    main: String,
+    helper: String,
+    has_helper: bool,
+}
+
+impl SequenceSources {
+    fn initial(value: u8) -> Self {
+        Self {
+            main: "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.value() }\n"
+                .into(),
+            helper: format!("pub fn value() -> i32 {{ {} }}\n", value % 9),
+            has_helper: true,
+        }
+    }
+
+    fn snapshot(&self) -> rue_compiler::SourceSnapshot {
+        let root = rue_compiler::FileId::DEFAULT;
+        let helper = rue_compiler::FileId::new(1);
+        let mut physical = ahash::AHashMap::new();
+        let mut logical = ahash::AHashMap::new();
+        physical.insert(root, "/p/main.rue".into());
+        logical.insert(root, "main.rue".into());
+        if self.has_helper {
+            physical.insert(helper, "/p/helper.rue".into());
+            logical.insert(helper, "helper.rue".into());
+        }
+        let metadata = rue_compiler::SourceMetadata::new(root, physical, logical)
+            .expect("warm-session metadata is valid");
+        let mut contents = vec![(root, std::sync::Arc::new(self.main.clone()))];
+        if self.has_helper {
+            contents.push((helper, std::sync::Arc::new(self.helper.clone())));
+        }
+        rue_compiler::SourceSnapshot::new(metadata, contents)
+            .expect("warm-session snapshot is valid")
+    }
+
+    fn apply(&mut self, mutation: SequenceMutation, baseline: &Self) {
+        match mutation {
+            SequenceMutation::Body(value) => {
+                self.helper = format!("pub fn value() -> i32 {{ {} }}\n", value % 9);
+            }
+            SequenceMutation::Signature(value) => {
+                self.helper = if value % 2 == 0 {
+                    format!("pub fn value(x: i32) -> i32 {{ x + {} }}\n", value % 3)
+                } else {
+                    "pub fn value() -> bool { true }\n".into()
+                };
+            }
+            SequenceMutation::Declaration(value) => {
+                self.helper
+                    .push_str(&format!("pub const extra{}: i32 = {};\n", value % 5, value))
+            }
+            SequenceMutation::ImportGraph(value) => {
+                self.has_helper = value % 3 != 1;
+                self.main = if self.has_helper && value % 2 == 0 {
+                    "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.value() }\n"
+                        .into()
+                } else {
+                    "fn main() -> i32 { 0 }\n".into()
+                };
+            }
+            SequenceMutation::Rename(value) => {
+                if value % 2 == 0 {
+                    self.main = self.main.replace("value", "renamed");
+                    self.helper = self.helper.replace("value", "renamed");
+                } else {
+                    self.main = self.main.replace("renamed", "value");
+                    self.helper = self.helper.replace("renamed", "value");
+                }
+            }
+            // Keep the syntax valid so discovery adopts the revision; the
+            // rooted semantic query then publishes a typed deterministic
+            // failure that can transition back to success.
+            SequenceMutation::Invalid => {
+                self.main = "fn main() -> i32 { let x: i32 = true; x }\n".into()
+            }
+            SequenceMutation::NoOp => {}
+            SequenceMutation::Revert => *self = baseline.clone(),
+        }
+    }
+}
+
+/// Deterministic bounded edit-sequence fuzzing over one retained session.
+pub struct WarmSessionTarget;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SequenceRunObservation {
+    adopted_revisions: usize,
+    parity_checks: usize,
+    successful_revisions: usize,
+    executable_parity_checks: usize,
+    warm_session_updates: usize,
+}
+
+fn run_edit_sequence(input: &[u8]) -> SequenceRunObservation {
+    let sequence = EditSequence::decode(input);
+    if sequence.0.is_empty() {
+        return SequenceRunObservation {
+            adopted_revisions: 0,
+            parity_checks: 0,
+            successful_revisions: 0,
+            executable_parity_checks: 0,
+            warm_session_updates: 0,
+        };
+    }
+    let options = source_compile_options(
+        rue_compiler::Target::host().expect("supported fuzz host"),
+        rue_compiler::OptLevel::O0,
+    );
+    let initial_sources = SequenceSources::initial(input.get(1).copied().unwrap_or(0));
+    let mut sources = initial_sources.clone();
+    let mut warm = rue_compiler::CompilerSession::new();
+    let initial = sources.snapshot();
+    let initial_parity = rue_compiler::unstable::assert_warm_fresh_parity(
+        "warm_session step=0 mutation=initial",
+        &mut warm,
+        &initial,
+        &options,
+    );
+    let mut observation = SequenceRunObservation {
+        adopted_revisions: 1,
+        parity_checks: 1,
+        successful_revisions: usize::from(initial_parity.rooted_success),
+        executable_parity_checks: usize::from(initial_parity.executable_success),
+        warm_session_updates: 0,
+    };
+    for (step, mutation) in sequence.0.iter().copied().enumerate() {
+        sources.apply(mutation, &initial_sources);
+        let snapshot = sources.snapshot();
+        let parity = rue_compiler::unstable::assert_warm_fresh_parity(
+            &format!("warm_session step={} mutation={mutation:?}", step + 1),
+            &mut warm,
+            &snapshot,
+            &options,
+        );
+        observation.adopted_revisions += 1;
+        observation.parity_checks += 1;
+        observation.successful_revisions += usize::from(parity.rooted_success);
+        observation.executable_parity_checks += usize::from(parity.executable_success);
+    }
+    observation.warm_session_updates = warm.unstable_metrics().updates();
+    observation
+}
+
+impl FuzzTarget for WarmSessionTarget {
+    fn name(&self) -> &'static str {
+        "warm_session"
+    }
+
+    fn fuzz(&self, input: &[u8]) {
+        let _ = std::hint::black_box(run_edit_sequence(input));
     }
 }
 
@@ -1184,6 +1411,7 @@ pub fn all_targets() -> Vec<Box<dyn FuzzTarget>> {
         Box::new(ParserTarget),
         Box::new(SemaTarget),
         Box::new(CompilerTarget),
+        Box::new(WarmSessionTarget),
         Box::new(CompilerAarch64Target),
         Box::new(CompilerX86_64O1Target),
         Box::new(PayloadSchemasTarget),
@@ -1201,6 +1429,7 @@ pub fn get_target(name: &str) -> Option<Box<dyn FuzzTarget>> {
         "parser" => Some(Box::new(ParserTarget)),
         "sema" => Some(Box::new(SemaTarget)),
         "compiler" => Some(Box::new(CompilerTarget)),
+        "warm_session" => Some(Box::new(WarmSessionTarget)),
         "compiler_aarch64" => Some(Box::new(CompilerAarch64Target)),
         "compiler_x86_64_o1" => Some(Box::new(CompilerX86_64O1Target)),
         "payload_schemas" => Some(Box::new(PayloadSchemasTarget)),
@@ -1270,6 +1499,209 @@ mod tests {
     fn test_compiler_target_type_error() {
         let target = CompilerTarget;
         target.fuzz(b"fn main() -> i32 { true }");
+    }
+
+    #[test]
+    fn warm_session_decoder_is_deterministic_and_bounded() {
+        let input = [17, 0, 4, 0, 1, 7, 0, 2, 6, 0, 3, 5, 0];
+        let first = EditSequence::decode(&input);
+        assert_eq!(first, EditSequence::decode(&input));
+        assert!(!first.0.is_empty());
+        assert!(first.0.len() <= EditSequence::MAX_STEPS);
+    }
+
+    #[test]
+    fn warm_session_decoder_reaches_every_invalidation_family() {
+        let input = [
+            8, 0, 0, 0, 1, 1, 0, 2, 2, 0, 3, 3, 0, 4, 4, 0, 5, 5, 0, 6, 6, 0, 7, 7, 0,
+        ];
+        let sequence = EditSequence::decode(&input);
+        let labels = sequence
+            .0
+            .iter()
+            .map(|mutation| mutation.label())
+            .collect::<Vec<_>>();
+        for family in [
+            "body",
+            "signature",
+            "declaration",
+            "import-graph",
+            "rename",
+            "invalid",
+            "no-op",
+            "revert",
+        ] {
+            assert!(
+                labels.contains(&family),
+                "decoder omitted {family}: {labels:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn warm_session_revert_returns_to_the_baseline_revision() {
+        let baseline = SequenceSources::initial(3);
+        let mut changed = baseline.clone();
+        changed.apply(SequenceMutation::Body(8), &baseline);
+        assert_ne!(changed.helper, baseline.helper);
+        assert_ne!(
+            changed.snapshot().source_text(rue_compiler::FileId::new(1)),
+            baseline
+                .snapshot()
+                .source_text(rue_compiler::FileId::new(1))
+        );
+        changed.apply(SequenceMutation::Revert, &baseline);
+        assert_eq!(changed, baseline);
+    }
+
+    #[test]
+    fn warm_session_mutation_table_proves_each_state_transition() {
+        let baseline = SequenceSources::initial(3);
+        let cases = [
+            ("body", SequenceMutation::Body(8), [0, 8, 0], 2),
+            ("signature", SequenceMutation::Signature(2), [1, 2, 0], 1),
+            (
+                "declaration",
+                SequenceMutation::Declaration(4),
+                [2, 4, 0],
+                2,
+            ),
+            (
+                "import-graph-removal",
+                SequenceMutation::ImportGraph(1),
+                [3, 1, 0],
+                2,
+            ),
+            ("rename", SequenceMutation::Rename(2), [4, 2, 0], 2),
+            ("invalid", SequenceMutation::Invalid, [5, 0, 0], 1),
+        ];
+        for (label, mutation, bytes, successful_revisions) in cases {
+            let mut after = baseline.clone();
+            after.apply(mutation, &baseline);
+            match mutation {
+                SequenceMutation::Body(_) => {
+                    assert_ne!(after.helper, baseline.helper, "{label} must edit the body");
+                }
+                SequenceMutation::Signature(_) => {
+                    assert!(after.helper.contains("value(x: i32)"));
+                    assert_ne!(
+                        after.helper, baseline.helper,
+                        "{label} must edit the signature"
+                    );
+                }
+                SequenceMutation::Declaration(value) => {
+                    assert!(
+                        after
+                            .helper
+                            .contains(&format!("pub const extra{}", value % 5))
+                    );
+                    assert_ne!(
+                        after.helper, baseline.helper,
+                        "{label} must add a declaration"
+                    );
+                }
+                SequenceMutation::ImportGraph(_) => {
+                    assert!(!after.has_helper, "{label} must remove the helper file");
+                    assert!(
+                        !after.main.contains("@import"),
+                        "{label} must remove the import"
+                    );
+                }
+                SequenceMutation::Rename(_) => {
+                    assert!(after.main.contains("renamed()"));
+                    assert!(after.helper.contains("fn renamed"));
+                    assert!(
+                        after.has_helper,
+                        "{label} must keep the imported file reachable"
+                    );
+                }
+                SequenceMutation::Invalid => {
+                    assert!(after.main.contains("let x: i32 = true"));
+                    assert_ne!(
+                        after.main, baseline.main,
+                        "{label} must leave the valid state"
+                    );
+                }
+                SequenceMutation::NoOp | SequenceMutation::Revert => unreachable!(),
+            }
+            // The first byte is the step count, so the first mutation triplet
+            // begins at byte one; its selector also deterministically seeds
+            // the initial helper body.
+            let input = vec![1, bytes[0], bytes[1], bytes[2]];
+            let observation = run_edit_sequence(&input);
+            assert_eq!(
+                observation.successful_revisions, successful_revisions,
+                "{label} must preserve its expected semantic validity"
+            );
+            assert_eq!(
+                observation.executable_parity_checks, successful_revisions,
+                "{label} must exercise executable parity for every successful revision"
+            );
+            assert_eq!(
+                observation.warm_session_updates, 2,
+                "{label} must adopt both revisions"
+            );
+        }
+
+        let mut removed = baseline.clone();
+        removed.apply(SequenceMutation::ImportGraph(1), &baseline);
+        assert!(!removed.has_helper);
+        removed.apply(SequenceMutation::Revert, &baseline);
+        assert_eq!(
+            removed, baseline,
+            "revert must add the removed topology back"
+        );
+        let observation = run_edit_sequence(&[2, 3, 1, 0, 7, 0, 0]);
+        assert_eq!(observation.successful_revisions, 3);
+        assert_eq!(observation.executable_parity_checks, 3);
+        assert_eq!(observation.warm_session_updates, 3);
+    }
+
+    #[test]
+    fn warm_session_observes_initial_and_every_mutation_step() {
+        let input = [
+            8, 0, 0, 0, 1, 1, 0, 2, 2, 0, 3, 3, 0, 4, 4, 0, 5, 5, 0, 6, 6, 0, 7, 7, 0,
+        ];
+        let observation = run_edit_sequence(&input);
+        assert_eq!(observation.adopted_revisions, 9);
+        assert_eq!(observation.parity_checks, observation.adopted_revisions);
+        assert_eq!(observation.successful_revisions, 5);
+        assert_eq!(observation.executable_parity_checks, 5);
+        assert_eq!(
+            observation.warm_session_updates,
+            observation.adopted_revisions
+        );
+    }
+
+    #[test]
+    fn warm_session_fixture_has_semantic_invalid_transition_and_recovery() {
+        let baseline = SequenceSources::initial(2);
+        let mut invalid = baseline.clone();
+        invalid.apply(SequenceMutation::Invalid, &baseline);
+        assert!(invalid.main.contains("let x: i32 = true"));
+        assert_ne!(invalid.main, baseline.main);
+        invalid.apply(SequenceMutation::Revert, &baseline);
+        assert_eq!(invalid, baseline);
+        // The integration fixture runs this exact valid -> semantic-invalid ->
+        // valid sequence through the retained-session parity path.
+        let observation = run_edit_sequence(&[2, 5, 0, 0, 7, 0, 0]);
+        assert_eq!(observation.adopted_revisions, 3);
+        assert_eq!(observation.parity_checks, 3);
+        assert_eq!(observation.successful_revisions, 2);
+        assert_eq!(observation.executable_parity_checks, 2);
+        assert_eq!(
+            observation.warm_session_updates,
+            observation.adopted_revisions
+        );
+    }
+
+    #[test]
+    fn warm_session_target_runs_stepwise_parity_over_valid_invalid_and_reverted_edits() {
+        // The first byte selects eight steps; selectors cover body, signature,
+        // declaration, import graph, rename, invalid, no-op, and revert.
+        WarmSessionTarget.fuzz(&[
+            8, 0, 0, 0, 1, 1, 0, 2, 2, 0, 3, 3, 0, 4, 4, 0, 5, 5, 0, 6, 6, 0, 7, 7, 0,
+        ]);
     }
 
     #[test]
@@ -1608,7 +2040,7 @@ mod tests {
     #[test]
     fn test_all_targets() {
         let targets = all_targets();
-        assert_eq!(targets.len(), 11);
+        assert_eq!(targets.len(), 12);
     }
 
     #[test]
@@ -1617,6 +2049,7 @@ mod tests {
         assert!(get_target("parser").is_some());
         assert!(get_target("sema").is_some());
         assert!(get_target("compiler").is_some());
+        assert!(get_target("warm_session").is_some());
         assert!(get_target("compiler_aarch64").is_some());
         assert!(get_target("compiler_x86_64_o1").is_some());
         assert!(get_target("payload_schemas").is_some());

@@ -899,12 +899,10 @@ impl RootedCfgOutput {
         &self.work
     }
 
-    #[cfg(test)]
     pub(crate) fn declarations(&self) -> &[crate::DurableDeclarationSemantic] {
         &self.graph.declarations
     }
 
-    #[cfg(test)]
     pub(crate) fn anonymous_nominals(
         &self,
     ) -> &[crate::durable_semantics::DurableAnonymousNominal] {
@@ -923,7 +921,6 @@ impl RootedCfgOutput {
         self.type_pools().map(|pool| pool.stats()).collect()
     }
 
-    #[cfg(test)]
     pub(crate) fn string_domains(&self) -> impl ExactSizeIterator<Item = &[String]> {
         self.cfgs
             .iter()
@@ -3528,7 +3525,6 @@ impl CompilerSession {
     /// Diagnostic snapshot from the most recently attempted query, whether it
     /// succeeded or failed. In-tree warm/fresh parity oracles compare this
     /// retained selection; it is not part of the stable facade.
-    #[cfg(test)]
     pub(crate) fn latest_diagnostics_for_test(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
         self.diagnostics.latest()
     }
@@ -7003,7 +6999,6 @@ fn continues_discovery_lifecycle(
         .all(|observation| carried_ledger.get(observation.request()) == Some(observation))
 }
 
-#[cfg(test)]
 impl CompilerSession {
     /// Return the producer request that owns each currently retained ordinary
     /// body terminal named by `names`. A missing declaration or a declaration
@@ -7013,6 +7008,7 @@ impl CompilerSession {
     /// revisions to prove the exact recomputed body set. Equal work counts alone
     /// cannot distinguish recomputing the intended consumers from recomputing
     /// the same number of unrelated bodies.
+    #[cfg(test)]
     pub(crate) fn retained_body_transaction_origins_for_test(
         &self,
         names: &[String],

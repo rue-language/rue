@@ -16,6 +16,7 @@ rue_binary(
         "//crates/rue-rir:rue-rir-fuzz-support",
         "//crates/rue-test-runner:rue-test-runner",
         "//third-party:anyhow",
+        "//third-party:ahash",
         "//third-party:libc",
         "//third-party:proptest",
     ],

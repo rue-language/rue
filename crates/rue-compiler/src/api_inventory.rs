@@ -259,6 +259,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("type_queries", include_str!("type_queries.rs")),
     ("typed_query_store", include_str!("typed_query_store.rs")),
     ("unstable", include_str!("unstable.rs")),
+    ("warm_fresh_parity", include_str!("warm_fresh_parity.rs")),
     ("well_known_option", include_str!("well_known_option.rs")),
 ];
 
@@ -2260,6 +2261,7 @@ fn unstable_views_do_not_alias_query_engine_records() {
         [
             "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
             "pubusecrate::import_discovery::{AcceptedImportSource,DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportDiscoveryPlan,ImportDiscoveryRequest,ImportDiscoveryWave,ImportInputRevision,ImportObservation,ImportObservationLedger,ImportObservationStatus,};",
+            "pubusecrate::warm_fresh_parity::ParityObservation;",
             "pubuserue_span::Span;",
             "pubusecrate::session::{ClosedDiscoveryContinuation,RootedCfgOutput,RootedCfgUnit,RootedParkOutcome,TrustedSuccessorDelta,};",
         ],
