@@ -6,10 +6,13 @@
 //! # Example
 //!
 //! ```ignore
-//! use rue_compiler::unstable::{DiagnosticFormatter, SourceInfo};
+//! use rue_compiler::unstable::{MultiFileFormatter, SourceInfo};
 //!
 //! let source_info = SourceInfo::new(&source, "example.rue");
-//! let formatter = DiagnosticFormatter::new(&source_info);
+//! let formatter = MultiFileFormatter::new([(
+//!     rue_compiler::FileId::DEFAULT,
+//!     source_info.clone(),
+//! )]);
 //!
 //! // Format an error
 //! let error_output = formatter.format_error(&error);
@@ -371,13 +374,15 @@ pub enum ColorChoice {
     Never,
 }
 
-/// Formatter for compiler diagnostics.
+/// Single-source compatibility wrapper for [`MultiFileFormatter`].
+///
+/// The source is registered under [`FileId::DEFAULT`], preserving the legacy
+/// single-source fallback for spans that do not carry a matching file ID.
 ///
 /// Provides methods to format compilation errors and warnings into
 /// human-readable strings with annotated source snippets.
 pub struct DiagnosticFormatter<'a> {
-    source_info: &'a SourceInfo<'a>,
-    renderer: Renderer,
+    authority: MultiFileFormatter<'a>,
 }
 
 impl<'a> DiagnosticFormatter<'a> {
@@ -390,19 +395,11 @@ impl<'a> DiagnosticFormatter<'a> {
 
     /// Create a new diagnostic formatter with explicit color choice.
     pub fn with_color_choice(source_info: &'a SourceInfo<'a>, color_choice: ColorChoice) -> Self {
-        let use_color = match color_choice {
-            ColorChoice::Auto => std::io::stderr().is_terminal(),
-            ColorChoice::Always => true,
-            ColorChoice::Never => false,
-        };
-        let renderer = if use_color {
-            Renderer::styled()
-        } else {
-            Renderer::plain()
-        };
         Self {
-            source_info,
-            renderer,
+            authority: MultiFileFormatter::with_color_choice(
+                [(FileId::DEFAULT, source_info.clone())],
+                color_choice,
+            ),
         }
     }
 
@@ -414,31 +411,7 @@ impl<'a> DiagnosticFormatter<'a> {
     /// Internal compiler errors (ICEs) receive special formatting with
     /// bug report instructions.
     pub fn format_error(&self, error: &CompileError) -> String {
-        // Format with error code: error[E0XXX]: message
-        let message_with_code = format!("[{}]: {}", error.kind.code(), error.kind);
-
-        // Check if this is an internal compiler error
-        let is_ice = matches!(
-            error.kind.code(),
-            ErrorCode::INTERNAL_ERROR | ErrorCode::INTERNAL_CODEGEN_ERROR
-        );
-
-        let mut output = self.format_diagnostic_impl(
-            Level::Error,
-            &message_with_code,
-            error.span(),
-            error.diagnostic(),
-        );
-
-        // Add ICE-specific notes and helps
-        if is_ice {
-            output.push_str("\nnote: this is a bug in the Rue compiler\n");
-            output.push_str(
-                "help: please report this issue at https://github.com/rue-language/rue/issues\n",
-            );
-        }
-
-        output
+        self.authority.format_error(error)
     }
 
     /// Format multiple compilation errors into a string.
@@ -446,27 +419,7 @@ impl<'a> DiagnosticFormatter<'a> {
     /// Each error is formatted on its own line(s). A summary line is added at
     /// the end if there are multiple errors showing the total count.
     pub fn format_errors(&self, errors: &CompileErrors) -> String {
-        if errors.is_empty() {
-            return String::new();
-        }
-
-        let mut output = String::new();
-        for error in errors.iter() {
-            if !output.is_empty() {
-                output.push('\n');
-            }
-            output.push_str(&self.format_error(error));
-        }
-
-        // Add summary line if multiple errors
-        if errors.len() > 1 {
-            output.push_str(&format!(
-                "\nerror: aborting due to {} previous errors\n",
-                errors.len()
-            ));
-        }
-
-        output
+        self.authority.format_errors(errors)
     }
 
     /// Format all warnings, adding line numbers when multiple variables share the same name.
@@ -474,157 +427,12 @@ impl<'a> DiagnosticFormatter<'a> {
     /// This improves error messages by disambiguating when there are multiple unused
     /// variables with the same name (e.g., shadowed variables in different scopes).
     pub fn format_warnings(&self, warnings: &[CompileWarning]) -> String {
-        if warnings.is_empty() {
-            return String::new();
-        }
-
-        // Count occurrences of each unused variable name
-        let mut var_name_counts: AHashMap<&str, usize> = AHashMap::new();
-        for warning in warnings {
-            if let Some(name) = warning.kind.unused_variable_name() {
-                *var_name_counts.entry(name).or_insert(0) += 1;
-            }
-        }
-
-        // Format each warning, adding line number if there are duplicates
-        let mut output = String::new();
-        for warning in warnings {
-            let needs_line_number = warning
-                .kind
-                .unused_variable_name()
-                .is_some_and(|name| var_name_counts.get(name).copied().unwrap_or(0) > 1);
-
-            if !output.is_empty() {
-                output.push('\n');
-            }
-            output.push_str(&self.format_warning_internal(warning, needs_line_number));
-        }
-        output
+        self.authority.format_warnings(warnings)
     }
 
     /// Format a single warning into a string.
     pub fn format_warning(&self, warning: &CompileWarning) -> String {
-        self.format_warning_internal(warning, false)
-    }
-
-    fn format_warning_internal(
-        &self,
-        warning: &CompileWarning,
-        include_line_number: bool,
-    ) -> String {
-        // Get the message, optionally with line number for disambiguation
-        let message = if include_line_number {
-            if let Some(span) = warning.span() {
-                let line = span.line_number(self.source_info.source);
-                warning.kind.format_with_line(Some(line))
-            } else {
-                warning.to_string()
-            }
-        } else {
-            warning.to_string()
-        };
-
-        self.format_diagnostic_impl(
-            Level::Warning,
-            &message,
-            warning.span(),
-            warning.diagnostic(),
-        )
-    }
-
-    /// Internal implementation for formatting diagnostics.
-    fn format_diagnostic_impl(
-        &self,
-        level: Level,
-        message: &str,
-        span: Option<Span>,
-        diagnostic: &Diagnostic,
-    ) -> String {
-        // For diagnostics without a primary span, promote the first attached
-        // label to the rendered snippet. Labels carry their own spans, so
-        // dropping them here would silently hide source context.
-        // Neutralize control bytes in every user-facing string before it
-        // reaches the terminal (RUE-548). Titles, labels, notes, and helps can
-        // interpolate module specifiers / paths; the source excerpt is handled
-        // by RenderSource. Collect owned copies up front so the snippet
-        // builder (which borrows &str) has something to point at.
-        let message = sanitize_message(message);
-        let sanitized_labels: Vec<Cow<str>> = diagnostic
-            .labels
-            .iter()
-            .map(|l| sanitize_message(&l.message))
-            .collect();
-        let sanitized_notes: Vec<Cow<str>> = diagnostic
-            .notes
-            .iter()
-            .map(|n| sanitize_message(&n.0))
-            .collect();
-        let sanitized_helps: Vec<Cow<str>> = diagnostic
-            .helps
-            .iter()
-            .map(|h| sanitize_message(&h.0))
-            .collect();
-
-        let promoted_label = span.is_none().then(|| diagnostic.labels.first()).flatten();
-        let promoted_label_idx = promoted_label.is_some().then_some(0usize);
-        let Some(span) = span.or_else(|| promoted_label.map(|label| label.span)) else {
-            let mut report = level.title(message.as_ref());
-            // Add notes and helps as footers
-            for note in &sanitized_notes {
-                report = report.footer(Level::Note.title(note.as_ref()));
-            }
-            for help in &sanitized_helps {
-                report = report.footer(Level::Help.title(help.as_ref()));
-            }
-            return format!("{}", self.renderer.render(report));
-        };
-
-        let render_source = RenderSource::new(self.source_info.source);
-        let source_len = self.source_info.source.len();
-        let (start, end) = render_source.map_span(span, source_len);
-
-        // Build snippet with primary annotation
-        let primary_annotation = level.span(start..end);
-        let primary_annotation = if let Some(idx) = promoted_label_idx {
-            primary_annotation.label(sanitized_labels[idx].as_ref())
-        } else {
-            primary_annotation
-        };
-        let mut snippet = Snippet::source(render_source.source.as_ref())
-            .origin(self.source_info.path)
-            .fold(true)
-            .annotation(primary_annotation);
-
-        // Add secondary labels as Info annotations
-        for (idx, label) in diagnostic
-            .labels
-            .iter()
-            .enumerate()
-            .skip(usize::from(promoted_label.is_some()))
-        {
-            let (label_start, label_end) = render_source.map_span(label.span, source_len);
-            snippet = snippet.annotation(
-                Level::Info
-                    .span(label_start..label_end)
-                    .label(sanitized_labels[idx].as_ref()),
-            );
-        }
-
-        let mut report = level.title(message.as_ref()).snippet(snippet);
-
-        // Add notes and helps as footers
-        for note in &sanitized_notes {
-            report = report.footer(Level::Note.title(note.as_ref()));
-        }
-        for help in &sanitized_helps {
-            report = report.footer(Level::Help.title(help.as_ref()));
-        }
-
-        let rendered = format!("{}", self.renderer.render(report));
-        correct_origin_columns(
-            rendered,
-            &[(self.source_info.path, self.source_info.source)],
-        )
+        self.authority.format_warning(warning)
     }
 }
 
@@ -634,10 +442,10 @@ impl<'a> DiagnosticFormatter<'a> {
 
 /// A diagnostic formatter that supports diagnostics spanning multiple source files.
 ///
-/// While [`DiagnosticFormatter`] works with a single source file, this formatter
-/// can render errors that reference multiple files. This is useful for multi-file
-/// compilation where an error might reference a type defined in one file while
-/// being used in another.
+/// This is the canonical text formatter. It can render errors that reference
+/// multiple files, including diagnostics that reference a type defined in one
+/// file while being used in another. [`DiagnosticFormatter`] remains as a thin
+/// compatibility wrapper for callers that provide one source.
 ///
 /// # Example
 ///
@@ -698,20 +506,28 @@ impl<'a> MultiFileFormatter<'a> {
 
     /// Get a fallback source info for a span whose file ID has no entry.
     ///
-    /// Tries `FileId::DEFAULT` first (single-file paths register their source
-    /// there or under a real ID). If that is absent, the only safe guess is
-    /// when exactly one source is registered; with multiple sources, picking
-    /// an arbitrary one would attribute the diagnostic to the wrong file
-    /// nondeterministically (hash-map iteration order — RUE-175), so this
-    /// returns None and the caller renders the message without a snippet.
+    /// If the ID is not present, the only safe guess is when exactly one source
+    /// is registered. With multiple sources, picking an arbitrary one would
+    /// attribute the diagnostic to the wrong file nondeterministically
+    /// (hash-map iteration order — RUE-175), so this returns None and the
+    /// caller renders the message without a snippet. An exact
+    /// `FileId::DEFAULT` entry is resolved by `get_source` before this method.
     fn fallback_source(&self) -> Option<&SourceInfo<'a>> {
-        self.sources.get(&FileId::DEFAULT).or_else(|| {
-            if self.sources.len() == 1 {
-                self.sources.values().next()
-            } else {
-                None
-            }
-        })
+        (self.sources.len() == 1)
+            .then(|| self.sources.values().next())
+            .flatten()
+    }
+
+    /// Resolve a span to the registered source identity used to group its
+    /// annotations. Unknown IDs resolve only for an unambiguous one-source
+    /// formatter; in a multi-source formatter they remain unavailable.
+    fn source_id_for_span(&self, span: Span) -> Option<FileId> {
+        if self.get_source(span.file_id).is_some() {
+            Some(span.file_id)
+        } else {
+            self.fallback_source()
+                .and_then(|_| self.sources.keys().next().copied())
+        }
     }
 
     /// Format a compilation error into a string.
@@ -854,9 +670,9 @@ impl<'a> MultiFileFormatter<'a> {
         diagnostic: &Diagnostic,
     ) -> String {
         // Neutralize control bytes in every user-facing string before it
-        // reaches the terminal (RUE-548); see the single-file twin. Owned
-        // copies collected up front so the &str-borrowing snippet builder and
-        // `file_spans` have stable referents.
+        // reaches the terminal (RUE-548). Owned copies collected up front so
+        // the &str-borrowing snippet builder and `file_spans` have stable
+        // referents.
         let message = sanitize_message(message);
         let sanitized_labels: Vec<Cow<str>> = diagnostic
             .labels
@@ -889,15 +705,23 @@ impl<'a> MultiFileFormatter<'a> {
             return format!("{}", self.renderer.render(report));
         };
 
-        // Collect all file IDs we need to show
+        // Collect all resolved source IDs we need to show. Grouping by the
+        // resolved identity is important for single-source compatibility:
+        // arbitrary legacy IDs must share one snippet rather than producing a
+        // duplicate snippet for each raw ID.
         let mut file_spans: AHashMap<FileId, Vec<(Span, Option<&str>, Level)>> = AHashMap::new();
+        let mut has_unresolved_span = false;
 
         // Add primary span (promoted label is index 0 when present).
-        file_spans.entry(primary_span.file_id).or_default().push((
-            primary_span,
-            promoted_label.map(|_| sanitized_labels[0].as_ref()),
-            level,
-        ));
+        if let Some(file_id) = self.source_id_for_span(primary_span) {
+            file_spans.entry(file_id).or_default().push((
+                primary_span,
+                promoted_label.map(|_| sanitized_labels[0].as_ref()),
+                level,
+            ));
+        } else {
+            has_unresolved_span = true;
+        }
 
         // Add secondary labels
         for (idx, label) in diagnostic
@@ -906,11 +730,15 @@ impl<'a> MultiFileFormatter<'a> {
             .enumerate()
             .skip(usize::from(promoted_label.is_some()))
         {
-            file_spans.entry(label.span.file_id).or_default().push((
-                label.span,
-                Some(sanitized_labels[idx].as_ref()),
-                Level::Info,
-            ));
+            if let Some(file_id) = self.source_id_for_span(label.span) {
+                file_spans.entry(file_id).or_default().push((
+                    label.span,
+                    Some(sanitized_labels[idx].as_ref()),
+                    Level::Info,
+                ));
+            } else {
+                has_unresolved_span = true;
+            }
         }
 
         // Build report with snippets for each file
@@ -922,16 +750,9 @@ impl<'a> MultiFileFormatter<'a> {
 
         let mut render_sources = Vec::with_capacity(file_ids.len());
         for file_id in &file_ids {
-            let source_info = self.get_source(*file_id).or_else(|| self.fallback_source());
+            let source_info = self.get_source(*file_id);
 
             let Some(source_info) = source_info else {
-                // No source available for this file. Refuse to guess a file
-                // (see fallback_source); surface the problem instead of
-                // silently misattributing the span (RUE-175).
-                report = report.footer(Level::Note.title(
-                    "source snippet unavailable: span has an unknown file id \
-                     (this is a bug in the Rue compiler)",
-                ));
                 continue;
             };
 
@@ -963,6 +784,12 @@ impl<'a> MultiFileFormatter<'a> {
         }
 
         // Add notes and helps as footers
+        if has_unresolved_span {
+            report = report.footer(Level::Note.title(
+                "source snippet unavailable: span has an unknown file id \
+                 (this is a bug in the Rue compiler)",
+            ));
+        }
         for note in &sanitized_notes {
             report = report.footer(Level::Note.title(note.as_ref()));
         }
@@ -1201,137 +1028,39 @@ impl JsonDiagnostic {
 /// Formats diagnostics as JSON for machine consumption.
 ///
 /// Use this formatter when outputting to tools like editors, CI systems,
-/// or any context requiring machine-readable output.
+/// or any context requiring machine-readable output. This is a compatibility
+/// wrapper around [`MultiFileJsonFormatter`], with its source registered under
+/// [`FileId::DEFAULT`].
 pub struct JsonDiagnosticFormatter<'a> {
-    source_info: &'a SourceInfo<'a>,
+    authority: MultiFileJsonFormatter<'a>,
 }
 
 impl<'a> JsonDiagnosticFormatter<'a> {
     /// Create a new JSON diagnostic formatter.
     pub fn new(source_info: &'a SourceInfo<'a>) -> Self {
-        Self { source_info }
+        Self {
+            authority: MultiFileJsonFormatter::new([(FileId::DEFAULT, source_info.clone())]),
+        }
     }
 
     /// Format a compile error as JSON.
     pub fn format_error(&self, error: &CompileError) -> JsonDiagnostic {
-        let diag = error.diagnostic();
-        let primary_span = error.span().map(|span| {
-            make_json_span(
-                self.source_info.path,
-                self.source_info.source,
-                span,
-                None,
-                true,
-            )
-        });
-
-        let secondary_spans: Vec<JsonSpan> = diag
-            .labels
-            .iter()
-            .map(|label| {
-                make_json_span(
-                    self.source_info.path,
-                    self.source_info.source,
-                    label.span,
-                    Some(label.message.clone()),
-                    false,
-                )
-            })
-            .collect();
-        let spans = finalize_json_spans(primary_span, secondary_spans);
-
-        let suggestions: Vec<JsonSuggestion> = diag
-            .suggestions
-            .iter()
-            .map(|s| JsonSuggestion {
-                message: s.message.clone(),
-                file: self.source_info.path.to_string(),
-                start: s.span.start,
-                end: s.span.end,
-                replacement: s.replacement.clone(),
-                applicability: s.applicability.to_string(),
-            })
-            .collect();
-
-        JsonDiagnostic {
-            code: format!("{}", error.kind.code()),
-            message: format!("{}", error.kind),
-            severity: "error",
-            spans,
-            suggestions,
-            notes: diag.notes.iter().map(|n| n.0.clone()).collect(),
-            helps: diag.helps.iter().map(|h| h.0.clone()).collect(),
-        }
+        self.authority.format_error(error)
     }
 
     /// Format a compile warning as JSON.
     pub fn format_warning(&self, warning: &CompileWarning) -> JsonDiagnostic {
-        let diag = warning.diagnostic();
-        let primary_span = warning.span().map(|span| {
-            make_json_span(
-                self.source_info.path,
-                self.source_info.source,
-                span,
-                None,
-                true,
-            )
-        });
-
-        let secondary_spans: Vec<JsonSpan> = diag
-            .labels
-            .iter()
-            .map(|label| {
-                make_json_span(
-                    self.source_info.path,
-                    self.source_info.source,
-                    label.span,
-                    Some(label.message.clone()),
-                    false,
-                )
-            })
-            .collect();
-        let spans = finalize_json_spans(primary_span, secondary_spans);
-
-        let suggestions: Vec<JsonSuggestion> = diag
-            .suggestions
-            .iter()
-            .map(|s| JsonSuggestion {
-                message: s.message.clone(),
-                file: self.source_info.path.to_string(),
-                start: s.span.start,
-                end: s.span.end,
-                replacement: s.replacement.clone(),
-                applicability: s.applicability.to_string(),
-            })
-            .collect();
-
-        JsonDiagnostic {
-            code: String::new(), // Warnings don't have codes yet
-            message: format!("{}", warning.kind),
-            severity: "warning",
-            spans,
-            suggestions,
-            notes: diag.notes.iter().map(|n| n.0.clone()).collect(),
-            helps: diag.helps.iter().map(|h| h.0.clone()).collect(),
-        }
+        self.authority.format_warning(warning)
     }
 
     /// Format multiple errors as a JSON array string.
     pub fn format_errors(&self, errors: &CompileErrors) -> String {
-        let diagnostics: Vec<String> = errors
-            .iter()
-            .map(|e| self.format_error(e).to_json())
-            .collect();
-        format!("[{}]", diagnostics.join(","))
+        self.authority.format_errors(errors)
     }
 
     /// Format multiple warnings as a JSON array string.
     pub fn format_warnings(&self, warnings: &[CompileWarning]) -> String {
-        let diagnostics: Vec<String> = warnings
-            .iter()
-            .map(|w| self.format_warning(w).to_json())
-            .collect();
-        format!("[{}]", diagnostics.join(","))
+        self.authority.format_warnings(warnings)
     }
 }
 
@@ -1376,20 +1105,15 @@ impl<'a> MultiFileJsonFormatter<'a> {
         self.sources.get(&file_id)
     }
 
-    /// Get a fallback source info (for FileId::DEFAULT or when no specific source is found).
+    /// Get a fallback source info when no specific source is found.
     ///
     /// Like [`MultiFileFormatter::fallback_source`], this only guesses when
-    /// the choice is unambiguous: `FileId::DEFAULT` if registered, else the
-    /// sole registered source. With multiple sources an unknown file ID must
-    /// not be attributed to an arbitrary file (RUE-175).
+    /// exactly one source is registered. With multiple sources an unknown file
+    /// ID must not be attributed to an arbitrary file (RUE-175).
     fn fallback_source(&self) -> Option<&SourceInfo<'a>> {
-        self.sources.get(&FileId::DEFAULT).or_else(|| {
-            if self.sources.len() == 1 {
-                self.sources.values().next()
-            } else {
-                None
-            }
-        })
+        (self.sources.len() == 1)
+            .then(|| self.sources.values().next())
+            .flatten()
     }
 
     /// Get the path and source for a span, using the span's file ID.
@@ -1518,10 +1242,186 @@ mod tests {
     use crate::{ErrorKind, Suggestion, WarningKind};
 
     #[test]
+    fn single_file_compatibility_wrappers_delegate_to_multifile_authorities() {
+        let source = "fn main() -> i32 { 1 + true }";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let text = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+        let canonical_text = MultiFileFormatter::with_color_choice(
+            [(FileId::DEFAULT, source_info.clone())],
+            ColorChoice::Never,
+        );
+        let json = JsonDiagnosticFormatter::new(&source_info);
+        let canonical_json = MultiFileJsonFormatter::new([(FileId::DEFAULT, source_info.clone())]);
+
+        let error = CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: "i32".to_string(),
+                found: "bool".to_string(),
+            },
+            Span::new(23, 27),
+        );
+        let warning = CompileWarning::new(
+            WarningKind::UnusedVariable("x".to_string()),
+            Span::new(23, 24),
+        );
+        let mut errors = CompileErrors::new();
+        errors.push(error.clone());
+
+        assert_eq!(
+            text.format_error(&error),
+            canonical_text.format_error(&error)
+        );
+        assert_eq!(
+            text.format_errors(&errors),
+            canonical_text.format_errors(&errors)
+        );
+        assert_eq!(
+            text.format_warning(&warning),
+            canonical_text.format_warning(&warning)
+        );
+        assert_eq!(
+            text.format_warnings(std::slice::from_ref(&warning)),
+            canonical_text.format_warnings(std::slice::from_ref(&warning))
+        );
+        assert_eq!(
+            json.format_error(&error).to_json(),
+            canonical_json.format_error(&error).to_json()
+        );
+        assert_eq!(
+            json.format_warning(&warning).to_json(),
+            canonical_json.format_warning(&warning).to_json()
+        );
+        assert_eq!(
+            json.format_errors(&errors),
+            canonical_json.format_errors(&errors)
+        );
+        assert_eq!(
+            json.format_warnings(std::slice::from_ref(&warning)),
+            canonical_json.format_warnings(std::slice::from_ref(&warning))
+        );
+
+        // Legacy callers did not provide a file table, so spans with any
+        // non-default IDs still belong to the one registered source. They
+        // must be grouped into one snippet rather than one snippet per ID.
+        let cross_file_error = CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: "i32".to_string(),
+                found: "bool".to_string(),
+            },
+            Span::with_file(FileId::new(1), 23, 27),
+        )
+        .with_label("related source", Span::with_file(FileId::new(2), 19, 23));
+        let cross_file_text = text.format_error(&cross_file_error);
+        assert_eq!(cross_file_text.matches("--> test.rue:").count(), 1);
+        assert!(cross_file_text.contains("related source"));
+
+        let cross_file_json = json.format_error(&cross_file_error);
+        assert_eq!(cross_file_json.spans.len(), 2);
+        assert!(
+            cross_file_json
+                .spans
+                .iter()
+                .all(|span| span.file == "test.rue")
+        );
+    }
+
+    #[test]
+    fn compatibility_formatter_implementations_are_exact_delegating_wrappers() {
+        let source = include_str!("diagnostic.rs");
+        let production_source = source
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .expect("diagnostic tests marker");
+        let normalize = |source: &str| {
+            source
+                .lines()
+                .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+                .flat_map(str::chars)
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>()
+        };
+        let normalized_production = production_source
+            .lines()
+            .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+            .flat_map(|line| line.split_whitespace())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let identifier_count = |source: &str, identifier: &str| {
+            source
+                .split(|character: char| !(character == '_' || character.is_ascii_alphanumeric()))
+                .filter(|token| *token == identifier)
+                .count()
+        };
+        // There may be exactly two production references to each compatibility
+        // type: its struct definition and its canonical inherent implementation.
+        // This catches another inherent or trait implementation regardless of
+        // lifetime spelling or where it is placed in the file.
+        for identifier in ["DiagnosticFormatter", "JsonDiagnosticFormatter"] {
+            assert_eq!(
+                identifier_count(&normalized_production, identifier),
+                2,
+                "{identifier} must only have its struct and canonical impl"
+            );
+        }
+        assert_eq!(
+            production_source
+                .matches("pub struct DiagnosticFormatter<'a>")
+                .count(),
+            1,
+            "single-file text formatter must have exactly one struct definition"
+        );
+        assert_eq!(
+            production_source
+                .matches("impl<'a> DiagnosticFormatter<'a>")
+                .count(),
+            1,
+            "single-file text formatter must have exactly one implementation"
+        );
+        assert_eq!(
+            production_source
+                .matches("pub struct JsonDiagnosticFormatter<'a>")
+                .count(),
+            1,
+            "single-file JSON formatter must have exactly one struct definition"
+        );
+        assert_eq!(
+            production_source
+                .matches("impl<'a> JsonDiagnosticFormatter<'a>")
+                .count(),
+            1,
+            "single-file JSON formatter must have exactly one implementation"
+        );
+
+        let text = production_source
+            .split_once("pub struct DiagnosticFormatter<'a>")
+            .and_then(|(_, rest)| rest.split_once("// ============================================================================\n// Multi-File Diagnostic Formatter"))
+            .map(|(section, _)| {
+                normalize(&format!("pub struct DiagnosticFormatter<'a>{section}"))
+            })
+            .expect("single-file text formatter section");
+        let json = production_source
+            .split_once("pub struct JsonDiagnosticFormatter<'a>")
+            .and_then(|(_, rest)| rest.split_once("// ============================================================================\n// Multi-File JSON Diagnostic Formatter"))
+            .map(|(section, _)| {
+                normalize(&format!("pub struct JsonDiagnosticFormatter<'a>{section}"))
+            })
+            .expect("single-file JSON formatter section");
+
+        assert_eq!(
+            text,
+            "pubstructDiagnosticFormatter<'a>{authority:MultiFileFormatter<'a>,}impl<'a>DiagnosticFormatter<'a>{pubfnnew(source_info:&'aSourceInfo<'a>)->Self{Self::with_color_choice(source_info,ColorChoice::Auto)}pubfnwith_color_choice(source_info:&'aSourceInfo<'a>,color_choice:ColorChoice)->Self{Self{authority:MultiFileFormatter::with_color_choice([(FileId::DEFAULT,source_info.clone())],color_choice,),}}pubfnformat_error(&self,error:&CompileError)->String{self.authority.format_error(error)}pubfnformat_errors(&self,errors:&CompileErrors)->String{self.authority.format_errors(errors)}pubfnformat_warnings(&self,warnings:&[CompileWarning])->String{self.authority.format_warnings(warnings)}pubfnformat_warning(&self,warning:&CompileWarning)->String{self.authority.format_warning(warning)}}"
+        );
+        assert_eq!(
+            json,
+            "pubstructJsonDiagnosticFormatter<'a>{authority:MultiFileJsonFormatter<'a>,}impl<'a>JsonDiagnosticFormatter<'a>{pubfnnew(source_info:&'aSourceInfo<'a>)->Self{Self{authority:MultiFileJsonFormatter::new([(FileId::DEFAULT,source_info.clone())]),}}pubfnformat_error(&self,error:&CompileError)->JsonDiagnostic{self.authority.format_error(error)}pubfnformat_warning(&self,warning:&CompileWarning)->JsonDiagnostic{self.authority.format_warning(warning)}pubfnformat_errors(&self,errors:&CompileErrors)->String{self.authority.format_errors(errors)}pubfnformat_warnings(&self,warnings:&[CompileWarning])->String{self.authority.format_warnings(warnings)}}"
+        );
+    }
+
+    #[test]
     fn test_format_error_with_span() {
         let source = "fn main() -> i32 { 1 + true }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let error = CompileError::new(
             ErrorKind::TypeMismatch {
@@ -1559,7 +1459,10 @@ mod tests {
             ),
         ] {
             let source_info = SourceInfo::new(source, "test.rue");
-            let text = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+            let text = MultiFileFormatter::with_color_choice(
+                [(FileId::DEFAULT, source_info.clone())],
+                ColorChoice::Never,
+            );
             let at_eof = source.len() as u32;
             let error = CompileError::new(ErrorKind::NoMainFunction, Span::new(at_eof, at_eof));
 
@@ -1568,7 +1471,8 @@ mod tests {
             assert!(output.contains(excerpt), "missing excerpt in:\n{output}");
             assert!(output.contains(caret), "missing EOF caret in:\n{output}");
 
-            let json = JsonDiagnosticFormatter::new(&source_info).format_error(&error);
+            let json = MultiFileJsonFormatter::new([(FileId::DEFAULT, source_info.clone())])
+                .format_error(&error);
             let span = &json.spans[0];
             assert_eq!((span.start, span.end), (at_eof, at_eof));
             assert_eq!((span.line, span.column), expected_line_col);
@@ -1580,7 +1484,10 @@ mod tests {
     fn test_format_multibyte_utf8_span_pins_text_caret_and_json_coordinates() {
         let source = "fn main() -> i32 {\n    let π = true;\n}";
         let source_info = SourceInfo::new(source, "test.rue");
-        let text = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+        let text = MultiFileFormatter::with_color_choice(
+            [(FileId::DEFAULT, source_info.clone())],
+            ColorChoice::Never,
+        );
         let start = source.find("true").unwrap() as u32;
         let error = CompileError::new(ErrorKind::NoMainFunction, Span::new(start, start + 4));
 
@@ -1591,7 +1498,8 @@ mod tests {
             "caret drifted after UTF-8 text:\n{output}"
         );
 
-        let json = JsonDiagnosticFormatter::new(&source_info).format_error(&error);
+        let json = MultiFileJsonFormatter::new([(FileId::DEFAULT, source_info.clone())])
+            .format_error(&error);
         let span = &json.spans[0];
         assert_eq!((span.start, span.end), (32, 36));
         assert_eq!((span.line, span.column), (2, 13));
@@ -1601,7 +1509,10 @@ mod tests {
     fn test_format_multiline_span_pins_text_excerpt_and_json_range() {
         let source = "fn main() -> i32 {\n    first\n    second\n}";
         let source_info = SourceInfo::new(source, "test.rue");
-        let text = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+        let text = MultiFileFormatter::with_color_choice(
+            [(FileId::DEFAULT, source_info.clone())],
+            ColorChoice::Never,
+        );
         let start = source.find("first").unwrap() as u32;
         let end = source.find("second").unwrap() as u32 + 3;
         let error = CompileError::new(ErrorKind::NoMainFunction, Span::new(start, end));
@@ -1613,7 +1524,8 @@ mod tests {
             "multiline underline changed:\n{output}"
         );
 
-        let json = JsonDiagnosticFormatter::new(&source_info).format_error(&error);
+        let json = MultiFileJsonFormatter::new([(FileId::DEFAULT, source_info.clone())])
+            .format_error(&error);
         let span = &json.spans[0];
         assert_eq!((span.start, span.end), (23, 36));
         assert_eq!((span.line, span.column), (2, 5));
@@ -1623,7 +1535,10 @@ mod tests {
     fn test_format_error_expands_tabs_before_mapping_caret() {
         let source = "fn main() -> i32 {\n\treturn nope;\n}";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+        let formatter = MultiFileFormatter::with_color_choice(
+            [(FileId::DEFAULT, source_info.clone())],
+            ColorChoice::Never,
+        );
 
         let start = source.find("nope").unwrap() as u32;
         let error = CompileError::new(
@@ -1717,7 +1632,10 @@ mod tests {
         // editors expect — even though the caret uses the tab-expanded excerpt.
         let source = "fn main() -> i32 {\n\treturn nope;\n}";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+        let formatter = MultiFileFormatter::with_color_choice(
+            [(FileId::DEFAULT, source_info.clone())],
+            ColorChoice::Never,
+        );
 
         let start = source.find("nope").unwrap() as u32;
         let error = CompileError::new(
@@ -1757,7 +1675,10 @@ mod tests {
         // characters, so the origin column already equals the original column.
         let source = "fn main() -> i32 {\n    return nope;\n}";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+        let formatter = MultiFileFormatter::with_color_choice(
+            [(FileId::DEFAULT, source_info.clone())],
+            ColorChoice::Never,
+        );
 
         let start = source.find("nope").unwrap() as u32;
         let error = CompileError::new(
@@ -1791,7 +1712,10 @@ mod tests {
     fn test_format_error_strips_crlf_without_shifting_span() {
         let source = "fn main() -> i32 {\r\n    let x: i32 = true;\r\n    x\r\n}\r\n";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+        let formatter = MultiFileFormatter::with_color_choice(
+            [(FileId::DEFAULT, source_info.clone())],
+            ColorChoice::Never,
+        );
 
         let start = source.find("let").unwrap() as u32;
         let end = source.find(';').unwrap() as u32 + 1;
@@ -1814,7 +1738,7 @@ mod tests {
     fn test_format_error_without_span() {
         let source = "fn foo() -> i32 { 42 }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let error = CompileError::without_span(ErrorKind::NoMainFunction);
 
@@ -1828,7 +1752,7 @@ mod tests {
     fn test_format_error_without_span_promotes_label() {
         let source = "fn foo() -> i32 { 42 }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let error = CompileError::without_span(ErrorKind::NoMainFunction)
             .with_label("candidate function is here", Span::new(3, 6));
@@ -1844,7 +1768,7 @@ mod tests {
     fn test_format_warning() {
         let source = "fn main() -> i32 { let x = 42; 0 }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let warning = CompileWarning::new(
             WarningKind::UnusedVariable("x".to_string()),
@@ -1860,7 +1784,7 @@ mod tests {
     fn test_format_warnings_with_duplicates() {
         let source = "fn main() -> i32 {\n    let x = 1;\n    let x = 2;\n    0\n}";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let warnings = vec![
             CompileWarning::new(
@@ -1882,7 +1806,7 @@ mod tests {
     fn test_format_warnings_empty() {
         let source = "fn main() -> i32 { 42 }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let output = formatter.format_warnings(&[]);
         assert!(output.is_empty());
@@ -1892,7 +1816,7 @@ mod tests {
     fn test_format_error_with_help() {
         let source = "fn main() -> i32 { x = 1; 0 }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let error = CompileError::new(
             ErrorKind::AssignToImmutable("x".to_string()),
@@ -1909,7 +1833,7 @@ mod tests {
     fn test_format_error_with_label() {
         let source = "fn main() -> i32 { if true { 1 } else { false } }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let error = CompileError::new(
             ErrorKind::TypeMismatch {
@@ -1928,7 +1852,7 @@ mod tests {
     fn test_format_errors_empty() {
         let source = "fn main() -> i32 { 42 }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let errors = CompileErrors::new();
         let output = formatter.format_errors(&errors);
@@ -1939,7 +1863,7 @@ mod tests {
     fn test_format_errors_single() {
         let source = "fn main() -> i32 { 1 + true }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let mut errors = CompileErrors::new();
         errors.push(CompileError::new(
@@ -1960,7 +1884,7 @@ mod tests {
     fn test_format_errors_multiple() {
         let source = "fn main() -> i32 {\n    let x = 1 + true;\n    let y = false - 1;\n    0\n}";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let mut errors = CompileErrors::new();
         errors.push(CompileError::new(
@@ -1990,7 +1914,10 @@ mod tests {
     fn test_color_choice_never() {
         let source = "fn main() -> i32 { 1 + true }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+        let formatter = MultiFileFormatter::with_color_choice(
+            [(FileId::DEFAULT, source_info.clone())],
+            ColorChoice::Never,
+        );
 
         let error = CompileError::new(
             ErrorKind::TypeMismatch {
@@ -2010,7 +1937,7 @@ mod tests {
     fn test_format_error_with_invalid_span() {
         let source = "fn main() -> i32 { 42 }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         // Span that extends beyond source length
         let error = CompileError::new(
@@ -2031,7 +1958,7 @@ mod tests {
     fn test_format_error_with_reversed_span() {
         let source = "fn main() -> i32 { 42 }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         // Span with start > end (should be clamped so start == end)
         let error = CompileError::new(
@@ -2052,7 +1979,10 @@ mod tests {
     fn test_color_choice_always() {
         let source = "fn main() -> i32 { 1 + true }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Always);
+        let formatter = MultiFileFormatter::with_color_choice(
+            [(FileId::DEFAULT, source_info.clone())],
+            ColorChoice::Always,
+        );
 
         let error = CompileError::new(
             ErrorKind::TypeMismatch {
@@ -2072,7 +2002,7 @@ mod tests {
     fn test_ice_formatting() {
         let source = "fn main() -> i32 { 42 }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let error = CompileError::without_span(ErrorKind::InternalError(
             "unexpected type in codegen".to_string(),
@@ -2092,7 +2022,7 @@ mod tests {
     fn test_ice_codegen_formatting() {
         let source = "fn main() -> i32 { 42 }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let error = CompileError::without_span(ErrorKind::InternalCodegenError(
             "failed to emit instruction".to_string(),
@@ -2111,7 +2041,7 @@ mod tests {
     fn test_non_ice_no_extra_formatting() {
         let source = "fn main() -> i32 { 1 + true }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = DiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let error = CompileError::new(
             ErrorKind::TypeMismatch {
@@ -2135,7 +2065,7 @@ mod tests {
     fn test_json_format_error() {
         let source = "fn main() -> i32 { 1 + true }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = JsonDiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileJsonFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let error = CompileError::new(
             ErrorKind::TypeMismatch {
@@ -2161,7 +2091,7 @@ mod tests {
         let source = "fn main() -> i32 {\n    1 + true\n}";
         //                            ^--- line 2, col 9 (0-indexed: 23)
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = JsonDiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileJsonFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let error = CompileError::new(
             ErrorKind::TypeMismatch {
@@ -2180,7 +2110,7 @@ mod tests {
     fn test_json_format_error_with_suggestion() {
         let source = "fn main() -> i32 { x = 1; 0 }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = JsonDiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileJsonFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let error = CompileError::new(
             ErrorKind::AssignToImmutable("x".to_string()),
@@ -2203,7 +2133,7 @@ mod tests {
     fn test_json_format_warning() {
         let source = "fn main() -> i32 { let x = 42; 0 }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = JsonDiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileJsonFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let warning = CompileWarning::new(
             WarningKind::UnusedVariable("x".to_string()),
@@ -2218,7 +2148,7 @@ mod tests {
     #[test]
     fn test_json_spanless_diagnostics_promote_labels() {
         let source_info = SourceInfo::new("fn main() -> i32 { 0 }", "test.rue");
-        let formatter = JsonDiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileJsonFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let error = CompileError::without_span(ErrorKind::NoMainFunction)
             .with_label("candidate", Span::new(3, 7))
@@ -2242,7 +2172,7 @@ mod tests {
     fn test_json_spans_clamp_reversed_and_out_of_range_ranges() {
         let source = "fn main() -> i32 { 0 }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = JsonDiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileJsonFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let error = CompileError::new(
             ErrorKind::NoMainFunction,
@@ -2270,7 +2200,7 @@ mod tests {
     fn test_json_to_string() {
         let source = "fn main() -> i32 { 1 + true }";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = JsonDiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileJsonFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let error = CompileError::new(
             ErrorKind::TypeMismatch {
@@ -2295,7 +2225,7 @@ mod tests {
     fn test_json_format_errors_array() {
         let source = "fn main() -> i32 {\n    1 + true\n}";
         let source_info = SourceInfo::new(source, "test.rue");
-        let formatter = JsonDiagnosticFormatter::new(&source_info);
+        let formatter = MultiFileJsonFormatter::new([(FileId::DEFAULT, source_info.clone())]);
 
         let mut errors = CompileErrors::new();
         errors.push(CompileError::new(
@@ -2334,6 +2264,82 @@ mod tests {
         assert!(output.contains("[E0206]"));
         assert!(output.contains("type mismatch"));
         assert!(output.contains("test.rue"));
+    }
+
+    #[test]
+    fn test_multi_file_formatter_default_source_is_exact_and_unknown_is_unresolved() {
+        let default_source = "fn main() -> i32 { 1 + true }";
+        let other_source = "fn helper() -> bool { true }";
+        let sources = vec![
+            (FileId::DEFAULT, SourceInfo::new(default_source, "main.rue")),
+            (FileId::new(1), SourceInfo::new(other_source, "helper.rue")),
+        ];
+        let formatter = MultiFileFormatter::new(sources.clone());
+        let json_formatter = MultiFileJsonFormatter::new(sources);
+        let unknown = FileId::new(99);
+        let default_error = CompileError::new(
+            ErrorKind::NoMainFunction,
+            Span::with_file(FileId::DEFAULT, 0, 3),
+        );
+        let unknown_error =
+            CompileError::new(ErrorKind::NoMainFunction, Span::with_file(unknown, 0, 3));
+
+        let default_output = formatter.format_error(&default_error);
+        assert!(default_output.contains("main.rue"));
+
+        let output = formatter.format_error(&unknown_error);
+        assert!(!output.contains("main.rue"));
+        assert!(!output.contains("helper.rue"));
+        assert!(output.contains("source snippet unavailable"));
+
+        let json = json_formatter.format_error(&unknown_error);
+        assert!(json.spans.is_empty());
+    }
+
+    #[test]
+    fn test_multi_file_formatter_single_source_fallback_groups_unknown_ids() {
+        let source = "fn main() -> i32 { 1 + true }";
+        let sources = vec![(FileId::new(1), SourceInfo::new(source, "test.rue"))];
+        let formatter = MultiFileFormatter::new(sources.clone());
+        let json_formatter = MultiFileJsonFormatter::new(sources);
+        let error = CompileError::new(
+            ErrorKind::NoMainFunction,
+            Span::with_file(FileId::new(99), 0, 3),
+        )
+        .with_label("related", Span::with_file(FileId::new(100), 4, 7));
+
+        let output = formatter.format_error(&error);
+        assert!(output.contains("test.rue"));
+        assert_eq!(output.matches("--> test.rue:").count(), 1);
+        let json = json_formatter.format_error(&error);
+        assert_eq!(json.spans.len(), 2);
+        assert!(json.spans.iter().all(|span| span.file == "test.rue"));
+    }
+
+    #[test]
+    fn test_multi_file_formatter_unknown_primary_keeps_resolvable_labels() {
+        let sources = vec![
+            (
+                FileId::new(1),
+                SourceInfo::new("fn main() -> i32 { helper() }", "main.rue"),
+            ),
+            (
+                FileId::new(2),
+                SourceInfo::new("fn helper() -> bool { true }", "helper.rue"),
+            ),
+        ];
+        let formatter = MultiFileFormatter::new(sources);
+        let error = CompileError::new(
+            ErrorKind::NoMainFunction,
+            Span::with_file(FileId::new(99), 0, 5),
+        )
+        .with_label("candidate", Span::with_file(FileId::new(2), 3, 9));
+
+        let output = formatter.format_error(&error);
+        assert!(output.contains("helper.rue"));
+        assert!(output.contains("candidate"));
+        assert!(output.contains("source snippet unavailable"));
+        assert!(!output.contains("main.rue"));
     }
 
     #[test]
@@ -2686,7 +2692,12 @@ mod tests {
 
         let error = CompileError::new(ErrorKind::NoMainFunction, Span::with_file(unknown, 0, 5))
             .with_label("first", Span::with_file(FileId::new(2), 3, 9))
-            .with_label("second", Span::with_file(FileId::new(1), 3, 7));
+            .with_label("second", Span::with_file(FileId::new(1), 3, 7))
+            .with_suggestion(Suggestion::machine_applicable(
+                "unknown source",
+                Span::with_file(unknown, 0, 5),
+                "fixed",
+            ));
         let json_error = formatter.format_error(&error);
         assert_eq!(json_error.spans.len(), 2);
         assert_eq!(json_error.spans[0].file, "helper.rue");
@@ -2695,6 +2706,7 @@ mod tests {
         assert_eq!(json_error.spans[1].file, "main.rue");
         assert!(!json_error.spans[1].primary);
         assert_eq!(json_error.spans[1].label.as_deref(), Some("second"));
+        assert!(json_error.suggestions.is_empty());
 
         let warning = CompileWarning::new(
             WarningKind::UnusedVariable("x".into()),

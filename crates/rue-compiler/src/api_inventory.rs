@@ -2340,6 +2340,36 @@ fn unstable_views_do_not_alias_query_engine_records() {
 }
 
 #[test]
+fn compatibility_formatters_have_one_source_authority_across_compiler_modules() {
+    // Scan complete source files, including tests and string fixtures.
+    // `code_identifiers` removes line comments before identifying names.
+    let count_identifier = |source: &str, identifier: &str| {
+        code_identifiers(source)
+            .into_iter()
+            .filter(|candidate| *candidate == identifier)
+            .count()
+    };
+
+    for (module, source) in PRODUCTION_MODULES.iter().copied().chain([
+        ("lib", include_str!("lib.rs")),
+        ("retained_charge", include_str!("retained_charge.rs")),
+    ]) {
+        for formatter in ["DiagnosticFormatter", "JsonDiagnosticFormatter"] {
+            let count = count_identifier(source, formatter);
+            let expected = match module {
+                "diagnostic" => 9,
+                "unstable" => 1,
+                _ => 0,
+            };
+            assert_eq!(
+                count, expected,
+                "{formatter} has an unexpected production reference count in {module}"
+            );
+        }
+    }
+}
+
+#[test]
 fn qualified_public_globs_are_rejected() {
     for fixture in ["pub use session::*;", "pub use unstable::{Metrics, *};"] {
         assert!(
