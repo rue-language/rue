@@ -30,7 +30,8 @@ use rue_error::{CompileError, CompileWarning};
 
 pub use build::CfgBuilder;
 pub use inline::{
-    CfgInlineError, inline_call, inline_call_in_block, splice_call_growth, splice_call_in_block,
+    AccessorPlaceIndex, CfgInlineError, inline_call, inline_call_in_block, splice_call_growth,
+    splice_call_in_block, splice_call_in_block_in_place,
 };
 pub use inst::{
     BasicBlock, BlockId, Cfg, CfgArgMode, CfgCallArg, CfgDisplay, CfgEditError,

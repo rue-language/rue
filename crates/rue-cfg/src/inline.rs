@@ -437,9 +437,102 @@ pub fn splice_call_in_block(
     type_pool: &FrozenTypeInternPool,
 ) -> Result<Cfg, CfgInlineError> {
     let mut dst: Cfg = caller.clone();
+    if let Some(replacement) =
+        splice_call_in_block_in_place(&mut dst, call, call_block, callee, type_pool, None)?
+    {
+        dst.rewrite_value_uses_in_place(|value| if value == call { replacement } else { value })?;
+    }
+    Ok(dst)
+}
 
+/// Index of attached place instructions whose base names an accessor
+/// producer ([`PlaceBase::Accessor`]), keyed by producer, plus the count of
+/// values visited to maintain it.
+///
+/// A batch driver builds this once from the pre-splice caller and hands it to
+/// every [`splice_call_in_block_in_place`]: each splice then indexes only its
+/// appended value range and substitutes only the recorded consumers of the
+/// spliced producer, so index maintenance visits each value the caller ever
+/// holds exactly once across the batch — instead of one whole-graph consumer
+/// scan per splice. A splice given no index falls back to that scan.
+#[derive(Debug, Default)]
+pub struct AccessorPlaceIndex {
+    consumers: AHashMap<CfgValue, Vec<CfgValue>>,
+    values_scanned: u64,
+}
+
+impl AccessorPlaceIndex {
+    /// Index every accessor-rooted place currently in `cfg`.
+    pub fn build(cfg: &Cfg) -> Self {
+        let mut index = Self::default();
+        index.note_appended(cfg, 0);
+        index
+    }
+
+    /// Total values visited to build and maintain this index. A batch that
+    /// scans each appended range once keeps this equal to the final value
+    /// count — the scaling contract batch drivers rely on (RUE-1314).
+    pub fn values_scanned(&self) -> u64 {
+        self.values_scanned
+    }
+
+    fn note_appended(&mut self, cfg: &Cfg, from: u32) {
+        for raw in from..cfg.value_count() as u32 {
+            self.values_scanned += 1;
+            let value = CfgValue::from_raw(raw);
+            let (CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. }) =
+                &cfg.get_inst(value).data
+            else {
+                continue;
+            };
+            if let PlaceBase::Accessor(producer) = place.base {
+                self.consumers.entry(producer).or_default().push(value);
+            }
+        }
+    }
+}
+
+/// Splice one call into `dst` itself, without copying the caller.
+///
+/// This is the batch-driver primitive (RUE-1314): [`splice_call_in_block`]
+/// pays one whole-caller clone per call so its input survives a failed
+/// splice, which makes a driver splicing A call sites into one growing
+/// caller O(A × V) in copying alone. This entry point mutates the caller the
+/// driver already owns. The contracts a batch driver builds on:
+///
+/// - **Stable append offsets.** Existing values, blocks, and locals keep
+///   their indices. Callee arena value `v` lands at `dst.value_count() + v`
+///   and callee block `b` at `dst.block_count() + b` (counts as of entry);
+///   the continuation block follows the copied callee blocks. Drivers use
+///   these offsets to find work introduced by the splice.
+/// - **Deferred use rewrite.** The replaced call is left as a detached husk
+///   and its uses are NOT rewritten here; the returned value, when present,
+///   is what every use of `call` must read instead (the continuation's join
+///   parameter, or the unit constant). The driver applies its accumulated
+///   replacements in one [`Cfg::rewrite_value_uses_in_place`] sweep before
+///   the batch verification; until then the graph intentionally reads
+///   through husks. An accessor splice substitutes its yielded place here
+///   (producer order matters for nested chains) and returns `None`.
+/// - **Worklist ordering.** The driver owns splice order. Within one block,
+///   call sites must be spliced in instruction order: a splice moves the
+///   instructions after its call into the continuation block, so a
+///   block→continuation redirect map resolves the current block of any
+///   later call originally in that block.
+/// - **Atomic failure at the batch boundary.** On `Err` the caller may be
+///   partially spliced; the driver discards the whole batch (its input
+///   `ValidatedCfg` is untouched), which is the same atomicity the cloning
+///   primitive gave per call, settled at the batch boundary instead.
+pub fn splice_call_in_block_in_place(
+    dst: &mut Cfg,
+    call: CfgValue,
+    call_block: BlockId,
+    callee: &Cfg,
+    type_pool: &FrozenTypeInternPool,
+    mut accessor_uses: Option<&mut AccessorPlaceIndex>,
+) -> Result<Option<CfgValue>, CfgInlineError> {
+    let appended_values_from = dst.value_count() as u32;
     // -- Locate and validate the call site. ---------------------------------
-    let shape = splice_shape(&dst, call, Some(call_block), callee)?;
+    let shape = splice_shape(dst, call, Some(call_block), callee)?;
     let call_ty = shape.call_ty;
     let call_span = shape.call_span;
     let call_args = shape.call_args;
@@ -467,7 +560,7 @@ pub fn splice_call_in_block(
         let redirect = if callee.is_param_by_ref(param.start_slot) {
             // The argument is a place; only a simple local/parameter root is
             // redirectable in this phase (module docs, ADR-0049 §2/§3).
-            let place = byref_argument_place(&dst, arg.value, index)?;
+            let place = byref_argument_place(dst, arg.value, index)?;
             match place.base {
                 PlaceBase::Local(slot) => {
                     if callee.is_param_address_taken(param.start_slot) {
@@ -574,7 +667,7 @@ pub fn splice_call_in_block(
             });
         };
         Some((
-            translate_place(&mut dst, callee, place, &splice)?,
+            translate_place(dst, callee, place, &splice)?,
             splice.value(returned),
         ))
     } else {
@@ -582,7 +675,7 @@ pub fn splice_call_in_block(
     };
     for index in 0..callee.value_count() {
         let source = callee.get_inst(CfgValue::from_raw(index as u32));
-        let data = translate_data(&mut dst, callee, &source.data, &splice)?;
+        let data = translate_data(dst, callee, &source.data, &splice)?;
         // Spans are copied verbatim so a future location-carrying trap
         // mechanism inherits the callee's real source position (ADR-0049 §7).
         let translated = splice.value(CfgValue::from_raw(index as u32));
@@ -628,7 +721,7 @@ pub fn splice_call_in_block(
     // -- Attach the copied blocks. ------------------------------------------
     for source in callee.blocks() {
         let terminator = translate_terminator(
-            &mut dst,
+            dst,
             callee,
             &source.terminator,
             &splice,
@@ -667,12 +760,12 @@ pub fn splice_call_in_block(
     // continuation join (ADR-0049 §3).
     for &(slot, argument, ty) in &materialized {
         let live = storage_inst(
-            &mut dst,
+            dst,
             CfgInstData::StorageLive { slot, local_ty: ty },
             call_span,
         );
         let init = storage_inst(
-            &mut dst,
+            dst,
             CfgInstData::Alloc {
                 slot,
                 init: argument,
@@ -692,7 +785,7 @@ pub fn splice_call_in_block(
     let mut dead_materialized = Vec::with_capacity(materialized.len());
     for &(slot, _, ty) in &materialized {
         dead_materialized.push(storage_inst(
-            &mut dst,
+            dst,
             CfgInstData::StorageDead { slot, local_ty: ty },
             call_span,
         ));
@@ -715,16 +808,31 @@ pub fn splice_call_in_block(
         block.terminator = original_terminator;
     }
 
-    // Every use of the former call result now reads the continuation's join
-    // value (or the unit constant).
-    if let Some(replacement) = replacement {
-        dst.rewrite_value_uses(|value| if value == call { replacement } else { value })?;
+    // Uses of the former call result are NOT rewritten here: the returned
+    // replacement is the batch driver's to apply in one sweep before the
+    // batch verification (see the function contract above).
+    debug_assert_eq!(
+        splice.value_base, appended_values_from,
+        "nothing may enter the value arena before the callee copy"
+    );
+    // Accessor-rooted places introduced by this splice live only in the
+    // appended value range; index them before substitution so later producer
+    // splices find their consumers without rescanning the caller.
+    if let Some(index) = accessor_uses.as_deref_mut() {
+        index.note_appended(dst, appended_values_from);
     }
     if let Some((yielded_place, yielded_value)) = yielded {
-        substitute_accessor_places(&mut dst, call, &yielded_place, yielded_value)?;
+        substitute_accessor_places(
+            dst,
+            call,
+            &yielded_place,
+            yielded_value,
+            accessor_uses,
+            block_base..block_base + callee.block_count() as u32,
+        )?;
     }
 
-    Ok(dst)
+    Ok(replacement)
 }
 
 /// Return the exact value and basic-block growth that
@@ -748,10 +856,22 @@ fn substitute_accessor_places(
     call: CfgValue,
     yielded: &Place,
     yielded_value: CfgValue,
+    index: Option<&mut AccessorPlaceIndex>,
+    appended_blocks: std::ops::Range<u32>,
 ) -> Result<(), CfgInlineError> {
+    // With an index, only the recorded consumers of this producer are
+    // visited; without one, the whole arena is scanned. Both paths apply the
+    // same base filter, so a stale index entry (a place an earlier
+    // substitution already recomposed onto another root) is skipped exactly
+    // like a non-consumer.
+    let candidates: Vec<CfgValue> = match &index {
+        Some(index) => index.consumers.get(&call).cloned().unwrap_or_default(),
+        None => (0..cfg.value_count() as u32)
+            .map(CfgValue::from_raw)
+            .collect(),
+    };
     let mut replacements = Vec::new();
-    for index in 0..cfg.value_count() {
-        let value = CfgValue::from_raw(index as u32);
+    for value in candidates {
         let place = match &cfg.get_inst(value).data {
             CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. }
                 if place.base == PlaceBase::Accessor(call) =>
@@ -765,11 +885,24 @@ fn substitute_accessor_places(
         let composed = cfg.make_place(yielded.base, yielded.base_type, projections)?;
         replacements.push((value, composed));
     }
+    let mut still_accessor_rooted = Vec::new();
     for (value, place) in replacements {
+        // A consumer whose composed root is itself an accessor producer (the
+        // yielded place of a not-yet-spliced nested accessor) stays a live
+        // consumer of THAT producer; keep the index complete for its splice.
+        if let PlaceBase::Accessor(producer) = place.base {
+            still_accessor_rooted.push((producer, value));
+        }
         match &mut cfg.get_inst_mut(value).data {
             CfgInstData::PlaceRead { place: target }
             | CfgInstData::PlaceWrite { place: target, .. } => *target = place,
             _ => unreachable!(),
+        }
+    }
+    if let Some(index) = index {
+        index.consumers.remove(&call);
+        for (producer, value) in still_accessor_rooted {
+            index.consumers.entry(producer).or_default().push(value);
         }
     }
 
@@ -779,9 +912,11 @@ fn substitute_accessor_places(
     // Detaching this structural read is also required for nested accessors:
     // otherwise its indirect pointer can be lazily materialized in an
     // earlier-numbered continuation block and then used before definition in
-    // the appended inner guard blocks.
-    for block_index in 0..cfg.block_count() {
-        let block = BlockId::from_raw(block_index as u32);
+    // the appended inner guard blocks. The read is a copied callee
+    // instruction, so it is attached in exactly one of this splice's appended
+    // callee blocks.
+    for block_index in appended_blocks {
+        let block = BlockId::from_raw(block_index);
         cfg.get_block_mut(block)
             .insts
             .retain(|value| *value != yielded_value);
@@ -1662,7 +1797,9 @@ mod tests {
         cfg.set_return(entry, users.last().copied());
 
         let yielded = Place::local(0, Type::I64);
-        substitute_accessor_places(&mut cfg, call, &yielded, yielded_value).unwrap();
+        let all_blocks = 0..cfg.block_count() as u32;
+        substitute_accessor_places(&mut cfg, call, &yielded, yielded_value, None, all_blocks)
+            .unwrap();
 
         for (read, user) in reads.iter().copied().zip(users) {
             assert!(matches!(
@@ -2015,6 +2152,120 @@ mod tests {
             growth.blocks,
             (inlined.block_count() - caller.block_count()) as u64
         );
+    }
+
+    /// The RUE-1314 scaling regression: a batch of A splices into one caller
+    /// through the in-place primitive must (1) produce exactly the graph the
+    /// per-call cloning primitive produces, splice for splice, with one
+    /// deferred use-rewrite sweep at the end; (2) resolve every site's
+    /// current block through the block→continuation redirect contract
+    /// without rescanning; and (3) keep index maintenance at one visit per
+    /// value the caller ever holds — the bound that replaces the old
+    /// O(splices × values) rescans.
+    #[test]
+    fn in_place_batch_matches_cloning_splices_and_visits_each_value_once() {
+        const CALLS: usize = 8;
+        let mut program = scalar_program();
+        program.add("callee", |_| scalar_increment_callee());
+        program.add("caller", |interner| {
+            // `fn caller() -> i64 { callee(callee(...callee(1)...)) }` as a
+            // chain of CALLS call sites in one block, so every later site
+            // both consumes an earlier call's result and gets moved into a
+            // continuation by an earlier splice.
+            let mut cfg = Cfg::new(Type::I64, 0, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let mut current = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I64));
+            for _ in 0..CALLS {
+                current = cfg
+                    .append_call(
+                        entry,
+                        None,
+                        interner.get_or_intern("callee"),
+                        [CfgCallArg {
+                            value: current,
+                            mode: CfgArgMode::Normal,
+                        }],
+                        Type::I64,
+                        Span::new(0, 0),
+                    )
+                    .unwrap();
+            }
+            cfg.set_return(entry, Some(current));
+            cfg
+        });
+        let caller = program.cfg("caller");
+        let callee = program.cfg("callee");
+        let sites: Vec<(CfgValue, BlockId)> = caller
+            .blocks()
+            .iter()
+            .flat_map(|block| {
+                block
+                    .insts
+                    .iter()
+                    .copied()
+                    .filter(|&value| {
+                        matches!(caller.get_inst(value).data, CfgInstData::Call { .. })
+                    })
+                    .map(|value| (value, block.id))
+            })
+            .collect();
+        assert_eq!(sites.len(), CALLS);
+
+        // Reference: the per-call cloning primitive, block found by rescan.
+        let mut reference: Cfg = caller.clone().into_editor();
+        for &(call, _) in &sites {
+            let block = reference
+                .blocks()
+                .iter()
+                .find(|block| block.insts.contains(&call))
+                .map(|block| block.id)
+                .unwrap();
+            reference =
+                splice_call_in_block(&reference, call, block, callee, &program.type_pool).unwrap();
+        }
+
+        // Batch: in-place splices with the index, redirect-resolved blocks,
+        // and one deferred use-rewrite sweep.
+        let mut batched: Cfg = caller.clone().into_editor();
+        let mut index = AccessorPlaceIndex::build(&batched);
+        let mut redirects: AHashMap<BlockId, BlockId> = AHashMap::new();
+        let mut replacements: AHashMap<CfgValue, CfgValue> = AHashMap::new();
+        for &(call, original_block) in &sites {
+            let mut block = original_block;
+            while let Some(next) = redirects.get(&block).copied() {
+                block = next;
+            }
+            let block_base = batched.block_count() as u32;
+            let replacement = splice_call_in_block_in_place(
+                &mut batched,
+                call,
+                block,
+                callee,
+                &program.type_pool,
+                Some(&mut index),
+            )
+            .unwrap();
+            redirects.insert(
+                block,
+                BlockId::from_raw(block_base + callee.block_count() as u32),
+            );
+            if let Some(replacement) = replacement {
+                replacements.insert(call, replacement);
+            }
+        }
+        assert_eq!(replacements.len(), CALLS);
+        batched
+            .rewrite_value_uses_in_place(|value| replacements.get(&value).copied().unwrap_or(value))
+            .unwrap();
+
+        // (3): one index visit per value the caller ever held, exactly.
+        assert_eq!(index.values_scanned(), batched.value_count() as u64);
+        // (1): the same graph, then the same single whole-batch proof.
+        assert_eq!(format!("{reference}"), format!("{batched}"));
+        batched
+            .finish_after_optimization(&program.type_pool)
+            .unwrap();
     }
 
     #[test]
