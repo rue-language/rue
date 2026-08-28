@@ -214,8 +214,12 @@ fn checked_relocation_offset(
 /// A zero-size symbol may point exactly one byte past the final section byte
 /// (the conventional end-marker position). Any nonzero extent must remain
 /// wholly inside the defining section.
-fn validate_defined_symbols(obj: &LinkObject) -> Result<(), LinkError> {
+fn validate_defined_symbols(
+    obj: &LinkObject,
+    cancellation: &mut impl FnMut() -> bool,
+) -> Result<(), LinkError> {
     for sym in &obj.symbols {
+        check_cancellation(cancellation)?;
         let Some(section_index) = sym.section_index else {
             continue;
         };
@@ -712,8 +716,10 @@ fn collect_section_relocations(
     obj_idx: usize,
     home: PatchHome,
     pending: &mut Vec<PendingRelocation>,
+    cancellation: &mut impl FnMut() -> bool,
 ) -> Result<(), LinkError> {
     for reloc in &section.relocations {
+        check_cancellation(cancellation)?;
         // Validate symbol index before accessing
         if reloc.symbol_index >= obj.symbols.len() {
             return Err(LinkError::InvalidSymbolIndex {
@@ -808,9 +814,19 @@ impl SymbolAddresses {
     }
 }
 
+fn check_cancellation(cancellation: &mut impl FnMut() -> bool) -> Result<(), LinkError> {
+    if cancellation() {
+        Err(LinkError::Canceled)
+    } else {
+        Ok(())
+    }
+}
+
 /// Linker errors.
 #[derive(Debug)]
 pub enum LinkError {
+    /// Cooperative cancellation was requested by the caller.
+    Canceled,
     /// Undefined symbol reference.
     UndefinedSymbol(String),
     /// Duplicate symbol definition.
@@ -870,6 +886,7 @@ pub enum LinkError {
 impl std::fmt::Display for LinkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            LinkError::Canceled => write!(f, "link canceled"),
             LinkError::UndefinedSymbol(s) => write!(f, "undefined symbol: {}", s),
             LinkError::DuplicateSymbol(s) => write!(f, "duplicate symbol: {}", s),
             LinkError::ArchMismatch {
@@ -991,16 +1008,67 @@ impl LinkSection {
         self.content_len
     }
 
-    fn extend_contents(&self, output: &mut Vec<u8>) {
+    fn extend_contents(
+        &self,
+        output: &mut Vec<u8>,
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<(), LinkError> {
         match &self.content {
-            LinkSectionContent::Bytes(bytes) => output.extend_from_slice(bytes),
+            LinkSectionContent::Bytes(bytes) => {
+                extend_bytes_with_cancellation(output, bytes, cancellation)?
+            }
             LinkSectionContent::Atoms(atoms) => {
                 for atom in atoms.iter() {
-                    output.extend_from_slice(atom);
+                    extend_bytes_with_cancellation(output, atom, cancellation)?;
                 }
             }
         }
+        Ok(())
     }
+}
+
+fn extend_bytes_with_cancellation(
+    output: &mut Vec<u8>,
+    bytes: &[u8],
+    cancellation: &mut impl FnMut() -> bool,
+) -> Result<(), LinkError> {
+    for chunk in bytes.chunks(64 * 1024) {
+        check_cancellation(cancellation)?;
+        output.extend_from_slice(chunk);
+    }
+    Ok(())
+}
+
+fn resize_with_cancellation(
+    output: &mut Vec<u8>,
+    new_len: usize,
+    value: u8,
+    cancellation: &mut impl FnMut() -> bool,
+) -> Result<(), LinkError> {
+    while output.len() < new_len {
+        check_cancellation(cancellation)?;
+        let chunk_end = new_len.min(output.len().saturating_add(64 * 1024));
+        output.resize(chunk_end, value);
+    }
+    Ok(())
+}
+
+fn extend_pattern_with_cancellation(
+    output: &mut Vec<u8>,
+    pattern: &[u8],
+    byte_count: usize,
+    cancellation: &mut impl FnMut() -> bool,
+) -> Result<(), LinkError> {
+    let mut remaining = byte_count;
+    while remaining > 0 {
+        check_cancellation(cancellation)?;
+        let chunk = remaining.min(64 * 1024);
+        for index in 0..chunk {
+            output.push(pattern[index % pattern.len()]);
+        }
+        remaining -= chunk;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -1093,6 +1161,16 @@ impl Linker {
 
     /// Add an object file to be linked.
     pub fn add_object(&mut self, obj: ObjectFile) -> Result<(), LinkError> {
+        self.add_object_with_cancellation(obj, &mut || false)
+    }
+
+    /// Add a parsed object with bounded cooperative cancellation checkpoints.
+    pub fn add_object_with_cancellation(
+        &mut self,
+        obj: ObjectFile,
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<(), LinkError> {
+        check_cancellation(cancellation)?;
         // Refuse objects compiled for a different architecture — without this
         // check an "aarch64" binary could silently embed x86 machine code
         // (confirmed during the linker review: 22 x86 syscalls linked into an
@@ -1108,16 +1186,21 @@ impl Linker {
             });
         }
 
-        self.add_link_object(LinkObject::from(obj))
+        self.add_link_object(LinkObject::from(obj), cancellation)
     }
 
-    fn add_link_object(&mut self, obj: LinkObject) -> Result<(), LinkError> {
-        validate_defined_symbols(&obj)?;
+    fn add_link_object(
+        &mut self,
+        obj: LinkObject,
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<(), LinkError> {
+        validate_defined_symbols(&obj, cancellation)?;
 
         let obj_index = self.objects.len();
 
         // Collect global symbols
         for sym in &obj.symbols {
+            check_cancellation(cancellation)?;
             if provides_definition(sym) {
                 if let Some((_, existing)) = self.global_symbols.get(&sym.name) {
                     // Two strong definitions collide; weak symbols defer.
@@ -1153,6 +1236,16 @@ impl Linker {
         &mut self,
         obj: crate::elf::StructuredObject,
     ) -> Result<(), LinkError> {
+        self.add_structured_object_with_cancellation(obj, &mut || false)
+    }
+
+    /// Add a compiler-owned structured object with bounded cancellation.
+    pub fn add_structured_object_with_cancellation(
+        &mut self,
+        obj: crate::elf::StructuredObject,
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<(), LinkError> {
+        check_cancellation(cancellation)?;
         let expected = match self.target {
             Target::X86_64Linux => crate::elf::ElfMachine::X86_64,
             Target::Aarch64Linux | Target::Aarch64Macos => crate::elf::ElfMachine::Aarch64,
@@ -1174,7 +1267,7 @@ impl Linker {
                 target: format!("{:?}", self.target),
             });
         }
-        self.add_link_object(LinkObject::from(obj))
+        self.add_link_object(LinkObject::from(obj), cancellation)
     }
 
     /// Add objects from an ar archive selectively based on symbol resolution.
@@ -1209,6 +1302,16 @@ impl Linker {
     /// single-function objects, so a per-round walk of every linked symbol table
     /// was quadratic in the size of the link.
     pub fn add_archive(&mut self, archive: Archive) -> Result<(), LinkError> {
+        self.add_archive_with_cancellation(archive, &mut || false)
+    }
+
+    /// Add an archive while observing caller-owned cooperative cancellation.
+    pub fn add_archive_with_cancellation(
+        &mut self,
+        archive: Archive,
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<(), LinkError> {
+        check_cancellation(cancellation)?;
         // Convert to a Vec we can index into
         let archive_objects: Vec<ObjectFile> = archive.objects.into_iter().collect();
 
@@ -1226,7 +1329,9 @@ impl Linker {
             // independent of hash iteration order.
             let mut symbol_providers: AHashMap<&str, Vec<usize>> = AHashMap::new();
             for (obj_idx, obj) in archive_objects.iter().enumerate() {
+                check_cancellation(cancellation)?;
                 for sym in &obj.symbols {
+                    check_cancellation(cancellation)?;
                     if provides_definition(sym) {
                         symbol_providers.entry(&sym.name).or_default().push(obj_idx);
                     }
@@ -1257,7 +1362,9 @@ impl Linker {
                 enqueue_undefined(name, &mut pending, &mut queued);
             }
             for obj in &self.objects {
+                check_cancellation(cancellation)?;
                 for sym in &obj.symbols {
+                    check_cancellation(cancellation)?;
                     if references_undefined(sym) {
                         enqueue_undefined(&sym.name, &mut pending, &mut queued);
                     }
@@ -1265,6 +1372,7 @@ impl Linker {
             }
 
             while let Some(name) = pending.pop_front() {
+                check_cancellation(cancellation)?;
                 // A member pulled in for an earlier reference may have defined
                 // this symbol in the meantime; an already-satisfied symbol
                 // extracts nothing (RUE-848).
@@ -1287,6 +1395,7 @@ impl Linker {
                 // own references join the worklist — the transitive step the
                 // fixed-point rescan used to perform.
                 for sym in &archive_objects[obj_idx].symbols {
+                    check_cancellation(cancellation)?;
                     if provides_definition(sym) {
                         defined.insert(&sym.name);
                     }
@@ -1301,8 +1410,9 @@ impl Linker {
 
         // Now actually add the selected objects
         for (idx, obj) in archive_objects.into_iter().enumerate() {
+            check_cancellation(cancellation)?;
             if selected[idx] {
-                self.add_object(obj)?;
+                self.add_object_with_cancellation(obj, cancellation)?;
             }
         }
 
@@ -1315,10 +1425,21 @@ impl Linker {
     /// the target platform.
     #[must_use = "linking returns a Result that must be checked"]
     pub fn link(self, entry_point: &str) -> Result<Vec<u8>, LinkError> {
+        self.link_with_cancellation(entry_point, || false)
+    }
+
+    /// Link all objects with bounded cooperative cancellation checkpoints.
+    #[must_use = "linking returns a Result that must be checked"]
+    pub fn link_with_cancellation(
+        self,
+        entry_point: &str,
+        mut cancellation: impl FnMut() -> bool,
+    ) -> Result<Vec<u8>, LinkError> {
+        check_cancellation(&mut cancellation)?;
         if self.target.is_macho() {
-            self.link_macho(entry_point)
+            self.link_macho(entry_point, &mut cancellation)
         } else {
-            self.link_elf(entry_point)
+            self.link_elf(entry_point, &mut cancellation)
         }
     }
 
@@ -1326,7 +1447,11 @@ impl Linker {
     ///
     /// This generates a dynamic executable using LC_MAIN that can run on macOS
     /// after ad-hoc code signing with `codesign -s - <binary>`.
-    fn link_macho(self, entry_point: &str) -> Result<Vec<u8>, LinkError> {
+    fn link_macho(
+        self,
+        entry_point: &str,
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<Vec<u8>, LinkError> {
         use crate::constants::{VM_PROT_EXECUTE, VM_PROT_READ};
         use crate::macho::{ImageSizes, MachOBuilder, Section64, Segment64, VM_BASE};
 
@@ -1344,6 +1469,7 @@ impl Linker {
 
         // Merge code sections (.text* / __text)
         for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
             for (sec_idx, section) in obj.sections.iter().enumerate() {
                 if !is_text_section(&section.name) || section.content_len() == 0 {
                     continue;
@@ -1355,17 +1481,16 @@ impl Linker {
                 let aligned_len = align_up(current_len, align);
                 let padding = (aligned_len - current_len) as usize;
                 // Use BRK #0 (0x00, 0x00, 0x20, 0xD4) as padding for ARM64
-                for _ in 0..padding / 4 {
-                    merged_text.extend_from_slice(&[0x00, 0x00, 0x20, 0xD4]);
-                }
-                // Handle non-aligned padding
-                for _ in 0..(padding % 4) {
-                    merged_text.push(0x00);
-                }
+                extend_pattern_with_cancellation(
+                    &mut merged_text,
+                    &[0x00, 0x00, 0x20, 0xD4],
+                    padding,
+                    cancellation,
+                )?;
 
                 let offset = merged_text.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
-                section.extend_contents(&mut merged_text);
+                section.extend_contents(&mut merged_text, cancellation)?;
 
                 collect_section_relocations(
                     obj,
@@ -1374,6 +1499,7 @@ impl Linker {
                     obj_idx,
                     PatchHome::Text,
                     &mut pending_relocations,
+                    cancellation,
                 )?;
             }
         }
@@ -1384,6 +1510,7 @@ impl Linker {
         // is Text and their relocations are applied against that base.
         // (RUE-131 items 8 and 11)
         for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
             for (sec_idx, section) in obj.sections.iter().enumerate() {
                 if !is_rodata_section(&section.name) {
                     continue;
@@ -1394,11 +1521,12 @@ impl Linker {
                 // Align rodata (8-byte alignment is common for data)
                 let align = section.align.max(8);
                 let padding = align_up(merged_text.len() as u64, align) - merged_text.len() as u64;
-                merged_text.resize(merged_text.len() + padding as usize, 0);
+                let new_len = merged_text.len() + padding as usize;
+                resize_with_cancellation(&mut merged_text, new_len, 0, cancellation)?;
 
                 let offset = merged_text.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
-                section.extend_contents(&mut merged_text);
+                section.extend_contents(&mut merged_text, cancellation)?;
 
                 collect_section_relocations(
                     obj,
@@ -1407,6 +1535,7 @@ impl Linker {
                     obj_idx,
                     PatchHome::Text,
                     &mut pending_relocations,
+                    cancellation,
                 )?;
             }
         }
@@ -1415,6 +1544,7 @@ impl Linker {
         // buffer — patching them against merged_text bounds/contents was
         // RUE-131 item 8; the ELF side got the same fix via PatchHome in #928)
         for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
             for (sec_idx, section) in obj.sections.iter().enumerate() {
                 if !is_data_section(&section.name) || section.content_len() == 0 {
                     continue;
@@ -1422,11 +1552,12 @@ impl Linker {
 
                 let align = section.align.max(1);
                 let padding = align_up(merged_data.len() as u64, align) - merged_data.len() as u64;
-                merged_data.resize(merged_data.len() + padding as usize, 0);
+                let new_len = merged_data.len() + padding as usize;
+                resize_with_cancellation(&mut merged_data, new_len, 0, cancellation)?;
 
                 let offset = merged_data.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
-                section.extend_contents(&mut merged_data);
+                section.extend_contents(&mut merged_data, cancellation)?;
 
                 collect_section_relocations(
                     obj,
@@ -1435,6 +1566,7 @@ impl Linker {
                     obj_idx,
                     PatchHome::Data,
                     &mut pending_relocations,
+                    cancellation,
                 )?;
             }
         }
@@ -1444,6 +1576,7 @@ impl Linker {
         // at least as strictly as the strictest section in it (RUE-1646).
         let mut max_bss_align: u64 = 1;
         for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
             for (sec_idx, section) in obj.sections.iter().enumerate() {
                 if !is_bss_section(&section.name) {
                     continue;
@@ -1469,7 +1602,8 @@ impl Linker {
             let bss_base_align = max_bss_align.max(8);
             let bss_base_padding =
                 align_up(merged_data.len() as u64, bss_base_align) - merged_data.len() as u64;
-            merged_data.resize(merged_data.len() + bss_base_padding as usize, 0);
+            let new_len = merged_data.len() + bss_base_padding as usize;
+            resize_with_cancellation(&mut merged_data, new_len, 0, cancellation)?;
         }
 
         // Compute the final file/VM layout before placing symbols, using the
@@ -1527,6 +1661,7 @@ impl Linker {
         let mut symbol_addresses = SymbolAddresses::default();
 
         for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
             for sym in &obj.symbols {
                 if sym.name.is_empty() {
                     continue;
@@ -1612,6 +1747,7 @@ impl Linker {
             home,
         } in pending_relocations
         {
+            check_cancellation(cancellation)?;
             // Pick the buffer the patch site lives in and its base vaddr.
             // (PatchHome::Rodata is unused here: Mach-O merges rodata into
             // the text buffer.)
@@ -1697,6 +1833,7 @@ impl Linker {
         }
 
         drop(relocate_span);
+        check_cancellation(cancellation)?;
         let _emit_span = info_span!("link_emit").entered();
 
         // Now build the binary with the relocated code.
@@ -1722,7 +1859,9 @@ impl Linker {
         builder.add_segment(text_segment);
 
         // Build as dynamic executable (uses LC_MAIN + dyld)
-        let (bytes, calculated_offset, _data_vm_addr) = builder.build_dynamic();
+        let (bytes, calculated_offset, _data_vm_addr) = builder
+            .build_dynamic_with_cancellation(cancellation)
+            .ok_or(LinkError::Canceled)?;
 
         // Verify our pre-calculated offset matches (sanity check)
         if text_file_offset != calculated_offset {
@@ -1737,7 +1876,11 @@ impl Linker {
     }
 
     /// Link all objects and produce an ELF executable.
-    fn link_elf(self, entry_point: &str) -> Result<Vec<u8>, LinkError> {
+    fn link_elf(
+        self,
+        entry_point: &str,
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<Vec<u8>, LinkError> {
         // Layout constants - use separate program headers for proper W^X security:
         // - Segment 1: .text (R+X) - executable code
         // - Segment 2: .rodata (R) - read-only data (only if rodata exists)
@@ -1773,6 +1916,7 @@ impl Linker {
 
         // Merge code sections (.text*)
         for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
             for (sec_idx, section) in obj.sections.iter().enumerate() {
                 if classify_section(&section.name) != SectionKind::Text
                     || section.content_len() == 0
@@ -1790,12 +1934,13 @@ impl Linker {
                 };
                 let align = section.align.max(minimum_alignment);
                 let padding = align_up(merged_text.len() as u64, align) - merged_text.len() as u64;
-                merged_text.resize(merged_text.len() + padding as usize, 0xCC); // INT3 padding
+                let new_len = merged_text.len() + padding as usize;
+                resize_with_cancellation(&mut merged_text, new_len, 0xCC, cancellation)?;
 
                 let offset = merged_text.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
 
-                section.extend_contents(&mut merged_text);
+                section.extend_contents(&mut merged_text, cancellation)?;
 
                 collect_section_relocations(
                     obj,
@@ -1804,6 +1949,7 @@ impl Linker {
                     obj_idx,
                     PatchHome::Text,
                     &mut pending_relocations,
+                    cancellation,
                 )?;
             }
         }
@@ -1812,6 +1958,7 @@ impl Linker {
         // We need page alignment between code and rodata so they can have different
         // memory protections at runtime.
         for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
             for (sec_idx, section) in obj.sections.iter().enumerate() {
                 if classify_section(&section.name) != SectionKind::Rodata {
                     continue;
@@ -1822,12 +1969,13 @@ impl Linker {
                 let align = section.align.max(1);
                 let padding =
                     align_up(merged_rodata.len() as u64, align) - merged_rodata.len() as u64;
-                merged_rodata.resize(merged_rodata.len() + padding as usize, 0);
+                let new_len = merged_rodata.len() + padding as usize;
+                resize_with_cancellation(&mut merged_rodata, new_len, 0, cancellation)?;
 
                 let offset = merged_rodata.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
 
-                section.extend_contents(&mut merged_rodata);
+                section.extend_contents(&mut merged_rodata, cancellation)?;
 
                 collect_section_relocations(
                     obj,
@@ -1836,12 +1984,14 @@ impl Linker {
                     obj_idx,
                     PatchHome::Rodata,
                     &mut pending_relocations,
+                    cancellation,
                 )?;
             }
         }
 
         // Merge .data sections (initialized data - placed in data segment)
         for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
             for (sec_idx, section) in obj.sections.iter().enumerate() {
                 if classify_section(&section.name) != SectionKind::Data {
                     continue;
@@ -1853,12 +2003,13 @@ impl Linker {
 
                 let align = section.align.max(1);
                 let padding = align_up(merged_data.len() as u64, align) - merged_data.len() as u64;
-                merged_data.resize(merged_data.len() + padding as usize, 0);
+                let new_len = merged_data.len() + padding as usize;
+                resize_with_cancellation(&mut merged_data, new_len, 0, cancellation)?;
 
                 let offset = merged_data.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
 
-                section.extend_contents(&mut merged_data);
+                section.extend_contents(&mut merged_data, cancellation)?;
 
                 collect_section_relocations(
                     obj,
@@ -1867,6 +2018,7 @@ impl Linker {
                     obj_idx,
                     PatchHome::Data,
                     &mut pending_relocations,
+                    cancellation,
                 )?;
             }
         }
@@ -1882,6 +2034,7 @@ impl Linker {
         let mut max_bss_align: u64 = 1;
 
         for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
             for (sec_idx, section) in obj.sections.iter().enumerate() {
                 if classify_section(&section.name) != SectionKind::Bss {
                     continue;
@@ -1915,7 +2068,8 @@ impl Linker {
         // alignment up to a page — every alignment a real object requests.
         let bss_base_padding =
             align_up(merged_data.len() as u64, max_bss_align) - merged_data.len() as u64;
-        merged_data.resize(merged_data.len() + bss_base_padding as usize, 0);
+        let new_len = merged_data.len() + bss_base_padding as usize;
+        resize_with_cancellation(&mut merged_data, new_len, 0, cancellation)?;
         let bss_offset_in_data = merged_data.len() as u64;
 
         // Determine which optional segments are needed
@@ -1950,6 +2104,7 @@ impl Linker {
         let mut symbol_addresses = SymbolAddresses::default();
 
         for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
             for sym in &obj.symbols {
                 if sym.name.is_empty() {
                     continue;
@@ -2003,6 +2158,7 @@ impl Linker {
         // (e.g., .text._ZN11rue_runtime4heap5alloc... for Rust runtime internal calls).
         // Section symbols are local to their object, so key them per object.
         for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
             for (sec_idx, section) in obj.sections.iter().enumerate() {
                 if let Some(&offset) = section_offsets.get(&(obj_idx, sec_idx)) {
                     let addr = match classify_section(&section.name) {
@@ -2042,6 +2198,7 @@ impl Linker {
             home,
         } in pending_relocations
         {
+            check_cancellation(cancellation)?;
             // Pick the buffer the patch site lives in and its base vaddr.
             // PC-relative relocations in rodata/data measure from their own
             // section's address, not the code segment's.
@@ -2110,6 +2267,7 @@ impl Linker {
         }
 
         drop(relocate_span);
+        check_cancellation(cancellation)?;
         let _emit_span = info_span!("link_emit").entered();
 
         // Build the ELF with proper W^X segment separation
@@ -2250,31 +2408,34 @@ impl Linker {
         // it is reachable via the Linker API with a code-only / code+rodata
         // object.
         if (elf.len() as u64) < code_file_offset {
-            elf.resize(code_file_offset as usize, 0);
+            resize_with_cancellation(&mut elf, code_file_offset as usize, 0, cancellation)?;
         }
 
         // Write code section
-        elf.extend_from_slice(&merged_text);
+        extend_bytes_with_cancellation(&mut elf, &merged_text, cancellation)?;
 
         // Pad to rodata file offset if needed
         if has_rodata {
             let padding_needed = rodata_file_offset as usize - elf.len();
-            elf.resize(elf.len() + padding_needed, 0);
+            let new_len = elf.len() + padding_needed;
+            resize_with_cancellation(&mut elf, new_len, 0, cancellation)?;
 
             // Write rodata section
-            elf.extend_from_slice(&merged_rodata);
+            extend_bytes_with_cancellation(&mut elf, &merged_rodata, cancellation)?;
         }
 
         // Pad to data segment file offset if needed
         if has_data_segment {
             let current_size = elf.len();
             let padding_needed = data_file_offset as usize - current_size;
-            elf.resize(elf.len() + padding_needed, 0);
+            let new_len = elf.len() + padding_needed;
+            resize_with_cancellation(&mut elf, new_len, 0, cancellation)?;
 
             // Write data segment
-            elf.extend_from_slice(&merged_data);
+            extend_bytes_with_cancellation(&mut elf, &merged_data, cancellation)?;
         }
 
+        check_cancellation(cancellation)?;
         Ok(elf)
     }
 }
@@ -2304,6 +2465,96 @@ mod tests {
     // Use X86_64Linux explicitly for ELF tests since ObjectFile only parses ELF
     // and the Linker produces ELF executables
     const ELF_TARGET: Target = Target::X86_64Linux;
+
+    #[test]
+    fn large_structured_link_observes_bounded_cancellation_checkpoints() {
+        let empty_atoms: Arc<[Arc<[u8]>]> = Arc::from([]);
+        let text_atoms: Arc<[Arc<[u8]>]> = Arc::from([Arc::from([0xC3_u8])]);
+        let mut linker = Linker::new(ELF_TARGET);
+        for index in 0..2_048 {
+            linker
+                .add_structured_object(crate::StructuredObject::function(
+                    ELF_TARGET,
+                    if index == 0 {
+                        "main".to_owned()
+                    } else {
+                        format!("function_{index}")
+                    },
+                    Arc::clone(&text_atoms),
+                    Arc::clone(&empty_atoms),
+                    Vec::new(),
+                ))
+                .unwrap();
+        }
+
+        let mut checkpoints = 0_usize;
+        let result = linker.link_with_cancellation("main", || {
+            checkpoints += 1;
+            checkpoints == 128
+        });
+
+        assert!(matches!(result, Err(LinkError::Canceled)));
+        assert_eq!(checkpoints, 128);
+    }
+
+    #[test]
+    fn ordinary_structured_link_uses_the_same_successful_path() {
+        let mut linker = Linker::new(ELF_TARGET);
+        linker
+            .add_structured_object(crate::StructuredObject::function(
+                ELF_TARGET,
+                "main",
+                Arc::from([Arc::from([0xC3_u8])]),
+                Arc::from([]),
+                Vec::new(),
+            ))
+            .unwrap();
+
+        let executable = linker.link("main").unwrap();
+        assert_eq!(&executable[..4], &ELF_MAGIC);
+    }
+
+    #[test]
+    fn large_single_section_final_emission_is_bounded_and_byte_identical() {
+        for (target, entry) in [
+            (Target::X86_64Linux, "main"),
+            (Target::Aarch64Macos, "__main"),
+        ] {
+            let make_linker = || {
+                let mut linker = Linker::new(target);
+                linker
+                    .add_structured_object(crate::StructuredObject::function(
+                        target,
+                        entry,
+                        Arc::from([Arc::<[u8]>::from(vec![0_u8; 4 * 1024 * 1024])]),
+                        Arc::from([]),
+                        Vec::new(),
+                    ))
+                    .unwrap();
+                linker
+            };
+
+            let ordinary = make_linker().link(entry).unwrap();
+            let mut total_checkpoints = 0_usize;
+            let cancellable = make_linker()
+                .link_with_cancellation(entry, || {
+                    total_checkpoints += 1;
+                    false
+                })
+                .unwrap();
+            assert_eq!(ordinary, cancellable);
+            assert!(total_checkpoints > 2 * (4 * 1024 * 1024 / (64 * 1024)));
+
+            let cancel_at = total_checkpoints - 8;
+            let mut checkpoints = 0_usize;
+            let canceled = make_linker().link_with_cancellation(entry, || {
+                checkpoints += 1;
+                checkpoints == cancel_at
+            });
+            assert!(matches!(canceled, Err(LinkError::Canceled)));
+            assert_eq!(checkpoints, cancel_at);
+        }
+    }
 
     fn defined_symbol(name: &str, value: u64, size: u64) -> Symbol {
         Symbol {
@@ -2619,13 +2870,14 @@ mod tests {
     fn defined_symbol_extents_accept_boundaries_and_reject_escape() {
         for (value, size) in [(0, 4), (3, 1), (4, 0)] {
             let obj = object_with_defined_symbols(4, vec![defined_symbol("valid", value, size)]);
-            validate_defined_symbols(&LinkObject::from(obj))
+            validate_defined_symbols(&LinkObject::from(obj), &mut || false)
                 .unwrap_or_else(|error| panic!("valid extent {value}+{size}: {error}"));
         }
 
         for (value, size) in [(5, 0), (4, 1), (3, 2), (u64::MAX, 2)] {
             let obj = object_with_defined_symbols(4, vec![defined_symbol("bad", value, size)]);
-            let error = validate_defined_symbols(&LinkObject::from(obj)).unwrap_err();
+            let error =
+                validate_defined_symbols(&LinkObject::from(obj), &mut || false).unwrap_err();
             assert!(matches!(
                 error,
                 LinkError::SymbolOutsideSection {

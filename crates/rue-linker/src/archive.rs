@@ -21,6 +21,8 @@ pub struct Archive {
 /// Error type for archive parsing.
 #[derive(Debug)]
 pub enum ArchiveError {
+    /// Cooperative cancellation was requested by the caller.
+    Canceled,
     /// Invalid ar magic number.
     InvalidMagic,
     /// Archive is too short.
@@ -38,6 +40,7 @@ pub enum ArchiveError {
 impl std::fmt::Display for ArchiveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ArchiveError::Canceled => write!(f, "archive parsing canceled"),
             ArchiveError::InvalidMagic => write!(f, "invalid ar archive magic"),
             ArchiveError::TooShort => write!(f, "archive too short"),
             ArchiveError::InvalidHeader(s) => write!(f, "invalid archive header: {}", s),
@@ -74,7 +77,7 @@ impl Archive {
     /// Special entries like symbol tables (`/`, `//`, `__.SYMDEF`) are skipped.
     #[must_use = "parsing returns a Result that must be checked"]
     pub fn parse(data: &[u8]) -> Result<Self, ArchiveError> {
-        Self::parse_impl(data, false)
+        Self::parse_impl(data, false, &mut || false)
     }
 
     /// Parse an archive while rejecting malformed members that advertise a
@@ -86,10 +89,25 @@ impl Archive {
     /// however, must parse successfully instead of silently disappearing.
     #[must_use = "parsing returns a Result that must be checked"]
     pub fn parse_strict_objects(data: &[u8]) -> Result<Self, ArchiveError> {
-        Self::parse_impl(data, true)
+        Self::parse_impl(data, true, &mut || false)
     }
 
-    fn parse_impl(data: &[u8], strict_objects: bool) -> Result<Self, ArchiveError> {
+    /// Parse a strict archive with bounded caller-owned cancellation checks.
+    pub fn parse_strict_objects_with_cancellation(
+        data: &[u8],
+        mut cancellation: impl FnMut() -> bool,
+    ) -> Result<Self, ArchiveError> {
+        Self::parse_impl(data, true, &mut cancellation)
+    }
+
+    fn parse_impl(
+        data: &[u8],
+        strict_objects: bool,
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<Self, ArchiveError> {
+        if cancellation() {
+            return Err(ArchiveError::Canceled);
+        }
         // Check magic
         if data.len() < AR_MAGIC.len() {
             return Err(ArchiveError::TooShort);
@@ -102,6 +120,9 @@ impl Archive {
         let mut offset = AR_MAGIC.len();
 
         loop {
+            if cancellation() {
+                return Err(ArchiveError::Canceled);
+            }
             let header_end = checked_offset_add(offset, HEADER_SIZE)?;
             if header_end > data.len() {
                 if strict_objects && offset != data.len() {
@@ -192,8 +213,9 @@ impl Archive {
 
             // Try to parse as object file (ELF or Mach-O).
             // Non-object members (e.g., LLVM bitcode files from LTO builds) are skipped.
-            match ObjectFile::parse(member_data) {
+            match ObjectFile::parse_with_cancellation(member_data, &mut *cancellation) {
                 Ok(obj) => objects.push(obj),
+                Err(crate::elf::ParseError::Canceled) => return Err(ArchiveError::Canceled),
                 Err(source) if strict_objects && looks_like_native_object(member_data) => {
                     return Err(ArchiveError::ObjectMemberParse {
                         member: actual_name,
@@ -249,6 +271,51 @@ fn looks_like_native_object(data: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rue_target::Target;
+
+    #[test]
+    fn strict_archive_parse_observes_cancellation_between_members() {
+        let mut checks = 0_usize;
+        let result = Archive::parse_strict_objects_with_cancellation(AR_MAGIC, || {
+            checks += 1;
+            checks == 2
+        });
+
+        assert!(matches!(result, Err(ArchiveError::Canceled)));
+        assert_eq!(checks, 2);
+    }
+
+    #[test]
+    fn strict_single_large_member_parse_has_byte_bounded_cancellation() {
+        let object = crate::ObjectBuilder::new(Target::X86_64Linux, "large")
+            .code(vec![0_u8; 4 * 1024 * 1024])
+            .build();
+        let header = format!(
+            "{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n",
+            "large.o/",
+            "0",
+            "0",
+            "0",
+            "644",
+            object.len()
+        );
+        assert_eq!(header.len(), HEADER_SIZE);
+        let mut archive = AR_MAGIC.to_vec();
+        archive.extend_from_slice(header.as_bytes());
+        archive.extend_from_slice(&object);
+        if archive.len() % 2 == 1 {
+            archive.push(b'\n');
+        }
+
+        let mut checkpoints = 0_usize;
+        let result = Archive::parse_strict_objects_with_cancellation(&archive, || {
+            checkpoints += 1;
+            checkpoints == 32
+        });
+
+        assert!(matches!(result, Err(ArchiveError::Canceled)));
+        assert_eq!(checkpoints, 32);
+    }
 
     #[test]
     fn test_invalid_magic() {

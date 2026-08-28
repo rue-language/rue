@@ -545,6 +545,47 @@ mod tests {
     }
 
     #[test]
+    fn in_progress_internal_link_cancellation_aborts_without_poisoning_reuse() {
+        let snapshot = wide_reached_program(64, 7);
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let rooted = session
+            .rooted_codegen_internal_with_cancellation(
+                &options,
+                rue_codegen::BackendArtifactRequest::default(),
+                rue_query::CancellationToken::new(),
+            )
+            .unwrap();
+        let cancellation = rue_query::CancellationToken::new();
+        crate::linking::set_link_cancellation_tripwire(Some((cancellation.clone(), 8)));
+
+        let canceled = crate::queries::compile_rooted_with_session_with_cancellation(
+            &mut session,
+            &snapshot,
+            &options,
+            rooted,
+            &cancellation,
+        );
+
+        assert!(matches!(
+            canceled,
+            Err(crate::session::PipelineRequestControl::Abort(
+                rue_query::QueryAbort::Canceled
+            ))
+        ));
+        assert!(cancellation.is_canceled());
+        crate::linking::set_link_cancellation_tripwire(None);
+
+        let recovered = crate::queries::compile_with_session(&mut session, &snapshot, &options)
+            .expect("a canceled final link must not poison retained compiler terminals");
+        assert!(!recovered.elf.is_empty());
+    }
+
+    #[test]
     fn failed_wide_batches_release_their_unpublished_child_cones_under_pressure() {
         const CHAIN_FUNCTIONS: usize = 33;
         // RUE-1262 ruling on what the pressure compiles buy. They are a witness

@@ -295,8 +295,13 @@ pub(crate) fn compile_with_session_with_cancellation(
             rue_query::QueryAbort::Canceled,
         ));
     }
-    let output = compile_rooted_with_session(session, snapshot, options, rooted)
-        .map_err(crate::session::PipelineRequestControl::Compile)?;
+    let output = compile_rooted_with_session_with_cancellation(
+        session,
+        snapshot,
+        options,
+        rooted,
+        &cancellation,
+    )?;
     if cancellation.is_canceled() {
         return Err(crate::session::PipelineRequestControl::Abort(
             rue_query::QueryAbort::Canceled,
@@ -315,6 +320,41 @@ pub(crate) fn compile_rooted_with_session(
     options: &CompileOptions,
     rooted: crate::session::RootedCodegenOutput,
 ) -> MultiErrorResult<CompileOutput> {
+    compile_rooted_with_session_with_cancellation(
+        session,
+        snapshot,
+        options,
+        rooted,
+        &rue_query::CancellationToken::new(),
+    )
+    .map_err(|control| match control {
+        crate::session::PipelineRequestControl::Compile(errors) => errors,
+        crate::session::PipelineRequestControl::Abort(abort) => {
+            crate::session::pipeline_abort_errors("compile finalization", abort)
+        }
+        crate::session::PipelineRequestControl::Parked(park) => {
+            crate::session::unresolved_toolchain_park_errors(&park)
+        }
+    })
+}
+
+pub(crate) fn compile_rooted_with_session_with_cancellation(
+    session: &mut CompilerSession,
+    snapshot: &SourceSnapshot,
+    options: &CompileOptions,
+    rooted: crate::session::RootedCodegenOutput,
+    cancellation: &rue_query::CancellationToken,
+) -> Result<CompileOutput, crate::session::PipelineRequestControl> {
+    let check_cancellation = || {
+        if cancellation.is_canceled() {
+            Err(crate::session::PipelineRequestControl::Abort(
+                rue_query::QueryAbort::Canceled,
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    check_cancellation()?;
     let source_tokens = session
         .published_owner()
         .filter(|program| program.belongs_to_exact_snapshot(snapshot))
@@ -323,8 +363,23 @@ pub(crate) fn compile_rooted_with_session(
             CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
                 "compilation snapshot differs from the published parsed program".into(),
             )))
-        })?;
-    let total_source_bytes: usize = snapshot.files().map(|source| source.source.len()).sum();
+        })
+        .map_err(crate::session::PipelineRequestControl::Compile)?;
+    let mut total_source_bytes = 0_usize;
+    let mut total_source_lines = 0_usize;
+    for source in snapshot.files() {
+        check_cancellation()?;
+        total_source_bytes = total_source_bytes.saturating_add(source.source.len());
+        let bytes = source.source.as_bytes();
+        for chunk in bytes.chunks(64 * 1024) {
+            check_cancellation()?;
+            total_source_lines = total_source_lines
+                .saturating_add(chunk.iter().filter(|&&byte| byte == b'\n').count());
+        }
+        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+            total_source_lines = total_source_lines.saturating_add(1);
+        }
+    }
     let session_work = session.work().clone();
     let metrics = session.unstable_metrics();
     let query_runtime = metrics.query_runtime();
@@ -332,41 +387,39 @@ pub(crate) fn compile_rooted_with_session(
     let provider_observations = crate::unstable::provider_observation_metrics(session);
     let mut output = match rooted.input {
         crate::session::RootedCodegenInput::Structured => {
-            let export_thunk_objects = rooted
-                .exports
-                .iter()
-                .map(|export| {
-                    crate::backend::generate_export_thunk_object(
-                        options.target,
-                        &export.exported_symbol,
-                        &export.native_symbol,
-                        &export.param_types,
-                    )
-                })
-                .collect::<Vec<_>>();
-            crate::linking::link_internal_structured_units_with_warnings(
+            let mut export_thunk_objects = Vec::with_capacity(rooted.exports.len());
+            for export in &rooted.exports {
+                check_cancellation()?;
+                export_thunk_objects.push(crate::backend::generate_export_thunk_object(
+                    options.target,
+                    &export.exported_symbol,
+                    &export.native_symbol,
+                    &export.param_types,
+                ));
+            }
+            crate::linking::link_internal_structured_units_with_warnings_and_cancellation(
                 options,
                 &rooted.units,
                 &export_thunk_objects,
                 &rooted.warnings,
+                cancellation,
             )?
         }
         crate::session::RootedCodegenInput::Projected => {
-            let image = crate::program_image_plan::ProgramImage::from_rooted(
+            let image = crate::program_image_plan::ProgramImage::from_rooted_with_cancellation(
                 rooted.objects,
                 rooted.exports,
                 options,
+                cancellation,
             )?;
-            image.fresh_link(options, &rooted.warnings)?
+            image.fresh_link_with_cancellation(options, &rooted.warnings, cancellation)?
         }
     };
+    check_cancellation()?;
     output.source_stats = SourceStats {
         files: snapshot.len(),
         bytes: total_source_bytes,
-        lines: snapshot
-            .files()
-            .map(|source| source.source.lines().count())
-            .sum(),
+        lines: total_source_lines,
         tokens: source_tokens,
     };
     output.work = PipelineWork {
@@ -381,5 +434,6 @@ pub(crate) fn compile_rooted_with_session(
     output.publication = crate::unstable::PublicationMetrics {
         cone_retention_failures: session.publication_cone_retention_failures(),
     };
+    check_cancellation()?;
     Ok(output)
 }
