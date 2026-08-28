@@ -162,7 +162,7 @@ mod tests {
     use rue_span::FileId;
 
     use super::*;
-    use crate::unstable::{ColorChoice, DiagnosticFormatter, JsonDiagnosticFormatter, SourceInfo};
+    use crate::unstable::{ColorChoice, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo};
     use crate::{CompilerSession, Item, SourceMetadata, SourceSnapshot};
 
     fn snapshot(entries: &[(u32, &str, &str)]) -> SourceSnapshot {
@@ -217,15 +217,18 @@ mod tests {
         assert_eq!(work.syntax.parser_invocations, 3);
 
         let source_info = SourceInfo::new(&first, "first.rue");
-        let text = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never)
-            .format_error(summaries[0]);
+        let text = MultiFileFormatter::with_color_choice(
+            [(FileId::DEFAULT, source_info.clone())],
+            ColorChoice::Never,
+        )
+        .format_error(summaries[0]);
         assert!(
             text.contains(
                 "[E0103]: additional parser diagnostics omitted after the first 100 errors"
             )
         );
 
-        let json_formatter = JsonDiagnosticFormatter::new(&source_info);
+        let json_formatter = MultiFileJsonFormatter::new([(FileId::DEFAULT, source_info.clone())]);
         let json = json_formatter.format_error(summaries[0]).to_json();
         assert_eq!(json, json_formatter.format_error(summaries[0]).to_json());
         assert!(json.contains("\"code\":\"E0103\""));
@@ -265,15 +268,18 @@ mod tests {
         assert_eq!(work.syntax.parser_invocations, 1);
 
         let source_info = SourceInfo::new(&first, "first.rue");
-        let text = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never)
-            .format_error(summaries[0]);
+        let text = MultiFileFormatter::with_color_choice(
+            [(FileId::DEFAULT, source_info.clone())],
+            ColorChoice::Never,
+        )
+        .format_error(summaries[0]);
         assert!(
             text.contains(
                 "[E0010]: additional lexer diagnostics omitted after the first 100 errors"
             )
         );
 
-        let json_formatter = JsonDiagnosticFormatter::new(&source_info);
+        let json_formatter = MultiFileJsonFormatter::new([(FileId::DEFAULT, source_info.clone())]);
         let json = json_formatter.format_error(summaries[0]).to_json();
         assert_eq!(json, json_formatter.format_error(summaries[0]).to_json());
         assert!(json.contains("\"code\":\"E0010\""));

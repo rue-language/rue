@@ -258,7 +258,7 @@ note: first defined here
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
-The `DiagnosticFormatter` already supports source file names; we need to ensure each error carries the correct file context.
+The `MultiFileFormatter` supports source file names; each error must carry the correct file context.
 
 #### 6. Linking
 
