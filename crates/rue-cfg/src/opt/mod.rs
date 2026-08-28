@@ -366,7 +366,18 @@ pub fn optimize_with_budget(
                 // reachability, then thread empty forwarding blocks and merge
                 // single-predecessor Goto chains into straight-line blocks
                 // before DCE prunes the leftovers.
-                simplify::run(&mut cfg)?;
+                let simplify_stats = simplify::run(&mut cfg)?;
+                // Folding a control value can expose stores and loads on the
+                // surviving path (notably drop flags). Re-run the sparse
+                // constant/folding cleanup when control flow changed so those
+                // newly unreachable ownership actions are removed before
+                // forwarding and CSE inspect the graph.
+                if simplify_stats.branches_folded > 0 || simplify_stats.switches_folded > 0 {
+                    dce::run(&mut cfg);
+                    constopt::run(&mut cfg);
+                    peephole::run(&mut cfg)?;
+                    simplify::run(&mut cfg)?;
+                }
 
                 // Value forwarding / copy propagation (RUE-914), at -O2/-O3 only.
                 // Runs after simplify and before CSE: it turns redundant `Load`s
@@ -376,7 +387,18 @@ pub fn optimize_with_budget(
                 // Both rules are trap-exact — a load never traps and the forwarded
                 // value is already computed — so the orphaned loads fall to DCE.
                 if matches!(level, OptLevel::O2 | OptLevel::O3) {
-                    forward::run(&mut cfg)?;
+                    let forward_stats = forward::run(&mut cfg)?;
+                    // Forwarding can expose constants in a branch condition
+                    // without changing the Load instruction itself. Fold and
+                    // simplify that newly constant control flow before CSE;
+                    // this is essential for drop-flag stores revealed after a
+                    // selector branch is folded.
+                    if forward_stats.loads_forwarded_single_write > 0
+                        || forward_stats.loads_forwarded_block_local > 0
+                    {
+                        constopt::run(&mut cfg);
+                        simplify::run(&mut cfg)?;
+                    }
                 }
 
                 // Block-local common-subexpression elimination (RUE-913), at

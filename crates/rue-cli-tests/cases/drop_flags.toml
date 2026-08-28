@@ -10,6 +10,7 @@ description = "Branch-divergent moves drop exactly once on every path."
 
 [[case]]
 name = "if_branch_move_drops_once_each_path"
+differential_opt = true
 files = [{ path = "main.rue", source = """
 struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
@@ -28,9 +29,11 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "100\n7\n200\n7\n300\n"
+exit_code = 0
 
 [[case]]
 name = "match_arm_move_drops_once_each_path"
+differential_opt = true
 files = [{ path = "main.rue", source = """
 struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
@@ -50,9 +53,11 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "9\n555\n9\n"
+exit_code = 0
 
 [[case]]
 name = "loop_break_move_drops_once"
+differential_opt = true
 description = "Conservative loop joins are also corrected at runtime by the flag."
 files = [{ path = "main.rue", source = """
 struct D { v: i32 }
@@ -73,6 +78,7 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "3\n777\n"
+exit_code = 0
 
 # RUE-1737: a partial field move on a break edge must reach the loop exit's
 # MoveState. Joining the move and non-move break paths keeps the enclosing
@@ -180,6 +186,7 @@ stdout = "1\n50\n2\n60\n50\n1\n"
 
 [[case]]
 name = "param_divergent_move_drops_once_each_path"
+differential_opt = true
 description = "Owned by-value params get the same flag treatment."
 files = [{ path = "main.rue", source = """
 struct D { v: i32 }
@@ -196,6 +203,7 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "4\n888\n5\n"
+exit_code = 0
 
 # RUE-67 regression: match arms are SIBLING paths for the move checker. A move
 # in one arm must not leak into the others — using `a` in the `_` arm after
@@ -205,6 +213,7 @@ stdout = "4\n888\n5\n"
 # the drop runs at scope exit.
 [[case]]
 name = "match_sibling_arm_use_after_move_accepted"
+differential_opt = true
 files = [{ path = "main.rue", source = """
 struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }

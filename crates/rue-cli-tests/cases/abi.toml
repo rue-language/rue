@@ -250,6 +250,7 @@ hello
 # ABI slot; callee and caller must agree on the shift.
 [[case]]
 name = "string_return_with_args"
+differential_opt = true
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -269,6 +270,7 @@ stdout = """
 5
 first
 """
+exit_code = 0
 
 # sret + stack-passed args together: a 9-slot struct argument (slots past the
 # arg registers spill to the caller's stack, shifted by the hidden sret

@@ -748,6 +748,21 @@ pub struct Cfg {
     /// RUE-521 O1+ segfault. By-ref call arguments are the analogous
     /// per-instruction escape, handled directly in constopt's scan.
     address_taken_slots: AHashSet<u32>,
+    /// Local slots that are ownership-transfer boundaries introduced by a
+    /// CFG transform (currently CFG inlining). Values are moved into these
+    /// regions with an `Alloc`; the corresponding translated parameter Loads
+    /// are recorded in `ownership_boundary_values` so only the ownership-
+    /// consuming reads remain tied to the callee-owned region.
+    ///
+    /// This is deliberately separate from `address_taken_slots`: an ownership
+    /// boundary does not imply that a raw pointer escapes, so it must not be
+    /// presented to codegen or alias analysis as an address escape.
+    ownership_boundary_slots: AHashSet<u32>,
+    /// SSA loads that materialize an ownership-transfer parameter. Unlike a
+    /// slot-wide optimizer barrier, this preserves the transfer through
+    /// forwarding while allowing a returned load to continue with the
+    /// caller's owner.
+    ownership_boundary_values: AHashSet<CfgValue>,
     /// Parameter ABI slots whose ADDRESS escapes through an address-taking
     /// intrinsic (`@raw` / `@raw_mut` / `@field_ptr` applied to a parameter),
     /// recorded at construction like `address_taken_slots`. A by-value
@@ -1059,6 +1074,8 @@ impl Clone for Cfg {
             fn_name: self.fn_name.clone(),
             param_modes: self.param_modes.clone(),
             address_taken_slots: self.address_taken_slots.clone(),
+            ownership_boundary_slots: self.ownership_boundary_slots.clone(),
+            ownership_boundary_values: self.ownership_boundary_values.clone(),
             address_taken_params: self.address_taken_params.clone(),
             source_param_abi: self.source_param_abi.clone(),
             capacity_exceeded: self.capacity_exceeded,
@@ -1090,6 +1107,8 @@ impl Cfg {
         );
         cfg.entry = self.entry;
         cfg.address_taken_slots = self.address_taken_slots.clone();
+        cfg.ownership_boundary_slots = self.ownership_boundary_slots.clone();
+        cfg.ownership_boundary_values = self.ownership_boundary_values.clone();
         cfg.address_taken_params = self.address_taken_params.clone();
         // Descriptors carry a type only for a by-value indirect aggregate
         // parameter, remapped across pools like any other CFG type (RUE-1005).
@@ -1372,6 +1391,8 @@ impl Cfg {
             fn_name,
             param_modes: param_modes.into(),
             address_taken_slots: AHashSet::new(),
+            ownership_boundary_slots: AHashSet::new(),
+            ownership_boundary_values: AHashSet::new(),
             address_taken_params: AHashSet::new(),
             source_param_abi: Vec::new(),
             capacity_exceeded: None,
@@ -1398,6 +1419,30 @@ impl Cfg {
     #[inline]
     pub fn is_address_taken(&self, slot: u32) -> bool {
         self.address_taken_slots.contains(&slot)
+    }
+
+    /// Mark a local slot as an ownership-transfer boundary. Optimizations that
+    /// substitute local loads must preserve the load at this boundary so the
+    /// destination local remains the owner of the transferred value.
+    #[inline]
+    pub(crate) fn mark_ownership_boundary(&mut self, slot: u32) {
+        self.ownership_boundary_slots.insert(slot);
+    }
+
+    /// Whether a local slot is an ownership-transfer boundary.
+    #[inline]
+    pub(crate) fn is_ownership_boundary(&self, slot: u32) -> bool {
+        self.ownership_boundary_slots.contains(&slot)
+    }
+
+    #[inline]
+    pub(crate) fn mark_ownership_boundary_value(&mut self, value: CfgValue) {
+        self.ownership_boundary_values.insert(value);
+    }
+
+    #[inline]
+    pub(crate) fn is_ownership_boundary_value(&self, value: CfgValue) -> bool {
+        self.ownership_boundary_values.contains(&value)
     }
 
     /// Record that parameter ABI slot `slot`'s address escapes through an
@@ -2718,8 +2763,17 @@ impl Cfg {
         &mut self,
         map: impl Fn(CfgValue) -> CfgValue,
     ) -> Result<(), CfgEditError> {
+        let boundary_values = self
+            .ownership_boundary_values
+            .iter()
+            .copied()
+            .map(|value| (value, map(value)))
+            .collect::<Vec<_>>();
         let mut rewritten = self.clone();
         rewritten.rewrite_value_uses_in_place(map)?;
+        for (_, replacement) in boundary_values {
+            rewritten.ownership_boundary_values.insert(replacement);
+        }
         *self = rewritten;
         Ok(())
     }
@@ -3746,6 +3800,7 @@ mod tests {
         let else_block = cfg.new_block();
         let exit = cfg.new_block();
         cfg.entry = entry;
+        cfg.mark_ownership_boundary(1);
         let old = cfg.append_inst(
             entry,
             CfgInst {
@@ -3754,6 +3809,7 @@ mod tests {
                 span: Span::new(3, 4),
             },
         );
+        cfg.mark_ownership_boundary_value(old);
         let replacement = cfg.append_inst(
             entry,
             CfgInst {
@@ -3843,6 +3899,8 @@ mod tests {
 
         let cloned = cfg.clone();
         assert_eq!(cloned.to_string(), cfg.to_string());
+        assert!(cloned.is_ownership_boundary(1));
+        assert!(cloned.is_ownership_boundary_value(old));
         assert_eq!(
             cloned.get_call_args(&cloned.get_inst(call).data)[0].mode,
             CfgArgMode::Borrow
@@ -3858,6 +3916,13 @@ mod tests {
             })
             .unwrap();
         assert_eq!(remapped.to_string(), cfg.to_string());
+        assert!(remapped.is_ownership_boundary(1));
+        assert!(remapped.is_ownership_boundary_value(old));
+        let mut rewritten = cfg.clone();
+        rewritten
+            .rewrite_value_uses(|value| if value == old { replacement } else { value })
+            .unwrap();
+        assert!(rewritten.is_ownership_boundary_value(replacement));
         assert_eq!(remapped.get_inst(call).span, Span::new(107, 108));
         assert_eq!(
             remapped.get_array_elements(&remapped.get_inst(array).data),

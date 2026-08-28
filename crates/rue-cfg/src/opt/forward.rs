@@ -12,6 +12,11 @@
 //! load, so no computation is added, removed, or reordered — only a redundant
 //! memory read is bypassed.
 //!
+//! A translated by-value parameter is the one exception to ordinary
+//! single-write forwarding. Inlining marks the parameter's materialized
+//! `Load` value; that ownership-consuming read stays a load, while later reads
+//! may still forward through it so a returned value keeps the caller's owner.
+//!
 //! ## Rule 1 — global single-write forwarding
 //!
 //! Generalizes constant store-to-load propagation ([`super::constopt`]) from
@@ -90,7 +95,9 @@ pub struct Stats {
 }
 
 /// Run value forwarding. Call at `-O2`/`-O3` after simplification and before
-/// CSE.
+/// CSE. Ownership-boundary values are always preserved: they describe a
+/// semantic transfer across an inline boundary, not an optional optimization
+/// policy.
 pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     let mut stats = Stats::default();
     let num_locals = cfg.num_locals() as usize;
@@ -159,7 +166,8 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
 
             match cfg.get_inst(value).data.duplicate_with_owner() {
                 CfgInstData::Alloc { slot, init } | CfgInstData::Store { slot, value: init } => {
-                    // Address-taken slots stay out of the block-local table.
+                    // Address-taken slots stay out of the block-local table;
+                    // ownership-boundary Loads are filtered by value below.
                     if !cfg.is_address_taken(slot) && (slot as usize) < num_locals {
                         last_store[slot as usize] = Some(init);
                     }
@@ -167,6 +175,13 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                 CfgInstData::Load { slot } => {
                     // A by-ref argument load must remain a place.
                     if byref_arg_values.contains(&value) {
+                        continue;
+                    }
+                    // Only the Load that crosses into a callee-owned
+                    // parameter is protected. Other loads from that slot may
+                    // still forward to the transfer value, which is how a
+                    // returned value hands ownership back to the caller.
+                    if cfg.is_ownership_boundary_value(value) {
                         continue;
                     }
                     if let Some(SlotWrites::One {
@@ -590,6 +605,36 @@ mod tests {
         );
         cfg.mark_address_taken(0);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(ptr) });
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.loads_forwarded_single_write, 0);
+        assert_eq!(stats.loads_forwarded_block_local, 0);
+        assert!(matches!(
+            cfg.get_inst(load).data,
+            CfgInstData::Load { slot: 0 }
+        ));
+    }
+
+    #[test]
+    fn test_ownership_boundary_slot_never_forwarded() {
+        // Inlining moves the caller value into a fresh callee-owned slot. The
+        // slot has one Alloc, but replacing its Load with the Alloc initializer
+        // would erase that ownership transfer and can double-drop the caller's
+        // value during post-splice reoptimization.
+        let mut cfg = make_cfg(1);
+        let value = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: value,
+            },
+            Type::UNIT,
+        );
+        let load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        cfg.mark_ownership_boundary(0);
+        cfg.mark_ownership_boundary_value(load);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(load) });
 
         let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loads_forwarded_single_write, 0);

@@ -32,6 +32,11 @@
 //!   dereferenced as an address, and a raw pointer may write the slot behind
 //!   the optimizer's back (RUE-521 O1+ segfault). These slots are
 //!   disqualified upfront, before any write is seen.
+//! - **Ownership-transfer boundaries** are tracked by CFG inlining at the
+//!   translated parameter `Load` values, not here at slot classification. The
+//!   same slot may return ownership to the caller on one path and be dropped
+//!   in the callee on another, so a slot-wide disqualification would be too
+//!   coarse. Constopt and forwarding consult the per-value marker instead.
 //!
 //! ## Dominance
 //!
@@ -98,7 +103,11 @@ pub(super) fn classify_slot_writes(cfg: &Cfg, reachable: Option<&BitSet>) -> Vec
     let num_locals = cfg.num_locals() as usize;
     let mut slot_writes = vec![SlotWrites::None; num_locals];
 
-    // Address-taken slots are disqualified upfront (RUE-521; module docs).
+    // Address-taken slots are disqualified upfront (RUE-521). Ownership
+    // transfer is tracked per materialized Param Load by the callers below:
+    // the same slot can return ownership to the caller on one path and be
+    // dropped in the callee on another, so a slot-wide classification would be
+    // too coarse.
     for (slot, state) in slot_writes.iter_mut().enumerate() {
         if cfg.is_address_taken(slot as u32) {
             *state = SlotWrites::Disqualified;

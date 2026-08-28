@@ -140,6 +140,7 @@ stdout = "1\n100\n2\n"
 
 [[case]]
 name = "branch_divergent_move_then_assignment_guarded"
+differential_opt = true
 description = "Conditionally moved value: the overwrite drop is guarded by the runtime drop flag — exactly one old-value drop on each path."
 files = [{ path = "main.rue", source = """
 struct D { v: i32 }
@@ -160,6 +161,7 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "1\n100\n2\n500\n1\n100\n2\n"
+exit_code = 0
 
 [[case]]
 name = "partially_moved_struct_overwrite_drops_remaining_fields"
