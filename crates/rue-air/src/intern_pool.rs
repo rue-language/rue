@@ -3838,9 +3838,17 @@ impl FrozenTypeInternPool {
 
     /// Return the flattened runtime ABI width of `ty` in eight-byte slots.
     pub fn abi_slot_count(&self, ty: Type) -> u32 {
-        self.validate_complete_type(ty)
-            .expect("backend layout requires a complete, non-recovery type graph");
-        self.inner.abi_slot_count(ty)
+        self.try_abi_slot_count(ty)
+            .expect("backend layout requires a complete, non-recovery type graph")
+    }
+
+    /// Return the flattened runtime ABI width of `ty`, or explain why the
+    /// handle cannot be read from this frozen pool.
+    pub fn try_abi_slot_count(&self, ty: Type) -> Result<u32, TypeValidationError> {
+        self.validate_complete_type(ty)?;
+        self.inner
+            .stored_abi_slot_count(ty)
+            .ok_or(TypeValidationError::IncompleteDefinition)
     }
 
     /// Canonical physical [`Layout`] of `ty`: the one authority code generation
@@ -5162,9 +5170,84 @@ mod tests {
         assert_eq!(frozen.inner.stored_abi_slot_count(pointer), Some(1));
         assert_eq!(frozen.inner.stored_abi_slot_count(choice_ty), Some(8));
         assert_eq!(frozen.inner.stored_abi_slot_count(wrapper_ty), Some(9));
+        assert_eq!(frozen.try_abi_slot_count(pair_ty), Ok(2));
+        assert_eq!(frozen.try_abi_slot_count(pairs), Ok(6));
+        assert_eq!(frozen.try_abi_slot_count(saturated), Ok(u32::MAX));
+        assert_eq!(frozen.try_abi_slot_count(choice_ty), Ok(8));
+        assert_eq!(frozen.try_abi_slot_count(wrapper_ty), Ok(9));
         assert_eq!(frozen.abi_slot_count(wrapper_ty), 9);
         assert_eq!(frozen.struct_field_slot_offset(wrapper, 1), 8);
         assert_eq!(frozen.enum_payload_slot_offset(choice, 0, 1), 7);
+    }
+
+    #[test]
+    fn frozen_try_abi_slot_count_rejects_malformed_handles_without_reading_storage() {
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let (owner, _) = pool.register_struct(
+            declarations.get_or_intern("Owner"),
+            struct_def(
+                "Owner",
+                vec![StructField {
+                    name: "value".into(),
+                    ty: Type::I64,
+                }],
+            ),
+        );
+        let frozen = pool.freeze();
+
+        assert_eq!(
+            frozen.try_abi_slot_count(Type::new_array(ArrayTypeId::from_pool_index(
+                owner.pool_index(),
+            ))),
+            Err(TypeValidationError::KindMismatch)
+        );
+        assert_eq!(
+            frozen.try_abi_slot_count(Type::new_struct(StructId::from_pool_index(99))),
+            Err(TypeValidationError::PoolIndexOutOfRange)
+        );
+        assert_eq!(
+            frozen.try_abi_slot_count(Type::ERROR),
+            Err(TypeValidationError::RecoveryType)
+        );
+        assert_eq!(
+            frozen.try_abi_slot_count(Type::from_u32(0x100)),
+            Err(TypeValidationError::InvalidEncoding)
+        );
+    }
+
+    #[test]
+    fn frozen_abi_slot_query_reads_the_stored_canonical_width() {
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let (owner, _) = pool.register_struct(
+            declarations.get_or_intern("Owner"),
+            struct_def(
+                "Owner",
+                vec![
+                    StructField {
+                        name: "left".into(),
+                        ty: Type::I64,
+                    },
+                    StructField {
+                        name: "right".into(),
+                        ty: Type::I64,
+                    },
+                ],
+            ),
+        );
+        let owner_ty = Type::new_struct(owner);
+        let mut frozen = pool.freeze();
+        assert_eq!(frozen.try_abi_slot_count(owner_ty), Ok(2));
+
+        // Deliberately perturb only the stored derived field. A verifier-local
+        // declaration walk cannot reproduce this mutation, so this test stays
+        // sensitive to a consumer that starts recomputing widths locally.
+        Arc::get_mut(&mut frozen.inner)
+            .expect("a freshly frozen pool has one owner")
+            .set_entry_abi_slots(owner.pool_index() as usize, 7);
+        assert_eq!(frozen.try_abi_slot_count(owner_ty), Ok(7));
+        assert_eq!(frozen.abi_slot_count(owner_ty), 7);
     }
 
     #[test]

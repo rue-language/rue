@@ -367,15 +367,12 @@ struct Verifier<'a> {
     /// may only be built once targets are known to be in bounds and payload
     /// slices are known to be valid.
     dominators: Option<DominatorTree>,
-    /// Memo for [`Verifier::abi_slot_count`], which is a pure function of the
-    /// type against this verifier's fixed pool: `block`, `value`, and `role`
-    /// only name the site in an error message.
-    ///
-    /// The count recurses through struct fields, array elements, and enum
-    /// payloads, and the same types recur constantly across a function's
-    /// slots. Uncached, a fresh Lattice build called it about two million
-    /// times for 406M instructions, 4.8% of the whole compile.
-    abi_slot_cache: std::cell::RefCell<ahash::AHashMap<Type, u32>>,
+    /// Test-only authority injection. A deliberately divergent answer proves
+    /// the verifier's slot-range decisions consume the frozen-pool query
+    /// instead of a shadow decomposition.
+    #[cfg(test)]
+    abi_slot_query_override:
+        Option<fn(&FrozenTypeInternPool, Type) -> Result<u32, rue_air::TypeValidationError>>,
 }
 
 impl<'a> Verifier<'a> {
@@ -391,7 +388,8 @@ impl<'a> Verifier<'a> {
             skip_unreachable_blocks: false,
             attachments: vec![None; cfg.value_count()],
             dominators: None,
-            abi_slot_cache: std::cell::RefCell::new(ahash::AHashMap::new()),
+            #[cfg(test)]
+            abi_slot_query_override: None,
         }
     }
 
@@ -1706,78 +1704,60 @@ impl<'a> Verifier<'a> {
         value: CfgValue,
         role: &str,
     ) -> Result<u32, CfgVerificationError> {
-        let cached = self.abi_slot_cache.borrow().get(&ty).copied();
-        if let Some(width) = cached {
-            return Ok(width);
-        }
-        let width = match ty.kind() {
-            TypeKind::I8
-            | TypeKind::I16
-            | TypeKind::I32
-            | TypeKind::I64
-            | TypeKind::U8
-            | TypeKind::U16
-            | TypeKind::U32
-            | TypeKind::U64
-            | TypeKind::Bool
-            | TypeKind::Error
-            | TypeKind::PtrConst(_)
-            | TypeKind::PtrMut(_) => 1,
-            TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType | TypeKind::Module(_) => 0,
-            TypeKind::Struct(struct_id) => {
-                let Some(pool) = self.type_pool else {
-                    return Ok(0);
-                };
-                let Some(def) = pool.try_struct_def(struct_id) else {
-                    return Err(self.error(format_args!(
-                        "{} instruction {} in block {} references invalid struct type {:?}",
-                        role, value, block, struct_id
-                    )));
-                };
-                let mut width = 0u32;
-                for field in &def.fields {
-                    width =
-                        width.saturating_add(self.abi_slot_count(field.ty, block, value, role)?);
-                }
-                width
-            }
-            TypeKind::Array(array_id) => {
-                let Some(pool) = self.type_pool else {
-                    return Ok(0);
-                };
-                let Some((element, len)) = pool.try_array_def(array_id) else {
-                    return Err(self.error(format_args!(
-                        "{} instruction {} in block {} references invalid array type {:?}",
-                        role, value, block, array_id
-                    )));
-                };
-                let element_width = u64::from(self.abi_slot_count(element, block, value, role)?);
-                u32::try_from(element_width.saturating_mul(len)).unwrap_or(u32::MAX)
-            }
-            TypeKind::Enum(enum_id) => {
-                let Some(pool) = self.type_pool else {
-                    return Ok(0);
-                };
-                let Some(def) = pool.try_enum_def(enum_id) else {
-                    return Err(self.error(format_args!(
-                        "{} instruction {} in block {} references invalid enum type {:?}",
-                        role, value, block, enum_id
-                    )));
-                };
-                let mut payload_width = 0;
-                for index in 0..def.variant_count() {
-                    let mut variant_width = 0u32;
-                    for &payload_ty in def.variant_payload(index) {
-                        variant_width = variant_width
-                            .saturating_add(self.abi_slot_count(payload_ty, block, value, role)?);
-                    }
-                    payload_width = payload_width.max(variant_width);
-                }
-                1u32.saturating_add(payload_width)
-            }
+        let Some(pool) = self.type_pool else {
+            return Ok(match ty.try_kind() {
+                Some(TypeKind::I8)
+                | Some(TypeKind::I16)
+                | Some(TypeKind::I32)
+                | Some(TypeKind::I64)
+                | Some(TypeKind::U8)
+                | Some(TypeKind::U16)
+                | Some(TypeKind::U32)
+                | Some(TypeKind::U64)
+                | Some(TypeKind::Bool)
+                | Some(TypeKind::Error)
+                | Some(TypeKind::PtrConst(_))
+                | Some(TypeKind::PtrMut(_)) => 1,
+                Some(TypeKind::Unit)
+                | Some(TypeKind::Never)
+                | Some(TypeKind::ComptimeType)
+                | Some(TypeKind::Module(_))
+                | Some(TypeKind::Struct(_))
+                | Some(TypeKind::Array(_))
+                | Some(TypeKind::Enum(_))
+                | None => 0,
+            });
         };
-        self.abi_slot_cache.borrow_mut().insert(ty, width);
-        Ok(width)
+
+        let canonical_width = || pool.try_abi_slot_count(ty);
+        #[cfg(test)]
+        let width = self
+            .abi_slot_query_override
+            .map_or_else(canonical_width, |query| query(pool, ty));
+        #[cfg(not(test))]
+        let width = canonical_width();
+
+        width.map_err(|error| {
+            let kind = ty.try_kind();
+            match kind {
+                Some(TypeKind::Struct(id)) => self.error(format_args!(
+                    "{} instruction {} in block {} references invalid struct type {:?}",
+                    role, value, block, id
+                )),
+                Some(TypeKind::Array(id)) => self.error(format_args!(
+                    "{} instruction {} in block {} references invalid array type {:?}",
+                    role, value, block, id
+                )),
+                Some(TypeKind::Enum(id)) => self.error(format_args!(
+                    "{} instruction {} in block {} references invalid enum type {:?}",
+                    role, value, block, id
+                )),
+                _ => self.error(format_args!(
+                    "{} instruction {} in block {} references invalid type ({error:?})",
+                    role, value, block
+                )),
+            }
+        })
     }
 
     fn is_fixed_str_to_view_coercion(&self, source: Type, result: Type) -> bool {
@@ -2238,6 +2218,7 @@ impl<'a> Verifier<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::Verifier;
     use crate::inst::{
         BlockId, Cfg, CfgInst, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator,
     };
@@ -4539,6 +4520,72 @@ mod tests {
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
         cfg.verify_with_type_pool(&pool).unwrap();
+    }
+
+    #[test]
+    fn verify_slot_ranges_consume_the_frozen_pool_authority() {
+        fn divergent_width(
+            _pool: &FrozenTypeInternPool,
+            _ty: Type,
+        ) -> Result<u32, rue_air::TypeValidationError> {
+            Ok(7)
+        }
+
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let pair = register_struct(&pool, &interner, "Pair", &[Type::I32, Type::I32]);
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 2, 0, "canonical_width".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Load { slot: 0 },
+                ty: Type::new_struct(pair),
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_terminator(entry, Terminator::Unreachable);
+
+        let mut verifier = Verifier::new(&cfg, Some(&pool), true);
+        verifier.abi_slot_query_override = Some(divergent_width);
+        let error = verifier.verify().unwrap_err();
+        assert!(error.to_string().contains("local slot range 0..7"));
+    }
+
+    #[test]
+    fn verify_reports_invalid_type_encoding_without_unwinding() {
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            1,
+            0,
+            "invalid_type_encoding".to_string(),
+            vec![],
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Load { slot: 0 },
+                // SAFETY: Type is one u32 field and every u32 is memory-valid;
+                // malformedness is semantic. The raw constructor is
+                // intentionally AIR-private, so reproduce packed-storage
+                // corruption at this verifier boundary.
+                ty: unsafe { std::mem::transmute::<u32, Type>(0x100) },
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_terminator(entry, Terminator::Unreachable);
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cfg.finish(&FrozenTypeInternPool::new())
+        }));
+        let error = outcome
+            .expect("malformed type verification must not unwind")
+            .unwrap_err();
+        assert!(error.to_string().contains("InvalidEncoding"));
     }
 
     #[test]
