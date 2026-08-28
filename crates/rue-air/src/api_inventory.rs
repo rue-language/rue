@@ -3482,3 +3482,237 @@ fn retired_source_owned_sema_plane_cannot_return() {
         "the provider host must construct the shared body engine"
     );
 }
+
+#[test]
+fn sema_diagnostics_use_the_friendly_type_display_authority() {
+    // Diagnostic payloads in the ordinary body engine must go through its
+    // presentation authority. This is the complete production sema inventory
+    // (the same Buck-generated manifest used by the broader inventory test),
+    // split below only to make the presentation boundary auditable. The
+    // non-presentation half is checked for raw captures, so adding a new sema
+    // module cannot silently evade this guard.
+    let all_sema_sources = [
+        (
+            "sema/aggregate_resolution",
+            include_str!("sema/aggregate_resolution.rs"),
+        ),
+        ("sema/aggregates", include_str!("sema/aggregates.rs")),
+        ("sema/analysis", include_str!("sema/analysis.rs")),
+        (
+            "sema/analysis/builtin_ops",
+            include_str!("sema/analysis/builtin_ops.rs"),
+        ),
+        (
+            "sema/analysis/calls",
+            include_str!("sema/analysis/calls.rs"),
+        ),
+        (
+            "sema/analysis/instructions",
+            include_str!("sema/analysis/instructions.rs"),
+        ),
+        (
+            "sema/analysis/intrinsics",
+            include_str!("sema/analysis/intrinsics.rs"),
+        ),
+        (
+            "sema/analysis/ownership",
+            include_str!("sema/analysis/ownership.rs"),
+        ),
+        (
+            "sema/analysis/pointers",
+            include_str!("sema/analysis/pointers.rs"),
+        ),
+        (
+            "sema/analysis/type_inference",
+            include_str!("sema/analysis/type_inference.rs"),
+        ),
+        ("sema/analyze_ops", include_str!("sema/analyze_ops.rs")),
+        ("sema/anon_structs", include_str!("sema/anon_structs.rs")),
+        (
+            "sema/binding_manifest",
+            include_str!("sema/binding_manifest.rs"),
+        ),
+        ("sema/body_endpoint", include_str!("sema/body_endpoint.rs")),
+        ("sema/body_identity", include_str!("sema/body_identity.rs")),
+        (
+            "sema/call_resolution",
+            include_str!("sema/call_resolution.rs"),
+        ),
+        ("sema/comptime", include_str!("sema/comptime.rs")),
+        ("sema/comptime_eval", include_str!("sema/comptime_eval.rs")),
+        ("sema/context", include_str!("sema/context.rs")),
+        ("sema/control_flow", include_str!("sema/control_flow.rs")),
+        (
+            "sema/declaration_index",
+            include_str!("sema/declaration_index.rs"),
+        ),
+        ("sema/declarations", include_str!("sema/declarations.rs")),
+        ("sema/fact_mode", include_str!("sema/fact_mode.rs")),
+        ("sema/inference_ctx", include_str!("sema/inference_ctx.rs")),
+        ("sema/info", include_str!("sema/info.rs")),
+        ("sema/known_symbols", include_str!("sema/known_symbols.rs")),
+        ("sema/mod", include_str!("sema/mod.rs")),
+        (
+            "sema/ordinary_engine",
+            include_str!("sema/ordinary_engine.rs"),
+        ),
+        ("sema/output", include_str!("sema/output.rs")),
+        ("sema/provider", include_str!("sema/provider.rs")),
+        (
+            "sema/provider_body_host",
+            include_str!("sema/provider_body_host.rs"),
+        ),
+        (
+            "sema/provider_module_registry",
+            include_str!("sema/provider_module_registry.rs"),
+        ),
+        (
+            "sema/semantic_body_export",
+            include_str!("sema/semantic_body_export.rs"),
+        ),
+        ("sema/typeck", include_str!("sema/typeck.rs")),
+        ("sema/visibility", include_str!("sema/visibility.rs")),
+    ];
+    let manifest = include_str!("rue_air_source_manifest.txt");
+    let test_only_sema_modules = [
+        "sema/consistency_tests",
+        "sema/provider_accessor_tests",
+        "sema/provider_fixture",
+        "sema/provider_fixture_tests",
+        "sema/provider_semantics_tests",
+        "sema/provider_strings_ownership_tests",
+        "sema/tests",
+    ];
+    let manifest_sema_modules = manifest
+        .lines()
+        .map(|path| path.trim_start_matches("./").trim_end_matches(".rs"))
+        .map(|path| path.trim_start_matches("src/"))
+        .filter(|path| path.starts_with("sema/"))
+        .filter(|path| !test_only_sema_modules.contains(path))
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    let inventoried_sema_modules = all_sema_sources
+        .iter()
+        .map(|(module, _)| module.to_string())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        manifest_sema_modules, inventoried_sema_modules,
+        "friendly-display inventory must cover every production sema source in Buck's manifest"
+    );
+    let presentation_modules = [
+        "sema/aggregates",
+        "sema/analysis",
+        "sema/analysis/builtin_ops",
+        "sema/analysis/calls",
+        "sema/analysis/instructions",
+        "sema/analysis/intrinsics",
+        "sema/analysis/ownership",
+        "sema/analysis/pointers",
+        "sema/analysis/type_inference",
+        "sema/analyze_ops",
+        "sema/comptime_eval",
+        "sema/control_flow",
+        "sema/typeck",
+    ];
+    for (module, source) in &all_sema_sources {
+        if presentation_modules.contains(module)
+            || matches!(*module, "sema/provider_body_host" | "sema/ordinary_engine")
+        {
+            continue;
+        }
+        assert!(
+            !source.contains("safe_name_with_pool(") && !source.contains("name_with_pool("),
+            "non-presentation sema module captured a raw type name: {module}"
+        );
+    }
+
+    // Keep the raw pool renderer available only to the authority itself and
+    // provider-owned identity/symbol paths; a new direct capture in one of
+    // the presentation modules is an accidental bypass that would leak
+    // anonymous nominal names again.
+    let presentation_sources = [
+        include_str!("sema/aggregates.rs"),
+        include_str!("sema/analysis.rs"),
+        include_str!("sema/analysis/builtin_ops.rs"),
+        include_str!("sema/analysis/calls.rs"),
+        include_str!("sema/analysis/instructions.rs"),
+        include_str!("sema/analysis/intrinsics.rs"),
+        include_str!("sema/analysis/ownership.rs"),
+        include_str!("sema/analysis/pointers.rs"),
+        include_str!("sema/analysis/type_inference.rs"),
+        include_str!("sema/analyze_ops.rs"),
+        include_str!("sema/comptime_eval.rs"),
+        include_str!("sema/control_flow.rs"),
+        include_str!("sema/typeck.rs"),
+    ]
+    .concat();
+    let mut presentation_code = String::with_capacity(presentation_sources.len());
+    let mut chars = presentation_sources.chars().peekable();
+    let mut in_line_comment = false;
+    let mut block_comment_depth = 0usize;
+    let mut in_string = false;
+    while let Some(ch) = chars.next() {
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+                presentation_code.push(ch);
+            }
+            continue;
+        }
+        if block_comment_depth > 0 {
+            if ch == '/' && chars.peek() == Some(&'*') {
+                chars.next();
+                block_comment_depth += 1;
+            } else if ch == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                block_comment_depth -= 1;
+            }
+            continue;
+        }
+        if in_string {
+            if ch == '\\' {
+                chars.next();
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            in_line_comment = true;
+        } else if ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            block_comment_depth = 1;
+        } else if ch == '"' {
+            in_string = true;
+        } else {
+            presentation_code.push(ch);
+        }
+    }
+    assert!(presentation_code.contains("format_type_name"));
+    assert!(
+        !presentation_code.contains("safe_name_with_pool(")
+            && !presentation_code.contains("name_with_pool("),
+        "a sema diagnostic captured a raw type name"
+    );
+    assert!(!presentation_code.contains("struct_def.name"));
+    assert!(!presentation_code.contains("enum_def.name"));
+    let ordinary = include_str!("sema/ordinary_engine.rs");
+    let provider = include_str!("sema/provider_body_host.rs");
+    assert!(ordinary.contains("self.storage.friendly_type_display(ty)"));
+    assert!(
+        ordinary.contains("fn format_internal_type_name")
+            && ordinary.contains("ty.safe_name_with_pool")
+    );
+    assert!(provider.contains("fn friendly_type_display(&self, ty: Type) -> String"));
+    assert!(provider.contains("ctor_displays.get(&ty)"));
+    assert!(provider.contains("crate::format_canonical_application("));
+    let identity = include_str!("semantic_identity.rs");
+    assert_eq!(
+        identity
+            .matches("pub fn format_canonical_application<")
+            .count(),
+        1,
+        "canonical comptime display interleaving must have one AIR owner"
+    );
+}

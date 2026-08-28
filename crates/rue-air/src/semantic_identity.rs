@@ -293,6 +293,66 @@ pub struct CanonicalArguments<D, M> {
     pub values: Arc<[CanonicalArgumentValue<D, M>]>,
 }
 
+/// The declaration-relative shape of one parameter used while presenting a
+/// canonical comptime application. Identity keeps type and value arguments in
+/// separate streams; this tiny schema projection is the shared presentation
+/// authority that interleaves them without changing that identity contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CanonicalDisplayParameter {
+    pub is_comptime: bool,
+    pub is_type: bool,
+}
+
+/// Render a canonical comptime application against its declaration schema.
+///
+/// [`CanonicalArguments`] deliberately stores two streams for compact,
+/// identity-stable keys. Every presentation consumer must use this function
+/// rather than inventing an ordering rule. Exhaustion is validated in both
+/// directions so malformed durable facts never become plausible diagnostics.
+pub fn format_canonical_application<D, M, I, F>(
+    name: &str,
+    parameters: I,
+    arguments: Option<&CanonicalArguments<D, M>>,
+    mut display_type: F,
+) -> Option<String>
+where
+    I: IntoIterator<Item = CanonicalDisplayParameter>,
+    F: FnMut(&TypeInstanceKey<D, M>) -> Option<String>,
+{
+    let Some(arguments) = arguments else {
+        return Some(name.to_owned());
+    };
+
+    let mut types = arguments.types.iter();
+    let mut values = arguments.values.iter();
+    let mut rendered = Vec::new();
+    for parameter in parameters
+        .into_iter()
+        .filter(|parameter| parameter.is_comptime)
+    {
+        if parameter.is_type {
+            rendered.push(display_type(types.next()?)?);
+        } else {
+            rendered.push(match values.next()? {
+                CanonicalArgumentValue::Integer(value) => value.to_string(),
+                CanonicalArgumentValue::Bool(value) => value.to_string(),
+                CanonicalArgumentValue::Type(value) => display_type(value.as_ref())?,
+                CanonicalArgumentValue::Function(_) => "function".to_owned(),
+                CanonicalArgumentValue::Unit => "()".to_owned(),
+                CanonicalArgumentValue::String(value) => format!("\"{value}\""),
+            });
+        }
+    }
+    if types.next().is_some() || values.next().is_some() {
+        return None;
+    }
+    if rendered.is_empty() {
+        Some(name.to_owned())
+    } else {
+        Some(format!("{name}({})", rendered.join(", ")))
+    }
+}
+
 // The two streams deliberately avoid storing a redundant tag per element.
 // Their mixed positional order is reconstructed only against the base
 // function's durable parameter schema (`parameter_comptime` plus the
@@ -857,5 +917,46 @@ mod tests {
             2
         );
         assert_eq!(AHashSet::from([baseline, same, moved]).len(), 2);
+    }
+
+    #[test]
+    fn canonical_application_display_interleaves_type_values_and_unit() {
+        type T = TypeInstanceKey<&'static str, &'static str>;
+        let arguments = CanonicalArguments {
+            types: Arc::from([T::I32]),
+            values: Arc::from([
+                CanonicalArgumentValue::Integer(7),
+                CanonicalArgumentValue::Unit,
+            ]),
+        };
+        let parameters = [
+            CanonicalDisplayParameter {
+                is_comptime: true,
+                is_type: false,
+            },
+            CanonicalDisplayParameter {
+                is_comptime: true,
+                is_type: true,
+            },
+            CanonicalDisplayParameter {
+                is_comptime: true,
+                is_type: false,
+            },
+        ];
+        assert_eq!(
+            format_canonical_application("Mixed", parameters, Some(&arguments), |ty| match ty {
+                T::I32 => Some("i32".to_owned()),
+                _ => None,
+            }),
+            Some("Mixed(7, i32, ())".to_owned())
+        );
+        let empty_arguments: CanonicalArguments<&'static str, &'static str> =
+            CanonicalArguments::default();
+        assert!(
+            format_canonical_application("Mixed", parameters, Some(&empty_arguments), |_| Some(
+                "unused".to_owned()
+            ),)
+            .is_none()
+        );
     }
 }

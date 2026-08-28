@@ -716,8 +716,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if !self.types_compatible(found, expected) && !expected.is_error() {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
-                            expected: expected.safe_name_with_pool(Some(self.body_type_pool())),
-                            found: found.safe_name_with_pool(Some(self.body_type_pool())),
+                            expected: self.format_type_name(expected),
+                            found: self.format_type_name(found),
                         },
                         self.body_rir_ref().get(args.get(i).unwrap().value).span,
                     ));
@@ -1015,7 +1015,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     }
                     return Err(CompileError::new(
                         ErrorKind::UndefinedAssocFn {
-                            type_name: reduced_ty.safe_name_with_pool(Some(self.body_type_pool())),
+                            type_name: self.format_type_name(reduced_ty),
                             function_name: variant_name,
                         },
                         span,
@@ -1042,7 +1042,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             _ => {
                 return Err(CompileError::new(
                     ErrorKind::MethodCallOnNonStruct {
-                        found: receiver_type.safe_name_with_pool(Some(self.body_type_pool())),
+                        found: self.format_type_name(receiver_type),
                         method_name: method_name_str,
                     },
                     span,
@@ -1051,8 +1051,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
 
         // Look up the struct name by its ID (for error messages)
-        let struct_def = self.body_type_pool().struct_def(struct_id);
-        let struct_name_str = struct_def.name.to_string();
+        let struct_name_str = self.format_type_name(Type::new_struct(struct_id));
 
         // Look up the method using StructId directly
         let method_key = (struct_id, method);
@@ -1546,7 +1545,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "struct type".to_string(),
-                            found: ty.safe_name_with_pool(Some(self.body_type_pool())),
+                            found: self.format_type_name(ty),
                         },
                         span,
                     ));
@@ -1568,7 +1567,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "struct type".to_string(),
-                            found: ty.safe_name_with_pool(Some(self.body_type_pool())),
+                            found: self.format_type_name(ty),
                         },
                         span,
                     ));

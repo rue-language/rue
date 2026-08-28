@@ -173,12 +173,12 @@ impl ComptimeType for Type {}
 
 pub(super) fn validate_comptime_value_for_type_impl(
     interner: &lasso::ThreadedRodeo,
-    type_pool: &crate::intern_pool::TypeInternPool,
     function_name: Spur,
     param_name: Spur,
     value: ConstValue,
     expected: Type,
     span: Span,
+    friendly_type_display: impl Fn(Type) -> String,
 ) -> CompileResult<()> {
     if matches!(value, ConstValue::Function(_)) {
         return Err(CompileError::new(
@@ -205,7 +205,7 @@ pub(super) fn validate_comptime_value_for_type_impl(
                     interner.resolve(&param_name),
                     interner.resolve(&function_name),
                     integer,
-                    expected.safe_name_with_pool(Some(type_pool))
+                    friendly_type_display(expected)
                 ),
             },
             span,
@@ -215,8 +215,8 @@ pub(super) fn validate_comptime_value_for_type_impl(
     if found != expected {
         return Err(CompileError::new(
             ErrorKind::TypeMismatch {
-                expected: expected.safe_name_with_pool(Some(type_pool)),
-                found: found.safe_name_with_pool(Some(type_pool)),
+                expected: friendly_type_display(expected),
+                found: friendly_type_display(found),
             },
             span,
         )
@@ -541,7 +541,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Some(ty) => match result.checked() {
                 Some(v) => Ok(Some(ConstValue::Integer(v))),
                 _ => {
-                    let ty_name = ty.safe_name_with_pool(Some(self.body_type_pool()));
+                    let ty_name = self.format_type_name(ty);
                     let detail = match result.raw() {
                         Some(v) => format!("the result {} does not fit in {}", v, ty_name),
                         None => format!("the result does not fit in {}", ty_name),
@@ -1129,12 +1129,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> CompileResult<()> {
         validate_comptime_value_for_type_impl(
             self.body_interner(),
-            self.body_type_pool(),
             function_name,
             param_name,
             value,
             expected,
             span,
+            |ty| self.format_type_name(ty),
         )
     }
 
@@ -1269,7 +1269,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// the host's constructor-display registry). Named types keep their
     /// declared names;
     /// a partial substitution records nothing rather than a wrong spelling.
-    fn record_ctor_type_display(
+    pub(crate) fn record_ctor_type_display(
         &mut self,
         ctor: Spur,
         ty: Type,
@@ -2282,7 +2282,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         OrdinaryBodyEngine::const_expr_type(self, env, inst_ref)
     }
     fn type_name(&self, ty: &Type) -> String {
-        ty.safe_name_with_pool(Some(self.body_type_pool()))
+        self.format_type_name(*ty)
     }
     fn type_is_unsigned(&self, ty: &Type) -> bool {
         ty.is_unsigned()

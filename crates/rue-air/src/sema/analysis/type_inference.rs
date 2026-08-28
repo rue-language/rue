@@ -809,34 +809,34 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let error_kind = match &err.kind {
                 UnifyResult::Ok => unreachable!("UnificationError should never contain Ok"),
                 UnifyResult::TypeMismatch { expected, found } => ErrorKind::TypeMismatch {
-                    expected: expected.name_with_pool(self.body_type_pool()),
-                    found: found.name_with_pool(self.body_type_pool()),
+                    expected: self.format_infer_type_name(expected),
+                    found: self.format_infer_type_name(found),
                 },
                 UnifyResult::IntLiteralNonInteger { found } => ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
-                    found: found.safe_name_with_pool(Some(self.body_type_pool())),
+                    found: self.format_type_name(*found),
                 },
                 UnifyResult::StringLiteralNonString { found } => ErrorKind::TypeMismatch {
                     expected: "string type".to_string(),
-                    found: found.name_with_pool(self.body_type_pool()),
+                    found: self.format_infer_type_name(found),
                 },
                 UnifyResult::OccursCheck { var, ty } => ErrorKind::TypeMismatch {
                     expected: "non-recursive type".to_string(),
                     found: format!(
                         "{var} = {} (infinite type)",
-                        ty.name_with_pool(self.body_type_pool())
+                        self.format_infer_type_name(ty)
                     ),
                 },
                 UnifyResult::NotSigned { ty } => {
-                    ErrorKind::CannotNegate(ty.safe_name_with_pool(Some(self.body_type_pool())))
+                    ErrorKind::CannotNegate(self.format_type_name(*ty))
                 }
                 UnifyResult::NotInteger { ty } => ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
-                    found: ty.safe_name_with_pool(Some(self.body_type_pool())),
+                    found: self.format_type_name(*ty),
                 },
                 UnifyResult::NotUnsigned { ty } => ErrorKind::TypeMismatch {
                     expected: "unsigned integer type".to_string(),
-                    found: ty.safe_name_with_pool(Some(self.body_type_pool())),
+                    found: self.format_type_name(*ty),
                 },
                 UnifyResult::ArrayLengthMismatch { expected, found } => {
                     ErrorKind::ArrayLengthMismatch {
@@ -1525,7 +1525,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 _ => {
                     return Err(CompileError::new(
                         ErrorKind::FieldAccessOnNonStruct {
-                            found: base_type.safe_name_with_pool(Some(self.body_type_pool())),
+                            found: self.format_type_name(base_type),
                         },
                         field_span,
                     ));
@@ -1537,7 +1537,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let Some((field_index, struct_field)) = struct_def.find_field(field_name) else {
                 return Err(CompileError::new(
                     ErrorKind::UnknownField {
-                        struct_name: struct_def.name.to_string(),
+                        struct_name: self.format_type_name(Type::new_struct(struct_id)),
                         field_name: field_name.to_string(),
                     },
                     field_span,
@@ -1621,7 +1621,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 _ => {
                     return Err(CompileError::new(
                         ErrorKind::IndexOnNonArray {
-                            found: base_type.safe_name_with_pool(Some(self.body_type_pool())),
+                            found: self.format_type_name(base_type),
                         },
                         inst.span,
                     ));
@@ -1643,7 +1643,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "integer type".to_string(),
-                        found: index_type.safe_name_with_pool(Some(self.body_type_pool())),
+                        found: self.format_type_name(index_type),
                     },
                     self.body_rir_ref().get(*index).span,
                 ));

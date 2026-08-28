@@ -12,6 +12,9 @@ the container runs their per-element drop glue, so all cases below use a
 `linear` element type.
 """
 
+# E0498 is retired in the current error catalog; this matrix covers its
+# surviving deferred-gate behavior under E0499 instead.
+
 [[case]]
 name = "e0499_names_ctor_spelling_and_user_site"
 description = "A ctor-produced anonymous linear element type prints as Ctor(args) and the rejection labels the user's application site (RUE-610)"
@@ -50,6 +53,26 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0499", "Token", "required by the type-constructor application here"]
+
+[[case]]
+name = "e0499_body_local_nested_enum_uses_outer_ctor_display"
+description = "A body-local enum passed into a second constructor keeps the first constructor spelling in the deferred E0499 query."
+source = """
+linear struct Token { v: i32 }
+fn Wrap(comptime T: type) -> type { enum { Some(T), None } }
+fn Gated(comptime T: type) -> type {
+    @require_droppable(T);
+    struct { y: T }
+}
+fn main() -> i32 {
+    let W = Wrap(Token);
+    let G = Gated(W);
+    let _ = G;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0499", "Wrap(Token)"]
 
 [[case]]
 name = "deferred_named_enum_linear_payload_is_rejected"

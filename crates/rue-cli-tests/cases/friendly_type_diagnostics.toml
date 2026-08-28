@@ -1,0 +1,86 @@
+[section]
+id = "cli.friendly_type_diagnostics"
+name = "Friendly anonymous constructor diagnostics"
+description = "Production CLI coverage for durable anonymous-type presentation across query, import, mixed-argument, identity, and JSON paths."
+
+[[case]]
+name = "body_local_nested_enum_deferred_gate"
+description = "A body-local nested enum reaches the deferred E0499 query with its producer spelling intact."
+files = [{ path = "main.rue", source = """
+linear struct Token { v: i32 }
+fn Wrap(comptime T: type) -> type { enum { Some(T), None } }
+fn Gated(comptime T: type) -> type {
+    @require_droppable(T);
+    struct { item: T }
+}
+fn main() -> i32 {
+    let W = Wrap(Token);
+    let G = Gated(W);
+    let _ = G;
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0499", "Wrap(Token)"]
+compile_stderr_not_contains = ["__anon_"]
+
+[[case]]
+name = "mixed_type_value_unit_arguments_preserve_declaration_order"
+description = "A value/type/value constructor keeps declaration order and retains the unit argument in E0499."
+files = [{ path = "main.rue", source = """
+linear struct Token { v: i32 }
+fn Mixed(comptime n: i32, comptime T: type, comptime marker: ()) -> type {
+    @require_droppable(T);
+    struct { item: T }
+}
+const M = Mixed(7, Token, ());
+fn main() -> i32 { let _ = M; 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0499", "Mixed(7, Token, ())"]
+compile_stderr_not_contains = ["__anon_"]
+
+[[case]]
+name = "imported_same_named_constructors_do_not_cross_contaminate"
+description = "Imported constructors with the same name and shape retain identity-specific source arguments rather than path$Ctor or anonymous symbols."
+files = [
+  { path = "main.rue", source = """
+linear struct Token { v: i32 }
+const left = @import("left.rue");
+const right = @import("right.rue");
+fn use_left(value: left.Wrap(Token)) -> i32 { value.missing(); 0 }
+fn use_right(value: right.Wrap(i64)) -> i32 { value.missing(); 0 }
+fn main() -> i32 {
+    use_left(left.Wrap(Token) { item: Token { v: 0 } });
+    use_right(right.Wrap(i64) { item: 0 });
+    0
+}
+""" },
+  { path = "left.rue", source = """
+pub fn Wrap(comptime T: type) -> type { struct { item: T } }
+""" },
+  { path = "right.rue", source = """
+pub fn Wrap(comptime T: type) -> type { struct { item: T } }
+""" },
+]
+compile_fail = true
+error_contains = ["E0411", "Wrap(Token)", "Wrap(i64)", "no method named 'missing'"]
+compile_stderr_not_contains = ["__anon_", "$Wrap"]
+
+[[case]]
+name = "json_method_diagnostic_keeps_friendly_type"
+description = "The JSON diagnostic surface carries the same friendly E0413 message as text rendering."
+files = [{ path = "main.rue", source = """
+linear struct Token { v: i32 }
+fn Wrap(comptime T: type) -> type { enum { Some(T), None } }
+fn use(value: Wrap(Token)) -> i32 { value.missing(); 0 }
+fn main() -> i32 {
+    use(Wrap(Token).Some(Token { v: 0 }));
+    0
+}
+""" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+error_contains = ["\"code\":\"E0413\"", "Wrap(Token)", "no method named 'missing'"]
+compile_stderr_not_contains = ["__anon_"]
