@@ -22,13 +22,19 @@
 //! dominated by its definition. Targets, variable-length storage slices,
 //! local/parameter slots, places, projections, edge arguments, conditions, and
 //! returns are validated before any getter or graph traversal can index them.
+//! Once those structural preconditions hold, a forward dataflow pass verifies
+//! explicit storage lifetimes, explicit Drop consumption, and initialization
+//! of unannotated compiler-owned slots such as runtime drop flags.
 //!
-//! These checks apply to unreachable blocks too. The sole reachability-based
-//! exemption is an unreachable block's `None` terminator: construction can
-//! leave an orphan block unfinished, but all of its existing contents still
-//! have to be structurally valid. Optimization runs strict verification before
-//! DCE can detach dead arena values, then verifies the remaining live graph
-//! again after all passes.
+//! Strict publication checks apply to unreachable blocks too. Their sole
+//! reachability exemption is an unreachable block's `None` terminator:
+//! construction can leave an orphan block unfinished, but all of its existing
+//! contents still have to be structurally valid. The mid-optimization
+//! materialization mode separately skips unreachable pre-DCE husks, which can
+//! retain stale edges while simplifying the live graph. Semantic dataflow
+//! checks only model reachable execution paths. Optimization runs strict
+//! verification before DCE can detach dead arena values, then verifies the
+//! remaining live graph again after all passes.
 
 use crate::PayloadError;
 use crate::dominators::DominatorTree;
@@ -36,6 +42,58 @@ use crate::inst::{
     BlockId, Cfg, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator, ValidatedCfg,
 };
 use rue_air::{FrozenTypeInternPool, Type, TypeKind};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum OwnerRoot {
+    Local { slot: u32, ty: Type },
+    OwnedParam { slot: u32, ty: Type },
+    WritableParam { slot: u32, ty: Type },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootFact {
+    Unresolved,
+    Unknown,
+    Known(OwnerRoot),
+}
+
+const SEMANTIC_STATE_A: u8 = 1;
+const SEMANTIC_STATE_B: u8 = 2;
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default)]
+struct SemanticWork {
+    fact_solves: usize,
+    peak_binary_state_slots: usize,
+    block_visits: usize,
+    edge_visits: usize,
+    validation_instruction_visits: usize,
+    instruction_operand_visits: usize,
+    terminator_operand_visits: usize,
+    root_nodes: usize,
+    root_edges: usize,
+    root_updates: usize,
+    root_dependency_visits: usize,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static SEMANTIC_WORK: std::cell::RefCell<SemanticWork> = const {
+        std::cell::RefCell::new(SemanticWork {
+            fact_solves: 0,
+            peak_binary_state_slots: 0,
+            block_visits: 0,
+            edge_visits: 0,
+            validation_instruction_visits: 0,
+            instruction_operand_visits: 0,
+            terminator_operand_visits: 0,
+            root_nodes: 0,
+            root_edges: 0,
+            root_updates: 0,
+            root_dependency_visits: 0,
+        })
+    };
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CfgVerificationLocation {
@@ -416,7 +474,879 @@ impl<'a> Verifier<'a> {
                 self.verify_terminator_use(block.id, &block.terminator)?;
             }
         }
+        self.verify_semantic_dataflow()?;
         Ok(())
+    }
+
+    /// Verify the semantic ordering that is explicit in CFG, after structural
+    /// verification has made all arena and payload reads safe.
+    ///
+    /// This intentionally does not reconstruct source ownership. In
+    /// particular, a projected place may be partially initialized or moved and
+    /// a whole-slot Load may be a copy or a move; CFG has no marker that would
+    /// let this pass distinguish those cases soundly. Instead it proves four
+    /// bounded invariants that every publication boundary preserves:
+    ///
+    /// * an exact logical `(slot, type)` storage region is live on every path at
+    ///   each local access, and Live/Dead transitions alternate on every path;
+    /// * a non-phi SSA instruction result, or an exact whole-owner
+    ///   local/by-value-parameter root, is not used after an explicit Drop on
+    ///   any path without a fresh dynamic definition or whole write;
+    /// * an unannotated compiler-owned slot that is loaded (notably a runtime
+    ///   drop flag) has first been initialized by Store/Alloc on every path;
+    /// * every tracked nonzero-width storage region is dead at a normal Return.
+    ///
+    /// Unreachable blocks have no runtime path and are deliberately excluded.
+    /// Post-DCE detached arena values are absent from block instruction lists,
+    /// so post-optimization verification naturally ignores them too.
+    fn verify_semantic_dataflow(&self) -> Result<(), CfgVerificationError> {
+        use ahash::AHashSet;
+
+        let mut storage_regions = AHashSet::<(u32, Type)>::new();
+        let mut storage_keys = Vec::new();
+        let mut droppable_value_set = AHashSet::<CfgValue>::new();
+        let mut droppable_values = Vec::new();
+        let mut static_roots = vec![RootFact::Unknown; self.cfg.value_count()];
+
+        for block in self.cfg.blocks() {
+            if !self.dominators().is_reachable(block.id) {
+                continue;
+            }
+            for &(parameter, _) in &block.params {
+                static_roots[parameter.as_u32() as usize] = RootFact::Unresolved;
+            }
+            for &value in &block.insts {
+                let inst = self.cfg.get_inst(value);
+                match inst.data {
+                    CfgInstData::StorageLive { slot, local_ty }
+                    | CfgInstData::StorageDead { slot, local_ty } => {
+                        // Zero-width locals can share a slot and type while
+                        // distinct lexical regions overlap. CFG has no
+                        // declaration identity with which to separate them.
+                        if self.abi_slot_count(
+                            local_ty,
+                            block.id,
+                            value,
+                            "semantic storage marker",
+                        )? != 0
+                            && storage_regions.insert((slot, local_ty))
+                        {
+                            storage_keys.push((slot, local_ty));
+                        }
+                    }
+                    CfgInstData::Drop { value: dropped } => {
+                        if let Some(pool) = self.type_pool {
+                            let dropped_ty = self.cfg.get_inst(dropped).ty;
+                            // Validate nominal identities before recursive drop
+                            // queries so malformed CFG returns a typed error.
+                            self.abi_slot_count(dropped_ty, block.id, value, "Drop operand")?;
+                            if pool.type_needs_drop(dropped_ty)
+                                && droppable_value_set.insert(dropped)
+                            {
+                                droppable_values.push(dropped);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                if let Some(root) = self.instruction_owner_root(block.id, value)? {
+                    static_roots[value.as_u32() as usize] = RootFact::Known(root);
+                }
+            }
+        }
+
+        let value_roots = self.resolve_owner_roots(static_roots);
+        let mut drop_roots = vec![None; self.cfg.value_count()];
+        let mut owner_roots = Vec::new();
+        let mut owner_root_set = AHashSet::new();
+        for &value in &droppable_values {
+            if let Some(root) = value_roots[value.as_u32() as usize] {
+                drop_roots[value.as_u32() as usize] = Some(root);
+                if owner_root_set.insert(root) {
+                    owner_roots.push(root);
+                }
+            }
+        }
+
+        // Every reachable Load outside a declared storage region is a
+        // compiler-owned raw channel. A missing Store/Alloc is itself the bug,
+        // so discovery never depends on whether a write survived.
+        let mut raw_slots = AHashSet::<(u32, Type)>::new();
+        let mut raw_keys = Vec::new();
+        for block in self.cfg.blocks() {
+            if !self.dominators().is_reachable(block.id) {
+                continue;
+            }
+            for &value in &block.insts {
+                let inst = self.cfg.get_inst(value);
+                if let CfgInstData::Load { slot } = inst.data {
+                    let key = (slot, inst.ty);
+                    if !storage_regions.contains(&key) && raw_slots.insert(key) {
+                        raw_keys.push(key);
+                    }
+                }
+            }
+        }
+
+        // Each fact is solved independently with one reusable two-bit state per
+        // block. The peak path-state memory is O(B), never O(B * F). Root
+        // provenance uses a dependency worklist whose nodes change at most
+        // twice, so its time is O(P + A), where A is incoming phi arguments.
+        // If O is the number of instruction operand references and T is the
+        // number of terminator operand references (including edge arguments),
+        // overall semantic time is
+        // O(B + E + I + P + A + F * (B + E + I + O + T)). Auxiliary memory is
+        // O(B + V + P + A + F); no state dimension is multiplied by F.
+        for key in storage_keys {
+            self.verify_storage_fact(key)?;
+        }
+        for key in raw_keys {
+            self.verify_raw_init_fact(key)?;
+        }
+        for &value in &droppable_values {
+            self.verify_exact_drop_fact(value)?;
+        }
+        for root in owner_roots {
+            self.verify_owner_root_fact(root, &drop_roots, &value_roots)?;
+        }
+        Ok(())
+    }
+
+    fn instruction_owner_root(
+        &self,
+        block: BlockId,
+        value: CfgValue,
+    ) -> Result<Option<OwnerRoot>, CfgVerificationError> {
+        let inst = self.cfg.get_inst(value);
+        let root = match &inst.data {
+            CfgInstData::Load { slot }
+                if self.abi_slot_count(inst.ty, block, value, "owner root")? != 0 =>
+            {
+                Some(OwnerRoot::Local {
+                    slot: *slot,
+                    ty: inst.ty,
+                })
+            }
+            CfgInstData::PlaceRead { place }
+                if (place.as_local().is_some() || place.as_param().is_some())
+                    && self.abi_slot_count(place.base_type, block, value, "owner root")? != 0 =>
+            {
+                self.place_owner_root(place)
+            }
+            CfgInstData::Param { index }
+                if self.abi_slot_count(inst.ty, block, value, "owner root")? != 0 =>
+            {
+                self.param_owner_root(*index, inst.ty)
+            }
+            _ => None,
+        };
+        Ok(root)
+    }
+
+    fn param_owner_root(&self, slot: u32, ty: Type) -> Option<OwnerRoot> {
+        if self.cfg.is_param_writable(slot) {
+            Some(OwnerRoot::WritableParam { slot, ty })
+        } else if !self.cfg.is_param_by_ref(slot) {
+            Some(OwnerRoot::OwnedParam { slot, ty })
+        } else {
+            // A shared, non-writable borrow is not an owned root.
+            None
+        }
+    }
+
+    fn place_owner_root(&self, place: &Place) -> Option<OwnerRoot> {
+        match place.base {
+            PlaceBase::Local(slot) => Some(OwnerRoot::Local {
+                slot,
+                ty: place.base_type,
+            }),
+            PlaceBase::Param(slot) => self.param_owner_root(slot, place.base_type),
+            PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => None,
+        }
+    }
+
+    fn whole_write_root(&self, data: &CfgInstData) -> Option<OwnerRoot> {
+        match data {
+            CfgInstData::Store { slot, value } => Some(OwnerRoot::Local {
+                slot: *slot,
+                ty: self.cfg.get_inst(*value).ty,
+            }),
+            CfgInstData::Alloc { slot, init } => Some(OwnerRoot::Local {
+                slot: *slot,
+                ty: self.cfg.get_inst(*init).ty,
+            }),
+            CfgInstData::ParamStore { param_slot, value } => {
+                self.param_owner_root(*param_slot, self.cfg.get_inst(*value).ty)
+            }
+            CfgInstData::PlaceWrite { place, .. } if place.as_local().is_some() => {
+                Some(OwnerRoot::Local {
+                    slot: place.as_local().unwrap(),
+                    ty: place.base_type,
+                })
+            }
+            CfgInstData::PlaceWrite { place, .. } if place.as_param().is_some() => {
+                self.param_owner_root(place.as_param().unwrap(), place.base_type)
+            }
+            _ => None,
+        }
+    }
+
+    fn merge_root_fact(current: RootFact, incoming: RootFact) -> RootFact {
+        match (current, incoming) {
+            (RootFact::Unknown, _) | (_, RootFact::Unknown) => RootFact::Unknown,
+            (current, RootFact::Unresolved) => current,
+            (RootFact::Unresolved, incoming) => incoming,
+            (RootFact::Known(left), RootFact::Known(right)) if left == right => {
+                RootFact::Known(left)
+            }
+            (RootFact::Known(_), RootFact::Known(_)) => RootFact::Unknown,
+        }
+    }
+
+    fn resolve_owner_roots(&self, static_roots: Vec<RootFact>) -> Vec<Option<OwnerRoot>> {
+        use std::collections::VecDeque;
+
+        let mut param_values = Vec::new();
+        let mut param_index = vec![None; self.cfg.value_count()];
+        for block in self.cfg.blocks() {
+            if !self.dominators().is_reachable(block.id) {
+                continue;
+            }
+            for &(value, _) in &block.params {
+                let index = param_values.len();
+                param_values.push(value);
+                param_index[value.as_u32() as usize] = Some(index);
+            }
+        }
+
+        let mut states = vec![RootFact::Unresolved; param_values.len()];
+        let mut dependents = vec![Vec::<usize>::new(); param_values.len()];
+        let mut queue = VecDeque::new();
+        let mut queued = vec![false; param_values.len()];
+
+        for block in self.cfg.blocks() {
+            if !self.dominators().is_reachable(block.id) {
+                continue;
+            }
+            self.for_each_semantic_edge(block.id, |target, args| {
+                let target_block = self.cfg.get_block(target);
+                for (position, &(parameter, _)) in target_block.params.iter().enumerate() {
+                    let target_index =
+                        param_index[parameter.as_u32() as usize].expect("reachable phi index");
+                    let argument = args[position];
+                    #[cfg(test)]
+                    SEMANTIC_WORK.with(|work| work.borrow_mut().root_edges += 1);
+                    if let Some(source_index) = param_index[argument.as_u32() as usize] {
+                        dependents[source_index].push(target_index);
+                    } else {
+                        let incoming = static_roots[argument.as_u32() as usize];
+                        let next = Self::merge_root_fact(states[target_index], incoming);
+                        if next != states[target_index] {
+                            states[target_index] = next;
+                            #[cfg(test)]
+                            SEMANTIC_WORK.with(|work| work.borrow_mut().root_updates += 1);
+                            if !queued[target_index] {
+                                queued[target_index] = true;
+                                queue.push_back(target_index);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        #[cfg(test)]
+        SEMANTIC_WORK.with(|work| work.borrow_mut().root_nodes += param_values.len());
+
+        // First propagate anchored roots and conflicts. Then classify pure
+        // unanchored SCCs as Unknown and propagate that result downstream.
+        for phase in 0..2 {
+            while let Some(source) = queue.pop_front() {
+                queued[source] = false;
+                let incoming = states[source];
+                for &target in &dependents[source] {
+                    #[cfg(test)]
+                    SEMANTIC_WORK.with(|work| {
+                        work.borrow_mut().root_dependency_visits += 1;
+                    });
+                    let next = Self::merge_root_fact(states[target], incoming);
+                    if next != states[target] {
+                        states[target] = next;
+                        #[cfg(test)]
+                        SEMANTIC_WORK.with(|work| work.borrow_mut().root_updates += 1);
+                        if !queued[target] {
+                            queued[target] = true;
+                            queue.push_back(target);
+                        }
+                    }
+                }
+            }
+            if phase == 0 {
+                for (index, state) in states.iter_mut().enumerate() {
+                    if *state == RootFact::Unresolved {
+                        *state = RootFact::Unknown;
+                        #[cfg(test)]
+                        SEMANTIC_WORK.with(|work| work.borrow_mut().root_updates += 1);
+                        queued[index] = true;
+                        queue.push_back(index);
+                    }
+                }
+            }
+        }
+
+        let mut roots = static_roots
+            .into_iter()
+            .map(|fact| match fact {
+                RootFact::Known(root) => Some(root),
+                RootFact::Unresolved | RootFact::Unknown => None,
+            })
+            .collect::<Vec<_>>();
+        for (index, value) in param_values.into_iter().enumerate() {
+            roots[value.as_u32() as usize] = match states[index] {
+                RootFact::Known(root) => Some(root),
+                RootFact::Unresolved | RootFact::Unknown => None,
+            };
+        }
+        roots
+    }
+
+    fn solve_semantic_fact(&self, mut transfer: impl FnMut(BlockId, u8) -> u8) -> Vec<u8> {
+        use std::collections::VecDeque;
+
+        let block_count = self.cfg.block_count();
+        let mut inputs = vec![0u8; block_count];
+        let mut queued = vec![false; block_count];
+        let mut queue = VecDeque::new();
+        let entry = self.cfg.entry.as_u32() as usize;
+        inputs[entry] = SEMANTIC_STATE_A;
+        queued[entry] = true;
+        queue.push_back(self.cfg.entry);
+
+        #[cfg(test)]
+        SEMANTIC_WORK.with(|work| {
+            let mut work = work.borrow_mut();
+            work.fact_solves += 1;
+            work.peak_binary_state_slots = work
+                .peak_binary_state_slots
+                .max(block_count * 2 + queue.len());
+        });
+
+        while let Some(block) = queue.pop_front() {
+            let index = block.as_u32() as usize;
+            queued[index] = false;
+            #[cfg(test)]
+            SEMANTIC_WORK.with(|work| work.borrow_mut().block_visits += 1);
+            let output = transfer(block, inputs[index]);
+            self.for_each_semantic_edge(block, |target, _| {
+                if !self.dominators().is_reachable(target) {
+                    return;
+                }
+                #[cfg(test)]
+                SEMANTIC_WORK.with(|work| work.borrow_mut().edge_visits += 1);
+                let target_index = target.as_u32() as usize;
+                let merged = inputs[target_index] | output;
+                if merged != inputs[target_index] {
+                    inputs[target_index] = merged;
+                    if !queued[target_index] {
+                        queued[target_index] = true;
+                        queue.push_back(target);
+                        #[cfg(test)]
+                        SEMANTIC_WORK.with(|work| {
+                            let mut work = work.borrow_mut();
+                            work.peak_binary_state_slots = work
+                                .peak_binary_state_slots
+                                .max(block_count * 2 + queue.len());
+                        });
+                    }
+                }
+            });
+        }
+        inputs
+    }
+
+    fn for_each_semantic_edge(&self, block: BlockId, mut f: impl FnMut(BlockId, &[CfgValue])) {
+        let terminator = &self.cfg.get_block(block).terminator;
+        match terminator {
+            Terminator::Goto { target, .. } => {
+                f(*target, self.cfg.get_goto_args(terminator));
+            }
+            Terminator::Branch {
+                then_block,
+                else_block,
+                ..
+            } => {
+                f(*then_block, self.cfg.get_branch_then_args(terminator));
+                f(*else_block, self.cfg.get_branch_else_args(terminator));
+            }
+            Terminator::Switch { cases, default, .. } => {
+                for &(_, target) in self.cfg.switch_cases(cases) {
+                    f(target, &[]);
+                }
+                f(*default, &[]);
+            }
+            Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => {}
+        }
+    }
+
+    fn for_each_terminator_operand(
+        &self,
+        block: BlockId,
+        mut f: impl FnMut(CfgValue, &'static str),
+    ) {
+        let terminator = &self.cfg.get_block(block).terminator;
+        match terminator {
+            Terminator::Goto { .. } => {
+                for &argument in self.cfg.get_goto_args(terminator) {
+                    f(argument, "goto argument");
+                }
+            }
+            Terminator::Branch { cond, .. } => {
+                f(*cond, "branch condition");
+                for &argument in self.cfg.get_branch_then_args(terminator) {
+                    f(argument, "branch-then argument");
+                }
+                for &argument in self.cfg.get_branch_else_args(terminator) {
+                    f(argument, "branch-else argument");
+                }
+            }
+            Terminator::Switch { scrutinee, .. } => f(*scrutinee, "switch scrutinee"),
+            Terminator::Return { value } => {
+                if let Some(value) = value {
+                    f(*value, "return value");
+                }
+            }
+            Terminator::Unreachable | Terminator::None => {}
+        }
+    }
+
+    fn local_storage_access(&self, data: &CfgInstData, result_ty: Type) -> Option<(u32, Type)> {
+        match data {
+            CfgInstData::Alloc { slot, init } => Some((*slot, self.cfg.get_inst(*init).ty)),
+            CfgInstData::Load { slot } => Some((*slot, result_ty)),
+            CfgInstData::Store { slot, value } => Some((*slot, self.cfg.get_inst(*value).ty)),
+            CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. } => {
+                match place.base {
+                    PlaceBase::Local(slot) => Some((slot, place.base_type)),
+                    PlaceBase::Param(_) | PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn verify_storage_fact(&self, key: (u32, Type)) -> Result<(), CfgVerificationError> {
+        const DEAD: u8 = SEMANTIC_STATE_A;
+        const LIVE: u8 = SEMANTIC_STATE_B;
+
+        let inputs = self.solve_semantic_fact(|block, mut state| {
+            for &value in &self.cfg.get_block(block).insts {
+                match self.cfg.get_inst(value).data {
+                    CfgInstData::StorageLive { slot, local_ty } if (slot, local_ty) == key => {
+                        state = LIVE;
+                    }
+                    CfgInstData::StorageDead { slot, local_ty } if (slot, local_ty) == key => {
+                        state = DEAD;
+                    }
+                    _ => {}
+                }
+            }
+            state
+        });
+
+        for block in self.cfg.blocks() {
+            if !self.dominators().is_reachable(block.id) {
+                continue;
+            }
+            let mut state = inputs[block.id.as_u32() as usize];
+            for &value in &block.insts {
+                #[cfg(test)]
+                SEMANTIC_WORK.with(|work| {
+                    work.borrow_mut().validation_instruction_visits += 1;
+                });
+                let inst = self.cfg.get_inst(value);
+                let location = CfgVerificationLocation::Instruction {
+                    block: block.id,
+                    value,
+                };
+                if self.local_storage_access(&inst.data, inst.ty) == Some(key) && state != LIVE {
+                    return Err(self.semantic_error(
+                        location,
+                        format_args!(
+                            "instruction {} in block {} accesses local storage ({}, {:?}) that is not live on every reaching path",
+                            value, block.id, key.0, key.1
+                        ),
+                    ));
+                }
+                match inst.data {
+                    CfgInstData::StorageLive { slot, local_ty } if (slot, local_ty) == key => {
+                        if state != DEAD {
+                            return Err(self.semantic_error(
+                                location,
+                                format_args!(
+                                    "StorageLive instruction {} in block {} starts local storage ({}, {:?}) that is not dead on every reaching path",
+                                    value, block.id, slot, local_ty
+                                ),
+                            ));
+                        }
+                        state = LIVE;
+                    }
+                    CfgInstData::StorageDead { slot, local_ty } if (slot, local_ty) == key => {
+                        if state != LIVE {
+                            return Err(self.semantic_error(
+                                location,
+                                format_args!(
+                                    "StorageDead instruction {} in block {} ends local storage ({}, {:?}) that is not live on every reaching path",
+                                    value, block.id, slot, local_ty
+                                ),
+                            ));
+                        }
+                        state = DEAD;
+                    }
+                    _ => {}
+                }
+            }
+            if matches!(block.terminator, Terminator::Return { .. }) && state & LIVE != 0 {
+                return Err(self.semantic_error(
+                    CfgVerificationLocation::Terminator { block: block.id },
+                    format_args!(
+                        "return in block {} leaves local storage ({}, {:?}) live on a reaching path",
+                        block.id, key.0, key.1
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_raw_init_fact(&self, key: (u32, Type)) -> Result<(), CfgVerificationError> {
+        const UNINITIALIZED: u8 = SEMANTIC_STATE_A;
+        const INITIALIZED: u8 = SEMANTIC_STATE_B;
+
+        let inputs = self.solve_semantic_fact(|block, mut state| {
+            for &value in &self.cfg.get_block(block).insts {
+                match self.cfg.get_inst(value).data {
+                    CfgInstData::Store {
+                        slot,
+                        value: stored,
+                    } if (slot, self.cfg.get_inst(stored).ty) == key => {
+                        state = INITIALIZED;
+                    }
+                    CfgInstData::Alloc { slot, init }
+                        if (slot, self.cfg.get_inst(init).ty) == key =>
+                    {
+                        state = INITIALIZED;
+                    }
+                    _ => {}
+                }
+            }
+            state
+        });
+
+        for block in self.cfg.blocks() {
+            if !self.dominators().is_reachable(block.id) {
+                continue;
+            }
+            let mut state = inputs[block.id.as_u32() as usize];
+            for &value in &block.insts {
+                #[cfg(test)]
+                SEMANTIC_WORK.with(|work| {
+                    work.borrow_mut().validation_instruction_visits += 1;
+                });
+                let inst = self.cfg.get_inst(value);
+                if let CfgInstData::Load { slot } = inst.data
+                    && (slot, inst.ty) == key
+                    && state & UNINITIALIZED != 0
+                {
+                    return Err(self.semantic_error(
+                        CfgVerificationLocation::Instruction {
+                            block: block.id,
+                            value,
+                        },
+                        format_args!(
+                            "instruction {} in block {} loads unannotated local storage ({}, {:?}) before it is initialized on every reaching path",
+                            value, block.id, slot, inst.ty
+                        ),
+                    ));
+                }
+                match inst.data {
+                    CfgInstData::Store {
+                        slot,
+                        value: stored,
+                    } if (slot, self.cfg.get_inst(stored).ty) == key => {
+                        state = INITIALIZED;
+                    }
+                    CfgInstData::Alloc { slot, init }
+                        if (slot, self.cfg.get_inst(init).ty) == key =>
+                    {
+                        state = INITIALIZED;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_exact_drop_fact(&self, target: CfgValue) -> Result<(), CfgVerificationError> {
+        const FRESH: u8 = SEMANTIC_STATE_A;
+        const CONSUMED: u8 = SEMANTIC_STATE_B;
+
+        let inputs = self.solve_semantic_fact(|block, mut state| {
+            if self
+                .cfg
+                .get_block(block)
+                .params
+                .iter()
+                .any(|&(parameter, _)| parameter == target)
+            {
+                state = FRESH;
+            }
+            for &value in &self.cfg.get_block(block).insts {
+                if value == target {
+                    state = FRESH;
+                }
+                if let CfgInstData::Drop { value: dropped } = self.cfg.get_inst(value).data
+                    && dropped == target
+                {
+                    state = CONSUMED;
+                }
+            }
+            state
+        });
+
+        for block in self.cfg.blocks() {
+            if !self.dominators().is_reachable(block.id) {
+                continue;
+            }
+            let mut state = inputs[block.id.as_u32() as usize];
+            if block
+                .params
+                .iter()
+                .any(|&(parameter, _)| parameter == target)
+            {
+                state = FRESH;
+            }
+            for &value in &block.insts {
+                #[cfg(test)]
+                SEMANTIC_WORK.with(|work| {
+                    work.borrow_mut().validation_instruction_visits += 1;
+                });
+                if value == target {
+                    state = FRESH;
+                }
+                let inst = self.cfg.get_inst(value);
+                let location = CfgVerificationLocation::Instruction {
+                    block: block.id,
+                    value,
+                };
+                if let CfgInstData::Drop { value: dropped } = inst.data
+                    && dropped == target
+                {
+                    if state & CONSUMED != 0 {
+                        return Err(self.semantic_error(
+                            location,
+                            format_args!(
+                                "Drop instruction {} in block {} consumes {} after it was already dropped on a reaching path",
+                                value, block.id, target
+                            ),
+                        ));
+                    }
+                    state = CONSUMED;
+                } else {
+                    let mut error = None;
+                    self.for_each_inst_operand(block.id, value, &inst.data, |operand, role| {
+                        #[cfg(test)]
+                        SEMANTIC_WORK.with(|work| {
+                            work.borrow_mut().instruction_operand_visits += 1;
+                        });
+                        if error.is_none() && operand == target && state & CONSUMED != 0 {
+                            error = Some(self.semantic_error(
+                                location,
+                                format_args!(
+                                    "{} {} in instruction {} in block {} was already dropped on a reaching path",
+                                    role, operand, value, block.id
+                                ),
+                            ));
+                        }
+                    });
+                    if let Some(error) = error {
+                        return Err(error);
+                    }
+                }
+            }
+            let mut error = None;
+            self.for_each_terminator_operand(block.id, |operand, role| {
+                #[cfg(test)]
+                SEMANTIC_WORK.with(|work| {
+                    work.borrow_mut().terminator_operand_visits += 1;
+                });
+                if error.is_none() && operand == target && state & CONSUMED != 0 {
+                    error = Some(self.semantic_error(
+                        CfgVerificationLocation::Terminator { block: block.id },
+                        format_args!(
+                            "{} {} in terminator of block {} was already dropped on a reaching path",
+                            role, operand, block.id
+                        ),
+                    ));
+                }
+            });
+            if let Some(error) = error {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_owner_root_fact(
+        &self,
+        root: OwnerRoot,
+        drop_roots: &[Option<OwnerRoot>],
+        value_roots: &[Option<OwnerRoot>],
+    ) -> Result<(), CfgVerificationError> {
+        const FRESH: u8 = SEMANTIC_STATE_A;
+        const CONSUMED: u8 = SEMANTIC_STATE_B;
+
+        let inputs = self.solve_semantic_fact(|block, mut state| {
+            for &value in &self.cfg.get_block(block).insts {
+                let inst = self.cfg.get_inst(value);
+                if self.whole_write_root(&inst.data) == Some(root) {
+                    state = FRESH;
+                }
+                if let CfgInstData::Drop { value: dropped } = inst.data
+                    && drop_roots[dropped.as_u32() as usize] == Some(root)
+                {
+                    state = CONSUMED;
+                }
+            }
+            state
+        });
+
+        for block in self.cfg.blocks() {
+            if !self.dominators().is_reachable(block.id) {
+                continue;
+            }
+            let mut state = inputs[block.id.as_u32() as usize];
+            for &(parameter, _) in &block.params {
+                if value_roots[parameter.as_u32() as usize] == Some(root) && state & CONSUMED != 0 {
+                    return Err(self.semantic_error(
+                        CfgVerificationLocation::Artifact,
+                        format_args!(
+                            "block parameter {} in block {} carries already-consumed owner root {:?}",
+                            parameter, block.id, root
+                        ),
+                    ));
+                }
+            }
+            for &value in &block.insts {
+                #[cfg(test)]
+                SEMANTIC_WORK.with(|work| {
+                    work.borrow_mut().validation_instruction_visits += 1;
+                });
+                let inst = self.cfg.get_inst(value);
+                let location = CfgVerificationLocation::Instruction {
+                    block: block.id,
+                    value,
+                };
+                if value_roots[value.as_u32() as usize] == Some(root) && state & CONSUMED != 0 {
+                    return Err(self.semantic_error(
+                        location,
+                        format_args!(
+                            "instruction {} in block {} reads already-consumed owner root {:?}",
+                            value, block.id, root
+                        ),
+                    ));
+                }
+                if let CfgInstData::PlaceRead { place } = &inst.data
+                    && self.place_owner_root(place) == Some(root)
+                    && state & CONSUMED != 0
+                {
+                    return Err(self.semantic_error(
+                        location,
+                        format_args!(
+                            "instruction {} in block {} reads through already-consumed owner root {:?}",
+                            value, block.id, root
+                        ),
+                    ));
+                }
+                if !matches!(inst.data, CfgInstData::Drop { .. }) {
+                    let mut error = None;
+                    self.for_each_inst_operand(block.id, value, &inst.data, |operand, role| {
+                        #[cfg(test)]
+                        SEMANTIC_WORK.with(|work| {
+                            work.borrow_mut().instruction_operand_visits += 1;
+                        });
+                        if error.is_none()
+                            && value_roots[operand.as_u32() as usize] == Some(root)
+                            && state & CONSUMED != 0
+                        {
+                            error = Some(self.semantic_error(
+                                location,
+                                format_args!(
+                                    "{} {} in instruction {} in block {} uses already-consumed owner root {:?}",
+                                    role, operand, value, block.id, root
+                                ),
+                            ));
+                        }
+                    });
+                    if let Some(error) = error {
+                        return Err(error);
+                    }
+                }
+                if let CfgInstData::Drop { value: dropped } = inst.data
+                    && drop_roots[dropped.as_u32() as usize] == Some(root)
+                {
+                    if state & CONSUMED != 0 {
+                        return Err(self.semantic_error(
+                            location,
+                            format_args!(
+                                "Drop instruction {} in block {} consumes already-consumed owner root {:?}",
+                                value, block.id, root
+                            ),
+                        ));
+                    }
+                    state = CONSUMED;
+                }
+                if self.whole_write_root(&inst.data) == Some(root) {
+                    state = FRESH;
+                }
+            }
+            let mut error = None;
+            self.for_each_terminator_operand(block.id, |operand, role| {
+                #[cfg(test)]
+                SEMANTIC_WORK.with(|work| {
+                    work.borrow_mut().terminator_operand_visits += 1;
+                });
+                if error.is_none()
+                    && value_roots[operand.as_u32() as usize] == Some(root)
+                    && state & CONSUMED != 0
+                {
+                    error = Some(self.semantic_error(
+                        CfgVerificationLocation::Terminator { block: block.id },
+                        format_args!(
+                            "{} {} in terminator of block {} carries already-consumed owner root {:?}",
+                            role, operand, block.id, root
+                        ),
+                    ));
+                }
+            });
+            if let Some(error) = error {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn semantic_error(
+        &self,
+        location: CfgVerificationLocation,
+        message: impl std::fmt::Display,
+    ) -> CfgVerificationError {
+        CfgVerificationError {
+            function: self.cfg.fn_name().to_string(),
+            location,
+            message: message.to_string(),
+            payload: None,
+        }
     }
 
     fn verify_block_table_and_attachments(&mut self) -> Result<(), CfgVerificationError> {
@@ -1313,7 +2243,9 @@ mod tests {
     };
     use crate::{CfgVerificationLocation, OptLevel, opt};
     use lasso::ThreadedRodeo;
-    use rue_air::{FrozenTypeInternPool, StructDef, StructField, StructId, Type, TypeInternPool};
+    use rue_air::{
+        FrozenTypeInternPool, StructDef, StructField, StructId, Type, TypeInternPool, TypeKind,
+    };
     use rue_span::Span;
 
     fn unit_cfg() -> Cfg {
@@ -1348,6 +2280,1539 @@ mod tests {
             },
         )
         .0
+    }
+
+    fn register_droppable_struct(
+        pool: &TypeInternPool,
+        interner: &ThreadedRodeo,
+        name: &str,
+    ) -> Type {
+        let id = pool
+            .register_struct(
+                interner.get_or_intern(name),
+                StructDef {
+                    name: name.into(),
+                    fields: Vec::new(),
+                    is_copy: false,
+                    is_linear: false,
+                    declared_linear: false,
+                    destructor: Some(format!("{name}.__drop").into()),
+                    is_builtin: false,
+                    is_pub: false,
+                    file_id: rue_span::FileId::DEFAULT,
+                },
+            )
+            .0;
+        Type::new_struct(id)
+    }
+
+    fn register_nonzero_droppable_struct(
+        pool: &TypeInternPool,
+        interner: &ThreadedRodeo,
+        name: &str,
+    ) -> Type {
+        let id = pool
+            .register_struct(
+                interner.get_or_intern(name),
+                StructDef {
+                    name: name.into(),
+                    fields: vec![StructField {
+                        name: "payload".into(),
+                        ty: Type::I64,
+                    }],
+                    is_copy: false,
+                    is_linear: false,
+                    declared_linear: false,
+                    destructor: Some(format!("{name}.__drop").into()),
+                    is_builtin: false,
+                    is_pub: false,
+                    file_id: rue_span::FileId::DEFAULT,
+                },
+            )
+            .0;
+        Type::new_struct(id)
+    }
+
+    fn init_nonzero_owner(cfg: &mut Cfg, block: BlockId, owner: Type, payload: i64) -> CfgValue {
+        let scalar = push(cfg, block, CfgInstData::Const(payload as u64), Type::I64);
+        let fields = cfg.push_struct_fields([scalar]).unwrap();
+        push(
+            cfg,
+            block,
+            CfgInstData::StructInit {
+                struct_id: match owner.kind() {
+                    TypeKind::Struct(id) => id,
+                    _ => unreachable!(),
+                },
+                fields,
+            },
+            owner,
+        )
+    }
+
+    fn push(cfg: &mut Cfg, block: BlockId, data: CfgInstData, ty: Type) -> CfgValue {
+        cfg.add_inst_to_block(
+            block,
+            CfgInst {
+                data,
+                ty,
+                span: Span::new(0, 0),
+            },
+        )
+    }
+
+    fn cfg_with_load_before_storage_live() -> Cfg {
+        let mut cfg = Cfg::new(Type::I32, 1, 0, "storage_order".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let loaded = push(&mut cfg, entry, CfgInstData::Load { slot: 0 }, Type::I32);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(
+            entry,
+            Terminator::Return {
+                value: Some(loaded),
+            },
+        );
+        cfg
+    }
+
+    #[test]
+    fn finish_rejects_local_use_before_storage_live() {
+        let error = cfg_with_load_before_storage_live()
+            .finish(&FrozenTypeInternPool::new())
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not live on every reaching path")
+        );
+        assert!(matches!(
+            error.location(),
+            CfgVerificationLocation::Instruction { .. }
+        ));
+    }
+
+    #[test]
+    fn post_optimization_publication_rejects_local_use_before_storage_live() {
+        let error = cfg_with_load_before_storage_live()
+            .finish_after_optimization(&FrozenTypeInternPool::new())
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not live on every reaching path")
+        );
+    }
+
+    #[test]
+    fn materialization_publication_rejects_local_use_before_storage_live() {
+        let error = cfg_with_load_before_storage_live()
+            .verify_materialization_with_type_pool(&FrozenTypeInternPool::new())
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not live on every reaching path")
+        );
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_storage_dead_before_live() {
+        let mut cfg = Cfg::new(Type::UNIT, 1, 0, "dead_before_live".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+
+        let error = cfg.finish(&FrozenTypeInternPool::new()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not live on every reaching path")
+        );
+    }
+
+    #[test]
+    fn semantic_verifier_does_not_conflate_zero_width_local_lifetimes() {
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "zst_storage".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        for _ in 0..2 {
+            push(
+                &mut cfg,
+                entry,
+                CfgInstData::StorageLive {
+                    slot: 0,
+                    local_ty: Type::UNIT,
+                },
+                Type::UNIT,
+            );
+        }
+        for _ in 0..2 {
+            push(
+                &mut cfg,
+                entry,
+                CfgInstData::StorageDead {
+                    slot: 0,
+                    local_ty: Type::UNIT,
+                },
+                Type::UNIT,
+            );
+        }
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+
+        cfg.finish(&FrozenTypeInternPool::new()).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_accepts_balanced_storage_in_a_loop() {
+        let mut cfg = Cfg::new(Type::UNIT, 1, 0, "storage_loop".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let header = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.entry = entry;
+        cfg.set_terminator(
+            entry,
+            Terminator::Goto {
+                target: header,
+                args: crate::payload::CfgGotoArgs::EMPTY,
+            },
+        );
+        push(
+            &mut cfg,
+            header,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+            Type::UNIT,
+        );
+        let init = push(&mut cfg, header, CfgInstData::Const(1), Type::I32);
+        push(
+            &mut cfg,
+            header,
+            CfgInstData::Alloc { slot: 0, init },
+            Type::UNIT,
+        );
+        push(
+            &mut cfg,
+            header,
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+            Type::UNIT,
+        );
+        let again = push(&mut cfg, header, CfgInstData::BoolConst(false), Type::BOOL);
+        cfg.set_branch(header, again, header, [], exit, []);
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+
+        cfg.finish(&FrozenTypeInternPool::new()).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_path_dependent_storage_lifetime() {
+        let mut cfg = Cfg::new(Type::UNIT, 1, 0, "storage_join".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let live_arm = cfg.new_block();
+        let dead_arm = cfg.new_block();
+        let join = cfg.new_block();
+        cfg.entry = entry;
+        let cond = push(&mut cfg, entry, CfgInstData::BoolConst(false), Type::BOOL);
+        cfg.set_branch(entry, cond, live_arm, [], dead_arm, []);
+        push(
+            &mut cfg,
+            live_arm,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+            Type::UNIT,
+        );
+        for block in [live_arm, dead_arm] {
+            cfg.set_terminator(
+                block,
+                Terminator::Goto {
+                    target: join,
+                    args: crate::payload::CfgGotoArgs::EMPTY,
+                },
+            );
+        }
+        push(&mut cfg, join, CfgInstData::Load { slot: 0 }, Type::I32);
+        cfg.set_terminator(join, Terminator::Return { value: None });
+
+        let error = cfg.finish(&FrozenTypeInternPool::new()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not live on every reaching path")
+        );
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_drop_flag_read_before_all_paths_initialize_it() {
+        let mut cfg = Cfg::new(Type::UNIT, 1, 1, "drop_flag_join".to_string(), vec![false]);
+        let entry = cfg.new_block();
+        let init_arm = cfg.new_block();
+        let skip_arm = cfg.new_block();
+        let join = cfg.new_block();
+        cfg.entry = entry;
+        let cond = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, Type::BOOL);
+        cfg.set_branch(entry, cond, init_arm, [], skip_arm, []);
+        let flag = push(&mut cfg, init_arm, CfgInstData::Const(1), Type::I32);
+        push(
+            &mut cfg,
+            init_arm,
+            CfgInstData::Store {
+                slot: 0,
+                value: flag,
+            },
+            Type::UNIT,
+        );
+        for block in [init_arm, skip_arm] {
+            cfg.set_terminator(
+                block,
+                Terminator::Goto {
+                    target: join,
+                    args: crate::payload::CfgGotoArgs::EMPTY,
+                },
+            );
+        }
+        push(&mut cfg, join, CfgInstData::Load { slot: 0 }, Type::I32);
+        cfg.set_terminator(join, Terminator::Return { value: None });
+
+        let error = cfg.finish(&FrozenTypeInternPool::new()).unwrap_err();
+        assert!(error.to_string().contains("before it is initialized"));
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_hidden_slot_load_when_no_write_survives() {
+        let mut cfg = Cfg::new(Type::I32, 1, 0, "missing_hidden_init".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let loaded = push(&mut cfg, entry, CfgInstData::Load { slot: 0 }, Type::I32);
+        cfg.set_terminator(
+            entry,
+            Terminator::Return {
+                value: Some(loaded),
+            },
+        );
+
+        let error = cfg.finish(&FrozenTypeInternPool::new()).unwrap_err();
+        assert!(error.to_string().contains("before it is initialized"));
+    }
+
+    #[test]
+    fn semantic_verifier_accepts_param_only_flag_initialized_on_divergent_paths() {
+        let mut cfg = Cfg::new(
+            Type::I32,
+            1,
+            1,
+            "drop_flag_divergent".to_string(),
+            vec![false],
+        );
+        let entry = cfg.new_block();
+        let true_arm = cfg.new_block();
+        let false_arm = cfg.new_block();
+        let join = cfg.new_block();
+        cfg.entry = entry;
+        let cond = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, Type::BOOL);
+        cfg.set_branch(entry, cond, true_arm, [], false_arm, []);
+        for (block, value) in [(true_arm, 1), (false_arm, 0)] {
+            let flag = push(&mut cfg, block, CfgInstData::Const(value), Type::I32);
+            push(
+                &mut cfg,
+                block,
+                CfgInstData::Store {
+                    slot: 0,
+                    value: flag,
+                },
+                Type::UNIT,
+            );
+            cfg.set_goto(block, join, []);
+        }
+        let flag = push(&mut cfg, join, CfgInstData::Load { slot: 0 }, Type::I32);
+        cfg.set_terminator(join, Terminator::Return { value: Some(flag) });
+
+        cfg.finish(&FrozenTypeInternPool::new()).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_use_after_explicit_drop() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_droppable_struct(&pool, &interner, "ConsumedOwner");
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(owner, 0, 0, "use_after_drop".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let fields = cfg.push_struct_fields([]).unwrap();
+        let owned = push(
+            &mut cfg,
+            entry,
+            CfgInstData::StructInit {
+                struct_id: match owner.kind() {
+                    TypeKind::Struct(id) => id,
+                    _ => unreachable!(),
+                },
+                fields,
+            },
+            owner,
+        );
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Drop { value: owned },
+            Type::UNIT,
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: Some(owned) });
+
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("already dropped on a reaching path")
+        );
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_double_drop() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_droppable_struct(&pool, &interner, "DoubleDropOwner");
+        let owner_id = match owner.kind() {
+            TypeKind::Struct(id) => id,
+            _ => unreachable!(),
+        };
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "double_drop".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let fields = cfg.push_struct_fields([]).unwrap();
+        let owned = push(
+            &mut cfg,
+            entry,
+            CfgInstData::StructInit {
+                struct_id: owner_id,
+                fields,
+            },
+            owner,
+        );
+        for _ in 0..2 {
+            push(
+                &mut cfg,
+                entry,
+                CfgInstData::Drop { value: owned },
+                Type::UNIT,
+            );
+        }
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("already dropped on a reaching path")
+        );
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_duplicate_drop_through_fresh_load() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_nonzero_droppable_struct(&pool, &interner, "FreshLoadOwner");
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 1, 0, "fresh_load_drop".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        let init = init_nonzero_owner(&mut cfg, entry, owner, 1);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc { slot: 0, init },
+            Type::UNIT,
+        );
+        for _ in 0..2 {
+            let loaded = push(&mut cfg, entry, CfgInstData::Load { slot: 0 }, owner);
+            push(
+                &mut cfg,
+                entry,
+                CfgInstData::Drop { value: loaded },
+                Type::UNIT,
+            );
+        }
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(error.to_string().contains("already-consumed owner root"));
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_pre_drop_load_used_by_later_store() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_nonzero_droppable_struct(&pool, &interner, "StoredConsumedOwner");
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            1,
+            0,
+            "stored_consumed_owner".to_string(),
+            vec![],
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        let initial = init_nonzero_owner(&mut cfg, entry, owner, 1);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: initial,
+            },
+            Type::UNIT,
+        );
+        let stale = push(&mut cfg, entry, CfgInstData::Load { slot: 0 }, owner);
+        let dropped = push(&mut cfg, entry, CfgInstData::Load { slot: 0 }, owner);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Drop { value: dropped },
+            Type::UNIT,
+        );
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Store {
+                slot: 0,
+                value: stale,
+            },
+            Type::UNIT,
+        );
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("uses already-consumed owner root")
+        );
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_duplicate_drop_through_fresh_param() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_nonzero_droppable_struct(&pool, &interner, "FreshParamOwner");
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            0,
+            1,
+            "fresh_param_drop".to_string(),
+            vec![false],
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        for _ in 0..2 {
+            let parameter = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, owner);
+            push(
+                &mut cfg,
+                entry,
+                CfgInstData::Drop { value: parameter },
+                Type::UNIT,
+            );
+        }
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(error.to_string().contains("already-consumed owner root"));
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_pre_drop_param_used_by_later_aggregate() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_nonzero_droppable_struct(&pool, &interner, "AggregatedParamOwner");
+        let wrapper_id = register_struct(&pool, &interner, "OwnerWrapper", &[owner]);
+        let wrapper = Type::new_struct(wrapper_id);
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            0,
+            1,
+            "aggregated_consumed_param".to_string(),
+            vec![false],
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let stale = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, owner);
+        let dropped = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, owner);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Drop { value: dropped },
+            Type::UNIT,
+        );
+        let fields = cfg.push_struct_fields([stale]).unwrap();
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StructInit {
+                struct_id: wrapper_id,
+                fields,
+            },
+            wrapper,
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("uses already-consumed owner root")
+        );
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_duplicate_drop_through_fresh_inout_param() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_nonzero_droppable_struct(&pool, &interner, "FreshInoutOwner");
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            0,
+            1,
+            "fresh_inout_drop".to_string(),
+            rue_air::ParamSlotModes::new(vec![true], vec![true]),
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        for _ in 0..2 {
+            let parameter = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, owner);
+            push(
+                &mut cfg,
+                entry,
+                CfgInstData::Drop { value: parameter },
+                Type::UNIT,
+            );
+        }
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(error.to_string().contains("already-consumed owner root"));
+    }
+
+    #[test]
+    fn semantic_verifier_accepts_whole_inout_reset_between_drops() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_nonzero_droppable_struct(&pool, &interner, "ResetInoutOwner");
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            0,
+            1,
+            "reset_inout_drop".to_string(),
+            rue_air::ParamSlotModes::new(vec![true], vec![true]),
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let parameter = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, owner);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Drop { value: parameter },
+            Type::UNIT,
+        );
+        let replacement = init_nonzero_owner(&mut cfg, entry, owner, 1);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::ParamStore {
+                param_slot: 0,
+                value: replacement,
+            },
+            Type::UNIT,
+        );
+        let parameter = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, owner);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Drop { value: parameter },
+            Type::UNIT,
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+
+        cfg.finish(&pool).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_accepts_whole_inout_place_write_reset_between_drops() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_nonzero_droppable_struct(&pool, &interner, "PlaceResetInoutOwner");
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            0,
+            1,
+            "place_reset_inout_drop".to_string(),
+            rue_air::ParamSlotModes::new(vec![true], vec![true]),
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let parameter = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, owner);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Drop { value: parameter },
+            Type::UNIT,
+        );
+        let replacement = init_nonzero_owner(&mut cfg, entry, owner, 1);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::PlaceWrite {
+                place: Place::param(0, owner),
+                value: replacement,
+            },
+            Type::UNIT,
+        );
+        let parameter = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, owner);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Drop { value: parameter },
+            Type::UNIT,
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+
+        cfg.finish(&pool).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_unknown_phi_double_drop() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_droppable_struct(&pool, &interner, "UnknownPhiOwner");
+        let owner_id = match owner.kind() {
+            TypeKind::Struct(id) => id,
+            _ => unreachable!(),
+        };
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "unknown_phi_drop".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let left = cfg.new_block();
+        let right = cfg.new_block();
+        let join = cfg.new_block();
+        let parameter = cfg.add_block_param(join, owner);
+        cfg.entry = entry;
+        let cond = push(&mut cfg, entry, CfgInstData::BoolConst(false), Type::BOOL);
+        cfg.set_branch(entry, cond, left, [], right, []);
+        for block in [left, right] {
+            let fields = cfg.push_struct_fields([]).unwrap();
+            let value = push(
+                &mut cfg,
+                block,
+                CfgInstData::StructInit {
+                    struct_id: owner_id,
+                    fields,
+                },
+                owner,
+            );
+            cfg.set_goto(block, join, [value]);
+        }
+        for _ in 0..2 {
+            push(
+                &mut cfg,
+                join,
+                CfgInstData::Drop { value: parameter },
+                Type::UNIT,
+            );
+        }
+        cfg.set_terminator(join, Terminator::Return { value: None });
+
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("already dropped on a reaching path")
+        );
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_conflicting_root_phi_double_drop() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_nonzero_droppable_struct(&pool, &interner, "ConflictingPhiOwner");
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 2, 0, "conflicting_phi_drop".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let left = cfg.new_block();
+        let right = cfg.new_block();
+        let join = cfg.new_block();
+        let parameter = cfg.add_block_param(join, owner);
+        cfg.entry = entry;
+        for slot in 0..2 {
+            push(
+                &mut cfg,
+                entry,
+                CfgInstData::StorageLive {
+                    slot,
+                    local_ty: owner,
+                },
+                Type::UNIT,
+            );
+            let initial = init_nonzero_owner(&mut cfg, entry, owner, i64::from(slot));
+            push(
+                &mut cfg,
+                entry,
+                CfgInstData::Alloc {
+                    slot,
+                    init: initial,
+                },
+                Type::UNIT,
+            );
+        }
+        let cond = push(&mut cfg, entry, CfgInstData::BoolConst(false), Type::BOOL);
+        cfg.set_branch(entry, cond, left, [], right, []);
+        let left_value = push(&mut cfg, left, CfgInstData::Load { slot: 0 }, owner);
+        cfg.set_goto(left, join, [left_value]);
+        let right_value = push(&mut cfg, right, CfgInstData::Load { slot: 1 }, owner);
+        cfg.set_goto(right, join, [right_value]);
+        for _ in 0..2 {
+            push(
+                &mut cfg,
+                join,
+                CfgInstData::Drop { value: parameter },
+                Type::UNIT,
+            );
+        }
+        for slot in 0..2 {
+            push(
+                &mut cfg,
+                join,
+                CfgInstData::StorageDead {
+                    slot,
+                    local_ty: owner,
+                },
+                Type::UNIT,
+            );
+        }
+        cfg.set_terminator(join, Terminator::Return { value: None });
+
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("already dropped on a reaching path")
+        );
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_consumed_unknown_phi_as_outgoing_argument() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_droppable_struct(&pool, &interner, "OutgoingPhiOwner");
+        let owner_id = match owner.kind() {
+            TypeKind::Struct(id) => id,
+            _ => unreachable!(),
+        };
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "outgoing_phi_drop".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let middle = cfg.new_block();
+        let tail = cfg.new_block();
+        let middle_param = cfg.add_block_param(middle, owner);
+        cfg.add_block_param(tail, owner);
+        cfg.entry = entry;
+        let fields = cfg.push_struct_fields([]).unwrap();
+        let value = push(
+            &mut cfg,
+            entry,
+            CfgInstData::StructInit {
+                struct_id: owner_id,
+                fields,
+            },
+            owner,
+        );
+        cfg.set_goto(entry, middle, [value]);
+        push(
+            &mut cfg,
+            middle,
+            CfgInstData::Drop {
+                value: middle_param,
+            },
+            Type::UNIT,
+        );
+        cfg.set_goto(middle, tail, [middle_param]);
+        cfg.set_terminator(tail, Terminator::Return { value: None });
+
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("already dropped on a reaching path")
+        );
+    }
+
+    #[test]
+    fn semantic_verifier_accepts_fresh_unknown_phi_each_loop_entry() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_droppable_struct(&pool, &interner, "FreshPhiLoopOwner");
+        let owner_id = match owner.kind() {
+            TypeKind::Struct(id) => id,
+            _ => unreachable!(),
+        };
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "fresh_phi_loop".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let header = cfg.new_block();
+        let body = cfg.new_block();
+        let exit = cfg.new_block();
+        let parameter = cfg.add_block_param(header, owner);
+        cfg.entry = entry;
+        let fields = cfg.push_struct_fields([]).unwrap();
+        let initial = push(
+            &mut cfg,
+            entry,
+            CfgInstData::StructInit {
+                struct_id: owner_id,
+                fields,
+            },
+            owner,
+        );
+        cfg.set_goto(entry, header, [initial]);
+        push(
+            &mut cfg,
+            header,
+            CfgInstData::Drop { value: parameter },
+            Type::UNIT,
+        );
+        let again = push(&mut cfg, header, CfgInstData::BoolConst(false), Type::BOOL);
+        cfg.set_branch(header, again, body, [], exit, []);
+        let fields = cfg.push_struct_fields([]).unwrap();
+        let next = push(
+            &mut cfg,
+            body,
+            CfgInstData::StructInit {
+                struct_id: owner_id,
+                fields,
+            },
+            owner,
+        );
+        cfg.set_goto(body, header, [next]);
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+
+        cfg.finish(&pool).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_propagates_exact_root_through_block_parameter() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_nonzero_droppable_struct(&pool, &interner, "BlockParamOwner");
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 1, 0, "block_param_drop".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let tail = cfg.new_block();
+        let parameter = cfg.add_block_param(tail, owner);
+        cfg.entry = entry;
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        let init = init_nonzero_owner(&mut cfg, entry, owner, 1);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc { slot: 0, init },
+            Type::UNIT,
+        );
+        let loaded = push(&mut cfg, entry, CfgInstData::Load { slot: 0 }, owner);
+        cfg.set_goto(entry, tail, [loaded]);
+        push(
+            &mut cfg,
+            tail,
+            CfgInstData::Drop { value: parameter },
+            Type::UNIT,
+        );
+        let loaded_again = push(&mut cfg, tail, CfgInstData::Load { slot: 0 }, owner);
+        push(
+            &mut cfg,
+            tail,
+            CfgInstData::Drop {
+                value: loaded_again,
+            },
+            Type::UNIT,
+        );
+        push(
+            &mut cfg,
+            tail,
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(tail, Terminator::Return { value: None });
+
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(error.to_string().contains("already-consumed owner root"));
+    }
+
+    #[test]
+    fn semantic_verifier_accepts_reset_loop_carried_owner_root() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_nonzero_droppable_struct(&pool, &interner, "LoopCarriedOwner");
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 1, 0, "loop_carried_owner".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let header = cfg.new_block();
+        let exit = cfg.new_block();
+        let parameter = cfg.add_block_param(header, owner);
+        cfg.entry = entry;
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        let initial = init_nonzero_owner(&mut cfg, entry, owner, 0);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: initial,
+            },
+            Type::UNIT,
+        );
+        let initial = push(&mut cfg, entry, CfgInstData::Load { slot: 0 }, owner);
+        cfg.set_goto(entry, header, [initial]);
+
+        push(
+            &mut cfg,
+            header,
+            CfgInstData::Drop { value: parameter },
+            Type::UNIT,
+        );
+        let replacement = init_nonzero_owner(&mut cfg, header, owner, 1);
+        push(
+            &mut cfg,
+            header,
+            CfgInstData::Store {
+                slot: 0,
+                value: replacement,
+            },
+            Type::UNIT,
+        );
+        let replacement = push(&mut cfg, header, CfgInstData::Load { slot: 0 }, owner);
+        let again = push(&mut cfg, header, CfgInstData::BoolConst(false), Type::BOOL);
+        cfg.set_branch(header, again, header, [replacement], exit, []);
+        push(
+            &mut cfg,
+            exit,
+            CfgInstData::Drop { value: replacement },
+            Type::UNIT,
+        );
+        push(
+            &mut cfg,
+            exit,
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+
+        cfg.finish(&pool).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_consumed_owner_root_on_backedge() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_nonzero_droppable_struct(&pool, &interner, "ConsumedBackedgeOwner");
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 1, 0, "consumed_backedge".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let header = cfg.new_block();
+        let exit = cfg.new_block();
+        let parameter = cfg.add_block_param(header, owner);
+        cfg.entry = entry;
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        let initial = init_nonzero_owner(&mut cfg, entry, owner, 0);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: initial,
+            },
+            Type::UNIT,
+        );
+        let initial = push(&mut cfg, entry, CfgInstData::Load { slot: 0 }, owner);
+        cfg.set_goto(entry, header, [initial]);
+        push(
+            &mut cfg,
+            header,
+            CfgInstData::Drop { value: parameter },
+            Type::UNIT,
+        );
+        let again = push(&mut cfg, header, CfgInstData::BoolConst(false), Type::BOOL);
+        cfg.set_branch(header, again, header, [parameter], exit, []);
+        push(
+            &mut cfg,
+            exit,
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("already dropped on a reaching path")
+        );
+    }
+
+    #[test]
+    fn semantic_verifier_treats_loop_body_definitions_as_fresh_dynamic_values() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_droppable_struct(&pool, &interner, "LoopOwner");
+        let owner_id = match owner.kind() {
+            TypeKind::Struct(id) => id,
+            _ => unreachable!(),
+        };
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "drop_loop".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let header = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.entry = entry;
+        cfg.set_terminator(
+            entry,
+            Terminator::Goto {
+                target: header,
+                args: crate::payload::CfgGotoArgs::EMPTY,
+            },
+        );
+        let fields = cfg.push_struct_fields([]).unwrap();
+        let owned = push(
+            &mut cfg,
+            header,
+            CfgInstData::StructInit {
+                struct_id: owner_id,
+                fields,
+            },
+            owner,
+        );
+        push(
+            &mut cfg,
+            header,
+            CfgInstData::Drop { value: owned },
+            Type::UNIT,
+        );
+        let again = push(&mut cfg, header, CfgInstData::BoolConst(false), Type::BOOL);
+        cfg.set_branch(header, again, header, [], exit, []);
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+
+        cfg.finish(&pool).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_ignores_drop_events_for_trivial_values() {
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "trivial_drop_loop".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let header = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.entry = entry;
+        cfg.set_terminator(
+            entry,
+            Terminator::Goto {
+                target: header,
+                args: crate::payload::CfgGotoArgs::EMPTY,
+            },
+        );
+        let value = push(&mut cfg, header, CfgInstData::Const(0), Type::I32);
+        push(&mut cfg, header, CfgInstData::Drop { value }, Type::UNIT);
+        let again = push(&mut cfg, header, CfgInstData::BoolConst(false), Type::BOOL);
+        cfg.set_branch(header, again, header, [], exit, []);
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+
+        cfg.finish(&FrozenTypeInternPool::new()).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_does_not_consume_trivial_local_root() {
+        let mut cfg = Cfg::new(Type::UNIT, 1, 0, "trivial_local_drop".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+            Type::UNIT,
+        );
+        let init = push(&mut cfg, entry, CfgInstData::Const(1), Type::I32);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc { slot: 0, init },
+            Type::UNIT,
+        );
+        for _ in 0..2 {
+            let value = push(&mut cfg, entry, CfgInstData::Load { slot: 0 }, Type::I32);
+            push(&mut cfg, entry, CfgInstData::Drop { value }, Type::UNIT);
+        }
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+
+        cfg.finish(&FrozenTypeInternPool::new()).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_normal_return_with_live_storage() {
+        let mut cfg = Cfg::new(Type::UNIT, 1, 0, "live_at_return".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+
+        let error = cfg.finish(&FrozenTypeInternPool::new()).unwrap_err();
+        assert!(error.to_string().contains("leaves local storage"));
+    }
+
+    #[test]
+    fn semantic_verifier_accepts_balanced_early_returns() {
+        let mut cfg = Cfg::new(Type::UNIT, 1, 0, "balanced_returns".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let left = cfg.new_block();
+        let right = cfg.new_block();
+        cfg.entry = entry;
+        let cond = push(&mut cfg, entry, CfgInstData::BoolConst(false), Type::BOOL);
+        cfg.set_branch(entry, cond, left, [], right, []);
+        for block in [left, right] {
+            push(
+                &mut cfg,
+                block,
+                CfgInstData::StorageLive {
+                    slot: 0,
+                    local_ty: Type::I32,
+                },
+                Type::UNIT,
+            );
+            push(
+                &mut cfg,
+                block,
+                CfgInstData::StorageDead {
+                    slot: 0,
+                    local_ty: Type::I32,
+                },
+                Type::UNIT,
+            );
+            cfg.set_terminator(block, Terminator::Return { value: None });
+        }
+
+        cfg.finish(&FrozenTypeInternPool::new()).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_exempts_panicking_and_nonterminating_paths_from_storage_dead() {
+        let mut panic_cfg = Cfg::new(Type::UNIT, 1, 0, "panic_path".to_string(), vec![]);
+        let panic_entry = panic_cfg.new_block();
+        panic_cfg.entry = panic_entry;
+        push(
+            &mut panic_cfg,
+            panic_entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+            Type::UNIT,
+        );
+        panic_cfg.set_terminator(panic_entry, Terminator::Unreachable);
+        panic_cfg.finish(&FrozenTypeInternPool::new()).unwrap();
+
+        let mut loop_cfg = Cfg::new(Type::UNIT, 1, 0, "nonterminating_path".to_string(), vec![]);
+        let loop_entry = loop_cfg.new_block();
+        let forever = loop_cfg.new_block();
+        loop_cfg.entry = loop_entry;
+        push(
+            &mut loop_cfg,
+            loop_entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: Type::I32,
+            },
+            Type::UNIT,
+        );
+        loop_cfg.set_goto(loop_entry, forever, []);
+        loop_cfg.set_goto(forever, forever, []);
+        loop_cfg.finish(&FrozenTypeInternPool::new()).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_reports_invalid_drop_type_without_panicking() {
+        let foreign_pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let foreign_owner = register_droppable_struct(&foreign_pool, &interner, "ForeignOwner");
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "invalid_drop_type".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let malformed = push(&mut cfg, entry, CfgInstData::Const(0), foreign_owner);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Drop { value: malformed },
+            Type::UNIT,
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+
+        let error = cfg.finish(&FrozenTypeInternPool::new()).unwrap_err();
+        assert!(error.to_string().contains("references invalid struct type"));
+    }
+
+    #[test]
+    fn semantic_verifier_bounds_state_for_many_live_regions_across_long_chain() {
+        const REGIONS: u32 = 64;
+        const CHAIN: usize = 64;
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            REGIONS,
+            0,
+            "bounded_regions".to_string(),
+            vec![],
+        );
+        let entry = cfg.new_block();
+        let chain = (0..CHAIN).map(|_| cfg.new_block()).collect::<Vec<_>>();
+        cfg.entry = entry;
+        for slot in 0..REGIONS {
+            push(
+                &mut cfg,
+                entry,
+                CfgInstData::StorageLive {
+                    slot,
+                    local_ty: Type::I32,
+                },
+                Type::UNIT,
+            );
+        }
+        cfg.set_goto(entry, chain[0], []);
+        for pair in chain.windows(2) {
+            cfg.set_goto(pair[0], pair[1], []);
+        }
+        let tail = *chain.last().unwrap();
+        for slot in 0..REGIONS {
+            push(
+                &mut cfg,
+                tail,
+                CfgInstData::StorageDead {
+                    slot,
+                    local_ty: Type::I32,
+                },
+                Type::UNIT,
+            );
+        }
+        cfg.set_terminator(tail, Terminator::Return { value: None });
+
+        super::SEMANTIC_WORK.with(|work| *work.borrow_mut() = Default::default());
+        cfg.finish(&FrozenTypeInternPool::new()).unwrap();
+        super::SEMANTIC_WORK.with(|work| {
+            let work = *work.borrow();
+            let blocks = CHAIN + 1;
+            assert_eq!(work.fact_solves, REGIONS as usize);
+            assert!(work.peak_binary_state_slots <= blocks * 3);
+            assert!(work.block_visits <= REGIONS as usize * blocks);
+            assert!(work.edge_visits <= REGIONS as usize * (blocks - 1));
+            assert_eq!(
+                work.validation_instruction_visits,
+                REGIONS as usize * REGIONS as usize * 2
+            );
+            assert_eq!(work.instruction_operand_visits, 0);
+            assert_eq!(work.terminator_operand_visits, 0);
+        });
+    }
+
+    #[test]
+    fn semantic_verifier_resolves_reverse_phi_chain_with_linear_work() {
+        const PHIS: usize = 128;
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_nonzero_droppable_struct(&pool, &interner, "ReversePhiOwner");
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 1, 0, "reverse_phi_chain".to_string(), vec![]);
+        let entry = cfg.new_block();
+        let blocks = (0..PHIS).map(|_| cfg.new_block()).collect::<Vec<_>>();
+        let parameters = blocks
+            .iter()
+            .map(|&block| cfg.add_block_param(block, owner))
+            .collect::<Vec<_>>();
+        cfg.entry = entry;
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        let initial = init_nonzero_owner(&mut cfg, entry, owner, 0);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: initial,
+            },
+            Type::UNIT,
+        );
+        let initial = push(&mut cfg, entry, CfgInstData::Load { slot: 0 }, owner);
+        cfg.set_goto(entry, blocks[PHIS - 1], [initial]);
+        for index in (1..PHIS).rev() {
+            cfg.set_goto(blocks[index], blocks[index - 1], [parameters[index]]);
+        }
+        let tail = blocks[0];
+        push(
+            &mut cfg,
+            tail,
+            CfgInstData::Drop {
+                value: parameters[0],
+            },
+            Type::UNIT,
+        );
+        let duplicate = push(&mut cfg, tail, CfgInstData::Load { slot: 0 }, owner);
+        push(
+            &mut cfg,
+            tail,
+            CfgInstData::Drop { value: duplicate },
+            Type::UNIT,
+        );
+        push(
+            &mut cfg,
+            tail,
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(tail, Terminator::Return { value: None });
+
+        super::SEMANTIC_WORK.with(|work| *work.borrow_mut() = Default::default());
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(error.to_string().contains("already-consumed owner root"));
+        super::SEMANTIC_WORK.with(|work| {
+            let work = *work.borrow();
+            assert_eq!(work.root_nodes, PHIS);
+            assert_eq!(work.root_edges, PHIS);
+            assert!(work.root_updates <= PHIS * 2);
+            assert!(work.root_dependency_visits <= (PHIS - 1) * 2);
+            assert!(work.validation_instruction_visits <= work.fact_solves * 9);
+            assert!(work.instruction_operand_visits > 0);
+            assert!(work.instruction_operand_visits <= work.fact_solves * 3);
+            assert!(work.terminator_operand_visits >= PHIS * 2);
+            assert!(work.terminator_operand_visits <= work.fact_solves * PHIS);
+        });
     }
 
     #[test]
