@@ -1080,8 +1080,15 @@ pub struct ParsedModulesWork {
     pub syntax: SyntaxWork,
     /// Snapshot modules classified by this assembly.
     pub modules_considered: usize,
-    /// Point lookups performed against the retained per-module parse queries.
+    /// Registered per-module child attempts made while validating or evaluating
+    /// the frontier. A retained aggregate hit performs no child lookup.
     pub previous_module_lookups: usize,
+    /// Independently parseable modules submitted to registered frontier batches.
+    pub frontier_items: usize,
+    /// Registered frontier batches requested. Empty frontiers are not batches.
+    pub frontier_batches: usize,
+    /// Batch-root evaluator executions, excluding the child module work.
+    pub frontier_batch_overhead: usize,
     /// Entire ParsedModule Arcs retained unchanged.
     pub modules_reused: usize,
     /// Cheap envelopes rebuilt around retained syntax payloads.
@@ -1103,6 +1110,9 @@ impl ParsedModulesWork {
         self.syntax.tokens += other.syntax.tokens;
         self.modules_considered += other.modules_considered;
         self.previous_module_lookups += other.previous_module_lookups;
+        self.frontier_items += other.frontier_items;
+        self.frontier_batches += other.frontier_batches;
+        self.frontier_batch_overhead += other.frontier_batch_overhead;
         self.modules_reused += other.modules_reused;
         self.modules_rebound += other.modules_rebound;
         self.modules_reparsed += other.modules_reparsed;
@@ -3788,7 +3798,9 @@ extern "C" { fn getpid() -> i32; }
         assert_eq!(work.modules_rebound, 0);
         assert_eq!(work.modules_reparsed, 1);
         assert_eq!(work.modules_considered, 129);
-        assert_eq!(work.previous_module_lookups, 129);
+        // Canonical dependency validation reaches the edited module after 83
+        // attempts, then the red evaluator requests the complete 129-child wave.
+        assert_eq!(work.previous_module_lookups, 83 + 129);
         assert_eq!(
             work.modules_considered,
             work.modules_reused + work.modules_rebound + work.modules_reparsed
@@ -4177,7 +4189,9 @@ fn main() -> i32 {
         let update = session.update(&make(true));
         let work = update.work();
 
-        assert_eq!(work.previous_module_lookups, 128);
+        // Canonical dependency validation reaches the edited module after 70
+        // attempts, then the red frontier evaluates all 128 children.
+        assert_eq!(work.previous_module_lookups, 70 + 128);
         assert_eq!(work.modules_reused, 127);
         assert_eq!(work.modules_reparsed, 1);
         assert_eq!(work.syntax.lexer_invocations, 1);

@@ -2475,6 +2475,18 @@ pub struct MergeMetrics {
     pub definition_shards_rebuilt: usize,
 }
 
+/// Exact registered warning-reference frontier scheduling work.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WarningReferenceMetrics {
+    pub frontier_items: usize,
+    pub frontier_batches: usize,
+    pub frontier_batch_overhead: usize,
+    pub children_computed: usize,
+    pub children_reused: usize,
+    pub children_joined: usize,
+    pub children_canceled: usize,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ParseMetrics {
     pub lexer_invocations: usize,
@@ -2482,6 +2494,10 @@ pub struct ParseMetrics {
     pub lexed_bytes: usize,
     pub tokens: usize,
     pub modules_considered: usize,
+    pub previous_module_lookups: usize,
+    pub frontier_items: usize,
+    pub frontier_batches: usize,
+    pub frontier_batch_overhead: usize,
     pub modules_reused: usize,
     pub modules_rebound: usize,
     pub modules_reparsed: usize,
@@ -2497,6 +2513,10 @@ impl ParseMetrics {
             lexed_bytes: work.syntax.lexed_bytes,
             tokens: work.syntax.tokens,
             modules_considered: work.modules_considered,
+            previous_module_lookups: work.previous_module_lookups,
+            frontier_items: work.frontier_items,
+            frontier_batches: work.frontier_batches,
+            frontier_batch_overhead: work.frontier_batch_overhead,
             modules_reused: work.modules_reused,
             modules_rebound: work.modules_rebound,
             modules_reparsed: work.modules_reparsed,
@@ -2695,6 +2715,7 @@ pub struct OneShotMetrics {
     pub lines: usize,
     pub tokens: usize,
     pub parsed: ParseMetrics,
+    pub warning_references: WarningReferenceMetrics,
     pub lowered: LowerMetrics,
     pub semantic: SemanticMetrics,
     pub query_runtime: QueryRuntimeMetrics,
@@ -2726,6 +2747,7 @@ impl OneShotMetrics {
             lines: stats.lines,
             tokens: stats.tokens,
             parsed: ParseMetrics::from_work(work.parsed),
+            warning_references: work.warning_references,
             lowered: LowerMetrics::from_work(work.lowered),
             semantic: SemanticMetrics::from_work(work.semantic),
             query_runtime,
@@ -2773,6 +2795,9 @@ impl MetricsSnapshot {
     }
     pub fn parse_metrics(&self) -> ParseMetrics {
         ParseMetrics::from_work(self.inner.last_parse)
+    }
+    pub fn warning_reference_metrics(&self) -> WarningReferenceMetrics {
+        self.inner.warning_references
     }
     pub fn lower_metrics(&self) -> LowerMetrics {
         LowerMetrics {

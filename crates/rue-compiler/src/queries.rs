@@ -124,6 +124,7 @@ pub struct SourceStats {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PipelineWork {
     pub parsed: ParsedModulesWork,
+    pub warning_references: crate::unstable::WarningReferenceMetrics,
     pub merged: CanonicalMergeWork,
     pub lowered: CanonicalRirWork,
     pub semantic: CanonicalSemanticWork,
@@ -424,6 +425,7 @@ pub(crate) fn compile_rooted_with_session_with_cancellation(
     };
     output.work = PipelineWork {
         parsed: session_work.last_parse,
+        warning_references: session_work.warning_references,
         merged: Default::default(),
         lowered: Default::default(),
         semantic: rooted.work,

@@ -1218,6 +1218,22 @@ mod tests {
             .into_result()
             .unwrap();
         let warm = crate::queries::compile_with_session(&mut session, &after, &options).unwrap();
+        assert_eq!(
+            warm.work.warning_references,
+            crate::unstable::WarningReferenceMetrics {
+                frontier_items: 3,
+                frontier_batches: 1,
+                frontier_batch_overhead: 1,
+                children_computed: 1,
+                children_reused: 2,
+                children_joined: 0,
+                children_canceled: 0,
+            }
+        );
+        assert_eq!(
+            session.unstable_metrics().warning_reference_metrics(),
+            warm.work.warning_references
+        );
         assert_eq!(warm.elf, cold.elf);
         assert_eq!(warm.warnings.len(), 2);
         assert_eq!(warm.work.lowered, Default::default());
@@ -1276,6 +1292,49 @@ mod tests {
         assert_eq!(warnings.len(), 1, "unexpected warnings: {warnings:?}");
         assert!(warnings[0].contains("unused function 'dormant'"));
         assert!(!warnings[0].contains("helper"));
+    }
+
+    #[test]
+    fn multi_module_parse_frontier_one_and_many_workers_produce_identical_output() {
+        let root = FileId::new(1);
+        let sources = [
+            SourceView::new(
+                "/p/main.rue",
+                "const a = @import(\"a.rue\"); const b = @import(\"b.rue\"); const c = @import(\"c.rue\"); fn main() -> i32 { a.value() + b.value() + c.value() }",
+                root,
+            ),
+            SourceView::new("/p/a.rue", "pub fn value() -> i32 { 10 }", FileId::new(2)),
+            SourceView::new("/p/b.rue", "pub fn value() -> i32 { 20 }", FileId::new(3)),
+            SourceView::new("/p/c.rue", "pub fn value() -> i32 { 12 }", FileId::new(4)),
+        ];
+        let metadata = SourceMetadata::from_sources(
+            &sources,
+            root,
+            AHashMap::from([
+                (root, "main.rue".to_owned()),
+                (FileId::new(2), "a.rue".to_owned()),
+                (FileId::new(3), "b.rue".to_owned()),
+                (FileId::new(4), "c.rue".to_owned()),
+            ]),
+        )
+        .unwrap();
+        let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
+        let run = |workers| {
+            let mut session = CompilerSession::with_query_concurrency(workers);
+            let published = crate::test_support::publish_test_snapshot(&mut session, &snapshot)
+                .expect("fixture import discovery closes");
+            crate::queries::compile_with_session(
+                &mut session,
+                &published,
+                &CompileOptions::default(),
+            )
+            .unwrap()
+        };
+
+        let one = run(1);
+        let many = run(4);
+        assert_eq!(one.elf, many.elf);
+        assert_eq!(one.warnings, many.warnings);
     }
 
     #[test]
