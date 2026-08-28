@@ -101,7 +101,7 @@ impl TrustedToolchainModuleDemand {
     /// against the toolchain's std path.
     pub fn std_relative_path(&self) -> &str {
         self.logical_path
-            .strip_prefix("\0rue-std/")
+            .strip_prefix(crate::TRUSTED_STANDARD_LIBRARY_NAMESPACE)
             .unwrap_or(&self.logical_path)
     }
 }

@@ -571,7 +571,7 @@ impl MetadataSegment {
                     "trusted standard-library file is absent from metadata",
                 ));
             };
-            if !path.starts_with("\0rue-std/") {
+            if !path.starts_with(crate::TRUSTED_STANDARD_LIBRARY_NAMESPACE) {
                 return Err(invalid_input(
                     "trusted standard-library file has a non-standard logical path",
                 ));

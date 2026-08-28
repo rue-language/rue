@@ -287,7 +287,7 @@ pub(crate) struct TestDiscoveryHost {
 /// name modules logically, so the tree needs a root but never a real directory.
 const FIXTURE_PROJECT_ROOT: &str = "/rue-fixture";
 const FIXTURE_STD_ROOT: &str = "/rue-fixture/std";
-const TRUSTED_MODULE_PREFIX: &str = "\0rue-std/";
+const TRUSTED_MODULE_PREFIX: &str = crate::TRUSTED_STANDARD_LIBRARY_NAMESPACE;
 
 impl TestDiscoveryHost {
     pub(crate) fn new(snapshot: &SourceSnapshot) -> MultiErrorResult<Self> {

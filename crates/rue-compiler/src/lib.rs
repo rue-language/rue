@@ -115,6 +115,7 @@ pub use diagnostic_attempt_store::{DiagnosticStage, FrontendDiagnosticSnapshot};
 pub use import_discovery::{
     AcceptedReadManifest, AcceptedReadManifestEntry, FileMetadataFingerprint, ImportCandidateRole,
     ImportDiscoveryContext, ImportOccurrenceKey, PhysicalFileIdentity,
+    trusted_logical_path_for_requested,
 };
 // Host discovery-protocol records are published through `unstable` only; the
 // crate-local paths keep the session and its tests on one spelling.
@@ -141,7 +142,10 @@ pub(crate) use semantic_identity::{
     StableSymbolEncoder, StableSymbolId, StructuralAnchor, StructuralPathSegment, TypeInstanceKey,
 };
 pub use session::{CanonicalImportGraphOutput, CompilerSession, CompilerSessionUpdate};
-pub use source_identity::{ModuleId, ModuleRevision, SourceId, SourceIdVersion, SourceRevision};
+pub use source_identity::{
+    ModuleId, ModuleRevision, SourceId, SourceIdVersion, SourceRevision,
+    TRUSTED_STANDARD_LIBRARY_NAMESPACE,
+};
 pub use source_metadata::SourceMetadata;
 pub use source_snapshot::{MAX_SOURCE_BYTES, MAX_SOURCE_FILES, SourceSnapshot};
 pub use toolchain_module_demand::{
