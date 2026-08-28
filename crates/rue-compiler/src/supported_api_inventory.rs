@@ -39,6 +39,7 @@ stable|import_discovery|dependency-artifact|source-loaders+embedders|ImportCandi
 stable|import_discovery|dependency-artifact|source-loaders+embedders|ImportDiscoveryContext|pub use import_discovery::ImportDiscoveryContext
 stable|import_discovery|dependency-artifact|source-loaders+embedders|ImportOccurrenceKey|pub use import_discovery::ImportOccurrenceKey
 stable|import_discovery|dependency-artifact|source-loaders+embedders|PhysicalFileIdentity|pub use import_discovery::PhysicalFileIdentity
+stable|import_discovery|one-shot-operation|source-loaders+embedders|trusted_logical_path_for_requested|pub use import_discovery::trusted_logical_path_for_requested
 stable|import_graph|dependency-artifact|source-loaders+embedders|CanonicalImportCycle|pub use import_graph::CanonicalImportCycle
 stable|import_graph|dependency-artifact|source-loaders+embedders|CanonicalImportGraph|pub use import_graph::CanonicalImportGraph
 stable|import_graph|dependency-artifact|source-loaders+embedders|CanonicalImportGraphProblem|pub use import_graph::CanonicalImportGraphProblem
@@ -71,6 +72,7 @@ stable|source_identity|source-input|cli+embedders|ModuleRevision|pub use source_
 stable|source_identity|source-input|cli+embedders|SourceId|pub use source_identity::SourceId
 stable|source_identity|source-input|cli+embedders|SourceIdVersion|pub use source_identity::SourceIdVersion
 stable|source_identity|source-input|cli+embedders|SourceRevision|pub use source_identity::SourceRevision
+stable|source_identity|source-input|cli+embedders|TRUSTED_STANDARD_LIBRARY_NAMESPACE|pub use source_identity::TRUSTED_STANDARD_LIBRARY_NAMESPACE
 stable|source_metadata|source-input|cli+embedders|SourceMetadata|pub use source_metadata::SourceMetadata
 stable|source_snapshot|source-input|cli+embedders|MAX_SOURCE_BYTES|pub use source_snapshot::MAX_SOURCE_BYTES
 stable|source_snapshot|source-input|cli+embedders|MAX_SOURCE_FILES|pub use source_snapshot::MAX_SOURCE_FILES

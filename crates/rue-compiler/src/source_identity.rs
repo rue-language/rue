@@ -303,6 +303,15 @@ impl fmt::Display for SourceId {
     }
 }
 
+/// Logical-path namespace prefix for trusted standard-library modules.
+///
+/// The leading NUL byte keeps the namespace disjoint from every expressible
+/// filesystem path, so a project file named `@rue-std/...` can never collide
+/// with a trusted identity. This constant is the single authority for the
+/// spelling: classification mints identities under it, `ModuleId` validates
+/// against it, and the driver derives error-attribution paths from it.
+pub const TRUSTED_STANDARD_LIBRARY_NAMESPACE: &str = "\0rue-std/";
+
 /// Canonical logical identity of one module.
 #[derive(Debug, Clone)]
 pub struct ModuleId {
@@ -373,7 +382,7 @@ impl ModuleId {
     }
     pub(crate) fn from_trusted_standard_library_path(path: impl AsRef<str>) -> CompileResult<Self> {
         let path = normalize_module_path(path.as_ref());
-        if !path.starts_with("\0rue-std/") {
+        if !path.starts_with(TRUSTED_STANDARD_LIBRARY_NAMESPACE) {
             return Err(CompileError::without_span(ErrorKind::InvalidCompilerInput(
                 "trusted standard-library module is outside the standard-library namespace".into(),
             )));
@@ -384,7 +393,7 @@ impl ModuleId {
         })
     }
     pub(crate) fn from_trusted_validated_canonical(path: &str) -> Self {
-        debug_assert!(path.starts_with("\0rue-std/"));
+        debug_assert!(path.starts_with(TRUSTED_STANDARD_LIBRARY_NAMESPACE));
         debug_assert_eq!(normalize_module_path(path), path);
         Self {
             logical_path: Arc::from(path),

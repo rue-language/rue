@@ -11,11 +11,13 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use ahash::AHashMap;
+use rue_air::normalize_module_path;
 use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind};
 use rue_span::FileId;
 
 use crate::{
     ImportDirective, ModuleId, ParsedProgram, SourceMetadata, SourceRevision, SourceSnapshot,
+    TRUSTED_STANDARD_LIBRARY_NAMESPACE,
 };
 
 /// Version of the target-independent candidate policy represented by plans.
@@ -3017,8 +3019,10 @@ fn requested_path_for_module(
     context: &ImportDiscoveryContext,
     module: &ModuleId,
 ) -> CompileResult<String> {
-    const STD_PREFIX: &str = "\0rue-std/";
-    if let Some(relative) = module.as_str().strip_prefix(STD_PREFIX) {
+    if let Some(relative) = module
+        .as_str()
+        .strip_prefix(TRUSTED_STANDARD_LIBRARY_NAMESPACE)
+    {
         let std_root = context
             .std_root()
             .ok_or_else(|| invalid_input("standard-library module has no captured std root"))?;
@@ -3033,8 +3037,30 @@ fn requested_path_for_module(
     ))
 }
 
+/// Derive the trusted logical path (`\0rue-std/<relative>`) the compiler
+/// assigns to a standard-library source requested at `requested` — the same
+/// lexical classification `classify_module` applies against the context's
+/// captured std root, in the same normalized spelling `ModuleId` publishes.
+/// Returns `None` when the context has no std root or the requested path is
+/// outside it, so callers attribute such paths as themselves rather than
+/// inventing a trusted spelling.
+pub fn trusted_logical_path_for_requested(
+    context: &ImportDiscoveryContext,
+    requested: &str,
+) -> Option<String> {
+    let std_root = context.std_root()?;
+    let relative = Path::new(requested).strip_prefix(std_root).ok()?;
+    Some(normalize_module_path(&format!(
+        "{TRUSTED_STANDARD_LIBRARY_NAMESPACE}{}",
+        relative.to_string_lossy()
+    )))
+}
+
 fn display_path_for_module(module: &ModuleId, entry: &AssembledSource) -> String {
-    if module.as_str().starts_with("\0rue-std/") {
+    if module
+        .as_str()
+        .starts_with(TRUSTED_STANDARD_LIBRARY_NAMESPACE)
+    {
         entry.requested_path.to_string()
     } else {
         module.as_str().to_owned()
@@ -3057,8 +3083,10 @@ fn classify_module(
                     requested, std_root
                 )));
             }
-            let logical = Path::new("\0rue-std").join(relative);
-            if logical
+            // Escape checks run on the unnormalized relative path: the shared
+            // derivation below collapses `..` lexically, so a traversal must be
+            // refused before it can normalize into an in-namespace identity.
+            if relative
                 .components()
                 .any(|component| matches!(component, Component::ParentDir))
             {
@@ -3067,7 +3095,9 @@ fn classify_module(
                     requested
                 )));
             }
-            return ModuleId::from_trusted_standard_library_path(logical.to_string_lossy());
+            let logical = trusted_logical_path_for_requested(context, &requested.to_string_lossy())
+                .expect("the requested path was just stripped against this context's std root");
+            return ModuleId::from_trusted_standard_library_path(logical);
         }
     }
     let project_root = Path::new(context.project_root());
@@ -3507,6 +3537,44 @@ mod tests {
         assert_eq!(second, expected);
         assert!(first[1].is_trusted_standard_library());
         assert!(!first[3].is_trusted_standard_library());
+    }
+
+    #[test]
+    fn trusted_logical_path_matches_classified_module_identity() {
+        let (project, std_root) = if cfg!(windows) {
+            (r"C:\rue-parity\project", r"C:\rue-parity\toolchain\std")
+        } else {
+            ("/rue-parity/project", "/rue-parity/toolchain/std")
+        };
+        let context = ImportDiscoveryContext::new(1, project, Some(std_root), "all").unwrap();
+
+        // The attribution helper must publish exactly the identity spelling
+        // classification mints for the same requested std path, including the
+        // normalized form of a non-canonical spelling.
+        for relative in ["_std.rue", "math/float.rue", "math/./float.rue"] {
+            let requested = Path::new(std_root).join(relative);
+            let requested = requested.to_string_lossy();
+            let module = classify_module(&context, &requested, &requested).unwrap();
+            assert!(module.is_trusted_standard_library());
+            assert_eq!(
+                trusted_logical_path_for_requested(&context, &requested).as_deref(),
+                Some(module.as_str())
+            );
+        }
+
+        // A path outside the std root has no trusted spelling, and neither does
+        // any path when the context captured no std root.
+        let outside = Path::new(project).join("main.rue");
+        assert_eq!(
+            trusted_logical_path_for_requested(&context, &outside.to_string_lossy()),
+            None
+        );
+        let rootless = ImportDiscoveryContext::new(1, project, None, "all").unwrap();
+        let inside = Path::new(std_root).join("_std.rue");
+        assert_eq!(
+            trusted_logical_path_for_requested(&rootless, &inside.to_string_lossy()),
+            None
+        );
     }
 
     #[cfg(windows)]

@@ -1535,6 +1535,12 @@ fn root_export_metadata(owner: &str, symbol: &str) -> (&'static str, &'static st
             | "ImportDiscoveryContext"
             | "ImportOccurrenceKey"
             | "PhysicalFileIdentity" => ("dependency-artifact", "source-loaders+embedders"),
+            // Requested-path → trusted-namespace classification (RUE-1736): the
+            // one derivation the driver may use for error attribution, so it
+            // cannot re-derive the mapping with its own namespace spelling.
+            "trusted_logical_path_for_requested" => {
+                ("one-shot-operation", "source-loaders+embedders")
+            }
             // The host discovery-protocol records (AcceptedImportSource,
             // ImportDiscoveryPlan/Request, ImportObservation*) live under
             // `unstable` with the protocol functions that consume them. Any

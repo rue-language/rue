@@ -34,7 +34,7 @@ use rue_compiler::{
     AcceptedReadManifest, CompileErrors, CompileOptions, CompilerSession, DependencyEnvelope,
     FileId, FileMetadataFingerprint, ImportDiscoveryContext, ImportDiscoveryStatus,
     ImportDiscoveryView, PhysicalFileIdentity, SourceMetadata, SourceSnapshot,
-    TrustedToolchainModuleDemand,
+    TrustedToolchainModuleDemand, trusted_logical_path_for_requested,
 };
 
 /// The content fingerprint used by the long-lived filesystem observer.
@@ -1783,21 +1783,6 @@ pub(crate) fn acquire_reached_toolchain_modules(
     ))
 }
 
-/// Derive the trusted logical path (`\0rue-std/<relative>`) for a std file the
-/// re-close read against the configured std root, falling back to the requested
-/// filesystem path when it lies outside the root's lexical prefix. Used only to
-/// name the exact failing transitive leaf in an environmental error.
-fn trusted_logical_path_for_requested(context: &ImportDiscoveryContext, requested: &str) -> String {
-    const STD_NAMESPACE: &str = "\0rue-std/";
-    match context.std_root() {
-        Some(root) => match Path::new(requested).strip_prefix(root) {
-            Ok(relative) => format!("{STD_NAMESPACE}{}", relative.to_string_lossy()),
-            Err(_) => requested.to_owned(),
-        },
-        None => requested.to_owned(),
-    }
-}
-
 /// Attribute a non-accepted observation for a toolchain-internal `@import` edge
 /// (a transitive trusted leaf reached during the re-close) to the exact failing
 /// module. A policy/containment denial is a hermetic build-configuration failure;
@@ -1809,7 +1794,10 @@ fn classify_trusted_transitive_failure(
 ) -> Option<SourceLoadError> {
     for observation in observations {
         let requested = observation.request().requested_path().to_owned();
-        let logical = trusted_logical_path_for_requested(context, &requested);
+        // The compiler owns requested-path → trusted-namespace classification;
+        // a path outside the captured std root is named as itself.
+        let logical = trusted_logical_path_for_requested(context, &requested)
+            .unwrap_or_else(|| requested.clone());
         let path = PathBuf::from(&requested);
         let error = match observation.status() {
             ImportObservationStatus::PresentReadable { .. } => continue,
