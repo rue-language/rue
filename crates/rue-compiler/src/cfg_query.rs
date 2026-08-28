@@ -1755,12 +1755,6 @@ enum SpliceWarningPolicy {
     Ignore,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpliceVerificationPolicy {
-    Immediate,
-    Deferred,
-}
-
 #[derive(Debug)]
 enum SpliceCalleeFailure {
     Canceled(QueryAbort),
@@ -1773,7 +1767,6 @@ enum SpliceCalleeFailure {
     ConflictingMachineSymbol,
     ConflictingForeignSymbol,
     Splice(rue_cfg::CfgInlineError),
-    Verification(rue_cfg::CfgVerificationError),
 }
 
 impl std::fmt::Display for SpliceCalleeFailure {
@@ -1799,40 +1792,16 @@ impl std::fmt::Display for SpliceCalleeFailure {
                 formatter.write_str("machine symbol has conflicting foreign classification")
             }
             Self::Splice(error) => write!(formatter, "CFG splice failed: {error}"),
-            Self::Verification(error) => {
-                write!(formatter, "spliced CFG failed verification: {error}")
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-enum SpliceCfg {
-    Verified(rue_cfg::ValidatedCfg),
-    Deferred(rue_cfg::Cfg),
-}
-
-impl SpliceCfg {
-    fn as_cfg(&self) -> &rue_cfg::Cfg {
-        match self {
-            Self::Verified(cfg) => cfg,
-            Self::Deferred(cfg) => cfg,
-        }
-    }
-
-    fn into_validated(
-        self,
-        type_pool: &rue_air::FrozenTypeInternPool,
-    ) -> Result<rue_cfg::ValidatedCfg, rue_cfg::CfgVerificationError> {
-        match self {
-            Self::Verified(cfg) => Ok(cfg),
-            Self::Deferred(cfg) => cfg.finish_after_optimization(type_pool),
         }
     }
 }
 
 struct CfgSpliceState {
-    cfg: SpliceCfg,
+    // The batch's editable caller: one copy of the published record's CFG,
+    // spliced in place and verified once when the batch completes. Failed
+    // batches are discarded whole, so a partially spliced editor is never
+    // observable (RUE-1314).
+    cfg: rue_cfg::Cfg,
     domains: crate::durable_cfg::CfgDomainProjection,
     interner: Arc<lasso::ThreadedRodeo>,
     pending_interner_strings: Vec<String>,
@@ -1853,10 +1822,7 @@ struct CfgSpliceState {
 }
 
 impl CfgSpliceState {
-    fn new(
-        record: &CfgRecord,
-        verification_policy: SpliceVerificationPolicy,
-    ) -> Result<Self, SpliceCalleeFailure> {
+    fn new(record: &CfgRecord) -> Result<Self, SpliceCalleeFailure> {
         let mut symbol_by_spelling = AHashMap::with_capacity(record.interner.len());
         for (symbol, spelling) in record.interner.iter() {
             symbol_by_spelling.insert(spelling.to_owned(), symbol);
@@ -1881,11 +1847,7 @@ impl CfgSpliceState {
             }
         }
         Ok(Self {
-            cfg: if verification_policy == SpliceVerificationPolicy::Immediate {
-                SpliceCfg::Verified(record.cfg.clone())
-            } else {
-                SpliceCfg::Deferred(record.cfg.clone().into_editor())
-            },
+            cfg: record.cfg.clone().into_editor(),
             domains: record.domains.clone(),
             interner: record.interner.clone(),
             pending_interner_strings: Vec::new(),
@@ -1926,6 +1888,13 @@ struct SpliceCalleeOutcome {
     callee_cfg: rue_cfg::ValidatedCfg,
     callee_value_base: u32,
     callee_block_base: u32,
+    /// The value every use of the spliced call must read instead (the
+    /// continuation's join parameter, or the unit constant). The splice
+    /// leaves the call as a detached husk; the driver applies its collected
+    /// replacements in ONE use-rewrite sweep before the batch verification.
+    /// Always `None` for accessor splices, whose yielded place is
+    /// substituted inside the splice.
+    replacement: Option<rue_cfg::CfgValue>,
 }
 
 fn plan_codegen_symbol_mappings(
@@ -1972,9 +1941,6 @@ fn accessor_splice_failure_message(error: SpliceCalleeFailure) -> String {
         SpliceCalleeFailure::Splice(error) => {
             format!("mandatory accessor CFG splice failed: {error}")
         }
-        SpliceCalleeFailure::Verification(error) => {
-            format!("mandatory accessor CFG splice failed: {error}")
-        }
         error => format!("accessor CFG splice merge failed: {error}"),
     }
 }
@@ -1991,9 +1957,6 @@ fn general_splice_failure_message(error: SpliceCalleeFailure) -> String {
             "general inline local atom has no imported string id".to_owned()
         }
         SpliceCalleeFailure::Splice(error) => format!("general inline splice failed: {error}"),
-        SpliceCalleeFailure::Verification(error) => {
-            format!("general inline splice failed: {error}")
-        }
         error => format!("general inline splice merge failed: {error}"),
     }
 }
@@ -2009,7 +1972,7 @@ fn splice_callee(
     current_callee_body_span: Span,
     type_pool: &rue_air::FrozenTypeInternPool,
     warning_policy: SpliceWarningPolicy,
-    verification_policy: SpliceVerificationPolicy,
+    accessor_uses: Option<&mut rue_cfg::AccessorPlaceIndex>,
     mut checkpoint: impl FnMut() -> Result<(), QueryAbort>,
 ) -> Result<SpliceCalleeOutcome, SpliceCalleeFailure> {
     checkpoint().map_err(SpliceCalleeFailure::Canceled)?;
@@ -2166,20 +2129,21 @@ fn splice_callee(
     let dependencies_complete = state.implicit_destructor_dependencies_complete
         && callee.implicit_destructor_dependencies_complete;
 
-    let callee_value_base = state.cfg.as_cfg().value_count() as u32;
-    let callee_block_base = state.cfg.as_cfg().block_count() as u32;
-    let spliced =
-        rue_cfg::splice_call_in_block(state.cfg.as_cfg(), call, call_block, &callee_cfg, type_pool)
-            .map_err(SpliceCalleeFailure::Splice)?;
-    let spliced = if verification_policy == SpliceVerificationPolicy::Immediate {
-        SpliceCfg::Verified(
-            spliced
-                .finish_after_optimization(type_pool)
-                .map_err(SpliceCalleeFailure::Verification)?,
-        )
-    } else {
-        SpliceCfg::Deferred(spliced)
-    };
+    let callee_value_base = state.cfg.value_count() as u32;
+    let callee_block_base = state.cfg.block_count() as u32;
+    // The in-place splice is the first mutation of `state`: every failure
+    // before this point leaves the state reusable (the general driver skips
+    // unimportable callees and continues), while a failure from here on
+    // poisons the batch and its driver discards the whole state.
+    let replacement = rue_cfg::splice_call_in_block_in_place(
+        &mut state.cfg,
+        call,
+        call_block,
+        &callee_cfg,
+        type_pool,
+        accessor_uses,
+    )
+    .map_err(SpliceCalleeFailure::Splice)?;
 
     state.domains.apply_splice_plan(domain_plan);
     for spelling in added_interner_strings {
@@ -2214,11 +2178,11 @@ fn splice_callee(
         .extend(destructor_additions);
     state.implicit_drop_glue_targets.extend(drop_glue_additions);
     state.implicit_destructor_dependencies_complete = dependencies_complete;
-    state.cfg = spliced;
     Ok(SpliceCalleeOutcome {
         callee_cfg,
         callee_value_base,
         callee_block_base,
+        replacement,
     })
 }
 
@@ -2292,7 +2256,7 @@ pub(crate) fn evaluate_optimized_cfg(
             (callee.clone(), dependency_body_span),
         );
     }
-    let mut state = match CfgSpliceState::new(record, SpliceVerificationPolicy::Immediate) {
+    let mut state = match CfgSpliceState::new(record) {
         Ok(state) => state,
         Err(error) => {
             return Ok(QueryOutput::success(internal_failure(
@@ -2302,14 +2266,17 @@ pub(crate) fn evaluate_optimized_cfg(
             .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
         }
     };
+    // One consumer index for the whole batch: each splice extends it over its
+    // appended value range and substitutes only recorded consumers, so index
+    // maintenance visits every value the caller ever holds exactly once
+    // instead of rescanning the growing caller per splice (RUE-1314).
+    let mut accessor_uses = rue_cfg::AccessorPlaceIndex::build(&state.cfg);
     let mut accessor_calls: std::collections::VecDeque<_> =
-        attached_accessor_calls(state.cfg.as_cfg(), 0, 0).into();
+        attached_accessor_calls(&state.cfg, 0, 0).into();
     let mut splice_block_redirects = AHashMap::new();
     while let Some((call, call_block)) = accessor_calls.pop_front() {
         let call_block = resolve_splice_block(call_block, &mut splice_block_redirects);
-        let rue_cfg::CfgInstData::AccessorCall { name, .. } =
-            state.cfg.as_cfg().get_inst(call).data
-        else {
+        let rue_cfg::CfgInstData::AccessorCall { name, .. } = state.cfg.get_inst(call).data else {
             unreachable!()
         };
         let Some(source_name) = state.resolve_symbol(name) else {
@@ -2341,7 +2308,7 @@ pub(crate) fn evaluate_optimized_cfg(
             *callee_body_span,
             &record.type_pool,
             SpliceWarningPolicy::Import,
-            SpliceVerificationPolicy::Immediate,
+            Some(&mut accessor_uses),
             || context.check_canceled(),
         ) {
             Ok(outcome) => outcome,
@@ -2354,6 +2321,16 @@ pub(crate) fn evaluate_optimized_cfg(
                 .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
             }
         };
+        if splice.replacement.is_some() {
+            // An accessor splice substitutes its yielded place itself and
+            // never defers a call replacement; a deferred value here would
+            // be silently dropped, so refuse the batch instead.
+            return Ok(QueryOutput::success(internal_failure(
+                "mandatory accessor splice deferred a call replacement",
+                record.body_span,
+            ))
+            .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+        }
         let continuation = rue_cfg::BlockId::from_raw(
             splice.callee_block_base + splice.callee_cfg.block_count() as u32,
         );
@@ -2389,7 +2366,9 @@ pub(crate) fn evaluate_optimized_cfg(
         record.interner.len() as u64,
     ));
     let interner_retained_charge = frozen_interner_retained_charge(&interner);
-    let current = match state.cfg.into_validated(&record.type_pool) {
+    // The whole accessor batch is proved here, once: `optimize` below still
+    // demands a `ValidatedCfg`, so no graph reaches a consumer unverified.
+    let current = match state.cfg.finish_after_optimization(&record.type_pool) {
         Ok(cfg) => cfg,
         Err(error) => {
             return Ok(QueryOutput::success(internal_failure(
@@ -2561,9 +2540,16 @@ pub(crate) fn apply_general_inlining(
     // through call-site selection and SCC detection.
     let mut edges: ahash::AHashMap<crate::FunctionInstanceKey, Vec<crate::FunctionInstanceKey>> =
         ahash::AHashMap::new();
+    // Each site carries the block that held the call in the published record,
+    // so the driver can track blocks split by earlier splices through a
+    // redirect map instead of rescanning the whole grown caller per site.
     let mut callsites: ahash::AHashMap<
         crate::FunctionInstanceKey,
-        Vec<(rue_cfg::CfgValue, crate::FunctionInstanceKey)>,
+        Vec<(
+            rue_cfg::CfgValue,
+            crate::FunctionInstanceKey,
+            rue_cfg::BlockId,
+        )>,
     > = ahash::AHashMap::new();
     let mut has_calls: ahash::AHashMap<crate::FunctionInstanceKey, bool> = ahash::AHashMap::new();
     for (function, record) in &records {
@@ -2591,7 +2577,7 @@ pub(crate) fn apply_general_inlining(
                 };
                 function_edges.push(callee.clone());
                 if record_keys.contains(&callee) {
-                    calls.push((value, callee));
+                    calls.push((value, callee, block.id));
                 }
             }
         }
@@ -2680,7 +2666,7 @@ pub(crate) fn apply_general_inlining(
         let caller_record = record_lookup.get(function).copied();
         let selected = sites
             .iter()
-            .filter(|(call, callee)| {
+            .filter(|(call, callee, _)| {
                 eligible(callee)
                     && record_lookup.get(callee).copied().is_some_and(|callee| {
                         // CFG calls carry physical argument values. A
@@ -2705,7 +2691,7 @@ pub(crate) fn apply_general_inlining(
         let CfgValue::Available(record) = &output[index] else {
             continue;
         };
-        let mut state = match CfgSpliceState::new(record, SpliceVerificationPolicy::Deferred) {
+        let mut state = match CfgSpliceState::new(record) {
             Ok(state) => state,
             Err(error) => {
                 output[index] = internal_failure(
@@ -2735,12 +2721,21 @@ pub(crate) fn apply_general_inlining(
             crate::FunctionInstanceKey,
             Result<(), crate::durable_cfg::CfgDomainFailure>,
         >::new();
-        for (call, callee_function) in selected {
+        // Selected sites run in instruction order per block, so a splice's
+        // block split moves every later same-block site into its continuation:
+        // the redirect map resolves each site's current block without
+        // rescanning the grown caller (RUE-1314).
+        let mut splice_block_redirects = AHashMap::new();
+        // Each splice defers its call-result replacement; the batch applies
+        // them in ONE use-rewrite sweep before verification.
+        let mut deferred_replacements =
+            ahash::AHashMap::<rue_cfg::CfgValue, rue_cfg::CfgValue>::new();
+        for (call, callee_function, original_block) in selected {
             context.check_canceled()?;
             let Some(callee) = record_lookup.get(&callee_function).copied() else {
                 continue;
             };
-            let growth = match rue_cfg::splice_call_growth(state.cfg.as_cfg(), call, &callee.cfg) {
+            let growth = match rue_cfg::splice_call_growth(&state.cfg, call, &callee.cfg) {
                 Ok(growth) => growth,
                 Err(error) => {
                     failed = Some(format!("general inline growth preflight failed: {error}"));
@@ -2789,21 +2784,10 @@ pub(crate) fn apply_general_inlining(
                 ));
                 break;
             }
-            let call_block = state
-                .cfg
-                .as_cfg()
-                .blocks()
-                .iter()
-                .find(|block| block.insts.contains(&call))
-                .map(|block| block.id)
-                .ok_or_else(|| format!("general inline call site {call} is detached"));
-            let call_block = match call_block {
-                Ok(block) => block,
-                Err(error) => {
-                    failed = Some(error);
-                    break;
-                }
-            };
+            // The splice itself validates that `call` is attached to this
+            // block, so a stale redirect still fails closed with a
+            // per-site CallSiteNotFound rather than splicing elsewhere.
+            let call_block = resolve_splice_block(original_block, &mut splice_block_redirects);
             context.record_work(rue_query::WorkItem::new(
                 "cfg.general-inline-interner-stages",
                 1,
@@ -2825,10 +2809,18 @@ pub(crate) fn apply_general_inlining(
                 current_callee_body_span,
                 &record.type_pool,
                 SpliceWarningPolicy::Ignore,
-                SpliceVerificationPolicy::Deferred,
+                None,
                 || context.check_canceled(),
             ) {
-                Ok(_) => {}
+                Ok(outcome) => {
+                    let continuation = rue_cfg::BlockId::from_raw(
+                        outcome.callee_block_base + outcome.callee_cfg.block_count() as u32,
+                    );
+                    splice_block_redirects.insert(call_block, continuation);
+                    if let Some(replacement) = outcome.replacement {
+                        deferred_replacements.insert(call, replacement);
+                    }
+                }
                 Err(SpliceCalleeFailure::Canceled(abort)) => return Err(abort),
                 Err(SpliceCalleeFailure::Domain(
                     crate::durable_cfg::CfgDomainFailure::MissingStableType(_),
@@ -2874,6 +2866,20 @@ pub(crate) fn apply_general_inlining(
         if !spliced {
             continue;
         }
+        // Every splice left its replaced call as a detached husk; route all
+        // its uses to the recorded replacement in one sweep for the whole
+        // batch, instead of one whole-graph rewrite per splice.
+        if !deferred_replacements.is_empty()
+            && let Err(error) = state.cfg.rewrite_value_uses_in_place(|value| {
+                deferred_replacements.get(&value).copied().unwrap_or(value)
+            })
+        {
+            output[index] = internal_failure(
+                format!("general inline use rewrite failed: {error:?}"),
+                record.body_span,
+            );
+            continue;
+        }
         let interner = match materialize_splice_interner(&state, || context.check_canceled()) {
             Ok(interner) => interner,
             Err(CfgInternerCopyFailure::Checkpoint(abort)) => return Err(abort),
@@ -2886,7 +2892,7 @@ pub(crate) fn apply_general_inlining(
             }
         };
         // The whole batch is proved here, once.
-        let current = match state.cfg.into_validated(&record.type_pool) {
+        let current = match state.cfg.finish_after_optimization(&record.type_pool) {
             Ok(cfg) => cfg,
             Err(error) => {
                 output[index] = internal_failure(
@@ -3439,7 +3445,7 @@ mod accessor_graph_tests {
             .clone();
         assert!(main.interner.len() >= 16, "fixture must exercise many keys");
 
-        let state = CfgSpliceState::new(&main, SpliceVerificationPolicy::Deferred).unwrap();
+        let state = CfgSpliceState::new(&main).unwrap();
         assert_eq!(state.symbol_by_spelling.len(), main.interner.len());
         for (symbol, spelling) in main.interner.iter() {
             assert_eq!(main.interner.get(spelling), Some(symbol));
@@ -3505,7 +3511,7 @@ mod accessor_graph_tests {
             .into_iter()
             .next()
             .unwrap();
-        let mut state = CfgSpliceState::new(&main, SpliceVerificationPolicy::Immediate).unwrap();
+        let mut state = CfgSpliceState::new(&main).unwrap();
         let base_string_len = state.strings.len();
 
         let outer_splice = splice_callee(
@@ -3516,7 +3522,7 @@ mod accessor_graph_tests {
             outer.body_span,
             &main.type_pool,
             SpliceWarningPolicy::Import,
-            SpliceVerificationPolicy::Immediate,
+            None,
             || Ok(()),
         )
         .unwrap();
@@ -3535,8 +3541,7 @@ mod accessor_graph_tests {
         );
         assert_eq!(introduced.len(), 1);
         let (inner_call, inner_block) = introduced[0];
-        let rue_cfg::CfgInstData::AccessorCall { name, .. } =
-            state.cfg.as_cfg().get_inst(inner_call).data
+        let rue_cfg::CfgInstData::AccessorCall { name, .. } = state.cfg.get_inst(inner_call).data
         else {
             panic!("nested call must remain an accessor call")
         };
@@ -3555,7 +3560,7 @@ mod accessor_graph_tests {
             inner.body_span,
             &main.type_pool,
             SpliceWarningPolicy::Import,
-            SpliceVerificationPolicy::Immediate,
+            None,
             || Ok(()),
         )
         .unwrap();
@@ -3715,7 +3720,7 @@ mod accessor_graph_tests {
                 })
             })
             .unwrap();
-        let mut state = CfgSpliceState::new(&main, SpliceVerificationPolicy::Deferred).unwrap();
+        let mut state = CfgSpliceState::new(&main).unwrap();
         let cfg_before = format!("{:?}", state.cfg);
         let domains_before = state.domains.stable_debug_snapshot(&main.air);
         let interner_before = state
@@ -3772,7 +3777,7 @@ mod accessor_graph_tests {
                 poisoned.body_span,
                 &main.type_pool,
                 SpliceWarningPolicy::Import,
-                SpliceVerificationPolicy::Deferred,
+                None,
                 || Ok(()),
             ),
             Err(SpliceCalleeFailure::ConflictingSourceSymbol)
@@ -3834,7 +3839,7 @@ mod accessor_graph_tests {
                 poisoned.body_span,
                 &main.type_pool,
                 SpliceWarningPolicy::Ignore,
-                SpliceVerificationPolicy::Deferred,
+                None,
                 || Ok(()),
             ),
             Err(SpliceCalleeFailure::ConflictingForeignSymbol)
@@ -3858,7 +3863,7 @@ mod accessor_graph_tests {
                     poisoned.body_span,
                     &main.type_pool,
                     SpliceWarningPolicy::Ignore,
-                    SpliceVerificationPolicy::Deferred,
+                    None,
                     || Ok(()),
                 ),
                 Err(SpliceCalleeFailure::Domain(
@@ -4100,19 +4105,56 @@ mod accessor_graph_tests {
             .0;
         assert_eq!(
             accessor_driver
-                .matches("attached_accessor_calls(state.cfg.as_cfg(), 0, 0)")
+                .matches("attached_accessor_calls(&state.cfg, 0, 0)")
                 .count(),
             1
         );
         assert!(accessor_driver.contains("accessor_calls.pop_front()"));
         assert!(accessor_driver.contains("accessor_calls.extend(introduced_calls)"));
         assert!(accessor_driver.contains("resolve_splice_block("));
+        assert!(accessor_driver.contains("AccessorPlaceIndex::build("));
         assert_eq!(accessor_driver.matches("splice_callee(").count(), 1);
         assert_eq!(general_driver.matches("splice_callee(").count(), 1);
+        assert!(general_driver.contains("resolve_splice_block("));
         assert_eq!(production.matches("fn splice_callee(").count(), 1);
         assert_eq!(production.matches(".import_accessor_cfg(").count(), 1);
+        // The batch drivers splice in place through the helper: exactly one
+        // in-place splice site, no per-splice caller clone or verification
+        // (RUE-1314), and exactly one deferred use-rewrite sweep, in the
+        // general driver, applied before the batch verification.
+        assert_eq!(
+            production
+                .matches("rue_cfg::splice_call_in_block_in_place(")
+                .count(),
+            1
+        );
         assert_eq!(
             production.matches("rue_cfg::splice_call_in_block(").count(),
+            0
+        );
+        assert_eq!(
+            production.matches("rewrite_value_uses_in_place(").count(),
+            1
+        );
+        assert_eq!(
+            general_driver
+                .matches("rewrite_value_uses_in_place(")
+                .count(),
+            1
+        );
+        // The helper still verifies each IMPORTED CALLEE (callee-sized); the
+        // grown caller is proved once per batch, in each driver.
+        assert!(!helper.contains("state.cfg.finish_after_optimization"));
+        assert_eq!(
+            accessor_driver
+                .matches("state.cfg.finish_after_optimization")
+                .count(),
+            1
+        );
+        assert_eq!(
+            general_driver
+                .matches("state.cfg.finish_after_optimization")
+                .count(),
             1
         );
         assert!(helper.contains("plan_codegen_symbol_mappings("));
@@ -4126,6 +4168,7 @@ mod accessor_graph_tests {
             for bypass in [
                 ".import_accessor_cfg(",
                 "rue_cfg::splice_call_in_block(",
+                "rue_cfg::splice_call_in_block_in_place(",
                 "rue_cfg::inline_call_in_block(",
                 "symbol_mappings.extend(",
                 "foreign_symbols.extend(",

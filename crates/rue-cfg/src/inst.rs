@@ -2763,26 +2763,31 @@ impl Cfg {
         &mut self,
         map: impl Fn(CfgValue) -> CfgValue,
     ) -> Result<(), CfgEditError> {
-        let boundary_values = self
-            .ownership_boundary_values
-            .iter()
-            .copied()
-            .map(|value| (value, map(value)))
-            .collect::<Vec<_>>();
         let mut rewritten = self.clone();
         rewritten.rewrite_value_uses_in_place(map)?;
-        for (_, replacement) in boundary_values {
-            rewritten.ownership_boundary_values.insert(replacement);
-        }
         *self = rewritten;
         Ok(())
     }
 
-    fn rewrite_value_uses_in_place(
+    /// The in-place variant of [`Self::rewrite_value_uses`]: one sweep over
+    /// every use site, without the transactional whole-CFG copy. On failure
+    /// the CFG may be partially rewritten, so this is for callers that
+    /// discard the CFG on error — batch splice drivers discard the whole
+    /// batch, and the transactional wrapper discards its own clone.
+    pub fn rewrite_value_uses_in_place(
         &mut self,
         map: impl Fn(CfgValue) -> CfgValue,
     ) -> Result<(), CfgEditError> {
         use CfgInstData::*;
+        // Per-value ownership facts follow the values they describe: a
+        // replaced value's boundary fact carries to its replacement (the
+        // detached original keeps its stale entry harmlessly).
+        let boundary_replacements = self
+            .ownership_boundary_values
+            .iter()
+            .copied()
+            .map(&map)
+            .collect::<Vec<_>>();
         let old_extra = std::mem::replace(&mut self.extra, payload::Values::new());
         let old_call_args = std::mem::replace(&mut self.call_args, payload::CallArgs::new());
         let old_projections = std::mem::replace(&mut self.projections, payload::Projections::new());
@@ -2963,6 +2968,9 @@ impl Cfg {
                 Terminator::Return { value: None } | Terminator::Unreachable | Terminator::None => {
                 }
             }
+        }
+        for replacement in boundary_replacements {
+            self.ownership_boundary_values.insert(replacement);
         }
         Ok(())
     }
