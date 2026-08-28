@@ -134,6 +134,7 @@ pub(crate) struct FrontendRuntimeMetrics {
 pub struct CompilerSessionWork {
     pub updates: usize,
     pub last_parse: ParsedModulesWork,
+    pub warning_references: crate::unstable::WarningReferenceMetrics,
     pub last_invalidation: ParseInvalidationSummary,
     pub imports: FrontendQueryWork,
     pub import_diagnostics: FrontendQueryWork,
@@ -470,6 +471,10 @@ impl CompilerSessionMetrics {
         self.aggregate.updates += 1;
         self.aggregate.last_parse = parse;
         self.aggregate.last_invalidation = invalidation;
+    }
+
+    fn set_warning_references(&mut self, work: crate::unstable::WarningReferenceMetrics) {
+        self.aggregate.warning_references = work;
     }
 
     fn project_dependency_invalidations(&mut self, changed_existing_revision: bool) {
@@ -5188,23 +5193,77 @@ impl CompilerSession {
         #[cfg(test)]
         self.warning_reference_executions.clear();
         let mut referenced = BTreeSet::new();
-        for declaration in graph
+        let declarations = graph
             .declarations
             .iter()
             .filter(|declaration| declaration.key.kind().owns_body())
-        {
-            let (execution, projected) = self
-                .queries
-                .revisioned
-                .warning_body_references(
-                    graph.revision,
-                    crate::body_query::BodyQueryKey::new(
-                        crate::FunctionInstanceKey::Definition(declaration.key.clone()),
-                        graph.configuration.clone(),
-                    ),
-                    cancellation.clone(),
+            .collect::<Vec<_>>();
+        if declarations.is_empty() {
+            self.metrics
+                .set_warning_references(crate::unstable::WarningReferenceMetrics::default());
+            return Ok(referenced);
+        }
+        let keys = declarations
+            .iter()
+            .map(|declaration| {
+                crate::body_query::BodyQueryKey::new(
+                    crate::FunctionInstanceKey::Definition(declaration.key.clone()),
+                    graph.configuration.clone(),
                 )
-                .map_err(PipelineRequestControl::Abort)?;
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let (attempt, child_executions) = self.queries.revisioned.warning_body_reference_frontier(
+            graph.revision,
+            keys,
+            cancellation,
+        );
+        let batch_execution = attempt.execution();
+        let mut warning_work = crate::unstable::WarningReferenceMetrics {
+            frontier_items: declarations.len(),
+            frontier_batches: 1,
+            frontier_batch_overhead: attempt
+                .work()
+                .iter()
+                .find_map(|(name, count)| {
+                    (name.as_ref() == "warning-reference.frontier.overhead")
+                        .then_some(*count as usize)
+                })
+                .unwrap_or(0),
+            ..crate::unstable::WarningReferenceMetrics::default()
+        };
+        for child in child_executions.iter().flatten() {
+            match child.execution {
+                rue_query::RequestExecution::Computed => warning_work.children_computed += 1,
+                rue_query::RequestExecution::Reused => warning_work.children_reused += 1,
+                rue_query::RequestExecution::Joined => warning_work.children_joined += 1,
+                rue_query::RequestExecution::Aborted if child.canceled => {
+                    warning_work.children_canceled += 1;
+                }
+                rue_query::RequestExecution::Aborted => {}
+            }
+        }
+        self.metrics.set_warning_references(warning_work);
+        let executions = child_executions
+            .into_iter()
+            .map(|execution| {
+                execution
+                    .map(|execution| execution.execution)
+                    .unwrap_or(batch_execution)
+            })
+            .collect::<Vec<_>>();
+        let terminal = attempt
+            .into_result()
+            .map_err(PipelineRequestControl::Abort)?;
+        let rue_query::QueryOutcome::Success(batch) = terminal.outcome() else {
+            unreachable!("WarningBodyReferenceFrontier publishes typed values")
+        };
+        assert_eq!(batch.values.len(), declarations.len());
+        for ((declaration, projected), execution) in declarations
+            .into_iter()
+            .zip(batch.values.iter())
+            .zip(executions.into_iter())
+        {
             #[cfg(not(test))]
             let _ = execution;
             #[cfg(test)]

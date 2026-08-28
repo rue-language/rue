@@ -562,6 +562,7 @@ pub(crate) struct RevisionedQueryDatabase {
     #[cfg(test)]
     declaration_body_plan_failure_injection: DeclarationBodyPlanFailureInjection,
     parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
+    parse_module_batches: QueryFamily<ParseModuleBatchKey, ParseModuleBatchValue>,
     module_source_bases: QueryFamily<ModuleQueryKey, Option<rue_air::DurableBodySourceLocator>>,
     module_indexes: QueryFamily<ModuleQueryKey, ModuleIndexValue>,
     #[allow(dead_code)]
@@ -575,8 +576,11 @@ pub(crate) struct RevisionedQueryDatabase {
         StableDeclarationClassificationQueryKey,
         StableDeclarationClassificationQueryValue,
     >,
+    #[allow(dead_code)]
     warning_body_references:
         QueryFamily<crate::body_query::BodyQueryKey, WarningBodyReferencesValue>,
+    warning_body_reference_batches:
+        QueryFamily<WarningBodyReferencesBatchKey, WarningBodyReferencesBatchValue>,
     #[cfg(test)]
     body_inputs: QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyInputValue>,
     #[allow(dead_code)]
@@ -2296,6 +2300,29 @@ struct ParseModuleValue {
     work: SyntaxWork,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ParseModuleBatchKey {
+    modules: Arc<[ModuleQueryKey]>,
+}
+
+impl QueryKey for ParseModuleBatchKey {
+    fn stable_identity(&self) -> String {
+        let mut identity = format!("parse-module-frontier;items={}", self.modules.len());
+        for key in self.modules.iter() {
+            identity.push('\u{1e}');
+            identity.push_str(&key.stable_identity());
+        }
+        identity
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.modules.hash(hasher);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ParseModuleBatchValue(Arc<[ParseModuleValue]>);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModuleIndexEntry {
     pub(crate) namespace: DefinitionNamespace,
@@ -2692,6 +2719,81 @@ impl QueryKey for WarningCallHeadProjectionQueryKey {
 pub(crate) enum WarningBodyReferencesValue {
     Available(Arc<[WarningStaticCallHead]>),
     Failure(WarningBodyReferencesFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct WarningBodyReferencesBatchKey {
+    bodies: Arc<[crate::body_query::BodyQueryKey]>,
+}
+
+impl QueryKey for WarningBodyReferencesBatchKey {
+    fn stable_identity(&self) -> String {
+        let mut identity = format!(
+            "warning-body-reference-frontier;items={}",
+            self.bodies.len()
+        );
+        for key in self.bodies.iter() {
+            identity.push('\u{1e}');
+            identity.push_str(&key.stable_identity());
+        }
+        identity
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.bodies.hash(hasher);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WarningBodyReferencesBatchValue {
+    pub(crate) values: Arc<[WarningBodyReferencesValue]>,
+    /// Complete observed child cones captured while the adaptive batch still
+    /// owns every request lease. One retained aggregate therefore protects a
+    /// warning frontier wider than the per-body memo cap without copying the
+    /// child values or manufacturing a second projection authority.
+    _retained_children: Arc<rue_query::RetainedPinSet>,
+}
+
+/// One frontier item's strongest request lifecycle in an aggregate attempt.
+/// Validation may observe a child before a red aggregate evaluator requests it
+/// again, so callers reduce duplicate nested attempts by stable child identity
+/// instead of counting completion-order-dependent ledger entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FrontierChildExecution {
+    pub(crate) execution: RequestExecution,
+    pub(crate) canceled: bool,
+}
+
+fn frontier_child_executions<K: QueryKey>(
+    attempt: &QueryRequestAttempt<impl Clone + Send + Sync + 'static>,
+    family: &str,
+    keys: &[K],
+) -> Vec<Option<FrontierChildExecution>> {
+    fn priority(execution: RequestExecution) -> u8 {
+        match execution {
+            RequestExecution::Computed => 4,
+            RequestExecution::Joined => 3,
+            RequestExecution::Reused => 2,
+            RequestExecution::Aborted => 1,
+        }
+    }
+
+    keys.iter()
+        .map(|key| {
+            let identity = key.stable_identity();
+            attempt
+                .nested_attempts()
+                .iter()
+                .filter(|nested| {
+                    nested.node().family() == family && nested.node().key() == identity
+                })
+                .map(|nested| FrontierChildExecution {
+                    execution: nested.execution(),
+                    canceled: matches!(nested.abort(), Some(QueryAbort::Canceled)),
+                })
+                .max_by_key(|nested| priority(nested.execution))
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3120,6 +3222,12 @@ impl RetainedCharge for ParseModuleValue {
     }
 }
 
+impl RetainedCharge for ParseModuleBatchValue {
+    fn retained_charge(&self) -> u64 {
+        self.0.retained_charge()
+    }
+}
+
 impl RetainedCharge for ModuleIndexEntry {
     fn retained_charge(&self) -> u64 {
         self.name.retained_charge()
@@ -3225,6 +3333,12 @@ macro_rules! query_value_charge {
 
 query_value_charge!(WarningCallHeadProjectionValue);
 query_value_charge!(WarningBodyReferencesValue);
+
+impl RetainedCharge for WarningBodyReferencesBatchValue {
+    fn retained_charge(&self) -> u64 {
+        self.values.retained_charge()
+    }
+}
 
 impl RetainedCharge for DeclarationBodyPlanFailure {
     fn retained_charge(&self) -> u64 {
@@ -10857,6 +10971,50 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the ParseModule family has one canonical name");
+        let parse_modules_for_batch = parse_modules.clone();
+        let parse_module_batches = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.parse-module-frontier",
+                1,
+                |left: &ParseModuleBatchValue, right: &ParseModuleBatchValue| {
+                    left.0.len() == right.0.len()
+                        && left
+                            .0
+                            .iter()
+                            .zip(right.0.iter())
+                            .all(|(left, right)| parse_module_value_equal(left, right))
+                },
+                move |context, _, key: &ParseModuleBatchKey| {
+                    context.record_work(rue_query::WorkItem::new(
+                        "parse.frontier.items",
+                        key.modules.len() as u64,
+                    ));
+                    context.record_work(rue_query::WorkItem::new("parse.frontier.batches", 1));
+                    context.record_work(rue_query::WorkItem::new("parse.frontier.overhead", 1));
+                    let _attempts = context.retain_nested_attempts_for(&["compiler.parse-module"]);
+                    let terminals = context.query_registered_adaptive_batch_refs(
+                        &parse_modules_for_batch,
+                        key.modules.iter(),
+                    )?;
+                    let values = terminals
+                        .iter()
+                        .map(|terminal| {
+                            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                                unreachable!("ParseModule publishes typed values")
+                            };
+                            value.clone()
+                        })
+                        .collect::<Vec<_>>();
+                    let kind = if values.iter().all(|value| value.result.is_ok()) {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    Ok(QueryOutput::success(ParseModuleBatchValue(values.into()))
+                        .with_terminal_kind(kind))
+                },
+            )
+            .expect("the ParseModuleFrontier family has one canonical name");
         let parse_for_module_source_bases = parse_modules.clone();
         let module_store_for_module_source_bases = module_store.clone();
         // Body-host module registration needs only stable file identity and
@@ -12051,6 +12209,14 @@ impl RevisionedQueryDatabase {
         let shells_for_warning_references = declaration_shells.clone();
         let call_heads_for_warning_references = warning_call_head_projections.clone();
         let imports_for_warning_references = declaration_imports.clone();
+        // Allocate the semantic publication roots before constructing the
+        // warning frontier so its evaluator can borrow the already-published
+        // declaration/body cones without re-demanding their children.
+        let publication_cone_retention_failures = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let declaration_semantics_root =
+            Arc::new(Mutex::new(PublishedDeclarationSemanticsRoot::default()));
+        let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
+        let body_reachability_root = Arc::new(Mutex::new(PublishedBodyReachabilityRoot::default()));
         let warning_body_references = runtime
             .family_with_equality_and_evaluator(
                 "compiler.warning-body-references",
@@ -12185,6 +12351,168 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the WarningBodyReferences family has one canonical name");
+        let warning_body_references_for_batch = warning_body_references.clone();
+        let declaration_root_for_warning_batch = declaration_semantics_root.clone();
+        let closure_root_for_warning_batch = body_closure_root.clone();
+        let reachability_root_for_warning_batch = body_reachability_root.clone();
+        let classifications_for_warning_batch = stable_declaration_classifications.clone();
+        let shells_for_warning_batch = declaration_shells.clone();
+        let call_heads_for_warning_batch = warning_call_head_projections.clone();
+        let warning_body_reference_batches = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.warning-body-reference-frontier",
+                1,
+                |left: &WarningBodyReferencesBatchValue,
+                 right: &WarningBodyReferencesBatchValue| {
+                    left.values == right.values
+                },
+                move |context, _, key: &WarningBodyReferencesBatchKey| {
+                    let declaration_fallback = declaration_root_for_warning_batch
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .lease
+                        .clone();
+                    let closure_fallback = closure_root_for_warning_batch
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .lease
+                        .clone();
+                    let reachability_fallback = reachability_root_for_warning_batch
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .lease
+                        .clone();
+                    let semantic_fallbacks = [
+                        declaration_fallback,
+                        closure_fallback,
+                        reachability_fallback,
+                    ];
+                    let _validated_registered = context
+                        .endorse_registered_validations_from(&semantic_fallbacks)
+                        .expect("warning frontier uses this query runtime");
+                    // Warning call-head projections are warning-only and are
+                    // not members of the semantic publication roots. Observe
+                    // their exact currently-demanded frontier first, then lend
+                    // that complete cone to the warning-body children. This is
+                    // still the canonical projection family; no facts are
+                    // recomputed or copied into a peer authority.
+                    let classification_keys = key
+                        .bodies
+                        .iter()
+                        .filter_map(|key| body_source_definition_key(&key.instance).cloned())
+                        .map(StableDeclarationClassificationQueryKey)
+                        .collect::<Vec<_>>();
+                    let classifications = context.query_registered_adaptive_batch_refs(
+                        &classifications_for_warning_batch,
+                        classification_keys.iter(),
+                    )?;
+                    let shell_keys = classifications
+                        .iter()
+                        .filter_map(|terminal| {
+                            let rue_query::QueryOutcome::Success(classification) =
+                                terminal.outcome()
+                            else {
+                                unreachable!(
+                                    "StableDeclarationClassification publishes typed values"
+                                )
+                            };
+                            match classification {
+                                StableDeclarationClassificationQueryValue::Selected(candidate) => {
+                                    Some(DeclarationShellQueryKey(candidate.clone()))
+                                }
+                                StableDeclarationClassificationQueryValue::Absent
+                                | StableDeclarationClassificationQueryValue::Invalid(_) => None,
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let shells = context.query_registered_adaptive_batch_refs(
+                        &shells_for_warning_batch,
+                        shell_keys.iter(),
+                    )?;
+                    let call_head_keys = shell_keys
+                        .iter()
+                        .zip(shells.iter())
+                        .filter_map(|(key, terminal)| {
+                            let rue_query::QueryOutcome::Success(shell) = terminal.outcome() else {
+                                unreachable!("DeclarationShell publishes typed values")
+                            };
+                            match shell {
+                                DeclarationShellQueryValue::Available(shell)
+                                    if !shell.is_extern =>
+                                {
+                                    Some(WarningCallHeadProjectionQueryKey(key.0.clone()))
+                                }
+                                DeclarationShellQueryValue::Available(_)
+                                | DeclarationShellQueryValue::Failure(_) => None,
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let call_heads = context.query_registered_adaptive_batch_refs(
+                        &call_heads_for_warning_batch,
+                        call_head_keys.iter(),
+                    )?;
+                    let call_head_fallback = Arc::new(
+                        context
+                            .retain_observed_terminal_cones_from(&call_heads, &semantic_fallbacks)
+                            .expect("warning frontier observes exact call-head cones"),
+                    );
+                    let fallbacks = [
+                        semantic_fallbacks[0].clone(),
+                        semantic_fallbacks[1].clone(),
+                        semantic_fallbacks[2].clone(),
+                        call_head_fallback,
+                    ];
+                    let _validated_children = context
+                        .endorse_registered_validations_from(&fallbacks)
+                        .expect("warning child frontier uses this query runtime");
+                    context.record_work(rue_query::WorkItem::new(
+                        "warning-reference.frontier.items",
+                        key.bodies.len() as u64,
+                    ));
+                    context.record_work(rue_query::WorkItem::new(
+                        "warning-reference.frontier.batches",
+                        1,
+                    ));
+                    context.record_work(rue_query::WorkItem::new(
+                        "warning-reference.frontier.overhead",
+                        1,
+                    ));
+                    let _attempts =
+                        context.retain_nested_attempts_for(&["compiler.warning-body-references"]);
+                    let terminals = context.query_registered_adaptive_batch_refs(
+                        &warning_body_references_for_batch,
+                        key.bodies.iter(),
+                    )?;
+                    let values = terminals
+                        .iter()
+                        .map(|terminal| {
+                            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                                unreachable!("WarningBodyReferences publishes typed values")
+                            };
+                            value.clone()
+                        })
+                        .collect::<Vec<_>>();
+                    let retained_children = Arc::new(
+                        context
+                            .retain_observed_terminal_cones_from(&terminals, &fallbacks)
+                            .expect("warning frontier observes every child cone"),
+                    );
+                    let kind = if values
+                        .iter()
+                        .all(|value| matches!(value, WarningBodyReferencesValue::Available(_)))
+                    {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    Ok(QueryOutput::success(WarningBodyReferencesBatchValue {
+                        values: values.into(),
+                        _retained_children: retained_children,
+                    })
+                    .with_terminal_kind(kind))
+                },
+            )
+            .expect("the WarningBodyReferenceFrontier family has one canonical name");
         // Body analysis is a canonical registered evaluator. Its dependency
         // bundle is installed after the mutually recursive semantic/body
         // families have all been registered, before the database can escape
@@ -13888,11 +14216,6 @@ impl RevisionedQueryDatabase {
         // artifacts alive until body closure atomically replaces that bridge
         // with the complete rooted body graph. They are initialized here so
         // both publication evaluators share the same handoff authority.
-        let publication_cone_retention_failures = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let declaration_semantics_root =
-            Arc::new(Mutex::new(PublishedDeclarationSemanticsRoot::default()));
-        let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
-        let body_reachability_root = Arc::new(Mutex::new(PublishedBodyReachabilityRoot::default()));
         let occurrences_for_declaration_projection = declaration_occurrence_indexes.clone();
         let orders_for_declaration_projection = declaration_orders.clone();
         let nucleus_for_declaration_projection = semantic_nucleus.clone();
@@ -15959,6 +16282,7 @@ impl RevisionedQueryDatabase {
             #[cfg(test)]
             declaration_body_plan_failure_injection,
             parse_modules,
+            parse_module_batches,
             module_source_bases,
             module_indexes,
             declaration_occurrence_indexes,
@@ -15967,6 +16291,7 @@ impl RevisionedQueryDatabase {
             #[cfg(test)]
             stable_declaration_classifications: stable_declaration_classifications.clone(),
             warning_body_references,
+            warning_body_reference_batches,
             #[cfg(test)]
             body_inputs,
             body_source_bases,
@@ -18886,28 +19211,29 @@ impl RevisionedQueryDatabase {
             .into_result()
     }
 
-    /// A warning-only static call-head projection for one declaration body. It
-    /// is intentionally requested outside body reachability and CFG query
-    /// evaluators: an unreachable-body edit may change unused-function
-    /// diagnostics without dirtying any rooted downstream terminal.
-    pub(crate) fn warning_body_references(
+    /// Request one stable-ordered frontier of independent warning-only body
+    /// projections. The registered root joins atomically, so cancellation or a
+    /// child abort cannot publish a partial aggregate.
+    pub(crate) fn warning_body_reference_frontier(
         &self,
         revision: Revision,
-        key: crate::body_query::BodyQueryKey,
+        keys: Arc<[crate::body_query::BodyQueryKey]>,
         cancellation: CancellationToken,
-    ) -> Result<(RequestExecution, WarningBodyReferencesValue), QueryAbort> {
+    ) -> (
+        QueryRequestAttempt<WarningBodyReferencesBatchValue>,
+        Vec<Option<FrontierChildExecution>>,
+    ) {
         let attempt = self.runtime.request_registered(
-            &self.warning_body_references,
+            &self.warning_body_reference_batches,
             revision,
-            key,
+            WarningBodyReferencesBatchKey {
+                bodies: keys.clone(),
+            },
             cancellation,
         );
-        let execution = attempt.execution();
-        let terminal = attempt.into_result()?;
-        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
-            unreachable!("WarningBodyReferences publishes typed values")
-        };
-        Ok((execution, value.clone()))
+        let executions =
+            frontier_child_executions(&attempt, "compiler.warning-body-references", keys.as_ref());
+        (attempt, executions)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -20519,6 +20845,68 @@ impl RevisionedQueryDatabase {
         module_source_input(module)
     }
 
+    fn parse_module_frontier(
+        &self,
+        revision: Revision,
+        modules: Arc<[ModuleQueryKey]>,
+    ) -> Result<(Arc<[ParseModuleValue]>, Vec<RequestExecution>, usize, usize), String> {
+        if modules.is_empty() {
+            return Ok((Arc::from([]), Vec::new(), 0, 0));
+        }
+        let attempt = self.runtime.request_registered(
+            &self.parse_module_batches,
+            revision,
+            ParseModuleBatchKey {
+                modules: modules.clone(),
+            },
+            CancellationToken::new(),
+        );
+        let batch_execution = attempt.execution();
+        let child_lookups = attempt
+            .nested_attempts()
+            .iter()
+            .filter(|nested| nested.node().family() == "compiler.parse-module")
+            .count();
+        let child_executions =
+            frontier_child_executions(&attempt, "compiler.parse-module", modules.as_ref());
+        let executions = if child_executions.iter().all(Option::is_none) {
+            vec![batch_execution; modules.len()]
+        } else {
+            assert!(child_executions.iter().all(Option::is_some));
+            child_executions
+                .into_iter()
+                .map(|execution| execution.unwrap().execution)
+                .collect()
+        };
+        let overhead = attempt
+            .work()
+            .iter()
+            .find_map(|(name, count)| {
+                (name.as_ref() == "parse.frontier.overhead").then_some(*count as usize)
+            })
+            .unwrap_or(0);
+        if attempt.terminal().is_none() {
+            let detail = attempt
+                .nested_attempts()
+                .iter()
+                .find_map(|child| {
+                    child.abort().map(|abort| {
+                        format!("ParseModule({}) aborted: {abort:?}", child.node().key())
+                    })
+                })
+                .unwrap_or_else(|| format!("ParseModule frontier aborted: {:?}", attempt.abort()));
+            return Err(detail);
+        }
+        let terminal = attempt
+            .into_result()
+            .expect("checked ParseModuleFrontier terminal remains available");
+        let rue_query::QueryOutcome::Success(ParseModuleBatchValue(values)) = terminal.outcome()
+        else {
+            unreachable!("ParseModuleFrontier publishes typed values")
+        };
+        Ok((values.clone(), executions, overhead, child_lookups))
+    }
+
     /// Parse ONLY a trusted successor's appended modules at the published
     /// overlay revision and structurally extend the retained predecessor
     /// program (RUE-1112). Predecessor modules are never re-dispatched,
@@ -20545,27 +20933,33 @@ impl RevisionedQueryDatabase {
             .clone();
         let mut parsed = Vec::with_capacity(appended.len());
         let mut errors = crate::CompileErrors::new();
-        let mut work = ParsedModulesWork::default();
-        for (module, file_id) in appended {
-            work.modules_considered += 1;
-            work.previous_module_lookups += 1;
-            let attempt = self.runtime.request_registered(
-                &self.parse_modules,
-                revision,
-                ModuleQueryKey(module.clone()),
-                CancellationToken::new(),
-            );
-            let Some(terminal) = attempt.terminal() else {
-                errors.push(import_input_error(format!(
-                    "ParseModule({module}) aborted: {:?}",
-                    attempt.abort()
-                )));
-                continue;
+        let mut work = ParsedModulesWork {
+            modules_considered: appended.len(),
+            frontier_items: appended.len(),
+            frontier_batches: usize::from(!appended.is_empty()),
+            ..ParsedModulesWork::default()
+        };
+        let keys = appended
+            .iter()
+            .map(|(module, _)| ModuleQueryKey(module.clone()))
+            .collect::<Vec<_>>()
+            .into();
+        let (values, executions, overhead, child_lookups) =
+            match self.parse_module_frontier(revision, keys) {
+                Ok(frontier) => frontier,
+                Err(detail) => {
+                    errors.push(import_input_error(detail));
+                    return (Err(errors), work);
+                }
             };
-            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
-                unreachable!("ParseModule publishes typed values")
-            };
-            let computed = matches!(attempt.execution(), RequestExecution::Computed);
+        work.frontier_batch_overhead = overhead;
+        work.previous_module_lookups = child_lookups;
+        for (((_module, file_id), value), execution) in appended
+            .iter()
+            .zip(values.iter())
+            .zip(executions.into_iter())
+        {
+            let computed = matches!(execution, RequestExecution::Computed);
             if computed {
                 work.modules_reparsed += 1;
                 work.syntax.lexer_invocations += value.work.lexer_invocations;
@@ -20630,32 +21024,40 @@ impl RevisionedQueryDatabase {
             .expect("parse projection retains its module input revision")
             .snapshot
             .clone();
-        let mut parsed = Vec::new();
+        let modules = modules.into_iter().collect::<Vec<_>>();
+        let mut parsed = Vec::with_capacity(modules.len());
         let mut errors = crate::CompileErrors::new();
-        let mut work = ParsedModulesWork::default();
-        for module in modules {
-            work.modules_considered += 1;
-            work.previous_module_lookups += 1;
+        let mut work = ParsedModulesWork {
+            modules_considered: modules.len(),
+            frontier_items: modules.len(),
+            frontier_batches: usize::from(!modules.is_empty()),
+            ..ParsedModulesWork::default()
+        };
+        let keys = modules
+            .iter()
+            .cloned()
+            .map(ModuleQueryKey)
+            .collect::<Vec<_>>()
+            .into();
+        let (values, executions, overhead, child_lookups) =
+            match self.parse_module_frontier(revision, keys) {
+                Ok(frontier) => frontier,
+                Err(detail) => {
+                    errors.push(import_input_error(detail));
+                    return (Err(errors), work);
+                }
+            };
+        work.frontier_batch_overhead = overhead;
+        work.previous_module_lookups = child_lookups;
+        for ((module, value), execution) in modules
+            .into_iter()
+            .zip(values.iter())
+            .zip(executions.into_iter())
+        {
             let current_file_id = snapshot
                 .file_id_for_module(&module, &self.identity_resolution)
                 .expect("parse demand belongs to the published source revision");
-            let attempt = self.runtime.request_registered(
-                &self.parse_modules,
-                revision,
-                ModuleQueryKey(module.clone()),
-                CancellationToken::new(),
-            );
-            let Some(terminal) = attempt.terminal() else {
-                errors.push(import_input_error(format!(
-                    "ParseModule({module}) aborted: {:?}",
-                    attempt.abort()
-                )));
-                continue;
-            };
-            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
-                unreachable!("ParseModule publishes typed values")
-            };
-            let computed = matches!(attempt.execution(), RequestExecution::Computed);
+            let computed = matches!(execution, RequestExecution::Computed);
             if computed {
                 work.modules_reparsed += 1;
                 work.syntax.lexer_invocations += value.work.lexer_invocations;
@@ -32741,11 +33143,693 @@ fn main() -> i32 {
                 .0
                 .is_ok()
         );
-        assert_eq!(database.runtime.metrics().claims, 3);
+        assert_eq!(database.runtime.metrics().claims, 4);
         let demanded = ModuleId::from_logical_path("a.rue").unwrap();
         let (next_parse, next_index) = database.module_terminals(revision, demanded);
         assert!(Arc::ptr_eq(&base_parse, &next_parse));
         assert!(Arc::ptr_eq(&base_index, &next_index));
+    }
+
+    #[test]
+    fn parse_module_frontier_parallelizes_and_reports_exact_work() {
+        let texts = (0..8)
+            .map(|index| {
+                format!(
+                    "// {}\nfn f{index}() -> i32 {{ {index} }}\n",
+                    "x".repeat(64_000)
+                )
+            })
+            .collect::<Vec<_>>();
+        let paths = (0..8)
+            .map(|index| format!("/m{index}.rue"))
+            .collect::<Vec<_>>();
+        let logical = (0..8)
+            .map(|index| format!("m{index}.rue"))
+            .collect::<Vec<_>>();
+        let entries = (0..8)
+            .map(|index| {
+                (
+                    index as u32 + 1,
+                    paths[index].as_str(),
+                    logical[index].as_str(),
+                    texts[index].as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let snapshot = source_snapshot(&entries, 1);
+        let modules = logical
+            .iter()
+            .map(|path| ModuleId::from_logical_path(path).unwrap())
+            .collect::<Vec<_>>();
+        let root = modules[0].clone();
+        let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
+        let revision = revision_for(&mut database, &snapshot);
+        let (program, work) = database.parse_program(revision, &root, modules);
+        assert!(program.is_ok());
+        assert_eq!(work.frontier_items, 8);
+        assert_eq!(work.frontier_batches, 1);
+        assert_eq!(work.frontier_batch_overhead, 1);
+        assert_eq!(work.modules_reparsed, 8);
+        assert_eq!(work.modules_reused, 0);
+        assert!(
+            database.runtime_metrics_for_test().peak_query_workers > 1,
+            "a cold independent module frontier must occupy multiple workers"
+        );
+    }
+
+    #[test]
+    fn parse_module_frontier_reuses_unedited_children_on_narrow_edit() {
+        let first = source_snapshot(
+            &[
+                (1, "/a.rue", "a.rue", "fn a() -> i32 { 1 }"),
+                (2, "/b.rue", "b.rue", "fn b() -> i32 { 2 }"),
+                (3, "/c.rue", "c.rue", "fn c() -> i32 { 3 }"),
+                (4, "/d.rue", "d.rue", "fn d() -> i32 { 4 }"),
+            ],
+            1,
+        );
+        let second = source_snapshot(
+            &[
+                (1, "/a.rue", "a.rue", "fn a() -> i32 { 1 }"),
+                (2, "/b.rue", "b.rue", "fn b() -> i32 { 20 }"),
+                (3, "/c.rue", "c.rue", "fn c() -> i32 { 3 }"),
+                (4, "/d.rue", "d.rue", "fn d() -> i32 { 4 }"),
+            ],
+            1,
+        );
+        let modules = ["a.rue", "b.rue", "c.rue", "d.rue"]
+            .map(|path| ModuleId::from_logical_path(path).unwrap());
+        let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
+        let first_revision = revision_for(&mut database, &first);
+        let (_, cold) = database.parse_program(first_revision, &modules[0], modules.clone());
+        assert_eq!(cold.modules_reparsed, 4);
+        assert_eq!(cold.previous_module_lookups, 4);
+
+        let no_op_revision = revision_for(&mut database, &first);
+        let (_, cross_revision_noop) =
+            database.parse_program(no_op_revision, &modules[0], modules.clone());
+        assert_eq!(cross_revision_noop.frontier_items, 4);
+        assert_eq!(cross_revision_noop.frontier_batches, 1);
+        assert_eq!(cross_revision_noop.frontier_batch_overhead, 0);
+        assert_eq!(cross_revision_noop.previous_module_lookups, 4);
+        assert_eq!(cross_revision_noop.modules_reparsed, 0);
+        assert_eq!(cross_revision_noop.modules_reused, 4);
+
+        let second_revision = revision_for(&mut database, &second);
+        let (_, narrow) = database.parse_program(second_revision, &modules[0], modules.clone());
+        assert_eq!(narrow.frontier_items, 4);
+        assert_eq!(narrow.frontier_batches, 1);
+        assert_eq!(narrow.frontier_batch_overhead, 1);
+        assert_eq!(narrow.previous_module_lookups, 5);
+        assert_eq!(narrow.modules_reparsed, 1);
+        assert_eq!(narrow.modules_reused, 3);
+        let noop_root = modules[0].clone();
+        let (_, noop) = database.parse_program(second_revision, &noop_root, modules);
+        assert_eq!(noop.modules_reparsed, 0);
+        assert_eq!(noop.modules_reused, 4);
+        assert_eq!(noop.frontier_batch_overhead, 0);
+        assert_eq!(noop.previous_module_lookups, 0);
+    }
+
+    #[test]
+    fn parse_module_frontier_one_and_many_workers_preserve_error_order() {
+        let snapshot = source_snapshot(
+            &[
+                (1, "/a.rue", "a.rue", "fn a( {}"),
+                (2, "/b.rue", "b.rue", "fn b( {}"),
+                (3, "/c.rue", "c.rue", "fn c( {}"),
+            ],
+            1,
+        );
+        let modules =
+            ["c.rue", "a.rue", "b.rue"].map(|path| ModuleId::from_logical_path(path).unwrap());
+        let run = |workers| {
+            let mut database = RevisionedQueryDatabase::with_query_concurrency(workers);
+            let revision = revision_for(&mut database, &snapshot);
+            database
+                .parse_program(revision, &modules[1], modules.clone())
+                .0
+                .unwrap_err()
+        };
+        assert_eq!(run(1), run(4));
+    }
+
+    #[test]
+    fn warning_reference_frontier_parallelizes_and_reports_exact_work() {
+        let text = (0..32)
+            .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
+            .collect::<String>();
+        let snapshot = source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let keys: Arc<[crate::body_query::BodyQueryKey]> = (0..32)
+            .map(|index| {
+                crate::body_query::BodyQueryKey::new(
+                    free_function_instance(&module, &format!("f{index}")),
+                    semantic_configuration(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
+        let revision = revision_for(&mut database, &snapshot);
+        database
+            .parse_program(revision, &module, [module.clone()])
+            .0
+            .unwrap();
+        assert_eq!(database.runtime_metrics_for_test().peak_query_workers, 1);
+        let (attempt, executions) = database.warning_body_reference_frontier(
+            revision,
+            keys.clone(),
+            CancellationToken::new(),
+        );
+        assert!(attempt.terminal().is_some());
+        assert_eq!(
+            executions
+                .iter()
+                .flatten()
+                .filter(|execution| execution.execution == RequestExecution::Computed)
+                .count(),
+            32
+        );
+        assert_eq!(
+            attempt
+                .work()
+                .iter()
+                .find(|(name, _)| name.as_ref() == "warning-reference.frontier.items")
+                .map(|(_, amount)| *amount),
+            Some(32)
+        );
+        assert_eq!(
+            attempt
+                .work()
+                .iter()
+                .find(|(name, _)| name.as_ref() == "warning-reference.frontier.batches")
+                .map(|(_, amount)| *amount),
+            Some(1)
+        );
+        assert_eq!(
+            attempt
+                .work()
+                .iter()
+                .find(|(name, _)| name.as_ref() == "warning-reference.frontier.overhead")
+                .map(|(_, amount)| *amount),
+            Some(1)
+        );
+        assert_eq!(
+            attempt
+                .nested_attempts()
+                .iter()
+                .filter(|attempt| attempt.node().family() == "compiler.warning-body-references")
+                .count(),
+            32
+        );
+        assert!(database.runtime_metrics_for_test().peak_query_workers > 1);
+    }
+
+    #[test]
+    fn warning_reference_frontier_retains_large_cross_revision_narrow_reuse() {
+        const FUNCTIONS: usize = 40;
+        let source = |changed: bool| {
+            (0..FUNCTIONS)
+                .map(|index| {
+                    if changed && index == 17 {
+                        format!("fn f{index}() -> i32 {{ f0() }}\n")
+                    } else {
+                        format!("fn f{index}() -> i32 {{ {index} }}\n")
+                    }
+                })
+                .collect::<String>()
+        };
+        let before_text = source(false);
+        let after_text = source(true);
+        let before = source_snapshot(&[(1, "/main.rue", "main.rue", &before_text)], 1);
+        let after = source_snapshot(&[(1, "/main.rue", "main.rue", &after_text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let keys: Arc<[crate::body_query::BodyQueryKey]> = (0..FUNCTIONS)
+            .map(|index| {
+                crate::body_query::BodyQueryKey::new(
+                    free_function_instance(&module, &format!("f{index}")),
+                    semantic_configuration(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .into();
+
+        let run = |workers| {
+            let mut database = RevisionedQueryDatabase::with_query_concurrency(workers);
+            let aggregate_key = WarningBodyReferencesBatchKey {
+                bodies: keys.clone(),
+            };
+            let first_revision = revision_for(&mut database, &before);
+            database
+                .parse_program(first_revision, &module, [module.clone()])
+                .0
+                .unwrap();
+            let (cold, cold_executions) = database.warning_body_reference_frontier(
+                first_revision,
+                keys.clone(),
+                CancellationToken::new(),
+            );
+            assert!(cold.terminal().is_some());
+            assert_eq!(
+                cold_executions
+                    .iter()
+                    .flatten()
+                    .filter(|execution| execution.execution == RequestExecution::Computed)
+                    .count(),
+                FUNCTIONS
+            );
+            drop(cold);
+            assert!(
+                database
+                    .warning_body_reference_batches
+                    .contains_retained_key(&aggregate_key),
+                "the aggregate family, not the completed request lease, retains the frontier"
+            );
+            assert!(
+                keys.iter()
+                    .all(|key| database.warning_body_references.contains_retained_key(key))
+            );
+
+            let no_op_revision = revision_for(&mut database, &before);
+            database
+                .parse_program(no_op_revision, &module, [module.clone()])
+                .0
+                .unwrap();
+            let (no_op, _) = database.warning_body_reference_frontier(
+                no_op_revision,
+                keys.clone(),
+                CancellationToken::new(),
+            );
+            assert_eq!(no_op.execution(), RequestExecution::Reused);
+            assert_eq!(
+                no_op
+                    .work()
+                    .iter()
+                    .find_map(|(name, amount)| {
+                        (name.as_ref() == "warning-reference.frontier.overhead").then_some(*amount)
+                    })
+                    .unwrap_or(0),
+                0
+            );
+            drop(no_op);
+            assert!(
+                database
+                    .warning_body_reference_batches
+                    .contains_retained_key(&aggregate_key),
+                "cross-revision green reuse remains family-owned after request release"
+            );
+
+            let narrow_revision = revision_for(&mut database, &after);
+            database
+                .parse_program(narrow_revision, &module, [module.clone()])
+                .0
+                .unwrap();
+            let (narrow, narrow_executions) = database.warning_body_reference_frontier(
+                narrow_revision,
+                keys.clone(),
+                CancellationToken::new(),
+            );
+            assert!(narrow.terminal().is_some());
+            let executions = narrow_executions
+                .into_iter()
+                .map(|execution| {
+                    execution
+                        .expect("red aggregate requests every child")
+                        .execution
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                executions
+                    .iter()
+                    .filter(|execution| **execution == RequestExecution::Computed)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                executions
+                    .iter()
+                    .filter(|execution| **execution == RequestExecution::Reused)
+                    .count(),
+                FUNCTIONS - 1
+            );
+            drop(narrow);
+            assert!(
+                keys.iter()
+                    .all(|key| database.warning_body_references.contains_retained_key(key))
+            );
+            executions
+        };
+
+        assert_eq!(run(1), run(4));
+    }
+
+    /// Reproducible final-code latency witness for the parse and warning
+    /// frontiers. Run with:
+    /// `scripts/rue unit compiler rue_1667_frontier_latency_witness --ignored --nocapture`.
+    /// Timing remains observational; exact work and overlap are assertions.
+    #[test]
+    #[ignore]
+    fn rue_1667_frontier_latency_witness() {
+        const SAMPLES: usize = 5;
+        const PARSE_MODULES: usize = 16;
+        const PARSE_COMMENT_BYTES: usize = 256_000;
+        const WARNING_FUNCTIONS: usize = 512;
+        const WARNING_CALLEES_PER_BODY: usize = 128;
+
+        let parse_texts = (0..PARSE_MODULES)
+            .map(|index| {
+                format!(
+                    "// {}\nfn f{index}() -> i32 {{ {index} }}\n",
+                    "x".repeat(PARSE_COMMENT_BYTES)
+                )
+            })
+            .collect::<Vec<_>>();
+        let parse_paths = (0..PARSE_MODULES)
+            .map(|index| format!("/m{index}.rue"))
+            .collect::<Vec<_>>();
+        let parse_logical = (0..PARSE_MODULES)
+            .map(|index| format!("m{index}.rue"))
+            .collect::<Vec<_>>();
+        let parse_entries = (0..PARSE_MODULES)
+            .map(|index| {
+                (
+                    index as u32 + 1,
+                    parse_paths[index].as_str(),
+                    parse_logical[index].as_str(),
+                    parse_texts[index].as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let parse_snapshot = source_snapshot(&parse_entries, 1);
+        let parse_modules = parse_logical
+            .iter()
+            .map(|path| ModuleId::from_logical_path(path).unwrap())
+            .collect::<Vec<_>>();
+
+        let warning_calls = (0..WARNING_CALLEES_PER_BODY)
+            .map(|index| format!("f{index}()"))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let warning_text = (0..WARNING_FUNCTIONS)
+            .map(|index| format!("fn f{index}() -> i32 {{ {warning_calls} }}\n"))
+            .collect::<String>();
+        let warning_snapshot = source_snapshot(&[(1, "/main.rue", "main.rue", &warning_text)], 1);
+        let warning_module = ModuleId::from_logical_path("main.rue").unwrap();
+        let warning_keys: Arc<[crate::body_query::BodyQueryKey]> = (0..WARNING_FUNCTIONS)
+            .map(|index| {
+                crate::body_query::BodyQueryKey::new(
+                    free_function_instance(&warning_module, &format!("f{index}")),
+                    semantic_configuration(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .into();
+
+        let measure = |workers| {
+            let mut parse_cold = Vec::with_capacity(SAMPLES);
+            let mut parse_warm = Vec::with_capacity(SAMPLES);
+            let mut warning_cold = Vec::with_capacity(SAMPLES);
+            let mut warning_warm = Vec::with_capacity(SAMPLES);
+            for _ in 0..SAMPLES {
+                let mut parse_database = RevisionedQueryDatabase::with_query_concurrency(workers);
+                let revision = revision_for(&mut parse_database, &parse_snapshot);
+                let start = std::time::Instant::now();
+                let (_, cold_work) = parse_database.parse_program(
+                    revision,
+                    &parse_modules[0],
+                    parse_modules.clone(),
+                );
+                parse_cold.push(start.elapsed().as_micros());
+                assert_eq!(cold_work.modules_reparsed, PARSE_MODULES);
+                assert_eq!(cold_work.frontier_batch_overhead, 1);
+                let start = std::time::Instant::now();
+                let (_, warm_work) = parse_database.parse_program(
+                    revision,
+                    &parse_modules[0],
+                    parse_modules.clone(),
+                );
+                parse_warm.push(start.elapsed().as_micros());
+                assert_eq!(warm_work.modules_reused, PARSE_MODULES);
+                assert_eq!(warm_work.previous_module_lookups, 0);
+                assert_eq!(warm_work.frontier_batch_overhead, 0);
+                assert_eq!(
+                    parse_database.runtime_metrics_for_test().peak_query_workers > 1,
+                    workers > 1
+                );
+
+                let mut warning_database = RevisionedQueryDatabase::with_query_concurrency(workers);
+                let revision = revision_for(&mut warning_database, &warning_snapshot);
+                warning_database
+                    .parse_program(revision, &warning_module, [warning_module.clone()])
+                    .0
+                    .unwrap();
+                let start = std::time::Instant::now();
+                let (cold, cold_executions) = warning_database.warning_body_reference_frontier(
+                    revision,
+                    warning_keys.clone(),
+                    CancellationToken::new(),
+                );
+                warning_cold.push(start.elapsed().as_micros());
+                assert!(cold.terminal().is_some());
+                assert_eq!(
+                    cold_executions
+                        .iter()
+                        .flatten()
+                        .filter(|execution| execution.execution == RequestExecution::Computed)
+                        .count(),
+                    WARNING_FUNCTIONS
+                );
+                let no_op_revision = revision_for(&mut warning_database, &warning_snapshot);
+                warning_database
+                    .parse_program(no_op_revision, &warning_module, [warning_module.clone()])
+                    .0
+                    .unwrap();
+                let start = std::time::Instant::now();
+                let (warm, _) = warning_database.warning_body_reference_frontier(
+                    no_op_revision,
+                    warning_keys.clone(),
+                    CancellationToken::new(),
+                );
+                warning_warm.push(start.elapsed().as_micros());
+                assert_eq!(warm.execution(), RequestExecution::Reused);
+                assert_eq!(
+                    warm.work()
+                        .iter()
+                        .find_map(|(name, amount)| {
+                            (name.as_ref() == "warning-reference.frontier.overhead")
+                                .then_some(*amount)
+                        })
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    warning_database
+                        .runtime_metrics_for_test()
+                        .peak_query_workers
+                        > 1,
+                    workers > 1
+                );
+            }
+            for samples in [
+                &mut parse_cold,
+                &mut parse_warm,
+                &mut warning_cold,
+                &mut warning_warm,
+            ] {
+                samples.sort_unstable();
+            }
+            (parse_cold, parse_warm, warning_cold, warning_warm)
+        };
+
+        for workers in [1, 4] {
+            let (parse_cold, parse_warm, warning_cold, warning_warm) = measure(workers);
+            eprintln!(
+                "RUE-1667 workers={workers} samples={SAMPLES} parse_modules={PARSE_MODULES} \
+                 parse_bytes_per_module={PARSE_COMMENT_BYTES} parse_cold_us={parse_cold:?} \
+                 parse_cold_median_us={} parse_warm_us={parse_warm:?} \
+                 parse_warm_median_us={} warning_functions={WARNING_FUNCTIONS} \
+                 warning_callees_per_body={WARNING_CALLEES_PER_BODY} \
+                 warning_cold_us={warning_cold:?} warning_cold_median_us={} \
+                 warning_warm_us={warning_warm:?} warning_warm_median_us={}",
+                parse_cold[SAMPLES / 2],
+                parse_warm[SAMPLES / 2],
+                warning_cold[SAMPLES / 2],
+                warning_warm[SAMPLES / 2],
+            );
+        }
+    }
+
+    #[test]
+    fn warning_reference_frontier_inflight_cancellation_publishes_no_aggregate() {
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        struct GatedChildKey(usize);
+        impl QueryKey for GatedChildKey {
+            fn stable_identity(&self) -> String {
+                format!("gated-warning-child-{}", self.0)
+            }
+            fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+                self.0.hash(hasher);
+            }
+        }
+
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        struct GatedBatchKey(Arc<[GatedChildKey]>);
+        impl QueryKey for GatedBatchKey {
+            fn stable_identity(&self) -> String {
+                format!("gated-warning-frontier-{}", self.0.len())
+            }
+            fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+                self.0.hash(hasher);
+            }
+        }
+
+        #[derive(Debug, Clone)]
+        struct GatedBatchValue {
+            values: Arc<[usize]>,
+            _retained_children: Arc<rue_query::RetainedPinSet>,
+        }
+        impl RetainedCharge for GatedBatchValue {
+            fn retained_charge(&self) -> u64 {
+                self.values.retained_charge()
+            }
+        }
+
+        #[derive(Default)]
+        struct EvaluatorGate {
+            state: Mutex<(usize, bool)>,
+            changed: std::sync::Condvar,
+        }
+
+        let snapshot =
+            source_snapshot(&[(1, "/main.rue", "main.rue", "fn main() -> i32 { 0 }")], 1);
+        let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
+        let revision = revision_for(&mut database, &snapshot);
+        let gate = Arc::new(EvaluatorGate::default());
+        let child_gate = gate.clone();
+        let children = database
+            .runtime
+            .family_with_evaluator(
+                "test.warning-body-reference-gated-child",
+                8,
+                move |context, _, key: &GatedChildKey| {
+                    let mut state = child_gate
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.0 += 1;
+                    child_gate.changed.notify_all();
+                    while !state.1 {
+                        context.check_canceled()?;
+                        let (next, _) = child_gate
+                            .changed
+                            .wait_timeout(state, std::time::Duration::from_millis(1))
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        state = next;
+                    }
+                    Ok(QueryOutput::success(key.0))
+                },
+            )
+            .unwrap();
+        let children_for_batch = children.clone();
+        let batches = database
+            .runtime
+            .family_with_equality_and_evaluator(
+                "test.warning-body-reference-gated-frontier",
+                1,
+                |left: &GatedBatchValue, right: &GatedBatchValue| left.values == right.values,
+                move |context, _, key: &GatedBatchKey| {
+                    let _validated_registered = context
+                        .endorse_registered_validations_from(&[])
+                        .expect("gated warning frontier uses this runtime");
+                    let _attempts = context
+                        .retain_nested_attempts_for(&["test.warning-body-reference-gated-child"]);
+                    let terminals = context
+                        .query_registered_adaptive_batch_refs(&children_for_batch, key.0.iter())?;
+                    let values = terminals
+                        .iter()
+                        .map(|terminal| {
+                            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                                unreachable!("gated children publish successes")
+                            };
+                            *value
+                        })
+                        .collect::<Vec<_>>();
+                    let retained_children = Arc::new(
+                        context
+                            .retain_observed_terminal_cones_from(&terminals, &[])
+                            .expect("gated warning frontier observes every child"),
+                    );
+                    Ok(QueryOutput::success(GatedBatchValue {
+                        values: values.into(),
+                        _retained_children: retained_children,
+                    }))
+                },
+            )
+            .unwrap();
+        let keys: Arc<[GatedChildKey]> = (0..32).map(GatedChildKey).collect::<Vec<_>>().into();
+        let database = Arc::new(database);
+        let aggregate_key = GatedBatchKey(keys);
+        let cancellation = CancellationToken::new();
+        let request_database = database.clone();
+        let request_batches = batches.clone();
+        let request_key = aggregate_key.clone();
+        let request_cancellation = cancellation.clone();
+        let request = std::thread::spawn(move || {
+            request_database.runtime.request_registered(
+                &request_batches,
+                revision,
+                request_key,
+                request_cancellation,
+            )
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut state = gate
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while state.0 == 0 {
+            let now = std::time::Instant::now();
+            assert!(
+                now < deadline,
+                "no warning child reached the in-flight evaluator gate"
+            );
+            let (next, _) = gate
+                .changed
+                .wait_timeout(state, deadline.saturating_duration_since(now))
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+        }
+        drop(state);
+        assert!(database.runtime_metrics_for_test().peak_query_workers > 1);
+        cancellation.cancel();
+        gate.changed.notify_all();
+        let canceled = request
+            .join()
+            .expect("warning frontier request thread joins");
+        assert_eq!(canceled.abort(), Some(&QueryAbort::Canceled));
+        assert!(canceled.terminal().is_none());
+        assert!(canceled.nested_attempts().iter().any(|attempt| {
+            attempt.node().family() == "test.warning-body-reference-gated-child"
+        }));
+        assert!(!batches.contains_retained_key(&aggregate_key));
+
+        let mut state = gate
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.1 = true;
+        gate.changed.notify_all();
+        drop(state);
+        let retry = database.runtime.request_registered(
+            &batches,
+            revision,
+            aggregate_key.clone(),
+            CancellationToken::new(),
+        );
+        assert!(retry.terminal().is_some());
+        assert!(batches.contains_retained_key(&aggregate_key));
     }
 
     #[test]
