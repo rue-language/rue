@@ -7,6 +7,12 @@ use rue_air::{
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 /// Structural work from one canonical semantic request.
 pub struct CanonicalSemanticWork {
+    /// Candidate declaration body-plan construction performed by the
+    /// registered `declaration-body-plan-artifacts` query.
+    pub candidate_body_plan_construction: CandidateBodyPlanWork,
+    /// Candidate plan materialization performed by body transactions. This is
+    /// the remap/validation/index and AIR-facing instruction/payload boundary.
+    pub candidate_body_plan_materialization: CandidateBodyPlanWork,
     /// One request-local RIR declaration-index construction.
     pub declaration_index: RirDeclarationIndexWork,
     /// Completed declaration binding, independent of optional manifest work.
@@ -17,6 +23,18 @@ pub struct CanonicalSemanticWork {
     pub body_analysis: BodyAnalysisWork,
     /// Drop-glue, CFG construction, and optimization work.
     pub cfg: CfgConstructionWork,
+}
+
+/// Deterministic lifecycle and output counts for one query-native structural
+/// work category. Only successfully published terminals contribute output
+/// counts; reused counts describe successful retained terminals returned by a
+/// request and never include cancellation or deterministic failures.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CandidateBodyPlanWork {
+    pub computed: usize,
+    pub reused: usize,
+    pub instructions_produced: usize,
+    pub payload_words_produced: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

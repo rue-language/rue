@@ -68,6 +68,13 @@ pub enum SampleOutcome {
 /// The compiler's `--benchmark-json` output.
 #[derive(serde::Deserialize)]
 struct BenchmarkJson {
+    #[serde(
+        rename = "schema_version",
+        deserialize_with = "deserialize_benchmark_schema_version"
+    )]
+    // The custom deserializer validates this wire field; the benchmark
+    // consumer otherwise has no need to retain the already-checked value.
+    _schema_version: u32,
     phase_accounting: PhaseAccounting,
     metadata: BenchmarkMetadata,
     source_metrics: SourceMetrics,
@@ -77,6 +84,23 @@ struct BenchmarkJson {
     compiler_boundary: Option<CompilerBoundaryEvidence>,
     #[serde(default)]
     critical_path: Option<CompilerCriticalPathEvidence>,
+}
+
+const BENCHMARK_JSON_SCHEMA_VERSION: u32 = 17;
+
+fn deserialize_benchmark_schema_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let version = <u32 as serde::Deserialize>::deserialize(deserializer)?;
+    if version != BENCHMARK_JSON_SCHEMA_VERSION {
+        return Err(D::Error::custom(format!(
+            "unsupported benchmark JSON schema version {version}; expected {BENCHMARK_JSON_SCHEMA_VERSION}"
+        )));
+    }
+    Ok(version)
 }
 
 #[derive(serde::Deserialize)]
@@ -312,7 +336,6 @@ fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
         let tail: String = stderr.lines().rev().take(5).collect::<Vec<_>>().join("\n");
         format!("no benchmark JSON on stdout ({error}); stderr tail:\n{tail}")
     })?;
-
     let output_bytes = fs::read(&output_path)
         .map_err(|error| format!("could not read compiler output for verification: {error}"))?;
     if output_bytes.is_empty()
@@ -588,6 +611,34 @@ mod tests {
     use rue_perf_schema::Phase;
 
     use super::*;
+
+    #[test]
+    fn benchmark_json_schema_16_is_rejected() {
+        let error = serde_json::from_str::<BenchmarkJson>(r#"{"schema_version":16}"#)
+            .err()
+            .expect("retired benchmark JSON schema must be rejected");
+        assert!(error.to_string().contains("expected 17"));
+    }
+
+    #[test]
+    fn benchmark_json_schema_17_is_accepted_by_the_parser() {
+        let phase_accounting = PhaseAccounting {
+            phase_ns: BTreeMap::new(),
+            mixed_parallel_ns: 0,
+            unattributed_ns: 0,
+            compiler_root_ns: 0,
+        };
+        let value = serde_json::json!({
+            "schema_version": 17,
+            "phase_accounting": phase_accounting,
+            "metadata": {"target": "x86_64-linux", "compiler_build_profile": "test"},
+            "source_metrics": {"files": 0, "modules": 0, "bytes": 0, "lines": 0, "tokens": 0, "functions": 0},
+            "compiler_work": CompilerWork::default(),
+            "emitted_output": {"size_bytes": 0, "sha256": ""}
+        });
+        let parsed: BenchmarkJson = serde_json::from_value(value).expect("schema 17 parses");
+        assert_eq!(parsed._schema_version, BENCHMARK_JSON_SCHEMA_VERSION);
+    }
 
     fn accounting(root_ns: u64, semantic_ns: u64, unattributed_ns: u64) -> PhaseAccounting {
         let mut phase_ns: BTreeMap<Phase, u64> =

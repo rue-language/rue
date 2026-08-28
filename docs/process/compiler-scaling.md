@@ -17,7 +17,7 @@ headline; it does not contribute to that index.
 ## Measurement regime
 
 Each sample launches the canonical compiler binary in a new process and asks
-it for `--benchmark-json`. The manifest, external runner, and compiler must
+it for `--benchmark-json` (benchmark JSON schema 17). The manifest, external runner, and compiler must
 independently agree that this is `fresh_source_to_native_v1`: Rue `-O3`, the
 internal linker, one published native executable, the canonical rooted query
 graph, and the declared worker row. There is no retained compiler session,
@@ -41,6 +41,16 @@ join, reuse, and validation outcomes can legitimately depend on scheduling. A
 one-worker counter disagreement rejects the workload instead of averaging
 structurally different compilations. Across all rows, different emitted bytes,
 fixture shape, compiler target, or automatic-worker resolution reject the run.
+
+Schema 17's compiler-work fields are query-native candidate-plan
+construction/materialization and canonical-RIR presentation counters. Timing
+events remain timing distributions only and are not projected into structural
+work. Run-object schema versions are globally unique: schema 1 is the
+historical full-evidence shape, schema 2 the historical stored shape, schema 3
+the current stored shape, and schema 4 the current full-evidence shape.
+Historical full schema 1 remains readable for validation but cannot be
+losslessly re-encoded because its retired taxonomy has no current
+representation.
 
 Every process proof includes the compiler-binary digest; fresh state and output
 directories; independently rehashed source inputs; the selected embedded

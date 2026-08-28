@@ -666,8 +666,8 @@ accordingly rather than restated with derived ones.
 **All 1,188 addresses move.** `schema_version` is an ordinary field of
 `RunObject` (`run.rs:457`) with no `skip_serializing_if`, so it is part of the
 canonical form `content_address` digests, and Question 1a requires every
-re-encoded record to declare `schema_version = 2`. A record whose only change is
-`1` → `2` therefore gets a new name. The 877 records carrying no boundary
+re-encoded record to declare `schema_version = 3`. A record whose only change is
+the stored-shape transition therefore gets a new name. The 877 records carrying no boundary
 evidence — epoch 2's 868, epoch 4's 3, and six epoch-5 records — stay
 byte-identical *below* the version field, which is why the equivalence result
 holds, but they move too. The required repository changes are exactly:
@@ -819,6 +819,24 @@ permanently, because a v1 record remains reachable at the tip forever.
 
 Declining Question 1a is not coherent with accepting anything else here. It is
 the one part of this proposal that is a prerequisite rather than a preference.
+
+### Current implementation version map
+
+The implementation uses globally unique `RunObject.schema_version` values;
+the historical proposal's v1/v2 shorthand must not be used to dispatch a
+record. The supported wire shapes are:
+
+| Version | Shape | Policy |
+| ---: | --- | --- |
+| 1 | historical full evidence, including `semantic_body_structure` | readable and validated; not losslessly re-encodable |
+| 2 | historical stored witness and digest form | readable and validated with the historical work.1 preimage |
+| 3 | current stored witness and digest form | producer output after compaction |
+| 4 | current full evidence with query-native compiler work | producer's in-memory form; encoded to v3 |
+
+Encoding dispatches on this version alone. In particular, schema 1 is never
+silently migrated to schema 3: `encode_stored_v3` rejects it because the retired
+taxonomy cannot be represented without field loss. Versions ahead of 4 are
+refused by validation.
 
 ## References
 

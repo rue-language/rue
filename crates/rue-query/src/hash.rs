@@ -460,6 +460,13 @@ pub(crate) struct ExactNodeIdentity {
 }
 
 impl NodeIdentity {
+    /// Construct a collision-safe identity for a typed key without requiring
+    /// a live registered family node. This is used when reconciling retained
+    /// query publications with nested observations.
+    pub fn from_typed_key<K: QueryKey>(family: impl Into<Arc<str>>, key: &K) -> Self {
+        Self::from_key(family.into(), key)
+    }
+
     /// A display-only identity whose text is already known.
     ///
     /// The digest comes from the text because for this identity the text *is*

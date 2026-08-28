@@ -40,7 +40,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rue_perf_schema::{
     Completeness, FULL_EVIDENCE_SCHEMA_VERSION, FailureRecord, Invocation, Manifest,
     ProcessElapsedRegression, ResolvedPins, RunIdentity, RunObject, Sample, ValidationOutcome,
-    WorkloadObservation, encode_v2, process_elapsed_regressions, validate_run,
+    WorkloadObservation, encode_stored_v3, process_elapsed_regressions, validate_run,
 };
 
 use crate::measure::{SampleOutcome, SampleRequest, measure_sample};
@@ -121,7 +121,7 @@ Subcommands:
                        data. Exits 3 when one does not resolve.
 
   reencode --data-root <dir> --manifest <path> [--apply]
-                       rewrite every full-evidence (schema v1) record in
+                       rewrite every full-evidence record in
                        <dir>/runs into the v2 witness-plus-digests encoding
                        under new content addresses, moving index.json and the
                        manifest pins with them (ADR-0067 Amendment 1). Dry run
@@ -689,7 +689,7 @@ fn run(options: &Options) -> Result<u8, String> {
 
     // The stored form replaces per-process evidence with one witness per
     // workload plus per-process digests (ADR-0071 Amendment 1).
-    let encoded = encode_v2(&run)
+    let encoded = encode_stored_v3(&run)
         .map_err(|error| format!("could not encode the run object for storage: {error}"))?;
     let serialized = rue_perf_schema::canonical_json(&encoded)
         .map_err(|error| format!("could not serialize the run object: {error}"))?;
@@ -919,7 +919,7 @@ window = 10
             },
             boundary: None,
             // A placeholder commitment: validation checks the shape, and only
-            // encode_v2 computes the real address.
+            // encode_stored_v3 computes the real address.
             full_evidence: Some("f".repeat(64)),
             workloads: vec![WorkloadObservation {
                 workload: "startup".to_string(),

@@ -30,6 +30,288 @@ mod tests {
         SourceSnapshot::single("<wide-backend-root>", source).unwrap()
     }
 
+    fn rooted_semantic_output(
+        session: &mut CompilerSession,
+        snapshot: &SourceSnapshot,
+    ) -> RootedCfgOutput {
+        publish_test_snapshot(session, snapshot).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap()
+    }
+
+    fn assert_zero_candidate_outputs(work: CanonicalSemanticWork) {
+        for category in [
+            work.candidate_body_plan_construction,
+            work.candidate_body_plan_materialization,
+        ] {
+            assert_eq!(category.instructions_produced, 0);
+            assert_eq!(category.payload_words_produced, 0);
+        }
+    }
+
+    #[test]
+    fn candidate_plan_metrics_cold_then_pure_warm_are_exact() {
+        let snapshot = SourceSnapshot::single(
+            "<candidate-cold-warm>",
+            "fn helper() -> i32 { let message: str = \"hello\"; @dbg(message); 1 } fn main() -> i32 { helper() }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        let cold_output = rooted_semantic_output(&mut session, &snapshot);
+        let cold = cold_output.work;
+        assert_eq!(cold.candidate_body_plan_construction.computed, 2);
+        assert_eq!(cold.candidate_body_plan_construction.reused, 0);
+        assert!(cold.candidate_body_plan_construction.instructions_produced > 0);
+        assert!(cold.candidate_body_plan_construction.payload_words_produced > 0);
+        assert_eq!(cold.candidate_body_plan_materialization.computed, 2);
+        assert_eq!(cold.candidate_body_plan_materialization.reused, 0);
+        assert!(
+            cold.candidate_body_plan_materialization
+                .instructions_produced
+                > 0
+        );
+        assert!(
+            cold.candidate_body_plan_materialization
+                .payload_words_produced
+                > 0
+        );
+
+        let warm = rooted_semantic_output(&mut session, &snapshot).work;
+        assert_eq!(warm.candidate_body_plan_construction.computed, 0);
+        assert_eq!(warm.candidate_body_plan_construction.reused, 2);
+        assert_eq!(warm.candidate_body_plan_materialization.computed, 0);
+        assert_eq!(warm.candidate_body_plan_materialization.reused, 2);
+        assert_zero_candidate_outputs(warm);
+        assert_eq!(
+            session.unstable_metrics().canonical_rir_presentation(),
+            Default::default()
+        );
+    }
+
+    #[test]
+    fn candidate_plan_metrics_narrow_edit_compute_one_reuse_rest() {
+        let root = FileId::new(1);
+        let helper = FileId::new(2);
+        let make_snapshot = |root_source: &str| {
+            let sources = [
+                SourceView::new("/p/main.rue", root_source, root),
+                SourceView::new("/p/helper.rue", "pub fn helper() -> i32 { 1 }", helper),
+            ];
+            let metadata = SourceMetadata::from_sources(
+                &sources,
+                root,
+                AHashMap::from([
+                    (root, "main.rue".to_owned()),
+                    (helper, "helper.rue".to_owned()),
+                ]),
+            )
+            .unwrap();
+            SourceSnapshot::from_sources(&sources, metadata).unwrap()
+        };
+        let before = make_snapshot(
+            "const helper_module = @import(\"helper.rue\"); fn main() -> i32 { helper_module.helper() }",
+        );
+        let after = make_snapshot(
+            "const helper_module = @import(\"helper.rue\"); fn main() -> i32 { helper_module.helper() + 1 }",
+        );
+        let mut session = CompilerSession::new();
+        let _cold_output = rooted_semantic_output(&mut session, &before);
+        let warm = rooted_semantic_output(&mut session, &after).work;
+        assert_eq!(warm.candidate_body_plan_construction.computed, 1);
+        assert_eq!(warm.candidate_body_plan_construction.reused, 1);
+        assert_eq!(warm.candidate_body_plan_materialization.computed, 1);
+        assert_eq!(warm.candidate_body_plan_materialization.reused, 1);
+        assert!(warm.candidate_body_plan_construction.instructions_produced > 0);
+        assert!(
+            warm.candidate_body_plan_materialization
+                .instructions_produced
+                > 0
+        );
+    }
+
+    #[test]
+    fn candidate_plan_metrics_dedupe_generic_construction_across_specializations() {
+        let snapshot = SourceSnapshot::single(
+            "<candidate-generic-dedupe>",
+            "fn choose(comptime result: i32) -> i32 { result } fn main() -> i32 { choose(1) + choose(2) }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        let cold = rooted_semantic_output(&mut session, &snapshot).work;
+        assert_eq!(cold.candidate_body_plan_construction.computed, 2);
+        assert_eq!(cold.candidate_body_plan_materialization.computed, 3);
+        assert!(cold.candidate_body_plan_construction.instructions_produced > 0);
+        assert!(
+            cold.candidate_body_plan_materialization
+                .instructions_produced
+                > 0
+        );
+
+        let warm = rooted_semantic_output(&mut session, &snapshot).work;
+        assert_eq!(warm.candidate_body_plan_construction.computed, 0);
+        assert_eq!(warm.candidate_body_plan_construction.reused, 2);
+        assert_eq!(warm.candidate_body_plan_materialization.computed, 0);
+        assert_eq!(warm.candidate_body_plan_materialization.reused, 3);
+        assert_zero_candidate_outputs(warm);
+    }
+
+    #[test]
+    fn candidate_plan_metrics_failed_and_cached_failure_publish_zero() {
+        let snapshot =
+            SourceSnapshot::single("<candidate-failed>", "fn main() -> i32 { missing_name }")
+                .unwrap();
+        let mut session = CompilerSession::new();
+        publish_test_snapshot(&mut session, &snapshot).unwrap();
+        assert!(session.rooted_cfg(&CompileOptions::default()).is_err());
+        assert!(!session.any_successful_body_transaction_for_test());
+        assert!(session.rooted_cfg(&CompileOptions::default()).is_err());
+        assert!(!session.any_successful_body_transaction_for_test());
+        // Parse/lowering failures never publish a semantic root, so they have
+        // no candidate-plan work to expose or retain for a later retry.
+        assert_eq!(session.work().updates, 1);
+    }
+
+    #[test]
+    fn candidate_plan_metrics_import_order_and_workers_are_deterministic() {
+        let root = FileId::new(1);
+        let sources = [
+            SourceView::new(
+                "/p/main.rue",
+                "const a = @import(\"a.rue\"); const b = @import(\"b.rue\"); fn main() -> i32 { a.value() + b.value() }",
+                root,
+            ),
+            SourceView::new("/p/a.rue", "pub fn value() -> i32 { 10 }", FileId::new(2)),
+            SourceView::new("/p/b.rue", "pub fn value() -> i32 { 20 }", FileId::new(3)),
+        ];
+        let metadata = SourceMetadata::from_sources(
+            &sources,
+            root,
+            AHashMap::from([
+                (root, "main.rue".to_owned()),
+                (FileId::new(2), "a.rue".to_owned()),
+                (FileId::new(3), "b.rue".to_owned()),
+            ]),
+        )
+        .unwrap();
+        let forward = SourceSnapshot::from_sources(&sources, metadata.clone()).unwrap();
+        let reverse_sources = [
+            SourceView::new(
+                "/p/main.rue",
+                "const a = @import(\"a.rue\"); const b = @import(\"b.rue\"); fn main() -> i32 { a.value() + b.value() }",
+                root,
+            ),
+            SourceView::new("/p/b.rue", "pub fn value() -> i32 { 20 }", FileId::new(3)),
+            SourceView::new("/p/a.rue", "pub fn value() -> i32 { 10 }", FileId::new(2)),
+        ];
+        let reverse = SourceSnapshot::from_sources(&reverse_sources, metadata).unwrap();
+        let measure = |snapshot: &SourceSnapshot, workers| {
+            let mut session = CompilerSession::with_query_concurrency(workers);
+            rooted_semantic_output(&mut session, snapshot).work
+        };
+        assert_eq!(measure(&forward, 1), measure(&reverse, 1));
+        assert_eq!(measure(&forward, 1), measure(&forward, 4));
+    }
+
+    #[test]
+    fn candidate_plan_metrics_scale_linearly() {
+        let small =
+            rooted_semantic_output(&mut CompilerSession::new(), &wide_reached_program(4, 7)).work;
+        let large =
+            rooted_semantic_output(&mut CompilerSession::new(), &wide_reached_program(16, 7)).work;
+        assert_eq!(
+            large.candidate_body_plan_construction.computed - 1,
+            (small.candidate_body_plan_construction.computed - 1) * 4
+        );
+        assert_eq!(
+            large.candidate_body_plan_materialization.computed - 1,
+            (small.candidate_body_plan_materialization.computed - 1) * 4
+        );
+        assert_eq!(
+            large.candidate_body_plan_construction.instructions_produced,
+            large.candidate_body_plan_construction.computed * 2
+        );
+        assert_eq!(
+            large
+                .candidate_body_plan_materialization
+                .instructions_produced,
+            large.candidate_body_plan_materialization.computed * 2
+        );
+    }
+
+    #[test]
+    fn candidate_plan_metrics_cancellation_retry_publishes_once() {
+        let snapshot = wide_reached_program(8, 7);
+        let mut session = CompilerSession::new();
+        publish_test_snapshot(&mut session, &snapshot).unwrap();
+        let injection = session.cancel_constraint_generation_after_nodes_for_test(0);
+        assert!(session.rooted_cfg(&CompileOptions::default()).is_err());
+        assert!(session.constraint_generation_visits_for_test() >= 1);
+        drop(injection);
+        let retry = session.rooted_cfg(&CompileOptions::default()).unwrap();
+        assert!(retry.work.candidate_body_plan_construction.computed > 0);
+        assert!(retry.work.candidate_body_plan_materialization.computed > 0);
+        // The aborted publication contributes no counters. A child that
+        // completed before the cancellation may be reused by the retry, but
+        // every reachable plan is still represented exactly once.
+        assert_eq!(
+            retry.work.candidate_body_plan_construction.computed
+                + retry.work.candidate_body_plan_construction.reused,
+            9
+        );
+        assert_eq!(
+            retry.work.candidate_body_plan_materialization.computed
+                + retry.work.candidate_body_plan_materialization.reused,
+            9
+        );
+    }
+
+    #[test]
+    fn candidate_plan_metrics_zero_work_input_is_zero() {
+        let snapshot =
+            SourceSnapshot::single("<candidate-zero-work>", "fn main() -> i32 { 1 }").unwrap();
+        let mut session = CompilerSession::new();
+        publish_test_snapshot(&mut session, &snapshot).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap();
+        let (construction, materialization) =
+            session.empty_body_closure_work_for_test(&CompileOptions::default());
+        assert_eq!(construction, Default::default());
+        assert_eq!(materialization, Default::default());
+    }
+
+    #[test]
+    fn canonical_rir_presentation_isolated_from_rooted_metrics() {
+        let snapshot =
+            SourceSnapshot::single("<candidate-rir-isolation>", "fn main() -> i32 { 1 }").unwrap();
+        let mut session = CompilerSession::new();
+        let rooted = rooted_semantic_output(&mut session, &snapshot).work;
+        assert!(
+            rooted
+                .candidate_body_plan_construction
+                .instructions_produced
+                > 0
+        );
+        assert_eq!(
+            session.unstable_metrics().canonical_rir_presentation(),
+            Default::default()
+        );
+        let first = session.rir().unwrap();
+        let first_metrics = session.unstable_metrics().canonical_rir_presentation();
+        let second = session.rir().unwrap();
+        let second_metrics = session.unstable_metrics().canonical_rir_presentation();
+        assert!(!first.is_empty());
+        assert_eq!(first.len(), second.len());
+        assert!(first_metrics.requests_computed >= 1);
+        assert!(second_metrics.requests_computed >= 2);
+        let rooted_again = rooted_semantic_output(&mut session, &snapshot).work;
+        assert_eq!(
+            session
+                .unstable_metrics()
+                .canonical_rir_presentation()
+                .requests_computed,
+            second_metrics.requests_computed
+        );
+        assert!(rooted_again.candidate_body_plan_materialization.reused > 0);
+    }
+
     #[test]
     fn pre_optimization_root_has_stable_query_identity_and_reuse() {
         let snapshot = SourceSnapshot::single(
@@ -447,7 +729,44 @@ mod tests {
             .update_for_presentation(&before)
             .into_result()
             .unwrap();
-        crate::queries::compile_with_session(&mut warm_session, &before, &options).unwrap();
+        let cold =
+            crate::queries::compile_with_session(&mut warm_session, &before, &options).unwrap();
+        assert_eq!(
+            cold.work.semantic.candidate_body_plan_construction.computed, 2,
+            "each cold declaration contributes one candidate plan"
+        );
+        assert_eq!(
+            cold.work.semantic.candidate_body_plan_construction.reused,
+            0
+        );
+        assert_eq!(
+            cold.work
+                .semantic
+                .candidate_body_plan_materialization
+                .computed,
+            2
+        );
+        assert_eq!(
+            cold.work
+                .semantic
+                .candidate_body_plan_materialization
+                .reused,
+            0
+        );
+        assert!(
+            cold.work
+                .semantic
+                .candidate_body_plan_construction
+                .instructions_produced
+                > 0
+        );
+        assert!(
+            cold.work
+                .semantic
+                .candidate_body_plan_materialization
+                .instructions_produced
+                > 0
+        );
         warm_session
             .update_for_presentation(&after)
             .into_result()
@@ -460,8 +779,34 @@ mod tests {
         assert_eq!(metrics.parsed.parser_invocations, 1);
         assert_eq!(metrics.parsed.modules_reparsed, 1);
         assert_eq!(
-            metrics.lowered.parser_invocations, 0,
-            "the parsed successor reuses the canonical RIR lowering boundary"
+            metrics.semantic.candidate_body_plan_construction.computed, 2,
+            "same-module edit reparses the module-owned candidate plans"
+        );
+        assert_eq!(metrics.semantic.candidate_body_plan_construction.reused, 0);
+        assert_eq!(
+            metrics
+                .semantic
+                .candidate_body_plan_materialization
+                .computed,
+            1
+        );
+        assert_eq!(
+            metrics.semantic.candidate_body_plan_materialization.reused,
+            1
+        );
+        assert!(
+            metrics
+                .semantic
+                .candidate_body_plan_construction
+                .instructions_produced
+                > 0
+        );
+        assert!(
+            metrics
+                .semantic
+                .candidate_body_plan_materialization
+                .instructions_produced
+                > 0
         );
         assert_eq!(metrics.semantic.body.analyses_computed, 1);
         assert_eq!(metrics.semantic.body.analyses_reused, 1);
@@ -1171,7 +1516,7 @@ mod tests {
         }));
         assert_eq!(warm.elf, cold.elf);
         assert_eq!(warm.warnings, cold.warnings);
-        assert_eq!(warm.work.lowered, Default::default());
+        assert_eq!(warm.work.canonical_rir_presentation, Default::default());
         assert_eq!(warm.work.semantic.body_analysis.body_analyses_computed, 0);
         assert_eq!(warm.work.semantic.body_analysis.body_analyses_reused, 1);
         assert_eq!(warm.work.semantic.cfg.cfg_builds_attempted, 0);
@@ -1236,7 +1581,7 @@ mod tests {
         );
         assert_eq!(warm.elf, cold.elf);
         assert_eq!(warm.warnings.len(), 2);
-        assert_eq!(warm.work.lowered, Default::default());
+        assert_eq!(warm.work.canonical_rir_presentation, Default::default());
         assert_eq!(warm.work.semantic.body_analysis.body_analyses_computed, 0);
         assert_eq!(warm.work.semantic.body_analysis.body_analyses_reused, 1);
         assert_eq!(warm.work.semantic.cfg.cfg_builds_attempted, 0);
@@ -2806,9 +3151,7 @@ mod tests {
         assert_eq!(work.merged.ast_payload_clones, 0);
         assert_eq!(work.merged.source_text_clones, 0);
         assert_eq!(work.merged.source_bytes_rehashed, 0);
-        assert_eq!(work.lowered.parser_invocations, 0);
-        assert_eq!(work.lowered.ast_payload_clones, 0);
-        assert_eq!(work.lowered.source_text_clones, 0);
+        assert_eq!(work.canonical_rir_presentation, Default::default());
         assert_eq!(work.semantic.body_analysis.body_analyses_computed, 2);
         assert_eq!(work.semantic.body_analysis.body_analyses_reused, 0);
         assert_eq!(work.semantic.body_analysis.closure_bodies_visited, 2);
@@ -2818,13 +3161,13 @@ mod tests {
         assert_eq!(work.semantic.cfg.optimization_attempts, 2);
         assert_eq!(work.semantic.cfg.optimization_completions, 2);
 
-        // The query-native path does not execute the retired whole-program
-        // declaration, binding, or durable-body phases. Their counters remain
-        // zero while the rooted body and CFG work above reports what did run.
-        let mut phase_work = work.semantic;
-        phase_work.body_analysis = Default::default();
-        phase_work.cfg = Default::default();
-        assert_eq!(phase_work, CanonicalSemanticWork::default());
+        // Candidate plan construction and materialization are rooted semantic
+        // work; retired whole-program lowering remains absent.
+        assert_eq!(work.semantic.candidate_body_plan_construction.computed, 2);
+        assert_eq!(
+            work.semantic.candidate_body_plan_materialization.computed,
+            2
+        );
     }
 
     #[test]

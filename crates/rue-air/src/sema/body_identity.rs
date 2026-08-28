@@ -3019,6 +3019,11 @@ impl BodyRirBundle {
         self.rir.len()
     }
 
+    /// Number of payload words produced by candidate-plan materialization.
+    pub fn payload_word_count(&self) -> usize {
+        self.rir.extra_len()
+    }
+
     pub fn source_file_id(&self) -> Option<FileId> {
         let mut files = self
             .rir

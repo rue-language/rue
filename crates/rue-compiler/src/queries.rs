@@ -115,18 +115,14 @@ pub struct SourceStats {
 }
 
 /// Composable structural work from the session query graph.
-///
-/// The phase-shaped fields remain stable for metrics consumers during the
-/// query-native cutover. A zero for a retired whole-program phase means that
-/// compilation deliberately bypassed that phase; rooted body-analysis and CFG
-/// query executions are reported in `semantic` rather than being hidden behind
-/// a default value.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PipelineWork {
     pub parsed: ParsedModulesWork,
     pub warning_references: crate::unstable::WarningReferenceMetrics,
     pub merged: CanonicalMergeWork,
-    pub lowered: CanonicalRirWork,
+    /// Whole-program RIR is an explicit presentation request and is not part
+    /// of ordinary rooted compilation.
+    pub canonical_rir_presentation: CanonicalRirWork,
     pub semantic: CanonicalSemanticWork,
 }
 
@@ -427,7 +423,7 @@ pub(crate) fn compile_rooted_with_session_with_cancellation(
         parsed: session_work.last_parse,
         warning_references: session_work.warning_references,
         merged: Default::default(),
-        lowered: Default::default(),
+        canonical_rir_presentation: Default::default(),
         semantic: rooted.work,
     };
     output.query_runtime = query_runtime;

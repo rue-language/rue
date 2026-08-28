@@ -66,9 +66,9 @@ pub use boundary::{
 pub use canonical::{CanonicalError, canonical_json, content_address};
 pub use encoding::{
     CompilerRunInvariant, CompilerWorkloadInvariant, EncodeError, EvidenceSource,
-    FULL_EVIDENCE_SCHEMA_VERSION, IDENTITY_DIGEST_TAG, RunBoundary, RunnerRunInvariant,
-    RunnerWorkloadInvariant, WORK_DIGEST_TAG, WorkloadBoundary, encode_v2, identity_digest,
-    reassemble_witness, work_digest,
+    FULL_EVIDENCE_SCHEMA_VERSION, IDENTITY_DIGEST_TAG, LEGACY_FULL_EVIDENCE_SCHEMA_VERSION,
+    RunBoundary, RunnerRunInvariant, RunnerWorkloadInvariant, WORK_DIGEST_TAG, WorkloadBoundary,
+    encode_stored_v3, identity_digest, reassemble_witness, work_digest,
 };
 pub use incremental::{
     DisplayIdentityWorkSummary, EDIT_REPORT_SCHEMA_VERSION, EditEndpoints, EditManifest,
@@ -104,11 +104,11 @@ pub use runtime::{
 };
 pub use sanity::is_commit;
 pub use scaling::{
-    CfgLocalEpochWork, CfgMaterializationWork, CfgPrerequisiteWork, CfgRetainedChargeWork,
-    CompilerWork, PublicationWork, QueryRuntimeWork, SCALING_REPORT_SCHEMA_VERSION,
-    ScalingIdentity, ScalingManifest, ScalingObservation, ScalingRegime, ScalingReport,
-    ScalingWorkload, SemanticBodyStructureWork, SemanticProviderWork, SemanticReachabilityWork,
-    WorkloadShape,
+    CandidateBodyPlanWork, CanonicalRirPresentationWork, CfgLocalEpochWork, CfgMaterializationWork,
+    CfgPrerequisiteWork, CfgRetainedChargeWork, CompilerWork, PublicationWork, QueryRuntimeWork,
+    SCALING_REPORT_SCHEMA_VERSION, ScalingIdentity, ScalingManifest, ScalingObservation,
+    ScalingRegime, ScalingReport, ScalingWorkload, SemanticAnalysisStructureWork,
+    SemanticProviderWork, SemanticReachabilityWork, WorkloadShape,
 };
 pub use series::{Metric, SeriesId};
 pub use stats::{
@@ -117,8 +117,9 @@ pub use stats::{
 };
 pub use stored::{Stored, StoredRecordError, StoredRun, StoredRuntimeReport};
 pub use validate::{
-    Completeness, InvalidSample, InvalidSampleReason, ProcessElapsedRegression, ValidationError,
-    ValidationOutcome, process_elapsed_regressions, validate_run,
+    Completeness, InvalidSample, InvalidSampleReason, ProcessElapsedRegression,
+    SUPPORTED_SCHEMA_VERSIONS, ValidationError, ValidationOutcome, process_elapsed_regressions,
+    validate_run,
 };
 
 /// Deterministic presentation-only query identity materialization.
@@ -145,10 +146,14 @@ pub struct DisplayIdentityWork {
 /// The schema version the producer writes (ADR-0067 Amendment 1).
 ///
 /// A run object records the version it was written under. Readers implement
-/// every schema version that can still be in the store —
-/// [`FULL_EVIDENCE_SCHEMA_VERSION`] and this one — and refuse only versions
-/// ahead of them. Encoding shape dispatches on the record's
+/// every schema shape that can still be in the store: schema 1 is the
+/// historical full-evidence form, schema 2 the historical stored form, schema
+/// 3 the current stored form, and schema 4 the current full-evidence form.
+/// Readers refuse only versions ahead of them. Encoding shape dispatches on the record's
 /// `schema_version`; what must be proven dispatches on the suite's
 /// `protocol_version`. Support for a version may be dropped only once no
 /// record carrying it is reachable by any consumer.
-pub const RUN_SCHEMA_VERSION: u32 = 2;
+pub const RUN_SCHEMA_VERSION: u32 = 3;
+/// Stored run version retained for decoding records written before the
+/// query-native candidate-plan fields were added.
+pub const LEGACY_RUN_SCHEMA_VERSION: u32 = 2;

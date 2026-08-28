@@ -233,14 +233,14 @@ pub struct Sample {
     pub phases: PhaseAccounting,
     /// One independent runner/compiler proof for each process in this sample.
     ///
-    /// The full-evidence (schema v1) encoding. Empty for historical
-    /// protocol-v1 suites, and always empty in the stored (schema v2)
-    /// encoding, where each process is committed to by digest instead.
+    /// The full-evidence encoding (schema v1 historical or schema v4 current).
+    /// Empty for historical protocol-v1 suites, and always empty in the stored
+    /// (schema v2/v3) encoding, where each process is committed to by digest.
     /// Protocol v2 under the full-evidence encoding requires exactly
     /// `batch_size` entries and validates each one against its epoch.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub boundary_evidence: Vec<BuildBoundaryEvidence>,
-    /// Per-process identity digests, schema v2 only.
+    /// Per-process identity digests, stored schema v3 only.
     ///
     /// One entry per process, in spawn order: the tagged SHA-256 of that
     /// process's reassembled `{runner, compiler}` pair
@@ -249,7 +249,7 @@ pub struct Sample {
     /// retained witness.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub boundary_processes: Vec<String>,
-    /// Per-process deterministic-work digests, schema v2 only.
+    /// Per-process deterministic-work digests, stored schema v3 only.
     ///
     /// Present exactly when the epoch's `worker_setting` is `one` — the only
     /// setting under which `compiler_work` is required to agree across
@@ -277,7 +277,7 @@ impl Sample {
 pub struct WorkloadObservation {
     /// The workload's logical identifier, as declared by the suite revision.
     pub workload: String,
-    /// Workload-invariant boundary evidence and retained members, schema v2
+    /// Workload-invariant boundary evidence and retained members, stored schema v3
     /// only ([`WorkloadBoundary`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boundary: Option<WorkloadBoundary>,
@@ -482,11 +482,11 @@ pub struct RunObject {
     pub schema_version: u32,
     /// Identity and configuration of the run.
     pub identity: RunIdentity,
-    /// Run-invariant boundary evidence, schema v2 only ([`RunBoundary`]).
+    /// Run-invariant boundary evidence, stored schema v3 only ([`RunBoundary`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boundary: Option<RunBoundary>,
-    /// The content address of this record's full-evidence (schema v1) form,
-    /// schema v2 only.
+    /// The content address of this record's full-evidence form,
+    /// stored schema v3 only.
     ///
     /// For a fresh collection this names the workflow's retained
     /// full-evidence artifact; for a re-encoded record it names the

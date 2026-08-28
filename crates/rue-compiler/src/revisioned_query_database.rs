@@ -250,7 +250,7 @@ impl Drop for TestBodyTransactionFailureGuard {
 use rue_query::{
     CancellationToken, InputIdentity, QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutput,
     QueryRequestAttempt, QueryRuntime, QuerySelection, QueryTerminalKind, RequestExecution,
-    Revision,
+    Revision, WorkItem,
 };
 
 type SemanticNucleusFamily = QueryFamily<
@@ -6500,9 +6500,11 @@ pub(crate) struct BodyClosureRequest {
     /// Keyed by the ADR-0074 structural key digest rather than the rendered
     /// body identity, so building and reading this projection never formats a
     /// body transaction's name.
-    body_executions: BTreeMap<rue_query::StableKeyHash, rue_query::RequestExecution>,
-    retained_before: BTreeSet<rue_query::StableKeyHash>,
+    body_executions: BTreeMap<rue_query::NodeIdentity, rue_query::RequestExecution>,
+    retained_before: BTreeSet<rue_query::NodeIdentity>,
     work: Vec<(Arc<str>, u64)>,
+    pub(crate) candidate_body_plan_work: crate::CandidateBodyPlanWork,
+    pub(crate) candidate_body_materialization_work: crate::CandidateBodyPlanWork,
 }
 
 impl BodyClosureRequest {
@@ -6511,14 +6513,20 @@ impl BodyClosureRequest {
         key: &crate::body_query::BodyQueryKey,
     ) -> rue_query::RequestExecution {
         self.body_executions
-            .get(&rue_query::stable_key_hash(key))
+            .get(&rue_query::NodeIdentity::from_typed_key(
+                "compiler.body-transaction",
+                key,
+            ))
             .copied()
             .unwrap_or(rue_query::RequestExecution::Reused)
     }
 
     pub(crate) fn was_retained(&self, key: &crate::body_query::BodyQueryKey) -> bool {
         self.retained_before
-            .contains(&rue_query::stable_key_hash(key))
+            .contains(&rue_query::NodeIdentity::from_typed_key(
+                "compiler.body-transaction",
+                key,
+            ))
     }
 
     /// Accrue request-local database-owned reachability scheduling work into
@@ -6551,6 +6559,158 @@ impl BodyClosureRequest {
             *counter = counter.saturating_add(amount);
         }
     }
+
+    pub(crate) fn accrue_candidate_body_plan_work(
+        &self,
+        target: &mut crate::CanonicalSemanticWork,
+    ) {
+        target.candidate_body_plan_construction = self.candidate_body_plan_work;
+        target.candidate_body_plan_materialization = self.candidate_body_materialization_work;
+    }
+}
+
+// NodeIdentity's cached presentation text is the only interior-mutability
+// member; equality and ordering use the immutable family/hash/witness identity.
+#[allow(clippy::mutable_key_type)]
+fn candidate_body_plan_work_from_nested(
+    attempts: &[rue_query::NestedQueryAttempt],
+) -> (crate::CandidateBodyPlanWork, crate::CandidateBodyPlanWork) {
+    fn priority(execution: RequestExecution) -> u8 {
+        match execution {
+            RequestExecution::Computed => 4,
+            RequestExecution::Joined => 3,
+            RequestExecution::Reused => 2,
+            RequestExecution::Aborted => 1,
+        }
+    }
+    fn reduce_family<'a>(
+        attempts: &'a [rue_query::NestedQueryAttempt],
+        family: &str,
+    ) -> Vec<&'a rue_query::NestedQueryAttempt> {
+        let mut selected = BTreeMap::new();
+        for attempt in attempts.iter().filter(|attempt| {
+            attempt.node().family() == family
+                && attempt.terminal_kind() == Some(QueryTerminalKind::Success)
+        }) {
+            selected
+                .entry(attempt.node().clone())
+                .and_modify(|current: &mut &rue_query::NestedQueryAttempt| {
+                    if priority(attempt.execution()) > priority(current.execution()) {
+                        *current = attempt;
+                    }
+                })
+                .or_insert(attempt);
+        }
+        selected.into_values().collect()
+    }
+    fn count(
+        attempts: Vec<&rue_query::NestedQueryAttempt>,
+        prefix: &str,
+    ) -> crate::CandidateBodyPlanWork {
+        let mut result = crate::CandidateBodyPlanWork::default();
+        for attempt in attempts {
+            match attempt.execution() {
+                RequestExecution::Computed => {
+                    for (identity, amount) in attempt.work() {
+                        if identity.as_ref() == format!("{prefix}.plans") {
+                            result.computed = result
+                                .computed
+                                .saturating_add(usize::try_from(*amount).unwrap_or(usize::MAX));
+                        } else if identity.as_ref() == format!("{prefix}.instructions") {
+                            result.instructions_produced = result
+                                .instructions_produced
+                                .saturating_add(usize::try_from(*amount).unwrap_or(usize::MAX));
+                        } else if identity.as_ref() == format!("{prefix}.payload_words") {
+                            result.payload_words_produced = result
+                                .payload_words_produced
+                                .saturating_add(usize::try_from(*amount).unwrap_or(usize::MAX));
+                        }
+                    }
+                }
+                RequestExecution::Reused | RequestExecution::Joined => result.reused += 1,
+                RequestExecution::Aborted => {}
+            }
+        }
+        result
+    }
+    (
+        count(
+            reduce_family(attempts, "compiler.declaration-body-plan-artifacts"),
+            "candidate_body_plan.construction",
+        ),
+        count(
+            reduce_family(attempts, "compiler.body-transaction"),
+            "candidate_body_plan.materialization",
+        ),
+    )
+}
+
+#[allow(clippy::mutable_key_type)]
+fn successful_nested_nodes(
+    attempts: &[rue_query::NestedQueryAttempt],
+    family: &str,
+) -> BTreeSet<rue_query::NodeIdentity> {
+    attempts
+        .iter()
+        .filter(|attempt| {
+            attempt.node().family() == family
+                && attempt.terminal_kind() == Some(QueryTerminalKind::Success)
+        })
+        .map(|attempt| attempt.node().clone())
+        .collect()
+}
+
+/// Recover exact reuse counts from a retained closure publication. Publication
+/// deliberately retains only the compact closure result on a warm request, so
+/// its nested-attempt ledger is empty. Candidate construction is deduplicated
+/// by full identity because generic specializations share one candidate plan;
+/// materialization remains per body instance.
+#[allow(clippy::mutable_key_type)]
+fn candidate_body_plan_work_from_retained_closure(
+    closure_terminal: &Arc<rue_query::QueryTerminal<crate::body_query::BodyClosureOutput>>,
+    represented_construction: &BTreeSet<rue_query::NodeIdentity>,
+    represented_materialization: &BTreeSet<rue_query::NodeIdentity>,
+) -> (crate::CandidateBodyPlanWork, crate::CandidateBodyPlanWork) {
+    let mut construction = crate::CandidateBodyPlanWork::default();
+    let mut materialization = crate::CandidateBodyPlanWork::default();
+    let rue_query::QueryOutcome::Success(closure) = closure_terminal.outcome() else {
+        return (construction, materialization);
+    };
+    let mut candidates = BTreeSet::<rue_query::NodeIdentity>::new();
+    let mut bodies = BTreeSet::<rue_query::NodeIdentity>::new();
+    for body in closure.bodies.iter() {
+        let rue_query::QueryOutcome::Success(bundle) = body.bundle.outcome() else {
+            continue;
+        };
+        if matches!(
+            bundle.transaction,
+            crate::body_query::BodyTransaction::Success { .. }
+        ) {
+            if let Some(definition) = body_source_definition_key(&body.key.instance) {
+                if let Some(candidate) = declaration_candidate_for_stable_key(definition) {
+                    candidates.insert(rue_query::NodeIdentity::from_typed_key(
+                        Arc::from("compiler.declaration-body-plan-artifacts"),
+                        &DeclarationBodyPlanQueryKey(candidate),
+                    ));
+                }
+            }
+            // BodyAnalysisBundle forwards the successful body-transaction
+            // terminal's registered work. Presence of this plan item is the
+            // retained publication authority; failed and zero-work bundles
+            // cannot manufacture a reuse count from their semantic value.
+            if body.bundle.work().iter().any(|(identity, amount)| {
+                identity.as_ref() == "candidate_body_plan.materialization.plans" && *amount > 0
+            }) {
+                bodies.insert(rue_query::NodeIdentity::from_typed_key(
+                    Arc::from("compiler.body-transaction"),
+                    &body.key,
+                ));
+            }
+        }
+    }
+    construction.reused = candidates.difference(represented_construction).count();
+    materialization.reused = bodies.difference(represented_materialization).count();
+    (construction, materialization)
 }
 
 pub(crate) use crate::body_query::WellKnownOptionResolutionFailure;
@@ -11521,6 +11681,7 @@ impl RevisionedQueryDatabase {
                     let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
                         unreachable!("ModuleIndex publishes typed values")
                     };
+                    let mut structural_work = Vec::new();
                     let value = match (&parsed.result, &indexed.0) {
                         (Err(errors), _) | (_, Err(errors)) => DeclarationBodyPlanArtifactsValue::Failure(
                             DeclarationBodyPlanFailure::CandidateRirRejected(errors.clone()),
@@ -11537,6 +11698,19 @@ impl RevisionedQueryDatabase {
                                 || context.check_canceled(),
                             ) {
                             Ok(artifacts) => {
+                                let instructions = artifacts.plan.instruction_count();
+                                structural_work.push(WorkItem::new(
+                                    "candidate_body_plan.construction.plans",
+                                    1,
+                                ));
+                                structural_work.push(WorkItem::new(
+                                    "candidate_body_plan.construction.instructions",
+                                    instructions as u64,
+                                ));
+                                structural_work.push(WorkItem::new(
+                                    "candidate_body_plan.construction.payload_words",
+                                    artifacts.plan.payload_word_count() as u64,
+                                ));
                                 DeclarationBodyPlanArtifactsValue::Available(Arc::new(artifacts))
                             }
                             Err(crate::canonical_lower::DeclarationBodyPlanBuildFailure::Query(
@@ -11588,7 +11762,12 @@ impl RevisionedQueryDatabase {
                     } else {
                         QueryTerminalKind::Failure
                     };
-                    Ok(QueryOutput::success(value).with_terminal_kind(kind))
+                    let output = QueryOutput::success(value).with_terminal_kind(kind);
+                    if kind == QueryTerminalKind::Success {
+                        Ok(output.with_work(structural_work))
+                    } else {
+                        Ok(output)
+                    }
                 },
             )
             .expect("the DeclarationBodyPlanArtifacts family has one canonical name");
@@ -14990,9 +15169,10 @@ impl RevisionedQueryDatabase {
                 BODY_QUERY_MEMO_RETENTION,
                 crate::body_query::analysis_bundle_equal,
                 move |context, _, key: &crate::body_query::BodyQueryKey| {
-                    let transaction =
+                    let transaction_terminal =
                         context.query_registered(&transactions_for_analysis_bundle, key.clone())?;
-                    let rue_query::QueryOutcome::Success(transaction) = transaction.outcome()
+                    let rue_query::QueryOutcome::Success(transaction) =
+                        transaction_terminal.outcome()
                     else {
                         unreachable!("BodyTransaction publishes typed values")
                     };
@@ -15017,11 +15197,22 @@ impl RevisionedQueryDatabase {
                     } else {
                         QueryTerminalKind::Failure
                     };
-                    Ok(QueryOutput::success(crate::body_query::BodyAnalysisBundle {
+                    let output = QueryOutput::success(crate::body_query::BodyAnalysisBundle {
                         transaction: transaction.clone(),
                         produced_anonymous,
                     })
-                    .with_terminal_kind(terminal_kind))
+                    .with_terminal_kind(terminal_kind);
+                    if terminal_kind == QueryTerminalKind::Success {
+                        Ok(output.with_work(
+                            transaction_terminal
+                                .work()
+                                .iter()
+                                .map(|(identity, amount)| WorkItem::new(identity.clone(), *amount))
+                                .collect(),
+                        ))
+                    } else {
+                        Ok(output)
+                    }
                 },
             )
             .expect("the BodyAnalysisBundle family has one canonical name");
@@ -16092,6 +16283,7 @@ impl RevisionedQueryDatabase {
                         let _nested_attempts = context.retain_nested_attempts_for(&[
                             "compiler.body-transaction",
                             "compiler.body-reachability",
+                            "compiler.declaration-body-plan-artifacts",
                         ]);
                         let closure_fallback = terminal_root_for_closure_publication
                             .lock()
@@ -17792,6 +17984,11 @@ impl BodyTransactionEvaluator {
         > = std::cell::RefCell::new(None);
         let observed = std::rc::Rc::new(std::cell::RefCell::new(ObservedLookupRoot::new()));
         let positive_references = std::rc::Rc::new(std::cell::RefCell::new(BTreeSet::new()));
+        // Materialization work is accumulated only until the body transaction
+        // reaches a successful terminal. Failed and canceled body attempts
+        // therefore never publish structural lowering work.
+        let materialization_work =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::<WorkItem>::new()));
         let result = (|| {
             // The transaction's prerequisite fan-out (toolchain demand/artifact
             // authority, transitive anonymous nominals, well-known `Option`
@@ -18126,6 +18323,17 @@ impl BodyTransactionEvaluator {
                         if let Some(attribution) = attribution {
                             publish_body_plan_materialization_attribution(attribution);
                         }
+                        materialization_work.borrow_mut().extend([
+                            WorkItem::new("candidate_body_plan.materialization.plans", 1),
+                            WorkItem::new(
+                                "candidate_body_plan.materialization.instructions",
+                                bundle.instruction_count() as u64,
+                            ),
+                            WorkItem::new(
+                                "candidate_body_plan.materialization.payload_words",
+                                bundle.payload_word_count() as u64,
+                            ),
+                        ]);
                         bundle
                     }
                     Ok(_) => {
@@ -18417,6 +18625,17 @@ impl BodyTransactionEvaluator {
                         if let Some(attribution) = attribution {
                             publish_body_plan_materialization_attribution(attribution);
                         }
+                        materialization_work.borrow_mut().extend([
+                            WorkItem::new("candidate_body_plan.materialization.plans", 1),
+                            WorkItem::new(
+                                "candidate_body_plan.materialization.instructions",
+                                bundle.instruction_count() as u64,
+                            ),
+                            WorkItem::new(
+                                "candidate_body_plan.materialization.payload_words",
+                                bundle.payload_word_count() as u64,
+                            ),
+                        ]);
                         bundle
                     }
                     Ok(_) => {
@@ -18799,6 +19018,17 @@ impl BodyTransactionEvaluator {
                         if let Some(attribution) = attribution {
                             publish_body_plan_materialization_attribution(attribution);
                         }
+                        materialization_work.borrow_mut().extend([
+                            WorkItem::new("candidate_body_plan.materialization.plans", 1),
+                            WorkItem::new(
+                                "candidate_body_plan.materialization.instructions",
+                                bundle.instruction_count() as u64,
+                            ),
+                            WorkItem::new(
+                                "candidate_body_plan.materialization.payload_words",
+                                bundle.payload_word_count() as u64,
+                            ),
+                        ]);
                         (bundle, declaration)
                     }
                     Ok(_) => {
@@ -19043,7 +19273,12 @@ impl BodyTransactionEvaluator {
             } else {
                 QueryTerminalKind::Failure
             };
-            Ok(QueryOutput::success(transaction).with_terminal_kind(kind))
+            let output = QueryOutput::success(transaction).with_terminal_kind(kind);
+            if kind == QueryTerminalKind::Success {
+                Ok(output.with_work(materialization_work.borrow_mut().drain(..).collect()))
+            } else {
+                Ok(output)
+            }
         })();
         match result {
             Ok(output) => Ok(output),
@@ -19141,6 +19376,7 @@ impl RevisionedQueryDatabase {
         }
     }
 
+    #[allow(clippy::mutable_key_type)]
     pub(crate) fn body_closure(
         &self,
         revision: Revision,
@@ -19163,7 +19399,10 @@ impl RevisionedQueryDatabase {
         let mut retained_before = BTreeSet::new();
         self.body_transactions.any_retained_key(|candidate| {
             if candidate.configuration == key.configuration {
-                retained_before.insert(rue_query::stable_key_hash(candidate));
+                retained_before.insert(rue_query::NodeIdentity::from_typed_key(
+                    "compiler.body-transaction",
+                    candidate,
+                ));
             }
             false
         });
@@ -19184,7 +19423,7 @@ impl RevisionedQueryDatabase {
             .filter(|attempt| attempt.node().family() == "compiler.body-transaction")
             .fold(BTreeMap::new(), |mut executions, attempt| {
                 executions
-                    .entry(attempt.node().stable_hash())
+                    .entry(attempt.node().clone())
                     .and_modify(|execution| {
                         // The publication request can observe the same body
                         // transaction first through closure validation and
@@ -19215,16 +19454,45 @@ impl RevisionedQueryDatabase {
             )
             .into_iter()
             .collect();
+        let (mut candidate_body_plan_work, mut candidate_body_materialization_work) =
+            candidate_body_plan_work_from_nested(publication_attempt.nested_attempts());
+        let represented_construction = successful_nested_nodes(
+            publication_attempt.nested_attempts(),
+            "compiler.declaration-body-plan-artifacts",
+        );
+        let represented_materialization = successful_nested_nodes(
+            publication_attempt.nested_attempts(),
+            "compiler.body-transaction",
+        );
         self.body_reachability_meter.accrue(&work);
         let publication = publication_attempt.into_result()?;
         let rue_query::QueryOutcome::Success(closure) = publication.outcome() else {
             unreachable!("BodyClosurePublication publishes typed values")
         };
+        // Retained publications have an intentionally empty nested-attempt
+        // ledger. The closure is also retained on mixed edits, where nested
+        // attempts cover only changed children. Recover missing successful
+        // child counts from the compact publication and subtract attempts
+        // already represented above. Output quantities remain zero on reuse.
+        let (retained_construction, retained_materialization) =
+            candidate_body_plan_work_from_retained_closure(
+                closure,
+                &represented_construction,
+                &represented_materialization,
+            );
+        candidate_body_plan_work.reused = candidate_body_plan_work
+            .reused
+            .saturating_add(retained_construction.reused);
+        candidate_body_materialization_work.reused = candidate_body_materialization_work
+            .reused
+            .saturating_add(retained_materialization.reused);
         Ok(BodyClosureRequest {
             terminal: closure.clone(),
             body_executions,
             retained_before,
             work,
+            candidate_body_plan_work,
+            candidate_body_materialization_work,
         })
     }
 
@@ -19335,6 +19603,32 @@ impl RevisionedQueryDatabase {
     #[cfg(test)]
     pub(crate) fn any_body_transaction_terminal(&self) -> bool {
         self.body_transactions.any_retained_key(|_| true)
+    }
+
+    /// Whether a retained body transaction has a successful value. Cached
+    /// deterministic failures are intentionally excluded: retention of a
+    /// failure is not evidence of published candidate work or reusable work.
+    #[cfg(test)]
+    pub(crate) fn any_successful_body_transaction_for_test(&self) -> bool {
+        let Some(revision) = self.current_semantic_revision() else {
+            return false;
+        };
+        let mut keys = Vec::new();
+        self.body_transactions.any_retained_key(|key| {
+            keys.push(key.clone());
+            false
+        });
+        keys.into_iter().any(|key| {
+            self.body_transaction(revision, key, CancellationToken::new())
+                .is_ok_and(|terminal| {
+                    matches!(
+                        terminal.outcome(),
+                        rue_query::QueryOutcome::Success(
+                            crate::body_query::BodyTransaction::Success { .. }
+                        )
+                    )
+                })
+        })
     }
 
     /// Whether the exact body key already has a retained memo node.

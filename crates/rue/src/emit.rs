@@ -3,7 +3,9 @@ use rue_compiler::unstable::MetricsSnapshot;
 #[cfg(test)]
 use rue_compiler::unstable::update_for_presentation;
 #[cfg(test)]
-use rue_compiler::unstable::{LowerMetrics, ParseMetrics, SemanticMetrics, rooted_cfg};
+use rue_compiler::unstable::{
+    CanonicalRirPresentationMetrics, ParseMetrics, SemanticMetrics, rooted_cfg,
+};
 use rue_compiler::unstable::{PresentationRequest, PresentationStage};
 #[cfg(test)]
 use rue_compiler::{CompileErrors, CompilerSession, RirView, SourceSnapshot};
@@ -59,7 +61,7 @@ pub(crate) struct EmitFrontend {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct EmitWork {
     pub(crate) parsed: ParseMetrics,
-    pub(crate) lowered: LowerMetrics,
+    pub(crate) canonical_rir_presentation: CanonicalRirPresentationMetrics,
     pub(crate) semantic: SemanticMetrics,
 }
 
@@ -131,7 +133,7 @@ pub(crate) fn build_emit_frontend_in_session(
         _rir: rir,
         work: EmitWork {
             parsed: session_work.parse_metrics(),
-            lowered: session_work.lower_metrics(),
+            canonical_rir_presentation: session_work.canonical_rir_presentation(),
             semantic: rooted.metrics(),
         },
         #[cfg(test)]

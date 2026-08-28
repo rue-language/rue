@@ -1736,7 +1736,7 @@ window = 3
             },
             boundary: None,
             // Direct-constructed stored records carry a placeholder
-            // commitment; validation checks the shape, and only encode_v2
+            // commitment; validation checks the shape, and only encode_stored_v3
             // computes the real address.
             full_evidence: Some("f".repeat(64)),
             workloads: vec![WorkloadObservation {

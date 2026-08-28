@@ -3561,3 +3561,70 @@ fn durable_constructor_diagnostics_use_the_air_interleaver() {
     assert!(!presenter.contains("values.next()"));
     assert!(!presenter.contains("types.next()"));
 }
+
+#[test]
+fn candidate_plan_metrics_have_one_query_terminal_authority() {
+    let database = include_str!("revisioned_query_database.rs");
+    let queries = include_str!("queries.rs");
+    let session = include_str!("session.rs");
+    let pipeline = include_str!("pipeline_tests.rs");
+    // These consumers live outside this Buck crate, so read them from the
+    // repository root at test time instead of smuggling copies into the
+    // compiler target. Buck runs tests from the project root; the fallback
+    // keeps direct `cargo test`-style invocations useful as well.
+    let repository = std::env::current_dir().expect("source guard has a working directory");
+    let read_source = |path: &str| {
+        std::fs::read_to_string(repository.join(path))
+            .unwrap_or_else(|error| panic!("source guard cannot read {path}: {error}"))
+    };
+    let driver = read_source("crates/rue/src/main.rs");
+    let timing = read_source("crates/rue/src/timing.rs");
+    let perf_scaling = read_source("crates/rue-perf-schema/src/scaling.rs");
+    let bench_scaling = read_source("crates/rue-bench/src/scaling.rs");
+    let sources = [
+        database,
+        queries,
+        session,
+        pipeline,
+        driver.as_str(),
+        timing.as_str(),
+        perf_scaling.as_str(),
+        bench_scaling.as_str(),
+    ];
+
+    // These names were the retired placeholder or a second accounting path.
+    // Keep the guard source-based so a future compatibility edit cannot
+    // silently reintroduce a permanent zero or timing peer.
+    for forbidden in [
+        "PipelineWork { lowered",
+        "lowered: Default::default()",
+        "LowerMetrics",
+        "benchmark_semantic_body_structure",
+        "BodyAnalysisBundle { structural_work:",
+    ] {
+        for source in sources {
+            assert!(
+                !source.contains(forbidden),
+                "retired authority returned: {forbidden}"
+            );
+        }
+    }
+
+    // The historical decoder remains private, but no current renderer or
+    // benchmark consumer may publish its retired lowering/index subgroup.
+    assert!(!bench_scaling.contains("body_lowerings"));
+    assert!(!bench_scaling.contains("rir_instructions"));
+    assert!(!bench_scaling.contains("benchmark_semantic_body_structure"));
+    assert!(!driver.contains("benchmark_semantic_body_structure"));
+    let public_work = perf_scaling
+        .split_once("pub struct CompilerWork")
+        .and_then(|(_, tail)| tail.split_once("LegacySemanticBodyStructureWork"))
+        .map(|(body, _)| body)
+        .expect("public CompilerWork remains separate from the v2 decoder");
+    assert!(!public_work.contains("body_lowerings"));
+    assert!(!public_work.contains("index_builds"));
+
+    assert!(database.contains("candidate_body_plan.construction"));
+    assert!(database.contains("candidate_body_plan.materialization"));
+    assert!(session.contains("accrue_candidate_body_plan_work"));
+}

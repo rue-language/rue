@@ -46,6 +46,103 @@ fn node_identity_order_is_family_then_stable_hash() {
     assert_ne!(alpha, beta);
 }
 
+#[test]
+fn nested_attempt_terminal_kind_distinguishes_success_failure_and_abort() {
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    struct TerminalKey(&'static str);
+
+    impl QueryKey for TerminalKey {
+        fn stable_identity(&self) -> String {
+            self.0.to_owned()
+        }
+
+        fn stable_hash(&self, hasher: &mut StableHasher) {
+            self.0.hash(hasher);
+        }
+    }
+
+    let runtime = QueryRuntime::new(1);
+    let revision = Revision::new(1, 1);
+    runtime.publish_revision(revision, []).unwrap();
+    let success = runtime
+        .family_with_evaluator::<TerminalKey, u64, _>("terminal-kind-success", 8, |_, _, _| {
+            Ok(QueryOutput::success(1).with_terminal_kind(QueryTerminalKind::Success))
+        })
+        .unwrap();
+    let success_for_root = success.clone();
+    let root = runtime
+        .family_with_evaluator::<TerminalKey, u64, _>(
+            "terminal-kind-root",
+            8,
+            move |context, _, key| {
+                context.query_registered(&success_for_root, key.clone())?;
+                Ok(QueryOutput::success(1))
+            },
+        )
+        .unwrap();
+    let computed = runtime.request_registered(
+        &root,
+        revision,
+        TerminalKey("value"),
+        CancellationToken::new(),
+    );
+    assert_eq!(computed.execution(), RequestExecution::Computed);
+    assert_eq!(
+        computed.nested_attempts()[0].terminal_kind(),
+        Some(QueryTerminalKind::Success)
+    );
+    let reused = runtime.request_registered(
+        &root,
+        revision,
+        TerminalKey("value"),
+        CancellationToken::new(),
+    );
+    assert_eq!(reused.execution(), RequestExecution::Reused);
+
+    let failure = runtime
+        .family_with_evaluator::<TerminalKey, u64, _>("terminal-kind-failure", 8, |_, _, _| {
+            Ok(QueryOutput::success(1).with_terminal_kind(QueryTerminalKind::Failure))
+        })
+        .unwrap();
+    let failure_for_root = failure.clone();
+    let failure_root = runtime
+        .family_with_evaluator::<TerminalKey, u64, _>(
+            "terminal-kind-failure-root",
+            8,
+            move |context, _, key| {
+                context.query_registered(&failure_for_root, key.clone())?;
+                Ok(QueryOutput::success(1))
+            },
+        )
+        .unwrap();
+    let failed = runtime.request_registered(
+        &failure_root,
+        revision,
+        TerminalKey("value"),
+        CancellationToken::new(),
+    );
+    assert_eq!(failed.execution(), RequestExecution::Computed);
+    assert_eq!(
+        failed.nested_attempts()[0].terminal_kind(),
+        Some(QueryTerminalKind::Failure)
+    );
+
+    let canceled = runtime
+        .family_with_evaluator::<TerminalKey, u64, _>("terminal-kind-abort", 8, |_, _, _| {
+            Err(QueryAbort::Canceled)
+        })
+        .unwrap();
+    let aborted = runtime.request_registered(
+        &canceled,
+        revision,
+        TerminalKey("value"),
+        CancellationToken::new(),
+    );
+    assert_eq!(aborted.execution(), RequestExecution::Aborted);
+    assert!(aborted.terminal().is_none());
+    assert_eq!(aborted.abort(), Some(&QueryAbort::Canceled));
+}
+
 /// ADR-0074 falsifier: the digest is derived from the key's own content,
 /// with compile-time keys, so it is identical in every process and does
 /// not depend on construction order, sharing, or a per-run seed.
