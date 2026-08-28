@@ -715,6 +715,26 @@ fn validate_legacy_v2_work(
         );
     };
     let successful_lowerings = critical.semantic_body_input_attributed_total.count;
+    let inline_scan_inconsistent = if structure.precompute_inline_scan_bodies == 0 {
+        // The historical v2 wire predates `precompute_inline_scan_bodies`,
+        // which therefore decodes as zero. Its preserved counters still bound
+        // the omitted root-population term: every child edge is a pop and the
+        // remaining pops can be attributed to at most one root per precomputed
+        // body.
+        structure.precompute_inline_scan_child_edges > structure.precompute_inline_scan_pops
+            || structure.precompute_inline_scan_pops - structure.precompute_inline_scan_child_edges
+                > structure.precompute_bodies
+    } else {
+        // A nonzero value was present on the historical wire, so retain the
+        // old exact relationship rather than applying the omitted-field
+        // existential bound. Checked addition makes malformed overflowing
+        // counters fail closed.
+        structure.precompute_inline_scan_bodies > structure.precompute_bodies
+            || structure
+                .precompute_inline_scan_child_edges
+                .checked_add(structure.precompute_inline_scan_bodies)
+                .is_none_or(|expected| expected != structure.precompute_inline_scan_pops)
+    };
     if structure.body_lowerings != successful_lowerings
         || structure.index_builds != structure.body_lowerings
         || structure.rir_instructions != structure.index_rir_instructions_visited
@@ -725,11 +745,7 @@ fn validate_legacy_v2_work(
             .saturating_add(structure.precompute_alias_filter_skips)
             > structure.precompute_alias_allocations_examined
         || structure.precompute_alias_type_successes > structure.precompute_alias_eval_attempts
-        || structure.precompute_inline_scan_pops
-            != structure
-                .precompute_inline_scan_child_edges
-                .saturating_add(structure.precompute_inline_scan_bodies)
-        || structure.precompute_inline_scan_bodies > structure.precompute_bodies
+        || inline_scan_inconsistent
         || structure.precompute_inline_final_candidates > structure.precompute_inline_raw_candidates
         || structure.precompute_inline_eval_attempts != structure.precompute_inline_final_candidates
         || structure.precompute_inline_type_successes > structure.precompute_inline_eval_attempts
@@ -2304,6 +2320,103 @@ window = 10
             ValidationError::BoundaryEvidenceMismatch { detail, .. }
                 if detail.contains("must not carry per-process digests")
         )));
+    }
+
+    #[test]
+    fn historical_v2_omitted_inline_scan_bodies_uses_preserved_bounds() {
+        let mut historical = boundary_run();
+        historical.schema_version = crate::LEGACY_FULL_EVIDENCE_SCHEMA_VERSION;
+        for observation in &mut historical.workloads {
+            for sample in &mut observation.samples {
+                for evidence in &mut sample.boundary_evidence {
+                    let mut work = evidence.compiler_work;
+                    work.legacy_v2_semantic_body_structure =
+                        Some(crate::scaling::LegacySemanticBodyStructureWork {
+                            body_lowerings: 1,
+                            index_builds: 1,
+                            precompute_bodies: 1,
+                            precompute_inline_scan_pops: 4,
+                            precompute_inline_scan_child_edges: 3,
+                            ..Default::default()
+                        });
+                    evidence.compiler_work = work;
+                }
+            }
+        }
+        // Historical records omitted precompute_inline_scan_bodies, so it
+        // decodes as zero. The preserved pop and child-edge counters still
+        // prove that the omitted root-population term is bounded by the
+        // number of precomputed bodies.
+        assert!(validate_run(&boundary_manifest(), &historical).is_appendable());
+
+        let mut contradictory_nonzero = historical.clone();
+        contradictory_nonzero.workloads[0].samples[0].boundary_evidence[0]
+            .compiler_work
+            .legacy_v2_semantic_body_structure
+            .as_mut()
+            .unwrap()
+            .precompute_inline_scan_bodies = 1;
+        contradictory_nonzero.workloads[0].samples[0].boundary_evidence[0]
+            .compiler_work
+            .legacy_v2_semantic_body_structure
+            .as_mut()
+            .unwrap()
+            .precompute_inline_scan_pops = 5;
+        let outcome = validate_run(&boundary_manifest(), &contradictory_nonzero);
+        assert!(outcome.errors.iter().any(|error| matches!(
+            error,
+            ValidationError::BoundaryEvidenceMismatch { detail, .. }
+                if detail.contains("schema v2 semantic_body_structure attribution")
+        )));
+
+        let mut too_many_roots = historical.clone();
+        too_many_roots.workloads[0].samples[0].boundary_evidence[0]
+            .compiler_work
+            .legacy_v2_semantic_body_structure
+            .as_mut()
+            .unwrap()
+            .precompute_inline_scan_pops = 5;
+        let outcome = validate_run(&boundary_manifest(), &too_many_roots);
+        assert!(outcome.errors.iter().any(|error| matches!(
+            error,
+            ValidationError::BoundaryEvidenceMismatch { detail, .. }
+                if detail.contains("schema v2 semantic_body_structure attribution")
+        )));
+
+        let mut too_many_children = historical;
+        too_many_children.workloads[0].samples[0].boundary_evidence[0]
+            .compiler_work
+            .legacy_v2_semantic_body_structure
+            .as_mut()
+            .unwrap()
+            .precompute_inline_scan_child_edges = 5;
+        let outcome = validate_run(&boundary_manifest(), &too_many_children);
+        assert!(outcome.errors.iter().any(|error| matches!(
+            error,
+            ValidationError::BoundaryEvidenceMismatch { detail, .. }
+                if detail.contains("schema v2 semantic_body_structure attribution")
+        )));
+    }
+
+    #[test]
+    fn historical_v2_inline_scan_counter_overflow_is_rejected() {
+        let evidence = crate::boundary::tests::evidence();
+        let critical = evidence.critical_path;
+        let work = crate::CompilerWork {
+            legacy_v2_semantic_body_structure: Some(
+                crate::scaling::LegacySemanticBodyStructureWork {
+                    body_lowerings: critical.semantic_body_input_attributed_total.count,
+                    index_builds: critical.semantic_body_input_attributed_total.count,
+                    precompute_bodies: critical.semantic_inference_precompute.count,
+                    precompute_inline_scan_pops: u64::MAX,
+                    precompute_inline_scan_child_edges: u64::MAX,
+                    precompute_inline_scan_bodies: 1,
+                    ..Default::default()
+                },
+            ),
+            ..Default::default()
+        };
+        assert!(validate_legacy_v2_work(&work, &critical).is_err());
     }
 
     #[test]
