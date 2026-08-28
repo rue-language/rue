@@ -60,6 +60,9 @@ fn expect_unsupported(src: &str) -> Unsupported {
         Err(RunSourceError::Compile(errors)) => {
             panic!("expected oracle-unsupported source, but it failed to compile: {errors:#?}")
         }
+        Err(RunSourceError::CfgTransformationDisagreement { .. }) => {
+            panic!("expected one typed unsupported result, but CFG boundaries disagreed")
+        }
         Ok(outcome) => panic!("expected oracle-unsupported source, got {outcome:?}"),
     }
 }
@@ -71,6 +74,80 @@ fn exit(src: &str) -> i32 {
 #[test]
 fn returns_literal() {
     assert_eq!(exit("fn main() -> i32 { 42 }"), 42);
+}
+
+#[test]
+fn cfg_boundary_differential_is_deterministic() {
+    let source = "fn square(x: i32) -> i32 { x * x } fn main() -> i32 { square(3) }";
+    let first = run_source_cfg_differential(source).expect("CFG boundaries agree");
+    let second = run_source_cfg_differential(source).expect("repeated CFG boundaries agree");
+    assert_eq!(first, second);
+}
+
+#[test]
+fn cfg_boundary_differential_catches_a_planted_transformation_fault() {
+    let source = r#"struct Inner {
+        x: i32,
+        fn value(borrow self) -> borrow i32 { yield self.x; }
+    }
+    fn seven() -> i32 { 7 }
+    fn main() -> i32 {
+        let inner = Inner { x: 7 };
+        if inner.value() == seven() { 0 } else { 1 }
+    }"#;
+    let snapshot = SourceSnapshot::single("<oracle-fault>", source).unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&snapshot).into_result().unwrap();
+    assert!(rue_compiler::unstable::inject_stale_query_for_oracle(
+        &mut session,
+        rue_compiler::unstable::DifferentialOracleFault::CfgTransformation,
+    ));
+    let error = run_session_cfg_differential_inner(&mut session, &PreviewFeatures::new())
+        .expect_err("the planted post-CFG fault must disagree");
+    assert!(
+        matches!(error, RunSourceError::CfgTransformationDisagreement { .. }),
+        "unexpected fault result: {error:?}"
+    );
+}
+
+#[test]
+fn cfg_boundary_differential_preserves_accessor_materialization() {
+    let source = r#"struct Inner {
+        x: i64,
+        fn value(borrow self) -> borrow i64 { yield self.x; }
+    }
+    fn main() -> i32 {
+        let inner = Inner { x: 7 };
+        if inner.value() == 7 { 0 } else { 1 }
+    }"#;
+    assert_eq!(
+        run_source_cfg_differential(source)
+            .expect("pre/post CFGs preserve accessor semantics")
+            .exit_code,
+        0
+    );
+}
+
+#[test]
+fn raw_accessor_whole_receiver_reassignment_matches_spliced_cfg() {
+    let source = r#"struct P {
+        x: i32,
+        fn value(inout self) -> inout i32 {
+            self = P { x: 9 };
+            yield self.x;
+        }
+    }
+    fn main() -> i32 {
+        let mut p = P { x: 1 };
+        p.value() = 11;
+        if p.x == 11 { 0 } else { 1 }
+    }"#;
+    assert_eq!(
+        run_source_cfg_differential(source)
+            .expect("raw accessor parameter redirection matches canonical splicing")
+            .exit_code,
+        0
+    );
 }
 
 #[test]
@@ -390,6 +467,9 @@ fn compile_errors_are_distinct_from_unsupported_programs() {
         }
         RunSourceError::Unsupported(unsupported) => {
             panic!("compile failure was misclassified as unsupported: {unsupported}");
+        }
+        RunSourceError::CfgTransformationDisagreement { .. } => {
+            panic!("compile failure was misclassified as a CFG disagreement");
         }
     }
 }

@@ -642,6 +642,7 @@ pub(crate) struct RevisionedQueryDatabase {
     drop_glues: QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::DropGlueValue>,
     #[allow(dead_code)]
     cfgs: QueryFamily<crate::cfg_query::CfgQueryKey, crate::cfg_query::CfgValue>,
+    raw_cfg_batches: QueryFamily<RawCfgBatchKey, RawCfgBatchOutput>,
     #[allow(dead_code)]
     optimized_cfgs: QueryFamily<crate::cfg_query::OptimizedCfgQueryKey, crate::cfg_query::CfgValue>,
     optimized_cfg_batches: QueryFamily<OptimizedCfgBatchKey, OptimizedCfgBatchOutput>,
@@ -1636,6 +1637,42 @@ pub(crate) struct OptimizedCfgBatchKey {
     /// batch constant-time for every holder.
     digest: rue_query::StableKeyHash,
     memo_hash: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct RawCfgBatchKey {
+    pub(crate) keys: Arc<[crate::cfg_query::CfgQueryKey]>,
+}
+
+impl QueryKey for RawCfgBatchKey {
+    fn stable_identity(&self) -> String {
+        let mut identity = format!("raw-cfg-batch;units={}", self.keys.len());
+        for key in self.keys.iter() {
+            identity.push('\u{1e}');
+            identity.push_str(&key.shared_stable_identity());
+        }
+        identity
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        hasher.write_usize(self.keys.len());
+        for key in self.keys.iter() {
+            key.stable_hash(hasher);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RawCfgBatchOutput {
+    pub(crate) values: Arc<[crate::cfg_query::CfgValue]>,
+    /// Exact raw-CFG child cones captured while their request leases are live.
+    _retained_children: Arc<rue_query::RetainedPinSet>,
+}
+
+impl RetainedCharge for RawCfgBatchOutput {
+    fn retained_charge(&self) -> u64 {
+        self.values.retained_charge()
+    }
 }
 
 impl OptimizedCfgBatchKey {
@@ -14123,6 +14160,73 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the Cfg family has one canonical name");
+        let backend_root = Arc::new(Mutex::new(PublishedBackendRoot::default()));
+        let cfg_collection_root = Arc::new(Mutex::new(PublishedCollectionRoot::default()));
+        let codegen_collection_root = Arc::new(Mutex::new(PublishedCollectionRoot::default()));
+        let cfgs_for_raw_batch = cfgs.clone();
+        let backend_root_for_raw_cfg_batch = backend_root.clone();
+        let body_closure_root_for_raw_cfg_batch = body_closure_root.clone();
+        let body_reachability_root_for_raw_cfg_batch = body_reachability_root.clone();
+        let cfg_collection_root_for_raw_cfg_batch = cfg_collection_root.clone();
+        let codegen_collection_root_for_raw_cfg_batch = codegen_collection_root.clone();
+        let raw_cfg_batches = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.raw-cfg-batch",
+                0,
+                |left: &RawCfgBatchOutput, right: &RawCfgBatchOutput| {
+                    left.values.len() == right.values.len()
+                        && left
+                            .values
+                            .iter()
+                            .zip(right.values.iter())
+                            .all(|(left, right)| crate::cfg_query::cfg_value_equal(left, right))
+                },
+                move |context, _, key: &RawCfgBatchKey| {
+                    let fallbacks = backend_retention_fallbacks(
+                        &backend_root_for_raw_cfg_batch,
+                        &body_closure_root_for_raw_cfg_batch,
+                        &body_reachability_root_for_raw_cfg_batch,
+                        &cfg_collection_root_for_raw_cfg_batch,
+                        &codegen_collection_root_for_raw_cfg_batch,
+                    );
+                    let _validated_registered = context
+                        .endorse_registered_validations_from(&fallbacks)
+                        .expect("raw CFG retention roots belong to this query runtime");
+                    let _attempts = context.retain_nested_attempts_for(&["compiler.cfg"]);
+                    let terminals = context.query_registered_adaptive_batch_refs(
+                        &cfgs_for_raw_batch,
+                        key.keys.iter(),
+                    )?;
+                    let values = terminals
+                        .iter()
+                        .map(|terminal| {
+                            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                                unreachable!("Cfg publishes typed values")
+                            };
+                            value.clone()
+                        })
+                        .collect::<Vec<_>>();
+                    let retained_children = Arc::new(
+                        context
+                            .retain_observed_terminal_cones_from(&terminals, &fallbacks)
+                            .expect("raw CFG batch observes every child cone"),
+                    );
+                    let kind = if values
+                        .iter()
+                        .all(|value| matches!(value, crate::cfg_query::CfgValue::Available(_)))
+                    {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    Ok(QueryOutput::success(RawCfgBatchOutput {
+                        values: values.into(),
+                        _retained_children: retained_children,
+                    })
+                    .with_terminal_kind(kind))
+                },
+            )
+            .expect("the RawCfgBatch family has one canonical name");
         let cfgs_for_optimization = cfgs.clone();
         let optimized_cfgs = runtime
             .family_with_equality_and_evaluator(
@@ -14134,9 +14238,6 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the OptimizedCfg family has one canonical name");
-        let backend_root = Arc::new(Mutex::new(PublishedBackendRoot::default()));
-        let cfg_collection_root = Arc::new(Mutex::new(PublishedCollectionRoot::default()));
-        let codegen_collection_root = Arc::new(Mutex::new(PublishedCollectionRoot::default()));
         // Backend terminals extend the already-published semantic/body graph.
         // Keep those independent roots available as retention fallbacks while
         // each backend batch promotes its exact transitive cone.
@@ -15892,6 +15993,7 @@ impl RevisionedQueryDatabase {
             call_abis,
             drop_glues,
             cfgs,
+            raw_cfg_batches,
             optimized_cfgs,
             optimized_cfg_batches,
             codegen_units,
@@ -16372,6 +16474,41 @@ impl RevisionedQueryDatabase {
             .request_registered(&self.cfgs, revision, key, cancellation)
     }
 
+    /// Request one stable-ordered production root of raw CFG terminals. The
+    /// registered evaluator captures the exact child cones before their
+    /// request leases are released.
+    pub(crate) fn raw_cfg_batch(
+        &self,
+        revision: Revision,
+        keys: Arc<[crate::cfg_query::CfgQueryKey]>,
+        cancellation: CancellationToken,
+    ) -> (RawCfgBatchKey, QueryRequestAttempt<RawCfgBatchOutput>) {
+        let key = RawCfgBatchKey { keys };
+        let attempt = self.runtime.request_registered(
+            &self.raw_cfg_batches,
+            revision,
+            key.clone(),
+            cancellation,
+        );
+        // The pre-optimization artifact can be followed immediately by the
+        // production optimized-CFG batch in the same session. Publish the raw
+        // batch's exact retained child cones as that successor's fallback
+        // authority while the request lease is still live, just as the
+        // optimized batch publishes its cones for codegen below. Without this
+        // handoff, green reuse of a raw compiler.cfg terminal can omit a deep
+        // validation leaf (for example compiler.drop-glue) from the successor
+        // task even though the raw artifact still owns the complete cone.
+        if let Some(terminal) = attempt.terminal() {
+            if let rue_query::QueryOutcome::Success(output) = terminal.outcome() {
+                self.cfg_collection_root
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lease = output._retained_children.clone();
+            }
+        }
+        (key, attempt)
+    }
+
     #[cfg(test)]
     pub(crate) fn optimized_cfg(
         &self,
@@ -16672,6 +16809,21 @@ impl RevisionedQueryDatabase {
             additions: root.additions,
             deletions: root.deletions,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn raw_cfg_handoff_matches_terminal_for_test(
+        &self,
+        terminal: &Arc<rue_query::QueryTerminal<RawCfgBatchOutput>>,
+    ) -> bool {
+        let rue_query::QueryOutcome::Success(output) = terminal.outcome() else {
+            return false;
+        };
+        let root = self
+            .cfg_collection_root
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::ptr_eq(&root.lease, &output._retained_children)
     }
 
     #[cfg(test)]

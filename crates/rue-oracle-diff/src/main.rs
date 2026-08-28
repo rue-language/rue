@@ -4,11 +4,12 @@
 //! reference interpreter and checks the oracle agrees with each case's expected
 //! exit code / stdout / stderr. Those expectations are what the *compiled binary*
 //! already produces (the CLI suite enforces that), so a disagreement here means
-//! the oracle and the compiler disagree — which, since the oracle is an
-//! independent implementation of the semantics operating *before* codegen,
-//! localizes a miscompile. This is the automated bug-catcher of RUE-50: it
-//! turns "we check the outputs we thought to write down" into "we check that
-//! the semantics and codegen agree on every program in the corpus."
+//! the oracle and the compiler disagree. The harness first executes the
+//! canonical raw CFG before and after mandatory CFG transformations, then
+//! compares the post-transform O0 oracle with expected/native behavior, separating CFG disagreements
+//! from later lowering/codegen disagreements. This is the automated bug-catcher
+//! of RUE-50: it turns "we check the outputs we thought to write down" into "we
+//! check that the semantics and compiler agree on every program in the corpus."
 //!
 //! Modes:
 //!
@@ -57,8 +58,8 @@ use rue_compiler::{
 };
 use rue_error::{PreviewFeature, PreviewFeatures};
 use rue_oracle::{
-    ModelGapKind, Outcome, RunSourceError, TrapKind, run_session_with_preview_features,
-    run_source_with_preview_features,
+    ModelGapKind, Outcome, RunSourceError, TrapKind, run_session_with_cfg_differential,
+    run_source_with_cfg_differential,
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
@@ -722,7 +723,7 @@ fn run_source_with_real_std(
         if frontier.requests().is_empty() {
             close_import_input_request(&mut session, revision)
                 .map_err(|errors| format!("{errors:#?}"))?;
-            return Ok(run_session_with_preview_features(session, preview_features));
+            return Ok(run_session_with_cfg_differential(session, preview_features));
         }
         let mut observations = Vec::new();
         for request in frontier.requests().iter().cloned() {
@@ -858,7 +859,7 @@ fn check_spec_case_with_known_gap(
             }
         }
     } else {
-        run_source_with_preview_features(&case.source, &preview_features)
+        run_source_with_cfg_differential(&case.source, &preview_features)
     };
     match oracle_result {
         // Only Unsupported values carrying a registrable ModelGapKind count as
@@ -1105,7 +1106,7 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
             }
         }
     } else {
-        run_source_with_preview_features(source, &preview_features)
+        run_source_with_cfg_differential(source, &preview_features)
     };
     match oracle_result {
         Err(error) => {
@@ -1244,6 +1245,12 @@ fn record_oracle_error(context: &str, error: RunSourceError) -> CaseOutcome {
                 ))
             }
         }
+        RunSourceError::CfgTransformationDisagreement {
+            pre_optimization,
+            post_optimization,
+        } => CaseOutcome::OracleFailure(format!(
+            "{context}\n      pre/post CFG execution disagreement: pre={pre_optimization:?}, post={post_optimization:?}"
+        )),
     }
 }
 
@@ -2314,6 +2321,30 @@ files = [{ path = "probe.rue", source = "not Rue" }]
                 rue_oracle::ExternalDependencyKind::RandomU32
             )))
         );
+    }
+
+    #[test]
+    fn cfg_transformation_disagreement_is_a_hard_oracle_failure() {
+        let pre_optimization = Outcome {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            panic: None,
+        };
+        let mut post_optimization = pre_optimization.clone();
+        post_optimization.exit_code = 1;
+
+        let outcome = record_oracle_error(
+            "CFG boundary probe",
+            RunSourceError::CfgTransformationDisagreement {
+                pre_optimization: Ok(pre_optimization),
+                post_optimization: Ok(post_optimization),
+            },
+        );
+        let CaseOutcome::OracleFailure(message) = outcome else {
+            panic!("CFG transformation disagreements must not become model gaps");
+        };
+        assert!(message.contains("pre/post CFG execution disagreement"));
     }
 
     #[test]

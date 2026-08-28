@@ -5,8 +5,9 @@
 //! same endpoint (RUE-776):
 //! - `lexer`: tokenization only.
 //! - `parser`: tokenization + AST construction.
-//! - `sema`: frontend through the canonical rooted optimized-CFG artifact,
-//!   including type checking, name resolution, affine checking, and CFG work.
+//! - `sema`: frontend through canonical raw/post-transform CFG execution,
+//!   including type checking, name resolution, affine checking, CFG work, and
+//!   an observable-semantics check across mandatory CFG transformations.
 //! - `compiler`: the *whole* pipeline — frontend, MIR
 //!   lowering, register allocation, machine emission, and internal linking to a
 //!   finished executable. Strictly deeper than `sema`.
@@ -76,15 +77,97 @@ mod ice_classification_tests {
     }
 }
 
-/// Run the canonical frontend root through optimized CFG construction. This is
-/// the endpoint of the `sema` target, with no machine backend or linker work.
-fn query_semantics(source: &str) -> rue_compiler::MultiErrorResult<()> {
+/// Run the canonical frontend root through optimized CFG construction. The
+/// `sema` target pairs this ICE check with observable raw/post-transform CFG
+/// execution, with no machine backend or linker work.
+fn query_semantics(source: &str) -> rue_compiler::MultiErrorResult<rue_compiler::CompilerSession> {
     let snapshot = rue_compiler::SourceSnapshot::single("<fuzz>", source)
         .map_err(rue_compiler::CompileErrors::from)?;
     let mut session = rue_compiler::CompilerSession::new();
     session.update(&snapshot).into_result()?;
-    rue_compiler::unstable::rooted_cfg(&mut session, &rue_compiler::CompileOptions::default())
-        .map(drop)
+    rue_compiler::unstable::rooted_cfg(&mut session, &rue_compiler::CompileOptions::default())?;
+    Ok(session)
+}
+
+fn assert_cfg_boundary_agreement(session: rue_compiler::CompilerSession) {
+    match rue_oracle::run_session_with_cfg_differential(session, &rue_error::PreviewFeatures::new())
+    {
+        Ok(_) => {}
+        Err(rue_oracle::RunSourceError::Unsupported(unsupported)) => {
+            assert_cfg_unsupported_policy(&unsupported);
+        }
+        Err(rue_oracle::RunSourceError::Compile(errors)) => assert_no_ice_errors(&errors),
+        Err(rue_oracle::RunSourceError::CfgTransformationDisagreement {
+            pre_optimization,
+            post_optimization,
+        }) => {
+            panic!(
+                "pre/post CFG execution disagreement: pre={pre_optimization:?}, post={post_optimization:?}"
+            );
+        }
+    }
+}
+
+fn assert_cfg_unsupported_policy(unsupported: &rue_oracle::Unsupported) {
+    if let Some(message) = cfg_unsupported_failure(
+        unsupported.class(),
+        unsupported.kind(),
+        unsupported.detail(),
+    ) {
+        panic!("{message}");
+    }
+}
+
+fn cfg_unsupported_failure(
+    class: rue_oracle::UnsupportedClass,
+    kind: rue_oracle::UnsupportedKind,
+    detail: &str,
+) -> Option<String> {
+    match class {
+        rue_oracle::UnsupportedClass::SemanticGap
+        | rue_oracle::UnsupportedClass::ExternalDependency
+        | rue_oracle::UnsupportedClass::ImplementationDefined
+        | rue_oracle::UnsupportedClass::ResourceLimit => None,
+        rue_oracle::UnsupportedClass::ContractViolation => Some(format!(
+            "oracle contract violation during CFG-boundary fuzz check: kind={kind:?}, detail={detail}"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod cfg_unsupported_policy_tests {
+    use super::cfg_unsupported_failure;
+    use rue_oracle::{
+        ContractViolationKind, ExternalDependencyKind, ImplementationDefinedKind,
+        ResourceLimitKind, SemanticGapKind, UnsupportedClass, UnsupportedKind,
+    };
+
+    #[test]
+    fn contract_violations_fail_closed_with_kind_and_detail() {
+        let message = cfg_unsupported_failure(
+            UnsupportedClass::ContractViolation,
+            UnsupportedKind::ContractViolation(ContractViolationKind::UnsplicedAccessor),
+            "accessor call remained in transformed CFG",
+        )
+        .expect("contract violations must produce a fail-closed fuzz failure");
+        assert!(message.contains("UnsplicedAccessor"));
+        assert!(message.contains("accessor call remained in transformed CFG"));
+    }
+
+    #[test]
+    fn expected_gaps_and_bounded_resource_limits_remain_skippable() {
+        for kind in [
+            UnsupportedKind::SemanticGap(SemanticGapKind::FlattenedParameterSlot),
+            UnsupportedKind::ExternalDependency(ExternalDependencyKind::RandomU32),
+            UnsupportedKind::ImplementationDefined(ImplementationDefinedKind::StringCapacityValue),
+            UnsupportedKind::ResourceLimit(ResourceLimitKind::InterpreterSteps),
+        ] {
+            assert_eq!(
+                cfg_unsupported_failure(kind.class(), kind, "expected unsupported execution"),
+                None
+            );
+        }
+    }
 }
 
 /// Build the explicit options used by source-level compiler fuzz targets.
@@ -208,8 +291,10 @@ impl FuzzTarget for SemaTarget {
             // - Affine type checking (partial moves, linearity)
             // - Name resolution
             // - Multi-error collection
-            let result = query_semantics(source);
-            assert_no_ice(&result);
+            match query_semantics(source) {
+                Ok(session) => assert_cfg_boundary_agreement(session),
+                Err(errors) => assert_no_ice_errors(&errors),
+            }
         }
     }
 }
@@ -221,7 +306,7 @@ impl FuzzTarget for SemaTarget {
 /// finished executable or return ordinary errors.
 ///
 /// This is deliberately a deeper boundary than [`SemaTarget`], which stops at
-/// the canonical optimized-CFG root. Where sema fuzzes type inference, name
+/// canonical CFG execution. Where sema fuzzes type inference, name
 /// resolution, affine checking, and CFG construction, this target additionally exercises MIR
 /// lowering, register allocation, machine emission, and internal linking — the
 /// backend phases where a distinct family of ICEs lives. Keeping the two on
@@ -1793,8 +1878,9 @@ mod tests {
     fn compiler_target_is_deeper_than_sema() {
         let source = "fn main() -> i32 { 42 }";
 
-        // sema endpoint: the rooted optimized-CFG query, no backend artifact.
-        query_semantics(source).expect("sema query succeeds on a valid program");
+        // sema endpoint: rooted CFG queries and execution, no backend artifact.
+        let session = query_semantics(source).expect("sema query succeeds on a valid program");
+        assert_cfg_boundary_agreement(session);
 
         // compiler endpoint: a fully linked executable image. The concrete
         // object format is host-dependent (ELF or Mach-O), so only its presence

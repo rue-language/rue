@@ -3,7 +3,7 @@
 //! Generate random **valid** Rue programs (see [`crate::gen`]) and run each one
 //! through *both* engines:
 //!
-//! 1. the [`rue_oracle`] reference interpreter (`run_source`), and
+//! 1. the [`rue_oracle`] reference interpreter at both canonical CFG boundaries,
 //! 2. the real compiler + the produced native binary.
 //!
 //! Then compare the observable behavior — process exit code, stdout, stderr,
@@ -25,7 +25,7 @@
 use crate::{generator, trap::native_runtime_trap_kind};
 use rue_oracle::{
     MAX_STDERR_BYTES, MAX_STDOUT_BYTES, RunSourceError, TrapKind, Unsupported, UnsupportedKind,
-    run_source,
+    run_source_cfg_differential,
 };
 use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
@@ -78,6 +78,12 @@ impl GeneratorContractFailure {
         match error {
             RunSourceError::Compile(errors) => Self::Compile(format!("{errors:#?}")),
             RunSourceError::Unsupported(unsupported) => Self::Unsupported(unsupported),
+            RunSourceError::CfgTransformationDisagreement {
+                pre_optimization,
+                post_optimization,
+            } => Self::Invariant(format!(
+                "pre/post CFG execution disagreement: pre={pre_optimization:?}, post={post_optimization:?}"
+            )),
         }
     }
 
@@ -269,7 +275,7 @@ pub fn run(args: &[String]) -> ExitCode {
     for seed in cfg.start..seed_end {
         let source = generator::generate(seed);
 
-        let oracle = match run_source(&source) {
+        let oracle = match run_source_cfg_differential(&source) {
             Err(error) => {
                 // Unlike corpus mode, generated mode has a strong input
                 // contract: every program must compile and remain within the
@@ -1098,7 +1104,8 @@ mod tests {
     fn generated_oracle_errors_remain_typed_contract_failures() {
         // A frontend rejection is a generator compile-contract failure, not an
         // oracle Unsupported skip and not a native `Compiled::CompileFail`.
-        let compile_error = run_source("fn main(").expect_err("invalid Rue must not compile");
+        let compile_error =
+            rue_oracle::run_source("fn main(").expect_err("invalid Rue must not compile");
         let compile_failure = GeneratorContractFailure::from_run_source(compile_error);
         assert!(matches!(
             compile_failure,
@@ -1108,7 +1115,7 @@ mod tests {
         // A compiled-but-unmodeled program is the other distinct contract
         // failure class. Keep the variant typed so summaries/repros cannot
         // collapse it back into the old generic skip path.
-        let unsupported = run_source(
+        let unsupported = rue_oracle::run_source(
             "fn main() -> i32 { let n: u32 = @random_u32(); if n == 0 { 0 } else { 1 } }",
         )
         .expect_err("randomness must remain outside the deterministic oracle");

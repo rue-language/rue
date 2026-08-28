@@ -33,6 +33,8 @@ fn flattened_parameter_padding_is_a_semantic_gap_but_oob_is_a_contract_failure()
         locals: Vec::new(),
         cache: HashMap::new(),
         promoted: HashMap::new(),
+        param_places: HashMap::new(),
+        place_return: false,
     };
 
     let padding = expect_flow_unsupported(Interp::base_value(&frame, PlaceBase::Param(1)));
@@ -133,6 +135,8 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
         locals: vec![None; cfg.num_locals() as usize],
         cache: HashMap::new(),
         promoted: HashMap::new(),
+        param_places: HashMap::new(),
+        place_return: false,
     };
     let projection = expect_flow_unsupported(interp.place_read(cfg, &mut frame, field_place));
     assert_eq!(
@@ -356,6 +360,8 @@ fn validated_cfg_rejects_invalid_owned_text_projection_metadata() {
         locals: vec![None; view_cfg.num_locals() as usize],
         cache: HashMap::new(),
         promoted: HashMap::new(),
+        param_places: HashMap::new(),
+        place_return: false,
     };
     // A non-aggregate value under str projection metadata: reading a field of
     // it must be a contract violation, not a silent success.
