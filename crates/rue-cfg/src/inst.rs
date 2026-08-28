@@ -958,7 +958,10 @@ impl Clone for ValidatedCfg {
 }
 
 impl ValidatedCfg {
-    pub(crate) fn into_editor(self) -> CfgEditor {
+    /// Consume the validation proof and return the same CFG as mutable editor
+    /// state. No payload is copied; a caller must verify the editor again
+    /// before publishing it to another consumer.
+    pub fn into_editor(self) -> CfgEditor {
         self.0
     }
 
