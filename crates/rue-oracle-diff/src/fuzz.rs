@@ -4,7 +4,7 @@
 //! through *both* engines:
 //!
 //! 1. the [`rue_oracle`] reference interpreter at both canonical CFG boundaries,
-//! 2. the real compiler + the produced native binary.
+//! 2. the real compiler + produced native binaries at O0, O1, O2, and O3.
 //!
 //! Then compare the observable behavior — process exit code, stdout, stderr,
 //! and typed trap cause.
@@ -27,17 +27,59 @@ use rue_oracle::{
     MAX_STDERR_BYTES, MAX_STDOUT_BYTES, RunSourceError, TrapKind, Unsupported, UnsupportedKind,
     run_source_cfg_differential,
 };
+use std::fmt;
 use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+/// Compiler optimization lanes covered by the native differential.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OptimizationLevel {
+    O0,
+    O1,
+    O2,
+    O3,
+}
+
+impl OptimizationLevel {
+    pub(crate) const OPTIMIZED: [Self; 3] = [Self::O1, Self::O2, Self::O3];
+
+    fn flag(self) -> &'static str {
+        match self {
+            Self::O0 => "-O0",
+            Self::O1 => "-O1",
+            Self::O2 => "-O2",
+            Self::O3 => "-O3",
+        }
+    }
+}
+
+impl fmt::Display for OptimizationLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.flag().trim_start_matches('-'))
+    }
+}
+
+pub(crate) struct CompileOptions<'a> {
+    pub(crate) optimization: OptimizationLevel,
+    pub(crate) previews: &'a [String],
+    pub(crate) std_path: Option<&'a Path>,
+    pub(crate) compile_timeout: Duration,
+    pub(crate) runtime_timeout: Duration,
+}
+
 /// Outcome of compiling and running a generated program natively.
-enum Compiled {
-    /// The compiler rejected a program the oracle's frontend accepted — an ICE
-    /// or backend gap (carries the compiler's stderr, truncated).
-    CompileFail(String),
+#[derive(Debug)]
+pub(crate) enum Compiled {
+    /// The compiler rejected a program the oracle's frontend accepted — a
+    /// front/backend gap distinct from an ICE (carries truncated stderr).
+    CompileRejected { exit: i32, stderr: String },
+    /// The compiler terminated by signal rather than rejecting the source.
+    CompileCrash { signal: i32, stderr: String },
+    /// The compiler reported an internal panic/ICE with an ordinary exit code.
+    CompileIce(String),
     /// The compiler did not terminate within the per-phase timeout.
     CompileTimeout,
     /// The binary ran to completion: process exit code + captured stdout +
@@ -152,6 +194,9 @@ struct Config {
     timeout: Duration,
     crash_dir: PathBuf,
     verbose: bool,
+    /// Test-harness-only observation mutation proving a selected optimized
+    /// lane detects a wrong result. It never changes compiler production code.
+    planted_miscompile: Option<OptimizationLevel>,
 }
 
 impl Default for Config {
@@ -162,6 +207,7 @@ impl Default for Config {
             timeout: Duration::from_secs(10),
             crash_dir: PathBuf::from("crates/rue-fuzz/crashes"),
             verbose: false,
+            planted_miscompile: None,
         }
     }
 }
@@ -192,6 +238,19 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             }
             "--crash-dir" => cfg.crash_dir = PathBuf::from(value()?),
             "--verbose" | "-v" => cfg.verbose = true,
+            "--test-plant-miscompile" => {
+                if std::env::var_os("RUE_ORACLE_DIFF_TESTING").is_none() {
+                    return Err(
+                        "--test-plant-miscompile requires RUE_ORACLE_DIFF_TESTING".to_string()
+                    );
+                }
+                cfg.planted_miscompile = Some(match value()?.as_str() {
+                    "O1" | "1" => OptimizationLevel::O1,
+                    "O2" | "2" => OptimizationLevel::O2,
+                    "O3" | "3" => OptimizationLevel::O3,
+                    _ => return Err("bad --test-plant-miscompile (expected O1, O2, or O3)".into()),
+                });
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -289,7 +348,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 };
                 eprintln!("{}", finding.render());
                 if let Err(error) = save_generator_contract_repro(&cfg.crash_dir, &finding) {
-                    report_repro_write_error(&cfg.crash_dir, seed, &error);
+                    report_repro_write_error(&cfg.crash_dir, seed, None, &error);
                 }
                 generator_contract_failures.push(finding);
                 continue;
@@ -305,53 +364,76 @@ pub fn run(args: &[String]) -> ExitCode {
             };
             eprintln!("{}", finding.render());
             if let Err(error) = save_generator_contract_repro(&cfg.crash_dir, &finding) {
-                report_repro_write_error(&cfg.crash_dir, seed, &error);
+                report_repro_write_error(&cfg.crash_dir, seed, None, &error);
             }
             generator_contract_failures.push(finding);
             continue;
         }
 
-        let compiled = match compile_and_run(&rue, workdir.path(), &source, cfg.timeout) {
-            Ok(c) => c,
-            Err(e) => {
-                // An infrastructure failure (couldn't invoke the tools) is fatal
-                // — better to stop loudly than silently pass.
-                eprintln!("seed {seed}: harness error: {e}");
-                return ExitCode::FAILURE;
-            }
-        };
+        for level in [
+            OptimizationLevel::O0,
+            OptimizationLevel::O1,
+            OptimizationLevel::O2,
+            OptimizationLevel::O3,
+        ] {
+            let mut compiled = match compile_and_run(
+                &rue,
+                workdir.path(),
+                &source,
+                CompileOptions {
+                    optimization: level,
+                    previews: &[],
+                    std_path: None,
+                    compile_timeout: cfg.timeout,
+                    runtime_timeout: cfg.timeout,
+                },
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    // An infrastructure failure (couldn't invoke the tools) is fatal
+                    // — better to stop loudly than silently pass.
+                    eprintln!("seed {seed} [{level}]: harness error: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            plant_test_miscompile(&mut compiled, level, cfg.planted_miscompile);
 
-        match classify(&oracle, &compiled) {
-            Verdict::Agree => {
-                agree += 1;
-                if cfg.verbose {
-                    println!("  seed {seed}: agree (exit {})", oracle.exit_code);
+            match classify(&oracle, &compiled) {
+                Verdict::Agree => {
+                    agree += 1;
+                    if cfg.verbose {
+                        println!("  seed {seed} [{level}]: agree (exit {})", oracle.exit_code);
+                    }
                 }
-            }
-            Verdict::Disagree(reason) => {
-                let d = Disagreement {
-                    seed,
-                    timeout_secs: cfg.timeout.as_secs(),
-                    source: source.clone(),
-                    oracle_exit: oracle.exit_code,
-                    oracle_stdout: oracle.stdout.clone(),
-                    oracle_stderr: oracle.stderr.clone(),
-                    oracle_panic: oracle.panic.clone(),
-                    compiled: describe(&compiled),
-                    reason,
-                };
-                eprintln!("{}", d.render());
-                if let Err(error) = save_repro(&cfg.crash_dir, &d) {
-                    report_repro_write_error(&cfg.crash_dir, seed, &error);
+                Verdict::Disagree(reason) => {
+                    let d = Disagreement {
+                        seed,
+                        optimization: level,
+                        timeout_secs: cfg.timeout.as_secs(),
+                        source: source.clone(),
+                        oracle_exit: oracle.exit_code,
+                        oracle_stdout: oracle.stdout.clone(),
+                        oracle_stderr: oracle.stderr.clone(),
+                        oracle_panic: oracle.panic,
+                        compiled: describe(&compiled),
+                        reason,
+                    };
+                    eprintln!("{}", d.render());
+                    if let Err(error) = save_repro(&cfg.crash_dir, &d) {
+                        report_repro_write_error(&cfg.crash_dir, seed, Some(level), &error);
+                    }
+                    disagreements.push(d);
                 }
-                disagreements.push(d);
             }
         }
     }
 
-    let total = agree + generator_contract_failures.len() as u32 + disagreements.len() as u32;
-    println!("\n=== summary over {total} generated programs ===");
-    println!("  agree:            {agree}");
+    let total_lanes = agree + disagreements.len() as u32;
+    println!(
+        "\n=== summary over {} generated programs / {total_lanes} native lanes ===",
+        cfg.seeds
+    );
+    println!("  agreeing lanes:   {agree}");
     println!(
         "  GENERATOR CONTRACT FAILURES: {}",
         generator_contract_failures.len()
@@ -384,12 +466,12 @@ fn generated_batch_passes(contract_failures: usize, disagreements: usize) -> boo
 }
 
 /// The comparison verdict.
-enum Verdict {
+pub(crate) enum Verdict {
     Agree,
     Disagree(String),
 }
 
-fn classify(oracle: &rue_oracle::Outcome, compiled: &Compiled) -> Verdict {
+pub(crate) fn classify(oracle: &rue_oracle::Outcome, compiled: &Compiled) -> Verdict {
     match compiled {
         Compiled::Ran {
             exit,
@@ -475,10 +557,17 @@ fn classify(oracle: &rue_oracle::Outcome, compiled: &Compiled) -> Verdict {
             }
             Verdict::Agree
         }
-        Compiled::CompileFail(stderr) => Verdict::Disagree(format!(
-            "compiler rejected a program the oracle accepted (possible ICE/backend gap): {}",
+        Compiled::CompileRejected { exit, stderr } => Verdict::Disagree(format!(
+            "compiler rejected a program the oracle accepted (exit {exit}): {}",
             first_line(stderr)
         )),
+        Compiled::CompileCrash { signal, stderr } => Verdict::Disagree(format!(
+            "compiler crashed with signal {signal}: {}",
+            first_line(stderr)
+        )),
+        Compiled::CompileIce(detail) => {
+            Verdict::Disagree(format!("internal compiler error: {}", first_line(detail)))
+        }
         Compiled::CompileTimeout => Verdict::Disagree(
             "compiler did not terminate within the per-phase timeout (oracle ran cleanly)"
                 .to_string(),
@@ -492,21 +581,27 @@ fn classify(oracle: &rue_oracle::Outcome, compiled: &Compiled) -> Verdict {
     }
 }
 
-fn compile_and_run(
+pub(crate) fn compile_and_run(
     rue: &Path,
     dir: &Path,
     source: &str,
-    timeout: Duration,
+    options: CompileOptions<'_>,
 ) -> std::io::Result<Compiled> {
     let src_path = dir.join("prog.rue");
     std::fs::write(&src_path, source)?;
     let bin_path = dir.join("prog");
-    // Best-effort remove of a stale binary so a compile failure can't run last
-    // iteration's executable.
-    let _ = std::fs::remove_file(&bin_path);
+    // Remove a stale binary so a compile failure cannot run the previous
+    // iteration's executable. Only absence is benign: a permission or file
+    // type error means the harness cannot establish artifact freshness.
+    match std::fs::remove_file(&bin_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
 
     let mut compile_cmd = Command::new(rue);
     compile_cmd
+        .arg(options.optimization.flag())
         .arg("prog.rue")
         .arg("-o")
         .arg("prog")
@@ -514,12 +609,55 @@ fn compile_and_run(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    match run_process_with_timeout(compile_cmd, timeout)? {
+    compile_cmd.env_remove("RUE_STD_PATH");
+    if let Some(std_path) = options.std_path {
+        compile_cmd.env("RUE_STD_PATH", std_path);
+    }
+    for preview in options.previews {
+        compile_cmd.arg("--preview").arg(preview);
+    }
+    match run_process_with_timeout(compile_cmd, options.compile_timeout)? {
         ProcessOutcome::TimedOut => return Ok(Compiled::CompileTimeout),
-        ProcessOutcome::Exited { status, stderr, .. } if !status.success() => {
-            return Ok(Compiled::CompileFail(stderr));
+        ProcessOutcome::Exited { status, stderr, .. } => {
+            if let Some(signal) = status.signal() {
+                return Ok(Compiled::CompileCrash { signal, stderr });
+            }
+            if let Some(failure) = rue_test_runner::ice_message(&status, &stderr) {
+                return Ok(Compiled::CompileIce(failure.to_string()));
+            }
+            if !status.success() {
+                return Ok(Compiled::CompileRejected {
+                    exit: status.code().unwrap_or(-1),
+                    stderr,
+                });
+            }
         }
-        ProcessOutcome::Exited { .. } => {}
+    }
+
+    let metadata = std::fs::metadata(&bin_path).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!(
+                "compiler succeeded without producing {}: {error}",
+                bin_path.display()
+            ),
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::other(format!(
+            "compiler output {} is not a regular file",
+            bin_path.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("compiler output {} is not executable", bin_path.display()),
+            ));
+        }
     }
 
     // Run the produced binary directly with a manual timeout so we can read the
@@ -528,7 +666,23 @@ fn compile_and_run(
     // `classify` for panic-category comparison (RUE-339).
     let mut cmd = Command::new(&bin_path);
     cmd.current_dir(dir);
-    run_with_timeout(cmd, timeout)
+    run_with_timeout(cmd, options.runtime_timeout)
+}
+
+/// Mutate only the harness's captured observation, and only when the guarded
+/// negative-test flag selected this exact optimized lane. Wrapping makes the
+/// planted wrong exit deterministic for every native result, including 255.
+fn plant_test_miscompile(
+    compiled: &mut Compiled,
+    level: OptimizationLevel,
+    selected: Option<OptimizationLevel>,
+) {
+    if selected != Some(level) {
+        return;
+    }
+    if let Compiled::Ran { exit, .. } = compiled {
+        *exit = (*exit + 1).rem_euclid(256);
+    }
 }
 
 /// Result of one child process whose stdout/stderr were drained while it ran.
@@ -559,6 +713,7 @@ fn run_process_with_timeout(
     mut cmd: Command,
     timeout: Duration,
 ) -> std::io::Result<ProcessOutcome> {
+    rue_test_runner::configure_process_group(&mut cmd);
     let child = cmd.spawn()?;
     wait_for_process(child, timeout)
 }
@@ -583,7 +738,15 @@ fn wait_for_process(mut child: Child, timeout: Duration) -> std::io::Result<Proc
     let start = Instant::now();
     let status: std::io::Result<Option<ExitStatus>> = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break Ok(Some(status)),
+            Ok(Some(status)) => {
+                // The direct child is authoritative for success even if it
+                // crossed the deadline concurrently with this poll. Tear down
+                // any descendants it left in its private process group before
+                // joining readers, because an inherited pipe fd would
+                // otherwise keep those joins blocked forever.
+                terminate_and_reap(&mut child);
+                break Ok(Some(status));
+            }
             Ok(None) if start.elapsed() >= timeout => {
                 terminate_and_reap(&mut child);
                 break Ok(None);
@@ -619,11 +782,10 @@ fn wait_for_process(mut child: Child, timeout: Duration) -> std::io::Result<Proc
 }
 
 fn terminate_and_reap(child: &mut Child) {
-    // `kill` can race with a natural exit; `wait` still reaps either way. The
-    // harness executes direct compiler/program children, not shell process
-    // trees, so terminating this one process closes every captured write end.
-    let _ = child.kill();
-    let _ = child.wait();
+    // The canonical helper signals the child's private process group before
+    // reaping the direct child. This closes pipe fds inherited by compiler
+    // linkers or native grandchildren as well as handling a natural-exit race.
+    rue_test_runner::kill_process_group(child);
 }
 
 /// Run one generated native binary using the shared bounded subprocess path.
@@ -689,6 +851,7 @@ fn read_capped<R: Read>(mut r: R, cap: usize) -> CappedRead {
 
 struct Disagreement {
     seed: u64,
+    optimization: OptimizationLevel,
     /// Per-phase compiler/native execution budget needed to replay timeouts.
     timeout_secs: u64,
     source: String,
@@ -703,8 +866,9 @@ struct Disagreement {
 impl Disagreement {
     fn render(&self) -> String {
         format!(
-            "\n\u{2717} DISAGREEMENT (seed {seed})\n  {reason}\n  oracle:   exit={exit} panic={panic:?} stdout={stdout:?} stderr={stderr:?}\n  compiled: {compiled}\n  --- source (regenerate with `fuzz --start {seed} --seeds 1 --timeout {timeout_secs}`) ---\n{source}",
+            "\n\u{2717} DISAGREEMENT (seed {seed}, {optimization})\n  {reason}\n  oracle:   exit={exit} panic={panic:?} stdout={stdout:?} stderr={stderr:?}\n  compiled: {compiled}\n  --- source (regenerate with `fuzz --start {seed} --seeds 1 --timeout {timeout_secs}`) ---\n{source}",
             seed = self.seed,
+            optimization = self.optimization,
             timeout_secs = self.timeout_secs,
             reason = self.reason,
             exit = self.oracle_exit,
@@ -737,7 +901,13 @@ fn describe(c: &Compiled) -> String {
                  stderr={stderr:?} stderr-truncated={stderr_truncated}"
             )
         }
-        Compiled::CompileFail(e) => format!("compile-fail: {}", first_line(e)),
+        Compiled::CompileRejected { exit, stderr } => {
+            format!("compile-rejected exit={exit}: {}", first_line(stderr))
+        }
+        Compiled::CompileCrash { signal, stderr } => {
+            format!("compiler-crash signal={signal}: {}", first_line(stderr))
+        }
+        Compiled::CompileIce(detail) => format!("compiler-ice: {}", first_line(detail)),
         Compiled::CompileTimeout => "compile-timeout".to_string(),
         Compiled::Crash(sig) => format!("crash signal={sig}"),
         Compiled::Timeout => "timeout".to_string(),
@@ -753,8 +923,11 @@ fn first_line(s: &str) -> String {
         .collect()
 }
 
-fn repro_path(dir: &Path, seed: u64) -> PathBuf {
-    dir.join(format!("oracle-diff-seed-{seed}.rue"))
+fn repro_path(dir: &Path, seed: u64, optimization: Option<OptimizationLevel>) -> PathBuf {
+    match optimization {
+        Some(level) => dir.join(format!("oracle-diff-seed-{seed}-{level}.rue")),
+        None => dir.join(format!("oracle-diff-seed-{seed}.rue")),
+    }
 }
 
 /// Escape dynamic diagnostic text onto one physical `//` line. Diagnostics may
@@ -778,6 +951,7 @@ fn disagreement_repro_contents(d: &Disagreement) -> String {
         "// rue-oracle-diff differential miscompile (seed {})\n",
         d.seed
     );
+    push_repro_comment(&mut contents, "optimization", &d.optimization.to_string());
     push_repro_comment(&mut contents, "reason", &d.reason);
     push_repro_comment(
         &mut contents,
@@ -821,21 +995,36 @@ fn generator_contract_repro_contents(finding: &GeneratorContractFinding) -> Stri
     contents
 }
 
-fn write_repro(dir: &Path, seed: u64, contents: &str) -> std::io::Result<()> {
+fn write_repro(
+    dir: &Path,
+    seed: u64,
+    optimization: Option<OptimizationLevel>,
+    contents: &str,
+) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    std::fs::write(repro_path(dir, seed), contents)
+    std::fs::write(repro_path(dir, seed, optimization), contents)
 }
 
-fn report_repro_write_error(dir: &Path, seed: u64, error: &std::io::Error) {
+fn report_repro_write_error(
+    dir: &Path,
+    seed: u64,
+    optimization: Option<OptimizationLevel>,
+    error: &std::io::Error,
+) {
     eprintln!(
         "seed {seed}: failed to save repro at {}: {error}",
-        repro_path(dir, seed).display()
+        repro_path(dir, seed, optimization).display()
     );
 }
 
 /// Persist a repro so a CI failure uploads a concrete, self-contained program.
 fn save_repro(dir: &Path, d: &Disagreement) -> std::io::Result<()> {
-    write_repro(dir, d.seed, &disagreement_repro_contents(d))
+    write_repro(
+        dir,
+        d.seed,
+        Some(d.optimization),
+        &disagreement_repro_contents(d),
+    )
 }
 
 fn save_generator_contract_repro(
@@ -845,6 +1034,7 @@ fn save_generator_contract_repro(
     write_repro(
         dir,
         finding.seed,
+        None,
         &generator_contract_repro_contents(finding),
     )
 }
@@ -923,6 +1113,63 @@ mod tests {
 
     fn is_disagree(v: Verdict) -> bool {
         matches!(v, Verdict::Disagree(_))
+    }
+
+    #[test]
+    fn planted_miscompile_mutates_only_the_selected_optimized_lane() {
+        let mut o0 = ran(42, "");
+        let mut o1 = ran(42, "");
+        let mut o2 = ran(42, "");
+        let mut o3 = ran(42, "");
+        for (compiled, level) in [
+            (&mut o0, OptimizationLevel::O0),
+            (&mut o1, OptimizationLevel::O1),
+            (&mut o2, OptimizationLevel::O2),
+            (&mut o3, OptimizationLevel::O3),
+        ] {
+            plant_test_miscompile(compiled, level, Some(OptimizationLevel::O2));
+        }
+        let oracle = oc(42, "");
+        assert!(matches!(classify(&oracle, &o0), Verdict::Agree));
+        assert!(matches!(classify(&oracle, &o1), Verdict::Agree));
+        assert!(is_disagree(classify(&oracle, &o2)));
+        assert!(matches!(classify(&oracle, &o3), Verdict::Agree));
+    }
+
+    #[test]
+    fn native_compile_preserves_optimization_preview_and_real_std_settings() {
+        let workdir = create_workdir().expect("temporary workdir");
+        let std_path = workdir.path().join("std-fixture");
+        std::fs::create_dir(&std_path).expect("create std fixture");
+        let compiler = fake_compiler(
+            workdir.path(),
+            "#!/bin/sh\n\
+             [ \"$1\" = -O3 ] || exit 21\n\
+             [ \"$5\" = --preview ] || exit 22\n\
+             [ \"$6\" = test_infra ] || exit 23\n\
+             [ -d \"$RUE_STD_PATH\" ] || exit 24\n\
+             printf '#!/bin/sh\\nexit 0\\n' > prog\n\
+             chmod +x prog\n",
+        );
+        let previews = vec!["test_infra".to_string()];
+        let result = compile_and_run(
+            &compiler,
+            workdir.path(),
+            "fn main() -> i32 { 0 }",
+            CompileOptions {
+                optimization: OptimizationLevel::O3,
+                previews: &previews,
+                std_path: Some(&std_path),
+                compile_timeout: Duration::from_secs(5),
+                runtime_timeout: Duration::from_secs(5),
+            },
+        )
+        .expect("run fake compiler");
+        assert!(
+            matches!(result, Compiled::Ran { exit: 0, .. }),
+            "{}",
+            describe(&result)
+        );
     }
 
     #[test]
@@ -1082,7 +1329,21 @@ mod tests {
         // divergence worth reporting.
         assert!(is_disagree(classify(
             &oc(0, ""),
-            &Compiled::CompileFail("boom".into())
+            &Compiled::CompileRejected {
+                exit: 1,
+                stderr: "boom".into(),
+            }
+        )));
+        assert!(is_disagree(classify(
+            &oc(0, ""),
+            &Compiled::CompileCrash {
+                signal: 6,
+                stderr: String::new(),
+            }
+        )));
+        assert!(is_disagree(classify(
+            &oc(0, ""),
+            &Compiled::CompileIce("compiler panicked".into())
         )));
         assert!(is_disagree(classify(&oc(0, ""), &Compiled::CompileTimeout)));
         assert!(is_disagree(classify(&oc(0, ""), &Compiled::Crash(11))));
@@ -1103,7 +1364,7 @@ mod tests {
     #[test]
     fn generated_oracle_errors_remain_typed_contract_failures() {
         // A frontend rejection is a generator compile-contract failure, not an
-        // oracle Unsupported skip and not a native `Compiled::CompileFail`.
+        // oracle Unsupported skip and not a native `Compiled::CompileRejected`.
         let compile_error =
             rue_oracle::run_source("fn main(").expect_err("invalid Rue must not compile");
         let compile_failure = GeneratorContractFailure::from_run_source(compile_error);
@@ -1209,6 +1470,7 @@ mod tests {
     fn disagreement_repro_also_escapes_multiline_metadata() {
         let disagreement = Disagreement {
             seed: 23,
+            optimization: OptimizationLevel::O2,
             timeout_secs: 3,
             source: "fn main() -> i32 { 23 }\n".to_string(),
             oracle_exit: 101,
@@ -1249,7 +1511,13 @@ mod tests {
             &compiler,
             workdir.path(),
             "fn main() -> i32 { 0 }",
-            Duration::from_millis(200),
+            CompileOptions {
+                optimization: OptimizationLevel::O2,
+                previews: &[],
+                std_path: None,
+                compile_timeout: Duration::from_millis(200),
+                runtime_timeout: Duration::from_secs(5),
+            },
         )
         .expect("spawn fake compiler");
 
@@ -1270,6 +1538,125 @@ mod tests {
     }
 
     #[test]
+    fn compiler_timeout_kills_descendants_holding_captured_pipes() {
+        let workdir = create_workdir().expect("temporary workdir");
+        let compiler = fake_compiler(
+            workdir.path(),
+            "#!/bin/sh\n(sh -c 'trap \"\" TERM; sleep 30') &\nsleep 30\n",
+        );
+
+        let start = Instant::now();
+        let result = compile_and_run(
+            &compiler,
+            workdir.path(),
+            "fn main() -> i32 { 0 }",
+            CompileOptions {
+                optimization: OptimizationLevel::O1,
+                previews: &[],
+                std_path: None,
+                compile_timeout: Duration::from_millis(200),
+                runtime_timeout: Duration::from_secs(5),
+            },
+        )
+        .expect("spawn descendant compiler fixture");
+
+        assert!(matches!(result, Compiled::CompileTimeout));
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "process-group kill must close descendant-held pipes before reader joins"
+        );
+    }
+
+    #[test]
+    fn successful_leader_exit_cleans_descendants_without_becoming_a_timeout() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("(trap '' TERM; sleep 30) & exit 7");
+        let started = Instant::now();
+        let result = run_with_timeout(command, Duration::from_secs(5))
+            .expect("run successful leader with a pipe-holding descendant");
+
+        assert!(matches!(result, Compiled::Ran { exit: 7, .. }));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "a successful direct child remains authoritative while its process group is cleaned"
+        );
+    }
+
+    #[test]
+    fn stale_artifact_errors_and_missing_or_non_executable_outputs_fail_closed() {
+        let workdir = create_workdir().expect("temporary workdir");
+        std::fs::create_dir(workdir.path().join("prog")).expect("create stale directory");
+        let compiler = fake_compiler(workdir.path(), "#!/bin/sh\nexit 0\n");
+        let options = || CompileOptions {
+            optimization: OptimizationLevel::O1,
+            previews: &[],
+            std_path: None,
+            compile_timeout: Duration::from_secs(5),
+            runtime_timeout: Duration::from_secs(5),
+        };
+        let error = compile_and_run(
+            &compiler,
+            workdir.path(),
+            "fn main() -> i32 { 0 }",
+            options(),
+        )
+        .expect_err("a stale directory cannot be ignored as a missing artifact");
+        assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+
+        std::fs::remove_dir(workdir.path().join("prog")).expect("remove stale directory");
+        let error = compile_and_run(
+            &compiler,
+            workdir.path(),
+            "fn main() -> i32 { 0 }",
+            options(),
+        )
+        .expect_err("compiler success without output must fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+
+        let compiler = fake_compiler(
+            workdir.path(),
+            "#!/bin/sh\nprintf 'not executable\\n' > prog\n",
+        );
+        let error = compile_and_run(
+            &compiler,
+            workdir.path(),
+            "fn main() -> i32 { 0 }",
+            options(),
+        )
+        .expect_err("non-executable compiler output must fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn compiler_crashes_and_ices_are_not_compile_rejections() {
+        let workdir = create_workdir().expect("temporary workdir");
+        let options = || CompileOptions {
+            optimization: OptimizationLevel::O1,
+            previews: &[],
+            std_path: None,
+            compile_timeout: Duration::from_secs(5),
+            runtime_timeout: Duration::from_secs(5),
+        };
+        let crashing = fake_compiler(workdir.path(), "#!/bin/sh\nkill -TERM $$\n");
+        let crash = compile_and_run(
+            &crashing,
+            workdir.path(),
+            "fn main() -> i32 { 0 }",
+            options(),
+        )
+        .expect("run crashing compiler");
+        assert!(matches!(crash, Compiled::CompileCrash { signal: 15, .. }));
+
+        let icing = fake_compiler(
+            workdir.path(),
+            "#!/bin/sh\necho 'internal compiler error: planted' 1>&2\nexit 0\n",
+        );
+        let ice = compile_and_run(&icing, workdir.path(), "fn main() -> i32 { 0 }", options())
+            .expect("run ICE compiler");
+        assert!(matches!(ice, Compiled::CompileIce(_)));
+    }
+
+    #[test]
     fn compiler_stderr_is_drained_while_retention_stays_bounded() {
         let workdir = create_workdir().expect("temporary workdir");
         let compiler = fake_compiler(
@@ -1281,12 +1668,18 @@ mod tests {
             &compiler,
             workdir.path(),
             "fn main() -> i32 { 0 }",
-            Duration::from_secs(30),
+            CompileOptions {
+                optimization: OptimizationLevel::O3,
+                previews: &[],
+                std_path: None,
+                compile_timeout: Duration::from_secs(30),
+                runtime_timeout: Duration::from_secs(5),
+            },
         )
         .expect("run fake compiler");
 
         match result {
-            Compiled::CompileFail(stderr) => {
+            Compiled::CompileRejected { exit: 9, stderr } => {
                 assert!(!stderr.is_empty(), "some compiler stderr is retained");
                 assert_eq!(
                     stderr.len(),

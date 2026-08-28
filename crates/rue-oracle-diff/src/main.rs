@@ -2,12 +2,11 @@
 //!
 //! Runs the concrete [`rue-cli-tests`] corpus through the [`rue_oracle`]
 //! reference interpreter and checks the oracle agrees with each case's expected
-//! exit code / stdout / stderr. Those expectations are what the *compiled binary*
-//! already produces (the CLI suite enforces that), so a disagreement here means
-//! the oracle and the compiler disagree. The harness first executes the
-//! canonical raw CFG before and after mandatory CFG transformations, then
-//! compares the post-transform O0 oracle with expected/native behavior, separating CFG disagreements
-//! from later lowering/codegen disagreements. This is the automated bug-catcher
+//! exit code / stdout / stderr, then checks the same observation from native
+//! binaries compiled at O1, O2, and O3. The harness first executes the canonical
+//! raw CFG before and after mandatory CFG transformations, then compares the
+//! post-transform O0 oracle with expected/native behavior, separating CFG
+//! disagreements from later lowering/codegen disagreements. This is the automated bug-catcher
 //! of RUE-50: it turns "we check the outputs we thought to write down" into "we
 //! check that the semantics and compiler agree on every program in the corpus."
 //!
@@ -32,7 +31,7 @@
 //!   `crates/rue-spec/cases`.
 //! - **fuzz** (`rue-oracle-diff fuzz [...]`): the differential *fuzzer* of
 //!   RUE-247 — generate random valid programs and cross-check the oracle
-//!   against the real compiler + native binary. See [`fuzz`]. A `dump <seed>`
+//!   against native binaries compiled at O0, O1, O2, and O3. See [`fuzz`]. A `dump <seed>`
 //!   subcommand prints a generated program for inspection.
 //!
 //! Every mode exits non-zero if an eligible program is rejected by the front
@@ -69,10 +68,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Deserialize)]
 struct TestFile {
     section: Section,
+    #[serde(default, rename = "timeout_profile")]
+    timeout_profiles: HashMap<String, HangTimeoutProfile>,
     #[serde(default, rename = "case")]
     cases: Vec<Case>,
 }
@@ -82,6 +84,21 @@ struct TestFile {
 #[derive(Deserialize)]
 struct Section {
     id: String,
+    #[serde(default)]
+    contract: Option<String>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HangTimeoutProfile {
+    compile_hang_timeout_ms: u64,
+    runtime_hang_timeout_ms: u64,
+}
+
+#[derive(Clone, Copy)]
+struct CliExecutionTimeouts {
+    compile: Duration,
+    runtime: Duration,
 }
 
 /// A permissive subset of the rue-cli-tests case schema — only the fields the
@@ -90,6 +107,8 @@ struct Section {
 #[derive(Deserialize)]
 struct Case {
     name: String,
+    #[serde(default)]
+    contract: Option<String>,
     #[serde(default)]
     files: Vec<SourceFile>,
     #[serde(default)]
@@ -100,6 +119,10 @@ struct Case {
     stdin: Option<String>,
     #[serde(default)]
     env: HashMap<String, String>,
+    #[serde(default)]
+    program_args: Vec<String>,
+    #[serde(default)]
+    program_env: HashMap<String, String>,
     #[serde(default)]
     compile_fail: bool,
     #[serde(default)]
@@ -168,6 +191,9 @@ enum IneligibleReason {
     WatchOrchestration,
     StandardInput,
     CompilerEnvironment,
+    RuntimeArguments,
+    RuntimeEnvironment,
+    NamedExecutionContract,
     ExternalSourcePath,
     NoInlineSource,
     MultipleSourceFiles,
@@ -191,6 +217,9 @@ impl fmt::Display for IneligibleReason {
             Self::WatchOrchestration => f.write_str("watch orchestration"),
             Self::StandardInput => f.write_str("standard input required"),
             Self::CompilerEnvironment => f.write_str("compiler environment"),
+            Self::RuntimeArguments => f.write_str("runtime command-line arguments"),
+            Self::RuntimeEnvironment => f.write_str("runtime environment"),
+            Self::NamedExecutionContract => f.write_str("named execution contract"),
             Self::ExternalSourcePath => f.write_str("external source path"),
             Self::NoInlineSource => f.write_str("no inline source"),
             Self::MultipleSourceFiles => f.write_str("multiple source files"),
@@ -217,6 +246,88 @@ enum CaseOutcome {
     OracleFailure(String),
     /// The oracle ran but disagreed with the expected behavior.
     Disagreement(String),
+}
+
+/// Shared native-execution state for corpus and spec modes. The work directory
+/// is unique to this harness process and reused sequentially; `compile_and_run`
+/// removes the previous output before every compilation.
+struct NativeRunner {
+    rue: PathBuf,
+    workdir: tempfile::TempDir,
+    std_path: PathBuf,
+    optimizations: Vec<fuzz::OptimizationLevel>,
+}
+
+impl NativeRunner {
+    fn from_env() -> Result<Self, String> {
+        let rue = std::env::var_os("RUE_BINARY")
+            .map(PathBuf::from)
+            .ok_or_else(|| "RUE_BINARY must point to the Rue compiler".to_string())?;
+        let std_path = std::env::var_os("RUE_ORACLE_DIFF_STD")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("std"));
+        let optimizations = match std::env::var("RUE_ORACLE_DIFF_OPT_LEVEL").as_deref() {
+            Ok("O1" | "1") => vec![fuzz::OptimizationLevel::O1],
+            Ok("O2" | "2") => vec![fuzz::OptimizationLevel::O2],
+            Ok("O3" | "3") => vec![fuzz::OptimizationLevel::O3],
+            Ok(value) => {
+                return Err(format!(
+                    "RUE_ORACLE_DIFF_OPT_LEVEL must be O1, O2, or O3, got {value:?}"
+                ));
+            }
+            Err(std::env::VarError::NotPresent) => fuzz::OptimizationLevel::OPTIMIZED.to_vec(),
+            Err(error) => return Err(format!("invalid RUE_ORACLE_DIFF_OPT_LEVEL: {error}")),
+        };
+        let workdir = tempfile::Builder::new()
+            .prefix("rue-oracle-corpus-")
+            .tempdir()
+            .map_err(|error| format!("cannot create native differential work dir: {error}"))?;
+        Ok(Self {
+            rue,
+            workdir,
+            std_path,
+            optimizations,
+        })
+    }
+
+    fn compare(
+        &self,
+        context: &str,
+        source: &str,
+        oracle: &Outcome,
+        previews: &[String],
+        real_std: bool,
+        compile_timeout: Duration,
+        runtime_timeout: Duration,
+    ) -> CaseOutcome {
+        for optimization in &self.optimizations {
+            let compiled = match fuzz::compile_and_run(
+                &self.rue,
+                self.workdir.path(),
+                source,
+                fuzz::CompileOptions {
+                    optimization: *optimization,
+                    previews,
+                    std_path: real_std.then_some(self.std_path.as_path()),
+                    compile_timeout,
+                    runtime_timeout,
+                },
+            ) {
+                Ok(compiled) => compiled,
+                Err(error) => {
+                    return CaseOutcome::OracleFailure(format!(
+                        "{context} [{optimization}]\n      native harness error: {error}"
+                    ));
+                }
+            };
+            if let fuzz::Verdict::Disagree(reason) = fuzz::classify(oracle, &compiled) {
+                return CaseOutcome::Disagreement(format!(
+                    "{context} [{optimization}]\n      optimized native observation: {reason}"
+                ));
+            }
+        }
+        CaseOutcome::Agree
+    }
 }
 
 /// Why an otherwise executable case could not be fully judged.
@@ -403,6 +514,13 @@ fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
     };
 
     let mut report = Report::default();
+    let native = match NativeRunner::from_env() {
+        Ok(native) => Some(native),
+        Err(error) => {
+            report.harness_failures.push(error);
+            None
+        }
+    };
     let mut gap_audit = model_gaps::cli::audit(inventory_scope);
     let (toml_files, discovery_failures) = discover_toml(&dirs);
     let mut inventory_complete = discovery_failures.is_empty();
@@ -414,6 +532,7 @@ fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
         ));
     }
 
+    let mut loaded_files = Vec::new();
     for path in &toml_files {
         let file = match load_cli_test_file(path) {
             Ok(file) => file,
@@ -423,8 +542,29 @@ fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
                 continue;
             }
         };
+        loaded_files.push((path, file));
+    }
+    let execution_timeouts = match cli_execution_timeouts(&loaded_files) {
+        Ok(timeouts) => Some(timeouts),
+        Err(error) => {
+            inventory_complete = false;
+            report.harness_failures.push(error);
+            None
+        }
+    };
+
+    for (path, file) in &loaded_files {
         for case in &file.cases {
-            let outcome = check_case(path, case);
+            let identity = format!("{}::{}", file.section.id, case.name);
+            let outcome = check_case_with_native(
+                path,
+                case,
+                file.section.contract.as_deref(),
+                native
+                    .as_ref()
+                    .zip(execution_timeouts)
+                    .map(|(runner, timeouts)| (runner, identity.as_str(), timeouts)),
+            );
             gap_audit.observe(
                 model_gaps::cli::CaseId::new(&file.section.id, &case.name),
                 &case.only_on,
@@ -439,6 +579,40 @@ fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
     report.harness_failures.sort();
 
     finish_report(&report, "rue-cli-tests")
+}
+
+fn cli_execution_timeouts(files: &[(&PathBuf, TestFile)]) -> Result<CliExecutionTimeouts, String> {
+    let mut profiles = files
+        .iter()
+        .filter_map(|(_, file)| file.timeout_profiles.get("ordinary").copied())
+        .collect::<Vec<_>>();
+    if profiles.is_empty() {
+        // A partial focused run may not include execution_contracts.toml in
+        // its requested roots. Resolve the same declared authority explicitly
+        // instead of falling back to a hard-coded timeout.
+        let path = std::env::var_os("RUE_ORACLE_DIFF_EXECUTION_CONTRACTS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from("crates/rue-cli-tests/cases/execution_contracts.toml")
+            });
+        let authority = load_cli_test_file(&path).map_err(|error| {
+            format!("cannot load authoritative CLI execution contracts: {error}")
+        })?;
+        if let Some(profile) = authority.timeout_profiles.get("ordinary") {
+            profiles.push(*profile);
+        }
+    }
+    if profiles.len() != 1 {
+        return Err("CLI corpus must declare timeout_profile.ordinary exactly once".to_string());
+    }
+    let profile = profiles[0];
+    if profile.compile_hang_timeout_ms == 0 || profile.runtime_hang_timeout_ms == 0 {
+        return Err("CLI timeout_profile.ordinary budgets must be non-zero".to_string());
+    }
+    Ok(CliExecutionTimeouts {
+        compile: Duration::from_millis(profile.compile_hang_timeout_ms),
+        runtime: Duration::from_millis(profile.runtime_hang_timeout_ms),
+    })
 }
 
 /// Translate the closed corpus classification into equally closed registry
@@ -567,6 +741,13 @@ fn spec_mode(raw_args: Vec<String>) -> ExitCode {
     };
 
     let mut report = Report::default();
+    let native = match NativeRunner::from_env() {
+        Ok(native) => Some(native),
+        Err(error) => {
+            report.harness_failures.push(error);
+            None
+        }
+    };
     let mut gap_audit = model_gaps::spec::audit(inventory_scope);
     let mut inventory_complete = true;
     for dir in &dirs {
@@ -599,7 +780,12 @@ fn spec_mode(raw_args: Vec<String>) -> ExitCode {
         }
         for (ident, file) in files {
             for case in &file.case {
-                let outcome = check_spec_case(&ident, case);
+                let identity = format!("{}::{}", file.section.id, case.name);
+                let outcome = check_spec_case_with_native(
+                    &ident,
+                    case,
+                    native.as_ref().map(|runner| (runner, identity.as_str())),
+                );
                 gap_audit.observe(
                     model_gaps::spec::CaseId::new(&file.section.id, &case.name),
                     &case.only_on,
@@ -661,11 +847,23 @@ fn spec_model_gap_observation(
 /// compiler/oracle contract violation fails the harness. [`RunSourceError::Compile`]
 /// for a case that survived these shape filters is likewise a hard front-end
 /// failure.
+#[cfg(test)]
 fn check_spec_case(ident: &str, case: &rue_test_runner::Case) -> CaseOutcome {
     let is_known_gap = KNOWN_ORACLE_GAPS
         .iter()
         .any(|(i, n, _)| *i == ident && *n == case.name);
-    check_spec_case_with_known_gap(ident, case, is_known_gap)
+    check_spec_case_with_known_gap(ident, case, is_known_gap, None)
+}
+
+fn check_spec_case_with_native(
+    ident: &str,
+    case: &rue_test_runner::Case,
+    native: Option<(&NativeRunner, &str)>,
+) -> CaseOutcome {
+    let is_known_gap = KNOWN_ORACLE_GAPS
+        .iter()
+        .any(|(i, n, _)| *i == ident && *n == case.name);
+    check_spec_case_with_known_gap(ident, case, is_known_gap, native)
 }
 
 fn run_source_with_real_std(
@@ -782,6 +980,7 @@ fn check_spec_case_with_known_gap(
     ident: &str,
     case: &rue_test_runner::Case,
     is_known_gap: bool,
+    native: Option<(&NativeRunner, &str)>,
 ) -> CaseOutcome {
     // Mirror the real rue-spec wrapper before classifying case shapes. Preview
     // cases without `preview_should_pass` use xfail semantics there, so they do
@@ -950,7 +1149,26 @@ fn check_spec_case_with_known_gap(
             }
 
             if modeled_observations_agree {
-                CaseOutcome::Agree
+                if let Some((runner, identity)) = native {
+                    let previews: Vec<String> = case.preview.iter().cloned().collect();
+                    runner.compare(
+                        &format!("rue-spec {identity}"),
+                        &case.source,
+                        &outcome,
+                        &previews,
+                        case.real_std,
+                        Duration::from_millis(
+                            case.timeout_ms
+                                .unwrap_or(rue_test_runner::DEFAULT_TIMEOUT_MS),
+                        ),
+                        Duration::from_millis(
+                            case.timeout_ms
+                                .unwrap_or(rue_test_runner::DEFAULT_TIMEOUT_MS),
+                        ),
+                    )
+                } else {
+                    CaseOutcome::Agree
+                }
             } else {
                 let mut msg = format!("{ident} :: {}", case.name);
                 if !exit_ok {
@@ -1008,7 +1226,17 @@ const KNOWN_ORACLE_GAPS: &[(&str, &str, &str)] = &[
     // run as normal three-way-agreement checks again.
 ];
 
+#[cfg(test)]
 fn check_case(path: &Path, case: &Case) -> CaseOutcome {
+    check_case_with_native(path, case, None, None)
+}
+
+fn check_case_with_native(
+    path: &Path,
+    case: &Case,
+    section_contract: Option<&str>,
+    native: Option<(&NativeRunner, &str, CliExecutionTimeouts)>,
+) -> CaseOutcome {
     // Mirror the real CLI runner's wrapper order: explicit and host-filtered
     // cases never reach invocation parsing or execution.
     if case.skip {
@@ -1033,6 +1261,9 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
     }
     if known_bug_applies {
         return CaseOutcome::Ineligible(IneligibleReason::ApplicableKnownBug);
+    }
+    if case.contract.as_deref().or(section_contract).is_some() {
+        return CaseOutcome::Ineligible(IneligibleReason::NamedExecutionContract);
     }
     // A watch case is an imperative sequence of filesystem edits and driver
     // publications, not one concrete source execution the in-process oracle
@@ -1114,6 +1345,16 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
             record_oracle_error(&context, error)
         }
         Ok(outcome) => {
+            // Runtime argv/env are external effects the current oracle cannot
+            // inject. Keep typed oracle model gaps authoritative when source
+            // evaluation reaches those intrinsics; otherwise classify the
+            // declared process inputs explicitly before any native execution.
+            if !case.program_args.is_empty() {
+                return CaseOutcome::Ineligible(IneligibleReason::RuntimeArguments);
+            }
+            if !case.program_env.is_empty() {
+                return CaseOutcome::Ineligible(IneligibleReason::RuntimeEnvironment);
+            }
             let trap_comparison = compare_trap_expectation(expected_trap, outcome.panic);
             // A case whose only observable contract is the runtime-error exit
             // code (101) — no `runtime_error_contains` trap declaration — is
@@ -1187,7 +1428,20 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
                 && missing_stderr.is_none()
                 && trap_ok
             {
-                CaseOutcome::Agree
+                if let Some((runner, identity, timeouts)) = native {
+                    let previews = corpus_preview_names(case);
+                    runner.compare(
+                        &format!("rue-cli-tests {identity}"),
+                        source,
+                        &outcome,
+                        &previews,
+                        real_std,
+                        timeouts.compile,
+                        timeouts.runtime,
+                    )
+                } else {
+                    CaseOutcome::Agree
+                }
             } else {
                 let mut msg = format!("{} :: {}", rel(path), case.name);
                 if !exit_ok {
@@ -1304,6 +1558,16 @@ fn corpus_preview_features(case: &Case) -> Result<PreviewFeatures, CliInvocation
     }
 }
 
+fn corpus_preview_names(case: &Case) -> Vec<String> {
+    let Some(args) = &case.args else {
+        return Vec::new();
+    };
+    args.windows(2)
+        .filter(|pair| pair[0] == "--preview")
+        .map(|pair| pair[1].clone())
+        .collect()
+}
+
 fn rel(path: &Path) -> String {
     path.file_name()
         .map(|f| f.to_string_lossy().into_owned())
@@ -1378,6 +1642,7 @@ mod tests {
     fn corpus_case(source: &str, compile_fail: bool) -> Case {
         Case {
             name: "classification probe".to_string(),
+            contract: None,
             files: vec![SourceFile {
                 path: "probe.rue".to_string(),
                 source: source.to_string(),
@@ -1386,6 +1651,8 @@ mod tests {
             args: None,
             stdin: None,
             env: HashMap::new(),
+            program_args: Vec::new(),
+            program_env: HashMap::new(),
             compile_fail,
             compile_only: false,
             watch: None,
@@ -1405,6 +1672,42 @@ mod tests {
             check_case(Path::new("classification.toml"), case),
             CaseOutcome::Ineligible(expected)
         );
+    }
+
+    #[test]
+    fn cli_execution_timeout_mapping_uses_authoritative_corpus_profile() {
+        let path = PathBuf::from("execution_contracts.toml");
+        let file: TestFile = toml::from_str(
+            r#"
+            [section]
+            id = "cli.execution_contracts"
+
+            [timeout_profile.ordinary]
+            compile_hang_timeout_ms = 180000
+            runtime_hang_timeout_ms = 120000
+            "#,
+        )
+        .expect("parse execution contracts fixture");
+        let files = vec![(&path, file)];
+        let timeouts = cli_execution_timeouts(&files).expect("resolve ordinary profile");
+        assert_eq!(timeouts.compile, Duration::from_millis(180_000));
+        assert_eq!(timeouts.runtime, Duration::from_millis(120_000));
+    }
+
+    #[test]
+    fn cli_runtime_inputs_and_named_contracts_are_explicitly_ineligible() {
+        let mut case = corpus_case("fn main() -> i32 { 0 }", false);
+        case.program_args.push("external".to_string());
+        assert_cli_ineligible(&case, IneligibleReason::RuntimeArguments);
+
+        case.program_args.clear();
+        case.program_env
+            .insert("EXTERNAL_MARKER".to_string(), "value".to_string());
+        assert_cli_ineligible(&case, IneligibleReason::RuntimeEnvironment);
+
+        case.program_env.clear();
+        case.contract = Some("heavyweight".to_string());
+        assert_cli_ineligible(&case, IneligibleReason::NamedExecutionContract);
     }
 
     fn assert_spec_ineligible(case: &rue_test_runner::Case, expected: IneligibleReason) {
@@ -1838,17 +2141,17 @@ files = [{ path = "probe.rue", source = "not Rue" }]
         };
 
         assert_eq!(
-            check_spec_case_with_known_gap("test:1", &case, true),
+            check_spec_case_with_known_gap("test:1", &case, true, None),
             CaseOutcome::Ineligible(IneligibleReason::KnownOracleGap)
         );
         assert!(matches!(
-            check_spec_case_with_known_gap("test:1", &case, false),
+            check_spec_case_with_known_gap("test:1", &case, false, None),
             CaseOutcome::Disagreement(_)
         ));
 
         case.exit_code = Some(0);
         let CaseOutcome::Disagreement(message) =
-            check_spec_case_with_known_gap("test:1", &case, true)
+            check_spec_case_with_known_gap("test:1", &case, true, None)
         else {
             panic!("a stale known-gap entry did not fail");
         };
@@ -1858,7 +2161,7 @@ files = [{ path = "probe.rue", source = "not Rue" }]
             "fn probe() -> u32 { let value: u32 = @random_u32(); value } fn main() { probe(); }"
                 .to_string();
         assert_eq!(
-            check_spec_case_with_known_gap("test:1", &case, true),
+            check_spec_case_with_known_gap("test:1", &case, true, None),
             CaseOutcome::Unmodeled(UnmodeledReason::ModelGap(ModelGapKind::ExternalDependency(
                 rue_oracle::ExternalDependencyKind::RandomU32
             ))),
@@ -1867,7 +2170,7 @@ files = [{ path = "probe.rue", source = "not Rue" }]
 
         case.source = "fn main() -> i32 { missing_name }".to_string();
         assert!(matches!(
-            check_spec_case_with_known_gap("test:1", &case, true),
+            check_spec_case_with_known_gap("test:1", &case, true, None),
             CaseOutcome::FrontendFailure(_)
         ));
     }
@@ -2111,18 +2414,18 @@ files = [{ path = "probe.rue", source = "not Rue" }]
         case.runtime_error = None;
         case.exit_code = Some(1);
         assert_eq!(
-            check_spec_case_with_known_gap("test:1", &case, true),
+            check_spec_case_with_known_gap("test:1", &case, true, None),
             CaseOutcome::Ineligible(IneligibleReason::KnownOracleGap)
         );
 
         case.exit_code = Some(0);
         assert_eq!(
-            check_spec_case_with_known_gap("test:1", &case, true),
+            check_spec_case_with_known_gap("test:1", &case, true, None),
             CaseOutcome::Ineligible(IneligibleReason::KnownOracleGap),
             "the remaining stderr mismatch keeps the tracked wrong-result entry live"
         );
         assert!(matches!(
-            check_spec_case_with_known_gap("test:1", &case, false),
+            check_spec_case_with_known_gap("test:1", &case, false, None),
             CaseOutcome::Disagreement(_)
         ));
     }

@@ -1147,9 +1147,29 @@ jobs:
             check_name: linux-x64-oracle-diff
           - os: ubuntu-latest
             cache_name: linux-x64
+            target: //crates/rue-oracle-diff:oracle-diff-test-o2
+            name: oracle-diff-o2
+            check_name: linux-x64-oracle-diff-o2
+          - os: ubuntu-latest
+            cache_name: linux-x64
+            target: //crates/rue-oracle-diff:oracle-diff-test-o3
+            name: oracle-diff-o3
+            check_name: linux-x64-oracle-diff-o3
+          - os: ubuntu-latest
+            cache_name: linux-x64
             target: //crates/rue-oracle-diff:oracle-diff-spec-test
             name: oracle-diff-spec
             check_name: linux-x64-oracle-diff-spec
+          - os: ubuntu-latest
+            cache_name: linux-x64
+            target: //crates/rue-oracle-diff:oracle-diff-spec-test-o2
+            name: oracle-diff-spec-o2
+            check_name: linux-x64-oracle-diff-spec-o2
+          - os: ubuntu-latest
+            cache_name: linux-x64
+            target: //crates/rue-oracle-diff:oracle-diff-spec-test-o3
+            name: oracle-diff-spec-o3
+            check_name: linux-x64-oracle-diff-spec-o3
     runs-on: ${{ matrix.os }}
     name: test (${{ matrix.check_name }})
     steps:

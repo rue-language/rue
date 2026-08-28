@@ -1,17 +1,20 @@
 load("//crates:defs.bzl", "rue_binary")
 load("//:corpus.bzl", "cached_corpus_suite")
+load("//:test_defs.bzl", "rue_sh_test")
 
 # The differential harness. Two modes:
 #  * default: runs the concrete rue-cli-tests corpus through the rue-oracle
-#    reference interpreter and checks it agrees with each case's expected exit
-#    code / stdout / stderr after first checking the canonical raw/post-transform
-#    CFG boundary (a mismatch localizes to CFG transformation or later codegen;
-#    wired as the sh_test below).
+#    reference interpreter, checks it agrees with each case's expected exit
+#    code / stdout / stderr, and executes each eligible case at O1, O2, and O3
+#    across the level-sharded actions below. It first checks the canonical
+#    raw/post-transform CFG boundary, so a mismatch localizes to CFG
+#    transformation or later codegen.
 #  * `fuzz`: the differential *fuzzer* (RUE-247) — generates random valid
-#    programs and cross-checks the oracle against the real compiler + native
-#    binary, reporting exit/stdout/stderr disagreements as miscompiles and generated
-#    compile/Unsupported results as contract failures, all with seed-based
-#    repros. Driven by `.github/workflows/fuzz.yml` nightly; needs `RUE_BINARY`.
+#    programs and cross-checks the oracle against native binaries at O0, O1,
+#    O2, and O3, reporting exit/stdout/stderr disagreements as miscompiles and
+#    generated compile/Unsupported results as contract failures, all with
+#    seed-based repros. Driven by `.github/workflows/fuzz.yml` nightly; needs
+#    `RUE_BINARY`.
 # The harness driver itself has no #[test] functions — it IS the harness — but
 # the `generator` module carries unit tests (determinism + always-emits-main),
 # so the rust_test target (`:rue-oracle-diff-test`) is kept enabled.
@@ -39,6 +42,29 @@ rue_binary(
     ],
 )
 
+export_file(
+    name = "planted-fake-compiler",
+    src = "testdata/planted-fake-rue.sh",
+)
+
+export_file(
+    name = "planted-fake-program",
+    src = "testdata/planted-fake-program.sh",
+)
+
+# Expected-failure integration proof: drive the real harness argument parser
+# and all four generated native lanes with a deterministic compiler/program.
+# The wrapper succeeds only when the guarded mutation makes O2 alone disagree.
+rue_sh_test(
+    name = "oracle-diff-planted-miscompile-test",
+    test = "test-planted-miscompile.sh",
+    env = {
+        "RUE_ORACLE_DIFF_BINARY": "$(exe_target :rue-oracle-diff)",
+        "RUE_ORACLE_DIFF_FAKE_COMPILER": "$(location :planted-fake-compiler)",
+        "RUE_ORACLE_DIFF_FAKE_PROGRAM": "$(location :planted-fake-program)",
+    },
+)
+
 # Run the differential harness under `buck2 test //...` (and hence CI): the
 # harness reads the rue-cli-tests `cases` filegroup via RUE_ORACLE_DIFF_CASES
 # and exits non-zero on ANY oracle/compiler disagreement, so a codegen change
@@ -50,27 +76,57 @@ rue_binary(
 # violations fail the harness; only typed model gaps remain coverage debt.
 # Preview-gated cases run when their declared preview flags can be mapped onto
 # the single-source oracle.
-# RUE-1163: a cached action like its peer corpora. Both inputs reach the harness
-# through declared env paths, and it drives the reference interpreter in-process
-# rather than spawning the compiler, so the cases filegroup and std/ are the
-# whole contract.
+# RUE-1163: a cached action like its peer corpora. Every runtime input reaches
+# the harness through a declared env path. The optimized native lane compiles
+# one complete optimization-level shard per action, so the compiler is part of
+# the cache key alongside the cases and std inputs. The three actions load the
+# authoritative inventory but own disjoint O1/O2/O3 native lanes; together they
+# cover the full modeled case×optimization matrix.
 cached_corpus_suite(
     name = "oracle-diff-test",
     tier = "slow",
-    # RUE-1117: `rue_heavy_suite` gives the differential the same execution
-    # contract as the other opaque corpus harnesses — its own CI lane through
-    # `scripts/ci-heavy-suite` (which fails closed if Buck reports no result for
-    # it), and exclusion from any broad pass that would otherwise absorb it.
     labels = ["rue_not_quick", "rue_heavy_suite"],
     harness = ":rue-oracle-diff",
     env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_ORACLE_DIFF_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
+        "RUE_ORACLE_DIFF_EXECUTION_CONTRACTS": "$(location //crates/rue-cli-tests:cases)/cases/execution_contracts.toml",
+        "RUE_ORACLE_DIFF_OPT_LEVEL": "O1",
         "RUE_ORACLE_DIFF_STD": "$(location root//:std)/std",
     },
-    absolutize = [
-        "RUE_ORACLE_DIFF_CASES",
-        "RUE_ORACLE_DIFF_STD",
-    ],
+    absolutize = ["RUE_BINARY", "RUE_ORACLE_DIFF_CASES", "RUE_ORACLE_DIFF_EXECUTION_CONTRACTS", "RUE_ORACLE_DIFF_STD"],
+    timeout_seconds = 3600,
+)
+
+cached_corpus_suite(
+    name = "oracle-diff-test-o2",
+    tier = "slow",
+    labels = ["rue_not_quick", "rue_heavy_suite"],
+    harness = ":rue-oracle-diff",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_ORACLE_DIFF_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
+        "RUE_ORACLE_DIFF_EXECUTION_CONTRACTS": "$(location //crates/rue-cli-tests:cases)/cases/execution_contracts.toml",
+        "RUE_ORACLE_DIFF_OPT_LEVEL": "O2",
+        "RUE_ORACLE_DIFF_STD": "$(location root//:std)/std",
+    },
+    absolutize = ["RUE_BINARY", "RUE_ORACLE_DIFF_CASES", "RUE_ORACLE_DIFF_EXECUTION_CONTRACTS", "RUE_ORACLE_DIFF_STD"],
+    timeout_seconds = 3600,
+)
+
+cached_corpus_suite(
+    name = "oracle-diff-test-o3",
+    tier = "slow",
+    labels = ["rue_not_quick", "rue_heavy_suite"],
+    harness = ":rue-oracle-diff",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_ORACLE_DIFF_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
+        "RUE_ORACLE_DIFF_EXECUTION_CONTRACTS": "$(location //crates/rue-cli-tests:cases)/cases/execution_contracts.toml",
+        "RUE_ORACLE_DIFF_OPT_LEVEL": "O3",
+        "RUE_ORACLE_DIFF_STD": "$(location root//:std)/std",
+    },
+    absolutize = ["RUE_BINARY", "RUE_ORACLE_DIFF_CASES", "RUE_ORACLE_DIFF_EXECUTION_CONTRACTS", "RUE_ORACLE_DIFF_STD"],
     timeout_seconds = 3600,
 )
 
@@ -87,12 +143,43 @@ cached_corpus_suite(
     harness = ":rue-oracle-diff",
     args = ["spec"],
     env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_ORACLE_DIFF_OPT_LEVEL": "O1",
         "RUE_ORACLE_DIFF_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
         "RUE_ORACLE_DIFF_STD": "$(location root//:std)/std",
     },
-    absolutize = [
-        "RUE_ORACLE_DIFF_SPEC_CASES",
-        "RUE_ORACLE_DIFF_STD",
-    ],
+    absolutize = ["RUE_BINARY", "RUE_ORACLE_DIFF_SPEC_CASES", "RUE_ORACLE_DIFF_STD"],
+    timeout_seconds = 3600,
+)
+
+cached_corpus_suite(
+    name = "oracle-diff-spec-test-o2",
+    tier = "slow",
+    labels = ["rue_not_quick", "rue_heavy_suite"],
+    harness = ":rue-oracle-diff",
+    args = ["spec"],
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_ORACLE_DIFF_OPT_LEVEL": "O2",
+        "RUE_ORACLE_DIFF_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
+        "RUE_ORACLE_DIFF_STD": "$(location root//:std)/std",
+    },
+    absolutize = ["RUE_BINARY", "RUE_ORACLE_DIFF_SPEC_CASES", "RUE_ORACLE_DIFF_STD"],
+    timeout_seconds = 3600,
+)
+
+cached_corpus_suite(
+    name = "oracle-diff-spec-test-o3",
+    tier = "slow",
+    labels = ["rue_not_quick", "rue_heavy_suite"],
+    harness = ":rue-oracle-diff",
+    args = ["spec"],
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_ORACLE_DIFF_OPT_LEVEL": "O3",
+        "RUE_ORACLE_DIFF_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
+        "RUE_ORACLE_DIFF_STD": "$(location root//:std)/std",
+    },
+    absolutize = ["RUE_BINARY", "RUE_ORACLE_DIFF_SPEC_CASES", "RUE_ORACLE_DIFF_STD"],
     timeout_seconds = 3600,
 )

@@ -122,24 +122,29 @@ input back to the target named in the filename:
 
 A separate, complementary fuzzer lives in `crates/rue-oracle-diff`: it generates
 random **valid, well-typed** programs (in the subset the `rue-oracle` reference
-interpreter models) and runs each through *both* the oracle and the real
-compiler + native binary, comparing exit code and `@dbg` stdout. A disagreement
+interpreter models) and runs each through *both* the oracle and native binaries
+compiled at O0, O1, O2, and O3, comparing exit code and `@dbg` stdout. A disagreement
 is an automatically-discovered **miscompile** with a deterministic, seed-based
 repro (not a crash — a *wrong answer*). Because the generator promises valid
 programs inside the oracle's modeled subset, compiler rejection and
 `Unsupported` are also fail-closed generator-contract findings with the same
-seed/source repro format. Repros land in this crate's `crashes/` directory as
-`oracle-diff-seed-<seed>.rue` and are uploaded by the same CI artifact step.
+seed/source repro format. Generator-contract repros land in this crate's
+`crashes/` directory as `oracle-diff-seed-<seed>.rue`; native disagreements add
+the failing lane as `oracle-diff-seed-<seed>-O<level>.rue`. Both are uploaded by
+the same CI artifact step.
 
 ```bash
 RUE_BINARY="$(scripts/rue-bin)" ./buck2 run //crates/rue-oracle-diff:rue-oracle-diff -- \
-    fuzz --seeds 500                 # cross-check 500 generated programs
+    fuzz --seeds 500                 # 500 programs × O0/O1/O2/O3 = 2,000 lanes
 ./buck2 run //crates/rue-oracle-diff:rue-oracle-diff -- dump 42   # inspect seed 42's program
 ```
 
 ## Integration with CI
 
-Fuzzing runs automatically in CI via `.github/workflows/fuzz.yml`. Each target runs for 5 minutes daily; the differential fuzzer (above) runs a bounded 500-seed batch in the same workflow.
+Fuzzing runs automatically in CI via `.github/workflows/fuzz.yml`. Each mutation
+target runs for 5 minutes daily; the differential fuzzer runs a fixed 500-program
+batch across all four optimization levels (2,000 native lanes) under a 60-minute
+outer job bound and independent per-phase child-process timeouts.
 
 To run fuzzing locally for a limited time:
 

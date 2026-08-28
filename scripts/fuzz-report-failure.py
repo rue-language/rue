@@ -208,7 +208,8 @@ def collect_crashes(crash_dir: Path) -> list[Crash]:
     """Read every reproducer under `crash_dir`, deduplicated by fingerprint.
 
     Both producers are handled: `rue-fuzz` (`crash-<target>-...txt` plus a
-    `.txt.meta` sibling) and `rue-oracle-diff` (`oracle-diff-seed-N.rue`).
+    `.txt.meta` sibling) and `rue-oracle-diff`
+    (`oracle-diff-seed-N[-O<level>].rue`).
     A reproducer whose metadata is missing still reports — with a degraded
     signature — because an unexplained crash file is still a crash.
     """

@@ -114,6 +114,14 @@ pub enum CfgInlineError {
     /// A physically by-reference argument is not a place read at all — a
     /// violated sema/CFG invariant at the call site (RUE-760).
     NonPlaceByRefArgument { arg_index: usize },
+    /// A physically by-reference argument was loaded from a local storage
+    /// epoch that ended before the call. The SSA value remains valid, but an
+    /// inline redirect back to that local would access dead storage.
+    ByRefArgumentStorageEnded { arg_index: usize },
+    /// The call can repeat through a backedge without re-executing the SSA
+    /// place read. A later iteration may observe a replacement storage epoch,
+    /// so redirecting the argument to the local is not proven sound.
+    ByRefArgumentCallCycle { arg_index: usize },
     /// The copied callee references a parameter ABI slot that is not the
     /// start slot of any of its source parameters.
     UnmappedCalleeParamSlot { slot: u32 },
@@ -157,6 +165,14 @@ impl std::fmt::Display for CfgInlineError {
             Self::NonPlaceByRefArgument { arg_index } => {
                 write!(f, "by-ref argument {arg_index} is not a place read")
             }
+            Self::ByRefArgumentStorageEnded { arg_index } => write!(
+                f,
+                "by-ref argument {arg_index} was loaded from storage whose lifetime ended before the call"
+            ),
+            Self::ByRefArgumentCallCycle { arg_index } => write!(
+                f,
+                "by-ref argument {arg_index} reaches a repeated call without re-executing its place read"
+            ),
             Self::UnmappedCalleeParamSlot { slot } => write!(
                 f,
                 "callee references parameter slot {slot}, which is not a source-parameter start slot"
@@ -341,12 +357,19 @@ fn splice_shape(
             _ => return Err(CfgInlineError::NotACall { call }),
         }
     };
-    if let Some(call_block) = call_block {
-        if call_block.as_u32() as usize >= caller.block_count()
-            || !caller.get_block(call_block).insts.contains(&call)
-        {
-            return Err(CfgInlineError::CallSiteNotFound { call });
-        }
+    let call_block = call_block
+        .or_else(|| {
+            caller
+                .blocks()
+                .iter()
+                .find(|block| block.insts.contains(&call))
+                .map(|block| block.id)
+        })
+        .ok_or(CfgInlineError::CallSiteNotFound { call })?;
+    if call_block.as_u32() as usize >= caller.block_count()
+        || !caller.get_block(call_block).insts.contains(&call)
+    {
+        return Err(CfgInlineError::CallSiteNotFound { call });
     }
     if !callee.get_block(callee.entry).params.is_empty() {
         return Err(CfgInlineError::CalleeEntryHasParams);
@@ -361,7 +384,12 @@ fn splice_shape(
     let mut materialized_params = 0u64;
     for (index, (param, arg)) in params.iter().zip(&call_args).enumerate() {
         if callee.is_param_by_ref(param.start_slot) {
-            byref_argument_place(caller, arg.value, index)?;
+            let place = byref_argument_place(caller, arg.value, index)?;
+            if !is_accessor {
+                ensure_byref_storage_epoch_reaches_call(
+                    caller, arg.value, index, call, call_block, &place,
+                )?;
+            }
         } else {
             materialized_params =
                 materialized_params
@@ -798,6 +826,178 @@ fn byref_argument_place(
         CfgInstData::Param { index } => Ok(Place::param(*index, caller.get_inst(argument).ty)),
         CfgInstData::PlaceRead { place } => Ok(place.duplicate_with_owner()),
         _ => Err(CfgInlineError::NonPlaceByRefArgument { arg_index }),
+    }
+}
+
+/// Prove that redirecting a by-reference SSA argument back to a caller local
+/// preserves the exact storage epoch from which the value was read.
+///
+/// A `Load`/local-rooted `PlaceRead` remains a valid SSA value after its local
+/// storage dies, so the ordinary CFG verifier accepts passing that value to a
+/// call. Inlining is stricter: parameter accesses become direct accesses to
+/// the original place. If a `StorageDead` (or a new `StorageLive`) for that
+/// region lies on any path between the read and the call, the redirect would
+/// resurrect dead storage. Refuse that optional optimization and retain the
+/// original call instead.
+fn ensure_byref_storage_epoch_reaches_call(
+    caller: &Cfg,
+    argument: CfgValue,
+    arg_index: usize,
+    call: CfgValue,
+    call_block: BlockId,
+    place: &Place,
+) -> Result<(), CfgInlineError> {
+    let PlaceBase::Local(slot) = place.base else {
+        return Ok(());
+    };
+    let key = (slot, place.base_type);
+    let argument_location = caller.blocks().iter().find_map(|block| {
+        block
+            .insts
+            .iter()
+            .position(|value| *value == argument)
+            .map(|position| (block.id, position))
+    });
+    let Some((argument_block, argument_position)) = argument_location else {
+        return Err(CfgInlineError::NonPlaceByRefArgument { arg_index });
+    };
+    let call_position = caller
+        .get_block(call_block)
+        .insts
+        .iter()
+        .position(|value| *value == call)
+        .ok_or(CfgInlineError::CallSiteNotFound { call })?;
+
+    if argument_block != call_block
+        && call_reenters_without_argument(caller, call_block, argument_block)
+    {
+        return Err(CfgInlineError::ByRefArgumentCallCycle { arg_index });
+    }
+
+    if argument_block == call_block {
+        return caller.get_block(call_block).insts[argument_position + 1..call_position]
+            .iter()
+            .try_for_each(|value| match caller.get_inst(*value).data {
+                CfgInstData::StorageLive { slot, local_ty }
+                | CfgInstData::StorageDead { slot, local_ty }
+                    if (slot, local_ty) == key =>
+                {
+                    Err(CfgInlineError::ByRefArgumentStorageEnded { arg_index })
+                }
+                _ => Ok(()),
+            });
+    }
+
+    // Walk forward from the argument's block, but stop at the call. This
+    // excludes unreachable predecessors of the call and gives a loop
+    // backedge the same suffix-after-definition bounds as its first pass.
+    // Intersecting with reverse reachability keeps dead-end branches out of
+    // the scan without losing either side of a diamond.
+    let predecessors = caller.compute_predecessors();
+    let mut can_reach_call = vec![false; caller.block_count()];
+    let mut reverse = vec![call_block];
+    while let Some(block) = reverse.pop() {
+        let block_index = block.as_u32() as usize;
+        if can_reach_call[block_index] {
+            continue;
+        }
+        can_reach_call[block_index] = true;
+        reverse.extend(predecessors[block_index].iter().copied());
+    }
+
+    let mut pending = vec![argument_block];
+    let mut visited = vec![false; caller.block_count()];
+    while let Some(block) = pending.pop() {
+        let block_index = block.as_u32() as usize;
+        if visited[block_index] || !can_reach_call[block_index] {
+            continue;
+        }
+        visited[block_index] = true;
+        let start = if block == argument_block {
+            argument_position + 1
+        } else {
+            0
+        };
+        let end = if block == call_block {
+            call_position
+        } else {
+            caller.get_block(block).insts.len()
+        };
+        for value in &caller.get_block(block).insts[start..end] {
+            match caller.get_inst(*value).data {
+                CfgInstData::StorageLive { slot, local_ty }
+                | CfgInstData::StorageDead { slot, local_ty }
+                    if (slot, local_ty) == key =>
+                {
+                    return Err(CfgInlineError::ByRefArgumentStorageEnded { arg_index });
+                }
+                _ => {}
+            }
+        }
+        if block == call_block {
+            continue;
+        }
+        match &caller.get_block(block).terminator {
+            Terminator::Goto { target, .. } => pending.push(*target),
+            Terminator::Branch {
+                then_block,
+                else_block,
+                ..
+            } => {
+                pending.push(*then_block);
+                pending.push(*else_block);
+            }
+            Terminator::Switch { cases, default, .. } => {
+                pending.push(*default);
+                pending.extend(caller.switch_cases(cases).iter().map(|(_, target)| *target));
+            }
+            Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => {}
+        }
+    }
+    Ok(())
+}
+
+/// Whether a successor path from the call reaches the call block again before
+/// the argument-defining block. Re-entering the definition refreshes the SSA
+/// place read; re-entering only the call can pair that old read with a new
+/// local storage epoch.
+fn call_reenters_without_argument(cfg: &Cfg, call_block: BlockId, argument_block: BlockId) -> bool {
+    let mut pending = Vec::new();
+    push_successors(cfg, call_block, &mut pending);
+    let mut visited = vec![false; cfg.block_count()];
+    while let Some(block) = pending.pop() {
+        if block == call_block {
+            return true;
+        }
+        if block == argument_block {
+            continue;
+        }
+        let block_index = block.as_u32() as usize;
+        if visited[block_index] {
+            continue;
+        }
+        visited[block_index] = true;
+        push_successors(cfg, block, &mut pending);
+    }
+    false
+}
+
+fn push_successors(cfg: &Cfg, block: BlockId, pending: &mut Vec<BlockId>) {
+    match &cfg.get_block(block).terminator {
+        Terminator::Goto { target, .. } => pending.push(*target),
+        Terminator::Branch {
+            then_block,
+            else_block,
+            ..
+        } => {
+            pending.push(*then_block);
+            pending.push(*else_block);
+        }
+        Terminator::Switch { cases, default, .. } => {
+            pending.push(*default);
+            pending.extend(cfg.switch_cases(cases).iter().map(|(_, target)| *target));
+        }
+        Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => {}
     }
 }
 
@@ -2177,6 +2377,324 @@ mod tests {
             inlined.block_count(),
             caller.block_count() + callee.block_count() + 1
         );
+        assert_all_blocks_terminated(&inlined);
+    }
+
+    #[test]
+    fn by_ref_local_root_whose_storage_epoch_ended_is_not_inlineable() {
+        // A view temporary may be loaded into an SSA call argument and have
+        // its backing slot ended before the call. The SSA value remains
+        // available, but an inline redirect must not turn the callee's
+        // parameter accesses back into accesses to the dead slot.
+        let mut program = scalar_program();
+        program.add("bump", |_| by_ref_bump_callee());
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::UNIT, 1, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let one = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I64));
+            cfg.append_inst(
+                entry,
+                inst(CfgInstData::Alloc { slot: 0, init: one }, Type::UNIT),
+            );
+            let argument = cfg.append_inst(entry, inst(CfgInstData::Load { slot: 0 }, Type::I64));
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.append_call(
+                entry,
+                None,
+                interner.get_or_intern("bump"),
+                [CfgCallArg {
+                    value: argument,
+                    mode: CfgArgMode::Inout,
+                }],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap();
+            cfg.set_return(entry, None);
+            cfg
+        });
+
+        assert!(matches!(
+            program.try_inline("caller", "bump"),
+            Err(CfgInlineError::ByRefArgumentStorageEnded { arg_index: 0 })
+        ));
+    }
+
+    #[test]
+    fn by_ref_local_root_refuses_an_epoch_change_around_a_backedge() {
+        // The call is reachable either directly or after the loop replaces
+        // the local's storage epoch. A block-only visited set must not let the
+        // backedge hide that alternate path.
+        let mut program = scalar_program();
+        program.add("bump", |_| by_ref_bump_callee());
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::UNIT, 1, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            let header = cfg.new_block();
+            let body = cfg.new_block();
+            let invoke = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let one = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I64));
+            cfg.append_inst(
+                entry,
+                inst(CfgInstData::Alloc { slot: 0, init: one }, Type::UNIT),
+            );
+            let argument = cfg.append_inst(entry, inst(CfgInstData::Load { slot: 0 }, Type::I64));
+            cfg.set_goto(entry, header, vec![]);
+
+            let iterate = cfg.append_inst(header, inst(CfgInstData::BoolConst(false), Type::BOOL));
+            cfg.set_branch(header, iterate, body, [], invoke, []);
+
+            cfg.append_inst(
+                body,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.append_inst(
+                body,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let two = cfg.append_inst(body, inst(CfgInstData::Const(2), Type::I64));
+            cfg.append_inst(
+                body,
+                inst(CfgInstData::Alloc { slot: 0, init: two }, Type::UNIT),
+            );
+            cfg.set_goto(body, header, vec![]);
+
+            cfg.append_call(
+                invoke,
+                None,
+                interner.get_or_intern("bump"),
+                [CfgCallArg {
+                    value: argument,
+                    mode: CfgArgMode::Inout,
+                }],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap();
+            cfg.append_inst(
+                invoke,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_return(invoke, None);
+            cfg
+        });
+
+        assert!(matches!(
+            program.try_inline("caller", "bump"),
+            Err(CfgInlineError::ByRefArgumentStorageEnded { arg_index: 0 })
+        ));
+    }
+
+    #[test]
+    fn by_ref_call_loop_without_reexecuting_place_read_is_not_inlineable() {
+        // The first call sees the storage epoch from entry. The recycle block
+        // replaces that epoch and jumps directly back to the call, without
+        // re-executing the SSA place read that supplied its argument.
+        let mut program = scalar_program();
+        program.add("bump", |_| by_ref_bump_callee());
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::UNIT, 1, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            let invoke = cfg.new_block();
+            let recycle = cfg.new_block();
+            let exit = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let one = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I64));
+            cfg.append_inst(
+                entry,
+                inst(CfgInstData::Alloc { slot: 0, init: one }, Type::UNIT),
+            );
+            let argument = cfg.append_inst(entry, inst(CfgInstData::Load { slot: 0 }, Type::I64));
+            cfg.set_goto(entry, invoke, []);
+
+            cfg.append_call(
+                invoke,
+                None,
+                interner.get_or_intern("bump"),
+                [CfgCallArg {
+                    value: argument,
+                    mode: CfgArgMode::Inout,
+                }],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap();
+            let repeat = cfg.append_inst(invoke, inst(CfgInstData::BoolConst(false), Type::BOOL));
+            cfg.set_branch(invoke, repeat, recycle, [], exit, []);
+
+            cfg.append_inst(
+                recycle,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.append_inst(
+                recycle,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let two = cfg.append_inst(recycle, inst(CfgInstData::Const(2), Type::I64));
+            cfg.append_inst(
+                recycle,
+                inst(CfgInstData::Alloc { slot: 0, init: two }, Type::UNIT),
+            );
+            cfg.set_goto(recycle, invoke, []);
+
+            cfg.append_inst(
+                exit,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_return(exit, None);
+            cfg
+        });
+
+        assert!(matches!(
+            program.try_inline("caller", "bump"),
+            Err(CfgInlineError::ByRefArgumentCallCycle { arg_index: 0 })
+        ));
+    }
+
+    #[test]
+    fn unreachable_epoch_marker_does_not_refuse_a_safe_by_ref_inline() {
+        let mut program = scalar_program();
+        program.add("bump", |_| by_ref_bump_callee());
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::UNIT, 1, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            let unreachable = cfg.new_block();
+            let invoke = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let one = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I64));
+            cfg.append_inst(
+                entry,
+                inst(CfgInstData::Alloc { slot: 0, init: one }, Type::UNIT),
+            );
+            let argument = cfg.append_inst(entry, inst(CfgInstData::Load { slot: 0 }, Type::I64));
+            cfg.set_goto(entry, invoke, vec![]);
+
+            cfg.append_inst(
+                unreachable,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_goto(unreachable, invoke, vec![]);
+
+            cfg.append_call(
+                invoke,
+                None,
+                interner.get_or_intern("bump"),
+                [CfgCallArg {
+                    value: argument,
+                    mode: CfgArgMode::Inout,
+                }],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap();
+            cfg.append_inst(
+                invoke,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_return(invoke, None);
+            cfg
+        });
+
+        let inlined = program.inline("caller", "bump");
         assert_all_blocks_terminated(&inlined);
     }
 
