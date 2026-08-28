@@ -6,7 +6,7 @@
 //! emitted-frame locals — is common to every machine-code emission entry point.
 
 use rue_air::{ArgClass, ArgConvention, FrozenTypeInternPool, NativeCallAbi, ReturnClass};
-use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue};
+use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, ValidatedCfg};
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use tracing::info_span;
 
@@ -193,104 +193,71 @@ pub(crate) fn validate_pre_lowering_budget_for_target(
     Ok(has_sret)
 }
 
-/// Run the target-independent backend pipeline around concrete pass hooks.
-///
-/// The closures monomorphize for each backend; there is no dynamic dispatch or
-/// universal backend trait. Keeping the two slot formulas here is deliberate:
-///
-/// - `existing_slots` includes the shared local area (RUE-768), the *homed*
-///   parameters (RUE-1170), and the optional incoming sret pointer so
-///   register-allocation spills cannot overlap any of them.
-/// - `total_locals` includes only the shared local area and new spill slots
-///   because emitters account for parameters and sret separately.
-///
-/// Run the canonical backend pipeline while carrying optional diagnostic
-/// observations alongside the same lowering and allocation execution.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_mir_with_artifacts<
-    M,
-    R,
-    D,
-    Lower,
-    Allocate,
-    Peephole,
-    Schedule,
-    Verify,
-    IsLeaf,
->(
-    cfg: &Cfg,
+/// Run the canonical backend pipeline through the compiler-checked backend
+/// contract. Every pass authority and target fact is an associated method or
+/// constant of the selected backend.
+pub(crate) fn prepare_mir_with_backend<B: crate::backend::Backend>(
+    cfg: &ValidatedCfg,
     type_pool: &FrozenTypeInternPool,
     interner: &lasso::ThreadedRodeo,
-    arg_reg_count: u32,
-    return_reg_count: u32,
-    scheme: SavedRegScheme,
-    target_c_flavor: rue_air::TargetCAbiFlavor,
-    is_foreign_symbol: &dyn Fn(lasso::Spur) -> bool,
-    lower: Lower,
-    allocate: Allocate,
-    peephole: Peephole,
-    schedule: Schedule,
-    verify: Verify,
-    is_leaf: IsLeaf,
-) -> CompileResult<(PreparedMir<M, R>, D)>
-where
-    Lower: FnOnce(
-        &crate::param_storage::ParamStoragePlan,
-        &crate::local_storage::LocalSlotPlan,
-    ) -> CompileResult<(M, D)>,
-    Allocate: FnOnce(M, u32, &mut D) -> CompileResult<(M, u32, Vec<R>)>,
-    Peephole: FnOnce(&mut M),
-    Schedule: FnOnce(&mut M),
-    Verify: FnOnce(&M) -> CompileResult<()>,
-    IsLeaf: FnOnce(&M) -> bool,
-{
+    target: rue_target::Target,
+    symbols: crate::MachineSymbolResolver<'_>,
+    request: crate::BackendArtifactRequest,
+) -> CompileResult<(PreparedMir<B::Mir, B::Reg>, crate::BackendArtifacts)> {
+    assert_eq!(
+        target.arch(),
+        B::ARCH,
+        "backend target architecture mismatch: backend is {:?}, target is {:?}",
+        B::ARCH,
+        target.arch()
+    );
     let has_sret = validate_pre_lowering_budget_for_target(
         cfg,
         type_pool,
-        arg_reg_count,
-        return_reg_count,
-        scheme,
-        target_c_flavor,
-        is_foreign_symbol,
+        B::ARG_REG_COUNT,
+        B::RETURN_REG_COUNT,
+        B::SAVED_REG_SCHEME,
+        B::TARGET_C_FLAVOR,
+        &|name| symbols.is_foreign(&symbols.resolve(interner.resolve(&name))),
     )?;
-    // The per-parameter storage decision (RUE-1170) is computed once here and
-    // shared by lowering (body addressing and entry copies), the frame slot
-    // sums below, and the emitter's prologue homing, so they cannot disagree
-    // about which parameters have frame homes.
     let param_storage =
-        crate::param_storage::ParamStoragePlan::plan(cfg, type_pool, has_sret, arg_reg_count);
+        crate::param_storage::ParamStoragePlan::plan(cfg, type_pool, has_sret, B::ARG_REG_COUNT);
     let param_homing = param_storage.homing().to_vec();
     let homed_param_slots = param_storage.homed_area_slots();
-    // The local frame-slot decision (RUE-768) is target-independent and is
-    // likewise computed once: lowering addresses through it, the sums below
-    // place the parameter area and the spill floor above it, and the emitters
-    // size the frame from it.
     let local_storage = crate::local_storage::LocalSlotPlan::plan(cfg, type_pool, interner);
     let frame_local_slots = local_storage.frame_local_slots();
 
     let (mir, mut artifacts) = {
         let _span = info_span!("mir_lowering").entered();
-        lower(&param_storage, &local_storage)?
+        B::lower(
+            cfg,
+            type_pool,
+            interner,
+            target,
+            symbols,
+            request,
+            &param_storage,
+            &local_storage,
+        )?
     };
     let existing_slots =
         checked_slot_sum([frame_local_slots, homed_param_slots, u32::from(has_sret)])
             .ok_or_else(|| frame_budget_error(cfg, None))?;
     let (mut mir, num_spills, used_callee_saved) = {
         let _span = info_span!("register_allocation").entered();
-        allocate(mir, existing_slots, &mut artifacts)?
+        B::allocate(mir, existing_slots, &mut artifacts, request)?
     };
-
     {
         let _span = info_span!("mir_peephole").entered();
-        peephole(&mut mir);
+        B::peephole(&mut mir);
     }
     {
         let _span = info_span!("mir_scheduling").entered();
-        schedule(&mut mir);
+        B::schedule(&mut mir);
     }
     {
         let _span = info_span!("mir_verification").entered();
-        verify(&mir)?;
+        B::verify(&mir)?;
     }
 
     let total_locals = frame_local_slots
@@ -298,13 +265,12 @@ where
         .ok_or_else(|| frame_budget_error(cfg, None))?;
     let total_slots = checked_slot_sum([total_locals, homed_param_slots, u32::from(has_sret)])
         .ok_or_else(|| frame_budget_error(cfg, None))?;
-    // Frame planning is the last thing the pipeline decides: the eligible-leaf
-    // question can only be answered once allocation, peephole, and scheduling
-    // have settled the final instruction stream and the final spill count.
-    let frame_layout = match plan_frame_pointer(total_slots, is_leaf(&mir)) {
-        FramePointer::Omitted => FrameLayout::frameless(scheme, used_callee_saved.len()),
+    let frame_layout = match plan_frame_pointer(total_slots, B::is_leaf(&mir)) {
+        FramePointer::Omitted => {
+            FrameLayout::frameless(B::SAVED_REG_SCHEME, used_callee_saved.len())
+        }
         FramePointer::Established => {
-            FrameLayout::try_new(scheme, used_callee_saved.len(), total_slots)
+            FrameLayout::try_new(B::SAVED_REG_SCHEME, used_callee_saved.len(), total_slots)
                 .map_err(|_| frame_budget_error(cfg, None))?
         }
     };
@@ -325,19 +291,174 @@ where
     ))
 }
 
+/// Complete target-independent orchestration around one backend's leaves.
+pub(crate) fn generate_with_backend<B: crate::backend::Backend>(
+    cfg: &ValidatedCfg,
+    type_pool: &FrozenTypeInternPool,
+    strings: &[String],
+    interner: &lasso::ThreadedRodeo,
+    target: rue_target::Target,
+    symbols: crate::MachineSymbolResolver<'_>,
+    atoms: &[crate::LocalAtomProjection<'_>],
+    require_complete_atoms: bool,
+    request: crate::BackendArtifactRequest,
+) -> CompileResult<crate::BackendProduct> {
+    let (mut prepared, mut artifacts) =
+        prepare_mir_with_backend::<B>(cfg, type_pool, interner, target, symbols, request)?;
+    let local_strings = {
+        let _span = info_span!("string_table_compaction").entered();
+        let (local_strings, remap) = crate::compact_string_table(
+            strings,
+            atoms,
+            B::referenced_string_ids(&prepared.mir),
+            require_complete_atoms,
+        )?;
+        B::remap_string_ids(&mut prepared.mir, &remap);
+        local_strings
+    };
+    let _emission_span = info_span!("machine_emission").entered();
+    let machine_code = B::emit(&prepared, &local_strings, request, &mut artifacts)?;
+    Ok(crate::BackendProduct {
+        machine_code,
+        artifacts,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
 
     use lasso::Spur;
-    use rue_air::{Type, TypeInternPool};
-    use rue_cfg::{Cfg, CfgArgMode, CfgCallArg, CfgInst, CfgInstData};
+    use rue_air::{FrozenTypeInternPool, Type, TypeInternPool};
+    use rue_cfg::{Cfg, CfgArgMode, CfgCallArg, CfgInst, CfgInstData, ValidatedCfg};
     use rue_span::Span;
+    use rue_target::{Arch, Target};
 
     use super::{
-        FramePointer, SavedRegScheme, plan_frame_pointer, prepare_mir_with_artifacts,
+        FramePointer, SavedRegScheme, plan_frame_pointer, prepare_mir_with_backend,
         validate_pre_lowering_budget,
     };
+
+    std::thread_local! {
+        static PIPELINE_EVENTS: RefCell<Vec<&'static str>> = const {
+            RefCell::new(Vec::new())
+        };
+    }
+
+    fn record(event: &'static str) {
+        PIPELINE_EVENTS.with(|events| events.borrow_mut().push(event));
+    }
+
+    struct TestBackend;
+
+    impl crate::backend::Backend for TestBackend {
+        type Mir = u32;
+        type Reg = u8;
+
+        const ARCH: Arch = Arch::X86_64;
+        const ARG_REG_COUNT: u32 = 6;
+        const RETURN_REG_COUNT: u32 = 6;
+        const SAVED_REG_SCHEME: SavedRegScheme = SavedRegScheme::X86_64;
+        const TARGET_C_FLAVOR: rue_air::TargetCAbiFlavor = rue_air::TargetCAbiFlavor::SysVAmd64;
+
+        fn lower(
+            _cfg: &ValidatedCfg,
+            _type_pool: &rue_air::FrozenTypeInternPool,
+            _interner: &lasso::ThreadedRodeo,
+            _target: Target,
+            _symbols: crate::MachineSymbolResolver<'_>,
+            _request: crate::BackendArtifactRequest,
+            _param_storage: &crate::param_storage::ParamStoragePlan,
+            local_storage: &crate::local_storage::LocalSlotPlan,
+        ) -> rue_error::CompileResult<(Self::Mir, crate::BackendArtifacts)> {
+            record("lower");
+            assert_eq!(local_storage.frame_local_slots(), 3);
+            Ok((10, crate::BackendArtifacts::default()))
+        }
+
+        fn allocate(
+            mir: Self::Mir,
+            existing_slots: u32,
+            _artifacts: &mut crate::BackendArtifacts,
+            _request: crate::BackendArtifactRequest,
+        ) -> rue_error::CompileResult<(Self::Mir, u32, Vec<Self::Reg>)> {
+            record("allocate");
+            assert_eq!(existing_slots, 6);
+            Ok((mir + 1, 4, vec![5]))
+        }
+
+        fn peephole(mir: &mut Self::Mir) {
+            record("peephole");
+            *mir += 2;
+        }
+
+        fn schedule(mir: &mut Self::Mir) {
+            record("schedule");
+            *mir += 3;
+        }
+
+        fn verify(mir: &Self::Mir) -> rue_error::CompileResult<()> {
+            record("verify");
+            assert_eq!(*mir, 16);
+            Ok(())
+        }
+
+        fn is_leaf(mir: &Self::Mir) -> bool {
+            record("is_leaf");
+            assert_eq!(*mir, 16, "frame planning sees the final instruction stream");
+            true
+        }
+
+        fn referenced_string_ids(_mir: &Self::Mir) -> Vec<u32> {
+            Vec::new()
+        }
+
+        fn remap_string_ids(_mir: &mut Self::Mir, _remap: &std::collections::BTreeMap<u32, u32>) {}
+
+        fn emit(
+            _prepared: &super::PreparedMir<Self::Mir, Self::Reg>,
+            _local_strings: &[String],
+            _request: crate::BackendArtifactRequest,
+            _artifacts: &mut crate::BackendArtifacts,
+        ) -> rue_error::CompileResult<crate::MachineCode> {
+            panic!("synthetic backend emitter is not part of this preparation test")
+        }
+    }
+
+    fn aggregate_test_cfg() -> (ValidatedCfg, FrozenTypeInternPool, lasso::ThreadedRodeo) {
+        let type_pool = TypeInternPool::new();
+        let array_id = type_pool.intern_array_from_type(Type::I64, 7);
+        let type_pool = type_pool.freeze();
+        let array_ty = Type::new_array(array_id);
+        let mut cfg = Cfg::new(
+            array_ty,
+            3,
+            2,
+            "pipeline_test".to_owned(),
+            vec![false, false],
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let elements = (0..7)
+            .map(|value| {
+                cfg.append_inst(
+                    entry,
+                    CfgInst {
+                        data: CfgInstData::Const(value),
+                        ty: Type::I64,
+                        span: Span::new(0, 2),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let array = cfg
+            .append_array_init(entry, elements, array_ty, Span::new(0, 2))
+            .unwrap();
+        cfg.set_return(entry, Some(array));
+        let interner = lasso::ThreadedRodeo::new();
+        let cfg = cfg.finish(&type_pool).expect("test CFG must validate");
+        (cfg, type_pool, interner)
+    }
 
     #[test]
     fn only_a_slotless_leaf_omits_the_frame_pointer() {
@@ -353,64 +474,25 @@ mod tests {
 
     #[test]
     fn pass_order_and_frame_slot_formulas_are_single_source() {
-        let type_pool = TypeInternPool::new();
-        let array_id = type_pool.intern_array_from_type(Type::I32, 7);
-        let type_pool = type_pool.freeze();
-        let cfg = Cfg::new(
-            Type::new_array(array_id),
-            3,
-            2,
-            "pipeline_test".to_owned(),
-            vec![false, false],
-        );
-        let events = RefCell::new(Vec::new());
+        let (cfg, type_pool, interner) = aggregate_test_cfg();
+        PIPELINE_EVENTS.with(|events| events.borrow_mut().clear());
 
         // A seven-slot return exceeds the six-register budget, so spill
         // placement sees 3 locals + 2 params + 1 sret-pointer slot. Four
         // spills then produce 3 + 4 emitted locals (not 3 + 2 + 1 + 4).
-        let (prepared, ()) = prepare_mir_with_artifacts(
+        let (prepared, _) = prepare_mir_with_backend::<TestBackend>(
             &cfg,
             &type_pool,
-            &lasso::ThreadedRodeo::new(),
-            6,
-            6,
-            SavedRegScheme::X86_64,
-            rue_air::TargetCAbiFlavor::SysVAmd64,
-            &|_| false,
-            |_param_storage, local_storage| {
-                events.borrow_mut().push("lower");
-                // No storage markers, so the local layout is the identity.
-                assert_eq!(local_storage.frame_local_slots(), 3);
-                Ok((10_u32, ()))
-            },
-            |mir, existing_slots, _artifacts| {
-                events.borrow_mut().push("allocate");
-                assert_eq!(existing_slots, 6);
-                Ok((mir + 1, 4, vec![5_u8]))
-            },
-            |mir| {
-                events.borrow_mut().push("peephole");
-                *mir += 2;
-            },
-            |mir| {
-                events.borrow_mut().push("schedule");
-                *mir += 3;
-            },
-            |mir| {
-                events.borrow_mut().push("verify");
-                assert_eq!(*mir, 16);
-                Ok(())
-            },
-            |mir| {
-                events.borrow_mut().push("is_leaf");
-                assert_eq!(*mir, 16, "frame planning sees the final instruction stream");
-                true
-            },
+            &interner,
+            Target::X86_64Linux,
+            crate::MachineSymbolResolver::default(),
+            crate::BackendArtifactRequest::default(),
         )
         .expect("synthetic pipeline should succeed");
 
+        let events = PIPELINE_EVENTS.with(|events| std::mem::take(&mut *events.borrow_mut()));
         assert_eq!(
-            events.into_inner(),
+            events,
             [
                 "lower", "allocate", "peephole", "schedule", "verify", "is_leaf"
             ]
@@ -421,6 +503,20 @@ mod tests {
         assert_eq!(prepared.param_storage.homed_area_slots(), 2);
         assert!(prepared.has_sret);
         assert_eq!(prepared.used_callee_saved, [5]);
+    }
+
+    #[test]
+    #[should_panic(expected = "backend target architecture mismatch")]
+    fn backend_contract_rejects_mismatched_target_before_lowering() {
+        let (cfg, type_pool, interner) = aggregate_test_cfg();
+        let _ = prepare_mir_with_backend::<TestBackend>(
+            &cfg,
+            &type_pool,
+            &interner,
+            Target::Aarch64Linux,
+            crate::MachineSymbolResolver::default(),
+            crate::BackendArtifactRequest::default(),
+        );
     }
 
     #[test]
