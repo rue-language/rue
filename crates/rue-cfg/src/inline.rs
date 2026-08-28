@@ -783,7 +783,7 @@ pub fn splice_call_in_block_in_place(
     // Uses of the former call result are NOT rewritten here: the returned
     // replacement is the batch driver's to apply in one sweep before the
     // batch verification (see the function contract above).
-    debug_assert_eq!(
+    assert_eq!(
         splice.value_base, appended_values_from,
         "nothing may enter the value arena before the callee copy"
     );
