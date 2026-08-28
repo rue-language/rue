@@ -98,12 +98,33 @@ pub(crate) fn checked_slot_sum(parts: impl IntoIterator<Item = u32>) -> Option<u
 
 /// Reject every base-frame and outgoing-call calculation before lowering can
 /// narrow it to a backend immediate or allocate proportional metadata.
+#[cfg(test)]
 pub(crate) fn validate_pre_lowering_budget(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
     arg_reg_count: u32,
     return_reg_count: u32,
     scheme: SavedRegScheme,
+) -> CompileResult<bool> {
+    validate_pre_lowering_budget_for_target(
+        cfg,
+        type_pool,
+        arg_reg_count,
+        return_reg_count,
+        scheme,
+        rue_air::TargetCAbiFlavor::SysVAmd64,
+        &|_| false,
+    )
+}
+
+pub(crate) fn validate_pre_lowering_budget_for_target(
+    cfg: &Cfg,
+    type_pool: &FrozenTypeInternPool,
+    arg_reg_count: u32,
+    return_reg_count: u32,
+    scheme: SavedRegScheme,
+    target_c_flavor: rue_air::TargetCAbiFlavor,
+    is_foreign_symbol: &dyn Fn(lasso::Spur) -> bool,
 ) -> CompileResult<bool> {
     let return_class =
         NativeCallAbi::new(type_pool, return_reg_count).classify_return(cfg.return_type());
@@ -116,23 +137,37 @@ pub(crate) fn validate_pre_lowering_budget(
     for raw in 0..cfg.value_count() {
         let value = CfgValue::from_raw(raw as u32);
         let inst = cfg.get_inst(value);
-        let CfgInstData::Call { .. } = &inst.data else {
+        let CfgInstData::Call { name, .. } = &inst.data else {
             continue;
         };
+        let call_args = cfg.get_call_args(&inst.data);
+        if is_foreign_symbol(*name)
+            && crate::foreign_call::ForeignCallInputs::call_touches_aggregate(
+                cfg, inst.ty, call_args,
+            )
+        {
+            crate::foreign_call::ForeignCallInputs::checked_call_area_bytes(
+                cfg,
+                type_pool,
+                inst.ty,
+                call_args,
+                target_c_flavor,
+            )
+            .map_err(|_| frame_budget_error(cfg, Some(value)))?;
+            continue;
+        }
         let return_class = NativeCallAbi::new(type_pool, return_reg_count).classify_return(inst.ty);
         let (mut abi_slots, sret_bytes) = match return_class {
             ReturnClass::Indirect { slot_count } => {
-                let bytes = u64::from(slot_count)
-                    .checked_mul(rue_air::layout::SLOT_BYTES)
-                    .ok_or_else(|| frame_budget_error(cfg, Some(value)))?;
-                let bytes = crate::frame_layout::checked_aligned_region_bytes(bytes)
-                    .map_err(|_| frame_budget_error(cfg, Some(value)))?;
+                let bytes =
+                    crate::frame_layout::checked_aligned_cell_region_bytes(u64::from(slot_count))
+                        .map_err(|_| frame_budget_error(cfg, Some(value)))?;
                 (1_u32, u64::from(bytes))
             }
             _ => (0_u32, 0),
         };
         let mut indirect_bytes = 0_u64;
-        for arg in cfg.get_call_args(&inst.data) {
+        for arg in call_args {
             let ty = cfg.get_inst(arg.value).ty;
             let convention = match arg.mode {
                 CfgArgMode::Normal => ArgConvention::ByValue,
@@ -189,6 +224,8 @@ pub(crate) fn prepare_mir_with_artifacts<
     arg_reg_count: u32,
     return_reg_count: u32,
     scheme: SavedRegScheme,
+    target_c_flavor: rue_air::TargetCAbiFlavor,
+    is_foreign_symbol: &dyn Fn(lasso::Spur) -> bool,
     lower: Lower,
     allocate: Allocate,
     peephole: Peephole,
@@ -207,8 +244,15 @@ where
     Verify: FnOnce(&M) -> CompileResult<()>,
     IsLeaf: FnOnce(&M) -> bool,
 {
-    let has_sret =
-        validate_pre_lowering_budget(cfg, type_pool, arg_reg_count, return_reg_count, scheme)?;
+    let has_sret = validate_pre_lowering_budget_for_target(
+        cfg,
+        type_pool,
+        arg_reg_count,
+        return_reg_count,
+        scheme,
+        target_c_flavor,
+        is_foreign_symbol,
+    )?;
     // The per-parameter storage decision (RUE-1170) is computed once here and
     // shared by lowering (body addressing and entry copies), the frame slot
     // sums below, and the emitter's prologue homing, so they cannot disagree
@@ -331,6 +375,8 @@ mod tests {
             6,
             6,
             SavedRegScheme::X86_64,
+            rue_air::TargetCAbiFlavor::SysVAmd64,
+            &|_| false,
             |_param_storage, local_storage| {
                 events.borrow_mut().push("lower");
                 // No storage markers, so the local layout is the identity.
@@ -391,6 +437,13 @@ mod tests {
             "AArch64's mandatory FP/LR save must count against the same budget"
         );
 
+        let over_boundary = Cfg::new(Type::UNIT, max_slots + 1, 0, "over_boundary".into(), vec![]);
+        assert!(
+            validate_pre_lowering_budget(&over_boundary, &type_pool, 6, 6, SavedRegScheme::X86_64,)
+                .is_err(),
+            "an oversized production CFG must be rejected before backend lowering"
+        );
+
         let param_boundary = Cfg::new(Type::UNIT, 0, max_slots, "param_boundary".into(), vec![]);
         assert!(
             validate_pre_lowering_budget(
@@ -405,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_argument_buffers_and_sret_share_one_call_area_budget() {
+    fn foreign_argument_buffers_and_sret_share_one_call_area_budget() {
         let type_pool = TypeInternPool::new();
         let array_id = type_pool.intern_array_from_type(Type::I32, 134_217_728);
         let huge = Type::new_array(array_id);
@@ -432,16 +485,110 @@ mod tests {
         cfg.append_call(entry, None, Spur::default(), args, huge, Span::default())
             .unwrap();
 
-        for (arg_regs, ret_regs, scheme) in [
-            (6, 6, SavedRegScheme::X86_64),
-            (8, 8, SavedRegScheme::Aarch64),
+        for (arg_regs, ret_regs, scheme, flavor) in [
+            (
+                6,
+                6,
+                SavedRegScheme::X86_64,
+                rue_air::TargetCAbiFlavor::SysVAmd64,
+            ),
+            (
+                8,
+                8,
+                SavedRegScheme::Aarch64,
+                rue_air::TargetCAbiFlavor::Aapcs64,
+            ),
         ] {
-            let error = validate_pre_lowering_budget(&cfg, &type_pool, arg_regs, ret_regs, scheme)
-                .unwrap_err();
+            let error = super::validate_pre_lowering_budget_for_target(
+                &cfg,
+                &type_pool,
+                arg_regs,
+                ret_regs,
+                scheme,
+                flavor,
+                &|_| true,
+            )
+            .unwrap_err();
             assert!(matches!(
                 error.kind,
                 rue_error::ErrorKind::FunctionFrameTooLarge { .. }
             ));
+        }
+
+        // Keep the native planner's cumulative indirect+sret guard covered as
+        // well; the target-C cases above exercise the distinct foreign shapes.
+        let error = validate_pre_lowering_budget(&cfg, &type_pool, 6, 6, SavedRegScheme::X86_64)
+            .unwrap_err();
+        assert!(matches!(
+            error.kind,
+            rue_error::ErrorKind::FunctionFrameTooLarge { .. }
+        ));
+    }
+
+    #[test]
+    fn foreign_image_scratch_shares_the_live_sret_budget() {
+        let type_pool = TypeInternPool::new();
+        let max_array = type_pool
+            .intern_array_from_type(Type::I32, rue_air::layout::MAX_FUNCTION_FRAME_BYTES / 4);
+        let small_array = type_pool.intern_array_from_type(Type::I32, 4);
+        let huge = Type::new_array(max_array);
+        let small = Type::new_array(small_array);
+        let type_pool = type_pool.freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "scratch_budget".into(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let arg = cfg.append_inst(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(0),
+                ty: small,
+                span: Span::default(),
+            },
+        );
+        cfg.append_call(
+            entry,
+            None,
+            Spur::default(),
+            [CfgCallArg {
+                value: arg,
+                mode: CfgArgMode::Normal,
+            }],
+            huge,
+            Span::default(),
+        )
+        .unwrap();
+
+        // The final call area contains only the max-sized sret buffer, but the
+        // aggregate argument's 16-byte image scratch is live alongside it
+        // during lowering. Both target-C lowerers must reject that peak before
+        // their stack adjustments are emitted.
+        for (arg_regs, ret_regs, scheme, flavor) in [
+            (
+                6,
+                6,
+                SavedRegScheme::X86_64,
+                rue_air::TargetCAbiFlavor::SysVAmd64,
+            ),
+            (
+                8,
+                8,
+                SavedRegScheme::Aarch64,
+                rue_air::TargetCAbiFlavor::Aapcs64,
+            ),
+        ] {
+            assert!(
+                super::validate_pre_lowering_budget_for_target(
+                    &cfg,
+                    &type_pool,
+                    arg_regs,
+                    ret_regs,
+                    scheme,
+                    flavor,
+                    &|_| true,
+                )
+                .is_err(),
+                "foreign scratch must count against the {flavor:?} live sret area"
+            );
         }
     }
 }

@@ -683,7 +683,13 @@ impl<'a> Emitter<'a> {
                     end_inst!(self, "mov [rbp{}], {}", offset, reg);
                 } else {
                     // Stack-passed arg: copy from above the frame into the param area
-                    let src_offset = 16 + (abi_index as i32 - ARG_REGS.len() as i32) * 8;
+                    let src_offset = crate::frame_layout::checked_incoming_stack_arg_offset(
+                        16,
+                        abi_index,
+                        u32::try_from(ARG_REGS.len())
+                            .expect("argument register count must fit u32"),
+                    )
+                    .expect("incoming stack argument offset must fit displacement");
                     self.begin_inst();
                     self.emit_mov_rm(Reg::Rax, Reg::Rbp, src_offset);
                     end_inst!(self, "mov rax, [rbp+{}]", src_offset);
@@ -3001,6 +3007,21 @@ mod tests {
             .emit()
             .unwrap()
             .0
+    }
+
+    #[test]
+    fn incoming_stack_argument_homing_uses_sysv_entry_offset() {
+        let mut mir = X86Mir::new();
+        mir.push(X86Inst::Ret);
+        let emitted = Emitter::new(&mir, 0, 0, 1, &[], &[])
+            .with_param_homing(vec![crate::codegen_pipeline::ParamHoming {
+                start_slot: 0,
+                reg_count: 1,
+                abi_start: 6,
+            }])
+            .emit_all()
+            .expect("stack argument homing must emit");
+        assert!(emitted.to_asm().contains("mov rax, [rbp+16]"));
     }
 
     #[test]

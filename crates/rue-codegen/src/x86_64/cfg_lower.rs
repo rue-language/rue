@@ -35,6 +35,10 @@ use super::mir::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
 use crate::agg_slots::SlotBackend;
 use crate::allocation;
 use crate::cfg_lower::CfgLowerContext;
+use crate::frame_layout::{
+    checked_aligned_cell_region_bytes, checked_cell_byte_offset, checked_cell_region_bytes,
+    checked_cell_region_padding_bytes, checked_displacement_bytes,
+};
 use crate::vreg::BLOCK_LABEL_BASE;
 
 /// Argument passing registers per System V AMD64 ABI. ABI arg slots beyond
@@ -71,11 +75,6 @@ const _: () = {
         index += 1;
     }
 };
-
-/// Round `value` up to a multiple of `alignment` (a power of two ≥ 1).
-const fn align_up_u32(value: u32, alignment: u32) -> u32 {
-    value.div_ceil(alignment) * alignment
-}
 
 /// CFG to X86Mir lowering.
 pub struct CfgLower<'a> {
@@ -126,7 +125,8 @@ impl crate::call_plan::CallMaterializer for CfgLower<'_> {
     fn materialize_sret_pointer(&mut self, storage_bytes: u32) -> VReg {
         self.mir.push(X86Inst::AddRI {
             dst: Operand::Physical(Reg::Rsp),
-            imm: -(storage_bytes as i32),
+            imm: -checked_displacement_bytes(u64::from(storage_bytes))
+                .expect("sret storage must fit displacement"),
         });
         let pointer = self.mir.alloc_vreg();
         self.mir.push(X86Inst::MovRR {
@@ -150,7 +150,8 @@ impl crate::call_plan::CallMaterializer for CfgLower<'_> {
         // zeroed first (ADR-0052 ruling 5) so the buffer is fully initialized.
         self.mir.push(X86Inst::AddRI {
             dst: Operand::Physical(Reg::Rsp),
-            imm: -(storage_bytes as i32),
+            imm: -checked_displacement_bytes(u64::from(storage_bytes))
+                .expect("indirect argument storage must fit displacement"),
         });
         let pointer = self.mir.alloc_vreg();
         self.mir.push(X86Inst::MovRR {
@@ -172,7 +173,8 @@ impl crate::call_plan::CallMaterializer for CfgLower<'_> {
         // written with a per-variant tag dispatch (RUE-1037).
         self.mir.push(X86Inst::AddRI {
             dst: Operand::Physical(Reg::Rsp),
-            imm: -(storage_bytes as i32),
+            imm: -checked_displacement_bytes(u64::from(storage_bytes))
+                .expect("indirect argument storage must fit displacement"),
         });
         let pointer = self.mir.alloc_vreg();
         self.mir.push(X86Inst::MovRR {
@@ -298,7 +300,16 @@ impl<'a> CfgLower<'a> {
 
         let out_shape = plan.out_shape();
         let out_bytes = out_shape
-            .map(|shape| (shape.shape().slots.len() as i32 * 8 + 15) & !15)
+            .map(|shape| {
+                i32::try_from(
+                    checked_aligned_cell_region_bytes(
+                        u64::try_from(shape.shape().slots.len())
+                            .expect("runtime out slot count must fit u64"),
+                    )
+                    .expect("runtime out area must pass frame-budget preflight"),
+                )
+                .expect("runtime out area must fit displacement")
+            })
             .unwrap_or(0);
         if out_bytes > 0 {
             self.mir.push(X86Inst::AddRI {
@@ -406,7 +417,8 @@ impl<'a> CfgLower<'a> {
                         self.mir.push(X86Inst::MovRM {
                             dst: Operand::Virtual(slot),
                             base: Reg::Rsp,
-                            offset: (index * 8) as i32,
+                            offset: checked_cell_byte_offset(index as u64)
+                                .expect("runtime out slot offset must fit displacement"),
                         });
                         slot
                     })
@@ -1057,11 +1069,21 @@ impl<'a> CfgLower<'a> {
         let primary = plan.result.unwrap_or_else(|| self.mir.alloc_vreg());
         let num_reg_args = plan.abi_slots.len().min(ARG_REGS.len());
         let num_stack_args = plan.stack_slot_count;
-        let needs_alignment = plan.stack_bytes > (num_stack_args * 8) as u32;
+        let stack_cell_bytes = checked_cell_region_bytes(
+            u64::try_from(num_stack_args).expect("call stack slot count must fit u64"),
+        )
+        .expect("call stack area must fit displacement");
+        let needs_alignment = plan.stack_bytes > stack_cell_bytes;
         if needs_alignment {
             self.mir.push(X86Inst::AddRI {
                 dst: Operand::Physical(Reg::Rsp),
-                imm: -8,
+                imm: -i32::try_from(
+                    checked_cell_region_padding_bytes(
+                        u64::try_from(num_stack_args).expect("call stack slot count must fit u64"),
+                    )
+                    .expect("call stack alignment padding must fit displacement"),
+                )
+                .expect("call stack alignment padding must fit i32"),
             });
         }
         for arg in plan.abi_slots.iter().skip(ARG_REGS.len()).rev() {
@@ -1092,7 +1114,8 @@ impl<'a> CfgLower<'a> {
         if num_stack_args > 0 || needs_alignment {
             self.mir.push(X86Inst::AddRI {
                 dst: Operand::Physical(Reg::Rsp),
-                imm: plan.stack_bytes as i32,
+                imm: checked_displacement_bytes(u64::from(plan.stack_bytes))
+                    .expect("call stack area must fit displacement"),
             });
         }
         // Free the by-value indirect argument buffers (RUE-1005), restoring rsp
@@ -1101,7 +1124,8 @@ impl<'a> CfgLower<'a> {
         if plan.caller_indirect_bytes > 0 {
             self.mir.push(X86Inst::AddRI {
                 dst: Operand::Physical(Reg::Rsp),
-                imm: plan.caller_indirect_bytes as i32,
+                imm: checked_displacement_bytes(u64::from(plan.caller_indirect_bytes))
+                    .expect("indirect argument area must fit displacement"),
             });
         }
         let slots = match plan.return_plan {
@@ -1135,7 +1159,8 @@ impl<'a> CfgLower<'a> {
                             self.mir.push(X86Inst::MovRM {
                                 dst: Operand::Virtual(slot),
                                 base: Reg::Rsp,
-                                offset: (index * 8) as i32,
+                                offset: checked_cell_byte_offset(index as u64)
+                                    .expect("sret slot offset must fit displacement"),
                             });
                             slot
                         })
@@ -1143,7 +1168,8 @@ impl<'a> CfgLower<'a> {
                 };
                 self.mir.push(X86Inst::AddRI {
                     dst: Operand::Physical(Reg::Rsp),
-                    imm: storage_bytes as i32,
+                    imm: checked_displacement_bytes(u64::from(storage_bytes))
+                        .expect("sret storage must fit displacement"),
                 });
                 slots
             }
@@ -1248,7 +1274,8 @@ impl<'a> CfgLower<'a> {
             sret_storage = image.storage_bytes;
             self.mir.push(X86Inst::AddRI {
                 dst: Operand::Physical(Reg::Rsp),
-                imm: -(sret_storage as i32),
+                imm: -checked_displacement_bytes(u64::from(sret_storage))
+                    .expect("foreign sret storage must fit displacement"),
             });
             let p = self.mir.alloc_vreg();
             self.mir.push(X86Inst::MovRR {
@@ -1312,12 +1339,25 @@ impl<'a> CfgLower<'a> {
         // arg lands at the lowest address), then the integer args pushed and popped
         // into ARG_REGS, matching the native `lower_call_plan` idiom.
         let num_stack = stack_ops.len();
-        let stack_bytes = align_up_u32((num_stack * 8) as u32, 16);
-        let needs_alignment = stack_bytes > (num_stack * 8) as u32;
+        let stack_cell_bytes = checked_cell_region_bytes(
+            u64::try_from(num_stack).expect("foreign stack slot count must fit u64"),
+        )
+        .expect("foreign stack area must fit displacement");
+        let stack_bytes = checked_aligned_cell_region_bytes(
+            u64::try_from(num_stack).expect("foreign stack slot count must fit u64"),
+        )
+        .expect("foreign stack area must pass frame-budget preflight");
+        let needs_alignment = stack_bytes > stack_cell_bytes;
         if needs_alignment {
             self.mir.push(X86Inst::AddRI {
                 dst: Operand::Physical(Reg::Rsp),
-                imm: -8,
+                imm: -i32::try_from(
+                    checked_cell_region_padding_bytes(
+                        u64::try_from(num_stack).expect("foreign stack slot count must fit u64"),
+                    )
+                    .expect("foreign stack alignment padding must fit displacement"),
+                )
+                .expect("foreign stack alignment padding must fit i32"),
             });
         }
         for v in stack_ops.iter().rev() {
@@ -1348,7 +1388,8 @@ impl<'a> CfgLower<'a> {
         if num_stack > 0 || needs_alignment {
             self.mir.push(X86Inst::AddRI {
                 dst: Operand::Physical(Reg::Rsp),
-                imm: stack_bytes as i32,
+                imm: checked_displacement_bytes(u64::from(stack_bytes))
+                    .expect("foreign stack area must fit displacement"),
             });
         }
 
@@ -1376,7 +1417,8 @@ impl<'a> CfgLower<'a> {
                 let eb = image.eightbytes();
                 self.mir.push(X86Inst::AddRI {
                     dst: Operand::Physical(Reg::Rsp),
-                    imm: -(image.storage_bytes as i32),
+                    imm: -checked_displacement_bytes(u64::from(image.storage_bytes))
+                        .expect("foreign result storage must fit displacement"),
                 });
                 let buf = self.mir.alloc_vreg();
                 self.mir.push(X86Inst::MovRR {
@@ -1396,7 +1438,8 @@ impl<'a> CfgLower<'a> {
                 let native = crate::agg_slots::load_enum_slots_through_ptr(self, buf, &image.map);
                 self.mir.push(X86Inst::AddRI {
                     dst: Operand::Physical(Reg::Rsp),
-                    imm: image.storage_bytes as i32,
+                    imm: checked_displacement_bytes(u64::from(image.storage_bytes))
+                        .expect("foreign result storage must fit displacement"),
                 });
                 native
             }
@@ -1405,7 +1448,8 @@ impl<'a> CfgLower<'a> {
                 let native = crate::agg_slots::load_enum_slots_through_ptr(self, p, &image.map);
                 self.mir.push(X86Inst::AddRI {
                     dst: Operand::Physical(Reg::Rsp),
-                    imm: sret_storage as i32,
+                    imm: checked_displacement_bytes(u64::from(sret_storage))
+                        .expect("foreign sret storage must fit displacement"),
                 });
                 native
             }
@@ -1431,7 +1475,8 @@ impl<'a> CfgLower<'a> {
     ) -> Vec<VReg> {
         self.mir.push(X86Inst::AddRI {
             dst: Operand::Physical(Reg::Rsp),
-            imm: -(image.storage_bytes as i32),
+            imm: -checked_displacement_bytes(u64::from(image.storage_bytes))
+                .expect("foreign argument storage must fit displacement"),
         });
         let buf = self.mir.alloc_vreg();
         self.mir.push(X86Inst::MovRR {
@@ -1449,7 +1494,8 @@ impl<'a> CfgLower<'a> {
         let ebs = crate::agg_slots::load_slots_through_ptr(self, buf, image.eightbytes());
         self.mir.push(X86Inst::AddRI {
             dst: Operand::Physical(Reg::Rsp),
-            imm: image.storage_bytes as i32,
+            imm: checked_displacement_bytes(u64::from(image.storage_bytes))
+                .expect("foreign argument storage must fit displacement"),
         });
         ebs
     }
@@ -5128,6 +5174,62 @@ mod tests {
                 ARG_REGS.len()
             );
         }
+    }
+
+    #[test]
+    fn ordinary_call_uses_checked_aligned_stack_area() {
+        // Seven scalar arguments leave one stack cell. The x86 lowering must
+        // reserve 8 bytes of checked alignment padding, then restore the full
+        // 16-byte aligned outgoing area after the call.
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I64,
+            0,
+            "caller",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        let args = (0..7)
+            .map(|value| CfgCallArg {
+                value: fixture.konst(value, Type::I64),
+                mode: CfgArgMode::Normal,
+            })
+            .collect();
+        let result = fixture.call("callee", args, Type::I64);
+        fixture.ret(Some(result));
+        let mir = fixture.lower().expect("ordinary call must lower");
+        let expected_padding = -i32::try_from(
+            crate::frame_layout::checked_cell_region_padding_bytes(1)
+                .expect("test call padding must fit the frame budget"),
+        )
+        .expect("test call padding must fit i32");
+        let call_index = mir
+            .instructions()
+            .iter()
+            .position(|inst| matches!(inst, X86Inst::CallRel { .. }))
+            .expect("ordinary call must emit a call");
+        assert!(mir.instructions()[..call_index].iter().any(|inst| {
+            matches!(
+                inst,
+                X86Inst::AddRI {
+                    dst: Operand::Physical(Reg::Rsp),
+                    imm,
+                }
+                if *imm == expected_padding
+            )
+        }));
+        assert!(mir.instructions()[call_index + 1..].iter().any(|inst| {
+            matches!(
+                inst,
+                X86Inst::AddRI {
+                    dst: Operand::Physical(Reg::Rsp),
+                    imm: 16,
+                }
+            )
+        }));
     }
 
     #[test]

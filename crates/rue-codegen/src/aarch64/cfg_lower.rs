@@ -14,6 +14,9 @@ use super::mir::{Aarch64Inst, Aarch64Mir, Cond, LabelId, Operand, Reg, VReg};
 use crate::agg_slots::SlotBackend;
 use crate::allocation;
 use crate::cfg_lower::CfgLowerContext;
+use crate::frame_layout::{
+    checked_aligned_cell_region_bytes, checked_cell_byte_offset, checked_displacement_bytes,
+};
 
 /// Argument passing registers per AAPCS64. ABI arg slots beyond these are
 /// passed on the caller's stack (slot `k >= 8` at `[fp+16+(k-8)*8]` in the
@@ -68,11 +71,6 @@ const _: () = {
     }
 };
 
-/// Round `value` up to a multiple of `alignment` (a power of two ≥ 1).
-const fn align_up_u32(value: u32, alignment: u32) -> u32 {
-    value.div_ceil(alignment) * alignment
-}
-
 /// CFG to Aarch64Mir lowering.
 pub struct CfgLower<'a> {
     /// Shared context with type helpers and chain tracing.
@@ -120,7 +118,8 @@ impl crate::call_plan::CallMaterializer for CfgLower<'_> {
         self.mir.push(Aarch64Inst::SubImm {
             dst: Operand::Physical(Reg::Sp),
             src: Operand::Physical(Reg::Sp),
-            imm: storage_bytes as i32,
+            imm: checked_displacement_bytes(u64::from(storage_bytes))
+                .expect("sret storage must fit displacement"),
         });
         let pointer = self.mir.alloc_vreg();
         self.mir.push(Aarch64Inst::MovRR {
@@ -145,7 +144,8 @@ impl crate::call_plan::CallMaterializer for CfgLower<'_> {
         self.mir.push(Aarch64Inst::SubImm {
             dst: Operand::Physical(Reg::Sp),
             src: Operand::Physical(Reg::Sp),
-            imm: storage_bytes as i32,
+            imm: checked_displacement_bytes(u64::from(storage_bytes))
+                .expect("indirect argument storage must fit displacement"),
         });
         let pointer = self.mir.alloc_vreg();
         self.mir.push(Aarch64Inst::MovRR {
@@ -168,7 +168,8 @@ impl crate::call_plan::CallMaterializer for CfgLower<'_> {
         self.mir.push(Aarch64Inst::SubImm {
             dst: Operand::Physical(Reg::Sp),
             src: Operand::Physical(Reg::Sp),
-            imm: storage_bytes as i32,
+            imm: checked_displacement_bytes(u64::from(storage_bytes))
+                .expect("indirect argument storage must fit displacement"),
         });
         let pointer = self.mir.alloc_vreg();
         self.mir.push(Aarch64Inst::MovRR {
@@ -300,7 +301,16 @@ impl<'a> CfgLower<'a> {
 
         let out_shape = plan.out_shape();
         let out_bytes = out_shape
-            .map(|shape| (shape.shape().slots.len() as i32 * 8 + 15) & !15)
+            .map(|shape| {
+                i32::try_from(
+                    checked_aligned_cell_region_bytes(
+                        u64::try_from(shape.shape().slots.len())
+                            .expect("runtime out slot count must fit u64"),
+                    )
+                    .expect("runtime out area must pass frame-budget preflight"),
+                )
+                .expect("runtime out area must fit displacement")
+            })
             .unwrap_or(0);
         if out_bytes > 0 {
             self.mir.push(Aarch64Inst::SubImm {
@@ -399,7 +409,8 @@ impl<'a> CfgLower<'a> {
                         self.mir.push(Aarch64Inst::Ldr {
                             dst: Operand::Virtual(slot),
                             base: Reg::Sp,
-                            offset: (index * 8) as i32,
+                            offset: checked_cell_byte_offset(index as u64)
+                                .expect("runtime out slot offset must fit displacement"),
                         });
                         slot
                     })
@@ -876,14 +887,16 @@ impl<'a> CfgLower<'a> {
             self.mir.push(Aarch64Inst::SubImm {
                 dst: Operand::Physical(Reg::Sp),
                 src: Operand::Physical(Reg::Sp),
-                imm: plan.stack_bytes as i32,
+                imm: checked_displacement_bytes(u64::from(plan.stack_bytes))
+                    .expect("call stack area must fit displacement"),
             });
         }
         for (index, arg) in plan.abi_slots.iter().skip(ARG_REGS.len()).enumerate() {
             self.mir.push(Aarch64Inst::Str {
                 src: Operand::Virtual(*arg),
                 base: Reg::Sp,
-                offset: (index * 8) as i32,
+                offset: checked_cell_byte_offset(index as u64)
+                    .expect("call stack slot offset must fit displacement"),
             });
         }
         for (index, arg) in plan.abi_slots.iter().take(num_reg_args).enumerate() {
@@ -898,7 +911,8 @@ impl<'a> CfgLower<'a> {
             self.mir.push(Aarch64Inst::AddImm {
                 dst: Operand::Physical(Reg::Sp),
                 src: Operand::Physical(Reg::Sp),
-                imm: plan.stack_bytes as i32,
+                imm: checked_displacement_bytes(u64::from(plan.stack_bytes))
+                    .expect("call stack area must fit displacement"),
             });
         }
         // Free the by-value indirect argument buffers (RUE-1005), restoring sp
@@ -908,7 +922,8 @@ impl<'a> CfgLower<'a> {
             self.mir.push(Aarch64Inst::AddImm {
                 dst: Operand::Physical(Reg::Sp),
                 src: Operand::Physical(Reg::Sp),
-                imm: plan.caller_indirect_bytes as i32,
+                imm: checked_displacement_bytes(u64::from(plan.caller_indirect_bytes))
+                    .expect("indirect argument area must fit displacement"),
             });
         }
         let slots = match plan.return_plan {
@@ -942,7 +957,8 @@ impl<'a> CfgLower<'a> {
                             self.mir.push(Aarch64Inst::Ldr {
                                 dst: Operand::Virtual(slot),
                                 base: Reg::Sp,
-                                offset: (index * 8) as i32,
+                                offset: checked_cell_byte_offset(index as u64)
+                                    .expect("sret slot offset must fit displacement"),
                             });
                             slot
                         })
@@ -951,7 +967,8 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(Aarch64Inst::AddImm {
                     dst: Operand::Physical(Reg::Sp),
                     src: Operand::Physical(Reg::Sp),
-                    imm: storage_bytes as i32,
+                    imm: checked_displacement_bytes(u64::from(storage_bytes))
+                        .expect("sret storage must fit displacement"),
                 });
                 slots
             }
@@ -1060,7 +1077,8 @@ impl<'a> CfgLower<'a> {
             self.mir.push(Aarch64Inst::SubImm {
                 dst: Operand::Physical(Reg::Sp),
                 src: Operand::Physical(Reg::Sp),
-                imm: sret_storage as i32,
+                imm: checked_displacement_bytes(u64::from(sret_storage))
+                    .expect("foreign sret storage must fit displacement"),
             });
             let p = self.mir.alloc_vreg();
             self.mir.push(Aarch64Inst::MovRR {
@@ -1101,9 +1119,12 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(Aarch64Inst::SubImm {
                         dst: Operand::Physical(Reg::Sp),
                         src: Operand::Physical(Reg::Sp),
-                        imm: image.storage_bytes as i32,
+                        imm: checked_displacement_bytes(u64::from(image.storage_bytes))
+                            .expect("foreign result storage must fit displacement"),
                     });
-                    byref_bytes += image.storage_bytes;
+                    byref_bytes = byref_bytes
+                        .checked_add(image.storage_bytes)
+                        .expect("foreign argument storage must fit u32");
                     let ptr = self.mir.alloc_vreg();
                     self.mir.push(Aarch64Inst::MovRR {
                         dst: Operand::Virtual(ptr),
@@ -1133,19 +1154,22 @@ impl<'a> CfgLower<'a> {
         }
 
         let num_stack = stack_ops.len();
-        let stack_bytes = align_up_u32((num_stack * 8) as u32, 16);
+        let stack_bytes = checked_aligned_cell_region_bytes(num_stack as u64)
+            .expect("foreign stack area must pass frame-budget preflight");
         if stack_bytes > 0 {
             self.mir.push(Aarch64Inst::SubImm {
                 dst: Operand::Physical(Reg::Sp),
                 src: Operand::Physical(Reg::Sp),
-                imm: stack_bytes as i32,
+                imm: checked_displacement_bytes(u64::from(stack_bytes))
+                    .expect("foreign stack area must fit displacement"),
             });
         }
         for (index, v) in stack_ops.iter().enumerate() {
             self.mir.push(Aarch64Inst::Str {
                 src: Operand::Virtual(*v),
                 base: Reg::Sp,
-                offset: (index * 8) as i32,
+                offset: checked_cell_byte_offset(index as u64)
+                    .expect("foreign stack slot offset must fit displacement"),
             });
         }
         for (index, v) in int_ops.iter().enumerate() {
@@ -1171,14 +1195,16 @@ impl<'a> CfgLower<'a> {
             self.mir.push(Aarch64Inst::AddImm {
                 dst: Operand::Physical(Reg::Sp),
                 src: Operand::Physical(Reg::Sp),
-                imm: stack_bytes as i32,
+                imm: checked_displacement_bytes(u64::from(stack_bytes))
+                    .expect("foreign stack area must fit displacement"),
             });
         }
         if byref_bytes > 0 {
             self.mir.push(Aarch64Inst::AddImm {
                 dst: Operand::Physical(Reg::Sp),
                 src: Operand::Physical(Reg::Sp),
-                imm: byref_bytes as i32,
+                imm: checked_displacement_bytes(u64::from(byref_bytes))
+                    .expect("foreign argument storage must fit displacement"),
             });
         }
 
@@ -1205,7 +1231,8 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(Aarch64Inst::SubImm {
                     dst: Operand::Physical(Reg::Sp),
                     src: Operand::Physical(Reg::Sp),
-                    imm: image.storage_bytes as i32,
+                    imm: checked_displacement_bytes(u64::from(image.storage_bytes))
+                        .expect("foreign argument storage must fit displacement"),
                 });
                 let buf = self.mir.alloc_vreg();
                 self.mir.push(Aarch64Inst::MovRR {
@@ -1226,7 +1253,8 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(Aarch64Inst::AddImm {
                     dst: Operand::Physical(Reg::Sp),
                     src: Operand::Physical(Reg::Sp),
-                    imm: image.storage_bytes as i32,
+                    imm: checked_displacement_bytes(u64::from(image.storage_bytes))
+                        .expect("foreign argument storage must fit displacement"),
                 });
                 native
             }
@@ -1236,7 +1264,8 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(Aarch64Inst::AddImm {
                     dst: Operand::Physical(Reg::Sp),
                     src: Operand::Physical(Reg::Sp),
-                    imm: sret_storage as i32,
+                    imm: checked_displacement_bytes(u64::from(sret_storage))
+                        .expect("foreign sret storage must fit displacement"),
                 });
                 native
             }
@@ -1262,7 +1291,8 @@ impl<'a> CfgLower<'a> {
         self.mir.push(Aarch64Inst::SubImm {
             dst: Operand::Physical(Reg::Sp),
             src: Operand::Physical(Reg::Sp),
-            imm: image.storage_bytes as i32,
+            imm: checked_displacement_bytes(u64::from(image.storage_bytes))
+                .expect("foreign argument storage must fit displacement"),
         });
         let buf = self.mir.alloc_vreg();
         self.mir.push(Aarch64Inst::MovRR {
@@ -1281,7 +1311,8 @@ impl<'a> CfgLower<'a> {
         self.mir.push(Aarch64Inst::AddImm {
             dst: Operand::Physical(Reg::Sp),
             src: Operand::Physical(Reg::Sp),
-            imm: image.storage_bytes as i32,
+            imm: checked_displacement_bytes(u64::from(image.storage_bytes))
+                .expect("foreign argument storage must fit displacement"),
         });
         ebs
     }
@@ -2223,7 +2254,14 @@ impl<'a> CfgLower<'a> {
                     .primary
             }
             crate::value_plan::IntrinsicOperation::Syscall => {
-                let stack_space = ((plan.args.len() * 8 + 15) & !15) as i32;
+                let stack_space = i32::try_from(
+                    checked_aligned_cell_region_bytes(
+                        u64::try_from(plan.args.len())
+                            .expect("syscall stack slot count must fit u64"),
+                    )
+                    .expect("syscall stack area must fit displacement"),
+                )
+                .expect("syscall stack area must fit i32");
                 if stack_space > 0 {
                     self.mir.push(Aarch64Inst::SubImm {
                         dst: Operand::Physical(Reg::Sp),
@@ -2235,7 +2273,8 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(Aarch64Inst::Str {
                         src: Operand::Virtual(arg.primary),
                         base: Reg::Sp,
-                        offset: (index * 8) as i32,
+                        offset: checked_cell_byte_offset(index as u64)
+                            .expect("syscall slot offset must fit displacement"),
                     });
                 }
                 let syscall_reg = if self.target.is_macho() {
@@ -2256,7 +2295,8 @@ impl<'a> CfgLower<'a> {
                         self.mir.push(Aarch64Inst::Ldr {
                             dst: Operand::Physical(*reg),
                             base: Reg::Sp,
-                            offset: ((index + 1) * 8) as i32,
+                            offset: checked_cell_byte_offset((index + 1) as u64)
+                                .expect("syscall argument offset must fit displacement"),
                         });
                     }
                 }
@@ -5274,6 +5314,67 @@ mod tests {
                 ARG_REGS.len()
             );
         }
+    }
+
+    #[test]
+    fn ordinary_call_uses_checked_aligned_stack_area() {
+        // Nine scalar arguments leave one stack cell. AAPCS64 reserves the
+        // checked 16-byte outgoing area and addresses its first slot at zero.
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I64,
+            0,
+            "caller",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        let args = (0..9)
+            .map(|value| CfgCallArg {
+                value: fixture.konst(value, Type::I64),
+                mode: CfgArgMode::Normal,
+            })
+            .collect();
+        let result = fixture.call("callee", args, Type::I64);
+        fixture.ret(Some(result));
+        let mir = fixture.lower().expect("ordinary call must lower");
+        let call_index = mir
+            .instructions()
+            .iter()
+            .position(|inst| matches!(inst, Aarch64Inst::Bl { .. }))
+            .expect("ordinary call must emit a branch-with-link");
+        assert!(mir.instructions()[..call_index].iter().any(|inst| {
+            matches!(
+                inst,
+                Aarch64Inst::SubImm {
+                    dst: Operand::Physical(Reg::Sp),
+                    src: Operand::Physical(Reg::Sp),
+                    imm: 16,
+                }
+            )
+        }));
+        assert!(mir.instructions()[..call_index].iter().any(|inst| {
+            matches!(
+                inst,
+                Aarch64Inst::Str {
+                    base: Reg::Sp,
+                    offset: 0,
+                    ..
+                }
+            )
+        }));
+        assert!(mir.instructions()[call_index + 1..].iter().any(|inst| {
+            matches!(
+                inst,
+                Aarch64Inst::AddImm {
+                    dst: Operand::Physical(Reg::Sp),
+                    src: Operand::Physical(Reg::Sp),
+                    imm: 16,
+                }
+            )
+        }));
     }
 
     #[test]

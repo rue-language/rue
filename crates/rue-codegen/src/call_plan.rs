@@ -14,6 +14,8 @@ use rue_runtime_abi::{ReservedExportClass, ReservedExportId};
 use crate::types;
 use crate::vreg::VReg;
 
+use crate::frame_layout::checked_aligned_cell_region_bytes;
+
 /// The source ABI expected by a call target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CalleeAbi {
@@ -296,8 +298,10 @@ impl CallInputs {
                         ArgClass::Indirect
                     )
                 {
-                    let storage_bytes =
-                        align_up(types::type_size_bytes(type_pool, arg_ty) as u32, 16);
+                    let storage_bytes = crate::frame_layout::checked_aligned_region_bytes(
+                        types::type_size_bytes(type_pool, arg_ty),
+                    )
+                    .expect("indirect argument storage must pass frame-budget preflight");
                     // A heterogeneous compact aggregate has no single map; it
                     // marshals its buffer with a per-variant tag dispatch (RUE-1037).
                     if let Some(image) = types::aggregate_physical_slot_map(type_pool, arg_ty) {
@@ -489,7 +493,9 @@ impl CallPlan {
                     // own buffer and passes one pointer (RUE-1005). The buffers
                     // are reserved below the sret storage and freed together
                     // after the call.
-                    caller_indirect_bytes += *storage_bytes;
+                    caller_indirect_bytes = caller_indirect_bytes
+                        .checked_add(*storage_bytes)
+                        .expect("indirect argument area must fit u32");
                     let pointer = materializer.materialize_indirect_value_arg(
                         *value,
                         image,
@@ -505,7 +511,9 @@ impl CallPlan {
                 } => {
                     // As IndirectValue, but the buffer is written with a per-variant
                     // tag dispatch (RUE-1037).
-                    caller_indirect_bytes += *storage_bytes;
+                    caller_indirect_bytes = caller_indirect_bytes
+                        .checked_add(*storage_bytes)
+                        .expect("indirect argument area must fit u32");
                     let pointer = materializer.materialize_indirect_value_arg_dispatch(
                         *value,
                         image,
@@ -544,7 +552,10 @@ impl CallPlan {
         }
 
         let stack_slot_count = abi_slots.len().saturating_sub(arg_reg_budget);
-        let stack_bytes = align_up((stack_slot_count * 8) as u32, 16);
+        let stack_bytes = checked_aligned_cell_region_bytes(
+            u64::try_from(stack_slot_count).expect("call stack slot count must fit u64"),
+        )
+        .expect("call stack area must pass frame-budget preflight");
 
         Self {
             target,
@@ -583,7 +594,10 @@ impl CallPlan {
             compact_return_dispatch: None,
             result: None,
             stack_slot_count,
-            stack_bytes: align_up((stack_slot_count * 8) as u32, 16),
+            stack_bytes: checked_aligned_cell_region_bytes(
+                u64::try_from(stack_slot_count).expect("call stack slot count must fit u64"),
+            )
+            .expect("call stack area must pass frame-budget preflight"),
             caller_indirect_bytes: 0,
             foreign_return_extension: None,
         }
@@ -603,13 +617,10 @@ pub fn return_plan(type_pool: &FrozenTypeInternPool, ty: Type, ret_reg_budget: u
         ReturnClass::Registers { slot_count } => ReturnPlan::Registers { slot_count },
         ReturnClass::Indirect { slot_count } => ReturnPlan::Sret {
             slot_count,
-            storage_bytes: align_up(slot_count * 8, 16),
+            storage_bytes: checked_aligned_cell_region_bytes(u64::from(slot_count))
+                .expect("sret storage must pass frame-budget preflight"),
         },
     }
-}
-
-const fn align_up(value: u32, alignment: u32) -> u32 {
-    (value + alignment - 1) / alignment * alignment
 }
 
 #[cfg(test)]
@@ -758,7 +769,7 @@ mod tests {
         // This checks the normalized shape independently of a target register
         // enum; type-pool-backed sret selection is exercised by backend ABI
         // tests through `return_plan`.
-        assert_eq!(align_up(24, 16), 32);
+        assert_eq!(checked_aligned_cell_region_bytes(3), Ok(32));
         assert_eq!(
             ReturnPlan::Sret {
                 slot_count: 3,

@@ -827,7 +827,13 @@ impl<'a> Emitter<'a> {
                     end_inst!(self, "str {}, [x29, #{}]", param_regs[abi_index], offset);
                 } else {
                     // Stack-passed arg: copy from above the frame into the param area
-                    let src_offset = 16 + (abi_index as i32 - param_regs.len() as i32) * 8;
+                    let src_offset = crate::frame_layout::checked_incoming_stack_arg_offset(
+                        16,
+                        u32::try_from(abi_index).expect("ABI index must fit u32"),
+                        u32::try_from(param_regs.len())
+                            .expect("argument register count must fit u32"),
+                    )
+                    .expect("incoming stack argument offset must fit displacement");
                     self.begin_inst();
                     self.emit_ldr(Reg::X9, Reg::Fp, src_offset);
                     end_inst!(self, "ldr x9, [x29, #{}]", src_offset);
@@ -2721,6 +2727,21 @@ mod tests {
             .emit()
             .unwrap()
             .0
+    }
+
+    #[test]
+    fn incoming_stack_argument_homing_uses_aapcs64_entry_offset() {
+        let mut mir = Aarch64Mir::new();
+        mir.push(Aarch64Inst::Ret);
+        let emitted = Emitter::new(&mir, 0, 0, 1, &[], &[])
+            .with_param_homing(vec![crate::codegen_pipeline::ParamHoming {
+                start_slot: 0,
+                reg_count: 1,
+                abi_start: 8,
+            }])
+            .emit_all()
+            .expect("stack argument homing must emit");
+        assert!(emitted.to_asm().contains("ldr x9, [x29, #16]"));
     }
 
     fn emit_single_with_callee_saved(inst: Aarch64Inst, callee_saved: &[Reg]) -> Vec<u8> {
