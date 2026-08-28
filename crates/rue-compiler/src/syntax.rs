@@ -7,6 +7,47 @@ use tracing::{info, info_span};
 
 use crate::{Lexer, MultiErrorResult, Parser, SourceView, ThreadedRodeo};
 
+#[derive(Debug)]
+pub(crate) struct TransientTokenBuffer {
+    tokens: Vec<rue_lexer::Token>,
+    #[cfg(test)]
+    lifetime: std::sync::Arc<()>,
+    #[cfg(test)]
+    parser_reused_allocation: bool,
+}
+
+impl TransientTokenBuffer {
+    fn new(tokens: Vec<rue_lexer::Token>, parser_reused_allocation: bool) -> Self {
+        #[cfg(not(test))]
+        let _ = parser_reused_allocation;
+        Self {
+            tokens,
+            #[cfg(test)]
+            lifetime: std::sync::Arc::new(()),
+            #[cfg(test)]
+            parser_reused_allocation,
+        }
+    }
+
+    pub(crate) fn as_slice(&self) -> &[rue_lexer::Token] {
+        &self.tokens
+    }
+
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut rue_lexer::Token> {
+        self.tokens.iter_mut()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn lifetime_probe(&self) -> std::sync::Weak<()> {
+        std::sync::Arc::downgrade(&self.lifetime)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn parser_reused_allocation(&self) -> bool {
+        self.parser_reused_allocation
+    }
+}
+
 /// Work performed while lexing and parsing source files.
 ///
 /// Token counts include the EOF token emitted by the lexer. A file contributes
@@ -32,7 +73,7 @@ pub struct SyntaxWork {
 pub(crate) struct FileParseOutcome {
     pub(crate) result: MultiErrorResult<std::sync::Arc<rue_parser::Ast>>,
     pub(crate) interner: ThreadedRodeo,
-    pub(crate) tokens: std::sync::Arc<[rue_lexer::Token]>,
+    pub(crate) tokens: TransientTokenBuffer,
     pub(crate) work: SyntaxWork,
 }
 
@@ -53,7 +94,7 @@ pub(crate) fn parse_file(source: SourceView<'_>, interner: ThreadedRodeo) -> Fil
                 return FileParseOutcome {
                     result: Err(errors),
                     interner,
-                    tokens: std::sync::Arc::from([]),
+                    tokens: TransientTokenBuffer::new(Vec::new(), true),
                     work,
                 };
             }
@@ -63,30 +104,53 @@ pub(crate) fn parse_file(source: SourceView<'_>, interner: ThreadedRodeo) -> Fil
     work.parser_invocations = 1;
     work.tokens = tokens.len();
     info!(token_count = tokens.len(), "lexing complete");
-    let retained_tokens: std::sync::Arc<[rue_lexer::Token]> = tokens.clone().into();
+    let token_allocation = tokens.as_ptr() as usize;
 
-    let (ast, interner) = {
+    let (ast, interner, tokens) = {
         let _span = info_span!("parser").entered();
         let parser = Parser::new(tokens, interner);
-        match parser.parse_preserving_interner() {
+        match parser.parse_preserving_interner_and_tokens() {
             Ok(output) => output,
-            Err((errors, interner)) => {
+            Err((errors, interner, tokens)) => {
+                let parser_reused_allocation = tokens.as_ptr() as usize == token_allocation;
                 return FileParseOutcome {
                     result: Err(errors),
                     interner,
-                    tokens: retained_tokens,
+                    tokens: TransientTokenBuffer::new(tokens, parser_reused_allocation),
                     work,
                 };
             }
         }
     };
 
+    let parser_reused_allocation = tokens.as_ptr() as usize == token_allocation;
+
     FileParseOutcome {
         result: Ok(std::sync::Arc::new(ast)),
         interner,
-        tokens: retained_tokens,
+        tokens: TransientTokenBuffer::new(tokens, parser_reused_allocation),
         work,
     }
+}
+
+/// Re-lex one immutable parsed source for token presentation.
+///
+/// This projection is intentionally outside [`SyntaxWork`]: it neither parses
+/// nor publishes compiler input and must not masquerade as canonical frontend
+/// work. Callers scope the returned allocation to their retainable view or
+/// presentation request.
+pub(crate) fn token_presentation(
+    source: SourceView<'_>,
+) -> (
+    std::sync::Arc<[rue_lexer::Token]>,
+    std::sync::Arc<lasso::RodeoResolver>,
+) {
+    let lexer =
+        Lexer::with_interner_and_file_id(source.source, ThreadedRodeo::new(), source.file_id);
+    let (tokens, interner) = lexer
+        .tokenize_preserving_interner()
+        .expect("a published parsed source must lex identically for presentation");
+    (tokens.into(), std::sync::Arc::new(interner.into_resolver()))
 }
 
 #[cfg(test)]
@@ -254,22 +318,40 @@ mod tests {
     #[test]
     fn work_uses_utf8_bytes_and_successful_lexer_token_vectors() {
         let valid = "fn main() { // café\n}";
-        let FileParseOutcome { result, work, .. } = parse_file(
+        let FileParseOutcome {
+            result,
+            tokens,
+            work,
+            ..
+        } = parse_file(
             SourceView::new("valid.rue", valid, FileId::new(1)),
             ThreadedRodeo::new(),
         );
         result.unwrap();
+        assert!(
+            tokens.parser_reused_allocation(),
+            "the parser must return the lexer's original token allocation"
+        );
         assert!(valid.len() > valid.chars().count());
         assert_eq!(work.lexed_bytes, valid.len());
         assert_eq!(work.tokens, 7);
         assert_eq!(work.parser_invocations, 1);
 
         let parse_error = "fn broken( {";
-        let FileParseOutcome { result, work, .. } = parse_file(
+        let FileParseOutcome {
+            result,
+            tokens,
+            work,
+            ..
+        } = parse_file(
             SourceView::new("parse.rue", parse_error, FileId::new(2)),
             ThreadedRodeo::new(),
         );
         assert!(result.is_err());
+        assert!(
+            tokens.parser_reused_allocation(),
+            "parse diagnostics must return the lexer's original token allocation"
+        );
         assert_eq!(work.lexed_bytes, parse_error.len());
         assert_eq!(work.tokens, 5);
         assert_eq!(work.parser_invocations, 1);

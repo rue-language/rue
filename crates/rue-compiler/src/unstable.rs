@@ -999,7 +999,13 @@ impl crate::CompilerSession {
                                 "presentation order contains unknown file id {file_id:?}"
                             ))
                         })?;
-                    for token in module.tokens() {
+                    let source = crate::SourceView::new(
+                        module.physical_path(),
+                        module.source_text(),
+                        module.file_id(),
+                    );
+                    let (tokens, _resolver) = crate::syntax::token_presentation(source);
+                    for token in tokens.iter() {
                         writeln!(&mut text, "{token}").expect("write to String");
                     }
                 }

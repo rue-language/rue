@@ -589,8 +589,10 @@ struct ParsedModuleProjectionCollector {
 struct ParsedSyntaxPayload {
     source: SourceId,
     source_text: Arc<String>,
+    file_id: FileId,
     token_count: usize,
-    tokens: Arc<[rue_lexer::Token]>,
+    #[cfg(test)]
+    token_buffer_lifetime: std::sync::Weak<()>,
     ast: ProvenancedAst,
     resolver: FrozenSymbolResolver,
     definitions: ParsedDefinitionIndex,
@@ -608,7 +610,6 @@ pub struct ParsedModule {
     file_id: FileId,
     physical_path: Arc<str>,
     payload: Arc<ParsedSyntaxPayload>,
-    tokens: Arc<[rue_lexer::Token]>,
     ast: Arc<Ast>,
     definitions: ParsedDefinitionIndex,
     imports: Arc<[ImportDirective]>,
@@ -683,7 +684,6 @@ impl ParsedModule {
 
     fn walk_retained_allocation_charge(&self) -> u64 {
         let ast_charge = |ast: &Arc<Ast>| ast.retained_charge();
-        let tokens_charge = |tokens: &[rue_lexer::Token]| std::mem::size_of_val(tokens) as u64;
         let imports_charge = |imports: &[ImportDirective]| {
             imports
                 .iter()
@@ -695,7 +695,6 @@ impl ParsedModule {
         let payload = (std::mem::size_of::<ParsedSyntaxPayload>() as u64)
             .saturating_add(self.payload.source.retained_charge())
             .saturating_add(self.payload.source_text.retained_charge())
-            .saturating_add(tokens_charge(&self.payload.tokens))
             .saturating_add(ast_charge(&self.payload.ast.ast))
             .saturating_add(std::mem::size_of::<SymbolProvenance>() as u64)
             .saturating_add(self.payload.ast.source.retained_charge())
@@ -728,7 +727,6 @@ impl ParsedModule {
             .retained_charge()
             .saturating_add(self.physical_path.retained_charge())
             .saturating_add(payload)
-            .saturating_add(tokens_charge(&self.tokens))
             .saturating_add(ast_charge(&self.ast))
             .saturating_add(self.definitions.retained_allocation_charge())
             .saturating_add(imports_charge(&self.imports))
@@ -980,7 +978,6 @@ impl ParsedModule {
             file_id: self.file_id,
             physical_path: self.physical_path.clone(),
             payload: self.payload.clone(),
-            tokens: self.tokens.clone(),
             ast: Arc::new(ast),
             definitions: self.definitions.clone(),
             imports: self.imports.clone(),
@@ -1024,9 +1021,6 @@ impl ParsedModule {
     pub(crate) fn token_count(&self) -> usize {
         self.payload.token_count
     }
-    pub(crate) fn tokens(&self) -> &[rue_lexer::Token] {
-        &self.tokens
-    }
     pub(crate) fn resolve_raw_symbol(&self, symbol: Spur) -> &str {
         self.payload.resolver.resolver.resolve(&symbol)
     }
@@ -1036,6 +1030,19 @@ impl ParsedModule {
     #[cfg(test)]
     pub(crate) fn shared_source_text(&self) -> Arc<String> {
         self.payload.source_text.clone()
+    }
+    #[cfg(test)]
+    pub(crate) fn transient_token_buffer_was_released(&self) -> bool {
+        self.payload.token_buffer_lifetime.upgrade().is_none()
+    }
+    #[cfg(test)]
+    pub(crate) fn presented_tokens_for_test(&self) -> Arc<[rue_lexer::Token]> {
+        crate::syntax::token_presentation(crate::SourceView::new(
+            self.physical_path(),
+            self.source_text(),
+            self.file_id(),
+        ))
+        .0
     }
     pub fn ast(&self) -> &Ast {
         &self.ast
@@ -1497,7 +1504,7 @@ pub(crate) struct StagedModuleParse {
     source_text: Arc<String>,
     ast: Arc<Ast>,
     interner: ThreadedRodeo,
-    tokens: Arc<[rue_lexer::Token]>,
+    tokens: crate::syntax::TransientTokenBuffer,
     work: SyntaxWork,
 }
 
@@ -1569,15 +1576,10 @@ fn build_module_from_staged(
         work,
         ..
     } = staged;
-    let tokens: Arc<[rue_lexer::Token]> = tokens
-        .iter()
-        .cloned()
-        .map(|mut token| {
-            token.span = Span::with_file(file_id, token.span.start, token.span.end);
-            token
-        })
-        .collect::<Vec<_>>()
-        .into();
+    let mut tokens = tokens;
+    for token in tokens.iter_mut() {
+        token.span = Span::with_file(file_id, token.span.start, token.span.end);
+    }
     // The stage normally owns the last reference, so the rebind mutates the
     // wave's tree in place rather than copying it.
     let ast = match Arc::try_unwrap(ast) {
@@ -1645,7 +1647,7 @@ fn build_module(
     ast: Arc<Ast>,
     interner: ThreadedRodeo,
     token_count: usize,
-    tokens: Arc<[rue_lexer::Token]>,
+    tokens: crate::syntax::TransientTokenBuffer,
 ) -> CompileResult<Arc<ParsedModule>> {
     let token = Arc::new(SymbolProvenance);
     let module = snapshot.module_id(file_id).expect("snapshot membership");
@@ -1671,7 +1673,7 @@ fn build_module_with_resolver(
     token: Arc<SymbolProvenance>,
     projections: ParsedModuleProjectionCollector,
     token_count: usize,
-    tokens: Arc<[rue_lexer::Token]>,
+    tokens: crate::syntax::TransientTokenBuffer,
 ) -> CompileResult<Arc<ParsedModule>> {
     let module = snapshot
         .module_id(file_id)
@@ -1702,17 +1704,21 @@ fn build_module_with_resolver(
         revision.module.clone(),
         file_id,
         &source_text,
-        &tokens,
+        tokens.as_slice(),
         &provenanced_ast.ast,
         &resolver,
         &projections.imports.valid,
         &projections.warning_call_heads,
     )?;
+    #[cfg(test)]
+    let token_buffer_lifetime = tokens.lifetime_probe();
     let payload = Arc::new(ParsedSyntaxPayload {
         source,
         source_text,
+        file_id,
         token_count,
-        tokens,
+        #[cfg(test)]
+        token_buffer_lifetime,
         ast: provenanced_ast,
         resolver,
         definitions,
@@ -1737,28 +1743,12 @@ fn bind_payload(
         source: payload.source.clone(),
     };
     let remap_span = |span: Span| Span::with_file(file_id, span.start, span.end);
-    let payload_file_id = payload
-        .tokens
-        .first()
-        .expect("the lexer always emits EOF")
-        .span
-        .file_id;
-    let (tokens, ast) = if payload_file_id == file_id {
-        (payload.tokens.clone(), payload.ast.ast.clone())
+    let ast = if payload.file_id == file_id {
+        payload.ast.ast.clone()
     } else {
-        let tokens = payload
-            .tokens
-            .iter()
-            .cloned()
-            .map(|mut token| {
-                token.span = remap_span(token.span);
-                token
-            })
-            .collect::<Vec<_>>()
-            .into();
         let mut ast = (*payload.ast.ast).clone();
         ast.rebind_file_id(file_id);
-        (tokens, Arc::new(ast))
+        Arc::new(ast)
     };
     let definitions = ParsedDefinitionIndex {
         candidates: payload
@@ -1839,7 +1829,6 @@ fn bind_payload(
         file_id,
         physical_path: Arc::from(snapshot.metadata().physical_path(file_id).unwrap()),
         payload,
-        tokens,
         ast,
         definitions,
         imports: imports.into(),
@@ -3906,19 +3895,26 @@ extern "C" { fn getpid() -> i32; }
             hit_work.lexed_bytes, 424_242,
             "the staged parse was consumed"
         );
+        assert!(
+            fresh.transient_token_buffer_was_released()
+                && hit.transient_token_buffer_was_released(),
+            "published fresh and staged modules must not retain their transient token buffers"
+        );
 
         // The staged build is indistinguishable from the fresh parse: same
         // revision, real file id on every retained span, and identical
         // definition provenance.
         assert_eq!(hit.revision(), fresh.revision());
         assert_eq!(hit.file_id(), fresh.file_id());
-        assert_eq!(hit.tokens().len(), fresh.tokens().len());
+        let hit_tokens = hit.presented_tokens_for_test();
+        let fresh_tokens = fresh.presented_tokens_for_test();
+        assert_eq!(hit_tokens.len(), fresh_tokens.len());
         assert!(
-            hit.tokens()
+            hit_tokens
                 .iter()
-                .zip(fresh.tokens())
-                .all(|(staged, fresh)| staged.span == fresh.span),
-            "token spans must be rebound to the snapshot's file id"
+                .zip(fresh_tokens.iter())
+                .all(|(staged, fresh)| staged.kind == fresh.kind && staged.span == fresh.span),
+            "staged token order, kinds, and rebound spans must match a fresh parse"
         );
         assert_eq!(hit.imports().len(), fresh.imports().len());
         assert_eq!(

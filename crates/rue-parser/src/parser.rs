@@ -160,8 +160,22 @@ impl Parser {
 
     /// Parse while retaining the shared interner when this file is malformed.
     pub fn parse_preserving_interner(
-        mut self,
+        self,
     ) -> Result<(Ast, ThreadedRodeo), (CompileErrors, ThreadedRodeo)> {
+        self.parse_preserving_interner_and_tokens()
+            .map(|(ast, interner, _tokens)| (ast, interner))
+            .map_err(|(errors, interner, _tokens)| (errors, interner))
+    }
+
+    /// Parse while returning the exact input token allocation to the caller.
+    ///
+    /// Compiler consumers that need tokens for a transient post-parse
+    /// projection can borrow this returned vector without cloning it. The
+    /// ordinary [`Self::parse`] and [`Self::parse_preserving_interner`] entry
+    /// points discard it after parsing.
+    pub fn parse_preserving_interner_and_tokens(
+        mut self,
+    ) -> Result<(Ast, ThreadedRodeo, Vec<Token>), (CompileErrors, ThreadedRodeo, Vec<Token>)> {
         if let Some(kind) = self.interner_error {
             return Err((
                 CompileErrors::from(CompileError::without_span(rue_lexer::interner_error_kind(
@@ -169,6 +183,7 @@ impl Parser {
                     "the parser could not intern a required primitive spelling",
                 ))),
                 self.interner,
+                self.tokens,
             ));
         }
         let input_token_count = self.tokens.len();
@@ -192,7 +207,7 @@ impl Parser {
                 validation_error_count = 0,
                 "parser complete"
             );
-            return Err((CompileErrors::from(vec![error]), self.interner));
+            return Err((CompileErrors::from(vec![error]), self.interner, self.tokens));
         }
 
         let items = {
@@ -226,7 +241,7 @@ impl Parser {
                 validation_error_count = 0,
                 "parser complete"
             );
-            return Err((CompileErrors::from(errors), self.interner));
+            return Err((CompileErrors::from(errors), self.interner, self.tokens));
         }
 
         let ast = Ast { items };
@@ -245,7 +260,7 @@ impl Parser {
                 validation_error_count = validation.len(),
                 "parser complete"
             );
-            return Err((CompileErrors::from(validation), self.interner));
+            return Err((CompileErrors::from(validation), self.interner, self.tokens));
         }
 
         info!(
@@ -258,7 +273,7 @@ impl Parser {
             validation_error_count = 0,
             "parser complete"
         );
-        Ok((ast, self.interner))
+        Ok((ast, self.interner, self.tokens))
     }
 }
 
