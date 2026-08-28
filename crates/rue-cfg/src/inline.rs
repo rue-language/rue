@@ -475,6 +475,16 @@ pub fn splice_call_in_block(
                 .max(type_pool.abi_slot_count(arg_ty))
                 .max(1);
             let slot = dst.alloc_temp_local_slots(width);
+            // A droppable value is an ownership transfer, not an ordinary
+            // single-assignment temporary. Keep its loads as the callee-owned
+            // value through all post-splice optimization; forwarding them to
+            // `argument` would erase the boundary and can make the caller
+            // drop the moved value a second time. Copy parameters need no
+            // boundary: forwarding those remains semantically and
+            // optimization-wise harmless.
+            if type_pool.type_needs_drop(arg_ty) {
+                dst.mark_ownership_boundary(slot);
+            }
             if callee.is_param_address_taken(param.start_slot) {
                 // The callee took the parameter's address; the escape fact
                 // must carry to the materialized slot (RUE-521).
@@ -490,7 +500,6 @@ pub fn splice_call_in_block(
         u64::try_from(materialized.len()).unwrap_or(u64::MAX),
         "splice plan and materialization lowering must agree"
     );
-
     // -- Rebase the callee's frame onto the caller's. -----------------------
     let local_base = if callee.num_locals() > 0 {
         dst.alloc_temp_local_slots(callee.num_locals())
@@ -500,6 +509,9 @@ pub fn splice_call_in_block(
     for slot in 0..callee.num_locals() {
         if callee.is_address_taken(slot) {
             dst.mark_address_taken(slot + local_base);
+        }
+        if callee.is_ownership_boundary(slot) {
+            dst.mark_ownership_boundary(slot + local_base);
         }
     }
 
@@ -545,11 +557,25 @@ pub fn splice_call_in_block(
         let data = translate_data(&mut dst, callee, &source.data, &splice)?;
         // Spans are copied verbatim so a future location-carrying trap
         // mechanism inherits the callee's real source position (ADR-0049 §7).
+        let translated = splice.value(CfgValue::from_raw(index as u32));
         dst.add_inst(CfgInst {
             data,
             ty: source.ty,
             span: source.span,
         });
+        // A callee may already be the result of an inline splice. Rebase its
+        // per-value ownership facts through the same value map as its code;
+        // otherwise a nested callee's protected transfer Load becomes an
+        // ordinary Load when copied into this caller.
+        if callee.is_ownership_boundary_value(CfgValue::from_raw(index as u32)) {
+            dst.mark_ownership_boundary_value(translated);
+        }
+        if let CfgInstData::Param { index } = source.data
+            && let Some(ParamRedirect::Materialized { slot }) = redirects.get(&index)
+            && dst.is_ownership_boundary(*slot)
+        {
+            dst.mark_ownership_boundary_value(translated);
+        }
     }
 
     // -- Wire the continuation join. ----------------------------------------
@@ -1537,6 +1563,34 @@ mod tests {
             slot >= caller_locals,
             "the dropped value comes from a fresh caller slot, not an original one"
         );
+        assert!(
+            inlined.is_ownership_boundary(slot),
+            "the materialized parameter slot must be marked as an ownership boundary"
+        );
+        assert!(
+            inlined.is_ownership_boundary_value(drop_operand),
+            "the callee-owned parameter Load must be marked as an ownership boundary"
+        );
+
+        // Reoptimization is the production path that used to forward this
+        // single-write slot back to the caller argument. The copied drop must
+        // still read the materialized slot after O3 cleanup.
+        let (optimized, _) = crate::opt::optimize_with_stats(
+            inlined.clone(),
+            crate::opt::OptLevel::O3,
+            &program.type_pool,
+        )
+        .unwrap();
+        let optimized_drop_operand = attached_values(&optimized)
+            .find_map(|value| match optimized.get_inst(value).data {
+                CfgInstData::Drop { value } => Some(value),
+                _ => None,
+            })
+            .unwrap();
+        assert!(matches!(
+            optimized.get_inst(optimized_drop_operand).data,
+            CfgInstData::Load { slot: optimized_slot } if optimized_slot == slot
+        ));
 
         // Callee-lifetime storage bracket for the materialized slot.
         assert_eq!(
@@ -1702,7 +1756,19 @@ mod tests {
             0
         );
         assert_eq!(count_calls(&inlined), 0);
+        let translated_load = attached_values(&inlined)
+            .find(|&value| matches!(inlined.get_inst(value).data, CfgInstData::Load { .. }))
+            .expect("the copied parameter should initially be represented by a Load");
+        assert!(!inlined.is_ownership_boundary_value(translated_load));
         assert_all_blocks_terminated(&inlined);
+        let (optimized, _) =
+            crate::opt::optimize_with_stats(inlined, crate::opt::OptLevel::O3, &program.type_pool)
+                .unwrap();
+        assert!(
+            !attached_values(&optimized)
+                .any(|value| matches!(optimized.get_inst(value).data, CfgInstData::Load { .. })),
+            "copy-only parameter Loads must still forward during O3"
+        );
     }
 
     #[test]
@@ -3255,6 +3321,46 @@ mod tests {
             inlined.is_address_taken(0),
             "the callee's parameter escape fact must pin the materialized slot (RUE-521)"
         );
+        assert!(
+            !inlined.is_ownership_boundary(0),
+            "Copy parameter materialization must remain optimizable"
+        );
+        let translated_load = attached_values(&inlined)
+            .find(|&value| matches!(inlined.get_inst(value).data, CfgInstData::Load { slot: 0 }))
+            .expect("the copied parameter should initially be represented by a Load");
+        assert!(
+            !inlined.is_ownership_boundary_value(translated_load),
+            "copy-only materialization must not acquire an ownership barrier"
+        );
+    }
+
+    #[test]
+    fn preexisting_callee_boundary_value_survives_a_nested_splice() {
+        let pool = synthetic_pool();
+        let interner = ThreadedRodeo::new();
+        let mut callee = Cfg::new(Type::I64, 0, 1, "callee".to_string(), vec![false]);
+        let entry = callee.new_block();
+        callee.entry = entry;
+        let param = callee.append_inst(entry, inst(CfgInstData::Param { index: 0 }, Type::I64));
+        // Simulate a callee that was itself produced by an earlier splice.
+        // This marker is not inferred from the scalar type, so only copying
+        // the callee's value metadata through the splice can preserve it.
+        callee.mark_ownership_boundary_value(param);
+        callee.set_return(entry, Some(param));
+        let callee = callee.finish(&pool).unwrap();
+        let (caller, call) = synthetic_caller(&pool, &interner, crate::CfgArgMode::Normal);
+
+        let inlined = inline_call(&caller, call, &callee, &pool).unwrap();
+        let protected_load = attached_values(&inlined)
+            .find(|&value| {
+                matches!(inlined.get_inst(value).data, CfgInstData::Load { slot: 0 })
+                    && inlined.is_ownership_boundary_value(value)
+            })
+            .expect("nested splice must retain the callee's marked value");
+        assert!(matches!(
+            inlined.get_inst(protected_load).data,
+            CfgInstData::Load { slot: 0 }
+        ));
     }
 
     #[test]

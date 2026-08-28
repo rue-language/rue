@@ -287,7 +287,16 @@ fn recognize(cfg: &Cfg, lp: &NaturalLoop) -> Option<Trip> {
             }
         }
     }
-    if alloc_count != 1 || initial.is_none() || cfg.is_address_taken(slot) {
+    // An inlined droppable parameter is a one-write slot too, but cloning its
+    // loop body would preserve the wrong caller-owned value if its ownership
+    // transfer were treated as an ordinary induction-variable spill. The
+    // slot marker is separate from the per-value forwarding marker because
+    // unrolling clones the storage region rather than an individual Load.
+    if alloc_count != 1
+        || initial.is_none()
+        || cfg.is_address_taken(slot)
+        || cfg.is_ownership_boundary(slot)
+    {
         return None;
     }
     let initial = initial?;
@@ -709,6 +718,13 @@ fn unroll_one(
             for &(v, ty) in &params {
                 let nv = cfg.add_block_param(block_map[&b], ty);
                 map.insert(v, nv);
+                // Unrolling duplicates the value arena. Preserve the
+                // per-value ownership fact alongside each value mapping;
+                // otherwise a protected transfer Load in the loop body can
+                // become forwardable only in the cloned iteration.
+                if source.is_ownership_boundary_value(v) {
+                    cfg.mark_ownership_boundary_value(nv);
+                }
             }
         }
         let insts: Vec<(CfgValue, BlockId)> = original_blocks
@@ -737,6 +753,9 @@ fn unroll_one(
                 },
             );
             map.insert(v, nv);
+            if source.is_ownership_boundary_value(v) {
+                cfg.mark_ownership_boundary_value(nv);
+            }
         }
         let internal_values = original_blocks
             .iter()
@@ -1400,6 +1419,26 @@ mod tests {
         assert_eq!(stats.loops_unrolled, 1);
         assert!(stats.values_cloned > 0);
         cfg.verify().unwrap();
+    }
+
+    #[test]
+    fn run_copies_boundary_markers_to_each_unrolled_value() {
+        let mut cfg = slot_loop(0, 2, false);
+        let body = BlockId::from_raw(2);
+        let marked = cfg.get_block(body).insts[0];
+        cfg.mark_ownership_boundary_value(marked);
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.loops_unrolled, 1);
+        let marked_attached = cfg
+            .blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter().copied())
+            .filter(|&value| cfg.is_ownership_boundary_value(value))
+            .count();
+        // The original body value and both unrolled clones must carry the
+        // fact. If clone metadata propagation is removed, this remains 1.
+        assert_eq!(marked_attached, 3);
     }
 
     #[test]

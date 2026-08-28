@@ -56,7 +56,9 @@ pub struct Stats {
 }
 
 /// Run sparse constant folding and store-to-load constant propagation to a
-/// fixpoint.
+/// fixpoint. Ownership-boundary values are always preserved: they describe a
+/// semantic transfer across an inline boundary, not an optional optimization
+/// policy.
 pub fn run(cfg: &mut Cfg) -> Stats {
     let value_count = cfg.value_count();
     let num_locals = cfg.num_locals() as usize;
@@ -177,6 +179,9 @@ pub fn run(cfg: &mut Cfg) -> Stats {
             let payload = const_payload(cfg, value)
                 .expect("became_const events carry Const/BoolConst values");
             for &load in &loads_of_slot[slot as usize] {
+                if cfg.is_ownership_boundary_value(load) {
+                    continue;
+                }
                 cfg.get_inst_mut(load).data = payload.duplicate_with_owner();
                 stats.loads_rewritten += 1;
                 became_const.push_back(load);
@@ -323,6 +328,79 @@ mod tests {
         assert!(matches!(
             cfg.get_inst(load).data,
             CfgInstData::Load { slot: 0 }
+        ));
+    }
+
+    #[test]
+    fn test_ownership_boundary_slot_not_propagated() {
+        // An inlined by-value parameter is initialized once, but the Load is
+        // the callee-owned read and must not be folded back to the caller's
+        // initializer during reoptimization.
+        let mut cfg = make_cfg(1);
+        let value = push(&mut cfg, CfgInstData::Const(7), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: value,
+            },
+            Type::UNIT,
+        );
+        let load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        cfg.mark_ownership_boundary(0);
+        cfg.mark_ownership_boundary_value(load);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(load) });
+
+        let stats = run(&mut cfg);
+        assert_eq!(stats.loads_rewritten, 0);
+        assert!(matches!(
+            cfg.get_inst(load).data,
+            CfgInstData::Load { slot: 0 }
+        ));
+    }
+
+    #[test]
+    fn test_mixed_boundary_and_copy_slots_only_protect_the_boundary_value() {
+        let mut cfg = make_cfg(2);
+        let owned_init = push(&mut cfg, CfgInstData::Const(7), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: owned_init,
+            },
+            Type::UNIT,
+        );
+        let owned_load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        cfg.mark_ownership_boundary(0);
+        cfg.mark_ownership_boundary_value(owned_load);
+
+        let copy_init = push(&mut cfg, CfgInstData::Const(9), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 1,
+                init: copy_init,
+            },
+            Type::UNIT,
+        );
+        let copy_load = push(&mut cfg, CfgInstData::Load { slot: 1 }, Type::I32);
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Return {
+                value: Some(copy_load),
+            },
+        );
+
+        let stats = run(&mut cfg);
+        assert_eq!(stats.loads_rewritten, 1);
+        assert!(matches!(
+            cfg.get_inst(owned_load).data,
+            CfgInstData::Load { slot: 0 }
+        ));
+        assert!(matches!(
+            cfg.get_inst(copy_load).data,
+            CfgInstData::Const(9)
         ));
     }
 
