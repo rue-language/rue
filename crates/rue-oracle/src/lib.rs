@@ -1,17 +1,20 @@
 //! # rue-oracle — the executable reference semantics
 //!
 //! A tree-walking interpreter over the compiler's **CFG** (the typed
-//! control-flow IR, produced by `CompilerSession`, *before* the
-//! MIR/codegen lowering where every miscompile of the 2026-07 work lived).
+//! control-flow IR, produced by `CompilerSession`, before MIR/codegen). The
+//! native differential retains the canonical post-transform O0 observation,
+//! while the CFG-boundary differential also executes the raw CFG artifact.
+//! This keeps mandatory CFG transformations out of the shared trusted base.
 //! Running a program through this interpreter and through the compiled binary
 //! and comparing the observable behavior (exit code, stdout, stderr, trap cause)
 //! is the differential-testing oracle of RUE-50, and the executable form of the
 //! operational semantics in `docs/formal/01-core-calculus.md` §6.
 //!
-//! Because the interpreter shares the compiler's *front half* (parser + sema +
-//! CFG build) but is an entirely independent *back half*, a disagreement between
-//! it and the compiled binary localizes a bug to lowering/codegen — exactly the
-//! layer that has been buggy.
+//! Because the interpreter shares parsing, semantic analysis, and raw CFG
+//! construction with the compiler, the paired comparisons localize different
+//! regions without adding a second builder: raw/post CFG disagreement identifies
+//! a mandatory CFG transformation, while post-transform/native disagreement
+//! identifies MIR lowering, code generation, or runtime execution.
 //!
 //! ## Coverage
 //!
@@ -167,19 +170,52 @@ fn query_cfg_state_from_session(
     mut session: CompilerSession,
     options: &CompileOptions,
 ) -> Result<CompileState, CompileErrors> {
-    let rooted = rue_compiler::unstable::rooted_cfg(&mut session, options)?;
-    let functions = rooted
-        .functions()
-        .iter()
-        .map(|function| OracleFunction {
-            #[cfg(test)]
-            source_name: function.definition_source_name().map(str::to_owned),
-            cfg: function.cfg().clone(),
-            interner: function.interner().clone(),
-            type_pool: function.type_pool().clone(),
-            strings: function.strings().clone(),
-        })
-        .collect::<Vec<_>>();
+    query_cfg_state_from_session_at_stage(&mut session, options, CfgStage::PostOptimization)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CfgStage {
+    PreOptimization,
+    PostOptimization,
+}
+
+fn query_cfg_state_from_session_at_stage(
+    session: &mut CompilerSession,
+    options: &CompileOptions,
+    stage: CfgStage,
+) -> Result<CompileState, CompileErrors> {
+    let functions = match stage {
+        CfgStage::PreOptimization => {
+            let rooted = rue_compiler::unstable::rooted_pre_optimization_cfg(session, options)?;
+            rooted
+                .functions()
+                .iter()
+                .map(|function| OracleFunction {
+                    #[cfg(test)]
+                    source_name: function.definition_source_name().map(str::to_owned),
+                    cfg: function.cfg().clone(),
+                    interner: function.interner().clone(),
+                    type_pool: function.type_pool().clone(),
+                    strings: function.strings().clone(),
+                })
+                .collect::<Vec<_>>()
+        }
+        CfgStage::PostOptimization => {
+            let rooted = rue_compiler::unstable::rooted_cfg(session, options)?;
+            rooted
+                .functions()
+                .iter()
+                .map(|function| OracleFunction {
+                    #[cfg(test)]
+                    source_name: function.definition_source_name().map(str::to_owned),
+                    cfg: function.cfg().clone(),
+                    interner: function.interner().clone(),
+                    type_pool: function.type_pool().clone(),
+                    strings: function.strings().clone(),
+                })
+                .collect::<Vec<_>>()
+        }
+    };
     let entry = functions
         .iter()
         .position(|function| function.cfg.fn_name() == "main")
@@ -502,6 +538,12 @@ pub enum RunSourceError {
     /// The source compiled, but interpretation ended with a typed model gap,
     /// resource limit, or compiler/oracle contract violation.
     Unsupported(Unsupported),
+    /// The canonical pre- and post-optimization CFGs produced different
+    /// observable behavior under the same interpreter.
+    CfgTransformationDisagreement {
+        pre_optimization: Result<Outcome, Unsupported>,
+        post_optimization: Result<Outcome, Unsupported>,
+    },
 }
 
 impl fmt::Display for RunSourceError {
@@ -511,6 +553,13 @@ impl fmt::Display for RunSourceError {
             RunSourceError::Unsupported(unsupported) => {
                 write!(f, "unsupported by the oracle: {unsupported}")
             }
+            RunSourceError::CfgTransformationDisagreement {
+                pre_optimization,
+                post_optimization,
+            } => write!(
+                f,
+                "pre/post CFG execution disagreement: pre={pre_optimization:?}, post={post_optimization:?}"
+            ),
         }
     }
 }
@@ -520,6 +569,7 @@ impl std::error::Error for RunSourceError {
         match self {
             RunSourceError::Compile(errors) => Some(errors),
             RunSourceError::Unsupported(unsupported) => Some(unsupported),
+            RunSourceError::CfgTransformationDisagreement { .. } => None,
         }
     }
 }
@@ -550,6 +600,30 @@ pub fn run_source_with_preview_features(
     run_state(state).map_err(RunSourceError::Unsupported)
 }
 
+/// Execute both canonical CFG boundaries and require identical observations.
+/// The returned outcome is the raw-CFG result; the comparison side runs the
+/// existing post-transform O0 pipeline without compiling or executing an
+/// additional native artifact.
+pub fn run_source_with_cfg_differential(
+    source: &str,
+    preview_features: &PreviewFeatures,
+) -> Result<Outcome, RunSourceError> {
+    let snapshot = SourceSnapshot::single("<oracle>", source)
+        .map_err(CompileErrors::from)
+        .map_err(RunSourceError::Compile)?;
+    let mut session = CompilerSession::new();
+    session
+        .update(&snapshot)
+        .into_result()
+        .map_err(RunSourceError::Compile)?;
+    run_session_cfg_differential_inner(&mut session, preview_features)
+}
+
+/// Stable-language convenience form of [`run_source_with_cfg_differential`].
+pub fn run_source_cfg_differential(source: &str) -> Result<Outcome, RunSourceError> {
+    run_source_with_cfg_differential(source, &PreviewFeatures::new())
+}
+
 /// Run a compiler session whose caller has already completed any required
 /// import discovery. This keeps filesystem policy in the harness while letting
 /// the oracle consume the same canonical multi-module compiler state.
@@ -566,6 +640,39 @@ pub fn run_session_with_preview_features(
     )
     .map_err(RunSourceError::Compile)?;
     run_state(state).map_err(RunSourceError::Unsupported)
+}
+
+/// Session-aware form of [`run_source_with_cfg_differential`].
+pub fn run_session_with_cfg_differential(
+    mut session: CompilerSession,
+    preview_features: &PreviewFeatures,
+) -> Result<Outcome, RunSourceError> {
+    run_session_cfg_differential_inner(&mut session, preview_features)
+}
+
+fn run_session_cfg_differential_inner(
+    session: &mut CompilerSession,
+    preview_features: &PreviewFeatures,
+) -> Result<Outcome, RunSourceError> {
+    let options = CompileOptions {
+        preview_features: preview_features.clone(),
+        ..CompileOptions::default()
+    };
+    let pre_state =
+        query_cfg_state_from_session_at_stage(session, &options, CfgStage::PreOptimization)
+            .map_err(RunSourceError::Compile)?;
+    let pre = run_state(pre_state);
+    let post_state =
+        query_cfg_state_from_session_at_stage(session, &options, CfgStage::PostOptimization)
+            .map_err(RunSourceError::Compile)?;
+    let post = run_state(post_state);
+    if pre == post {
+        return pre.map_err(RunSourceError::Unsupported);
+    }
+    Err(RunSourceError::CfgTransformationDisagreement {
+        pre_optimization: pre,
+        post_optimization: post,
+    })
 }
 
 fn run_state(state: CompileState) -> Result<Outcome, Unsupported> {
@@ -965,6 +1072,13 @@ struct Frame {
     /// that allocation so a write through the pointer and a direct read agree.
     /// Keyed by [`promotion_key`] over the slot's [`PlaceBase`].
     promoted: HashMap<u64, usize>,
+    /// Physical by-reference parameter slots bound to their caller locations.
+    /// Ordinary calls retain copy-in/copy-out behavior and leave this empty;
+    /// raw accessor execution uses it to preserve the yielded place identity.
+    param_places: HashMap<u32, PtrTarget>,
+    /// The single trailing accessor `yield` returns its place rather than the
+    /// value loaded from that place.
+    place_return: bool,
 }
 
 enum WritebackPlace<'a> {
@@ -1397,6 +1511,12 @@ impl<'a> Interp<'a> {
                 (slot, cfg.num_params(), width, Some(slot))
             }
             PlaceBase::Indirect(_) => return None,
+            PlaceBase::Accessor(call)
+                if (call.as_u32() as usize) < cfg.value_count()
+                    && matches!(cfg.get_inst(call).data, CfgInstData::AccessorCall { .. }) =>
+            {
+                return None;
+            }
             PlaceBase::Accessor(_) => return Some(ContractViolationKind::UnsplicedAccessor),
         };
         let out_of_bounds = if width == 0 {
@@ -1989,10 +2109,47 @@ impl<'a> Interp<'a> {
         result
     }
 
+    fn call_accessor(
+        &mut self,
+        name: &str,
+        args: &[(Value, Type, CfgArgMode)],
+        param_places: HashMap<u32, PtrTarget>,
+    ) -> Step<PtrTarget> {
+        if self.depth >= MAX_DEPTH {
+            return Err(unsupported(
+                UnsupportedKind::ResourceLimit(ResourceLimitKind::RecursionDepth),
+                "recursion depth budget exhausted",
+            ));
+        }
+        self.depth += 1;
+        let caller = self.state.current_function.load(Ordering::Relaxed);
+        let result = self.call_inner_with_places(name, args, param_places, true);
+        self.state.current_function.store(caller, Ordering::Relaxed);
+        self.depth -= 1;
+        let (value, _) = result?;
+        match value {
+            Value::Ptr(Some(target)) => Ok(target),
+            _ => Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::UnsplicedAccessor),
+                "accessor execution did not return a live place",
+            )),
+        }
+    }
+
     fn call_inner(
         &mut self,
         name: &str,
         args: &[(Value, Type, CfgArgMode)],
+    ) -> Step<(Value, Vec<Option<Value>>)> {
+        self.call_inner_with_places(name, args, HashMap::new(), false)
+    }
+
+    fn call_inner_with_places(
+        &mut self,
+        name: &str,
+        args: &[(Value, Type, CfgArgMode)],
+        param_places: HashMap<u32, PtrTarget>,
+        place_return: bool,
     ) -> Step<(Value, Vec<Option<Value>>)> {
         let function = self.find_function(name).ok_or_else(|| {
             unsupported(
@@ -2036,6 +2193,8 @@ impl<'a> Interp<'a> {
             locals: vec![None; cfg.num_locals() as usize],
             cache: HashMap::new(),
             promoted: HashMap::new(),
+            param_places,
+            place_return,
         };
 
         let mut current = cfg.entry;
@@ -2092,9 +2251,20 @@ impl<'a> Interp<'a> {
             let term = &block.terminator;
             match term {
                 Terminator::Return { value } => {
-                    let ret = match value {
-                        Some(v) => self.eval(cfg, &mut frame, *v)?,
-                        None => Value::Unit,
+                    let ret = match (frame.place_return, value) {
+                        (true, Some(v)) => {
+                            Value::Ptr(Some(self.returned_place_target(cfg, &mut frame, *v)?))
+                        }
+                        (true, None) => {
+                            return Err(unsupported(
+                                UnsupportedKind::ContractViolation(
+                                    ContractViolationKind::UnsplicedAccessor,
+                                ),
+                                "accessor returned without a yielded place",
+                            ));
+                        }
+                        (false, Some(v)) => self.eval(cfg, &mut frame, *v)?,
+                        (false, None) => Value::Unit,
                     };
                     return Ok((ret, std::mem::take(&mut frame.params)));
                 }
@@ -2507,6 +2677,16 @@ impl<'a> Interp<'a> {
                     // not read the slot (that would grab the next parameter's
                     // value); materialize the unique ZST value instead.
                     self.zero_sized_value(ty)
+                } else if let Some(target) = frame.param_places.get(index).cloned() {
+                    // Raw accessor execution redirects by-reference parameter
+                    // slots to their caller places, matching canonical
+                    // accessor splicing for whole-parameter reads.
+                    self.ptr_cell_read(
+                        &target,
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::UnsplicedAccessor,
+                        ),
+                    )?
                 } else if let Some(&a) =
                     frame.promoted.get(&promotion_key(PlaceBase::Param(*index)))
                 {
@@ -2719,14 +2899,50 @@ impl<'a> Interp<'a> {
             // caller via copy-out).
             CfgInstData::ParamStore { param_slot, value } => {
                 let val = self.eval(cfg, frame, *value)?;
-                Self::set_param(frame, *param_slot, val);
+                if let Some(target) = frame.param_places.get(param_slot).cloned() {
+                    // A whole-receiver assignment inside an inout accessor is
+                    // an immediate write to the caller's place; the spliced
+                    // CFG performs the same redirection.
+                    self.ptr_cell_write(
+                        &target,
+                        val,
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::UnsplicedAccessor,
+                        ),
+                    )?;
+                } else {
+                    Self::set_param(frame, *param_slot, val);
+                }
                 Value::Unit
             }
-            CfgInstData::AccessorCall { .. } => {
-                return Err(unsupported(
-                    UnsupportedKind::ContractViolation(ContractViolationKind::UnsplicedAccessor),
-                    "accessor call reached the oracle",
-                ));
+            CfgInstData::AccessorCall { name, .. } => {
+                let fname = self.interner().resolve(name).to_string();
+                let call_args = cfg.get_call_args(&inst.data).to_vec();
+                let arg_types = call_args
+                    .iter()
+                    .map(|arg| cfg.get_inst(arg.value).ty)
+                    .collect::<Vec<_>>();
+                let mut argvals = Vec::with_capacity(call_args.len());
+                let mut param_places = HashMap::new();
+                let mut base = 0usize;
+                for (index, argument) in call_args.iter().enumerate() {
+                    let value = match argument.mode {
+                        CfgArgMode::Borrow | CfgArgMode::Inout => {
+                            let target = self.argument_place_target(cfg, frame, argument.value)?;
+                            param_places.insert(base as u32, target.clone());
+                            self.ptr_cell_read(
+                                &target,
+                                UnsupportedKind::ContractViolation(
+                                    ContractViolationKind::UnsplicedAccessor,
+                                ),
+                            )?
+                        }
+                        CfgArgMode::Normal => self.eval(cfg, frame, argument.value)?,
+                    };
+                    argvals.push((value, arg_types[index], argument.mode));
+                    base += self.call_arg_slot_width(arg_types[index], argument.mode);
+                }
+                Value::Ptr(Some(self.call_accessor(&fname, &argvals, param_places)?))
             }
             CfgInstData::Call { runtime, name, .. } => {
                 let fname = self.interner().resolve(name).to_string();
@@ -3217,6 +3433,58 @@ impl<'a> Interp<'a> {
         Ok((place.base, path))
     }
 
+    fn compose_pointer_path(mut target: PtrTarget, path: &[(usize, Projection)]) -> PtrTarget {
+        for (index, _) in path {
+            target.path.push(target.index as usize);
+            target.index = *index as i128;
+        }
+        target
+    }
+
+    fn external_place_target(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        base: PlaceBase,
+        path: &[(usize, Projection)],
+    ) -> Step<Option<PtrTarget>> {
+        let target = match base {
+            PlaceBase::Param(slot) => frame.param_places.get(&slot).cloned(),
+            PlaceBase::Accessor(call) => match self.eval(cfg, frame, call)? {
+                Value::Ptr(target) => target,
+                _ => {
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::UnsplicedAccessor,
+                        ),
+                        "accessor call did not yield a place",
+                    ));
+                }
+            },
+            PlaceBase::Indirect(pointer) => match self.eval(cfg, frame, pointer)? {
+                Value::Ptr(target) => target,
+                _ => None,
+            },
+            PlaceBase::Local(_) => None,
+        };
+        Ok(target.map(|target| Self::compose_pointer_path(target, path)))
+    }
+
+    fn returned_place_target(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        value: CfgValue,
+    ) -> Step<PtrTarget> {
+        let CfgInstData::PlaceRead { place } = &cfg.get_inst(value).data else {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::UnsplicedAccessor),
+                "accessor return is not the trailing yielded place",
+            ));
+        };
+        self.promote_place(cfg, frame, place, cfg.get_inst(value).ty)
+    }
+
     fn base_value(frame: &Frame, base: PlaceBase) -> Step<Value> {
         match base {
             PlaceBase::Local(slot) => Self::get_local(frame, slot),
@@ -3246,6 +3514,12 @@ impl<'a> Interp<'a> {
 
     fn place_read(&mut self, cfg: &'a Cfg, frame: &mut Frame, place: &Place) -> Step<Value> {
         let (base, path) = self.resolve_path(cfg, frame, place)?;
+        if let Some(target) = self.external_place_target(cfg, frame, base, &path)? {
+            return self.ptr_cell_read(
+                &target,
+                UnsupportedKind::ContractViolation(ContractViolationKind::UnsplicedAccessor),
+            );
+        }
         let mut cur = match base {
             PlaceBase::Indirect(pointer) => {
                 let pointer = self.eval(cfg, frame, pointer)?;
@@ -3285,6 +3559,13 @@ impl<'a> Interp<'a> {
         val: Value,
     ) -> Step<()> {
         let (base, path) = self.resolve_path(cfg, frame, place)?;
+        if let Some(target) = self.external_place_target(cfg, frame, base, &path)? {
+            return self.ptr_cell_write(
+                &target,
+                val,
+                UnsupportedKind::ContractViolation(ContractViolationKind::UnsplicedAccessor),
+            );
+        }
         if let PlaceBase::Indirect(pointer) = base {
             let pointer = self.eval(cfg, frame, pointer)?;
             let target = self.expect_ptr(pointer, unsupported_intrinsic_kind("ptr_write"))?;
@@ -3455,6 +3736,28 @@ impl<'a> Interp<'a> {
             other => Err(unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::InoutArgumentNotLvalue),
                 format!("inout argument is not an lvalue: {other:?}"),
+            )),
+        }
+    }
+
+    fn argument_place_target(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        value: CfgValue,
+    ) -> Step<PtrTarget> {
+        let ty = cfg.get_inst(value).ty;
+        match &cfg.get_inst(value).data {
+            CfgInstData::Load { slot } => {
+                self.promote_place(cfg, frame, &Place::local(*slot, ty), ty)
+            }
+            CfgInstData::Param { index } => {
+                self.promote_place(cfg, frame, &Place::param(*index, ty), ty)
+            }
+            CfgInstData::PlaceRead { place } => self.promote_place(cfg, frame, place, ty),
+            other => Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::InoutArgumentNotLvalue),
+                format!("accessor argument is not a place: {other:?}"),
             )),
         }
     }
@@ -3753,6 +4056,9 @@ impl<'a> Interp<'a> {
         pointee: Type,
     ) -> Step<PtrTarget> {
         let (base, path) = self.resolve_path(cfg, frame, place)?;
+        if let Some(target) = self.external_place_target(cfg, frame, base, &path)? {
+            return Ok(target);
+        }
         let key = promotion_key(base);
         let alloc = if let Some(&a) = frame.promoted.get(&key) {
             a

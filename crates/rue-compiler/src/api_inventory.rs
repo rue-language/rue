@@ -2263,7 +2263,7 @@ fn unstable_views_do_not_alias_query_engine_records() {
             "pubusecrate::import_discovery::{AcceptedImportSource,DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportDiscoveryPlan,ImportDiscoveryRequest,ImportDiscoveryWave,ImportInputRevision,ImportObservation,ImportObservationLedger,ImportObservationStatus,};",
             "pubusecrate::warm_fresh_parity::ParityObservation;",
             "pubuserue_span::Span;",
-            "pubusecrate::session::{ClosedDiscoveryContinuation,RootedCfgOutput,RootedCfgUnit,RootedParkOutcome,TrustedSuccessorDelta,};",
+            "pubusecrate::session::{ClosedDiscoveryContinuation,RootedCfgOutput,RootedCfgUnit,RootedParkOutcome,RootedPreOptimizationCfgOutput,RootedPreOptimizationCfgUnit,TrustedSuccessorDelta,};",
         ],
         "unstable may reexport only reviewed presentation, source-assembly, and host discovery-protocol records"
     );

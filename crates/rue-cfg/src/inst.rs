@@ -977,6 +977,48 @@ impl ValidatedCfg {
         self.0 = editor;
         Ok(result)
     }
+
+    /// Apply a mutation to an already-optimized graph, whose dead values may
+    /// remain detached, and publish only after the optimizer's full final
+    /// verification contract succeeds.
+    #[doc(hidden)]
+    pub fn try_edit_after_optimization<R>(
+        &mut self,
+        type_pool: &rue_air::FrozenTypeInternPool,
+        edit: impl FnOnce(&mut CfgEditor) -> Result<R, CfgEditError>,
+    ) -> Result<R, CfgEditTransactionError> {
+        let mut editor = self.0.clone();
+        let result = edit(&mut editor).map_err(CfgEditTransactionError::Edit)?;
+        editor
+            .verify_after_optimization_with_type_pool(type_pool)
+            .map_err(CfgEditTransactionError::Verification)?;
+        self.0 = editor;
+        Ok(result)
+    }
+
+    /// Test-support corruption used by the compiler/oracle CFG-boundary
+    /// differential. It reverses one attached equality comparison and
+    /// republishes only if the resulting CFG remains fully verified.
+    #[doc(hidden)]
+    pub fn inject_differential_comparison_fault(
+        &mut self,
+        type_pool: &rue_air::FrozenTypeInternPool,
+    ) -> bool {
+        let candidate = (0..self.value_count())
+            .map(|index| CfgValue::from_raw(index as u32))
+            .find(|value| matches!(self.get_inst(*value).data, CfgInstData::Eq(_, _)));
+        let Some(candidate) = candidate else {
+            return false;
+        };
+        self.try_edit_after_optimization(type_pool, |editor| {
+            let CfgInstData::Eq(lhs, rhs) = editor.get_inst(candidate).data else {
+                unreachable!()
+            };
+            editor.get_inst_mut(candidate).data = CfgInstData::Ne(lhs, rhs);
+            Ok(())
+        })
+        .is_ok()
+    }
 }
 
 impl Clone for Cfg {
@@ -1684,8 +1726,10 @@ impl Cfg {
     /// owner-bound payload range.
     pub fn get_call_args<'a>(&'a self, data: &CfgInstData) -> &'a [CfgCallArg] {
         match data {
-            CfgInstData::Call { args, .. } => self.call_args(args),
-            _ => panic!("get_call_args called on non-Call instruction"),
+            CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
+                self.call_args(args)
+            }
+            _ => panic!("get_call_args called on non-call instruction"),
         }
     }
 

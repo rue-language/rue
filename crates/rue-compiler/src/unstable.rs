@@ -524,7 +524,7 @@ pub fn committed_successor_sharing(
 
 pub use crate::session::{
     ClosedDiscoveryContinuation, RootedCfgOutput, RootedCfgUnit, RootedParkOutcome,
-    TrustedSuccessorDelta,
+    RootedPreOptimizationCfgOutput, RootedPreOptimizationCfgUnit, TrustedSuccessorDelta,
 };
 
 /// Run the production body-closure root without constructing a presentation
@@ -915,6 +915,16 @@ pub fn rooted_cfg(
     options: &crate::CompileOptions,
 ) -> Result<RootedCfgOutput, crate::CompileErrors> {
     session.rooted_cfg(options)
+}
+
+/// Query the canonical reached raw CFGs before mandatory accessor
+/// materialization and optimization. This unstable endpoint is intended for
+/// differential tests; production codegen continues to consume [`rooted_cfg`].
+pub fn rooted_pre_optimization_cfg(
+    session: &mut crate::CompilerSession,
+    options: &crate::CompileOptions,
+) -> Result<RootedPreOptimizationCfgOutput, crate::CompileErrors> {
+    session.rooted_pre_optimization_cfg(options)
 }
 
 /// Assert warm/fresh parity for one retained source revision. This is an
@@ -2835,6 +2845,7 @@ impl MetricsSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DifferentialOracleFault {
     Semantic,
+    CfgTransformation,
     Diagnostic,
     Import,
 }

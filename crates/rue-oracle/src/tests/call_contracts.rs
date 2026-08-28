@@ -456,6 +456,8 @@ fn user_call_layout_is_rejected_before_unmodeled_operands_run() {
             locals: vec![None; cfg.num_locals() as usize],
             cache: HashMap::new(),
             promoted: HashMap::new(),
+            param_places: HashMap::new(),
+            place_return: false,
         };
         let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, call));
         assert_eq!(
@@ -552,6 +554,8 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
             locals: vec![None; cfg.num_locals() as usize],
             cache: HashMap::new(),
             promoted: HashMap::new(),
+            param_places: HashMap::new(),
+            place_return: false,
         };
         let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, outer));
         assert_eq!(
@@ -588,6 +592,8 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
             locals: vec![None; cfg.num_locals() as usize],
             cache: HashMap::new(),
             promoted: HashMap::new(),
+            param_places: HashMap::new(),
+            place_return: false,
         };
         let corrupted = if name == "panic" { args[0] } else { args[1] };
         frame.cache.insert(corrupted.as_u32(), Value::Int(7));
@@ -617,6 +623,8 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
         locals: vec![None; cfg.num_locals() as usize],
         cache: HashMap::new(),
         promoted: HashMap::new(),
+        param_places: HashMap::new(),
+        place_return: false,
     };
     frame.cache.insert(args[0].as_u32(), Value::Int(1));
     let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, assertion));

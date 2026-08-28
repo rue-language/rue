@@ -31,6 +31,176 @@ mod tests {
     }
 
     #[test]
+    fn pre_optimization_root_has_stable_query_identity_and_reuse() {
+        let snapshot = SourceSnapshot::single(
+            "main.rue",
+            "fn square(x: i32) -> i32 { x * x } fn main() -> i32 { square(3) }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        publish_test_snapshot(&mut session, &snapshot).unwrap();
+        let options = CompileOptions::default();
+
+        let first = session.rooted_pre_optimization_cfg(&options).unwrap();
+        assert!(
+            session
+                .rooted_cfg_executions()
+                .iter()
+                .all(|(_, execution)| { *execution == rue_query::RequestExecution::Computed })
+        );
+        let first_cfgs = format!("{:?}", first.functions());
+
+        let second = session.rooted_pre_optimization_cfg(&options).unwrap();
+        assert!(
+            session
+                .rooted_cfg_executions()
+                .iter()
+                .all(|(_, execution)| {
+                    matches!(
+                        execution,
+                        rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined
+                    )
+                })
+        );
+        assert_eq!(first_cfgs, format!("{:?}", second.functions()));
+
+        let optimized = CompileOptions {
+            opt_level: rue_cfg::OptLevel::O1,
+            ..options.clone()
+        };
+        session.rooted_cfg(&optimized).unwrap();
+        let third = session.rooted_pre_optimization_cfg(&options).unwrap();
+        assert_eq!(first_cfgs, format!("{:?}", third.functions()));
+    }
+
+    #[test]
+    fn raw_root_preserves_accessor_calls_that_post_transform_o0_eliminates() {
+        let snapshot = SourceSnapshot::single(
+            "main.rue",
+            r#"struct Inner {
+                x: i32,
+                fn value(borrow self) -> borrow i32 { yield self.x; }
+            }
+            fn main() -> i32 {
+                let inner = Inner { x: 7 };
+            if inner.value() == 7 { 0 } else { 1 }
+            }"#,
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        publish_test_snapshot(&mut session, &snapshot).unwrap();
+        let options = CompileOptions::default();
+
+        let raw = session.rooted_pre_optimization_cfg(&options).unwrap();
+        let raw_main = raw
+            .functions()
+            .iter()
+            .find(|unit| unit.definition_source_name() == Some("main"))
+            .unwrap();
+        assert!((0..raw_main.cfg().value_count()).any(|index| {
+            matches!(
+                raw_main
+                    .cfg()
+                    .get_inst(rue_cfg::CfgValue::from_raw(index as u32))
+                    .data,
+                rue_cfg::CfgInstData::AccessorCall { .. }
+            )
+        }));
+
+        let post = session.rooted_cfg(&options).unwrap();
+        let post_main = post
+            .functions()
+            .iter()
+            .find(|unit| unit.definition_source_name() == Some("main"))
+            .unwrap();
+        assert!(post_main.cfg().blocks().iter().all(|block| {
+            block.insts.iter().all(|value| {
+                let inst = post_main.cfg().get_inst(*value);
+                !matches!(inst.data, rue_cfg::CfgInstData::AccessorCall { .. })
+                    && !matches!(
+                        &inst.data,
+                        rue_cfg::CfgInstData::PlaceRead { place }
+                            | rue_cfg::CfgInstData::PlaceWrite { place, .. }
+                            if matches!(place.base, rue_cfg::PlaceBase::Accessor(_))
+                    )
+            })
+        }));
+    }
+
+    #[test]
+    fn raw_then_post_hands_off_drop_glue_cones_for_accessor_program() {
+        let mut source = String::from(
+            r#"
+                struct AccessorOwner {
+                    value: i32,
+                    fn view(borrow self) -> borrow i32 { yield self.value; }
+                }
+            "#,
+        );
+        // Exceed the eight-entry body-query retention floor with distinct
+        // destructor owners that all inspect builtin `str` drop glue. This is
+        // the focused analogue of the real-std StrBuf corpus that exposed the
+        // missing raw-to-post fallback handoff.
+        for index in 0..32 {
+            source.push_str(&format!(
+                "struct DropOwner{index} {{ text: str }} drop fn DropOwner{index}(self) {{}} "
+            ));
+        }
+        source.push_str(
+            "fn use_owners(comptime N: i32) -> i32 { let accessor = AccessorOwner { value: 42 }; ",
+        );
+        for index in 0..32 {
+            source.push_str(&format!(
+                "let owner{index} = DropOwner{index} {{ text: \"retained\" }}; "
+            ));
+        }
+        source.push_str(
+            "if accessor.view() == 42 && N == 2 { 0 } else { 1 } } \
+             fn main() -> i32 { use_owners(2) }",
+        );
+        let snapshot = SourceSnapshot::single("<raw-post-drop-glue-handoff>", source).unwrap();
+        let mut session = CompilerSession::new();
+        publish_test_snapshot(&mut session, &snapshot).unwrap();
+        let options = CompileOptions::default();
+
+        // Match the oracle lifecycle: project the raw records, then release
+        // the artifact terminal before asking the same session for the
+        // post-transform root. The raw batch's published handoff must retain
+        // deep validation leaves such as the builtin `str` drop-glue query.
+        let raw_identity = {
+            let raw = session.rooted_pre_optimization_cfg(&options).unwrap();
+            assert!(
+                session.raw_cfg_handoff_is_published(&raw),
+                "the raw batch must publish its exact retained child cones for the post-transform successor"
+            );
+            assert!(raw.functions().iter().any(|unit| {
+                (0..unit.cfg().value_count()).any(|index| {
+                    matches!(
+                        unit.cfg()
+                            .get_inst(rue_cfg::CfgValue::from_raw(index as u32))
+                            .data,
+                        rue_cfg::CfgInstData::AccessorCall { .. }
+                    )
+                })
+            }));
+            raw.query_identity()
+        };
+
+        let post = session.rooted_cfg(&options).unwrap();
+        assert!(!raw_identity.is_empty());
+        assert!(post.functions().iter().all(|unit| {
+            unit.cfg().blocks().iter().all(|block| {
+                block.insts.iter().all(|value| {
+                    !matches!(
+                        unit.cfg().get_inst(*value).data,
+                        rue_cfg::CfgInstData::AccessorCall { .. }
+                    )
+                })
+            })
+        }));
+    }
+
+    #[test]
     fn backend_query_keys_share_exact_batch_and_memo_display_identities() {
         let snapshot = SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }").unwrap();
         let options = CompileOptions::default();

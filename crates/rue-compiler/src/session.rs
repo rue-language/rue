@@ -881,6 +881,88 @@ pub struct RootedCfgOutput {
     backend_root: crate::revisioned_query_database::BackendRootCandidate,
 }
 
+#[derive(Clone)]
+pub struct RootedPreOptimizationCfgUnit {
+    pub(crate) function: crate::FunctionInstanceKey,
+    pub(crate) cfg_key: crate::cfg_query::CfgQueryKey,
+    pub(crate) record: Arc<crate::cfg_query::CfgRecord>,
+}
+
+impl std::fmt::Debug for RootedPreOptimizationCfgUnit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RootedPreOptimizationCfgUnit")
+            .field("function", &self.function)
+            .field("source_name", &self.record.source_name)
+            .field("cfg_blocks", &self.record.cfg.blocks())
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+pub struct RootedPreOptimizationCfgOutput {
+    cfgs: Vec<RootedPreOptimizationCfgUnit>,
+    pub(crate) raw_cfg_batch: crate::revisioned_query_database::RawCfgBatchKey,
+    // The batch terminal owns the exact retained cones of its compiler.cfg
+    // children for as long as this public artifact remains live.
+    _raw_cfg_terminal:
+        Arc<rue_query::QueryTerminal<crate::revisioned_query_database::RawCfgBatchOutput>>,
+    warnings: Vec<CompileWarning>,
+    work: crate::CanonicalSemanticWork,
+}
+
+impl RootedPreOptimizationCfgOutput {
+    pub fn functions(&self) -> &[RootedPreOptimizationCfgUnit] {
+        &self.cfgs
+    }
+
+    pub fn warnings(&self) -> &[CompileWarning] {
+        &self.warnings
+    }
+
+    pub fn metrics(&self) -> crate::unstable::SemanticMetrics {
+        crate::unstable::SemanticMetrics::from_work(self.work)
+    }
+
+    pub fn query_identity(&self) -> String {
+        rue_query::QueryKey::stable_identity(&self.raw_cfg_batch)
+    }
+}
+
+impl RootedPreOptimizationCfgUnit {
+    pub fn definition_source_name(&self) -> Option<&str> {
+        match &self.function {
+            crate::FunctionInstanceKey::Definition(definition) => Some(definition.name()),
+            _ => None,
+        }
+    }
+
+    pub fn source_name(&self) -> &str {
+        self.definition_source_name()
+            .unwrap_or(&self.record.source_name)
+    }
+
+    pub fn cfg(&self) -> &rue_cfg::ValidatedCfg {
+        &self.record.cfg
+    }
+
+    pub fn interner(&self) -> &Arc<lasso::ThreadedRodeo> {
+        &self.record.interner
+    }
+
+    pub fn type_pool(&self) -> &rue_air::FrozenTypeInternPool {
+        &self.record.type_pool
+    }
+
+    pub fn strings(&self) -> &Arc<[String]> {
+        &self.record.strings
+    }
+
+    pub fn query_identity(&self) -> String {
+        rue_query::QueryKey::stable_identity(&self.cfg_key)
+    }
+}
+
 impl RootedCfgOutput {
     pub fn functions(&self) -> &[RootedCfgUnit] {
         &self.cfgs
@@ -1062,6 +1144,34 @@ fn collect_rooted_exports(
             }
         })
         .collect()
+}
+
+fn sort_rooted_warnings(graph: &RootedBodyGraph, warnings: &mut Vec<CompileWarning>) {
+    let mut module_ids: AHashMap<rue_span::FileId, &str> =
+        AHashMap::with_capacity(graph.modules.len());
+    for module in graph.modules.iter() {
+        module_ids
+            .entry(module.file_id())
+            .or_insert_with(|| module.module_id().as_str());
+    }
+    let mut keyed = warnings
+        .drain(..)
+        .map(|warning| {
+            let span = warning.span();
+            let key = (
+                span.and_then(|span| module_ids.get(&span.file_id).copied())
+                    .unwrap_or(""),
+                span.map(|span| span.start).unwrap_or(0),
+                span.map(|span| span.end).unwrap_or(0),
+                warning.to_string(),
+                format!("{:?}", warning.diagnostic()),
+            );
+            (key, warning)
+        })
+        .collect::<Vec<_>>();
+    keyed.sort_by(|left, right| left.0.cmp(&right.0));
+    warnings.extend(keyed.into_iter().map(|(_, warning)| warning));
+    warnings.dedup();
 }
 
 /// An opaque, single-use continuation issued ONLY from a successful close of
@@ -1699,7 +1809,8 @@ impl CompilerSession {
         fault: crate::unstable::DifferentialOracleFault,
     ) -> bool {
         match fault {
-            crate::unstable::DifferentialOracleFault::Semantic => {
+            crate::unstable::DifferentialOracleFault::Semantic
+            | crate::unstable::DifferentialOracleFault::CfgTransformation => {
                 self.oracle_fault = Some(fault);
                 true
             }
@@ -5123,7 +5234,8 @@ impl CompilerSession {
         &mut self,
         options: &CompileOptions,
     ) -> Result<RootedCfgOutput, CompileErrors> {
-        if self.oracle_fault.take() == Some(crate::unstable::DifferentialOracleFault::Semantic) {
+        if self.oracle_fault == Some(crate::unstable::DifferentialOracleFault::Semantic) {
+            self.oracle_fault.take();
             return Err(CompileErrors::from(CompileError::without_span(
                 ErrorKind::InternalError("differential semantic fault".into()),
             )));
@@ -5140,11 +5252,50 @@ impl CompilerSession {
         }
     }
 
+    pub(crate) fn rooted_pre_optimization_cfg(
+        &mut self,
+        options: &CompileOptions,
+    ) -> Result<RootedPreOptimizationCfgOutput, CompileErrors> {
+        match self.rooted_cfg_artifact_with_cancellation(
+            options,
+            rue_query::CancellationToken::new(),
+            true,
+            std::convert::identity,
+            |_| unreachable!("a pre-optimization request cannot publish a post artifact"),
+        ) {
+            Ok(output) => Ok(output),
+            Err(PipelineRequestControl::Compile(errors)) => Err(errors),
+            Err(PipelineRequestControl::Abort(abort)) => {
+                Err(pipeline_abort_errors("pre-optimization rooted CFG", abort))
+            }
+            Err(PipelineRequestControl::Parked(park)) => {
+                Err(unresolved_toolchain_park_errors(&park))
+            }
+        }
+    }
+
     pub(crate) fn rooted_cfg_with_cancellation(
         &mut self,
         options: &CompileOptions,
         cancellation: rue_query::CancellationToken,
     ) -> Result<RootedCfgOutput, PipelineRequestControl> {
+        self.rooted_cfg_artifact_with_cancellation(
+            options,
+            cancellation,
+            false,
+            |_| unreachable!("a post-optimization request cannot publish a raw artifact"),
+            std::convert::identity,
+        )
+    }
+
+    fn rooted_cfg_artifact_with_cancellation<T>(
+        &mut self,
+        options: &CompileOptions,
+        cancellation: rue_query::CancellationToken,
+        pre_optimization: bool,
+        publish_pre: impl FnOnce(RootedPreOptimizationCfgOutput) -> T,
+        publish_post: impl FnOnce(RootedCfgOutput) -> T,
+    ) -> Result<T, PipelineRequestControl> {
         let graph = match self.rooted_body_graph_with_cancellation(options, cancellation.clone()) {
             Ok(graph) => graph,
             Err(SemanticRequestControl::Compile(errors)) => {
@@ -5377,6 +5528,173 @@ impl CompilerSession {
                     semantic_input.clone(),
                 ),
             );
+        }
+        if pre_optimization {
+            let raw_requests = cfg_inputs
+                .iter()
+                .map(|(function, _, body_span)| {
+                    (
+                        function.clone(),
+                        raw_accessor_keys
+                            .get(function)
+                            .expect("every CFG input has one raw key")
+                            .clone(),
+                        *body_span,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let raw_keys = raw_requests
+                .iter()
+                .map(|(_, key, _)| key.clone())
+                .collect::<Vec<_>>()
+                .into();
+            #[cfg(test)]
+            self.rooted_cfg_executions.clear();
+            let (raw_cfg_batch, attempt) =
+                self.queries
+                    .revisioned
+                    .raw_cfg_batch(graph.revision, raw_keys, cancellation);
+            let batch_execution = attempt.execution();
+            let executions = if batch_execution == rue_query::RequestExecution::Computed {
+                let executions = attempt
+                    .nested_attempts()
+                    .iter()
+                    .filter(|attempt| attempt.node().family() == "compiler.cfg")
+                    .map(rue_query::NestedQueryAttempt::execution)
+                    .collect::<Vec<_>>();
+                assert_eq!(executions.len(), raw_requests.len());
+                executions
+            } else {
+                vec![batch_execution; raw_requests.len()]
+            };
+            let batch_work = |name: &str| {
+                attempt
+                    .work()
+                    .iter()
+                    .find_map(|(kind, count)| (kind.as_ref() == name).then_some(*count as usize))
+                    .unwrap_or(0)
+            };
+            work.cfg.prerequisite_stable_types_scanned +=
+                batch_work("cfg.prerequisite.stable-types-scanned");
+            work.cfg.prerequisite_layout_requests += batch_work("cfg.prerequisite.layout-requests");
+            work.cfg.prerequisite_drop_glue_requests +=
+                batch_work("cfg.prerequisite.drop-glue-requests");
+            work.cfg.retained_interner_charge_scans +=
+                batch_work("cfg.retained-interner-charge-scans");
+            work.cfg.retained_interner_entries_scanned +=
+                batch_work("cfg.retained-interner-entries-scanned");
+            work.cfg.retained_interner_utf8_bytes_scanned +=
+                batch_work("cfg.retained-interner-utf8-bytes-scanned");
+            work.cfg.cfg_builds_attempted += batch_work("cfg.build.attempts");
+            work.cfg.cfg_builds_succeeded += batch_work("cfg.build.successes");
+            work.cfg.cfg_builds_failed += batch_work("cfg.build.failures");
+            work.cfg.air_instructions_consumed += batch_work("cfg.air.instructions");
+            work.cfg.cfg_warnings_emitted += batch_work("cfg.warnings");
+            let cfg_reuses = executions
+                .iter()
+                .filter(|execution| {
+                    matches!(
+                        execution,
+                        rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined
+                    )
+                })
+                .count();
+            work.cfg.cfg_reuse_candidates += cfg_reuses;
+            work.cfg.cfg_reuses += cfg_reuses;
+
+            let batch_terminal = attempt
+                .into_result()
+                .map_err(PipelineRequestControl::Abort)?;
+            let rue_query::QueryOutcome::Success(batch) = batch_terminal.outcome() else {
+                unreachable!("RawCfgBatch publishes typed values")
+            };
+            assert_eq!(batch.values.len(), raw_requests.len());
+            let mut cfgs = Vec::with_capacity(raw_requests.len());
+            for (((function, cfg_key, body_span), value), _execution) in raw_requests
+                .into_iter()
+                .zip(batch.values.iter())
+                .zip(executions)
+            {
+                #[cfg(test)]
+                self.rooted_cfg_executions
+                    .push((function.clone(), _execution));
+                let record = match value {
+                    crate::cfg_query::CfgValue::Available(record) => record.clone(),
+                    crate::cfg_query::CfgValue::Failure {
+                        errors,
+                        body_span: old_span,
+                    } => {
+                        return Err(PipelineRequestControl::Compile(
+                            crate::cfg_query::import_errors(errors, *old_span, body_span),
+                        ));
+                    }
+                    crate::cfg_query::CfgValue::AccessorFailure { .. } => {
+                        unreachable!("raw CFG queries do not publish accessor-splice failures")
+                    }
+                };
+                let local_air_payload = record.air.payload_store_stats();
+                work.cfg.local_epochs += 1;
+                work.cfg.local_air_instructions += record.air.instructions().len();
+                work.cfg.local_air_payload_bytes += local_air_payload
+                    .word_store_logical_bytes
+                    .saturating_add(local_air_payload.projection_store_logical_bytes)
+                    .saturating_add(local_air_payload.place_store_logical_bytes);
+                work.cfg.local_type_entries += record.type_pool.len();
+                work.cfg.local_aggregate_type_aliases += record.local_aggregate_type_aliases;
+                work.cfg.local_materialized_type_handles += record.local_materialized_type_handles;
+                work.cfg.local_interner_entries += record.interner.len();
+                work.cfg.local_interner_utf8_bytes += record.interner.utf8_bytes();
+                work.cfg.local_strings += record.strings.len();
+                work.cfg.local_atoms += record.local_atoms.len();
+                warnings.extend(crate::cfg_query::import_warnings(
+                    &record.materialization_warnings,
+                    record.body_span,
+                    body_span,
+                ));
+                warnings.extend(crate::cfg_query::import_warnings(
+                    &record.warnings,
+                    record.body_span,
+                    body_span,
+                ));
+                cfgs.push(RootedPreOptimizationCfgUnit {
+                    function,
+                    cfg_key,
+                    record,
+                });
+            }
+            drop(_cfg_collection_span);
+            cfgs.sort_by(|left, right| left.function.cmp(&right.function));
+            sort_rooted_warnings(&graph, &mut warnings);
+            let source = self
+                .published_snapshot
+                .clone()
+                .ok_or_else(|| PipelineRequestControl::Compile(no_published_program()))?;
+            let input = CodegenInputDescriptor {
+                semantic: SemanticInputDescriptor::new(
+                    &source,
+                    options.target,
+                    &options.preview_features,
+                ),
+                opt_level: options.opt_level.into(),
+            };
+            let imports = self
+                .accepted_semantic_import_graph()
+                .map_err(PipelineRequestControl::Compile)?;
+            let diagnostics = self.publish_diagnostics(
+                &source,
+                FrontendDiagnosticIdentity::Semantic(semantic_diagnostic_input(&input, imports)),
+                None,
+                &warnings,
+            );
+            self.diagnostics.select_snapshot(&diagnostics);
+            self.refresh_retention_metrics();
+            return Ok(publish_pre(RootedPreOptimizationCfgOutput {
+                cfgs,
+                raw_cfg_batch,
+                _raw_cfg_terminal: batch_terminal,
+                warnings,
+                work,
+            }));
         }
         let accessor_subgraph = crate::cfg_query::accessor_cfg_subgraph(raw_accessor_keys)
             .map_err(|failure| {
@@ -5639,6 +5957,24 @@ impl CompilerSession {
                 body_span,
             });
         }
+        if self.oracle_fault == Some(crate::unstable::DifferentialOracleFault::CfgTransformation) {
+            self.oracle_fault.take();
+            let main = cfgs
+                .iter_mut()
+                .find(|unit| unit.function == main_identity)
+                .expect("successful rooted CFG publishes main");
+            let record = Arc::make_mut(&mut main.record);
+            if !record
+                .cfg
+                .inject_differential_comparison_fault(&record.type_pool)
+            {
+                return Err(CompileError::without_span(ErrorKind::InternalError(
+                    "differential CFG transformation fault had no equality comparison to corrupt"
+                        .into(),
+                ))
+                .into());
+            }
+        }
         drop(_cfg_collection_span);
 
         // Preserve the canonical backend/presentation order independently of
@@ -5707,7 +6043,7 @@ impl CompilerSession {
         self.diagnostics.select_snapshot(&diagnostics);
         self.refresh_retention_metrics();
 
-        Ok(RootedCfgOutput {
+        Ok(publish_post(RootedCfgOutput {
             graph,
             cfgs,
             optimized_cfg_batch: cfg_batch_key,
@@ -5715,7 +6051,7 @@ impl CompilerSession {
             work,
             backend_work,
             backend_root,
-        })
+        }))
     }
 
     pub(crate) fn rooted_codegen(
@@ -6235,6 +6571,16 @@ impl CompilerSession {
         &self,
     ) -> crate::revisioned_query_database::PublishedBackendRootMetrics {
         self.queries.revisioned.backend_root_metrics_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn raw_cfg_handoff_is_published(
+        &self,
+        output: &RootedPreOptimizationCfgOutput,
+    ) -> bool {
+        self.queries
+            .revisioned
+            .raw_cfg_handoff_matches_terminal_for_test(&output._raw_cfg_terminal)
     }
 
     #[cfg(test)]

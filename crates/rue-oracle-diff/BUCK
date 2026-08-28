@@ -4,7 +4,9 @@ load("//:corpus.bzl", "cached_corpus_suite")
 # The differential harness. Two modes:
 #  * default: runs the concrete rue-cli-tests corpus through the rue-oracle
 #    reference interpreter and checks it agrees with each case's expected exit
-#    code / stdout / stderr (a mismatch localizes to codegen; wired as the sh_test below).
+#    code / stdout / stderr after first checking the canonical raw/post-transform
+#    CFG boundary (a mismatch localizes to CFG transformation or later codegen;
+#    wired as the sh_test below).
 #  * `fuzz`: the differential *fuzzer* (RUE-247) — generates random valid
 #    programs and cross-checks the oracle against the real compiler + native
 #    binary, reporting exit/stdout/stderr disagreements as miscompiles and generated

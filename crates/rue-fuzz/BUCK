@@ -11,6 +11,7 @@ rue_binary(
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-error:rue-error",
         "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-oracle:rue-oracle",
         "//crates/rue-parser:rue-parser",
         "//crates/rue-rir:rue-rir",
         "//crates/rue-rir:rue-rir-fuzz-support",
