@@ -1639,6 +1639,46 @@ fn discover_toml(dirs: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn nested_grid_row_and_arraybuf_accessors_agree_at_cfg_boundaries() {
+        // This is the smallest real-std reproduction of the pre-splice
+        // projection bug: the first accessor yields an ArrayBuf(Row) element,
+        // then the second accessor projects through Row.values.  The
+        // differential helper runs both the pre- and post-CFG sessions, so a
+        // successful result proves that the pointer-backed place applies the
+        // complete remaining path rather than consuming one projection.
+        let source = r#"
+            const std = @import("std");
+            struct Row {
+                values: std.arraybuf.ArrayBuf(i64),
+                fn get_ref(borrow self, i: u64) -> borrow i64 {
+                    yield self.values.get_ref(i);
+                }
+            }
+            struct Grid {
+                rows: std.arraybuf.ArrayBuf(Row),
+                fn get_ref(borrow self, i: u64) -> borrow Row {
+                    yield self.rows.get_ref(i);
+                }
+            }
+            fn main() -> i32 {
+                let Values = std.arraybuf.ArrayBuf(i64);
+                let Rows = std.arraybuf.ArrayBuf(Row);
+                let mut values = Values.new();
+                values.push(42);
+                let row = Row { values: values };
+                let mut rows = Rows.new();
+                rows.push(row);
+                let grid = Grid { rows: rows };
+                if grid.get_ref(0).get_ref(0) == 42 { 0 } else { 1 }
+            }
+        "#;
+        let result = run_source_with_real_std(source, &PreviewFeatures::new())
+            .expect("real std must be available to the oracle-diff tests")
+            .expect("pre- and post-CFG oracle results must agree");
+        assert_eq!(result.exit_code, 0);
+    }
+
     fn corpus_case(source: &str, compile_fail: bool) -> Case {
         Case {
             name: "classification probe".to_string(),

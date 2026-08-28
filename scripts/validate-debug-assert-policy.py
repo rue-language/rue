@@ -74,7 +74,11 @@ ALLOWANCES = {
     "crates/rue-compiler/src/source_identity.rs": Allowance(4, "redundant normalized-path representation checks"),
     "crates/rue-compiler/src/source_snapshot.rs": Allowance(1, "redundant source arena identity check"),
     "crates/rue-error/src/lib.rs": Allowance(1, "redundant diagnostic rendering bounds check"),
-    "crates/rue-oracle/src/lib.rs": Allowance(2, "oracle harness bookkeeping checks, not compiler correctness gates"),
+    "crates/rue-oracle/src/lib.rs": Allowance(
+        5,
+        "oracle harness ABI, representation-vector, and typed-view bookkeeping"
+        " checks, not compiler correctness gates",
+    ),
     "crates/rue-parser/src/parser/shared.rs": Allowance(2, "redundant parser entry preconditions"),
     "crates/rue-parser/src/parser/statements.rs": Allowance(1, "redundant parser entry precondition"),
     "crates/rue-rir/src/inst.rs": Allowance(1, "redundant RIR variable-width encoding check"),

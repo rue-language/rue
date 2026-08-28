@@ -126,6 +126,7 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        heap_metadata_bytes: 0,
     };
     let mut frame = Frame {
         // Deliberately inject a non-aggregate value under Pair projection
@@ -181,6 +182,7 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        heap_metadata_bytes: 0,
     };
     let inout = expect_flow_unsupported(ordinary_interp.lvalue_of(ordinary_cfg, ordinary_param));
     assert_eq!(
@@ -283,6 +285,7 @@ fn logical_inout_writability_is_distinct_from_the_by_reference_abi() {
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        heap_metadata_bytes: 0,
     };
     let place_read = |name: &str| {
         let cfg = state
@@ -375,6 +378,7 @@ fn validated_cfg_rejects_invalid_owned_text_projection_metadata() {
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        heap_metadata_bytes: 0,
     };
     let width =
         expect_flow_unsupported(view_interp.place_read(view_cfg, &mut view_frame, view_place));
@@ -637,6 +641,7 @@ fn zero_sized_place_base_uses_the_canonical_boundary_slot() {
             budget: STEP_BUDGET,
             depth: 0,
             heap: Vec::new(),
+            heap_metadata_bytes: 0,
         };
         let CfgInstData::PlaceRead { place } = &cfg.get_inst(read_value).data else {
             unreachable!()
@@ -804,6 +809,7 @@ fn validated_cfg_allows_only_the_explicit_str_view_whole_place_read_coercion() {
             budget: STEP_BUDGET,
             depth: 0,
             heap: Vec::new(),
+            heap_metadata_bytes: 0,
         };
         assert!(interp.is_str_like_type(original_place.base_type));
         assert!(interp.is_str_like_type(read_type));
