@@ -549,6 +549,7 @@ pub(crate) fn evaluate_codegen_unit(
             &record.type_pool,
             &record.strings,
             &record.interner,
+            key.target,
             symbols,
             &atoms,
             key.request,

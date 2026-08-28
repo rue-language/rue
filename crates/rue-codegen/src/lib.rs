@@ -42,6 +42,7 @@ macro_rules! end_inst {
 }
 
 mod allocation;
+mod backend;
 pub mod call_plan;
 mod codegen_pipeline;
 pub mod export_thunk;
@@ -510,9 +511,6 @@ pub fn format_offset(offset: i32) -> String {
     }
 }
 
-// Re-export the generate function for x86_64 (default)
-pub use x86_64::generate;
-
 // Re-export shared types
 pub use cfg_lower::{
     BlockLoweringInfo, LoweringDebugInfo, LoweringDecision, TerminatorLoweringDecision,
@@ -527,9 +525,6 @@ pub use stack_frame::{
     ArgumentLocation, ReturnLocation, StackFrameInfo, StackSlot, generate_stack_frame_info,
 };
 pub use vreg::{LabelId, VReg};
-
-// Re-export commonly used x86_64 types for convenience
-pub use x86_64::{Operand, Reg, X86Inst, X86Mir};
 
 #[cfg(test)]
 mod tests {
@@ -764,6 +759,42 @@ mod tests {
         }
     }
 
+    /// Exercise the same production artifact path for every supported target.
+    /// The target-specific MIR and emitter remain behind their qualified
+    /// modules; this harness owns only the parity-level entry-point contract.
+    fn generate_product_for_target(
+        cfg: &ValidatedCfg,
+        type_pool: &FrozenTypeInternPool,
+        strings: &[String],
+        interner: &ThreadedRodeo,
+        target: rue_target::Target,
+        request: BackendArtifactRequest,
+    ) -> BackendProduct {
+        match target.arch() {
+            rue_target::Arch::X86_64 => x86_64::generate_product_with_symbols_and_atoms(
+                cfg,
+                type_pool,
+                strings,
+                interner,
+                target,
+                MachineSymbolResolver::default(),
+                &[],
+                request,
+            ),
+            rue_target::Arch::Aarch64 => aarch64::generate_product_with_symbols_and_atoms(
+                cfg,
+                type_pool,
+                strings,
+                interner,
+                target,
+                MachineSymbolResolver::default(),
+                &[],
+                request,
+            ),
+        }
+        .expect("production backend generation should succeed")
+    }
+
     #[test]
     fn emitted_byte_synchronization_handles_labels_and_rejects_gaps() {
         let mut instructions = vec![
@@ -793,7 +824,14 @@ mod tests {
         let (cfg, type_pool, interner) = test_cfg();
 
         // Test the generate function
-        let machine_code = generate(&cfg, &type_pool, &[], &interner).unwrap();
+        let machine_code = x86_64::generate(
+            &cfg,
+            &type_pool,
+            &[],
+            &interner,
+            rue_target::Target::X86_64Linux,
+        )
+        .unwrap();
 
         // Should generate working code
         assert!(!machine_code.code.is_empty());
@@ -821,8 +859,14 @@ mod tests {
         let num_locals = (MAX_ADD_SUB_IMMEDIATE as u64 / SLOT_BYTES + 1) as u32;
         let (cfg, type_pool, interner) = test_cfg_with_locals_named(num_locals, "large_frame");
 
-        let x86 = x86_64::generate(&cfg, &type_pool, &[], &interner)
-            .expect("x86-64 large frame generation should succeed");
+        let x86 = x86_64::generate(
+            &cfg,
+            &type_pool,
+            &[],
+            &interner,
+            rue_target::Target::X86_64Linux,
+        )
+        .expect("x86-64 large frame generation should succeed");
         assert!(!x86.code.is_empty());
 
         let arm = aarch64::generate(
@@ -885,18 +929,22 @@ mod tests {
             asm: true,
         };
 
-        let x86 = x86_64::generate(&cfg, &type_pool, &strings, &interner)
-            .expect("x86 normal generation should succeed");
-        let x86_product = x86_64::generate_product_with_symbols_and_atoms(
+        let x86 = x86_64::generate(
             &cfg,
             &type_pool,
             &strings,
             &interner,
-            MachineSymbolResolver::default(),
-            &[],
-            request,
+            rue_target::Target::X86_64Linux,
         )
-        .expect("x86 diagnostic product should succeed");
+        .expect("x86 normal generation should succeed");
+        let x86_product = generate_product_for_target(
+            &cfg,
+            &type_pool,
+            &strings,
+            &interner,
+            rue_target::Target::X86_64Linux,
+            request,
+        );
         assert_same_machine_code(&x86, &x86_product.machine_code);
         assert!(x86_product.artifacts.lowering.is_some());
         assert!(x86_product.artifacts.mir.is_some());
@@ -920,17 +968,8 @@ mod tests {
         ] {
             let arm = aarch64::generate(&cfg, &type_pool, &strings, &interner, target)
                 .expect("AArch64 normal generation should succeed");
-            let arm_product = aarch64::generate_product_with_symbols_and_atoms(
-                &cfg,
-                &type_pool,
-                &strings,
-                &interner,
-                target,
-                MachineSymbolResolver::default(),
-                &[],
-                request,
-            )
-            .expect("AArch64 diagnostic product should succeed");
+            let arm_product =
+                generate_product_for_target(&cfg, &type_pool, &strings, &interner, target, request);
             assert_same_machine_code(&arm, &arm_product.machine_code);
             assert!(arm_product.artifacts.lowering.is_some());
             assert!(arm_product.artifacts.mir.is_some());

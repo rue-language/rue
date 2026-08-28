@@ -2,11 +2,49 @@
 
 #[test]
 fn production_generate_entry_points_require_validated_cfg() {
+    let contract = include_str!("backend.rs");
+    assert!(contract.contains("pub(crate) trait Backend"));
+    for required in [
+        "type Mir;",
+        "type Reg;",
+        "const ARCH",
+        "const ARG_REG_COUNT",
+        "const RETURN_REG_COUNT",
+        "fn lower(",
+        "fn allocate(",
+        "fn peephole(",
+        "fn schedule(",
+        "fn verify(",
+        "fn referenced_string_ids(",
+        "fn remap_string_ids(",
+        "fn emit(",
+    ] {
+        assert!(
+            contract.contains(required),
+            "Backend contract lost {required}"
+        );
+    }
+
     for backend in [
         include_str!("x86_64/mod.rs"),
         include_str!("aarch64/mod.rs"),
     ] {
-        for entry_point in ["generate", "generate_product_with_symbols_and_atoms"] {
+        assert!(backend.contains("use crate::backend::Backend;"));
+        assert!(backend.contains("impl Backend for"));
+        assert!(backend.contains("const ARCH: rue_target::Arch"));
+        assert!(backend.contains("generate_with_backend::<"));
+        for removed in ["fn generate_inner(", "fn prepare_backend_with_artifacts("] {
+            assert!(
+                !backend.contains(removed),
+                "backend-local orchestration helper returned: {removed}"
+            );
+        }
+        for entry_point in [
+            "generate",
+            "generate_with_symbols",
+            "generate_with_symbols_and_atoms",
+            "generate_product_with_symbols_and_atoms",
+        ] {
             let signature = backend
                 .split(&format!("pub fn {entry_point}("))
                 .nth(1)
@@ -17,6 +55,14 @@ fn production_generate_entry_points_require_validated_cfg() {
                 "{entry_point} accepts an unvalidated CFG"
             );
             assert!(!signature.contains("cfg: &Cfg,"));
+            let target = signature
+                .find("target: Target")
+                .or_else(|| signature.find("target: rue_target::Target"));
+            assert!(
+                target.is_some(),
+                "{entry_point} must carry the target in both backends"
+            );
+            assert!(signature.find("interner:").unwrap() < target.unwrap());
         }
         for removed in [
             "pub fn generate_with_asm(",
@@ -27,6 +73,17 @@ fn production_generate_entry_points_require_validated_cfg() {
                 "presentation-only backend entry point returned: {removed}"
             );
         }
+    }
+
+    let root = include_str!("lib.rs");
+    for removed in [
+        "pub use x86_64::generate;",
+        "pub use x86_64::{Operand, Reg, X86Inst, X86Mir};",
+    ] {
+        assert!(
+            !root.contains(removed),
+            "crate-root x86 facade returned: {removed}"
+        );
     }
 
     for lowering in [

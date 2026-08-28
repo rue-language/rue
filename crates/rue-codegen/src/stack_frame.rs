@@ -319,6 +319,7 @@ fn generate_x86_64_stack_frame(
         cfg,
         type_pool,
         interner,
+        target,
         crate::MachineSymbolResolver::default(),
     )?;
     let has_sret = prepared.has_sret;
@@ -926,6 +927,7 @@ mod tests {
                 &type_pool,
                 &[],
                 &interner,
+                target,
                 crate::MachineSymbolResolver::default(),
                 &[],
                 request,
