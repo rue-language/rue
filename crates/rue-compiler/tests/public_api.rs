@@ -9,7 +9,7 @@ use rue_compiler::{
     CompileErrors, CompileOptions, CompileOutput, CompilerSession, CompilerSessionUpdate,
     DependencyEnvelope, DiagnosticStage, FileId, FrontendDiagnosticSnapshot, ImportDiscoveryStatus,
     ImportDiscoveryView, MultiErrorResult, RirView, SourceLocationView, SourceMetadata,
-    SourceRevision, SourceSnapshot, SourceView, SyntaxNodeView, compile_snapshot,
+    SourceRevision, SourceSnapshot, SourceView, SyntaxModuleView, SyntaxNodeView, compile_snapshot,
 };
 use rue_error::ErrorKind;
 
@@ -144,6 +144,172 @@ fn syntax_nodes_resolve_names_and_retain_their_owner_across_updates() {
     let debug = format!("{function:?}");
     assert!(!debug.contains("ParsedModule"));
     assert!(!debug.contains("Ast"));
+}
+
+fn snapshot_at(file_id: FileId, source: &str) -> SourceSnapshot {
+    let physical_paths = [(file_id, "/project/main.rue".to_owned())]
+        .into_iter()
+        .collect();
+    let logical_paths = [(file_id, "main.rue".to_owned())].into_iter().collect();
+    let metadata = SourceMetadata::new(file_id, physical_paths, logical_paths).unwrap();
+    SourceSnapshot::new(metadata, vec![(file_id, Arc::new(source.to_owned()))]).unwrap()
+}
+
+fn token_records(module: &SyntaxModuleView) -> Vec<(String, Option<String>, u32, u32)> {
+    module
+        .tokens()
+        .map(|token| {
+            (
+                token.kind().to_owned(),
+                token.value().map(|value| value.into_owned()),
+                token.start(),
+                token.end(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn token_views_are_exact_deterministic_and_retain_their_old_source() {
+    let source = "fn main() -> i32 { let value = \"old\"; value }";
+    let first = snapshot_at(FileId::new(7), source);
+    let edited = snapshot_at(
+        FileId::new(11),
+        "fn replacement() -> i32 { let value = \"new\"; value }",
+    );
+    let expected_kinds = [
+        "FN",
+        "IDENT",
+        "LPAREN",
+        "RPAREN",
+        "ARROW",
+        "TYPE(i32)",
+        "LBRACE",
+        "LET",
+        "IDENT",
+        "EQ",
+        "STRING",
+        "SEMI",
+        "IDENT",
+        "RBRACE",
+        "EOF",
+    ];
+    let expected_lexemes = [
+        "fn", "main", "(", ")", "->", "i32", "{", "let", "value", "=", "\"old\"", ";", "value",
+        "}", "",
+    ];
+
+    let mut warm_session = CompilerSession::new();
+    let retained = warm_session.update(&first).into_result().unwrap();
+    let module = retained.modules().next().unwrap();
+    assert_eq!(module.file_id(), FileId::new(7));
+    let records = token_records(&module);
+    assert_eq!(
+        records
+            .iter()
+            .map(|(kind, _, _, _)| kind.as_str())
+            .collect::<Vec<_>>(),
+        expected_kinds
+    );
+    assert_eq!(
+        records
+            .iter()
+            .map(|(_, _, start, end)| &source[*start as usize..*end as usize])
+            .collect::<Vec<_>>(),
+        expected_lexemes
+    );
+    assert_eq!(records[1].1.as_deref(), Some("main"));
+    assert_eq!(records[8].1.as_deref(), Some("value"));
+    assert_eq!(records[10].1.as_deref(), Some("old"));
+
+    let old_token = module.tokens().nth(1).unwrap();
+    let old_location = old_token.location();
+    let metrics_before_presentation = warm_session.unstable_metrics().parse_metrics();
+    let _ = token_records(&module);
+    assert_eq!(
+        warm_session.unstable_metrics().parse_metrics(),
+        metrics_before_presentation,
+        "lazy token presentation is not canonical syntax work"
+    );
+
+    warm_session.update(&edited).into_result().unwrap();
+    let current = warm_session.published().unwrap().modules().next().unwrap();
+    let current_location = current.tokens().nth(1).unwrap().location();
+    assert_eq!(old_token.value().as_deref(), Some("main"));
+    assert_eq!(
+        &module.source()[old_token.start() as usize..old_token.end() as usize],
+        "main"
+    );
+    assert!(old_location.is_valid());
+    assert!(
+        !old_location
+            .source_identity()
+            .same_source(&current_location.source_identity()),
+        "a retained token view must keep the old immutable source identity"
+    );
+
+    let warm = warm_session.update(&first).into_result().unwrap();
+    let warm_records = token_records(&warm.modules().next().unwrap());
+    let warm_again = warm_session.update(&first);
+    assert_eq!(warm_again.unstable_metrics().lexer_invocations, 0);
+    let warm_again_records =
+        token_records(&warm_again.into_result().unwrap().modules().next().unwrap());
+    let mut fresh_session = CompilerSession::new();
+    let fresh_records = token_records(
+        &fresh_session
+            .update(&first)
+            .into_result()
+            .unwrap()
+            .modules()
+            .next()
+            .unwrap(),
+    );
+    assert_eq!(warm_records, fresh_records);
+    assert_eq!(warm_again_records, fresh_records);
+
+    let options = CompileOptions::default();
+    let order = [FileId::new(7)];
+    let warm_parse_metrics = warm_session.unstable_metrics().parse_metrics();
+    let warm_presentation = warm_session
+        .unstable_present(PresentationRequest {
+            stage: PresentationStage::Tokens,
+            options: &options,
+            file_order: &order,
+        })
+        .unwrap();
+    assert_eq!(
+        warm_session.unstable_metrics().parse_metrics(),
+        warm_parse_metrics,
+        "unstable token presentation must not increment canonical parse work"
+    );
+    let fresh_presentation = fresh_session
+        .unstable_present(PresentationRequest {
+            stage: PresentationStage::Tokens,
+            options: &options,
+            file_order: &order,
+        })
+        .unwrap();
+    assert_eq!(warm_presentation.as_str(), fresh_presentation.as_str());
+    assert_eq!(
+        warm_presentation.as_str().lines().count(),
+        expected_kinds.len()
+    );
+    assert!(
+        warm_presentation
+            .as_str()
+            .lines()
+            .next()
+            .unwrap()
+            .ends_with("FN")
+    );
+    assert!(
+        warm_presentation
+            .as_str()
+            .lines()
+            .last()
+            .unwrap()
+            .ends_with("EOF")
+    );
 }
 
 fn find_syntax_node(

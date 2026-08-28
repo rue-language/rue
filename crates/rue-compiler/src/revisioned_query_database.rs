@@ -32418,9 +32418,10 @@ fn main() -> i32 {
         assert_eq!(parse_work.modules_rebound, 2);
         let projected_a = program.module(&a).unwrap();
         assert_eq!(projected_a.file_id(), FileId::new(2));
+        assert!(projected_a.transient_token_buffer_was_released());
         assert!(
             projected_a
-                .tokens()
+                .presented_tokens_for_test()
                 .iter()
                 .all(|token| token.span.file_id == FileId::new(2))
         );

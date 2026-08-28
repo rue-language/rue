@@ -4,7 +4,11 @@
 //! do not reveal phase storage, interners, type pools, owner-relative handles,
 //! or the phases' textual debug formats.
 
-use std::{borrow::Cow, fmt, sync::Arc};
+use std::{
+    borrow::Cow,
+    fmt,
+    sync::{Arc, OnceLock},
+};
 
 use crate::{CanonicalRirOutput, ParsedProgram};
 
@@ -153,16 +157,39 @@ impl fmt::Debug for SourceLocationView {
     }
 }
 
+/// Lazily materialized token storage tied to one immutable syntax owner.
+struct TokenPresentation {
+    module: Arc<crate::parsed_modules::ParsedModule>,
+    tokens: Arc<[rue_lexer::Token]>,
+    resolver: Arc<lasso::RodeoResolver>,
+}
+
+impl TokenPresentation {
+    fn new(module: Arc<crate::parsed_modules::ParsedModule>) -> Self {
+        let source = crate::SourceView::new(
+            module.physical_path(),
+            module.source_text(),
+            module.file_id(),
+        );
+        let (tokens, resolver) = crate::syntax::token_presentation(source);
+        Self {
+            module,
+            tokens,
+            resolver,
+        }
+    }
+}
+
 /// One resolved token tied to an immutable syntax owner.
 #[derive(Clone)]
 pub struct TokenView {
-    owner: Arc<crate::parsed_modules::ParsedModule>,
+    owner: Arc<TokenPresentation>,
     index: usize,
 }
 
 impl TokenView {
     fn token(&self) -> &rue_lexer::Token {
-        &self.owner.tokens()[self.index]
+        &self.owner.tokens[self.index]
     }
 
     pub fn kind(&self) -> &str {
@@ -270,7 +297,7 @@ impl TokenView {
             rue_lexer::TokenKind::Ident(symbol)
             | rue_lexer::TokenKind::String(symbol)
             | rue_lexer::TokenKind::Float(symbol) => {
-                Some(Cow::Borrowed(self.owner.resolve_raw_symbol(symbol)))
+                Some(Cow::Borrowed(self.owner.resolver.resolve(&symbol)))
             }
             rue_lexer::TokenKind::Int(value) => Some(Cow::Owned(value.to_string())),
             _ => None,
@@ -286,7 +313,7 @@ impl TokenView {
     }
 
     pub fn location(&self) -> SourceLocationView {
-        SourceLocationView::syntax(self.owner.clone(), self.token().span)
+        SourceLocationView::syntax(self.owner.module.clone(), self.token().span)
     }
 }
 
@@ -367,6 +394,7 @@ impl fmt::Debug for SyntaxNodeView {
 #[derive(Clone)]
 pub struct SyntaxModuleView {
     owner: Arc<crate::parsed_modules::ParsedModule>,
+    token_presentation: Arc<OnceLock<Arc<TokenPresentation>>>,
 }
 
 impl SyntaxModuleView {
@@ -383,8 +411,12 @@ impl SyntaxModuleView {
     }
 
     pub fn tokens(&self) -> impl ExactSizeIterator<Item = TokenView> + '_ {
-        (0..self.owner.tokens().len()).map(|index| TokenView {
-            owner: self.owner.clone(),
+        let owner = self
+            .token_presentation
+            .get_or_init(|| Arc::new(TokenPresentation::new(self.owner.clone())))
+            .clone();
+        (0..owner.tokens.len()).map(move |index| TokenView {
+            owner: owner.clone(),
             index,
         })
     }
@@ -412,7 +444,7 @@ impl fmt::Debug for SyntaxModuleView {
             .debug_struct("SyntaxModuleView")
             .field("file_id", &self.file_id())
             .field("path", &self.path())
-            .field("token_count", &self.owner.tokens().len())
+            .field("token_count", &self.owner.token_count())
             .field("item_count", &self.item_count())
             .finish()
     }
@@ -422,11 +454,19 @@ impl fmt::Debug for SyntaxModuleView {
 #[derive(Clone)]
 pub struct SyntaxView {
     owner: Arc<ParsedProgram>,
+    token_presentations: Arc<[Arc<OnceLock<Arc<TokenPresentation>>>]>,
 }
 
 impl SyntaxView {
     pub(crate) fn new(owner: Arc<ParsedProgram>) -> Self {
-        Self { owner }
+        let token_presentations = (0..owner.modules().len())
+            .map(|_| Arc::new(OnceLock::new()))
+            .collect::<Vec<_>>()
+            .into();
+        Self {
+            owner,
+            token_presentations,
+        }
     }
 
     pub fn modules(&self) -> impl ExactSizeIterator<Item = SyntaxModuleView> + '_ {
@@ -434,7 +474,11 @@ impl SyntaxView {
             .modules()
             .iter()
             .cloned()
-            .map(|owner| SyntaxModuleView { owner })
+            .zip(self.token_presentations.iter().cloned())
+            .map(|(owner, token_presentation)| SyntaxModuleView {
+                owner,
+                token_presentation,
+            })
     }
 
     pub fn source_revision(&self) -> &crate::SourceRevision {
