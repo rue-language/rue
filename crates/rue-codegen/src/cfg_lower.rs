@@ -270,7 +270,8 @@ fn format_cfg_inst_data_impl(
 ///   `__rue_to_string` take an out-pointer first, and source-defined `StrBuf`
 ///   functions use the same type-wide convention. (RUE-92)
 /// - Any other aggregate with more slots than `ret_reg_budget` also returns
-///   via sret: the caller allocates `slot_count * 8` bytes (16-aligned) on
+///   via sret: the caller allocates `slot_count * frame_cell_bytes()` bytes
+///   (16-aligned) on
 ///   its stack and passes the buffer address as a hidden first argument
 ///   (shifting all user arguments by one ABI slot); the callee stores every
 ///   slot through that pointer before returning. (RUE-13/78/91)

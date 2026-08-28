@@ -424,7 +424,12 @@ fn generate_x86_64_stack_frame(
         } else {
             // Stack arguments are at positive offsets from rbp
             // ABI slot 6 at [rbp+16], slot 7 at [rbp+24], etc.
-            let offset = 16 + ((abi_index - 6) as i32) * 8;
+            let offset = crate::frame_layout::checked_incoming_stack_arg_offset(
+                16,
+                u32::try_from(abi_index).expect("ABI index must fit u32"),
+                6,
+            )
+            .expect("reported incoming stack argument offset must fit displacement");
             ArgPassingLocation::Stack { offset }
         };
         arguments.push(ArgumentLocation {
@@ -609,7 +614,12 @@ fn generate_aarch64_stack_frame(
             ArgPassingLocation::Register(arg_regs[abi_index].to_string())
         } else {
             // Stack arguments on AArch64
-            let offset = ((abi_index - 8) as i32) * 8;
+            let offset = crate::frame_layout::checked_incoming_stack_arg_offset(
+                16,
+                u32::try_from(abi_index).expect("ABI index must fit u32"),
+                8,
+            )
+            .expect("reported incoming stack argument offset must fit displacement");
             ArgPassingLocation::Stack { offset }
         };
         arguments.push(ArgumentLocation {
@@ -959,6 +969,56 @@ mod tests {
             pool,
             interner,
         )
+    }
+
+    /// `fn stack_arg(a0..a8: i32) -> i32 { a8 }`: the ninth ABI argument is
+    /// loaded from the incoming stack area by both emitters. The reporter's
+    /// FP-relative location must describe that same entry cell.
+    fn incoming_stack_arg_cfg() -> (ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut cfg = Cfg::new(
+            Type::I32,
+            0,
+            9,
+            "stack_arg".to_string(),
+            ParamSlotModes::new(vec![false; 9], vec![false; 9]),
+        );
+        cfg.set_source_param_abi(scalar_param_abi(9));
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let ninth = value(&mut cfg, entry, CfgInstData::Param { index: 8 }, Type::I32);
+        cfg.set_return(entry, Some(ninth));
+        (
+            cfg.finish(&pool).expect("test CFG must verify"),
+            pool,
+            interner,
+        )
+    }
+
+    #[test]
+    fn incoming_stack_argument_report_matches_emitter_entry_offset() {
+        let (cfg, type_pool, interner) = incoming_stack_arg_cfg();
+        for target in [Target::X86_64Linux, Target::Aarch64Linux] {
+            let (asm, info) = frame_projection(&cfg, &type_pool, &interner, target);
+            let argument_index = match target.arch() {
+                Arch::X86_64 => 6,
+                Arch::Aarch64 => 8,
+            };
+            let offset = match &info.arguments[argument_index].location {
+                ArgPassingLocation::Stack { offset } => *offset,
+                location => panic!("selected stack argument unexpectedly uses {location:?}"),
+            };
+            assert_eq!(offset, 16, "{target:?} uses the first ABI entry stack cell");
+            let entry_load = match target.arch() {
+                Arch::X86_64 => format!("[rbp+{offset}]"),
+                Arch::Aarch64 => format!("[x29, #{offset}]"),
+            };
+            assert!(
+                asm.contains(&entry_load),
+                "reported incoming argument offset is not emitted at {entry_load}:\n{asm}"
+            );
+        }
     }
 
     /// `fn framed() -> i32 { let mut total = 41; bump(inout total); total }`:

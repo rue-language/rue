@@ -75,6 +75,8 @@ fn prepare_backend_with_artifacts(
         cfg_lower::ARG_REGS.len() as u32,
         cfg_lower::RET_REGS.len() as u32,
         crate::frame_layout::SavedRegScheme::Aarch64,
+        rue_air::TargetCAbiFlavor::Aapcs64,
+        &|name| symbols.is_foreign(&symbols.resolve(interner.resolve(&name))),
         |param_storage, local_storage| {
             let (mir, lowering) = if request.lowering {
                 let (mir, debug) =

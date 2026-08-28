@@ -36,7 +36,91 @@ pub fn checked_aligned_region_bytes(bytes: u64) -> Result<u32, FrameBudgetExceed
     if aligned > MAX_FUNCTION_FRAME_BYTES {
         return Err(FrameBudgetExceeded);
     }
-    Ok(aligned as u32)
+    u32::try_from(aligned).map_err(|_| FrameBudgetExceeded)
+}
+
+/// Byte span of `num_cells` contiguous frame cells, before call-boundary
+/// alignment. The checked conversion is shared by transient ABI areas and
+/// their per-cell addressing so a future cell width cannot be re-derived at a
+/// call site.
+#[inline]
+pub fn checked_cell_region_bytes(num_cells: u64) -> Result<u32, FrameBudgetExceeded> {
+    num_cells
+        .checked_mul(frame_cell_bytes())
+        .ok_or(FrameBudgetExceeded)
+        .and_then(|bytes| {
+            if bytes > MAX_FUNCTION_FRAME_BYTES {
+                Err(FrameBudgetExceeded)
+            } else {
+                Ok(bytes)
+            }
+        })
+        .and_then(|bytes| u32::try_from(bytes).map_err(|_| FrameBudgetExceeded))
+}
+
+/// Byte span of `num_cells` contiguous frame cells, rounded to the call-boundary
+/// alignment and checked against the displacement-sized frame budget.
+#[inline]
+pub fn checked_aligned_cell_region_bytes(num_cells: u64) -> Result<u32, FrameBudgetExceeded> {
+    checked_cell_region_bytes(num_cells)
+        .and_then(|bytes| checked_aligned_region_bytes(u64::from(bytes)))
+}
+
+/// Byte padding needed to round `num_cells` up to the call-boundary alignment.
+/// Both sides come from the same cell-width authority, so an x86 push-based
+/// call cannot retain an 8-byte padding assumption when cell width changes.
+#[inline]
+pub fn checked_cell_region_padding_bytes(num_cells: u64) -> Result<u32, FrameBudgetExceeded> {
+    let raw = checked_cell_region_bytes(num_cells)?;
+    let aligned = checked_aligned_cell_region_bytes(num_cells)?;
+    aligned.checked_sub(raw).ok_or(FrameBudgetExceeded)
+}
+
+/// Checked byte offset of cell `cell_index` in an ascending cell region.
+#[inline]
+pub fn checked_cell_byte_offset(cell_index: u64) -> Result<i32, FrameBudgetExceeded> {
+    i32::try_from(
+        cell_index
+            .checked_mul(frame_cell_bytes())
+            .ok_or(FrameBudgetExceeded)?,
+    )
+    .map_err(|_| FrameBudgetExceeded)
+}
+
+/// Convert a byte count used as a machine displacement or immediate without
+/// allowing a narrowing conversion to wrap.
+#[inline]
+pub fn checked_displacement_bytes(bytes: u64) -> Result<i32, FrameBudgetExceeded> {
+    i32::try_from(bytes).map_err(|_| FrameBudgetExceeded)
+}
+
+/// Checked positive FP-relative offset of an incoming stack argument.
+///
+/// `entry_base_bytes` is the ABI-specific distance from the frame pointer to
+/// the first stack argument, while `register_arg_count` is the number of ABI
+/// argument registers. Keeping those two inputs explicit preserves the x86
+/// return-address base (16) and the AArch64 entry base (16) without
+/// duplicating cell-width arithmetic. Both backend emitters and the
+/// `--emit stackframe` reporter pass their target's entry base here, so the
+/// reported FP-relative location is the one the prologue actually reads.
+#[inline]
+pub fn checked_incoming_stack_arg_offset(
+    entry_base_bytes: u64,
+    abi_index: u32,
+    register_arg_count: u32,
+) -> Result<i32, FrameBudgetExceeded> {
+    let stack_index = u64::from(
+        abi_index
+            .checked_sub(register_arg_count)
+            .ok_or(FrameBudgetExceeded)?,
+    );
+    let cell_offset = checked_cell_byte_offset(stack_index)?;
+    i32::try_from(
+        entry_base_bytes
+            .checked_add(u64::try_from(cell_offset).map_err(|_| FrameBudgetExceeded)?)
+            .ok_or(FrameBudgetExceeded)?,
+    )
+    .map_err(|_| FrameBudgetExceeded)
 }
 
 /// Validate one outgoing call's simultaneous stack reservation: hidden return
@@ -46,10 +130,7 @@ pub fn checked_call_area_bytes(
     sret_storage_bytes: u64,
     indirect_argument_bytes: u64,
 ) -> Result<u32, FrameBudgetExceeded> {
-    let stack_bytes = stack_slots
-        .checked_mul(frame_cell_bytes())
-        .ok_or(FrameBudgetExceeded)?;
-    let stack_bytes = u64::from(checked_aligned_region_bytes(stack_bytes)?);
+    let stack_bytes = u64::from(checked_aligned_cell_region_bytes(stack_slots)?);
     let total = sret_storage_bytes
         .checked_add(indirect_argument_bytes)
         .and_then(|bytes| bytes.checked_add(stack_bytes))
@@ -77,7 +158,10 @@ pub const fn frame_cell_bytes() -> u64 {
 /// backends add the saved-register offset via their own adjustment.
 #[inline]
 pub fn slot_offset_pre_saved(slot: u32) -> i32 {
-    -(frame_cell_bytes() as i32 * (slot as i32 + 1))
+    checked_cell_byte_offset(u64::from(slot) + 1)
+        .expect("frame slot offset must fit displacement")
+        .checked_neg()
+        .expect("frame slot offset must fit displacement")
 }
 
 /// Total byte span of `num_slots` contiguous frame cells.
@@ -456,5 +540,47 @@ mod tests {
             "alignment plus one stack slot must exceed the displacement budget"
         );
         assert!(checked_call_area_bytes(u64::MAX, 0, 0).is_err());
+    }
+
+    #[test]
+    fn checked_cell_regions_cover_zero_alignment_boundary_and_overflow() {
+        assert_eq!(checked_cell_region_bytes(0), Ok(0));
+        assert_eq!(checked_cell_region_bytes(1), Ok(8));
+        assert_eq!(checked_aligned_cell_region_bytes(0), Ok(0));
+        assert_eq!(checked_aligned_cell_region_bytes(1), Ok(16));
+        assert_eq!(checked_cell_region_padding_bytes(0), Ok(0));
+        assert_eq!(checked_cell_region_padding_bytes(1), Ok(8));
+        assert_eq!(checked_cell_region_padding_bytes(2), Ok(0));
+        assert_eq!(
+            checked_cell_region_padding_bytes(MAX_FUNCTION_FRAME_BYTES / SLOT_BYTES),
+            Ok(0)
+        );
+        assert_eq!(
+            checked_aligned_cell_region_bytes(MAX_FUNCTION_FRAME_BYTES / SLOT_BYTES),
+            Ok(MAX_FUNCTION_FRAME_BYTES as u32)
+        );
+        assert!(checked_cell_region_bytes(MAX_FUNCTION_FRAME_BYTES / SLOT_BYTES + 1).is_err());
+        assert!(
+            checked_cell_region_padding_bytes(MAX_FUNCTION_FRAME_BYTES / SLOT_BYTES + 1).is_err()
+        );
+        assert!(checked_cell_region_bytes(u64::MAX).is_err());
+        assert!(
+            checked_aligned_cell_region_bytes(MAX_FUNCTION_FRAME_BYTES / SLOT_BYTES + 1).is_err()
+        );
+    }
+
+    #[test]
+    fn checked_cell_offsets_preserve_current_abi_values() {
+        assert_eq!(checked_cell_byte_offset(0), Ok(0));
+        assert_eq!(checked_cell_byte_offset(3), Ok(24));
+        assert_eq!(checked_incoming_stack_arg_offset(16, 6, 6), Ok(16));
+        assert_eq!(checked_incoming_stack_arg_offset(16, 8, 6), Ok(32));
+        // AArch64's reporter and emitter share the FP/LR entry base.
+        assert_eq!(checked_incoming_stack_arg_offset(16, 8, 8), Ok(16));
+        assert_eq!(checked_incoming_stack_arg_offset(16, 10, 8), Ok(32));
+        assert!(checked_incoming_stack_arg_offset(16, 5, 6).is_err());
+        assert!(checked_cell_byte_offset(u64::MAX).is_err());
+        assert_eq!(checked_displacement_bytes(i32::MAX as u64), Ok(i32::MAX));
+        assert!(checked_displacement_bytes(i32::MAX as u64 + 1).is_err());
     }
 }

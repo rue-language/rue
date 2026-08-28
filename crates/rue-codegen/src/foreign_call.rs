@@ -25,6 +25,7 @@ use rue_air::{
 };
 use rue_cfg::{Cfg, CfgCallArg, CfgValue};
 
+use crate::frame_layout::{checked_aligned_region_bytes, checked_call_area_bytes};
 use crate::types::{self, PhysicalEnumSlot};
 
 /// The compact physical memory image of an aggregate crossing the C boundary —
@@ -63,9 +64,11 @@ impl AggregateImage {
             map,
             padding: type_pool.compact_image_padding_ranges(ty),
             slot_count: types::type_slot_count(type_pool, ty),
-            size: layout.size as u32,
-            align: layout.alignment as u32,
-            storage_bytes: align_up(layout.size as u32, 16),
+            size: u32::try_from(layout.size).expect("foreign aggregate size must fit u32"),
+            align: u32::try_from(layout.alignment)
+                .expect("foreign aggregate alignment must fit u32"),
+            storage_bytes: checked_aligned_region_bytes(layout.size)
+                .expect("foreign aggregate storage must pass frame-budget preflight"),
         }
     }
 
@@ -150,6 +153,126 @@ impl ForeignCallInputs {
                 .any(|arg| is_aggregate(cfg.get_inst(arg.value).ty))
     }
 
+    /// Compute the simultaneous transient area of an aggregate foreign call
+    /// using the target-C classifier that the lowerers consume. This accounts
+    /// for hidden sret storage, SysV by-value stack cells, AAPCS64 caller-owned
+    /// by-reference copies, and argument-register exhaustion that spills
+    /// pointers/eightbytes to the outgoing stack area.
+    pub(crate) fn checked_call_area_bytes(
+        cfg: &Cfg,
+        type_pool: &FrozenTypeInternPool,
+        return_ty: Type,
+        args: &[CfgCallArg],
+        flavor: TargetCAbiFlavor,
+    ) -> Result<u32, crate::frame_layout::FrameBudgetExceeded> {
+        let abi = TargetCCallAbi::new(flavor);
+        let register_budget = u64::from(abi.int_arg_register_budget());
+        let sret_storage_bytes = if is_aggregate(return_ty) {
+            let layout = type_pool.layout(return_ty);
+            match abi.classify_aggregate_return(layout.size, layout.alignment) {
+                AggregateReturnClass::Indirect { .. } => {
+                    u64::from(checked_aligned_region_bytes(layout.size)?)
+                }
+                _ => 0,
+            }
+        } else {
+            0
+        };
+        let mut used_registers =
+            if sret_storage_bytes > 0 && !abi.sret_pointer_in_dedicated_register() {
+                1_u64
+            } else {
+                0
+            };
+        let mut stack_cells = 0_u64;
+        let mut indirect_bytes = 0_u64;
+
+        for arg in args {
+            let ty = cfg.get_inst(arg.value).ty;
+            if !is_aggregate(ty) {
+                if used_registers < register_budget {
+                    used_registers += 1;
+                } else {
+                    stack_cells = stack_cells
+                        .checked_add(1)
+                        .ok_or(crate::frame_layout::FrameBudgetExceeded)?;
+                }
+                continue;
+            }
+
+            let layout = type_pool.layout(ty);
+            match abi.classify_aggregate_arg(layout.size, layout.alignment) {
+                AggregateArgClass::IntegerRegisters { eightbytes } => {
+                    // The backend marshals every register-packed aggregate
+                    // through a temporary image buffer. It is short-lived, but
+                    // can overlap the hidden sret area and any earlier AAPCS64
+                    // caller-owned copies.
+                    let scratch = checked_aligned_region_bytes(layout.size)?;
+                    checked_call_area_bytes(
+                        0,
+                        sret_storage_bytes,
+                        indirect_bytes
+                            .checked_add(u64::from(scratch))
+                            .ok_or(crate::frame_layout::FrameBudgetExceeded)?,
+                    )?;
+                    let eightbytes = u64::from(eightbytes);
+                    if used_registers
+                        .checked_add(eightbytes)
+                        .is_some_and(|used| used <= register_budget)
+                    {
+                        used_registers += eightbytes;
+                    } else {
+                        stack_cells = stack_cells
+                            .checked_add(eightbytes)
+                            .ok_or(crate::frame_layout::FrameBudgetExceeded)?;
+                    }
+                }
+                AggregateArgClass::ByValueStack { .. } => {
+                    // SysV still needs a temporary C image before its
+                    // eightbytes are copied into the outgoing stack area.
+                    let scratch = checked_aligned_region_bytes(layout.size)?;
+                    checked_call_area_bytes(
+                        0,
+                        sret_storage_bytes,
+                        indirect_bytes
+                            .checked_add(u64::from(scratch))
+                            .ok_or(crate::frame_layout::FrameBudgetExceeded)?,
+                    )?;
+                    stack_cells = stack_cells
+                        .checked_add(layout.size.div_ceil(8))
+                        .ok_or(crate::frame_layout::FrameBudgetExceeded)?;
+                }
+                AggregateArgClass::ByReferenceCopy { .. } => {
+                    indirect_bytes = indirect_bytes
+                        .checked_add(u64::from(checked_aligned_region_bytes(layout.size)?))
+                        .ok_or(crate::frame_layout::FrameBudgetExceeded)?;
+                    if used_registers < register_budget {
+                        used_registers += 1;
+                    } else {
+                        stack_cells = stack_cells
+                            .checked_add(1)
+                            .ok_or(crate::frame_layout::FrameBudgetExceeded)?;
+                    }
+                }
+            }
+        }
+
+        if is_aggregate(return_ty) {
+            let layout = type_pool.layout(return_ty);
+            match abi.classify_aggregate_return(layout.size, layout.alignment) {
+                AggregateReturnClass::IntegerRegisters { .. } => {
+                    // Return-image scratch is allocated after outgoing stack
+                    // and AAPCS64 by-reference areas are released, so it is a
+                    // separate peak from the call-boundary reservation.
+                    let scratch = checked_aligned_region_bytes(layout.size)?;
+                    checked_call_area_bytes(0, 0, u64::from(scratch))?;
+                }
+                AggregateReturnClass::Indirect { .. } => {}
+            }
+        }
+        checked_call_area_bytes(stack_cells, sret_storage_bytes, indirect_bytes)
+    }
+
     /// Classify a foreign call through the shared [`TargetCCallAbi`] authority.
     pub(crate) fn from_cfg(
         symbol: String,
@@ -221,8 +344,4 @@ fn is_aggregate(ty: Type) -> bool {
         ty.kind(),
         rue_air::TypeKind::Struct(_) | rue_air::TypeKind::Array(_)
     )
-}
-
-const fn align_up(value: u32, alignment: u32) -> u32 {
-    value.div_ceil(alignment) * alignment
 }
