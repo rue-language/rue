@@ -18829,7 +18829,6 @@ impl RevisionedQueryDatabase {
     /// read-only terminal request records whether that key still has a current
     /// success or deterministic failure. The supplied computation is never
     /// entered, so this hook cannot become a second semantic computation path.
-    #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn retained_body_identity_states_for_test(
         &self,
@@ -18891,7 +18890,6 @@ impl RevisionedQueryDatabase {
     /// Test-only lookup of one retained body transaction by its complete
     /// function-instance identity, including specializations and anonymous
     /// members.
-    #[cfg(test)]
     pub(crate) fn retained_body_transaction_for_test(
         &self,
         revision: Revision,

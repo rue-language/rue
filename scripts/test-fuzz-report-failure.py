@@ -593,6 +593,7 @@ class WorkflowContractTests(unittest.TestCase):
             "parser",
             "sema",
             "compiler",
+            "warm_session",
             "compiler_aarch64",
             "compiler_x86_64_o1",
             "payload_schemas",

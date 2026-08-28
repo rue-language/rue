@@ -97,6 +97,7 @@ mod integration_tests;
 mod scaling_harness;
 #[cfg(test)]
 mod supported_api_inventory;
+mod warm_fresh_parity;
 
 // Supported source, identity, option, session, and diagnostic surface.
 pub use artifact_views::{
@@ -169,7 +170,6 @@ pub(crate) use import_discovery::IMPORT_DISCOVERY_POLICY_VERSION;
 #[allow(unused_imports)]
 pub(crate) use parsed_modules::{ParseInvalidationSummary, ParsedModulesWork};
 pub(crate) use queries::{PipelineWork, SourceStats};
-#[cfg(test)]
 pub(crate) use session::RootedCfgOutput;
 #[allow(unused_imports)]
 pub(crate) use session::{
@@ -184,7 +184,6 @@ pub(crate) use source_identity::{
 };
 
 // Immutable query artifacts and stable identities returned by CompilerSession.
-#[cfg(test)]
 pub(crate) use body_query::{BodyTransaction, transaction_equal};
 pub(crate) use bound_definitions::{
     StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace,

@@ -319,107 +319,6 @@ impl Report {
 }
 
 // ---------------------------------------------------------------------------
-// Full-parity warm/fresh oracle (single shared helper)
-// ---------------------------------------------------------------------------
-
-/// Render a full-fidelity diagnostic string for a failed compile: every error in
-/// natural order, each with its kind, span, labels, notes, helps, and
-/// suggestions (the `Debug` of `CompileError` is the diagnostic presentation
-/// state). Comparing this warm-vs-fresh catches divergence in success/failure,
-/// diagnostic ordering, spans, and labels.
-fn render_diagnostics(errors: &CompileErrors) -> String {
-    errors
-        .iter()
-        .map(|error| format!("{error:?}"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn assert_successful_output_body_presence(
-    label: &str,
-    output: &RootedCfgOutput,
-    states: &BTreeMap<String, Option<crate::BodyTransaction>>,
-) {
-    for function in output.functions() {
-        let prefix = format!("{:?}:", function.function);
-        let matching = states
-            .iter()
-            .filter(|(identity, _)| identity.starts_with(&prefix))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            matching.len(),
-            1,
-            "{label}: successful output body identity is absent or ambiguous: {:?}",
-            function.function
-        );
-        assert!(
-            matching[0].1.is_some(),
-            "{label}: successful output body has no observable retained transaction: {:?}",
-            function.function
-        );
-    }
-}
-
-fn body_query_identity(instance: &crate::FunctionInstanceKey, options: &CompileOptions) -> String {
-    format!(
-        "{:?}:{:?}",
-        instance,
-        crate::semantic_query_nucleus::SemanticQueryConfiguration {
-            target: options.target,
-            preview_features: crate::StablePreviewFeatures::new(&options.preview_features),
-        }
-    )
-}
-
-fn reachable_successful_body_identities(
-    label: &str,
-    output: &RootedCfgOutput,
-    states: &BTreeMap<String, Option<crate::BodyTransaction>>,
-    options: &CompileOptions,
-) -> BTreeSet<String> {
-    let mut pending = output
-        .functions()
-        .iter()
-        .map(|function| body_query_identity(&function.function, options))
-        .collect::<Vec<_>>();
-    let mut reachable = BTreeSet::new();
-    while let Some(identity) = pending.pop() {
-        if !reachable.insert(identity.clone()) {
-            continue;
-        }
-        let Some(Some(transaction)) = states.get(&identity) else {
-            panic!("{label}: reachable successful body identity has no transaction: {identity}");
-        };
-        for reference in transaction.references().0.iter() {
-            if let crate::body_query::BodyReference::Callable(instance) = reference {
-                pending.push(body_query_identity(instance, options));
-            }
-        }
-    }
-    reachable
-}
-
-fn assert_reachable_body_key_set_parity(
-    label: &str,
-    warm_bodies: &BTreeMap<String, Option<crate::BodyTransaction>>,
-    fresh_bodies: &BTreeMap<String, Option<crate::BodyTransaction>>,
-) {
-    assert_eq!(
-        warm_bodies.keys().collect::<Vec<_>>(),
-        fresh_bodies.keys().collect::<Vec<_>>(),
-        "{label}: successful warm/fresh body-key sets differ"
-    );
-}
-
-/// The one shared warm-vs-fresh oracle every edit row uses. Built on the exact
-/// canonical rooted CFG values, it asserts full parity between a warm
-/// (incremental) rev2 compile and a fresh rev2 compile:
-///
-/// * success vs failure agreement;
-/// * on success, the full parity snapshot: functions, strings, type pool, bound
-///   definitions, anonymous-nominal associations, every dependency surface,
-///   full warnings (kind/spans/labels/order/presentation), and durable status;
-/// * on failure, the full ordered diagnostic presentation.
 fn assert_warm_fresh_parity(
     label: &str,
     warm_session: &mut CompilerSession,
@@ -429,173 +328,15 @@ fn assert_warm_fresh_parity(
     warm: &Result<RootedCfgOutput, CompileErrors>,
     fresh: &Result<RootedCfgOutput, CompileErrors>,
 ) {
-    // The body-transaction family is the canonical production cache. Its
-    // test-only snapshot includes stale keys as well as current terminals, so
-    // successful parity must first narrow it to the identities reachable from
-    // each output and its transaction edges.
-    let warm_bodies = warm_session.retained_body_identity_states_for_test(options);
-    let fresh_bodies = fresh_session.retained_body_identity_states_for_test(options);
-    // A failed rooted body/CFG query may stop before an unchanged helper is
-    // requested. Such a helper can remain observable from the warm cache while
-    // having no fresh-side retained key; that is cache reachability, not a
-    match (warm, fresh) {
-        (Ok(warm), Ok(fresh)) => {
-            // Successful results must expose the same complete reachable
-            // identity universe. This includes output functions and every
-            // callable body demanded by their transaction edges, while
-            // ignoring retained but unreachable stale keys.
-            let warm_reachable =
-                reachable_successful_body_identities("warm", warm, &warm_bodies, options);
-            let fresh_reachable =
-                reachable_successful_body_identities("fresh", fresh, &fresh_bodies, options);
-            let warm_reachable_states = warm_reachable
-                .iter()
-                .map(|identity| {
-                    (
-                        identity.clone(),
-                        warm_bodies.get(identity).cloned().unwrap_or(None),
-                    )
-                })
-                .collect::<BTreeMap<_, _>>();
-            let fresh_reachable_states = fresh_reachable
-                .iter()
-                .map(|identity| {
-                    (
-                        identity.clone(),
-                        fresh_bodies.get(identity).cloned().unwrap_or(None),
-                    )
-                })
-                .collect::<BTreeMap<_, _>>();
-            assert_reachable_body_key_set_parity(
-                label,
-                &warm_reachable_states,
-                &fresh_reachable_states,
-            );
-            for identity in warm_reachable.iter() {
-                let warm_transaction = warm_bodies.get(identity).and_then(Option::as_ref);
-                let fresh_transaction = fresh_bodies.get(identity).and_then(Option::as_ref);
-                assert_eq!(
-                    warm_transaction.is_some(),
-                    fresh_transaction.is_some(),
-                    "{label}: warm/fresh body identity presence diverged for {identity}\n"
-                );
-                if let (Some(warm_transaction), Some(fresh_transaction)) =
-                    (warm_transaction, fresh_transaction)
-                {
-                    assert!(
-                        crate::transaction_equal(warm_transaction, fresh_transaction),
-                        "{label}: exact BodyTransaction diverged for {identity}\n warm={warm_transaction:?}\n fresh={fresh_transaction:?}"
-                    );
-                }
-            }
-            crate::test_support::assert_rooted_cfg_value_parity(label, warm, fresh);
-
-            // Keep the public output check as a consistency assertion, not as
-            // the identity enumeration source. Every emitted function must
-            // also have exactly one observable retained body transaction.
-            assert_successful_output_body_presence(label, warm, &warm_bodies);
-            assert_successful_output_body_presence(label, fresh, &fresh_bodies);
-
-            assert_eq!(
-                format!("{:?}", warm.functions()),
-                format!("{:?}", fresh.functions()),
-                "{label}: full AIR/CFG public artifacts diverged"
-            );
-            assert_eq!(
-                format!("{:?}", warm.warnings()),
-                format!("{:?}", fresh.warnings()),
-                "{label}: ordered semantic warnings diverged"
-            );
-            assert_eq!(
-                format!("{:?}", warm_session.latest_diagnostics_for_test()),
-                format!("{:?}", fresh_session.latest_diagnostics_for_test()),
-                "{label}: ordered diagnostic snapshots diverged"
-            );
-
-            let warm_executable = warm_session.oracle_executable(source, options);
-            let fresh_executable = fresh_session.oracle_executable(source, options);
-            match (warm_executable, fresh_executable) {
-                (Ok(warm), Ok(fresh)) => {
-                    assert_eq!(warm.elf, fresh.elf, "{label}: executable bytes diverged");
-                    assert_eq!(
-                        format!("{:?}", warm.warnings),
-                        format!("{:?}", fresh.warnings),
-                        "{label}: executable warnings diverged"
-                    );
-                }
-                (Err(warm), Err(fresh)) => assert_eq!(
-                    render_diagnostics(&warm),
-                    render_diagnostics(&fresh),
-                    "{label}: executable failure diagnostics diverged"
-                ),
-                (Ok(_), Err(fresh)) => panic!(
-                    "{label}: warm executable succeeded but fresh failed:\n{}",
-                    render_diagnostics(&fresh)
-                ),
-                (Err(warm), Ok(_)) => panic!(
-                    "{label}: warm executable failed but fresh succeeded:\n{}",
-                    render_diagnostics(&warm)
-                ),
-            }
-        }
-        (Err(warm), Err(fresh)) => {
-            assert_eq!(
-                render_diagnostics(warm),
-                render_diagnostics(fresh),
-                "{label}: warm/fresh failure diagnostics diverged"
-            );
-            assert_eq!(
-                format!("{:?}", warm_session.latest_diagnostics_for_test()),
-                format!("{:?}", fresh_session.latest_diagnostics_for_test()),
-                "{label}: ordered failure diagnostic snapshots diverged"
-            );
-            // A failed rooted body/CFG query may stop before unchanged helper
-            // bodies are requested. Compare deterministic failures demanded
-            // by both sides, preserving early-stop behavior for helpers that
-            // exist only in one retained family.
-            let warm_failures = warm_bodies
-                .iter()
-                .filter(|(_, transaction)| {
-                    matches!(
-                        transaction,
-                        Some(crate::BodyTransaction::DeterministicFailure { .. })
-                    )
-                })
-                .map(|(identity, transaction)| {
-                    (identity.clone(), transaction.as_ref().unwrap().clone())
-                })
-                .collect::<BTreeMap<_, _>>();
-            let fresh_failures = fresh_bodies
-                .iter()
-                .filter(|(_, transaction)| {
-                    matches!(
-                        transaction,
-                        Some(crate::BodyTransaction::DeterministicFailure { .. })
-                    )
-                })
-                .map(|(identity, transaction)| {
-                    (identity.clone(), transaction.as_ref().unwrap().clone())
-                })
-                .collect::<BTreeMap<_, _>>();
-            for identity in warm_failures
-                .keys()
-                .filter(|identity| fresh_failures.contains_key(*identity))
-            {
-                assert!(
-                    crate::transaction_equal(&warm_failures[identity], &fresh_failures[identity]),
-                    "{label}: exact failed BodyTransaction diverged for {identity}"
-                );
-            }
-        }
-        (Ok(_), Err(fresh)) => panic!(
-            "{label}: warm compiled but fresh failed:\n{}",
-            render_diagnostics(fresh)
-        ),
-        (Err(warm), Ok(_)) => panic!(
-            "{label}: warm failed but fresh compiled:\n{}",
-            render_diagnostics(warm)
-        ),
-    }
+    crate::warm_fresh_parity::assert_rooted_parity(
+        label,
+        warm_session,
+        fresh_session,
+        source,
+        options,
+        warm,
+        fresh,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1753,7 +1494,11 @@ fn correctness_oracle_rejects_missing_successful_body_transaction() {
         .cloned()
         .expect("main body identity is retained");
     states.remove(&main_identity);
-    assert_successful_output_body_presence("missing retained body regression", &output, &states);
+    crate::warm_fresh_parity::assert_successful_output_body_presence(
+        "missing retained body regression",
+        &output,
+        &states,
+    );
 }
 
 #[test]
@@ -1774,7 +1519,11 @@ fn correctness_oracle_rejects_asymmetric_successful_body_key_sets() {
         ("warm-only".to_owned(), Some(transaction.clone())),
     ]);
     let fresh = BTreeMap::from([("reachable".to_owned(), Some(transaction))]);
-    assert_reachable_body_key_set_parity("asymmetric successful body keys", &warm, &fresh);
+    crate::warm_fresh_parity::assert_reachable_body_key_set_parity(
+        "asymmetric successful body keys",
+        &warm,
+        &fresh,
+    );
 }
 
 #[test]
@@ -1809,7 +1558,49 @@ fn correctness_oracle_rejects_missing_reachable_transaction_on_both_sides() {
     );
     let mut omitted = BTreeMap::new();
     omitted.insert(root_identity, Some(root_transaction));
-    reachable_successful_body_identities("both-missing", &output, &omitted, &options);
+    crate::warm_fresh_parity::reachable_body_identities(
+        "both-missing",
+        &output,
+        &omitted,
+        &options,
+    );
+}
+
+#[test]
+#[should_panic(expected = "exact failed BodyTransaction diverged")]
+fn correctness_oracle_rejects_divergent_deterministic_failure_transactions() {
+    let options = CompileOptions::default();
+    let warm_source = SourceSnapshot::single("main.rue", "fn main() -> i32 { true }\n").unwrap();
+    let fresh_source = SourceSnapshot::single("main.rue", "fn main() -> i32 { false }\n").unwrap();
+    let mut warm_session = CompilerSession::new();
+    let mut fresh_session = CompilerSession::new();
+    warm_session.update(&warm_source).into_result().unwrap();
+    fresh_session.update(&fresh_source).into_result().unwrap();
+    assert!(warm_session.rooted_cfg(&options).is_err());
+    assert!(fresh_session.rooted_cfg(&options).is_err());
+    let warm_failure = warm_session
+        .retained_body_identity_states_for_test(&options)
+        .into_values()
+        .find_map(|transaction| match transaction {
+            Some(crate::BodyTransaction::DeterministicFailure { .. }) => Some(transaction),
+            _ => None,
+        })
+        .expect("warm invalid body retains a deterministic failure");
+    let fresh_failure = fresh_session
+        .retained_body_identity_states_for_test(&options)
+        .into_values()
+        .find_map(|transaction| match transaction {
+            Some(crate::BodyTransaction::DeterministicFailure { .. }) => Some(transaction),
+            _ => None,
+        })
+        .expect("fresh invalid body retains a deterministic failure");
+    let warm = BTreeMap::from([("shared-invalid-body".to_owned(), warm_failure)]);
+    let fresh = BTreeMap::from([("shared-invalid-body".to_owned(), fresh_failure)]);
+    crate::warm_fresh_parity::assert_deterministic_failure_body_transaction_parity(
+        "divergent deterministic failure",
+        &warm,
+        &fresh,
+    );
 }
 
 #[test]
