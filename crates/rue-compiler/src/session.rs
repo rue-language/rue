@@ -1633,6 +1633,62 @@ impl ExactSourceInput {
 
 impl CompilerSession {
     #[cfg(test)]
+    pub(crate) fn cancel_constraint_generation_after_nodes_for_test(
+        &self,
+        nodes: usize,
+    ) -> crate::revisioned_query_database::TestConstraintGenerationCancellationGuard {
+        self.queries
+            .revisioned
+            .cancel_constraint_generation_after_nodes_for_test(nodes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn constraint_generation_visits_for_test(&self) -> usize {
+        self.queries
+            .revisioned
+            .constraint_generation_visits_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn any_successful_body_transaction_for_test(&self) -> bool {
+        self.queries
+            .revisioned
+            .any_successful_body_transaction_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn empty_body_closure_work_for_test(
+        &self,
+        options: &CompileOptions,
+    ) -> (crate::CandidateBodyPlanWork, crate::CandidateBodyPlanWork) {
+        let revision = self
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .expect("empty body-closure test requires a semantic revision");
+        let request = self
+            .queries
+            .revisioned
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([]),
+                    roots: Arc::from([]),
+                    configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                        target: options.target.clone(),
+                        preview_features: StablePreviewFeatures::new(&options.preview_features),
+                    },
+                },
+                rue_query::CancellationToken::new(),
+            )
+            .expect("empty body-closure query must publish");
+        (
+            request.candidate_body_plan_work,
+            request.candidate_body_materialization_work,
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_query_concurrency(workers: usize) -> Self {
         let mut session = Self::default();
         session.queries.revisioned =
@@ -4970,6 +5026,7 @@ impl CompilerSession {
         }
         let mut work = crate::CanonicalSemanticWork::default();
         request.accrue_reachability_work(&mut work.body_analysis);
+        request.accrue_candidate_body_plan_work(&mut work);
         work.body_analysis.closure_bodies_visited = closure.bodies.len();
         for closure_body in closure.bodies.iter() {
             match request.execution_for(&closure_body.key) {

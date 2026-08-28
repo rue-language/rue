@@ -929,29 +929,46 @@ impl BuildBoundaryEvidence {
         {
             return Err("compiler precompute attribution is incomplete".to_string());
         }
-        let structure = self.compiler_work.semantic_body_structure;
-        if structure.body_lowerings != successful_lowerings
-            || structure.index_builds != structure.body_lowerings
-            || structure.rir_instructions != structure.index_rir_instructions_visited
-            || structure.precompute_bodies != critical.semantic_inference_precompute.count
-            || structure.precompute_alias_eval_attempts != structure.precompute_alias_filter_accepts
-            || structure
-                .precompute_alias_filter_accepts
-                .saturating_add(structure.precompute_alias_filter_skips)
-                > structure.precompute_alias_allocations_examined
-            || structure.precompute_alias_type_successes > structure.precompute_alias_eval_attempts
-            || structure.precompute_inline_scan_pops
-                != structure
-                    .precompute_inline_scan_child_edges
-                    .saturating_add(structure.precompute_inline_scan_bodies)
-            || structure.precompute_inline_scan_bodies > structure.precompute_bodies
-            || structure.precompute_inline_final_candidates
-                > structure.precompute_inline_raw_candidates
-            || structure.precompute_inline_eval_attempts
-                != structure.precompute_inline_final_candidates
-            || structure.precompute_inline_type_successes
-                > structure.precompute_inline_eval_attempts
-            || structure.staged_canonical_evaluations > structure.staged_fact_nodes
+        let structure = self.compiler_work.semantic_analysis_structure;
+        let precompute_subgroup = [
+            structure.precompute_alias_nodes_visited,
+            structure.precompute_alias_block_statements,
+            structure.precompute_alias_allocations_examined,
+            structure.precompute_alias_filter_accepts,
+            structure.precompute_alias_filter_skips,
+            structure.precompute_alias_eval_attempts,
+            structure.precompute_alias_type_successes,
+            structure.precompute_inline_scan_pops,
+            structure.precompute_inline_scan_child_edges,
+            structure.precompute_inline_scan_bodies,
+            structure.precompute_inline_raw_candidates,
+            structure.precompute_inline_final_candidates,
+            structure.precompute_inline_eval_attempts,
+            structure.precompute_inline_type_successes,
+        ];
+        if (structure.precompute_bodies == 0 && precompute_subgroup.iter().any(|value| *value != 0))
+            || (structure.precompute_bodies != 0
+                && (structure.precompute_bodies != critical.semantic_inference_precompute.count
+                    || structure.precompute_alias_eval_attempts
+                        != structure.precompute_alias_filter_accepts
+                    || structure
+                        .precompute_alias_filter_accepts
+                        .saturating_add(structure.precompute_alias_filter_skips)
+                        > structure.precompute_alias_allocations_examined
+                    || structure.precompute_alias_type_successes
+                        > structure.precompute_alias_eval_attempts
+                    || structure.precompute_inline_scan_pops
+                        != structure
+                            .precompute_inline_scan_child_edges
+                            .saturating_add(structure.precompute_inline_scan_bodies)
+                    || structure.precompute_inline_scan_bodies > structure.precompute_bodies
+                    || structure.precompute_inline_final_candidates
+                        > structure.precompute_inline_raw_candidates
+                    || structure.precompute_inline_eval_attempts
+                        != structure.precompute_inline_final_candidates
+                    || structure.precompute_inline_type_successes
+                        > structure.precompute_inline_eval_attempts
+                    || structure.staged_canonical_evaluations > structure.staged_fact_nodes))
         {
             return Err("compiler body structural-work attribution is inconsistent".to_string());
         }
@@ -1120,17 +1137,7 @@ pub(crate) mod tests {
                 declined_joins: 0,
                 donated_permits: 0,
             },
-            compiler_work: CompilerWork {
-                semantic_body_structure: crate::SemanticBodyStructureWork {
-                    body_lowerings: 1,
-                    index_builds: 1,
-                    precompute_bodies: 1,
-                    precompute_inline_scan_pops: 1,
-                    precompute_inline_scan_bodies: 1,
-                    ..crate::SemanticBodyStructureWork::default()
-                },
-                ..CompilerWork::default()
-            },
+            compiler_work: CompilerWork::default(),
         }
     }
 
@@ -1345,44 +1352,6 @@ pub(crate) mod tests {
             .validate_current_producer_against(&policy, "x86-64-linux")
             .unwrap();
 
-        let mut too_many_body_successes = evidence();
-        for distribution in [
-            &mut too_many_body_successes
-                .critical_path
-                .semantic_body_input_attributed_total,
-            &mut too_many_body_successes
-                .critical_path
-                .semantic_body_input_assembly_snapshot,
-            &mut too_many_body_successes
-                .critical_path
-                .semantic_body_input_lex_parse,
-            &mut too_many_body_successes
-                .critical_path
-                .semantic_body_input_rir_lower,
-            &mut too_many_body_successes
-                .critical_path
-                .semantic_body_input_span_remap_validation,
-            &mut too_many_body_successes
-                .critical_path
-                .semantic_body_input_rir_index,
-        ] {
-            add_success(distribution);
-        }
-        too_many_body_successes
-            .compiler_work
-            .semantic_body_structure
-            .body_lowerings = 2;
-        too_many_body_successes
-            .compiler_work
-            .semantic_body_structure
-            .index_builds = 2;
-        assert_eq!(
-            too_many_body_successes
-                .validate_current_producer_against(&policy, "x86-64-linux")
-                .unwrap_err(),
-            "compiler body-lowering attribution is incomplete"
-        );
-
         let mut too_many_provider_successes = evidence();
         for distribution in [
             &mut too_many_provider_successes
@@ -1409,22 +1378,6 @@ pub(crate) mod tests {
                 .unwrap_err(),
             "compiler provider-analysis attribution is incomplete"
         );
-    }
-
-    #[test]
-    fn current_producer_accepts_census_zero_inline_scan() {
-        let policy = BuildBoundaryPolicy::fresh_source_to_native_v1(WorkerSetting::One);
-        let mut census_zero = evidence();
-        add_success(&mut census_zero.critical_path.semantic_body_input_lowering);
-        add_success(&mut census_zero.critical_path.semantic_provider_analysis);
-        let structure = &mut census_zero.compiler_work.semantic_body_structure;
-        assert_eq!(structure.precompute_bodies, 1);
-        structure.precompute_inline_scan_pops = 0;
-        structure.precompute_inline_scan_child_edges = 0;
-        structure.precompute_inline_scan_bodies = 0;
-        census_zero
-            .validate_current_producer_against(&policy, "x86-64-linux")
-            .unwrap();
     }
 
     #[test]
@@ -1461,6 +1414,20 @@ pub(crate) mod tests {
         );
 
         assert_eq!(REQUIRED_SEMANTIC_EVIDENCE.len(), 27);
+    }
+
+    #[test]
+    fn partial_semantic_analysis_structure_cannot_hide_behind_zero_denominator() {
+        let policy = BuildBoundaryPolicy::fresh_source_to_native_v1(WorkerSetting::One);
+        let mut evidence = evidence();
+        evidence
+            .compiler_work
+            .semantic_analysis_structure
+            .precompute_alias_nodes_visited = 1;
+        let error = evidence
+            .validate_current_producer_against(&policy, "x86-64-linux")
+            .unwrap_err();
+        assert!(error.contains("body structural-work attribution is inconsistent"));
     }
 
     #[test]

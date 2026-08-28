@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 23;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 24;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,13 +197,30 @@ pub struct ScalingObservation {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompilerWork {
+    /// Query-native source/AST-to-candidate declaration body-plan work.
+    #[serde(default)]
+    pub candidate_body_plan_construction: CandidateBodyPlanWork,
+    /// Query-native candidate plan materialization/remapping/validation work.
+    #[serde(default)]
+    pub candidate_body_plan_materialization: CandidateBodyPlanWork,
+    /// Query-native whole-program RIR presentation work. This is populated
+    /// only for an explicit presentation request and never for rooted builds.
+    #[serde(default)]
+    pub canonical_rir_presentation: CanonicalRirPresentationWork,
     /// Exact semantic facts observed by provider-native body analysis.
     pub semantic_provider: SemanticProviderWork,
     /// Work performed while discovering and scheduling reachable bodies.
     pub semantic_reachability: SemanticReachabilityWork,
-    /// Exact body-lowering and inference-precompute structural attribution.
+    /// Unrelated semantic-analysis evidence. Candidate-plan fields above are
+    /// the sole structural lowering authority in v3.
     #[serde(default)]
-    pub semantic_body_structure: SemanticBodyStructureWork,
+    pub semantic_analysis_structure: SemanticAnalysisStructureWork,
+    /// Historical v2 payload retained only in memory while validating a v2
+    /// record. It is deliberately omitted from every v3 serialization.
+    #[serde(rename = "semantic_body_structure", default, skip_serializing)]
+    #[doc(hidden)]
+    #[doc(hidden)]
+    pub legacy_v2_semantic_body_structure: Option<LegacySemanticBodyStructureWork>,
     /// Request-local lookup preparation for exact CFG materialization facts.
     pub cfg_materialization: CfgMaterializationWork,
     /// Stable-type scans and registered prerequisite requests for CFG bodies.
@@ -226,6 +243,29 @@ fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
+/// Exact lifecycle and output quantities for one candidate body-plan query.
+/// Computed and reused are request counts; output quantities count successfully
+/// published plans only and are independent of timing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateBodyPlanWork {
+    pub computed: u64,
+    pub reused: u64,
+    pub instructions_produced: u64,
+    pub payload_words_produced: u64,
+}
+
+/// Exact quantities for explicit whole-program canonical RIR presentation.
+/// Requests and projected modules are intentionally separate units.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalRirPresentationWork {
+    pub requests_computed: u64,
+    pub modules_projected: u64,
+    pub instructions_produced: u64,
+    pub payload_words_produced: u64,
+}
+
 /// Deterministic publication-seam health for one compiler process.
 ///
 /// The collection-scope handoffs replace per-node lease-reacquisition demand
@@ -239,13 +279,55 @@ pub struct PublicationWork {
     pub cone_retention_failures: u64,
 }
 
-/// Deterministic structural work behind successful body lowerings and
-/// inference precompute. `body_lowerings` is the success denominator for every
-/// body-lowering work field; failed or recovered attempts publish no bundle and
-/// therefore contribute no structural result.
+/// Unrelated deterministic semantic-analysis counters retained in v3.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SemanticBodyStructureWork {
+pub struct SemanticAnalysisStructureWork {
+    pub precompute_bodies: u64,
+    pub precompute_alias_nodes_visited: u64,
+    pub precompute_alias_block_statements: u64,
+    pub precompute_alias_allocations_examined: u64,
+    pub precompute_alias_filter_accepts: u64,
+    pub precompute_alias_filter_skips: u64,
+    pub precompute_alias_eval_attempts: u64,
+    pub precompute_alias_type_successes: u64,
+    pub precompute_inline_scan_pops: u64,
+    pub precompute_inline_scan_child_edges: u64,
+    #[serde(default)]
+    pub precompute_inline_scan_bodies: u64,
+    pub precompute_inline_raw_candidates: u64,
+    pub precompute_inline_final_candidates: u64,
+    pub precompute_inline_eval_attempts: u64,
+    pub precompute_inline_type_successes: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub staged_resolved_instructions: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub staged_constraints_generated: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub staged_fact_nodes: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub staged_canonical_evaluations: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub staged_binding_scope_nodes: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub staged_binding_materializations: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub staged_binding_trie_updates: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub staged_binding_trie_lookups: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub staged_probe_nodes: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub staged_precompute_nodes: u64,
+}
+
+/// Private v2-only body lowering evidence. It is accepted solely while
+/// decoding and validating historical records; no v3 producer or renderer
+/// exposes this retired subgroup.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[doc(hidden)]
+pub struct LegacySemanticBodyStructureWork {
     pub body_lowerings: u64,
     pub source_bytes: u64,
     pub declaration_fragments: u64,
@@ -273,42 +355,106 @@ pub struct SemanticBodyStructureWork {
     pub precompute_inline_final_candidates: u64,
     pub precompute_inline_eval_attempts: u64,
     pub precompute_inline_type_successes: u64,
-    // Published schema-v2 records predate the staged counters, but their
-    // `rue.boundary.work.1` digests are recomputed by current readers.  Missing
-    // fields deserialize as zero and zero values stay omitted on serialization,
-    // preserving that historical digest preimage.  Every nonzero observation
-    // is still explicit in newly collected records.
-    /// Resolved instruction facts produced by staged selector passes.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub staged_resolved_instructions: u64,
-    /// Constraints generated by staged probe and frontier passes. The final
-    /// ordinary inference pass is intentionally excluded.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub staged_constraints_generated: u64,
-    /// Nodes visited by the bounded selector fact frontier.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub staged_fact_nodes: u64,
-    /// Actual invocations of the canonical selector evaluator.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub staged_canonical_evaluations: u64,
-    /// Persistent lexical scope nodes pushed during staged fact collection.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub staged_binding_scope_nodes: u64,
-    /// Selector/frontier checkpoint visits; persistent scopes are not flattened.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub staged_binding_materializations: u64,
-    /// Path-copied trie nodes written by persistent lexical scope updates.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub staged_binding_trie_updates: u64,
-    /// Trie levels consulted by staged runtime-name membership.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub staged_binding_trie_lookups: u64,
-    /// RIR nodes visited while discovering reachable comptime fact sites.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub staged_probe_nodes: u64,
-    /// Precompute nodes charged once by the staged snapshot.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub staged_precompute_nodes: u64,
+}
+
+impl CompilerWork {
+    /// Reconstruct the exact historical semantic subgroup for a v2 digest.
+    /// A decoded v2 record carries its original payload; a newly constructed
+    /// value projects the unrelated v3 evidence and leaves retired counters
+    /// at their historical zero.
+    pub(crate) fn legacy_v2_semantic_body_structure(&self) -> LegacySemanticBodyStructureWork {
+        self.legacy_v2_semantic_body_structure
+            .unwrap_or_else(|| LegacySemanticBodyStructureWork {
+                precompute_bodies: self.semantic_analysis_structure.precompute_bodies,
+                precompute_alias_nodes_visited: self
+                    .semantic_analysis_structure
+                    .precompute_alias_nodes_visited,
+                precompute_alias_block_statements: self
+                    .semantic_analysis_structure
+                    .precompute_alias_block_statements,
+                precompute_alias_allocations_examined: self
+                    .semantic_analysis_structure
+                    .precompute_alias_allocations_examined,
+                precompute_alias_filter_accepts: self
+                    .semantic_analysis_structure
+                    .precompute_alias_filter_accepts,
+                precompute_alias_filter_skips: self
+                    .semantic_analysis_structure
+                    .precompute_alias_filter_skips,
+                precompute_alias_eval_attempts: self
+                    .semantic_analysis_structure
+                    .precompute_alias_eval_attempts,
+                precompute_alias_type_successes: self
+                    .semantic_analysis_structure
+                    .precompute_alias_type_successes,
+                precompute_inline_scan_pops: self
+                    .semantic_analysis_structure
+                    .precompute_inline_scan_pops,
+                precompute_inline_scan_child_edges: self
+                    .semantic_analysis_structure
+                    .precompute_inline_scan_child_edges,
+                precompute_inline_scan_bodies: self
+                    .semantic_analysis_structure
+                    .precompute_inline_scan_bodies,
+                precompute_inline_raw_candidates: self
+                    .semantic_analysis_structure
+                    .precompute_inline_raw_candidates,
+                precompute_inline_final_candidates: self
+                    .semantic_analysis_structure
+                    .precompute_inline_final_candidates,
+                precompute_inline_eval_attempts: self
+                    .semantic_analysis_structure
+                    .precompute_inline_eval_attempts,
+                precompute_inline_type_successes: self
+                    .semantic_analysis_structure
+                    .precompute_inline_type_successes,
+                staged_resolved_instructions: self
+                    .semantic_analysis_structure
+                    .staged_resolved_instructions,
+                staged_constraints_generated: self
+                    .semantic_analysis_structure
+                    .staged_constraints_generated,
+                staged_fact_nodes: self.semantic_analysis_structure.staged_fact_nodes,
+                staged_canonical_evaluations: self
+                    .semantic_analysis_structure
+                    .staged_canonical_evaluations,
+                staged_binding_scope_nodes: self
+                    .semantic_analysis_structure
+                    .staged_binding_scope_nodes,
+                staged_binding_materializations: self
+                    .semantic_analysis_structure
+                    .staged_binding_materializations,
+                staged_binding_trie_updates: self
+                    .semantic_analysis_structure
+                    .staged_binding_trie_updates,
+                staged_binding_trie_lookups: self
+                    .semantic_analysis_structure
+                    .staged_binding_trie_lookups,
+                staged_probe_nodes: self.semantic_analysis_structure.staged_probe_nodes,
+                staged_precompute_nodes: self.semantic_analysis_structure.staged_precompute_nodes,
+                ..LegacySemanticBodyStructureWork::default()
+            })
+    }
 }
 
 /// Deterministic provider operations performed by semantic body analysis.
@@ -630,6 +776,63 @@ question = "small maintained compiler frontend"
     }
 
     #[test]
+    fn legacy_compiler_work_preserves_semantic_structure() {
+        let mut encoded = serde_json::to_value(CompilerWork::default()).unwrap();
+        let mut expected =
+            serde_json::to_value(LegacySemanticBodyStructureWork::default()).unwrap();
+        expected["body_lowerings"] = 7.into();
+        expected["source_bytes"] = 11.into();
+        expected["rir_instructions"] = 13.into();
+        expected["index_builds"] = 7.into();
+        encoded["semantic_body_structure"] = serde_json::to_value(expected).unwrap();
+        let decoded: CompilerWork = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            decoded
+                .legacy_v2_semantic_body_structure
+                .unwrap()
+                .body_lowerings,
+            7
+        );
+    }
+
+    #[test]
+    fn legacy_compiler_work_defaults_new_taxonomy() {
+        let mut encoded = serde_json::to_value(CompilerWork::default()).unwrap();
+        let mut structure =
+            serde_json::to_value(LegacySemanticBodyStructureWork::default()).unwrap();
+        structure["body_lowerings"] = 7.into();
+        structure["rir_instructions"] = 11.into();
+        structure["source_bytes"] = 13.into();
+        structure["index_builds"] = 7.into();
+        encoded["semantic_body_structure"] = structure;
+        encoded
+            .as_object_mut()
+            .unwrap()
+            .remove("candidate_body_plan_construction");
+        encoded
+            .as_object_mut()
+            .unwrap()
+            .remove("candidate_body_plan_materialization");
+        encoded
+            .as_object_mut()
+            .unwrap()
+            .remove("canonical_rir_presentation");
+        let decoded: CompilerWork = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            decoded.candidate_body_plan_construction,
+            CandidateBodyPlanWork::default()
+        );
+        assert_eq!(
+            decoded.candidate_body_plan_materialization,
+            CandidateBodyPlanWork::default()
+        );
+        assert_eq!(
+            decoded.canonical_rir_presentation,
+            CanonicalRirPresentationWork::default()
+        );
+    }
+
+    #[test]
     fn older_compiler_work_defaults_additive_cfg_categories() {
         let mut encoded = serde_json::to_value(CompilerWork::default()).unwrap();
         let object = encoded.as_object_mut().unwrap();
@@ -643,49 +846,14 @@ question = "small maintained compiler frontend"
             CfgRetainedChargeWork::default()
         );
         assert_eq!(
-            decoded.semantic_body_structure,
-            SemanticBodyStructureWork::default()
-        );
-    }
-
-    #[test]
-    fn older_semantic_body_structure_defaults_inline_scan_bodies() {
-        let mut structure = serde_json::to_value(SemanticBodyStructureWork {
-            precompute_inline_scan_bodies: 7,
-            ..SemanticBodyStructureWork::default()
-        })
-        .unwrap();
-        structure
-            .as_object_mut()
-            .unwrap()
-            .remove("precompute_inline_scan_bodies");
-        let decoded: SemanticBodyStructureWork = serde_json::from_value(structure).unwrap();
-        assert_eq!(decoded.precompute_inline_scan_bodies, 0);
-
-        let mut compiler = serde_json::to_value(CompilerWork {
-            semantic_body_structure: SemanticBodyStructureWork {
-                precompute_inline_scan_bodies: 7,
-                ..SemanticBodyStructureWork::default()
-            },
-            ..CompilerWork::default()
-        })
-        .unwrap();
-        compiler["semantic_body_structure"]
-            .as_object_mut()
-            .unwrap()
-            .remove("precompute_inline_scan_bodies");
-        let decoded: CompilerWork = serde_json::from_value(compiler).unwrap();
-        assert_eq!(
-            decoded
-                .semantic_body_structure
-                .precompute_inline_scan_bodies,
-            0
+            decoded.semantic_analysis_structure,
+            SemanticAnalysisStructureWork::default()
         );
     }
 
     #[test]
     fn staged_body_work_is_additive_and_round_trips_in_json() {
-        let structure = SemanticBodyStructureWork {
+        let structure = SemanticAnalysisStructureWork {
             staged_resolved_instructions: 11,
             staged_constraints_generated: 13,
             staged_fact_nodes: 17,
@@ -696,47 +864,12 @@ question = "small maintained compiler frontend"
             staged_binding_trie_lookups: 37,
             staged_probe_nodes: 23,
             staged_precompute_nodes: 29,
-            ..SemanticBodyStructureWork::default()
+            ..SemanticAnalysisStructureWork::default()
         };
         let encoded = serde_json::to_value(structure).unwrap();
-        let decoded: SemanticBodyStructureWork = serde_json::from_value(encoded).unwrap();
-        assert_eq!(decoded.staged_resolved_instructions, 11);
-        assert_eq!(decoded.staged_constraints_generated, 13);
-        assert_eq!(decoded.staged_fact_nodes, 17);
-        assert_eq!(decoded.staged_canonical_evaluations, 19);
-        assert_eq!(decoded.staged_binding_scope_nodes, 41);
-        assert_eq!(decoded.staged_binding_materializations, 43);
-        assert_eq!(decoded.staged_binding_trie_updates, 31);
-        assert_eq!(decoded.staged_binding_trie_lookups, 37);
-        assert_eq!(decoded.staged_probe_nodes, 23);
-        assert_eq!(decoded.staged_precompute_nodes, 29);
-
+        let decoded: SemanticAnalysisStructureWork = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, structure);
         let mut legacy = serde_json::to_value(structure).unwrap();
-        let object = legacy.as_object_mut().unwrap();
-        object.remove("staged_resolved_instructions");
-        object.remove("staged_constraints_generated");
-        object.remove("staged_fact_nodes");
-        object.remove("staged_canonical_evaluations");
-        object.remove("staged_binding_scope_nodes");
-        object.remove("staged_binding_materializations");
-        object.remove("staged_binding_trie_updates");
-        object.remove("staged_binding_trie_lookups");
-        object.remove("staged_probe_nodes");
-        object.remove("staged_precompute_nodes");
-        let decoded: SemanticBodyStructureWork = serde_json::from_value(legacy).unwrap();
-        assert_eq!(decoded.staged_resolved_instructions, 0);
-        assert_eq!(decoded.staged_constraints_generated, 0);
-        assert_eq!(decoded.staged_fact_nodes, 0);
-        assert_eq!(decoded.staged_canonical_evaluations, 0);
-        assert_eq!(decoded.staged_binding_scope_nodes, 0);
-        assert_eq!(decoded.staged_binding_materializations, 0);
-        assert_eq!(decoded.staged_binding_trie_updates, 0);
-        assert_eq!(decoded.staged_binding_trie_lookups, 0);
-        assert_eq!(decoded.staged_probe_nodes, 0);
-        assert_eq!(decoded.staged_precompute_nodes, 0);
-
-        let zero = serde_json::to_value(SemanticBodyStructureWork::default()).unwrap();
-        let zero = zero.as_object().unwrap();
         for field in [
             "staged_resolved_instructions",
             "staged_constraints_generated",
@@ -749,11 +882,30 @@ question = "small maintained compiler frontend"
             "staged_probe_nodes",
             "staged_precompute_nodes",
         ] {
-            assert!(
-                !zero.contains_key(field),
-                "zero {field} must not change the historical work-digest preimage"
-            );
+            legacy.as_object_mut().unwrap().remove(field);
         }
+        let decoded: SemanticAnalysisStructureWork = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            decoded,
+            SemanticAnalysisStructureWork {
+                ..SemanticAnalysisStructureWork::default()
+            }
+        );
+    }
+
+    #[test]
+    fn older_semantic_body_structure_defaults_inline_scan_bodies() {
+        let mut structure = serde_json::to_value(SemanticAnalysisStructureWork {
+            precompute_inline_scan_bodies: 7,
+            ..SemanticAnalysisStructureWork::default()
+        })
+        .unwrap();
+        structure
+            .as_object_mut()
+            .unwrap()
+            .remove("precompute_inline_scan_bodies");
+        let decoded: SemanticAnalysisStructureWork = serde_json::from_value(structure).unwrap();
+        assert_eq!(decoded.precompute_inline_scan_bodies, 0);
     }
 
     #[test]

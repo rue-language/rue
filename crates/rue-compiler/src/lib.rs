@@ -164,7 +164,7 @@ pub(crate) use canonical_lower::CanonicalRirWork;
 #[allow(unused_imports)]
 pub(crate) use canonical_merge::CanonicalMergeWork;
 #[allow(unused_imports)]
-pub(crate) use canonical_semantic::CanonicalSemanticWork;
+pub(crate) use canonical_semantic::{CandidateBodyPlanWork, CanonicalSemanticWork};
 #[allow(unused_imports)]
 pub(crate) use definition_snapshot::DefinitionShardWork;
 #[allow(unused_imports)]

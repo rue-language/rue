@@ -1262,6 +1262,8 @@ fn benchmark_compiler_work(
     let reachability = metrics.semantic_reachability;
     let provider = metrics.provider_observations;
     rue_perf_schema::CompilerWork {
+        legacy_v2_semantic_body_structure: None,
+        semantic_analysis_structure: rue_perf_schema::SemanticAnalysisStructureWork::default(),
         semantic_provider: rue_perf_schema::SemanticProviderWork {
             name_lookups: provider.name_lookups,
             import_lookups: provider.import_lookups,
@@ -1305,7 +1307,40 @@ fn benchmark_compiler_work(
             transactions_prefetched: reachability.transactions_prefetched,
             transactions_serial: reachability.transactions_serial,
         },
-        semantic_body_structure: rue_perf_schema::SemanticBodyStructureWork::default(),
+        candidate_body_plan_construction: rue_perf_schema::CandidateBodyPlanWork {
+            computed: metrics.semantic.candidate_body_plan_construction.computed as u64,
+            reused: metrics.semantic.candidate_body_plan_construction.reused as u64,
+            instructions_produced: metrics
+                .semantic
+                .candidate_body_plan_construction
+                .instructions_produced as u64,
+            payload_words_produced: metrics
+                .semantic
+                .candidate_body_plan_construction
+                .payload_words_produced as u64,
+        },
+        candidate_body_plan_materialization: rue_perf_schema::CandidateBodyPlanWork {
+            computed: metrics
+                .semantic
+                .candidate_body_plan_materialization
+                .computed as u64,
+            reused: metrics.semantic.candidate_body_plan_materialization.reused as u64,
+            instructions_produced: metrics
+                .semantic
+                .candidate_body_plan_materialization
+                .instructions_produced as u64,
+            payload_words_produced: metrics
+                .semantic
+                .candidate_body_plan_materialization
+                .payload_words_produced as u64,
+        },
+        canonical_rir_presentation: rue_perf_schema::CanonicalRirPresentationWork {
+            requests_computed: metrics.canonical_rir_presentation.requests_computed as u64,
+            modules_projected: metrics.canonical_rir_presentation.modules_projected as u64,
+            instructions_produced: metrics.canonical_rir_presentation.instructions_produced as u64,
+            payload_words_produced: metrics.canonical_rir_presentation.payload_words_produced
+                as u64,
+        },
         cfg_materialization: rue_perf_schema::CfgMaterializationWork {
             index_builds: metrics.semantic.cfg.materialization_index_builds as u64,
             declarations_scanned: metrics.semantic.cfg.materialization_declarations_scanned as u64,
@@ -1430,21 +1465,14 @@ fn benchmark_compiler_work(
     }
 }
 
-fn benchmark_semantic_body_structure(
+/// Preserve the independent inference/precompute and staged-selector counters
+/// in the benchmark schema. Candidate-plan construction and materialization
+/// are query-native and are populated exclusively by `benchmark_compiler_work`;
+/// timing events do not project those structural quantities.
+fn benchmark_semantic_analysis_structure(
     timing: &timing::TimingData,
-) -> rue_perf_schema::SemanticBodyStructureWork {
-    rue_perf_schema::SemanticBodyStructureWork {
-        body_lowerings: timing.counter_total("body_lowerings"),
-        source_bytes: timing.counter_total("source_bytes"),
-        declaration_fragments: timing.counter_total("declaration_fragments"),
-        rir_instructions: timing.counter_total("rir_instructions"),
-        rir_payload_words: timing.counter_total("rir_payload_words"),
-        index_builds: timing.counter_total("index_builds"),
-        index_rir_instructions_visited: timing.counter_total("index_rir_instructions_visited"),
-        index_method_references_visited: timing.counter_total("index_method_references_visited"),
-        index_shell_declarations_visited: timing.counter_total("index_shell_declarations_visited"),
-        index_named_methods_indexed: timing.counter_total("index_named_methods_indexed"),
-        index_const_declarations_indexed: timing.counter_total("index_const_declarations_indexed"),
+) -> rue_perf_schema::SemanticAnalysisStructureWork {
+    rue_perf_schema::SemanticAnalysisStructureWork {
         precompute_bodies: timing.counter_total("precompute_bodies"),
         precompute_alias_nodes_visited: timing.counter_total("precompute_alias_nodes_visited"),
         precompute_alias_block_statements: timing
@@ -2039,12 +2067,13 @@ fn main() {
                         functions: source_stats.semantic.cfg.functions_considered,
                     }
                 }),
-                benchmark_metrics.and_then(|metrics| {
-                    timing_data.as_ref().map(|timing| {
-                        let mut work = benchmark_compiler_work(metrics);
-                        work.semantic_body_structure = benchmark_semantic_body_structure(timing);
-                        work
-                    })
+                benchmark_metrics.map(|metrics| {
+                    let mut work = benchmark_compiler_work(metrics);
+                    if let Some(timing) = timing_data.as_ref() {
+                        work.semantic_analysis_structure =
+                            benchmark_semantic_analysis_structure(timing);
+                    }
+                    work
                 }),
                 benchmark_emitted_output.as_deref(),
                 compiler_boundary.as_ref(),
@@ -2750,8 +2779,12 @@ mod tests {
 
         assert_eq!(work.parsed.lexer_invocations, 2);
         assert_eq!(work.parsed.parser_invocations, 2);
-        assert_eq!(work.lowered.parser_invocations, 0);
-        assert_eq!(work.lowered.ast_payload_clones, 0);
+        assert!(work.canonical_rir_presentation.requests_computed > 0);
+        assert!(
+            work.semantic.candidate_body_plan_construction.computed > 0
+                || work.semantic.candidate_body_plan_construction.reused > 0
+        );
+        assert!(work.semantic.candidate_body_plan_materialization.computed > 0);
         assert_eq!(work.semantic.binding.bind_invocations, 0);
         assert_eq!(work.semantic.manifest.build_invocations, 0);
         assert_eq!(work.semantic.cfg.cfg_builds_attempted, 1);

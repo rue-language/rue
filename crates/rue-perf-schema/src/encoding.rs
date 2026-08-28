@@ -1,4 +1,4 @@
-//! The v2 record encoding: one boundary witness plus per-process digests.
+//! The stored record encoding: one boundary witness plus per-process digests.
 //!
 //! ADR-0071 Amendment 1 (accepted 2026-08-23) replaces per-process copies of
 //! byte-identical boundary evidence with one complete witness per workload
@@ -46,20 +46,26 @@ use crate::boundary::{
 };
 use crate::canonical::CanonicalError;
 use crate::run::RunObject;
-use crate::scaling::CompilerWork;
+use crate::scaling::{CompilerWork, LegacySemanticBodyStructureWork};
 
 /// Domain tag for the per-process identity digest over `{runner, compiler}`.
 pub const IDENTITY_DIGEST_TAG: &str = "rue.boundary.identity.1\n";
 
-/// Domain tag for the per-process work digest over `compiler_work`.
-pub const WORK_DIGEST_TAG: &str = "rue.boundary.work.1\n";
+/// Domain tag for the v3 per-process work digest over `compiler_work`.
+/// Candidate-plan fields changed the canonical work preimage, so v3 is
+/// deliberately domain-separated from the historical v2 digest.
+pub const WORK_DIGEST_TAG: &str = "rue.boundary.work.2\n";
+/// Historical v2 domain tag, retained solely for validating v2 records.
+pub const LEGACY_WORK_DIGEST_TAG: &str = "rue.boundary.work.1\n";
 
-/// The schema version of the full-evidence encoding.
+/// The schema version of the current full-evidence encoding.
 ///
 /// This is also the encoding the producer builds in memory, validates in
 /// full, and retains as the collection workflow's artifact; only what reaches
 /// the store is written at [`crate::RUN_SCHEMA_VERSION`].
-pub const FULL_EVIDENCE_SCHEMA_VERSION: u32 = 1;
+pub const FULL_EVIDENCE_SCHEMA_VERSION: u32 = 4;
+/// Historical full-evidence encoding retained for validation only.
+pub const LEGACY_FULL_EVIDENCE_SCHEMA_VERSION: u32 = 1;
 
 /// Where a retained evidence member came from.
 ///
@@ -187,11 +193,45 @@ pub fn work_digest(work: &CompilerWork) -> Result<String, CanonicalError> {
     tagged_digest(WORK_DIGEST_TAG, work)
 }
 
+/// Reconstruct the exact v2 digest preimage. v2 records did not contain the
+/// candidate-plan or canonical-RIR groups; serializing today's `CompilerWork`
+/// after defaulting those fields would validate a different value.
+#[derive(Serialize)]
+struct HistoricalCompilerWorkV2<'a> {
+    semantic_provider: &'a crate::scaling::SemanticProviderWork,
+    semantic_reachability: &'a crate::scaling::SemanticReachabilityWork,
+    semantic_body_structure: &'a LegacySemanticBodyStructureWork,
+    cfg_materialization: &'a crate::scaling::CfgMaterializationWork,
+    cfg_prerequisites: &'a crate::scaling::CfgPrerequisiteWork,
+    cfg_retained_charge: &'a crate::scaling::CfgRetainedChargeWork,
+    cfg_local_epoch: &'a crate::scaling::CfgLocalEpochWork,
+    query_runtime: &'a crate::scaling::QueryRuntimeWork,
+    publication: &'a crate::scaling::PublicationWork,
+}
+
+pub fn work_digest_v2(work: &CompilerWork) -> Result<String, CanonicalError> {
+    let semantic_body_structure = work.legacy_v2_semantic_body_structure();
+    tagged_digest(
+        LEGACY_WORK_DIGEST_TAG,
+        &HistoricalCompilerWorkV2 {
+            semantic_provider: &work.semantic_provider,
+            semantic_reachability: &work.semantic_reachability,
+            semantic_body_structure: &semantic_body_structure,
+            cfg_materialization: &work.cfg_materialization,
+            cfg_retained_charge: &work.cfg_retained_charge,
+            cfg_prerequisites: &work.cfg_prerequisites,
+            cfg_local_epoch: &work.cfg_local_epoch,
+            query_runtime: &work.query_runtime,
+            publication: &work.publication,
+        },
+    )
+}
+
 /// Reassemble the complete `{runner, compiler}` pair from the two blocks.
 ///
 /// This is the digest preimage a reader recomputes. The partition being
 /// complete and disjoint is what makes the digest independent of *where* a
-/// field was hoisted to; [`encode_v2`] asserts the round-trip against the
+/// field was hoisted to; [`encode_stored_v3`] asserts the round-trip against the
 /// original witness so a field landing in neither block, or in both, cannot
 /// pass silently.
 pub fn reassemble_witness(
@@ -277,6 +317,9 @@ fn split_workload_invariant(
 pub enum EncodeError {
     /// The input does not declare the full-evidence schema version.
     NotFullEvidence { found: u32 },
+    /// Historical full evidence contains a retired taxonomy that the stored
+    /// schema cannot represent without dropping fields.
+    HistoricalFullEvidenceUnsupported,
     /// The reassembled witness did not equal the original pair.
     ///
     /// This is the round-trip guarantee failing: a field landed in neither
@@ -292,7 +335,12 @@ impl std::fmt::Display for EncodeError {
         match self {
             EncodeError::NotFullEvidence { found } => write!(
                 f,
-                "expected a schema v{FULL_EVIDENCE_SCHEMA_VERSION} full-evidence record, found v{found}"
+                "expected current full-evidence schema v{FULL_EVIDENCE_SCHEMA_VERSION}, found v{found}"
+            ),
+            EncodeError::HistoricalFullEvidenceUnsupported => write!(
+                f,
+                "historical full-evidence schema v{LEGACY_FULL_EVIDENCE_SCHEMA_VERSION} cannot be losslessly re-encoded: its retired semantic_body_structure taxonomy is not representable in stored schema v{}",
+                crate::RUN_SCHEMA_VERSION
             ),
             EncodeError::RoundTrip { workload } => write!(
                 f,
@@ -311,7 +359,7 @@ impl From<CanonicalError> for EncodeError {
     }
 }
 
-/// Encode a full-evidence (v1) record into the stored (v2) form.
+/// Encode current full-evidence schema v4 into the stored (v3) form.
 ///
 /// A record with no boundary evidence anywhere — a protocol-1 suite — changes
 /// only its declared `schema_version`. Everything the encoding drops is
@@ -325,7 +373,10 @@ impl From<CanonicalError> for EncodeError {
 /// keeps as evidence — therefore still disagrees after encoding: the
 /// mismatching process's digest fails the witness comparison exactly where
 /// the original bytes failed the equality check.
-pub fn encode_v2(full: &RunObject) -> Result<RunObject, EncodeError> {
+pub fn encode_stored_v3(full: &RunObject) -> Result<RunObject, EncodeError> {
+    if full.schema_version == LEGACY_FULL_EVIDENCE_SCHEMA_VERSION {
+        return Err(EncodeError::HistoricalFullEvidenceUnsupported);
+    }
     if full.schema_version != FULL_EVIDENCE_SCHEMA_VERSION {
         return Err(EncodeError::NotFullEvidence {
             found: full.schema_version,
@@ -472,8 +523,49 @@ mod tests {
         );
         assert_eq!(
             tagged_digest(WORK_DIGEST_TAG, &runner).unwrap(),
-            "b8b977f34591df2d3d8700988c6f0dd0a0a7da1a65e9ac5818bcce75af821155"
+            "24a54e6f381f2b1741ca57e33069fba148d5f23053fcdb2ba32a256192858e9c"
         );
+    }
+
+    #[test]
+    fn v2_work_digest_uses_the_historical_preimage() {
+        // This fixture intentionally has the current taxonomy absent (the
+        // v2 wire shape) while retaining the historical semantic structure.
+        // The fixed digest guards against accidentally defaulting and
+        // reserializing the v3 `CompilerWork` shape during validation.
+        let work = CompilerWork::default();
+        assert_eq!(
+            work_digest_v2(&work).unwrap(),
+            "31e7133458a98d37218c0b5b8c18c1ae0f54095ef3df8134e6e14a2a5297ba57"
+        );
+    }
+
+    #[test]
+    fn nonzero_v2_preimage_has_a_pinned_work1_digest_and_differs_from_work2() {
+        let mut work = CompilerWork::default();
+        work.semantic_provider.name_lookups = 2;
+        work.semantic_reachability.frontier_scans = 3;
+        work.cfg_materialization.index_builds = 1;
+        work.legacy_v2_semantic_body_structure = Some(LegacySemanticBodyStructureWork {
+            body_lowerings: 2,
+            source_bytes: 37,
+            declaration_fragments: 2,
+            rir_instructions: 11,
+            rir_payload_words: 7,
+            index_builds: 2,
+            index_rir_instructions_visited: 11,
+            index_method_references_visited: 5,
+            index_shell_declarations_visited: 3,
+            index_named_methods_indexed: 2,
+            index_const_declarations_indexed: 1,
+            precompute_bodies: 0,
+            ..LegacySemanticBodyStructureWork::default()
+        });
+        assert_eq!(
+            work_digest_v2(&work).unwrap(),
+            "782c32cdf7db40c23df3bbd6ceb81bedffc8ecbfd68878fea8c43b1dec217db4"
+        );
+        assert_ne!(work_digest_v2(&work).unwrap(), work_digest(&work).unwrap());
     }
 
     #[test]
@@ -483,8 +575,10 @@ mod tests {
         // here for the general shape.
         let work = CompilerWork::default();
         let under_work_tag = work_digest(&work).unwrap();
+        let under_historical_work_tag = work_digest_v2(&work).unwrap();
         let under_identity_tag = tagged_digest(IDENTITY_DIGEST_TAG, &work).unwrap();
         assert_ne!(under_work_tag, under_identity_tag);
+        assert_ne!(under_work_tag, under_historical_work_tag);
     }
 
     #[test]
@@ -540,7 +634,7 @@ mod tests {
         // measured, so the digests of a v1 record's evidence and the digests
         // stored in its v2 form are the same strings.
         let full = full_run();
-        let encoded = encode_v2(&full).unwrap();
+        let encoded = encode_stored_v3(&full).unwrap();
         let original = full.workloads[0].samples[0].boundary_evidence[0].clone();
         assert_eq!(
             encoded.workloads[0].samples[0].boundary_processes[0],
@@ -551,7 +645,7 @@ mod tests {
     #[test]
     fn encoding_round_trips_the_witness_exactly() {
         let full = full_run();
-        let encoded = encode_v2(&full).unwrap();
+        let encoded = encode_stored_v3(&full).unwrap();
         let run = encoded.boundary.as_ref().unwrap();
         let workload = encoded.workloads[0].boundary.as_ref().unwrap();
         let (runner, compiler) = reassemble_witness(run, workload);
@@ -567,7 +661,7 @@ mod tests {
     #[test]
     fn one_worker_records_carry_both_digests_per_process() {
         let full = full_run();
-        let encoded = encode_v2(&full).unwrap();
+        let encoded = encode_stored_v3(&full).unwrap();
         for observation in &encoded.workloads {
             for sample in &observation.samples {
                 assert!(sample.boundary_evidence.is_empty());
@@ -591,7 +685,7 @@ mod tests {
                 }
             }
         }
-        let encoded = encode_v2(&full).unwrap();
+        let encoded = encode_stored_v3(&full).unwrap();
         for observation in &encoded.workloads {
             assert!(observation.boundary.is_some());
             for sample in &observation.samples {
@@ -609,7 +703,7 @@ mod tests {
                 sample.boundary_evidence = Vec::new();
             }
         }
-        let encoded = encode_v2(&full).unwrap();
+        let encoded = encode_stored_v3(&full).unwrap();
         assert_eq!(encoded.schema_version, crate::RUN_SCHEMA_VERSION);
         assert!(encoded.boundary.is_none());
         for observation in &encoded.workloads {
@@ -636,7 +730,7 @@ mod tests {
             "fixture must batch at least two processes"
         );
         evidence[1].runner.output_sha256 = "c".repeat(64);
-        let encoded = encode_v2(&full).unwrap();
+        let encoded = encode_stored_v3(&full).unwrap();
         let digests = &encoded.workloads[1].samples[0].boundary_processes;
         assert_ne!(digests[0], digests[1]);
         assert_eq!(digests[0], digests[2]);
@@ -645,13 +739,29 @@ mod tests {
     #[test]
     fn a_record_already_encoded_is_refused() {
         let full = full_run();
-        let encoded = encode_v2(&full).unwrap();
+        let encoded = encode_stored_v3(&full).unwrap();
         assert_eq!(
-            encode_v2(&encoded),
+            encode_stored_v3(&encoded),
             Err(EncodeError::NotFullEvidence {
                 found: crate::RUN_SCHEMA_VERSION
             })
         );
+    }
+
+    #[test]
+    fn historical_full_evidence_v1_refuses_lossy_reencoding() {
+        let mut historical = full_run();
+        historical.schema_version = LEGACY_FULL_EVIDENCE_SCHEMA_VERSION;
+        let before = historical.clone();
+        let error =
+            encode_stored_v3(&historical).expect_err("historical evidence must not lose fields");
+        assert_eq!(error, EncodeError::HistoricalFullEvidenceUnsupported);
+        assert!(
+            error
+                .to_string()
+                .contains("cannot be losslessly re-encoded")
+        );
+        assert_eq!(historical, before, "refusal must not mutate the input");
     }
 
     #[test]
@@ -693,15 +803,16 @@ mod tests {
 
     #[test]
     fn the_work_digest_preimage_serializes_every_group() {
-        // `CompilerWork` is the work-digest preimage; rule 3's by-name scope
-        // covers the evidence pair, so this test extends the same guarantee
-        // to the third preimage type. Its `serde(default)` fields are
-        // parse-side tolerance for old records and must still serialize.
+        // `CompilerWork` is the v3 work-digest preimage. Retired v2 lowering
+        // evidence is intentionally absent from this public wire shape.
         let canonical = crate::canonical::canonical_json(&CompilerWork::default()).unwrap();
         for field in [
+            "candidate_body_plan_construction",
+            "candidate_body_plan_materialization",
+            "canonical_rir_presentation",
             "semantic_provider",
             "semantic_reachability",
-            "semantic_body_structure",
+            "semantic_analysis_structure",
             "cfg_materialization",
             "cfg_prerequisites",
             "cfg_retained_charge",
@@ -734,7 +845,7 @@ mod tests {
 
     #[test]
     fn an_encoded_record_round_trips_through_stored_bytes() {
-        let encoded = encode_v2(&full_run()).unwrap();
+        let encoded = encode_stored_v3(&full_run()).unwrap();
         let serialized = crate::canonical::canonical_json(&encoded).unwrap();
         let parsed: RunObject = serde_json::from_str(&serialized).unwrap();
         assert_eq!(parsed, encoded);

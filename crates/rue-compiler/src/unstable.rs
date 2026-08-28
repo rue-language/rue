@@ -2527,16 +2527,41 @@ impl ParseMetrics {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct LowerMetrics {
-    pub parser_invocations: usize,
-    pub ast_payload_clones: usize,
+pub struct CandidateBodyPlanMetrics {
+    pub computed: usize,
+    pub reused: usize,
+    pub instructions_produced: usize,
+    pub payload_words_produced: usize,
 }
 
-impl LowerMetrics {
-    pub(crate) fn from_work(work: crate::CanonicalRirWork) -> Self {
+/// Work performed only when a caller explicitly requests whole-program RIR
+/// presentation. This is intentionally separate from rooted compilation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CanonicalRirPresentationMetrics {
+    pub requests_computed: usize,
+    pub modules_projected: usize,
+    pub instructions_produced: usize,
+    pub payload_words_produced: usize,
+}
+
+impl From<crate::CanonicalRirWork> for CanonicalRirPresentationMetrics {
+    fn from(work: crate::CanonicalRirWork) -> Self {
         Self {
-            parser_invocations: work.parser_invocations,
-            ast_payload_clones: work.ast_payload_clones,
+            requests_computed: 0,
+            modules_projected: work.modules_projected,
+            instructions_produced: work.instructions_appended,
+            payload_words_produced: work.payload_words_appended,
+        }
+    }
+}
+
+impl From<crate::CandidateBodyPlanWork> for CandidateBodyPlanMetrics {
+    fn from(work: crate::CandidateBodyPlanWork) -> Self {
+        Self {
+            computed: work.computed,
+            reused: work.reused,
+            instructions_produced: work.instructions_produced,
+            payload_words_produced: work.payload_words_produced,
         }
     }
 }
@@ -2609,6 +2634,8 @@ pub struct SemanticBodyMetrics {
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SemanticMetrics {
+    pub candidate_body_plan_construction: CandidateBodyPlanMetrics,
+    pub candidate_body_plan_materialization: CandidateBodyPlanMetrics,
     pub binding: SemanticBindingMetrics,
     pub manifest: SemanticManifestMetrics,
     pub body: SemanticBodyMetrics,
@@ -2618,6 +2645,8 @@ pub struct SemanticMetrics {
 impl SemanticMetrics {
     pub(crate) fn from_work(work: crate::CanonicalSemanticWork) -> Self {
         Self {
+            candidate_body_plan_construction: work.candidate_body_plan_construction.into(),
+            candidate_body_plan_materialization: work.candidate_body_plan_materialization.into(),
             binding: SemanticBindingMetrics {
                 bind_invocations: work.binding.bind_invocations,
                 declarations_inspected: work.binding.indexed_declaration_records_visited,
@@ -2716,7 +2745,7 @@ pub struct OneShotMetrics {
     pub tokens: usize,
     pub parsed: ParseMetrics,
     pub warning_references: WarningReferenceMetrics,
-    pub lowered: LowerMetrics,
+    pub canonical_rir_presentation: CanonicalRirPresentationMetrics,
     pub semantic: SemanticMetrics,
     pub query_runtime: QueryRuntimeMetrics,
     pub semantic_reachability: SemanticReachabilityMetrics,
@@ -2748,7 +2777,7 @@ impl OneShotMetrics {
             tokens: stats.tokens,
             parsed: ParseMetrics::from_work(work.parsed),
             warning_references: work.warning_references,
-            lowered: LowerMetrics::from_work(work.lowered),
+            canonical_rir_presentation: work.canonical_rir_presentation.into(),
             semantic: SemanticMetrics::from_work(work.semantic),
             query_runtime,
             semantic_reachability,
@@ -2783,6 +2812,11 @@ impl MetricsSnapshot {
     pub fn rir(&self) -> QueryMetrics {
         self.inner.rir.into()
     }
+    pub fn canonical_rir_presentation(&self) -> CanonicalRirPresentationMetrics {
+        let mut metrics: CanonicalRirPresentationMetrics = self.inner.last_rir.into();
+        metrics.requests_computed = self.inner.rir.executions;
+        metrics
+    }
     pub fn downstream_invalidations(&self) -> usize {
         self.inner.downstream_invalidations
     }
@@ -2798,12 +2832,6 @@ impl MetricsSnapshot {
     }
     pub fn warning_reference_metrics(&self) -> WarningReferenceMetrics {
         self.inner.warning_references
-    }
-    pub fn lower_metrics(&self) -> LowerMetrics {
-        LowerMetrics {
-            parser_invocations: self.inner.last_rir.parser_invocations,
-            ast_payload_clones: self.inner.last_rir.ast_payload_clones,
-        }
     }
     pub fn retention(&self) -> RetentionMetrics {
         RetentionMetrics {

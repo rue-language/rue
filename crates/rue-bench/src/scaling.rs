@@ -675,34 +675,49 @@ fn render(report: &ScalingReport) -> String {
         ));
     }
 
-    out.push_str("\nExact one-worker structural totals used to decide whether immutable body plans merit a prototype:\n\n");
-    out.push_str("| workload | successful lowerings / attempts | source bytes | RIR inst/payload | index builds/inst visits/shell visits | alias nodes/evals | inline pops/edges/evals |\n");
-    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    out.push_str("\nExact one-worker query-native candidate-plan work:\n\n");
+    out.push_str("| workload | construction computed/reused | construction instructions/payload | materialization computed/reused | materialization instructions/payload |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: |\n");
     for observation in reference_observations(report) {
-        let work = observation.work.semantic_body_structure;
-        let lowering_attempts = observation
-            .samples
-            .first()
-            .and_then(|sample| sample.boundary_evidence.first())
-            .map_or(0, |evidence| {
-                evidence.critical_path.semantic_body_input_lowering.count
-            });
+        let construction = observation.work.candidate_body_plan_construction;
+        let materialization = observation.work.candidate_body_plan_materialization;
         out.push_str(&format!(
-            "| {} | {}/{} | {} | {}/{} | {}/{}/{} | {}/{} | {}/{}/{} |\n",
+            "| {} | {}/{} | {}/{} | {}/{} | {}/{} |\n",
             observation.workload,
-            work.body_lowerings,
-            lowering_attempts,
-            work.source_bytes,
-            work.rir_instructions,
-            work.rir_payload_words,
-            work.index_builds,
-            work.index_rir_instructions_visited,
-            work.index_shell_declarations_visited,
+            construction.computed,
+            construction.reused,
+            construction.instructions_produced,
+            construction.payload_words_produced,
+            materialization.computed,
+            materialization.reused,
+            materialization.instructions_produced,
+            materialization.payload_words_produced,
+        ));
+    }
+
+    out.push_str(
+        "\nSemantic-analysis structural evidence (query-native, excluding candidate plans):\n\n",
+    );
+    out.push_str(
+        "| workload | precompute bodies | alias nodes/evals | inline pops/edges/evals | staged facts/evals | staged bindings/probes |\n",
+    );
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: |\n");
+    for observation in reference_observations(report) {
+        let work = observation.work.semantic_analysis_structure;
+        out.push_str(&format!(
+            "| {} | {} | {}/{} | {}/{}/{} | {}/{} | {}/{}/{} |\n",
+            observation.workload,
+            work.precompute_bodies,
             work.precompute_alias_nodes_visited,
             work.precompute_alias_eval_attempts,
             work.precompute_inline_scan_pops,
             work.precompute_inline_scan_child_edges,
             work.precompute_inline_eval_attempts,
+            work.staged_fact_nodes,
+            work.staged_canonical_evaluations,
+            work.staged_binding_scope_nodes,
+            work.staged_binding_materializations,
+            work.staged_probe_nodes,
         ));
     }
 
@@ -1151,6 +1166,26 @@ mod tests {
                     functions: 1,
                 },
                 work: rue_perf_schema::CompilerWork {
+                    legacy_v2_semantic_body_structure: None,
+                    candidate_body_plan_construction:
+                        rue_perf_schema::CandidateBodyPlanWork::default(),
+                    candidate_body_plan_materialization:
+                        rue_perf_schema::CandidateBodyPlanWork::default(),
+                    canonical_rir_presentation:
+                        rue_perf_schema::CanonicalRirPresentationWork::default(),
+                    semantic_analysis_structure: rue_perf_schema::SemanticAnalysisStructureWork {
+                        precompute_alias_nodes_visited: 127,
+                        precompute_alias_eval_attempts: 131,
+                        precompute_inline_scan_pops: 137,
+                        precompute_inline_scan_child_edges: 139,
+                        precompute_inline_eval_attempts: 149,
+                        staged_resolved_instructions: 151,
+                        staged_constraints_generated: 157,
+                        staged_fact_nodes: 163,
+                        staged_canonical_evaluations: 167,
+                        staged_probe_nodes: 173,
+                        ..Default::default()
+                    },
                     semantic_provider: rue_perf_schema::SemanticProviderWork {
                         name_lookups: 2,
                         import_lookups: 3,
@@ -1191,26 +1226,6 @@ mod tests {
                         frontier_width_eight_or_more: 1,
                         transactions_prefetched: 7,
                         transactions_serial: 0,
-                        ..Default::default()
-                    },
-                    semantic_body_structure: rue_perf_schema::SemanticBodyStructureWork {
-                        body_lowerings: 2,
-                        source_bytes: 101,
-                        rir_instructions: 103,
-                        rir_payload_words: 107,
-                        index_builds: 2,
-                        index_rir_instructions_visited: 109,
-                        index_shell_declarations_visited: 113,
-                        precompute_alias_nodes_visited: 127,
-                        precompute_alias_eval_attempts: 131,
-                        precompute_inline_scan_pops: 137,
-                        precompute_inline_scan_child_edges: 139,
-                        precompute_inline_eval_attempts: 149,
-                        staged_resolved_instructions: 151,
-                        staged_constraints_generated: 157,
-                        staged_fact_nodes: 163,
-                        staged_canonical_evaluations: 167,
-                        staged_probe_nodes: 173,
                         ..Default::default()
                     },
                     cfg_materialization: rue_perf_schema::CfgMaterializationWork {
@@ -1329,7 +1344,9 @@ mod tests {
         assert!(rendered.contains("Body structural-plan attribution"));
         assert!(rendered.contains("assembly/snapshot ms"));
         assert!(rendered.contains("precompute eval/provider ms"));
-        assert!(rendered.contains("index builds/inst visits/shell visits"));
+        assert!(rendered.contains("construction computed/reused"));
+        assert!(rendered.contains("Semantic-analysis structural evidence"));
+        assert!(rendered.contains("precompute bodies"));
         assert!(rendered.contains("provider lookup and dispatch remain"));
     }
 

@@ -593,7 +593,38 @@ fixed ASCII tag ending in a newline:
 | Digest | Tag |
 | --- | --- |
 | `boundary_processes` (over `{runner, compiler}`) | `rue.boundary.identity.1\n` |
-| `boundary_work_processes` (over `compiler_work`) | `rue.boundary.work.1\n` |
+| `boundary_work_processes` (over v3 `compiler_work`) | `rue.boundary.work.2\n` |
+
+Schema-v2 records remain readable with their historical `rue.boundary.work.1\n`
+domain and preimage: v2 omitted the candidate-plan and canonical-RIR groups.
+Readers reconstruct that exact historical shape before validating its digest;
+they do not default fields and reserialize the current work type. New v3
+compiler work exposes the query-native candidate construction and materialization
+taxonomy, while semantic inference/precompute counters remain governed legacy
+evidence and timing distributions never project candidate structural work. The
+v3 public `CompilerWork` shape names those candidate groups explicitly and
+retains only the unrelated semantic-analysis evidence; the retired body-lowering
+and index subgroup is accepted only by the private v2 decoder and is never
+rendered or emitted by v3.
+
+The scaling-report wire revision is 24 for this taxonomy. Canonical-RIR
+presentation reports `requests_computed` only: the current presentation query
+does not reuse a published result, so no synthetic reuse counter is exposed.
+The candidate-plan fields report query-terminal computed/reused counts and
+successful output quantities independently of timing distributions.
+
+Run-object schema numbers are globally unique across the two encodings: schema
+1 is the historical full-evidence shape, schema 2 the historical stored shape,
+schema 3 the current stored shape, and schema 4 the current full-evidence
+shape. Schema 1 is validation-only; its retired work taxonomy is not losslessly
+representable in schema 3 and `encode_stored_v3` refuses it.
+
+| `schema_version` | Encoding shape | Current policy |
+| ---: | --- | --- |
+| 1 | historical full evidence | validate only; no lossless migration |
+| 2 | historical stored witness and work.1 digests | decode and validate |
+| 3 | current stored witness and work.2 digests | producer output |
+| 4 | current full evidence and query-native work | producer's in-memory form |
 
 Without the tag, the two digests are computed over different types but by the
 same construction, and a record's `content_address` is a third — domain

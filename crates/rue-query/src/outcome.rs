@@ -372,6 +372,7 @@ pub struct NestedQueryAttempt {
     pub(crate) execution: RequestExecution,
     pub(crate) terminal_revision: Option<Revision>,
     pub(crate) terminal_stamp: Option<u64>,
+    pub(crate) terminal_kind: Option<QueryTerminalKind>,
     pub(crate) abort: Option<QueryAbort>,
     pub(crate) dependencies: Arc<[Observation]>,
     pub(crate) inputs: Arc<[InputObservation]>,
@@ -413,6 +414,12 @@ impl NestedQueryAttempt {
     /// Red/green stamp of the terminal returned by this request.
     pub fn terminal_stamp(&self) -> Option<u64> {
         self.terminal_stamp
+    }
+
+    /// Family-owned success/failure classification of the returned terminal.
+    /// Aborted requests have no terminal kind.
+    pub fn terminal_kind(&self) -> Option<QueryTerminalKind> {
+        self.terminal_kind
     }
 
     /// Non-terminal control result, present exactly for aborted attempts.

@@ -21,29 +21,39 @@
 
 use std::collections::BTreeMap;
 
-use crate::RUN_SCHEMA_VERSION;
 use crate::encoding::{
-    FULL_EVIDENCE_SCHEMA_VERSION, identity_digest, reassemble_witness, work_digest,
+    FULL_EVIDENCE_SCHEMA_VERSION, LEGACY_FULL_EVIDENCE_SCHEMA_VERSION, identity_digest,
+    reassemble_witness, work_digest, work_digest_v2,
 };
 use crate::manifest::Manifest;
 use crate::run::{FailureRecord, Phase, RunObject, Sample};
 use crate::sanity::{is_commit, is_sha256_digest, is_utc_timestamp, samples_beyond_policy};
 use crate::stats::median;
+use crate::{LEGACY_RUN_SCHEMA_VERSION, RUN_SCHEMA_VERSION};
+
+/// Every run-object schema this reader accepts, in historical-to-current
+/// order. Encoding dispatches on these values rather than record shape.
+pub const SUPPORTED_SCHEMA_VERSIONS: [u32; 4] = [
+    LEGACY_FULL_EVIDENCE_SCHEMA_VERSION,
+    LEGACY_RUN_SCHEMA_VERSION,
+    RUN_SCHEMA_VERSION,
+    FULL_EVIDENCE_SCHEMA_VERSION,
+];
 
 /// A reason a run may not enter a series at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
     /// The run was written under a schema version ahead of this crate.
     ///
-    /// Readers implement every version that can still be in the store —
-    /// [`FULL_EVIDENCE_SCHEMA_VERSION`] and [`RUN_SCHEMA_VERSION`] — and
-    /// refuse only versions they do not know. Refusal applies forward,
-    /// never backward.
+    /// Readers implement the four schema shapes that can still be in the
+    /// store: historical full v1, historical stored v2, current stored v3,
+    /// and current full v4. Refusal applies only to versions ahead of this
+    /// reader, never to a supported older shape.
     UnsupportedSchemaVersion {
         /// The version the run object declares.
         found: u32,
-        /// The newest version this crate implements.
-        expected: u32,
+        /// Every schema version this crate implements.
+        expected: [u32; 4],
     },
     /// The run names a suite revision the manifest does not declare.
     UnknownSuiteRevision {
@@ -172,7 +182,7 @@ impl std::fmt::Display for ValidationError {
             ValidationError::UnsupportedSchemaVersion { found, expected } => {
                 write!(
                     f,
-                    "run schema version {found} is not the supported version {expected}"
+                    "run schema version {found} is unsupported; supported versions are {expected:?}"
                 )
             }
             ValidationError::UnknownSuiteRevision { revision } => {
@@ -405,7 +415,9 @@ impl ValidationOutcome {
 pub fn validate_run(manifest: &Manifest, run: &RunObject) -> ValidationOutcome {
     let mut errors = Vec::new();
 
-    if run.schema_version != FULL_EVIDENCE_SCHEMA_VERSION
+    if run.schema_version != LEGACY_FULL_EVIDENCE_SCHEMA_VERSION
+        && run.schema_version != FULL_EVIDENCE_SCHEMA_VERSION
+        && run.schema_version != LEGACY_RUN_SCHEMA_VERSION
         && run.schema_version != RUN_SCHEMA_VERSION
     {
         // Nothing below can be trusted to mean what it appears to mean, so this
@@ -413,7 +425,7 @@ pub fn validate_run(manifest: &Manifest, run: &RunObject) -> ValidationOutcome {
         return ValidationOutcome {
             errors: vec![ValidationError::UnsupportedSchemaVersion {
                 found: run.schema_version,
-                expected: RUN_SCHEMA_VERSION,
+                expected: SUPPORTED_SCHEMA_VERSIONS,
             }],
             invalid_samples: Vec::new(),
             completeness: Completeness::Partial {
@@ -539,11 +551,11 @@ fn check_boundary_evidence(
     // Encoding shape dispatches on the record's schema version; what must be
     // proven dispatches on the suite's protocol version. The two cross here
     // and nowhere else.
-    if run.schema_version == RUN_SCHEMA_VERSION {
+    if run.schema_version == RUN_SCHEMA_VERSION || run.schema_version == LEGACY_RUN_SCHEMA_VERSION {
         check_boundary_evidence_encoded(run, suite, epoch, errors);
         return;
     }
-    // The full-evidence encoding must not smuggle in v2 shapes: a v1 record
+    // The full-evidence encoding must not smuggle in stored shapes: a full
     // carrying digests or blocks is malformed, not partially upgraded.
     if run.full_evidence.is_some() {
         if let Some(observation) = run.workloads.first() {
@@ -665,11 +677,26 @@ fn check_boundary_evidence(
                     detail,
                 });
             }
+            for (process_index, evidence) in sample.boundary_evidence.iter().enumerate() {
+                let work_shape = if run.schema_version == crate::LEGACY_FULL_EVIDENCE_SCHEMA_VERSION
+                {
+                    validate_legacy_v2_work(&evidence.compiler_work, &evidence.critical_path)
+                } else {
+                    validate_v3_work(&evidence.compiler_work)
+                };
+                if let Err(detail) = work_shape {
+                    errors.push(ValidationError::BoundaryEvidenceMismatch {
+                        workload: observation.workload.clone(),
+                        sample_index: sample_index as u32,
+                        detail: format!("process {process_index}: {detail}"),
+                    });
+                }
+            }
         }
     }
 }
 
-/// The stored (schema v2) half of the boundary check: witness plus digests.
+/// The stored (schema v3) half of the boundary check: witness plus digests.
 ///
 /// Every guarantee the full-evidence path checks per process is re-derived
 /// here from the retained witness and the per-process digests: semantic
@@ -677,6 +704,95 @@ fn check_boundary_evidence(
 /// per sample, and cross-process identity — a process's digest equal to the
 /// witness digest is the digest-level statement of the byte-equality the
 /// full path asserted.
+fn validate_legacy_v2_work(
+    work: &crate::CompilerWork,
+    critical: &crate::CompilerCriticalPathEvidence,
+) -> Result<(), String> {
+    let Some(structure) = work.legacy_v2_semantic_body_structure.as_ref() else {
+        return Err(
+            "schema v2 compiler_work must preserve semantic_body_structure for work.1 validation"
+                .to_string(),
+        );
+    };
+    let successful_lowerings = critical.semantic_body_input_attributed_total.count;
+    if structure.body_lowerings != successful_lowerings
+        || structure.index_builds != structure.body_lowerings
+        || structure.rir_instructions != structure.index_rir_instructions_visited
+        || structure.precompute_bodies != critical.semantic_inference_precompute.count
+        || structure.precompute_alias_eval_attempts != structure.precompute_alias_filter_accepts
+        || structure
+            .precompute_alias_filter_accepts
+            .saturating_add(structure.precompute_alias_filter_skips)
+            > structure.precompute_alias_allocations_examined
+        || structure.precompute_alias_type_successes > structure.precompute_alias_eval_attempts
+        || structure.precompute_inline_scan_pops
+            != structure
+                .precompute_inline_scan_child_edges
+                .saturating_add(structure.precompute_inline_scan_bodies)
+        || structure.precompute_inline_scan_bodies > structure.precompute_bodies
+        || structure.precompute_inline_final_candidates > structure.precompute_inline_raw_candidates
+        || structure.precompute_inline_eval_attempts != structure.precompute_inline_final_candidates
+        || structure.precompute_inline_type_successes > structure.precompute_inline_eval_attempts
+        || structure.staged_canonical_evaluations > structure.staged_fact_nodes
+    {
+        return Err("schema v2 semantic_body_structure attribution is inconsistent".to_string());
+    }
+    Ok(())
+}
+
+fn validate_v3_work(work: &crate::CompilerWork) -> Result<(), String> {
+    if work.legacy_v2_semantic_body_structure.is_some() {
+        return Err(
+            "schema v3 compiler_work must not carry retired semantic_body_structure".to_string(),
+        );
+    }
+    let structure = work.semantic_analysis_structure;
+    let precompute_subgroup = [
+        structure.precompute_alias_nodes_visited,
+        structure.precompute_alias_block_statements,
+        structure.precompute_alias_allocations_examined,
+        structure.precompute_alias_filter_accepts,
+        structure.precompute_alias_filter_skips,
+        structure.precompute_alias_eval_attempts,
+        structure.precompute_alias_type_successes,
+        structure.precompute_inline_scan_pops,
+        structure.precompute_inline_scan_child_edges,
+        structure.precompute_inline_scan_bodies,
+        structure.precompute_inline_raw_candidates,
+        structure.precompute_inline_final_candidates,
+        structure.precompute_inline_eval_attempts,
+        structure.precompute_inline_type_successes,
+    ];
+    if structure.precompute_bodies == 0 && precompute_subgroup.iter().any(|value| *value != 0)
+        || (structure.precompute_bodies != 0
+            && (structure.precompute_alias_eval_attempts
+                != structure.precompute_alias_filter_accepts
+                || structure
+                    .precompute_alias_filter_accepts
+                    .saturating_add(structure.precompute_alias_filter_skips)
+                    > structure.precompute_alias_allocations_examined
+                || structure.precompute_alias_type_successes
+                    > structure.precompute_alias_eval_attempts
+                || structure.precompute_inline_scan_pops
+                    != structure
+                        .precompute_inline_scan_child_edges
+                        .saturating_add(structure.precompute_inline_scan_bodies)
+                || structure.precompute_inline_scan_bodies > structure.precompute_bodies
+                || structure.precompute_inline_final_candidates
+                    > structure.precompute_inline_raw_candidates
+                || structure.precompute_inline_eval_attempts
+                    != structure.precompute_inline_final_candidates
+                || structure.precompute_inline_type_successes
+                    > structure.precompute_inline_eval_attempts))
+        || structure.staged_canonical_evaluations > structure.staged_fact_nodes
+    {
+        return Err(
+            "schema v3 semantic_analysis_structure attribution is inconsistent".to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn check_boundary_evidence_encoded(
     run: &RunObject,
     suite: &crate::manifest::SuiteRevision,
@@ -690,7 +806,7 @@ fn check_boundary_evidence_encoded(
             detail,
         });
     };
-    // Every stored (v2) record commits to its full-evidence form by content
+    // Every stored (v3) record commits to its full-evidence form by content
     // address, whatever its protocol: the name of the retained artifact for a
     // fresh collection, of the pre-compaction original for a re-encoded one.
     match &run.full_evidence {
@@ -754,7 +870,7 @@ fn check_boundary_evidence_encoded(
                     push(
                         &observation.workload,
                         0,
-                        "schema v2 protocol-2 record carries no run boundary block".to_string(),
+                        "schema v3 protocol-2 record carries no run boundary block".to_string(),
                     );
                 }
                 return;
@@ -769,7 +885,7 @@ fn check_boundary_evidence_encoded(
                         push(
                             &observation.workload,
                             0,
-                            "schema v2 protocol-2 record carries no workload boundary block"
+                            "schema v3 protocol-2 record carries no workload boundary block"
                                 .to_string(),
                         );
                     }
@@ -790,6 +906,17 @@ fn check_boundary_evidence_encoded(
                         format!("witness: {detail}"),
                     );
                 }
+                let work_shape = if run.schema_version == LEGACY_RUN_SCHEMA_VERSION {
+                    validate_legacy_v2_work(
+                        &workload_boundary.compiler_work,
+                        &workload_boundary.critical_path,
+                    )
+                } else {
+                    validate_v3_work(&workload_boundary.compiler_work)
+                };
+                if let Err(detail) = work_shape {
+                    push(&observation.workload, witness_sample, detail);
+                }
                 let witness_digest =
                     match identity_digest(&witness_evidence.runner, &witness_evidence.compiler) {
                         Ok(digest) => digest,
@@ -803,7 +930,12 @@ fn check_boundary_evidence_encoded(
                         }
                     };
                 let witness_work_digest = if one_worker {
-                    match work_digest(&workload_boundary.compiler_work) {
+                    let digest = if run.schema_version == LEGACY_RUN_SCHEMA_VERSION {
+                        work_digest_v2(&workload_boundary.compiler_work)
+                    } else {
+                        work_digest(&workload_boundary.compiler_work)
+                    };
+                    match digest {
                         Ok(digest) => Some(digest),
                         Err(error) => {
                             push(
@@ -857,7 +989,7 @@ fn check_boundary_evidence_encoded(
                         push(
                             &observation.workload,
                             sample_index,
-                            "schema v2 record must not carry inline boundary evidence".to_string(),
+                            "schema v3 record must not carry inline boundary evidence".to_string(),
                         );
                         continue;
                     }
@@ -1430,13 +1562,13 @@ window = 10
     #[test]
     fn an_unsupported_schema_version_stops_validation_immediately() {
         let mut run = sample_run();
-        run.schema_version = RUN_SCHEMA_VERSION + 1;
+        run.schema_version = FULL_EVIDENCE_SCHEMA_VERSION + 1;
         let outcome = validate_run(&manifest(), &run);
         assert_eq!(
             outcome.errors,
             vec![ValidationError::UnsupportedSchemaVersion {
-                found: RUN_SCHEMA_VERSION + 1,
-                expected: RUN_SCHEMA_VERSION,
+                found: FULL_EVIDENCE_SCHEMA_VERSION + 1,
+                expected: SUPPORTED_SCHEMA_VERSIONS,
             }]
         );
         assert!(!outcome.is_appendable());
@@ -1919,7 +2051,7 @@ window = 10
         );
     }
 
-    // ---- The stored (schema v2) encoding, and the dual-version reader ----
+    // ---- The stored (schema v3) encoding, and the dual-version reader ----
 
     const BOUNDARY_MANIFEST: &str = r#"
 [[suite]]
@@ -1974,7 +2106,7 @@ window = 10
         Manifest::parse(BOUNDARY_MANIFEST).expect("fixture boundary manifest is valid")
     }
 
-    /// A protocol-2 run in the full-evidence encoding, consistent with
+    /// A protocol-2 run in the current full-evidence encoding, consistent with
     /// [`boundary_manifest`] and appendable under it.
     pub(crate) fn boundary_run() -> RunObject {
         let evidence = crate::boundary::tests::evidence();
@@ -2006,7 +2138,7 @@ window = 10
     #[test]
     fn the_encoded_form_validates_exactly_like_the_full_form() {
         let full = boundary_run();
-        let encoded = crate::encode_v2(&full).expect("fixture encodes");
+        let encoded = crate::encode_stored_v3(&full).expect("fixture encodes");
         let full_outcome = validate_run(&boundary_manifest(), &full);
         let encoded_outcome = validate_run(&boundary_manifest(), &encoded);
         assert_eq!(encoded_outcome.errors, full_outcome.errors);
@@ -2016,7 +2148,7 @@ window = 10
 
     #[test]
     fn a_tampered_process_digest_fails_the_witness_comparison() {
-        let mut encoded = crate::encode_v2(&boundary_run()).unwrap();
+        let mut encoded = crate::encode_stored_v3(&boundary_run()).unwrap();
         encoded.workloads[0].samples[1].boundary_processes[1] = "0".repeat(64);
         let outcome = validate_run(&boundary_manifest(), &encoded);
         assert!(
@@ -2033,7 +2165,7 @@ window = 10
     #[test]
     fn a_stored_record_must_not_carry_inline_evidence() {
         let full = boundary_run();
-        let mut encoded = crate::encode_v2(&full).unwrap();
+        let mut encoded = crate::encode_stored_v3(&full).unwrap();
         encoded.workloads[0].samples[0].boundary_evidence =
             full.workloads[0].samples[0].boundary_evidence.clone();
         let outcome = validate_run(&boundary_manifest(), &encoded);
@@ -2050,7 +2182,7 @@ window = 10
 
     #[test]
     fn a_one_worker_record_without_work_digests_is_rejected() {
-        let mut encoded = crate::encode_v2(&boundary_run()).unwrap();
+        let mut encoded = crate::encode_stored_v3(&boundary_run()).unwrap();
         encoded.workloads[0].samples[0].boundary_work_processes = Vec::new();
         let outcome = validate_run(&boundary_manifest(), &encoded);
         assert!(
@@ -2066,7 +2198,7 @@ window = 10
 
     #[test]
     fn a_stored_record_missing_its_workload_block_is_rejected() {
-        let mut encoded = crate::encode_v2(&boundary_run()).unwrap();
+        let mut encoded = crate::encode_stored_v3(&boundary_run()).unwrap();
         encoded.workloads[0].boundary = None;
         let outcome = validate_run(&boundary_manifest(), &encoded);
         assert!(
@@ -2103,24 +2235,204 @@ window = 10
         let full = boundary_run();
         assert_eq!(full.schema_version, FULL_EVIDENCE_SCHEMA_VERSION);
         assert!(validate_run(&boundary_manifest(), &full).is_appendable());
-        let encoded = crate::encode_v2(&full).unwrap();
+        let encoded = crate::encode_stored_v3(&full).unwrap();
         assert_eq!(encoded.schema_version, RUN_SCHEMA_VERSION);
         assert!(validate_run(&boundary_manifest(), &encoded).is_appendable());
         let mut ahead = encoded;
-        ahead.schema_version = RUN_SCHEMA_VERSION + 1;
+        ahead.schema_version = FULL_EVIDENCE_SCHEMA_VERSION + 1;
         let outcome = validate_run(&boundary_manifest(), &ahead);
         assert_eq!(
             outcome.errors,
             vec![ValidationError::UnsupportedSchemaVersion {
-                found: RUN_SCHEMA_VERSION + 1,
-                expected: RUN_SCHEMA_VERSION,
+                found: FULL_EVIDENCE_SCHEMA_VERSION + 1,
+                expected: SUPPORTED_SCHEMA_VERSIONS,
             }]
         );
     }
 
     #[test]
+    fn historical_full_evidence_v1_validates_and_invalidates_by_its_evidence() {
+        let mut historical = boundary_run();
+        historical.schema_version = crate::LEGACY_FULL_EVIDENCE_SCHEMA_VERSION;
+        for observation in &mut historical.workloads {
+            for sample in &mut observation.samples {
+                for evidence in &mut sample.boundary_evidence {
+                    let mut work = evidence.compiler_work;
+                    work.legacy_v2_semantic_body_structure =
+                        Some(crate::scaling::LegacySemanticBodyStructureWork {
+                            body_lowerings: 1,
+                            index_builds: 1,
+                            precompute_bodies: 1,
+                            ..Default::default()
+                        });
+                    evidence.compiler_work = work;
+                }
+            }
+        }
+        assert!(validate_run(&boundary_manifest(), &historical).is_appendable());
+
+        historical.workloads[0].samples[0].boundary_evidence[1]
+            .compiler_work
+            .legacy_v2_semantic_body_structure
+            .as_mut()
+            .unwrap()
+            .body_lowerings = 2;
+        let outcome = validate_run(&boundary_manifest(), &historical);
+        assert!(
+            outcome.errors.iter().any(|error| matches!(
+                error,
+                ValidationError::BoundaryEvidenceMismatch { detail, .. }
+                    if detail.contains("process 1:")
+                        && detail.contains("schema v2 semantic_body_structure attribution")
+            )),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+
+        // Keep the fixture valid for the independent digest-shape check below.
+        historical.workloads[0].samples[0].boundary_evidence[1]
+            .compiler_work
+            .legacy_v2_semantic_body_structure
+            .as_mut()
+            .unwrap()
+            .body_lowerings = 1;
+
+        historical.workloads[0].samples[0].boundary_processes = vec!["0".repeat(64); 2];
+        let outcome = validate_run(&boundary_manifest(), &historical);
+        assert!(outcome.errors.iter().any(|error| matches!(
+            error,
+            ValidationError::BoundaryEvidenceMismatch { detail, .. }
+                if detail.contains("must not carry per-process digests")
+        )));
+    }
+
+    #[test]
+    fn current_full_evidence_validates_work_shape_for_every_process() {
+        let mut current = boundary_run();
+        assert!(validate_run(&boundary_manifest(), &current).is_appendable());
+        current.workloads[0].samples[0].boundary_evidence[1]
+            .compiler_work
+            .legacy_v2_semantic_body_structure =
+            Some(crate::scaling::LegacySemanticBodyStructureWork::default());
+        let outcome = validate_run(&boundary_manifest(), &current);
+        assert!(
+            outcome.errors.iter().any(|error| matches!(
+                error,
+                ValidationError::BoundaryEvidenceMismatch { detail, .. }
+                    if detail.contains("process 1:")
+                        && detail.contains("schema v3 compiler_work must not carry retired")
+            )),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+    }
+
+    #[test]
+    fn historical_v2_run_reconstructs_its_work_digest_before_v3_reencoding() {
+        // Build a genuine stored-shaped fixture, then replace the work block
+        // with the historical wire shape. This exercises schema dispatch and
+        // the old preimage rather than merely accepting missing fields.
+        let full = boundary_run();
+        let mut value = serde_json::to_value(crate::encode_stored_v3(&full).unwrap()).unwrap();
+        value["schema_version"] = LEGACY_RUN_SCHEMA_VERSION.into();
+        for observation in value["workloads"].as_array_mut().unwrap() {
+            let boundary = observation["boundary"].as_object_mut().unwrap();
+            let mut historical =
+                serde_json::to_value(crate::scaling::LegacySemanticBodyStructureWork::default())
+                    .unwrap();
+            historical["body_lowerings"] = 1.into();
+            historical["source_bytes"] = 17.into();
+            historical["rir_instructions"] = 19.into();
+            historical["index_builds"] = 1.into();
+            historical["index_rir_instructions_visited"] = 19.into();
+            historical["precompute_bodies"] = 1.into();
+            historical["precompute_alias_allocations_examined"] = 1.into();
+            historical["precompute_alias_filter_accepts"] = 1.into();
+            historical["precompute_alias_eval_attempts"] = 1.into();
+            boundary.insert("compiler_work".to_string(), {
+                let mut work = boundary["compiler_work"].clone();
+                let object = work.as_object_mut().unwrap();
+                object.remove("candidate_body_plan_construction");
+                object.remove("candidate_body_plan_materialization");
+                object.remove("canonical_rir_presentation");
+                object.remove("semantic_analysis_structure");
+                object.insert("semantic_body_structure".to_string(), historical);
+                work
+            });
+        }
+        let mut historical: RunObject = serde_json::from_value(value).unwrap();
+        const HISTORICAL_WORK_DIGEST: &str =
+            "e837cde685fc85e75a1889bb8e29d0233618c8a4b836c941aeab7b8011ba5375";
+        for observation in &mut historical.workloads {
+            let boundary = observation.boundary.as_ref().unwrap();
+            let digest = work_digest_v2(&boundary.compiler_work).unwrap();
+            assert_eq!(digest, HISTORICAL_WORK_DIGEST);
+            for sample in &mut observation.samples {
+                sample.boundary_work_processes =
+                    vec![HISTORICAL_WORK_DIGEST.to_owned(); sample.batch_size as usize];
+            }
+        }
+        let outcome = validate_run(&boundary_manifest(), &historical);
+        assert!(outcome.is_appendable(), "{:?}", outcome.errors);
+
+        let mut invalid = historical.clone();
+        invalid.workloads[0]
+            .boundary
+            .as_mut()
+            .unwrap()
+            .compiler_work
+            .legacy_v2_semantic_body_structure
+            .as_mut()
+            .unwrap()
+            .body_lowerings = 2;
+        let invalid_outcome = validate_run(&boundary_manifest(), &invalid);
+        assert!(
+            invalid_outcome.errors.iter().any(|error| matches!(
+                error,
+                ValidationError::BoundaryEvidenceMismatch { detail, .. }
+                    if detail.contains("schema v2 semantic_body_structure attribution")
+            )),
+            "unexpected errors: {:?}",
+            invalid_outcome.errors
+        );
+
+        let v3 = crate::encode_stored_v3(&full).unwrap();
+        assert_eq!(v3.schema_version, RUN_SCHEMA_VERSION);
+        let encoded = serde_json::to_value(&v3).unwrap();
+        assert!(
+            encoded["workloads"][0]["boundary"]["compiler_work"]
+                .get("semantic_body_structure")
+                .is_none()
+        );
+        assert!(
+            encoded["workloads"][0]["boundary"]["compiler_work"]
+                .get("semantic_analysis_structure")
+                .is_some()
+        );
+
+        let mut invalid_v3 = v3;
+        invalid_v3.workloads[0]
+            .boundary
+            .as_mut()
+            .unwrap()
+            .compiler_work
+            .legacy_v2_semantic_body_structure =
+            Some(crate::scaling::LegacySemanticBodyStructureWork::default());
+        let invalid_v3_outcome = validate_run(&boundary_manifest(), &invalid_v3);
+        assert!(
+            invalid_v3_outcome.errors.iter().any(|error| matches!(
+                error,
+                ValidationError::BoundaryEvidenceMismatch { detail, .. }
+                    if detail.contains("schema v3 compiler_work must not carry retired")
+            )),
+            "unexpected errors: {:?}",
+            invalid_v3_outcome.errors
+        );
+    }
+
+    #[test]
     fn provenance_naming_a_nonexistent_process_is_rejected() {
-        let mut encoded = crate::encode_v2(&boundary_run()).unwrap();
+        let mut encoded = crate::encode_stored_v3(&boundary_run()).unwrap();
         encoded.workloads[0]
             .boundary
             .as_mut()
@@ -2141,7 +2453,7 @@ window = 10
 
     #[test]
     fn a_stored_record_must_name_its_full_evidence_form() {
-        let mut encoded = crate::encode_v2(&boundary_run()).unwrap();
+        let mut encoded = crate::encode_stored_v3(&boundary_run()).unwrap();
         encoded.full_evidence = None;
         let outcome = validate_run(&boundary_manifest(), &encoded);
         assert!(
@@ -2155,7 +2467,7 @@ window = 10
         );
         // And the commitment is the input's own address.
         let full = boundary_run();
-        let encoded = crate::encode_v2(&full).unwrap();
+        let encoded = crate::encode_stored_v3(&full).unwrap();
         assert_eq!(
             encoded.full_evidence.as_deref(),
             Some(crate::content_address(&full).unwrap().as_str())

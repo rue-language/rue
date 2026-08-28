@@ -104,8 +104,6 @@ const COMPILER_BUILD_PROFILE: &str = "release_thin_lto";
 const COMPILER_BUILD_PROFILE: &str = "debug";
 
 use ahash::AHashMap;
-#[cfg(test)]
-use rue_perf_schema::SemanticBodyStructureWork;
 use rue_perf_schema::{CompilerWork, DurationDistribution, Phase, PhaseAccounting};
 use serde::Serialize;
 
@@ -793,7 +791,7 @@ impl TimingData {
         };
 
         BenchmarkTiming {
-            schema_version: 16,
+            schema_version: 17,
             timing_model: "inclusive_spans",
             phase_accounting,
             metadata,
@@ -1223,7 +1221,6 @@ struct SemanticBodyLoweringBreakdownVisitor {
     rir_lower_ns: Option<u64>,
     span_remap_validation_ns: Option<u64>,
     body_rir_index_ns: Option<u64>,
-    counters: AHashMap<&'static str, u64>,
 }
 
 impl tracing::field::Visit for TimingFlushVisitor {
@@ -1310,9 +1307,7 @@ impl tracing::field::Visit for SemanticBodyLoweringBreakdownVisitor {
             "rir_lower_ns" => self.rir_lower_ns = Some(value),
             "span_remap_validation_ns" => self.span_remap_validation_ns = Some(value),
             "body_rir_index_ns" => self.body_rir_index_ns = Some(value),
-            name => {
-                self.counters.insert(name, value);
-            }
+            _ => {}
         }
     }
 
@@ -1471,10 +1466,6 @@ where
             ] {
                 self.data
                     .record_span(name, Duration::from_nanos(duration_ns), false, true);
-            }
-            self.data.record_counter("body_lowerings", 1);
-            for (name, value) in visitor.counters {
-                self.data.record_counter(name, value);
             }
             return;
         }
@@ -2576,7 +2567,7 @@ mod tests {
         data.record("lexer", Duration::from_millis(100));
 
         let json = data.to_json_with_metrics("x86_64-linux", "0.1.0", None, None, None);
-        assert!(json.contains("\"schema_version\":16"));
+        assert!(json.contains("\"schema_version\":17"));
         assert!(json.contains(&format!(
             "\"compiler_build_profile\":\"{COMPILER_BUILD_PROFILE}\""
         )));
@@ -2967,9 +2958,6 @@ mod phase_accounting_tests {
         ] {
             assert_eq!(data.pass_duration_distribution(name).total_ns, expected);
         }
-        assert_eq!(data.counter_total("body_lowerings"), 1);
-        assert_eq!(data.counter_total("source_bytes"), 100);
-        assert_eq!(data.counter_total("index_builds"), 1);
     }
 
     #[test]
@@ -3424,7 +3412,7 @@ mod phase_accounting_tests {
 
         let timing =
             data.to_benchmark_timing_with_metrics("probe-target", "probe", None, None, None);
-        assert_eq!(timing.schema_version, 16);
+        assert_eq!(timing.schema_version, 17);
         assert_eq!(
             timing.metadata.compiler_build_profile,
             COMPILER_BUILD_PROFILE
@@ -3454,7 +3442,8 @@ mod phase_accounting_tests {
     fn benchmark_json_publishes_staged_body_work() {
         let data = TimingData::new();
         let work = CompilerWork {
-            semantic_body_structure: SemanticBodyStructureWork {
+            legacy_v2_semantic_body_structure: None,
+            semantic_analysis_structure: rue_perf_schema::SemanticAnalysisStructureWork {
                 staged_resolved_instructions: 23,
                 staged_constraints_generated: 29,
                 staged_fact_nodes: 31,
@@ -3465,13 +3454,19 @@ mod phase_accounting_tests {
                 staged_binding_trie_lookups: 53,
                 staged_probe_nodes: 41,
                 staged_precompute_nodes: 43,
-                ..SemanticBodyStructureWork::default()
+                ..rue_perf_schema::SemanticAnalysisStructureWork::default()
+            },
+            candidate_body_plan_construction: rue_perf_schema::CandidateBodyPlanWork {
+                computed: 67,
+                reused: 71,
+                instructions_produced: 73,
+                payload_words_produced: 79,
             },
             ..CompilerWork::default()
         };
         let json = data.to_json_with_metrics("test-target", "test", None, Some(work), None);
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        let structure = &value["compiler_work"]["semantic_body_structure"];
+        let structure = &value["compiler_work"]["semantic_analysis_structure"];
         assert_eq!(structure["staged_resolved_instructions"], 23);
         assert_eq!(structure["staged_constraints_generated"], 29);
         assert_eq!(structure["staged_fact_nodes"], 31);
@@ -3482,5 +3477,10 @@ mod phase_accounting_tests {
         assert_eq!(structure["staged_binding_trie_lookups"], 53);
         assert_eq!(structure["staged_probe_nodes"], 41);
         assert_eq!(structure["staged_precompute_nodes"], 43);
+        let candidates = &value["compiler_work"]["candidate_body_plan_construction"];
+        assert_eq!(candidates["computed"], 67);
+        assert_eq!(candidates["reused"], 71);
+        assert_eq!(candidates["instructions_produced"], 73);
+        assert_eq!(candidates["payload_words_produced"], 79);
     }
 }

@@ -1,7 +1,7 @@
 //! Re-encode a store tree from the full-evidence encoding to the stored one.
 //!
 //! The one-time compaction ADR-0067 Amendment 1 Question 2 accepts: every
-//! schema-v1 record in `runs/` is rewritten in the v2 witness-plus-digests
+//! full-evidence record in `runs/` is rewritten in the v3 witness-plus-digests
 //! encoding under its own new content address, `index.json` and the manifest's
 //! pinned addresses move with them, and the originals leave the tree. Nothing
 //! here touches git: the operator lands the result as a single ordinary append
@@ -23,7 +23,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use rue_perf_schema::{FULL_EVIDENCE_SCHEMA_VERSION, Manifest, RunObject, Stored, encode_v2};
+use rue_perf_schema::{
+    FULL_EVIDENCE_SCHEMA_VERSION, LEGACY_FULL_EVIDENCE_SCHEMA_VERSION, Manifest, RunObject, Stored,
+    encode_stored_v3,
+};
 
 use crate::check_baselines::unresolved;
 use crate::staleness_inputs::parse_index;
@@ -80,13 +83,20 @@ fn report(
         let stored = Stored::<RunObject>::read(&text)
             .map_err(|error| format!("{}: {error}", path.display()))?;
         bytes_before += text.len() as u64;
+        if stored.record().schema_version == LEGACY_FULL_EVIDENCE_SCHEMA_VERSION {
+            return Err(format!(
+                "{}: historical full-evidence schema v{} cannot be losslessly re-encoded; retain the original artifact instead",
+                path.display(),
+                LEGACY_FULL_EVIDENCE_SCHEMA_VERSION
+            ));
+        }
         if stored.record().schema_version != FULL_EVIDENCE_SCHEMA_VERSION {
             already_encoded += 1;
             bytes_after += text.len() as u64;
             continue;
         }
-        let encoded =
-            encode_v2(stored.record()).map_err(|error| format!("{}: {error}", path.display()))?;
+        let encoded = encode_stored_v3(stored.record())
+            .map_err(|error| format!("{}: {error}", path.display()))?;
         let minted =
             Stored::minted(encoded).map_err(|error| format!("{}: {error}", path.display()))?;
         let serialized = rue_perf_schema::canonical_json(minted.record())
@@ -197,7 +207,9 @@ fn rewrite_addresses(path: &Path, moves: &BTreeMap<String, String>) -> Result<us
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_perf_schema::RUN_SCHEMA_VERSION;
+    use rue_perf_schema::{
+        FULL_EVIDENCE_SCHEMA_VERSION, LEGACY_FULL_EVIDENCE_SCHEMA_VERSION, RUN_SCHEMA_VERSION,
+    };
 
     // The derive fixtures build evidence-free protocol-1 records; the
     // evidence-bearing encode path is covered exhaustively in
@@ -351,7 +363,7 @@ mod tests {
         let manifest_file = store.path().join("manifest.toml");
         std::fs::write(&manifest_file, manifest_pinned_to(&old_address)).unwrap();
 
-        let encoded = encode_v2(&record).unwrap();
+        let encoded = encode_stored_v3(&record).unwrap();
         assert_eq!(encoded.schema_version, RUN_SCHEMA_VERSION);
         assert_eq!(
             encoded.full_evidence.as_deref(),
@@ -379,6 +391,21 @@ mod tests {
         let manifest = std::fs::read_to_string(&manifest_file).unwrap();
         assert!(manifest.contains(&new_address));
         assert!(!manifest.contains(&old_address));
+    }
+
+    #[test]
+    fn historical_full_evidence_is_refused_without_lossy_rewrite() {
+        let mut record = fixture_record();
+        record.schema_version = LEGACY_FULL_EVIDENCE_SCHEMA_VERSION;
+        let store = store_with(&[&record]);
+        let manifest_file = store.path().join("manifest.toml");
+        std::fs::write(&manifest_file, manifest_pinned_to("unused")).unwrap();
+
+        let mut output = Vec::new();
+        let error = report(store.path(), &manifest_file, false, &mut output)
+            .expect_err("historical full evidence must not be migrated");
+        assert!(error.contains("cannot be losslessly re-encoded"), "{error}");
+        assert!(error.contains("schema v1"), "{error}");
     }
 
     #[test]

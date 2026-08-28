@@ -108,6 +108,7 @@ pub(crate) struct ModuleDeclarationRoot {
 #[derive(Debug)]
 pub(crate) struct DeclarationBodyPlan {
     packed: PackedValidatedRir,
+    payload_word_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -491,6 +492,10 @@ impl DeclarationBodyPlan {
         self.packed.instruction_count()
     }
 
+    pub(crate) fn payload_word_count(&self) -> usize {
+        self.payload_word_count
+    }
+
     pub(crate) fn fallible_intrinsics(&self) -> rue_rir::RirFallibleIntrinsicSet {
         self.packed.fallible_intrinsics()
     }
@@ -806,6 +811,7 @@ fn finish_declaration_body_plan(
         Query(rue_query::QueryAbort),
         BeforeDeclaration,
     }
+    let payload_word_count = rir.extra_len();
     let packed = rir
         .try_pack_candidate(
             &symbols,
@@ -856,7 +862,10 @@ fn finish_declaration_body_plan(
         })?;
     Ok(DeclarationBodyPlanArtifacts {
         candidate,
-        plan: DeclarationBodyPlan { packed },
+        plan: DeclarationBodyPlan {
+            packed,
+            payload_word_count,
+        },
     })
 }
 
