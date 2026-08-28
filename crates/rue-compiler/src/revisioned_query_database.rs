@@ -4411,6 +4411,51 @@ fn durable_type_diagnostic_name(ty: &crate::durable_semantics::DurableType) -> S
     crate::durable_comptime::durable_type_diagnostic_name(ty)
 }
 
+fn deferred_gate_type_diagnostic_name(
+    context: &QueryContext,
+    family: &SemanticNucleusFamily,
+    ty: &crate::durable_semantics::DurableType,
+    configuration: &crate::semantic_query_nucleus::SemanticQueryConfiguration,
+) -> Result<String, QueryAbort> {
+    let crate::durable_semantics::DurableType::AnonymousNominal(identity) = ty else {
+        return Ok(durable_type_diagnostic_name(ty));
+    };
+    let producer = match &identity.producer {
+        crate::StableProducerId::Definition(definition) => definition,
+        crate::StableProducerId::Function(function) => {
+            let Some(definition) = function_definition_key(function) else {
+                return Ok(durable_type_diagnostic_name(ty));
+            };
+            definition
+        }
+    };
+    let Some(declaration) = declaration_candidate_for_stable_key(producer) else {
+        return Ok(durable_type_diagnostic_name(ty));
+    };
+    let signature = context.query_registered(
+        family,
+        crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+            crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration,
+                configuration: configuration.clone(),
+            },
+        ),
+    )?;
+    let rue_query::QueryOutcome::Success(
+        crate::semantic_query_nucleus::SemanticNucleusValue::Signature(signature),
+    ) = signature.outcome()
+    else {
+        return Ok(durable_type_diagnostic_name(ty));
+    };
+    let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+        parameters, ..
+    } = &signature.signature
+    else {
+        return Ok(durable_type_diagnostic_name(ty));
+    };
+    Ok(crate::durable_comptime::durable_type_diagnostic_name_with_parameters(ty, parameters))
+}
+
 fn foreign_signature_display(
     parameters: &[crate::durable_semantics::DurableSemanticParameter],
     result: &crate::durable_semantics::DurableType,
@@ -13245,19 +13290,25 @@ impl RevisionedQueryDatabase {
                                 deferred_ownership: BTreeSet::new(),
                                 ownership_properties: BTreeMap::new(),
                             };
+                            let gate_type_name = deferred_gate_type_diagnostic_name(
+                                context,
+                                family,
+                                &query.gate.ty,
+                                &query.producer.configuration,
+                            )?;
                             let result = match query.gate.kind {
                                 crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireDroppable => provider
                                     .type_carries_linear(&query.gate.ty)
                                     .map(|rejected| rejected.then(|| {
                                         rue_error::ErrorKind::ContainerElementIsLinear {
-                                            ty: durable_type_diagnostic_name(&query.gate.ty),
+                                            ty: gate_type_name.clone(),
                                         }
                                     })),
                                 crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireTriviallyDroppable => provider
                                     .type_has_drop_glue(&query.gate.ty)
                                     .map(|rejected| rejected.then(|| {
                                         rue_error::ErrorKind::ContainerElementNotTriviallyDroppable {
-                                            ty: durable_type_diagnostic_name(&query.gate.ty),
+                                            ty: gate_type_name.clone(),
                                         }
                                     })),
                             };

@@ -61,7 +61,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(
                         ErrorKind::LiteralOutOfRange {
                             value: *value,
-                            ty: ty.safe_name_with_pool(Some(self.body_type_pool())),
+                            ty: self.format_type_name(ty),
                         },
                         inst.span,
                     ));
@@ -192,9 +192,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         "unary `-` requires a signed integer operand (i8, i16, i32, i64, isize)"
                     };
                     return Err(CompileError::new(
-                        ErrorKind::CannotNegate(
-                            ty.safe_name_with_pool(Some(self.body_type_pool())),
-                        ),
+                        ErrorKind::CannotNegate(self.format_type_name(ty)),
                         inst.span,
                     )
                     .with_note(note));
@@ -270,7 +268,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "integer type".to_string(),
-                            found: ty.safe_name_with_pool(Some(self.body_type_pool())),
+                            found: self.format_type_name(ty),
                         },
                         inst.span,
                     ));

@@ -88,8 +88,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> CompileResult<AnalysisResult> {
         let def = self.body_type_pool().enum_def(enum_id);
         let payload_types = def.variant_payload(variant_index as usize).to_vec();
-        let variant_name = def.variants[variant_index as usize].clone();
-        let enum_name = def.name.clone();
 
         // Visibility check, mirroring the bare-path `EnumVariant` handler
         // (E0460, privacy is uniform across item kinds). A comptime-bound enum
@@ -154,9 +152,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         let ty = Type::new_enum(enum_id);
 
-        // Suppress unused-variable warnings for names only used in messages.
-        let _ = (&variant_name, &enum_name);
-
         let air_ref = air.add_enum_variant(enum_id, variant_index, &payload_refs, ty, span)?;
         Ok(AnalysisResult::with_continues(air_ref, ty, continues))
     }
@@ -180,7 +175,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Err(CompileError::new(
             ErrorKind::TypeMismatch {
                 expected: "integer, bool, string, unit, struct, array, or enum".to_string(),
-                found: ty.safe_name_with_pool(Some(self.body_type_pool())),
+                found: self.format_type_name(ty),
             },
             span,
         ))
@@ -344,9 +339,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "a type".to_string(),
-                        found: head_result
-                            .ty
-                            .safe_name_with_pool(Some(self.body_type_pool())),
+                        found: self.format_type_name(head_result.ty),
                     },
                     span,
                 ));
@@ -357,7 +350,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "struct type".to_string(),
-                            found: reduced_ty.safe_name_with_pool(Some(self.body_type_pool())),
+                            found: self.format_type_name(reduced_ty),
                         },
                         span,
                     ));
@@ -370,9 +363,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "module".to_string(),
-                        found: module_result
-                            .ty
-                            .safe_name_with_pool(Some(self.body_type_pool())),
+                        found: self.format_type_name(module_result.ty),
                     },
                     span,
                 ));
@@ -413,7 +404,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
                                 expected: "struct type".to_string(),
-                                found: ty.safe_name_with_pool(Some(self.body_type_pool())),
+                                found: self.format_type_name(ty),
                             },
                             span,
                         ));
@@ -460,7 +451,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if !field_index_map.contains_key(init_name.as_str()) {
                 return Err(CompileError::new(
                     ErrorKind::UnknownField {
-                        struct_name: struct_def.name.to_string(),
+                        struct_name: self.format_type_name(struct_type),
                         field_name: init_name.to_string(),
                     },
                     span,
@@ -470,7 +461,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if !seen_fields.insert(init_name.clone()) {
                 return Err(CompileError::new(
                     ErrorKind::DuplicateField {
-                        struct_name: struct_def.name.to_string(),
+                        struct_name: self.format_type_name(struct_type),
                         field_name: init_name.to_string(),
                     },
                     span,
@@ -488,7 +479,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .collect();
             return Err(CompileError::new(
                 ErrorKind::MissingFields(Box::new(MissingFieldsError {
-                    struct_name: struct_def.name.to_string(),
+                    struct_name: self.format_type_name(struct_type),
                     missing_fields,
                 })),
                 span,
@@ -520,8 +511,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(
                         ErrorKind::LiteralOutOfRange {
                             value: *value,
-                            ty: expected_field_type
-                                .safe_name_with_pool(Some(self.body_type_pool())),
+                            ty: self.format_type_name(expected_field_type),
                         },
                         field_inst.span,
                     ));
@@ -580,11 +570,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if !self.types_compatible(field_result.ty, expected_field_type) {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
-                        expected: expected_field_type
-                            .safe_name_with_pool(Some(self.body_type_pool())),
-                        found: field_result
-                            .ty
-                            .safe_name_with_pool(Some(self.body_type_pool())),
+                        expected: self.format_type_name(expected_field_type),
+                        found: self.format_type_name(field_result.ty),
                     },
                     field_span,
                 )
@@ -592,7 +579,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     format!(
                         "field '{}' expects type {}",
                         init_name,
-                        expected_field_type.safe_name_with_pool(Some(self.body_type_pool()))
+                        self.format_type_name(expected_field_type)
                     ),
                     field_span,
                 ));
@@ -857,7 +844,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "a runtime value".to_string(),
-                    found: elem_ty.safe_name_with_pool(Some(self.body_type_pool())),
+                    found: self.format_type_name(elem_ty),
                 },
                 span,
             ));
@@ -945,7 +932,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let variant_name = self.body_interner().resolve(&method);
             let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
                 ErrorKind::UnknownVariant {
-                    enum_name: enum_def.name.to_string(),
+                    enum_name: self.format_type_name(Type::new_enum(enum_id)),
                     variant_name: variant_name.to_string(),
                 },
                 span,
@@ -1046,7 +1033,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let variant_name = self.body_interner().resolve(&variant);
         let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
             ErrorKind::UnknownVariant {
-                enum_name: enum_def.name.to_string(),
+                enum_name: self.format_type_name(Type::new_enum(enum_id)),
                 variant_name: variant_name.to_string(),
             },
             span,
@@ -1099,7 +1086,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let variant_name = self.body_interner().resolve(&variant);
         let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
             ErrorKind::UnknownVariant {
-                enum_name: enum_def.name.to_string(),
+                enum_name: self.format_type_name(Type::new_enum(enum_id)),
                 variant_name: variant_name.to_string(),
             },
             span,
@@ -1182,7 +1169,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Err(CompileError::new(
                     ErrorKind::InternalError(format!(
                         "Array literal inferred as non-array type: {}",
-                        array_type.safe_name_with_pool(Some(self.body_type_pool()))
+                        self.format_internal_type_name(array_type)
                     )),
                     span,
                 ));
@@ -1276,7 +1263,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Err(CompileError::new(
                     ErrorKind::InternalError(format!(
                         "Array-repeat literal inferred as non-array type: {}",
-                        array_type.safe_name_with_pool(Some(self.body_type_pool()))
+                        self.format_internal_type_name(array_type)
                     )),
                     span,
                 ));
@@ -1295,7 +1282,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !self.is_type_copy(elem_type) {
             return Err(CompileError::new(
                 ErrorKind::ArrayRepeatNonCopy {
-                    element_type: elem_type.safe_name_with_pool(Some(self.body_type_pool())),
+                    element_type: self.format_type_name(elem_type),
                 },
                 span,
             ));
@@ -1434,7 +1421,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let variant_name = self.body_interner().resolve(&*variant);
                 let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
                     ErrorKind::UnknownVariant {
-                        enum_name: enum_def.name.to_string(),
+                        enum_name: self.format_type_name(Type::new_enum(enum_id)),
                         variant_name: variant_name.to_string(),
                     },
                     inst.span,

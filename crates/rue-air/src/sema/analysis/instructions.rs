@@ -282,7 +282,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 Err(CompileError::new(
                                     ErrorKind::LiteralOutOfRange {
                                         value: value as u64,
-                                        ty: ty.safe_name_with_pool(Some(self.body_type_pool())),
+                                        ty: self.format_type_name(ty),
                                     },
                                     inst.span,
                                 ))
@@ -292,7 +292,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                         reason: format!(
                                             "value {} is out of range for type {}",
                                             value,
-                                            ty.safe_name_with_pool(Some(self.body_type_pool()))
+                                            self.format_type_name(ty)
                                         ),
                                     },
                                     inst.span,

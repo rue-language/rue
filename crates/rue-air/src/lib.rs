@@ -136,10 +136,11 @@ pub use semantic_body::{
 };
 pub use semantic_identity::{
     AnonymousMemberKey, AnonymousMemberKind, AnonymousNominalKey, AnonymousNominalKind,
-    CanonicalArgumentValue, CanonicalArguments, CompilerCallableId, FunctionInstanceKey,
-    LocalAtomId, LocalAtomKind, LocalAtomRecord, Node, NominalInstanceKey, STABLE_DEFINITION_KINDS,
-    STABLE_DEFINITION_NAMESPACES, SemanticBodyLocalAtom, StableCallableId, StableDefinitionKind,
-    StableDefinitionNamespace, StableProducerId, StableSymbolId, TypeInstanceKey,
+    CanonicalArgumentValue, CanonicalArguments, CanonicalDisplayParameter, CompilerCallableId,
+    FunctionInstanceKey, LocalAtomId, LocalAtomKind, LocalAtomRecord, Node, NominalInstanceKey,
+    STABLE_DEFINITION_KINDS, STABLE_DEFINITION_NAMESPACES, SemanticBodyLocalAtom, StableCallableId,
+    StableDefinitionKind, StableDefinitionNamespace, StableProducerId, StableSymbolId,
+    TypeInstanceKey, format_canonical_application,
 };
 pub use semantic_import::{
     SEMANTIC_IMPORT_CONST_KINDS, SEMANTIC_IMPORT_TYPE_KINDS, SemanticImportConstKind,

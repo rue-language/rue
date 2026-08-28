@@ -3546,3 +3546,18 @@ fn import_resolution_remains_discovery_owned() {
         );
     }
 }
+
+#[test]
+fn durable_constructor_diagnostics_use_the_air_interleaver() {
+    let durable = include_str!("durable_comptime.rs");
+    let presenter = durable
+        .split_once("pub(crate) fn durable_type_diagnostic_name_with_parameters")
+        .and_then(|(_, rest)| rest.split_once("pub(crate) fn inferred_durable_const_type_name"))
+        .map(|(body, _)| body)
+        .expect("durable constructor presenter remains an explicit production function");
+    assert!(presenter.contains("rue_air::format_canonical_application("));
+    assert!(!presenter.contains("let mut types ="));
+    assert!(!presenter.contains("let mut values ="));
+    assert!(!presenter.contains("values.next()"));
+    assert!(!presenter.contains("types.next()"));
+}

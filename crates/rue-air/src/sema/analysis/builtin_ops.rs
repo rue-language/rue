@@ -84,7 +84,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "StrBuf".to_string(),
-                        found: operand.ty.safe_name_with_pool(Some(self.body_type_pool())),
+                        found: self.format_type_name(operand.ty),
                     },
                     span,
                 ));
@@ -200,9 +200,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "text".to_string(),
-                    found: arg_result
-                        .ty
-                        .safe_name_with_pool(Some(self.body_type_pool())),
+                    found: self.format_type_name(arg_result.ty),
                 },
                 self.body_rir_ref().get(arg_value).span,
             )
@@ -323,9 +321,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
-                    found: lhs_result
-                        .ty
-                        .safe_name_with_pool(Some(self.body_type_pool())),
+                    found: self.format_type_name(lhs_result.ty),
                 },
                 span,
             ));
@@ -426,7 +422,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "integer".to_string(),
-                    found: lhs_type.safe_name_with_pool(Some(self.body_type_pool())),
+                    found: self.format_type_name(lhs_type),
                 },
                 self.body_rir_ref().get(lhs).span,
             ));

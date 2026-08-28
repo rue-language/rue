@@ -1099,8 +1099,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             return Err(CompileError::new(
                                 ErrorKind::TypeMismatch {
                                     expected: "integer type".to_string(),
-                                    found: index_type
-                                        .safe_name_with_pool(Some(self.body_type_pool())),
+                                    found: self.format_type_name(index_type),
                                 },
                                 self.body_rir_ref().get(*index).span,
                             ));
@@ -1418,7 +1417,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !byref_consumer && self.type_has_drop_glue(ty) {
             return Err(CompileError::new(
                 ErrorKind::AccessorResultMoved {
-                    ty: ty.safe_name_with_pool(Some(self.body_type_pool())),
+                    ty: self.format_type_name(ty),
                 },
                 span,
             )
@@ -2285,7 +2284,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 "consider making parameter `{}` inout: `inout {}: {}`",
                 name_str,
                 name_str,
-                ty.safe_name_with_pool(Some(self.body_type_pool()))
+                self.format_type_name(ty)
             ))
         }
     }
@@ -2402,10 +2401,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
-                            expected: param_ty.safe_name_with_pool(Some(self.body_type_pool())),
-                            found: value_result
-                                .ty
-                                .safe_name_with_pool(Some(self.body_type_pool())),
+                            expected: self.format_type_name(param_ty),
+                            found: self.format_type_name(value_result.ty),
                         },
                         self.body_rir_ref().get(value).span,
                     ));
@@ -2655,20 +2652,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let container_type = marker_depth
             .checked_sub(1)
             .map_or(trace.base_type, |i| trace.projections[i].result_type);
-        let container_struct_id = container_type.as_struct().ok_or_else(|| {
-            CompileError::new(
+        if container_type.as_struct().is_none() {
+            return Err(CompileError::new(
                 ErrorKind::InternalError(
                     "declared-linear destructure container is not a struct".to_string(),
                 ),
                 span,
-            )
-        })?;
+            ));
+        }
         let accessed = trace.projections[marker_depth].field_name;
-        let root_name = self
-            .body_type_pool()
-            .struct_def(container_struct_id)
-            .name
-            .to_string();
+        let root_name = self.format_type_name(container_type);
         let mut drops = Vec::new();
         self.emit_declared_linear_residue_drops_at(
             air,
@@ -2765,9 +2758,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let Some(selected_index) = selected.const_index else {
                     return Err(CompileError::new(
                         ErrorKind::MoveOutOfIndex {
-                            element_type: selected
-                                .result_type
-                                .safe_name_with_pool(Some(self.body_type_pool())),
+                            element_type: self.format_type_name(selected.result_type),
                         },
                         span,
                     )
@@ -2963,10 +2954,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         field_name: String,
         span: Span,
     ) -> CompileError {
-        let struct_def = self.body_type_pool().struct_def(struct_id);
         let mut err = CompileError::new(
             ErrorKind::MoveFieldOutOfDestructorType {
-                struct_name: struct_def.name.to_string(),
+                struct_name: self.format_type_name(Type::new_struct(struct_id)),
                 field_name: field_name.clone(),
             },
             span,
@@ -2976,14 +2966,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             "the destructor for '{}' runs on the whole value when it is dropped: it \
              would observe the moved-out field, and the automatic field cleanup after \
              the destructor would drop `{field_name}` a second time",
-            struct_def.name
+            self.format_type_name(Type::new_struct(struct_id))
         ))
         .with_help(format!(
             "borrow the field instead (`borrow value.{field_name}`), or move the whole value"
         ));
         if let Some(drop_span) = self.destructor_span(struct_id).as_ref() {
             err = err.with_label(
-                format!("destructor for '{}' is defined here", struct_def.name),
+                format!(
+                    "destructor for '{}' is defined here",
+                    self.format_type_name(Type::new_struct(struct_id))
+                ),
                 *drop_span,
             );
         }
@@ -3151,7 +3144,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             {
                 return Err(CompileError::new(
                     ErrorKind::MoveOutOfIndex {
-                        element_type: field_type.safe_name_with_pool(Some(self.body_type_pool())),
+                        element_type: self.format_type_name(field_type),
                     },
                     span,
                 )
@@ -3253,8 +3246,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if trace.has_untrackable_index() {
                     return Err(CompileError::new(
                         ErrorKind::MoveOutOfIndex {
-                            element_type: field_type
-                                .safe_name_with_pool(Some(self.body_type_pool())),
+                            element_type: self.format_type_name(field_type),
                         },
                         span,
                     )
@@ -3445,7 +3437,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             None => {
                 return Err(CompileError::new(
                     ErrorKind::FieldAccessOnNonStruct {
-                        found: base_type.safe_name_with_pool(Some(self.body_type_pool())),
+                        found: self.format_type_name(base_type),
                     },
                     span,
                 ));
@@ -3457,7 +3449,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let Some((field_index, struct_field)) = struct_def.find_field(field_name) else {
             return Err(CompileError::new(
                 ErrorKind::UnknownField {
-                    struct_name: struct_def.name.to_string(),
+                    struct_name: self.format_type_name(Type::new_struct(struct_id)),
                     field_name: field_name.to_string(),
                 },
                 span,
@@ -3664,7 +3656,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     // This shouldn't happen if try_trace_place worked correctly
                     return Err(CompileError::new(
                         ErrorKind::IndexOnNonArray {
-                            found: parent_type.safe_name_with_pool(Some(self.body_type_pool())),
+                            found: self.format_type_name(parent_type),
                         },
                         span,
                     ));
@@ -3712,7 +3704,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             {
                 return Err(CompileError::new(
                     ErrorKind::MoveOutOfIndex {
-                        element_type: elem_type.safe_name_with_pool(Some(self.body_type_pool())),
+                        element_type: self.format_type_name(elem_type),
                     },
                     span,
                 )
@@ -3809,8 +3801,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if element_move.is_none() {
                     return Err(CompileError::new(
                         ErrorKind::MoveOutOfIndex {
-                            element_type: elem_type
-                                .safe_name_with_pool(Some(self.body_type_pool())),
+                            element_type: self.format_type_name(elem_type),
                         },
                         span,
                     )
@@ -3986,7 +3977,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             None => {
                 return Err(CompileError::new(
                     ErrorKind::IndexOnNonArray {
-                        found: base_type.safe_name_with_pool(Some(self.body_type_pool())),
+                        found: self.format_type_name(base_type),
                     },
                     span,
                 ));
@@ -4002,7 +3993,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
-                    found: index_type.safe_name_with_pool(Some(self.body_type_pool())),
+                    found: self.format_type_name(index_type),
                 },
                 self.body_rir_ref().get(index).span,
             ));
@@ -4027,7 +4018,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !self.is_type_copy(elem_type) {
             return Err(CompileError::new(
                 ErrorKind::MoveOutOfIndex {
-                    element_type: elem_type.safe_name_with_pool(Some(self.body_type_pool())),
+                    element_type: self.format_type_name(elem_type),
                 },
                 span,
             )
@@ -4128,9 +4119,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "an integer".to_string(),
-                    found: index_result
-                        .ty
-                        .safe_name_with_pool(Some(self.body_type_pool())),
+                    found: self.format_type_name(index_result.ty),
                 },
                 self.body_rir_ref().get(index).span,
             ));
@@ -4240,9 +4229,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "an integer".to_string(),
-                    found: index_result
-                        .ty
-                        .safe_name_with_pool(Some(self.body_type_pool())),
+                    found: self.format_type_name(index_result.ty),
                 },
                 self.body_rir_ref().get(index).span,
             ));
@@ -4332,9 +4319,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "an integer".to_string(),
-                    found: index_result
-                        .ty
-                        .safe_name_with_pool(Some(self.body_type_pool())),
+                    found: self.format_type_name(index_result.ty),
                 },
                 self.body_rir_ref().get(index).span,
             ));
@@ -4520,11 +4505,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Err(CompileError::new(
             ErrorKind::UndefinedMethod {
                 method_name: method_name.to_string(),
-                type_name: self
-                    .body_type_pool()
-                    .struct_def(slice_struct_id)
-                    .name
-                    .to_string(),
+                type_name: self.format_type_name(Type::new_struct(slice_struct_id)),
             },
             span,
         ))
@@ -4714,7 +4695,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 None => {
                     return Err(CompileError::new(
                         ErrorKind::FieldAccessOnNonStruct {
-                            found: base_type.safe_name_with_pool(Some(self.body_type_pool())),
+                            found: self.format_type_name(base_type),
                         },
                         span,
                     ));
@@ -4726,7 +4707,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let Some((field_index, struct_field)) = struct_def.find_field(field_name) else {
                 return Err(CompileError::new(
                     ErrorKind::UnknownField {
-                        struct_name: struct_def.name.to_string(),
+                        struct_name: self.format_type_name(Type::new_struct(struct_id)),
                         field_name: field_name.to_string(),
                     },
                     span,
@@ -4913,7 +4894,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 None => {
                     return Err(CompileError::new(
                         ErrorKind::IndexOnNonArray {
-                            found: base_type.safe_name_with_pool(Some(self.body_type_pool())),
+                            found: self.format_type_name(base_type),
                         },
                         span,
                     ));
@@ -4934,9 +4915,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "integer type".to_string(),
-                        found: index_result
-                            .ty
-                            .safe_name_with_pool(Some(self.body_type_pool())),
+                        found: self.format_type_name(index_result.ty),
                     },
                     self.body_rir_ref().get(index).span,
                 ));
@@ -5705,7 +5684,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !self.type_requires_consumption(dest_ty) || discharged {
             return Ok(());
         }
-        let type_name = dest_ty.safe_name_with_pool(Some(self.body_type_pool()));
+        let type_name = self.format_type_name(dest_ty);
         let err = if through_inout {
             CompileError::new(
                 ErrorKind::LinearValueOverwrittenThroughInout { type_name },
@@ -5805,7 +5784,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         let err = CompileError::new(
             ErrorKind::LinearValueDiscarded {
-                type_name: ty.safe_name_with_pool(Some(self.body_type_pool())),
+                type_name: self.format_type_name(ty),
             },
             self.body_rir_ref().get(inst_ref).span,
         )
@@ -5835,7 +5814,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         match self.infectious_linear_reason(struct_id).as_ref() {
             Some((field_name, field_type)) => err.with_note(format!(
                 "'{}' is linear because field '{}' of type '{}' carries a linear value",
-                self.body_type_pool().struct_def(struct_id).name,
+                self.format_type_name(Type::new_struct(struct_id)),
                 field_name,
                 field_type
             )),
@@ -6430,7 +6409,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if trace.via_accessor {
             return Err(CompileError::new(
                 ErrorKind::AccessorResultMoved {
-                    ty: moved_type.safe_name_with_pool(Some(self.body_type_pool())),
+                    ty: self.format_type_name(moved_type),
                 },
                 span,
             ));
@@ -6626,7 +6605,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
         if self.is_strbuf(found) || self.is_str_fixed_struct(found) {
-            let found_name = found.safe_name_with_pool(Some(self.body_type_pool()));
+            let found_name = self.format_type_name(found);
             let mut err = CompileError::new(
                 ErrorKind::BufferNotFirstClassStr {
                     found: found_name,

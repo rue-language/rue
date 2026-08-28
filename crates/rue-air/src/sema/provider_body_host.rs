@@ -4005,7 +4005,18 @@ where
             }
             crate::SemanticComptimeCallResult::Value(value) => value,
         };
-        Ok(self.materialize_durable_const_value(&value))
+        let materialized = self.materialize_durable_const_value(&value);
+        if let Some(ConstValue::Type(ty)) = materialized.as_ref() {
+            let type_arguments = type_arguments.iter().copied().collect();
+            let value_arguments = value_arguments.iter().copied().collect();
+            OrdinaryBodyEngine::new(self).record_ctor_type_display(
+                head.key,
+                *ty,
+                &type_arguments,
+                &value_arguments,
+            );
+        }
+        Ok(materialized)
     }
 
     fn type_syntax_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
@@ -4073,6 +4084,139 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
+    /// Reconstruct a constructor display from the durable producer identity.
+    /// The request-local cache is only an accelerator: imported signatures and
+    /// warm query results may materialize a type without evaluating the call
+    /// in this body, so presentation must remain available from the durable
+    /// anonymous key itself.
+    fn friendly_durable_type_display(&self, ty: &TypeInstanceKey<K, M>) -> Option<String> {
+        use crate::NominalInstanceKey as N;
+        use crate::TypeInstanceKey as T;
+        Some(match ty {
+            T::I8 => "i8".into(),
+            T::I16 => "i16".into(),
+            T::I32 => "i32".into(),
+            T::I64 => "i64".into(),
+            T::U8 => "u8".into(),
+            T::U16 => "u16".into(),
+            T::U32 => "u32".into(),
+            T::U64 => "u64".into(),
+            T::Bool => "bool".into(),
+            T::Unit => "()".into(),
+            T::Never => "!".into(),
+            T::ComptimeType => "type".into(),
+            T::BuiltinNominal { name, .. } => name.to_string(),
+            T::Nominal(N::Builtin { name, .. }) => name.to_string(),
+            T::Nominal(N::Named(key)) => self.source.definition_name(key)?.to_string(),
+            T::Nominal(N::Anonymous(identity)) => {
+                self.friendly_durable_anonymous_display(identity)?
+            }
+            T::Array { element, len } => {
+                format!("[{}; {len}]", self.friendly_durable_type_display(element)?)
+            }
+            T::Slice { element, name } => {
+                let _ = element;
+                name.to_string()
+            }
+            T::PtrConst(element) => {
+                format!("ptr const {}", self.friendly_durable_type_display(element)?)
+            }
+            T::PtrMut(element) => {
+                format!("ptr mut {}", self.friendly_durable_type_display(element)?)
+            }
+            T::Module(module) => self.source.module_path(module),
+            T::GenericParameter(index) => format!("T{index}"),
+        })
+    }
+
+    fn friendly_durable_anonymous_display(
+        &self,
+        identity: &crate::AnonymousNominalKey<K, M>,
+    ) -> Option<String> {
+        let crate::StableProducerId::Function(function) = &identity.producer else {
+            return match &identity.producer {
+                crate::StableProducerId::Definition(definition) => self
+                    .source
+                    .definition_name(definition)
+                    .map(|name| name.to_string()),
+                crate::StableProducerId::Function(_) => None,
+            };
+        };
+        let definition = match function.as_ref() {
+            crate::FunctionInstanceKey::Definition(definition) => definition,
+            crate::FunctionInstanceKey::Specialization { base, .. } => {
+                fn base_definition<K, M>(
+                    function: &crate::FunctionInstanceKey<K, M>,
+                ) -> Option<&K> {
+                    match function {
+                        crate::FunctionInstanceKey::Definition(definition) => Some(definition),
+                        crate::FunctionInstanceKey::Specialization { base, .. } => {
+                            base_definition(base)
+                        }
+                        crate::FunctionInstanceKey::AnonymousMember { .. }
+                        | crate::FunctionInstanceKey::DropGlue(_) => None,
+                    }
+                }
+                base_definition(base)?
+            }
+            crate::FunctionInstanceKey::AnonymousMember { .. }
+            | crate::FunctionInstanceKey::DropGlue(_) => return None,
+        };
+        let name = self.source.definition_name(definition)?;
+        let signature = self.source.function(definition)?;
+        let parameters =
+            signature
+                .parameters
+                .iter()
+                .map(|parameter| crate::CanonicalDisplayParameter {
+                    is_comptime: parameter.is_comptime,
+                    is_type: matches!(parameter.ty, crate::SemanticImportType::ComptimeType),
+                });
+        crate::format_canonical_application(
+            &name,
+            parameters,
+            identity.producer_arguments(),
+            |ty| self.friendly_durable_type_display(ty),
+        )
+    }
+
+    fn friendly_type_display(&self, ty: Type) -> String {
+        if matches!(ty.kind(), TypeKind::Struct(id) if self.type_pool.is_anonymous_struct(id))
+            || matches!(ty.kind(), TypeKind::Enum(id) if self.type_pool.is_anonymous_enum(id))
+        {
+            if let Some(identity) = self.endpoint.durable_anonymous_identity(ty)
+                && let Some(display) = self.friendly_durable_anonymous_display(&identity)
+            {
+                return display;
+            }
+        }
+        // A request-local entry is only an accelerator. For anonymous types,
+        // the durable producer identity above is the portable authority; in
+        // particular it prevents an imported callable's identity spelling
+        // (`path$Wrap`) from escaping into a body diagnostic.
+        if let Some(display) = self.ctor_displays.get(&ty) {
+            return display.clone();
+        }
+        match ty.try_kind() {
+            Some(TypeKind::Array(id)) => self
+                .type_pool
+                .try_array_def(id)
+                .map(|(element, length)| {
+                    format!("[{}; {}]", self.friendly_type_display(element), length)
+                })
+                .unwrap_or_else(|| ty.safe_name_with_pool(Some(&self.type_pool))),
+            Some(TypeKind::PtrConst(id)) => format!(
+                "ptr const {}",
+                self.friendly_type_display(self.type_pool.ptr_const_def(id))
+            ),
+            Some(TypeKind::PtrMut(id)) => format!(
+                "ptr mut {}",
+                self.friendly_type_display(self.type_pool.ptr_mut_def(id))
+            ),
+            _ => ty.safe_name_with_pool(Some(&self.type_pool)),
+        }
+    }
+
     /// Apply the 6.6:3-6.6:5 accessor declaration rules to a free function
     /// whose body this host is about to analyze. Predeclaration already ran
     /// them over every declaration in the program; repeating them at the body
@@ -4740,6 +4884,14 @@ where
                 self.materialize_durable_const_value(&value)
             }
         };
+        if let Some(ConstValue::Type(ty)) = value.as_ref() {
+            OrdinaryBodyEngine::new(self).record_ctor_type_display(
+                name,
+                *ty,
+                callee_types,
+                callee_values,
+            );
+        }
         // A durable result this request cannot materialize is the same kind of
         // representation gap as `NotReduced`, so a value self call keeps its
         // local fallback there too.
@@ -4890,12 +5042,7 @@ where
             .fields
             .iter()
             .find(|field| self.type_pool.type_carries_linear(field.ty))
-            .map(|field| {
-                (
-                    field.name.clone(),
-                    field.ty.safe_name_with_pool(Some(&self.type_pool)),
-                )
-            })
+            .map(|field| (field.name.clone(), self.friendly_type_display(field.ty)))
     }
     fn well_known_option(&self, payload: Type) -> Option<Type> {
         self.endpoint.well_known_option_for_payload(payload)
@@ -4966,6 +5113,10 @@ where
     fn record_body_ctor_type_display(&mut self, ty: Type, display: String) {
         self.ctor_displays.insert(ty, display);
     }
+    fn friendly_type_display(&self, ty: Type) -> String {
+        Self::friendly_type_display(self, ty)
+    }
+
     fn trusted_try_producer(&self, ty: Type) -> Option<super::anon_structs::TrustedTryProducer> {
         match self
             .endpoint

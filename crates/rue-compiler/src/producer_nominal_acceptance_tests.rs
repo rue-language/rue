@@ -851,6 +851,40 @@ fn warm_rooted_cfg(
     session.rooted_cfg(options)
 }
 
+#[test]
+fn friendly_anonymous_method_diagnostic_is_warm_fresh_parity_safe() {
+    let source = r#"
+linear struct Token { v: i32 }
+fn Wrap(comptime T: type) -> type { enum { Some(T), None } }
+fn use(value: Wrap(Token)) -> i32 { value.missing(); 0 }
+fn main() -> i32 {
+    use(Wrap(Token).Some(Token { v: 0 }));
+    0
+}
+"#;
+    let prior = "fn main() -> i32 { 0 }";
+    let options = CompileOptions::default();
+    let fresh = fresh_rooted_cfg(source, &options)
+        .expect_err("the focused method diagnostic must fail in a fresh session")
+        .to_string();
+    let warm = warm_rooted_cfg(prior, source, &options)
+        .expect_err("the focused method diagnostic must fail in a warm session")
+        .to_string();
+    assert_eq!(fresh, warm, "warm and fresh diagnostics diverged");
+    assert!(
+        fresh.contains("no method named 'missing'"),
+        "expected method diagnostic: {fresh}"
+    );
+    assert!(
+        fresh.contains("Wrap(Token)"),
+        "lost constructor display: {fresh}"
+    );
+    assert!(
+        !fresh.contains("__anon_"),
+        "raw anonymous name leaked: {fresh}"
+    );
+}
+
 /// The emitted symbol names of a rooted CFG output: every struct/enum symbol and
 /// every function machine name. Two independent cold compiles of one program
 /// must produce identical sets.

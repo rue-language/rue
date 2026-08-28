@@ -2685,6 +2685,64 @@ pub(crate) fn durable_type_diagnostic_name(ty: &DurableType) -> String {
     DurableComptimeScalarPolicy::type_name(ty)
 }
 
+/// Render an anonymous producer with the declaration-relative comptime
+/// parameter schema. `CanonicalArguments` intentionally stores type and value
+/// streams separately for identity; the callable schema is the only authority
+/// that can safely interleave those streams for presentation.
+pub(crate) fn durable_type_diagnostic_name_with_parameters(
+    ty: &DurableType,
+    parameters: &[crate::durable_semantics::DurableSemanticParameter],
+) -> String {
+    let DurableType::AnonymousNominal(identity) = ty else {
+        return durable_type_diagnostic_name(ty);
+    };
+    let crate::StableProducerId::Function(function) = &identity.producer else {
+        return durable_type_diagnostic_name(ty);
+    };
+    let definition = match function.as_ref() {
+        crate::FunctionInstanceKey::Definition(definition) => Some(definition),
+        crate::FunctionInstanceKey::Specialization { base, .. } => {
+            fn base_definition(
+                function: &crate::FunctionInstanceKey,
+            ) -> Option<&crate::StableDefinitionKey> {
+                match function {
+                    crate::FunctionInstanceKey::Definition(definition) => Some(definition),
+                    crate::FunctionInstanceKey::Specialization { base, .. } => {
+                        base_definition(base)
+                    }
+                    crate::FunctionInstanceKey::AnonymousMember { .. }
+                    | crate::FunctionInstanceKey::DropGlue(_) => None,
+                }
+            }
+            base_definition(base)
+        }
+        crate::FunctionInstanceKey::AnonymousMember { .. }
+        | crate::FunctionInstanceKey::DropGlue(_) => None,
+    };
+    let Some(definition) = definition else {
+        return durable_type_diagnostic_name(ty);
+    };
+    let parameters = parameters
+        .iter()
+        .map(|parameter| rue_air::CanonicalDisplayParameter {
+            is_comptime: parameter.is_comptime,
+            is_type: matches!(
+                parameter.ty,
+                crate::durable_semantics::DurableType::ComptimeType
+            ),
+        });
+    rue_air::format_canonical_application(
+        definition.name(),
+        parameters,
+        identity.producer_arguments(),
+        |argument| {
+            durable_type_from_instance_key(argument)
+                .map(|argument| durable_type_diagnostic_name(&argument))
+        },
+    )
+    .unwrap_or_else(|| durable_type_diagnostic_name(ty))
+}
+
 pub(crate) fn inferred_durable_const_type_name(value: &DurableConstValue) -> &'static str {
     match value {
         DurableConstValue::Integer(value) if i32::try_from(*value).is_ok() => "i32",

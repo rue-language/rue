@@ -318,6 +318,7 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
     fn known_drop_glue_during_binding(&self, ty: Type) -> Option<bool>;
     fn has_ctor_type_display(&self, ty: Type) -> bool;
     fn record_body_ctor_type_display(&mut self, ty: Type, display: String);
+    fn friendly_type_display(&self, ty: Type) -> String;
     fn trusted_try_producer(&self, ty: Type) -> Option<super::anon_structs::TrustedTryProducer>;
     fn resolve_canonical_import(
         &self,
@@ -510,6 +511,28 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         self.storage.require_preview(feature, what, span)
     }
     pub(crate) fn format_type_name(&self, ty: Type) -> String {
+        self.storage.friendly_type_display(ty)
+    }
+
+    /// Render an inference type through the same presentation authority as
+    /// concrete body types. Inference arrays and variables are structural
+    /// syntax, but concrete leaves can be anonymous nominals whose friendly
+    /// identity is owned by the provider.
+    pub(crate) fn format_infer_type_name(&self, ty: &InferType) -> String {
+        match ty {
+            InferType::Concrete(ty) => self.format_type_name(*ty),
+            InferType::Var(id) => id.to_string(),
+            InferType::IntLiteral => "{integer}".to_string(),
+            InferType::Array { element, length } => {
+                format!("[{}; {length}]", self.format_infer_type_name(element))
+            }
+        }
+    }
+
+    /// Render a type for an internal invariant message. These messages are
+    /// deliberately excluded from the user-facing display authority: their
+    /// raw nominal spelling helps identify an impossible compiler state.
+    pub(crate) fn format_internal_type_name(&self, ty: Type) -> String {
         ty.safe_name_with_pool(Some(self.body_type_pool()))
     }
     pub(crate) fn comptime_type_param_flags(&self, function: &FunctionCallInfo) -> Vec<bool> {

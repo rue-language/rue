@@ -1037,7 +1037,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Some(slots) => Ok(slots as u32),
             None => Err(CompileError::new(
                 ErrorKind::TypeTooLarge {
-                    type_name: ty.safe_name_with_pool(Some(self.body_type_pool())),
+                    type_name: self.format_type_name(ty),
                     max_slots: MAX_TYPE_SLOTS,
                 },
                 span,
