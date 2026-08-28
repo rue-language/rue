@@ -90,6 +90,41 @@ fn cfg_uses_air_synthetic_type_identity_policy() {
 }
 
 #[test]
+fn cfg_abi_width_checks_have_one_frozen_pool_authority() {
+    let source = include_str!("verify.rs");
+    assert_eq!(
+        source.matches("    fn abi_slot_count(").count(),
+        1,
+        "CFG verifier must have exactly one ABI-width decision helper"
+    );
+    assert_eq!(
+        source.matches("pool.try_abi_slot_count(ty)").count(),
+        1,
+        "CFG verifier must contain exactly one frozen-pool ABI-width query"
+    );
+    assert!(source.contains("fn verify_slot_ranges_consume_the_frozen_pool_authority()"));
+    let width_check = source
+        .split("    fn abi_slot_count(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n    fn ").next())
+        .expect("CFG verifier ABI-width helper");
+    assert!(width_check.contains("pool.try_abi_slot_count(ty)"));
+    for local_authority in [
+        "abi_slot_cache",
+        "try_struct_def(struct_id)",
+        "try_array_def(array_id)",
+        "try_enum_def(enum_id)",
+        "saturating_add(self.abi_slot_count",
+        "compute_abi_slot_count",
+    ] {
+        assert!(
+            !width_check.contains(local_authority),
+            "CFG verifier regained a local ABI-width authority: {local_authority}"
+        );
+    }
+}
+
+#[test]
 fn slot_write_classification_has_one_owner() {
     // The RUE-521 knowledge of which local slots may be store-to-load
     // forwarded (write counting, address escapes, by-ref call arguments,
