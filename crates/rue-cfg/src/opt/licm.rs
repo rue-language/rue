@@ -697,6 +697,12 @@ mod tests {
         // is invariant and hoists; add an observable effect (a Store) to the
         // body and the same Load must stay put (phase-2 conservatism).
         let mut s = single_loop();
+        push(
+            &mut s.cfg,
+            s.entry,
+            CfgInstData::Alloc { slot: 0, init: s.a },
+            Type::UNIT,
+        );
         let load = push(&mut s.cfg, s.body, CfgInstData::Load { slot: 0 }, Type::I32);
         s.cfg.verify().unwrap();
         let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
@@ -705,6 +711,12 @@ mod tests {
 
         // Now a body with a store: the Load must not move.
         let mut s = single_loop();
+        push(
+            &mut s.cfg,
+            s.entry,
+            CfgInstData::Alloc { slot: 0, init: s.a },
+            Type::UNIT,
+        );
         let load = push(&mut s.cfg, s.body, CfgInstData::Load { slot: 0 }, Type::I32);
         push(
             &mut s.cfg,

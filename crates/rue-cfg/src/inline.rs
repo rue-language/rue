@@ -3192,6 +3192,58 @@ mod tests {
     }
 
     #[test]
+    fn splice_publication_rejects_semantically_invalid_copied_storage() {
+        let pool = synthetic_pool();
+        let interner = ThreadedRodeo::new();
+
+        let mut caller = Cfg::new(Type::UNIT, 0, 0, "main".to_string(), vec![]);
+        let caller_entry = caller.new_block();
+        caller.entry = caller_entry;
+        let call = caller
+            .append_call(
+                caller_entry,
+                None,
+                interner.get_or_intern("callee"),
+                [],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap();
+        caller.set_return(caller_entry, None);
+        let caller = caller.finish(&pool).unwrap();
+
+        // Test-only publication bypass: structurally valid, but StorageDead
+        // ends a logical region which was never made live. The splice must copy
+        // the malformed instruction and its normal finish-after-optimization
+        // publication boundary must reject it.
+        let mut callee = Cfg::new(Type::UNIT, 1, 0, "callee".to_string(), vec![]);
+        let callee_entry = callee.new_block();
+        callee.entry = callee_entry;
+        callee.append_inst(
+            callee_entry,
+            inst(
+                CfgInstData::StorageDead {
+                    slot: 0,
+                    local_ty: Type::I64,
+                },
+                Type::UNIT,
+            ),
+        );
+        callee.set_return(callee_entry, None);
+        let malformed_callee = ValidatedCfg(callee);
+
+        let error = inline_call(&caller, call, &malformed_callee, &pool).unwrap_err();
+        let CfgInlineError::Verification(error) = error else {
+            panic!("splice must reach its semantic verification boundary: {error:?}");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("not live on every reaching path")
+        );
+    }
+
+    #[test]
     fn address_taken_param_escape_carries_to_the_materialized_slot() {
         let pool = synthetic_pool();
         let interner = ThreadedRodeo::new();
