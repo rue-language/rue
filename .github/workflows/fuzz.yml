@@ -25,8 +25,12 @@ jobs:
   fuzz:
     runs-on: ubuntu-latest
     # A wedged step can otherwise burn a runner to GitHub's 6h job cap.
-    # Generous vs the ~40min expected total, tight vs the 6h default.
-    timeout-minutes: 90
+    # Twelve fixed five-minute campaigns plus the 60-minute differential have
+    # a 120-minute bounded sum. Thirty minutes of headroom leaves setup, crash
+    # upload/aggregation/reporting, and corpus publication able to run even
+    # when every campaign consumes its full budget, while staying well below
+    # the 6h default.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v6
 
@@ -267,14 +271,15 @@ jobs:
       # miscompile. A compiler rejection or oracle Unsupported result is a
       # generator-contract failure. Either class exits non-zero and writes a
       # self-contained seed/source repro to crates/rue-fuzz/crashes/.
-      # Keep this native differential target host-only: its fixed 500-seed
-      # budget and executable replay contract are deliberately unchanged. The
-      # source compiler_x86_64_o1 target above supplies bounded optimization
-      # coverage with the same replayable target on every developer host.
-      - name: Differential fuzz (oracle vs compiled, 500 seeds)
+      # Keep this native differential target host-only. Its fixed 500-program
+      # window now executes all four O0/O1/O2/O3 lanes (2,000 native lanes),
+      # each with the harness's independent 10-second compiler and runtime
+      # guards. The 60-minute step deadline is the outer CI bound; no seed or
+      # optimization lane is dropped to meet it.
+      - name: Differential fuzz (oracle vs compiled, 500 programs / 2,000 lanes)
         id: fuzz-differential
         continue-on-error: true
-        timeout-minutes: 20
+        timeout-minutes: 60
         run: |
           RUE_BINARY="$(scripts/rue-bin)" ./buck2 run //crates/rue-oracle-diff:rue-oracle-diff -- \
             fuzz --seeds 500 --crash-dir crates/rue-fuzz/crashes

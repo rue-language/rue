@@ -230,6 +230,18 @@ NOT_LISTABLE = {
         "harness-owned, making a --list inventory non-authoritative; keeping it "
         "opaque avoids running the corpus merely to classify it."
     ),
+    "//crates/rue-oracle-diff:oracle-diff-test-o2": (
+        "distinct-assertion opaque target: the O2 shard runs the complete modeled CLI "
+        "corpus through the reference interpreter and optimized native compiler. Its "
+        "case inventory is harness-owned, and the separate optimization result is a "
+        "distinct assertion rather than duplicate execution."
+    ),
+    "//crates/rue-oracle-diff:oracle-diff-test-o3": (
+        "distinct-assertion opaque target: the O3 shard runs the complete modeled CLI "
+        "corpus through the reference interpreter and optimized native compiler. Its "
+        "case inventory is harness-owned, and the separate optimization result is a "
+        "distinct assertion rather than duplicate execution."
+    ),
     "//crates/rue-oracle-diff:oracle-diff-spec-test": (
         "distinct-assertion opaque target: the harness drives the specification "
         "corpus through the reference interpreter and compares compiler behavior. "
@@ -237,6 +249,18 @@ NOT_LISTABLE = {
         "coverage, and therefore is not ordinary duplicate accounting. The "
         "harness owns runtime eligibility and argument grammar, so --list would "
         "not provide an authoritative inventory; it remains intentionally opaque."
+    ),
+    "//crates/rue-oracle-diff:oracle-diff-spec-test-o2": (
+        "distinct-assertion opaque target: the O2 shard runs the complete modeled spec "
+        "corpus through the reference interpreter and optimized native compiler. Its "
+        "case inventory is harness-owned, and the separate optimization result is a "
+        "distinct assertion rather than duplicate execution."
+    ),
+    "//crates/rue-oracle-diff:oracle-diff-spec-test-o3": (
+        "distinct-assertion opaque target: the O3 shard runs the complete modeled spec "
+        "corpus through the reference interpreter and optimized native compiler. Its "
+        "case inventory is harness-owned, and the separate optimization result is a "
+        "distinct assertion rather than duplicate execution."
     ),
     "//:spec-traceability": (
         "rue-spec's `--traceability` is a reporting mode, not a filter: handed "

@@ -3269,6 +3269,120 @@ mod tests {
         assert_eq!(has_unit(&o3, "middle"), has_unit(&o3_again, "middle"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_o3_retains_byref_call_after_view_storage_epoch_ends() {
+        let context = ImportDiscoveryContext::new(1, "/project", Some("/sdk"), "test")
+            .expect("discovery context should be valid");
+        let mut assembler = DiscoverySourceAssembler::new(
+            context,
+            "/project/main.rue",
+            "/project/main.rue",
+            PhysicalFileIdentity::new(1, 1),
+            FileMetadataFingerprint::new(1, 1, 1),
+            Arc::new(
+                r#"
+                    const std = @import("std/_std.rue");
+                    const StrBuf = std.strbuf.StrBuf;
+                    fn leaf(inout s: str) -> i32 { @intCast(s.len()) }
+                    fn read_view(inout s: str, x: i32) -> i32 {
+                        @intCast(s.len()) + x
+                    }
+                    fn outer(inout s: str) -> i32 {
+                        read_view(inout s, leaf(inout s))
+                    }
+                    fn main() -> i32 {
+                        let mut text: StrBuf = "hello";
+                        let expected = @intCast(text.len()) * 2;
+                        if outer(inout text) == expected { 0 } else { 1 }
+                    }
+                "#
+                .to_owned(),
+            ),
+        )
+        .unwrap();
+        assembler
+            .add_explicit(
+                "/sdk/_std.rue",
+                "/sdk/_std.rue",
+                PhysicalFileIdentity::new(2, 2),
+                FileMetadataFingerprint::new(2, 2, 2),
+                Arc::new("pub const strbuf = @import(\"strbuf.rue\");".to_owned()),
+            )
+            .unwrap();
+        assembler
+            .add_explicit(
+                "/sdk/strbuf.rue",
+                "/sdk/strbuf.rue",
+                PhysicalFileIdentity::new(3, 3),
+                FileMetadataFingerprint::new(3, 3, 3),
+                Arc::new(
+                    r#"
+                    pub struct StrBuf {
+                        buf: ptr mut u8,
+                        len: u64,
+                        cap: u64,
+                        fn len(borrow self) -> u64 { self.len }
+                        fn as_ptr(borrow self) -> ptr mut u8 { self.buf }
+                    }
+                    drop fn StrBuf(self) {}
+                    "#
+                    .to_owned(),
+                ),
+            )
+            .unwrap();
+        let snapshot = assembler.snapshot().unwrap();
+
+        for opt_level in [OptLevel::O0, OptLevel::O2, OptLevel::O3] {
+            let options = CompileOptions {
+                opt_level,
+                ..CompileOptions::default()
+            };
+            let mut session = CompilerSession::new();
+            let published = publish_test_snapshot(&mut session, &snapshot).unwrap();
+            let rooted = session.rooted_cfg(&options).unwrap();
+            let main = rooted
+                .cfgs
+                .iter()
+                .find(|unit| {
+                    matches!(
+                        &unit.function,
+                        FunctionInstanceKey::Definition(definition) if definition.name() == "main"
+                    )
+                })
+                .expect("main reaches the optimized CFG batch");
+            assert!(
+                main.record.cfg.blocks().iter().any(|block| {
+                    block
+                        .insts
+                        .iter()
+                        .any(|value| match main.record.cfg.get_inst(*value).data {
+                            rue_cfg::CfgInstData::Call {
+                                runtime: None,
+                                name,
+                                ..
+                            } => main.record.interner.resolve(&name).ends_with("outer"),
+                            _ => false,
+                        })
+                }),
+                "{opt_level:?}: the unsafe by-ref view call must remain uninlined"
+            );
+
+            let output =
+                crate::queries::compile_with_session(&mut session, &published, &options).unwrap();
+            let execution =
+                execute_compiled_output(&output, &format!("byref-storage-epoch-{opt_level:?}"));
+            assert_eq!(
+                execution.status.code(),
+                Some(0),
+                "{opt_level:?}: retained source call did not execute consistently: {execution:?}"
+            );
+            assert!(execution.stdout.is_empty());
+            assert!(execution.stderr.is_empty());
+        }
+    }
+
     #[test]
     fn phase3_preflights_many_sites_before_budgeted_splices() {
         let calls = (0..80)

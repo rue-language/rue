@@ -86,7 +86,11 @@ SELECTABLE_CORPUS=(
     //:cli-tests-shard-3
     //:spec-tests
     //crates/rue-oracle-diff:oracle-diff-test
+    //crates/rue-oracle-diff:oracle-diff-test-o2
+    //crates/rue-oracle-diff:oracle-diff-test-o3
     //crates/rue-oracle-diff:oracle-diff-spec-test
+    //crates/rue-oracle-diff:oracle-diff-spec-test-o2
+    //crates/rue-oracle-diff:oracle-diff-spec-test-o3
 )
 
 # RUE-1130. The corpus jobs above were the only gated lanes, and measurement

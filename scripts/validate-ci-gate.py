@@ -757,7 +757,11 @@ def validate(
         "linux-x64-cli-shard-3",
         "linux-x64-spec",
         "linux-x64-oracle-diff",
+        "linux-x64-oracle-diff-o2",
+        "linux-x64-oracle-diff-o3",
         "linux-x64-oracle-diff-spec",
+        "linux-x64-oracle-diff-spec-o2",
+        "linux-x64-oracle-diff-spec-o3",
     }
     if check_names != expected_checks:
         errors.append(

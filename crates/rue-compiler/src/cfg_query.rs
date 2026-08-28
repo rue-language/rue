@@ -2742,6 +2742,16 @@ pub(crate) fn apply_general_inlining(
             };
             let growth = match rue_cfg::splice_call_growth(state.cfg.as_cfg(), call, &callee.cfg) {
                 Ok(growth) => growth,
+                Err(
+                    rue_cfg::CfgInlineError::ByRefArgumentStorageEnded { .. }
+                    | rue_cfg::CfgInlineError::ByRefArgumentCallCycle { .. },
+                ) => {
+                    // The call's SSA argument remains valid after its source
+                    // temporary dies, but redirecting an inlined by-reference
+                    // parameter back to that dead local would be invalid. Keep
+                    // the original call; general inlining is optional.
+                    continue;
+                }
                 Err(error) => {
                     failed = Some(format!("general inline growth preflight failed: {error}"));
                     break;
