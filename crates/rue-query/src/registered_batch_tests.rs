@@ -144,11 +144,69 @@ fn run_registered_batch(worker_count: usize) -> QueryRequestAttempt<Arc<[u64]>> 
         "every granted logical worker slot and the donating parent lane must execute"
     );
     assert_eq!(
+        metrics.batch_worker_thread_births, metrics.batch_worker_slots_granted,
+        "the first batch creates exactly one reusable OS worker per admitted extra lane"
+    );
+    if metrics.batch_worker_thread_births == 0 {
+        assert_eq!(metrics.batch_worker_coordinator_residual_ns, 0);
+    } else {
+        assert!(
+            metrics.batch_worker_coordinator_residual_ns > 0,
+            "worker construction and batch dispatch must have observable coordinator latency"
+        );
+    }
+    assert_eq!(
         peak.load(Ordering::Acquire),
         worker_count.min(4),
         "the registered batch must use the runtime's shared permit budget"
     );
     attempt
+}
+
+#[test]
+fn reusable_worker_births_do_not_repeat_across_registered_batches() {
+    let runtime = QueryRuntime::new(2);
+    let startup = runtime.metrics();
+    assert_eq!(startup.batch_worker_thread_births, 0);
+    assert_eq!(startup.batch_worker_coordinator_residual_ns, 0);
+    publish_empty(&runtime, [revision(1)]);
+    let child = runtime
+        .family_with_evaluator::<Slot, u64, _>("reused-worker-child", 8, |_, _, key| {
+            Ok(QueryOutput::success(key.0))
+        })
+        .unwrap();
+    let child_for_root = child.clone();
+    let root = runtime
+        .family_with_evaluator::<Key, u64, _>("reused-worker-root", 8, move |context, _, _| {
+            let mut sum = 0;
+            for keys in [[Slot(1), Slot(2)], [Slot(3), Slot(4)]] {
+                for terminal in context.query_registered_batch(&child_for_root, keys)? {
+                    let QueryOutcome::Success(value) = terminal.outcome() else {
+                        unreachable!()
+                    };
+                    sum += *value;
+                }
+            }
+            Ok(QueryOutput::success(sum))
+        })
+        .unwrap();
+
+    let result = runtime
+        .request_registered(&root, revision(1), Key("root"), CancellationToken::new())
+        .into_result()
+        .unwrap();
+    assert_eq!(result.outcome(), &QueryOutcome::Success(10));
+    let metrics = runtime.metrics();
+    assert_eq!(metrics.batch_worker_slots_requested, 2);
+    assert_eq!(metrics.batch_worker_slots_granted, 2);
+    assert_eq!(metrics.batch_worker_lanes_entered, 4);
+    assert_eq!(
+        metrics.batch_worker_thread_births, 1,
+        "both batches must reuse the runtime's one physical worker"
+    );
+    assert!(
+        metrics.batch_worker_coordinator_residual_ns > startup.batch_worker_coordinator_residual_ns
+    );
 }
 
 #[test]

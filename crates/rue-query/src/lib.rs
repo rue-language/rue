@@ -6,6 +6,7 @@
 use std::sync::{Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 mod context;
+mod executor;
 mod hash;
 mod metrics;
 mod node;

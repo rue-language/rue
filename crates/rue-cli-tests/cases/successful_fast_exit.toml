@@ -19,7 +19,7 @@ name = "benchmark_json_is_complete_before_exit"
 files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
 args = ["--benchmark-json", "-j1", "main.rue", "-o", "prog"]
 compile_stdout_contains = [
-  '"schema_version":17',
+  '"schema_version":18',
   '"phase_accounting":',
   '"compiler_work":',
   '"compiler_boundary":',

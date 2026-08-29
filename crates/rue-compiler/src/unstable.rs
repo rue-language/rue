@@ -2166,6 +2166,11 @@ mod query_validation_metrics_tests {
             retention_enforcements: 1,
             retention_scan_entries: 1,
             query_worker_active_ns: 1,
+            batch_worker_slots_requested: 1,
+            batch_worker_slots_granted: 1,
+            batch_worker_lanes_entered: 1,
+            batch_worker_thread_births: 1,
+            batch_worker_coordinator_residual_ns: 1,
             ready_items: 1,
             ready_wait_ns: 1,
             max_ready_wait_ns: 1,
@@ -2208,6 +2213,13 @@ pub struct QueryRuntimeMetrics {
     pub retention_scan_entries: u64,
     /// Aggregated critical-path and worker-scheduling evidence.
     pub query_worker_active_ns: u64,
+    /// Logical scheduler demand, admission, and entered-lane evidence.
+    pub batch_worker_slots_requested: u64,
+    pub batch_worker_slots_granted: u64,
+    pub batch_worker_lanes_entered: u64,
+    /// Physical OS-thread construction and its coordinator-only residual.
+    pub batch_worker_thread_births: u64,
+    pub batch_worker_coordinator_residual_ns: u64,
     pub ready_items: u64,
     pub ready_wait_ns: u64,
     pub max_ready_wait_ns: u64,
@@ -2248,6 +2260,21 @@ impl QueryRuntimeMetrics {
             query_worker_active_ns: self
                 .query_worker_active_ns
                 .saturating_sub(earlier.query_worker_active_ns),
+            batch_worker_slots_requested: self
+                .batch_worker_slots_requested
+                .saturating_sub(earlier.batch_worker_slots_requested),
+            batch_worker_slots_granted: self
+                .batch_worker_slots_granted
+                .saturating_sub(earlier.batch_worker_slots_granted),
+            batch_worker_lanes_entered: self
+                .batch_worker_lanes_entered
+                .saturating_sub(earlier.batch_worker_lanes_entered),
+            batch_worker_thread_births: self
+                .batch_worker_thread_births
+                .saturating_sub(earlier.batch_worker_thread_births),
+            batch_worker_coordinator_residual_ns: self
+                .batch_worker_coordinator_residual_ns
+                .saturating_sub(earlier.batch_worker_coordinator_residual_ns),
             ready_items: self.ready_items.saturating_sub(earlier.ready_items),
             ready_wait_ns: self.ready_wait_ns.saturating_sub(earlier.ready_wait_ns),
             max_ready_wait_ns: self
@@ -2288,6 +2315,21 @@ impl QueryRuntimeMetrics {
         self.query_worker_active_ns = self
             .query_worker_active_ns
             .saturating_add(other.query_worker_active_ns);
+        self.batch_worker_slots_requested = self
+            .batch_worker_slots_requested
+            .saturating_add(other.batch_worker_slots_requested);
+        self.batch_worker_slots_granted = self
+            .batch_worker_slots_granted
+            .saturating_add(other.batch_worker_slots_granted);
+        self.batch_worker_lanes_entered = self
+            .batch_worker_lanes_entered
+            .saturating_add(other.batch_worker_lanes_entered);
+        self.batch_worker_thread_births = self
+            .batch_worker_thread_births
+            .saturating_add(other.batch_worker_thread_births);
+        self.batch_worker_coordinator_residual_ns = self
+            .batch_worker_coordinator_residual_ns
+            .saturating_add(other.batch_worker_coordinator_residual_ns);
         self.ready_items = self.ready_items.saturating_add(other.ready_items);
         self.ready_wait_ns = self.ready_wait_ns.saturating_add(other.ready_wait_ns);
         self.max_ready_wait_ns = self.max_ready_wait_ns.max(other.max_ready_wait_ns);
@@ -2316,6 +2358,11 @@ impl From<rue_query::RuntimeMetrics> for QueryRuntimeMetrics {
             retention_enforcements: runtime.retention_enforcements,
             retention_scan_entries: runtime.retention_scan_entries,
             query_worker_active_ns: runtime.query_worker_active_ns,
+            batch_worker_slots_requested: runtime.batch_worker_slots_requested,
+            batch_worker_slots_granted: runtime.batch_worker_slots_granted,
+            batch_worker_lanes_entered: runtime.batch_worker_lanes_entered,
+            batch_worker_thread_births: runtime.batch_worker_thread_births,
+            batch_worker_coordinator_residual_ns: runtime.batch_worker_coordinator_residual_ns,
             ready_items: runtime.ready_items,
             ready_wait_ns: runtime.ready_wait_ns,
             max_ready_wait_ns: runtime.max_ready_wait_ns,

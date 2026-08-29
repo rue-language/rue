@@ -526,6 +526,34 @@ fn render(report: &ScalingReport) -> String {
         ));
     }
 
+    out.push_str("\n## Query worker construction\n\n");
+    out.push_str("Counts are median physical/logical observations from each fresh compiler process. Births count the runtime's reusable OS workers. Coordinator residual is runtime worker creation, synchronous job dispatch, plus only the completion-delivery tail after each worker recorded completion; it excludes wait for useful worker execution. Dispatch may overlap already-running worker execution, so the residual must not be added to active time or compiler-root wall time.\n\n");
+    out.push_str("| workload / workers | requested/granted/entered | OS-thread births | coordinator residual ms |\n");
+    out.push_str("| --- | ---: | ---: | ---: |\n");
+    for observation in &report.workloads {
+        let evidence = observation.samples.iter().map(|sample| {
+            sample
+                .boundary_evidence
+                .first()
+                .map(|evidence| evidence.critical_path.clone())
+                .unwrap_or_default()
+        });
+        let requested = summarize(evidence.clone().map(|e| e.batch_worker_slots_requested));
+        let granted = summarize(evidence.clone().map(|e| e.batch_worker_slots_granted));
+        let entered = summarize(evidence.clone().map(|e| e.batch_worker_lanes_entered));
+        let births = summarize(evidence.clone().map(|e| e.batch_worker_thread_births));
+        let coordinator = summarize(evidence.map(|e| e.batch_worker_coordinator_residual_ns));
+        out.push_str(&format!(
+            "| {} | {}/{}/{} | {} | {:.3} |\n",
+            observation_label(observation),
+            requested.median,
+            granted.median,
+            entered.median,
+            births.median,
+            coordinator.median as f64 / 1_000_000.0,
+        ));
+    }
+
     out.push_str("\n## Semantic critical-path detail\n\n");
     out.push_str("Declaration graph, body closure, and body graph projection are adjacent, non-overlapping intervals after a semantic request selects its root inputs. Occurrence-index and nucleus columns are nested inside declaration graph; body prerequisite and analysis columns are nested inside body closure. Nested columns explain their owner and must not be added to the enclosing interval.\n\n");
     out.push_str("| workload / workers | declaration graph total/max ms | occurrence indexes total/max ms | declaration nuclei total/max ms | body closure total/max ms | body graph projection total/max ms | body prerequisites total/max ms | body analysis total/max ms |\n");
@@ -1314,6 +1342,8 @@ mod tests {
         assert!(rendered.contains("shape id"));
         assert!(rendered.contains("Deterministic query work"));
         assert!(rendered.contains("Worker scaling and critical path"));
+        assert!(rendered.contains("Query worker construction"));
+        assert!(rendered.contains("OS-thread births"));
         assert!(rendered.contains("domain projection total/max ms"));
         assert!(rendered.contains("prerequisite queries total/max ms"));
         assert!(rendered.contains("CFG prerequisite work"));

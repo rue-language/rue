@@ -367,6 +367,22 @@ impl DurationDistribution {
 pub struct CompilerCriticalPathEvidence {
     /// Active execution-permit time, summed across independent query workers.
     pub query_worker_active_ns: u64,
+    /// Extra registered-batch scheduler slots requested and granted, plus all
+    /// scheduler lanes which entered (including inline parent lanes).
+    #[serde(default)]
+    pub batch_worker_slots_requested: u64,
+    #[serde(default)]
+    pub batch_worker_slots_granted: u64,
+    #[serde(default)]
+    pub batch_worker_lanes_entered: u64,
+    /// Actual reusable operating-system workers created by the query runtime.
+    #[serde(default)]
+    pub batch_worker_thread_births: u64,
+    /// Runtime worker creation, job dispatch, and post-worker-completion
+    /// delivery tail. Worker execution and time blocked waiting for completion
+    /// are excluded; this is not additive with active or compiler-root time.
+    #[serde(default)]
+    pub batch_worker_coordinator_residual_ns: u64,
     /// Dependency-ready registered batch items observed by workers.
     pub ready_items: u64,
     pub ready_wait_ns: u64,
@@ -821,6 +837,24 @@ impl BuildBoundaryEvidence {
         } else if critical.max_ready_wait_ns > critical.ready_wait_ns {
             return Err("maximum ready wait exceeds total ready wait".to_string());
         }
+        if critical.batch_worker_slots_granted > critical.batch_worker_slots_requested {
+            return Err("granted batch-worker slots exceed requested slots".to_string());
+        }
+        let thread_capacity = u64::from(configuration.resolved_workers.saturating_sub(1));
+        if critical.batch_worker_thread_births > thread_capacity {
+            return Err("batch-worker thread births exceed runtime capacity".to_string());
+        }
+        if critical.batch_worker_lanes_entered < critical.batch_worker_slots_granted {
+            return Err("fewer batch-worker lanes entered than slots were granted".to_string());
+        }
+        if configuration.resolved_workers == 1
+            && (critical.batch_worker_slots_granted != 0
+                || critical.batch_worker_lanes_entered != 0
+                || critical.batch_worker_thread_births != 0
+                || critical.batch_worker_coordinator_residual_ns != 0)
+        {
+            return Err("single-worker compilation reported registered-batch threads".to_string());
+        }
         if critical.peak_query_workers == 0
             || critical.peak_query_workers > u64::from(configuration.resolved_workers)
         {
@@ -1087,6 +1121,11 @@ pub(crate) mod tests {
             },
             critical_path: CompilerCriticalPathEvidence {
                 query_worker_active_ns: 1,
+                batch_worker_slots_requested: 0,
+                batch_worker_slots_granted: 0,
+                batch_worker_lanes_entered: 0,
+                batch_worker_thread_births: 0,
+                batch_worker_coordinator_residual_ns: 0,
                 ready_items: 1,
                 ready_wait_ns: 1,
                 max_ready_wait_ns: 1,
@@ -1156,6 +1195,29 @@ pub(crate) mod tests {
             .push(CompilerInputClass::WorkloadSource);
         assert!(widened.validate().is_err());
         assert_eq!(WorkerSetting::REFERENCE_MATRIX.len(), 5);
+    }
+
+    #[test]
+    fn reusable_worker_births_are_bounded_by_runtime_capacity_not_batch_admissions() {
+        let policy = BuildBoundaryPolicy::fresh_source_to_native_v1(WorkerSetting::Two);
+        let mut parallel = evidence();
+        parallel.compiler.configuration.requested_workers = WorkerSetting::Two;
+        parallel.compiler.configuration.resolved_workers = 2;
+        parallel.critical_path.batch_worker_slots_requested = 10;
+        parallel.critical_path.batch_worker_slots_granted = 4;
+        parallel.critical_path.batch_worker_lanes_entered = 7;
+        parallel.critical_path.batch_worker_thread_births = 1;
+        parallel.critical_path.batch_worker_coordinator_residual_ns = 1;
+        parallel.critical_path.peak_query_workers = 2;
+        parallel.validate_against(&policy, "x86-64-linux").unwrap();
+
+        parallel.critical_path.batch_worker_thread_births = 2;
+        assert_eq!(
+            parallel
+                .validate_against(&policy, "x86-64-linux")
+                .unwrap_err(),
+            "batch-worker thread births exceed runtime capacity"
+        );
     }
 
     #[test]

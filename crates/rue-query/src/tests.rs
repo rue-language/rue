@@ -4952,11 +4952,15 @@ fn adaptive_registered_batch_stays_inline_when_parallelism_is_impossible() {
     assert_eq!(serial_metrics.batch_worker_slots_requested, 0);
     assert_eq!(serial_metrics.batch_worker_slots_granted, 0);
     assert_eq!(serial_metrics.batch_worker_lanes_entered, 0);
+    assert_eq!(serial_metrics.batch_worker_thread_births, 0);
+    assert_eq!(serial_metrics.batch_worker_coordinator_residual_ns, 0);
     assert_eq!(parallel_metrics.donated_permits, 1);
     assert_eq!(parallel_metrics.ready_items, 2);
     assert_eq!(parallel_metrics.batch_worker_slots_requested, 1);
     assert_eq!(parallel_metrics.batch_worker_slots_granted, 1);
     assert_eq!(parallel_metrics.batch_worker_lanes_entered, 2);
+    assert_eq!(parallel_metrics.batch_worker_thread_births, 1);
+    assert!(parallel_metrics.batch_worker_coordinator_residual_ns > 0);
 }
 
 #[test]

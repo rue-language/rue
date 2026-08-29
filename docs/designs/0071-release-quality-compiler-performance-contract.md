@@ -607,7 +607,9 @@ retains only the unrelated semantic-analysis evidence; the retired body-lowering
 and index subgroup is accepted only by the private v2 decoder and is never
 rendered or emitted by v3.
 
-The scaling-report wire revision is 24 for this taxonomy. Canonical-RIR
+The scaling-report wire revision is 25. Revision 25 adds query-worker physical
+thread-birth and coordinator-residual construction evidence; it does not change
+the query work taxonomy described here. Canonical-RIR
 presentation reports `requests_computed` only: the current presentation query
 does not reuse a published result, so no synthetic reuse counter is exposed.
 The candidate-plan fields report query-terminal computed/reused counts and

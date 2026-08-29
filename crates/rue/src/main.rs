@@ -1178,6 +1178,11 @@ fn compiler_critical_path_evidence(
     let runtime = metrics.query_runtime;
     CompilerCriticalPathEvidence {
         query_worker_active_ns: runtime.query_worker_active_ns,
+        batch_worker_slots_requested: runtime.batch_worker_slots_requested,
+        batch_worker_slots_granted: runtime.batch_worker_slots_granted,
+        batch_worker_lanes_entered: runtime.batch_worker_lanes_entered,
+        batch_worker_thread_births: runtime.batch_worker_thread_births,
+        batch_worker_coordinator_residual_ns: runtime.batch_worker_coordinator_residual_ns,
         ready_items: runtime.ready_items,
         ready_wait_ns: runtime.ready_wait_ns,
         max_ready_wait_ns: runtime.max_ready_wait_ns,

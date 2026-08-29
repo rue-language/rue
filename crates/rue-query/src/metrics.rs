@@ -170,6 +170,23 @@ pub struct RuntimeMetrics {
     /// nothing about whether a lane maps to a newly created operating-system
     /// thread; it proves that every granted logical lane reached execution.
     pub batch_worker_lanes_entered: u64,
+    /// Operating-system threads successfully created for registered batches.
+    ///
+    /// This is a physical structural count, not a logical scheduler count.
+    /// The runtime lazily creates reusable physical workers for admitted slots,
+    /// up to one for every concurrency slot beyond the inline donating-parent
+    /// lane. A one-worker runtime therefore reports zero births, while repeated
+    /// batches reuse earlier workers and do not increase the count.
+    pub batch_worker_thread_births: u64,
+    /// Synchronous coordinator latency attributable to the physical-worker
+    /// mapping beneath registered batches.
+    ///
+    /// This sums lazy runtime-worker creation, synchronous job dispatch, and
+    /// only the completion-delivery tail after each worker recorded completion.
+    /// Time blocked waiting for a worker to finish is excluded. Dispatch can
+    /// overlap useful execution by already-running workers, so this observation
+    /// is not additive with worker-active time or compiler-root wall time.
+    pub batch_worker_coordinator_residual_ns: u64,
     /// Sum and maximum of ready-to-start delay for registered batch items.
     pub ready_wait_ns: u64,
     pub max_ready_wait_ns: u64,
@@ -244,6 +261,8 @@ pub(crate) struct Metrics {
     pub(crate) batch_worker_slots_requested: AtomicU64,
     pub(crate) batch_worker_slots_granted: AtomicU64,
     pub(crate) batch_worker_lanes_entered: AtomicU64,
+    pub(crate) batch_worker_thread_births: AtomicU64,
+    pub(crate) batch_worker_coordinator_residual_ns: AtomicU64,
     pub(crate) ready_wait_ns: AtomicU64,
     pub(crate) max_ready_wait_ns: AtomicU64,
     pub(crate) longest_query_dependency_chain: AtomicU64,
@@ -340,6 +359,10 @@ impl Metrics {
             batch_worker_slots_requested: self.batch_worker_slots_requested.load(Ordering::Relaxed),
             batch_worker_slots_granted: self.batch_worker_slots_granted.load(Ordering::Relaxed),
             batch_worker_lanes_entered: self.batch_worker_lanes_entered.load(Ordering::Relaxed),
+            batch_worker_thread_births: self.batch_worker_thread_births.load(Ordering::Relaxed),
+            batch_worker_coordinator_residual_ns: self
+                .batch_worker_coordinator_residual_ns
+                .load(Ordering::Relaxed),
             ready_wait_ns: self.ready_wait_ns.load(Ordering::Relaxed),
             max_ready_wait_ns: self.max_ready_wait_ns.load(Ordering::Relaxed),
             longest_query_dependency_chain: self

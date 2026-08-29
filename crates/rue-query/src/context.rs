@@ -18,6 +18,55 @@ use crate::*;
 /// valid deeply nested query onto a worker cannot create a stack overflow.
 pub(crate) const REGISTERED_BATCH_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
+fn batch_completion_coordinator_residual_ns(
+    wait_started: Instant,
+    worker_finished_at: Instant,
+    wait_returned_at: Instant,
+) -> u64 {
+    duration_ns(wait_returned_at.duration_since(worker_finished_at.max(wait_started)))
+}
+
+/// One contention-free publication for a registered batch, including unwind.
+struct BatchCoordinatorMeasurement<'a> {
+    metrics: &'a Metrics,
+    thread_births: u64,
+    coordinator_residual_ns: u64,
+}
+
+impl<'a> BatchCoordinatorMeasurement<'a> {
+    fn new(metrics: &'a Metrics) -> Self {
+        Self {
+            metrics,
+            thread_births: 0,
+            coordinator_residual_ns: 0,
+        }
+    }
+
+    fn record_submission(&mut self, thread_births: u64, coordinator_residual_ns: u64) {
+        self.thread_births = self.thread_births.saturating_add(thread_births);
+        self.coordinator_residual_ns = self
+            .coordinator_residual_ns
+            .saturating_add(coordinator_residual_ns);
+    }
+
+    fn record_completion_residual(&mut self, coordinator_residual_ns: u64) {
+        self.coordinator_residual_ns = self
+            .coordinator_residual_ns
+            .saturating_add(coordinator_residual_ns);
+    }
+}
+
+impl Drop for BatchCoordinatorMeasurement<'_> {
+    fn drop(&mut self) {
+        self.metrics
+            .batch_worker_thread_births
+            .fetch_add(self.thread_births, Ordering::Relaxed);
+        self.metrics
+            .batch_worker_coordinator_residual_ns
+            .fetch_add(self.coordinator_residual_ns, Ordering::Relaxed);
+    }
+}
+
 /// Task-scoped access to nested dependency queries.
 #[derive(Debug)]
 pub struct QueryContext {
@@ -652,61 +701,68 @@ impl QueryContext {
                 .donated_permits
                 .fetch_add(1, Ordering::Relaxed);
         }
-        let (mut completed, panic) = std::thread::scope(|scope| {
-            let mut workers = Vec::with_capacity(worker_claim.count);
-            for _ in 0..worker_claim.count {
-                let queue = queue.clone();
-                let items = items.clone();
-                let family = family.clone();
-                let parent = self.task.clone();
-                let authority = batch_authority.clone();
-                let tracing_dispatch = tracing_dispatch.clone();
-                let tracing_parent = tracing_parent.clone();
-                workers.push(
-                    std::thread::Builder::new()
-                        .name("rue-query-batch".into())
-                        .stack_size(REGISTERED_BATCH_WORKER_STACK_BYTES)
-                        .spawn_scoped(scope, move || {
-                            run_registered_batch_worker(
-                                queue,
-                                items,
-                                family,
-                                parent,
-                                authority,
-                                tracing_dispatch,
-                                tracing_parent,
-                            )
-                        })
-                        .expect("registered batch worker thread must spawn"),
-                );
-            }
-            let inline = run_registered_batch_worker(
-                queue.clone(),
-                items.clone(),
-                family.clone(),
-                self.task.clone(),
-                batch_authority.clone(),
-                tracing_dispatch.clone(),
-                tracing_parent.clone(),
+        let mut workers = Vec::with_capacity(worker_claim.count);
+        let mut coordinator_measurement = BatchCoordinatorMeasurement::new(&self.task.core.metrics);
+        for _ in 0..worker_claim.count {
+            let queue = queue.clone();
+            let items = items.clone();
+            let family = (*family).clone();
+            let parent = self.task.clone();
+            let authority = batch_authority.clone();
+            let tracing_dispatch = tracing_dispatch.clone();
+            let tracing_parent = tracing_parent.clone();
+            let dispatch_started = Instant::now();
+            let (worker, born) = self.task.core.batch_executor.submit(move || {
+                run_registered_batch_worker(
+                    queue,
+                    items,
+                    family,
+                    parent,
+                    authority,
+                    tracing_dispatch,
+                    tracing_parent,
+                )
+            });
+            coordinator_measurement
+                .record_submission(born, duration_ns(dispatch_started.elapsed()));
+            workers.push(worker);
+        }
+        let inline = run_registered_batch_worker(
+            queue.clone(),
+            items.clone(),
+            (*family).clone(),
+            self.task.clone(),
+            batch_authority.clone(),
+            tracing_dispatch.clone(),
+            tracing_parent.clone(),
+        );
+        let mut completed = Vec::new();
+        let mut panic = None;
+        match inline {
+            Ok(inline_completed) => completed.extend(inline_completed),
+            Err(payload) => panic = Some(payload),
+        }
+        for worker in workers {
+            let wait_started = Instant::now();
+            let (submitted_result, worker_finished_at) = worker.join();
+            // The worker timestamp separates useful-execution wait from
+            // completion delivery without changing the structured wait. If
+            // the worker was already done, the whole receive is coordinator
+            // residual; otherwise only the completion-to-return tail is.
+            coordinator_measurement.record_completion_residual(
+                batch_completion_coordinator_residual_ns(
+                    wait_started,
+                    worker_finished_at,
+                    Instant::now(),
+                ),
             );
-            let mut completed = Vec::new();
-            let mut panic = None;
-            match inline {
-                Ok(inline_completed) => completed.extend(inline_completed),
-                Err(payload) => panic = Some(payload),
+            match submitted_result {
+                Ok(Ok(worker_completed)) => completed.extend(worker_completed),
+                Ok(Err(payload)) | Err(payload) if panic.is_none() => panic = Some(payload),
+                Ok(Err(_)) | Err(_) => {}
             }
-            for worker in workers {
-                match worker
-                    .join()
-                    .expect("registered batch workers catch their own unwinds")
-                {
-                    Ok(worker_completed) => completed.extend(worker_completed),
-                    Err(payload) if panic.is_none() => panic = Some(payload),
-                    Err(_) => {}
-                }
-            }
-            (completed, panic)
-        });
+        }
+        drop(coordinator_measurement);
         drop(structured_waits);
         drop(donation);
         if let Some(payload) = panic {
@@ -991,5 +1047,78 @@ impl QueryContext {
 
     fn task_runtime(&self) -> Arc<RuntimeCore> {
         self.task.core.clone()
+    }
+}
+
+#[cfg(test)]
+mod coordinator_residual_tests {
+    use super::*;
+    #[cfg(panic = "unwind")]
+    use std::panic::AssertUnwindSafe;
+    use std::time::Duration;
+
+    #[test]
+    fn completion_residual_excludes_wait_for_useful_worker_execution() {
+        let origin = Instant::now();
+        assert_eq!(
+            batch_completion_coordinator_residual_ns(
+                origin,
+                origin + Duration::from_nanos(10),
+                origin + Duration::from_nanos(13),
+            ),
+            3
+        );
+        assert_eq!(
+            batch_completion_coordinator_residual_ns(
+                origin + Duration::from_nanos(10),
+                origin,
+                origin + Duration::from_nanos(13),
+            ),
+            3,
+            "an already-finished worker attributes the whole receive to coordinator residual"
+        );
+    }
+
+    #[test]
+    fn batch_measurement_publishes_accumulated_totals_on_drop() {
+        let metrics = Metrics::default();
+        {
+            let mut measurement = BatchCoordinatorMeasurement::new(&metrics);
+            measurement.record_submission(1, 7);
+            measurement.record_completion_residual(5);
+        }
+        assert_eq!(
+            metrics.batch_worker_thread_births.load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            metrics
+                .batch_worker_coordinator_residual_ns
+                .load(Ordering::Relaxed),
+            12
+        );
+    }
+
+    #[test]
+    #[cfg(panic = "unwind")]
+    fn batch_measurement_publishes_accumulated_totals_on_unwind() {
+        let metrics = Metrics::default();
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            let mut measurement = BatchCoordinatorMeasurement::new(&metrics);
+            measurement.record_submission(1, 7);
+            measurement.record_completion_residual(5);
+            panic!("later worker submission failed");
+        }));
+        assert!(panic.is_err());
+        assert_eq!(
+            metrics.batch_worker_thread_births.load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            metrics
+                .batch_worker_coordinator_residual_ns
+                .load(Ordering::Relaxed),
+            12
+        );
     }
 }
