@@ -34,8 +34,27 @@ class InstructionShapeTests(unittest.TestCase):
         self.assertFalse(validator.has_non_stack_word_access((0xF94003A0).to_bytes(4, "little"), 183))
 
     def test_control_transfer_offsets(self):
-        self.assertEqual(validator.relocation_is_control_transfer(bytes.fromhex("e900000000"), 1, 62), "branch")
-        self.assertEqual(validator.relocation_is_control_transfer((0x14000000).to_bytes(4, "little"), 0, 183), "branch")
+        self.assertEqual(
+            validator.relocation_is_control_transfer(bytes.fromhex("e900000000"), 1, 62, 2, "elf"),
+            "branch",
+        )
+        self.assertEqual(
+            validator.relocation_is_control_transfer(
+                (0x14000000).to_bytes(4, "little"), 0, 183, 282, "elf"
+            ),
+            "branch",
+        )
+
+    def test_data_relocations_are_not_control_transfers(self):
+        # movq (%rdi), %rax; subq $external_data, %rax; ret. The R_X86_64_32S
+        # relocation starts at the subq immediate, not at a call instruction.
+        x86 = bytes.fromhex("488b07482b0500000000c3")
+        self.assertIsNone(validator.relocation_is_control_transfer(x86, 6, 62, 11, "elf"))
+        self.assertIsNone(
+            validator.relocation_is_control_transfer(
+                (0x90000000).to_bytes(4, "little"), 0, 183, 275, "elf"
+            )
+        )
 
 
 class BodyValidationTests(unittest.TestCase):
@@ -97,13 +116,25 @@ class BodyValidationTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(AssertionError, "unresolved reachable control transfer"):
             validator._validate_bodies(
-                Path("synthetic.a:member.o"), {"_memcpy": root}, "macho", 183
+                Path("synthetic.a:member.o"), {"_memcpy": root}, "macho", validator.MACHO_CPU_ARM64
             )
 
     def test_non_control_external_relocation_is_ignored(self):
         # Data relocations do not establish a callable edge and remain valid.
         root = body("memcpy", bytes.fromhex("488b07"), [(0, "external_data", 1)])
         validator._validate_bodies(Path("synthetic"), {"memcpy": root}, "elf", 62)
+
+    def test_valid_x86_data_relocation_does_not_hide_a_call(self):
+        root = body("memcpy", bytes.fromhex("488b07482b0500000000c3"), [(6, "external_data", 11)])
+        validator._validate_bodies(Path("synthetic"), {"memcpy": root}, "elf", 62)
+
+    def test_valid_aarch64_adrp_data_relocation_is_not_a_call(self):
+        root = body(
+            "memcpy",
+            (0x90000000).to_bytes(4, "little") + (0xF9400020).to_bytes(4, "little"),
+            [(0, "external_data", 275)],
+        )
+        validator._validate_bodies(Path("synthetic"), {"memcpy": root}, "elf", 183)
 
     def test_wrapper_skips_unrelated_outlined_helper(self):
         wrapper = body(
