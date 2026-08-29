@@ -9,7 +9,10 @@ const CHUNK_SIZE: usize = core::mem::size_of::<u64>();
 // below permit arbitrary byte alignment, while `read_unaligned` and
 // `write_unaligned` are defined for every alignment and do not call the
 // reserved memcpy/memmove/memset symbols on the supported targets.
-#[inline(always)]
+// Keep the accessors out of the surrounding loops: otherwise an optimized
+// test binary can recognize the loop idiom and lower it back to an exported
+// reserved primitive, recursively re-entering its wrapper.
+#[inline(never)]
 unsafe fn read_chunk(src: *const u8) -> u64 {
     // SAFETY: Every caller has established that the complete chunk is inside
     // its valid input range. `read_unaligned` places no alignment requirement
@@ -17,7 +20,7 @@ unsafe fn read_chunk(src: *const u8) -> u64 {
     unsafe { core::ptr::read_unaligned(src.cast::<u64>()) }
 }
 
-#[inline(always)]
+#[inline(never)]
 unsafe fn write_chunk(dst: *mut u8, value: u64) {
     // SAFETY: Every caller has established that the complete chunk is inside
     // its valid output range. `write_unaligned` places no alignment

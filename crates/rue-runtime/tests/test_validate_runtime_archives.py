@@ -53,6 +53,21 @@ class BodyValidationTests(unittest.TestCase):
         impl = body("impl", bytes.fromhex("488b07"))
         validator._validate_bodies(Path("synthetic"), {"memcpy": wrapper, "impl": impl}, "elf", 62)
 
+    def test_wrapper_skips_unrelated_outlined_helper(self):
+        wrapper = body(
+            "memset",
+            bytes.fromhex("e800000000e800000000"),
+            [(1, "outlined", 4), (6, "chunk", 4)],
+        )
+        outlined = body("outlined", bytes.fromhex("c3"))
+        chunk = body("chunk", bytes.fromhex("488b07"))
+        validator._validate_bodies(
+            Path("synthetic"),
+            {"memset": wrapper, "outlined": outlined, "chunk": chunk},
+            "elf",
+            62,
+        )
+
     def test_str_eq_wrapper_follows_bcmp(self):
         wrapper = body("__rue_str_eq", bytes.fromhex("e900000000"), [(1, "bcmp", 4)])
         impl = body("bcmp", bytes.fromhex("488b07"))
