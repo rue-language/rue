@@ -651,6 +651,11 @@ def _normalized_target(target: str, expected_format: str) -> str:
     return target
 
 
+def _is_local_data_target(target: str, expected_format: str) -> bool:
+    normalized = _normalized_target(target, expected_format)
+    return normalized.startswith(".rodata") or normalized.startswith("rodata")
+
+
 def _target_body(bodies: dict, target: str, expected_format: str):
     normalized = _normalized_target(target, expected_format)
     return bodies.get(target) or bodies.get(normalized) or bodies.get(
@@ -677,9 +682,16 @@ def _validate_bodies(path: Path, bodies: dict, expected_format: str,
         # even when it also contains a word access. This catches accidental
         # compiler-builtins recursion and tail recursion.
         for offset, target, kind in current["relocs"]:
-            if not relocation_is_control_transfer(current["code"], offset,
-                                                   expected_machine, kind,
-                                                   expected_format):
+            transfer = relocation_is_control_transfer(
+                current["code"], offset, expected_machine, kind, expected_format
+            )
+            if not transfer:
+                continue
+            # An x86 FF /4 relocation to a local .rodata symbol is a compiler
+            # jump table, not a callable edge. It is resolved data even though
+            # the machine instruction is an indirect branch; do not mistake it
+            # for an unresolved helper call.
+            if transfer == "call-or-branch" and _is_local_data_target(target, expected_format):
                 continue
             normalized = _normalized_target(target, expected_format)
             if normalized in RESERVED_SYMBOLS and symbol in RESERVED_SYMBOLS:
