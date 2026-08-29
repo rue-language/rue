@@ -320,8 +320,10 @@ unsafe fn copy_forward(mut dst: *mut u8, mut src: *const u8, mut remaining: usiz
         remaining -= CHUNK_SIZE;
     }
 
-    // SAFETY: The remaining tail is smaller than one chunk.
-    unsafe { copy_forward_tail(dst, src, remaining) };
+    if remaining != 0 {
+        // SAFETY: The remaining tail is smaller than one chunk.
+        unsafe { copy_forward_tail(dst, src, remaining) };
+    }
 }
 
 #[inline(always)]
@@ -334,8 +336,10 @@ unsafe fn copy_backward(dst: *mut u8, src: *const u8, mut remaining: usize) {
         unsafe { write_chunk(dst.add(remaining), value) };
     }
 
-    // SAFETY: The remaining tail is smaller than one chunk.
-    unsafe { copy_backward_tail(dst, src, remaining) };
+    if remaining != 0 {
+        // SAFETY: The remaining tail is smaller than one chunk.
+        unsafe { copy_backward_tail(dst, src, remaining) };
+    }
 }
 
 /// Copy `n` bytes from `src` to `dst`. The memory regions must not overlap.
@@ -390,8 +394,10 @@ pub unsafe fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
         cursor = unsafe { cursor.add(CHUNK_SIZE) };
         remaining -= CHUNK_SIZE;
     }
-    // SAFETY: The remaining tail is smaller than one chunk.
-    unsafe { set_tail(cursor, byte, remaining) };
+    if remaining != 0 {
+        // SAFETY: The remaining tail is smaller than one chunk.
+        unsafe { set_tail(cursor, byte, remaining) };
+    }
     dst
 }
 
