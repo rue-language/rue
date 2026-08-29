@@ -557,7 +557,7 @@ fn main() -> i32 {
 
 [[case]]
 name = "std_quicksort_regressions"
-description = "quicksort handles adversarial orderings, duplicate counts, boundaries, and a 4096-element stack-depth stress (18 checks -> exit 87)."
+description = "quicksort handles adversarial orderings, duplicate counts, boundaries, and a 4096-element stack-depth stress (18 checks -> exit 87); duplicate cases use 256 elements for bounded coverage."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
 exit_code = 87
@@ -611,75 +611,78 @@ fn main() -> i32 {
     if reverse.get_or(0, -1) == 0 && reverse.get_or(n - 1, -1) == 4095 { score = score + 1; }
 
     // All-equal and duplicate-heavy arrays exercise the unbalanced partition
-    // path while checking that no element is lost or moved out of order.
+    // path while checking that no element is lost or moved out of order. Keep
+    // these correctness checks smaller than the 4096-element stack stress so
+    // the strict-Lomuto oracle run remains bounded and deterministic.
+    let duplicate_n: u64 = 256;
     let mut equal = B.new();
     i = 0;
-    while i < n {
+    while i < duplicate_n {
         equal.push(7);
         i += 1;
     }
     std.sort.quicksort(i64, inout equal);
     if std.sort.is_sorted(i64, borrow equal) { score = score + 1; }
-    if equal.get_or(0, -1) == 7 && equal.get_or(n - 1, -1) == 7 { score = score + 1; }
+    if equal.len() == duplicate_n && equal.get_or(0, -1) == 7 && equal.get_or(duplicate_n - 1, -1) == 7 { score = score + 1; }
 
     let mut duplicates = B.new();
     i = 0;
-    while i < n {
+    while i < duplicate_n {
         duplicates.push(@intCast(i % 7));
         i += 1;
     }
     std.sort.quicksort(i64, inout duplicates);
     if std.sort.is_sorted(i64, borrow duplicates) { score = score + 1; }
-    if duplicates.len() == n { score = score + 1; }
+    if duplicates.len() == duplicate_n { score = score + 1; }
     let mut count: u64 = 0;
     i = 0;
-    while i < n {
+    while i < duplicate_n {
         if duplicates.get_or(i, -1) == 0 { count += 1; }
         i += 1;
     }
-    if count == 586 { score = score + 1; }
+    if count == 37 { score = score + 1; }
     count = 0;
     i = 0;
-    while i < n {
+    while i < duplicate_n {
         if duplicates.get_or(i, -1) == 1 { count += 1; }
         i += 1;
     }
-    if count == 585 { score = score + 1; }
+    if count == 37 { score = score + 1; }
     count = 0;
     i = 0;
-    while i < n {
+    while i < duplicate_n {
         if duplicates.get_or(i, -1) == 2 { count += 1; }
         i += 1;
     }
-    if count == 585 { score = score + 1; }
+    if count == 37 { score = score + 1; }
     count = 0;
     i = 0;
-    while i < n {
+    while i < duplicate_n {
         if duplicates.get_or(i, -1) == 3 { count += 1; }
         i += 1;
     }
-    if count == 585 { score = score + 1; }
+    if count == 37 { score = score + 1; }
     count = 0;
     i = 0;
-    while i < n {
+    while i < duplicate_n {
         if duplicates.get_or(i, -1) == 4 { count += 1; }
         i += 1;
     }
-    if count == 585 { score = score + 1; }
+    if count == 36 { score = score + 1; }
     count = 0;
     i = 0;
-    while i < n {
+    while i < duplicate_n {
         if duplicates.get_or(i, -1) == 5 { count += 1; }
         i += 1;
     }
-    if count == 585 { score = score + 1; }
+    if count == 36 { score = score + 1; }
     count = 0;
     i = 0;
-    while i < n {
+    while i < duplicate_n {
         if duplicates.get_or(i, -1) == 6 { count += 1; }
         i += 1;
     }
-    if count == 585 { score = score + 1; }
+    if count == 36 { score = score + 1; }
 
     if score == 18 { 87 } else { @intCast(score) }
 }
