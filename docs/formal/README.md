@@ -121,9 +121,12 @@ This one artifact does three jobs at once:
   (purpose 1);
 - it is the **differential-testing oracle** of RUE-50: run a random program
   through both the interpreter and the compiler; any disagreement is a bug in one
-  of them. Most of the miscompiles fixed in the 2026-07 work (slot-0 aggregate
-  extraction, stale-frame return disclosure, drop-glue garbage) would have been
-  caught automatically by this loop.
+  of them. A planted-defect study measured this claim against historical Rue
+  compiler failures rather than relying on a counterfactual: the corpus oracle
+  caught RUE-348 at O1--O3 and RUE-914/RUE-1758 at O2--O3, while a bounded
+  generated-fuzz window missed all three. See the
+  [RUE-1816 coverage ledger](../notes/rue-1816-planted-miscompile-coverage.md)
+  for the reproducible matrix and its accepted gaps.
 
 The interpreter is validated *against* the compiler and the compiler against
 *it*: neither is presumed correct; disagreement is the signal. (See RUE-50.)

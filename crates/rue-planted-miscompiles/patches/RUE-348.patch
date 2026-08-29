@@ -1,0 +1,24 @@
+diff --git a/crates/rue-cfg/src/opt/constfold.rs b/crates/rue-cfg/src/opt/constfold.rs
+--- a/crates/rue-cfg/src/opt/constfold.rs
++++ b/crates/rue-cfg/src/opt/constfold.rs
+@@ -205,17 +205,17 @@ fn fold_enum_comparison<F>(cfg: &Cfg, lhs: CfgValue, rhs: CfgValue, op: F) -> Option<CfgInstData>
+ where
+     F: FnOnce(u32, u32) -> bool,
+ {
+-    let (lhs_enum_id, lhs_variant, lhs_payload_len) = get_enum_variant(cfg, lhs)?;
+-    let (rhs_enum_id, rhs_variant, rhs_payload_len) = get_enum_variant(cfg, rhs)?;
++    let (lhs_enum_id, lhs_variant, _lhs_payload_len) = get_enum_variant(cfg, lhs)?;
++    let (rhs_enum_id, rhs_variant, _rhs_payload_len) = get_enum_variant(cfg, rhs)?;
+
+     // Only fold when both operands are the same enum AND payload-less: comparing
+     // the variant index alone is correct only for fieldless variants (e.g.
+     // `@target_arch() == Arch::X86_64`). For payload-carrying variants,
+     // structural equality must also compare the payloads — `Opt::Some(5)` and
+     // `Opt::Some(6)` share variant index 1 but are NOT equal — so those must fall
+     // through to codegen's `emit_aggregate_equality` rather than folding on the
+     // tag alone (RUE-348).
+-    if lhs_enum_id == rhs_enum_id && lhs_payload_len == 0 && rhs_payload_len == 0 {
++    if lhs_enum_id == rhs_enum_id {
+         let result = op(lhs_variant, rhs_variant);
+         Some(CfgInstData::BoolConst(result))
+     } else {

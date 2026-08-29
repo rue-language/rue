@@ -1,0 +1,28 @@
+fn Opt(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+
+fn Map(comptime V: type) -> type {
+    struct {
+        value: V,
+
+        fn get(borrow self, present: bool) -> Opt(V) {
+            let O = Opt(V);
+            if present { O.Some(self.value) } else { O.None }
+        }
+    }
+}
+
+fn passthrough(x: bool) -> bool { x }
+
+fn main() -> i32 {
+    let M = Map(i32);
+    let O = Opt(i32);
+    let map = M { value: 7 };
+    let absent = map.get(false);
+    let marker = passthrough(true);
+    match absent {
+        O.Some(value) => { if marker { value } else { 91 } },
+        O.None => 0,
+    }
+}

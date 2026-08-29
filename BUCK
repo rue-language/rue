@@ -1030,6 +1030,27 @@ rue_sh_test(
     },
 )
 
+# RUE-1816's historical-defect plants are source patches compiled only inside
+# an archived temporary source tree. This structural gate proves each patch is
+# restricted to its one reviewed compiler file and that no activation marker
+# enters the ordinary Rue compiler targets.
+rue_sh_test(
+    name = "planted-miscompile-isolation-validation",
+    test = "scripts/planted-miscompile-study.py",
+    args = ["--verify-layout", "--self-test"],
+    resources = [
+        "//crates/rue-planted-miscompiles:lab-inputs",
+        "//crates/rue:allocator-policy-inputs",
+        "//crates/rue:rue-sources",
+        "//crates/rue-cfg:rue-cfg-sources",
+        "//crates/rue-codegen:rue-codegen-sources",
+        "//crates/rue-compiler:rue-compiler-sources",
+    ],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
 rue_sh_test(
     name = "release-configuration-tool-tests",
     test = "scripts/test-release-configuration.py",
