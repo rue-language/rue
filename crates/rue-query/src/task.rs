@@ -312,6 +312,9 @@ pub(crate) struct BatchWorkerClaim {
 
 impl BatchWorkerClaim {
     pub(crate) fn new(core: Arc<RuntimeCore>, desired: usize) -> Self {
+        core.metrics
+            .batch_worker_slots_requested
+            .fetch_add(desired as u64, Ordering::Relaxed);
         let limit = core.permits.maximum.saturating_sub(1);
         let mut current = core.batch_workers.load(Ordering::Acquire);
         let count = loop {
@@ -326,6 +329,9 @@ impl BatchWorkerClaim {
                 Err(actual) => current = actual,
             }
         };
+        core.metrics
+            .batch_worker_slots_granted
+            .fetch_add(count as u64, Ordering::Relaxed);
         Self { core, count }
     }
 }

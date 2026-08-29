@@ -7048,12 +7048,7 @@ fn invalid_undemanded_module_is_neither_parsed_nor_lowered() {
 #[test]
 fn parse_module_frontier_parallelizes_and_reports_exact_work() {
     let texts = (0..8)
-        .map(|index| {
-            format!(
-                "// {}\nfn f{index}() -> i32 {{ {index} }}\n",
-                "x".repeat(64_000)
-            )
-        })
+        .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
         .collect::<Vec<_>>();
     let paths = (0..8)
         .map(|index| format!("/m{index}.rue"))
@@ -7076,20 +7071,22 @@ fn parse_module_frontier_parallelizes_and_reports_exact_work() {
         .iter()
         .map(|path| ModuleId::from_logical_path(path).unwrap())
         .collect::<Vec<_>>();
-    let root = modules[0].clone();
-    let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
-    let revision = revision_for(&mut database, &snapshot);
-    let (program, work) = database.parse_program(revision, &root, modules);
-    assert!(program.is_ok());
-    assert_eq!(work.frontier_items, 8);
-    assert_eq!(work.frontier_batches, 1);
-    assert_eq!(work.frontier_batch_overhead, 1);
-    assert_eq!(work.modules_reparsed, 8);
-    assert_eq!(work.modules_reused, 0);
-    assert!(
-        database.runtime_metrics_for_test().peak_query_workers > 1,
-        "a cold independent module frontier must occupy multiple workers"
-    );
+    for _ in 0..16 {
+        let root = modules[0].clone();
+        let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
+        let revision = revision_for(&mut database, &snapshot);
+        let (program, work) = database.parse_program(revision, &root, modules.clone());
+        assert!(program.is_ok());
+        assert_eq!(work.frontier_items, 8);
+        assert_eq!(work.frontier_batches, 1);
+        assert_eq!(work.frontier_batch_overhead, 1);
+        assert_eq!(work.modules_reparsed, 8);
+        assert_eq!(work.modules_reused, 0);
+        let scheduling = database.runtime_metrics_for_test();
+        assert_eq!(scheduling.batch_worker_slots_requested, 7);
+        assert_eq!(scheduling.batch_worker_slots_granted, 3);
+        assert_eq!(scheduling.batch_worker_lanes_entered, 4);
+    }
 }
 
 #[test]
@@ -7166,7 +7163,9 @@ fn parse_module_frontier_one_and_many_workers_preserve_error_order() {
             .0
             .unwrap_err()
     };
-    assert_eq!(run(1), run(4));
+    for _ in 0..16 {
+        assert_eq!(run(1), run(4));
+    }
 }
 
 #[test]
@@ -7185,57 +7184,66 @@ fn warning_reference_frontier_parallelizes_and_reports_exact_work() {
         })
         .collect::<Vec<_>>()
         .into();
-    let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
-    let revision = revision_for(&mut database, &snapshot);
-    database
-        .parse_program(revision, &module, [module.clone()])
-        .0
-        .unwrap();
-    assert_eq!(database.runtime_metrics_for_test().peak_query_workers, 1);
-    let (attempt, executions) =
-        database.warning_body_reference_frontier(revision, keys.clone(), CancellationToken::new());
-    assert!(attempt.terminal().is_some());
-    assert_eq!(
-        executions
-            .iter()
-            .flatten()
-            .filter(|execution| execution.execution == RequestExecution::Computed)
-            .count(),
-        32
-    );
-    assert_eq!(
-        attempt
-            .work()
-            .iter()
-            .find(|(name, _)| name.as_ref() == "warning-reference.frontier.items")
-            .map(|(_, amount)| *amount),
-        Some(32)
-    );
-    assert_eq!(
-        attempt
-            .work()
-            .iter()
-            .find(|(name, _)| name.as_ref() == "warning-reference.frontier.batches")
-            .map(|(_, amount)| *amount),
-        Some(1)
-    );
-    assert_eq!(
-        attempt
-            .work()
-            .iter()
-            .find(|(name, _)| name.as_ref() == "warning-reference.frontier.overhead")
-            .map(|(_, amount)| *amount),
-        Some(1)
-    );
-    assert_eq!(
-        attempt
-            .nested_attempts()
-            .iter()
-            .filter(|attempt| attempt.node().family() == "compiler.warning-body-references")
-            .count(),
-        32
-    );
-    assert!(database.runtime_metrics_for_test().peak_query_workers > 1);
+    for _ in 0..16 {
+        let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
+        let revision = revision_for(&mut database, &snapshot);
+        database
+            .parse_program(revision, &module, [module.clone()])
+            .0
+            .unwrap();
+        let (attempt, executions) = database.warning_body_reference_frontier(
+            revision,
+            keys.clone(),
+            CancellationToken::new(),
+        );
+        assert!(attempt.terminal().is_some());
+        assert_eq!(
+            executions
+                .iter()
+                .flatten()
+                .filter(|execution| execution.execution == RequestExecution::Computed)
+                .count(),
+            32
+        );
+        assert_eq!(
+            attempt
+                .work()
+                .iter()
+                .find(|(name, _)| name.as_ref() == "warning-reference.frontier.items")
+                .map(|(_, amount)| *amount),
+            Some(32)
+        );
+        assert_eq!(
+            attempt
+                .work()
+                .iter()
+                .find(|(name, _)| name.as_ref() == "warning-reference.frontier.batches")
+                .map(|(_, amount)| *amount),
+            Some(1)
+        );
+        assert_eq!(
+            attempt
+                .work()
+                .iter()
+                .find(|(name, _)| name.as_ref() == "warning-reference.frontier.overhead")
+                .map(|(_, amount)| *amount),
+            Some(1)
+        );
+        assert_eq!(
+            attempt
+                .nested_attempts()
+                .iter()
+                .filter(|attempt| attempt.node().family() == "compiler.warning-body-references")
+                .count(),
+            32
+        );
+        let scheduling = database.runtime_metrics_for_test();
+        // The warning aggregate schedules three prerequisite projections and
+        // the final body-reference frontier over the same 32 cold bodies.
+        assert_eq!(scheduling.batch_worker_slots_requested, 4 * 31);
+        assert_eq!(scheduling.batch_worker_slots_granted, 4 * 3);
+        assert_eq!(scheduling.batch_worker_lanes_entered, 4 * 4);
+    }
 }
 
 #[test]
@@ -7605,11 +7613,10 @@ fn warning_reference_frontier_inflight_cancellation_publishes_no_aggregate() {
                 child_gate.changed.notify_all();
                 while !state.1 {
                     context.check_canceled()?;
-                    let (next, _) = child_gate
+                    state = child_gate
                         .changed
-                        .wait_timeout(state, std::time::Duration::from_millis(1))
+                        .wait(state)
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    state = next;
                 }
                 Ok(QueryOutput::success(key.0))
             },
@@ -7673,20 +7680,33 @@ fn warning_reference_frontier_inflight_cancellation_publishes_no_aggregate() {
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    while state.0 == 0 {
+    while state.0 < 4 {
         let now = std::time::Instant::now();
         assert!(
             now < deadline,
-            "no warning child reached the in-flight evaluator gate"
+            "only {} of four warning children reached the evaluator rendezvous",
+            state.0
         );
-        let (next, _) = gate
+        let (next, timed_out) = gate
             .changed
             .wait_timeout(state, deadline.saturating_duration_since(now))
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state = next;
+        assert!(
+            !timed_out.timed_out() || state.0 >= 4,
+            "only {} of four warning children reached the evaluator rendezvous",
+            state.0
+        );
     }
     drop(state);
-    assert!(database.runtime_metrics_for_test().peak_query_workers > 1);
+    let scheduling = database.runtime_metrics_for_test();
+    assert_eq!(scheduling.batch_worker_slots_requested, 31);
+    assert_eq!(scheduling.batch_worker_slots_granted, 3);
+    assert_eq!(scheduling.batch_worker_lanes_entered, 4);
+    assert_eq!(
+        scheduling.peak_query_workers, 4,
+        "four gated child evaluators guarantee exact worker overlap"
+    );
     cancellation.cancel();
     gate.changed.notify_all();
     let canceled = request

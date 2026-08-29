@@ -101,6 +101,11 @@ where
     V: Clone + Send + Sync + 'static,
 {
     tracing::dispatcher::with_default(&tracing_dispatch, || {
+        parent
+            .core
+            .metrics
+            .batch_worker_lanes_entered
+            .fetch_add(1, Ordering::Relaxed);
         let parent_span = tracing_parent.enter();
         let mut ready_items = 0u64;
         let mut ready_wait_ns = 0u64;

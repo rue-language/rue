@@ -132,6 +132,17 @@ fn run_registered_batch(worker_count: usize) -> QueryRequestAttempt<Arc<[u64]>> 
         .unwrap();
     let attempt =
         runtime.request_registered(&root, revision(1), Key("root"), CancellationToken::new());
+    let metrics = runtime.metrics();
+    assert_eq!(metrics.batch_worker_slots_requested, 3);
+    assert_eq!(
+        metrics.batch_worker_slots_granted,
+        worker_count.saturating_sub(1).min(3) as u64
+    );
+    assert_eq!(
+        metrics.batch_worker_lanes_entered,
+        metrics.batch_worker_slots_granted + 1,
+        "every granted logical worker slot and the donating parent lane must execute"
+    );
     assert_eq!(
         peak.load(Ordering::Acquire),
         worker_count.min(4),
