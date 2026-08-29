@@ -1,0 +1,23 @@
+include!("semantic/call_abis.rs");
+include!("semantic/declaration_body_plan_artifacts.rs");
+include!("semantic/declaration_semantics_projection.rs");
+include!("semantic/declaration_semantics_publications.rs");
+include!("semantic/declaration_shells.rs");
+include!("semantic/drop_glues.rs");
+include!("semantic/layouts.rs");
+include!("semantic/semantic_nucleus.rs");
+include!("semantic/stable_declaration_classifications.rs");
+include!("semantic/type_facts.rs");
+include!("semantic/type_shapes.rs");
+
+pub(super) use register_semantic_call_abis;
+pub(super) use register_semantic_declaration_body_plan_artifacts;
+pub(super) use register_semantic_declaration_semantics_projection;
+pub(super) use register_semantic_declaration_semantics_publications;
+pub(super) use register_semantic_declaration_shells;
+pub(super) use register_semantic_drop_glues;
+pub(super) use register_semantic_layouts;
+pub(super) use register_semantic_semantic_nucleus;
+pub(super) use register_semantic_stable_declaration_classifications;
+pub(super) use register_semantic_type_facts;
+pub(super) use register_semantic_type_shapes;

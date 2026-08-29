@@ -193,6 +193,459 @@ mod comptime_public_contract_tests {
     }
 }
 
+// The hub owns the aggregate used by cross-phase source-shape tests. Keeping
+// one authority prevents this inventory from silently drifting from the
+// source consumed by the revisioned-database tests.
+use crate::revisioned_query_database::{REGISTRATION_MANIFEST, REVISIONED_DATABASE_SOURCE};
+
+const REVISIONED_DATABASE_PHASES: &[(&str, &str)] = &[
+    (
+        "shared",
+        include_str!("revisioned_query_database/shared.rs"),
+    ),
+    (
+        "backend",
+        include_str!("revisioned_query_database/backend.rs"),
+    ),
+    (
+        "parse_import",
+        include_str!("revisioned_query_database/parse_import.rs"),
+    ),
+    (
+        "semantic",
+        include_str!("revisioned_query_database/semantic.rs"),
+    ),
+    ("body", include_str!("revisioned_query_database/body.rs")),
+    (
+        "registrations",
+        include_str!("revisioned_query_database/registrations.rs"),
+    ),
+    (
+        "provider",
+        include_str!("revisioned_query_database/provider.rs"),
+    ),
+    (
+        "test_support",
+        include_str!("revisioned_query_database/test_support.rs"),
+    ),
+];
+
+fn registered_revisioned_database_families() -> Vec<(&'static str, &'static str)> {
+    crate::revisioned_query_database::REGISTRATION_MANIFEST
+        .iter()
+        .map(|(owner, family, _, _)| (*family, *owner))
+        .collect()
+}
+
+fn registered_family_source(family: &str) -> &'static str {
+    REGISTRATION_MANIFEST
+        .iter()
+        .find_map(|(_, name, _, source)| (*name == family).then_some(*source))
+        .expect("registered family manifest entry")
+}
+
+#[test]
+fn revisioned_database_hub_and_registered_family_authority_are_structural() {
+    let hub = include_str!("revisioned_query_database.rs");
+    for module in [
+        "shared",
+        "backend",
+        "parse_import",
+        "semantic",
+        "body",
+        "registrations",
+        "provider",
+    ] {
+        assert!(
+            hub.contains(&format!("mod {module};")),
+            "revisioned query database hub lost phase module {module}"
+        );
+    }
+    assert!(
+        hub.lines().count() < 140,
+        "revisioned query database hub regrew into a phase implementation"
+    );
+    let registration_composer = include_str!("revisioned_query_database/registrations.rs");
+    assert!(
+        registration_composer.lines().count() < 1200,
+        "registration composer regrew into a family-registration monolith"
+    );
+    assert!(
+        !registration_composer.contains(".family_with")
+            && !registration_composer.contains(".content_addressed_family_with"),
+        "family registrations must remain owned by their phase fragments"
+    );
+    assert_eq!(
+        hub.matches("include_str!(\"revisioned_query_database/test_support.rs\")")
+            .count(),
+        1,
+        "the hub must be the sole aggregate authority for test-support source"
+    );
+    for forbidden in [
+        "impl RevisionedQueryDatabase",
+        "family_with_equality",
+        "content_addressed_family",
+    ] {
+        assert!(
+            !hub.contains(forbidden),
+            "revisioned query database hub regained implementation authority: {forbidden}"
+        );
+    }
+
+    let families = registered_revisioned_database_families();
+    assert_eq!(
+        families.len(),
+        44,
+        "the registered-family manifest is complete"
+    );
+    let invocations = registration_composer
+        .match_indices("register_")
+        .filter_map(|(start, _)| {
+            let tail = &registration_composer[start..];
+            let end = tail.find('!')?;
+            let name = &tail[..end];
+            name.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                .then_some(name)
+        })
+        .collect::<Vec<_>>();
+    let manifest_macros = REGISTRATION_MANIFEST
+        .iter()
+        .map(|(_, _, macro_name, _)| *macro_name)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        invocations, manifest_macros,
+        "constructor order or family ownership changed"
+    );
+    for (owner, family, macro_name, source) in REGISTRATION_MANIFEST {
+        assert_eq!(
+            REGISTRATION_MANIFEST
+                .iter()
+                .filter(|entry| entry.1 == *family)
+                .count(),
+            1,
+            "registered family has multiple manifest authorities: {family}"
+        );
+        assert_eq!(
+            source
+                .matches(&format!("macro_rules! {macro_name}"))
+                .count(),
+            1
+        );
+        assert_eq!(source.matches(&format!("\"{family}\"")).count(), 1);
+        assert!(
+            macro_name.starts_with(&format!("register_{owner}_"))
+                || *macro_name == "register_provider_probe"
+        );
+    }
+    assert_eq!(
+        REVISIONED_DATABASE_PHASES
+            .iter()
+            .flat_map(|(_, source)| source.match_indices("struct RevisionedQueryDatabase"))
+            .count(),
+        1,
+        "RevisionedQueryDatabase must have exactly one canonical owner"
+    );
+    assert_eq!(
+        REVISIONED_DATABASE_PHASES
+            .iter()
+            .flat_map(|(_, source)| source.match_indices("struct CompilerQueryRuntime"))
+            .count(),
+        1,
+        "query runtime must have exactly one canonical owner"
+    );
+    let database_fields = REVISIONED_DATABASE_PHASES
+        .iter()
+        .find(|(module, _)| *module == "shared")
+        .map(|(_, source)| {
+            source
+                .split_once("pub(crate) struct RevisionedQueryDatabase {")
+                .and_then(|(_, body)| body.split_once("\n}"))
+                .map(|(body, _)| body)
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    assert!(
+        !database_fields
+            .lines()
+            .any(|line| line.trim_start().starts_with("pub(crate)")),
+        "RevisionedQueryDatabase fields must stay private to the module tree"
+    );
+    let mut declarations = Vec::new();
+    for (owner, source) in REVISIONED_DATABASE_PHASES {
+        // Reuse the balanced public-declaration scanner below by normalizing
+        // the visibility spelling. This inventories complete multiline
+        // signatures and aggregate field shapes, not merely their first line.
+        let normalized = source.replace("pub(crate)", "pub");
+        declarations.extend(
+            public_declarations(&normalized)
+                .into_iter()
+                .map(|declaration| format!("{owner}|{}", canonical_signature(&declaration))),
+        );
+    }
+    declarations.sort();
+    let fingerprint = declarations
+        .iter()
+        .fold(0xcbf29ce484222325_u64, |hash, declaration| {
+            declaration
+                .bytes()
+                .chain(std::iter::once(b'\n'))
+                .fold(hash, |hash, byte| {
+                    (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+                })
+        });
+    assert_eq!(
+        (declarations.len(), fingerprint),
+        (202, 7_082_883_898_404_990_306),
+        "crate-visible declaration names, signatures, fields, or phase owners changed"
+    );
+
+    // The split must preserve the original crate-visible declaration set. The
+    // baseline is an identity manifest extracted from the pre-split source;
+    // this catches newly widened helpers even when a source-shape fingerprint
+    // is accidentally updated alongside them. The cfg(test) registration
+    // manifest is intentionally an inventory-only addition and is excluded.
+    let mut actual_identities = REVISIONED_DATABASE_PHASES
+        .iter()
+        .flat_map(|(_, source)| crate_visible_declaration_identities(source))
+        .filter(|identity| identity != "const:REGISTRATION_MANIFEST")
+        .collect::<Vec<_>>();
+    actual_identities.sort();
+    let mut original_identities = ORIGINAL_REVISIONED_DATABASE_CRATE_SURFACE
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    original_identities.sort();
+    assert_eq!(
+        actual_identities, original_identities,
+        "crate-visible declaration names/kinds diverged from the pre-split surface"
+    );
+}
+
+const ORIGINAL_REVISIONED_DATABASE_CRATE_SURFACE: &str = r#"
+struct:TestBodyTransactionFailureGuard
+struct:FrontierRendezvous
+fn:new
+fn:wait_for_arrivals
+fn:arrivals
+fn:frontier_arrivals
+fn:timed_out
+fn:release
+struct:FrontierRendezvousGuard
+struct:TestConstraintGenerationCancellationGuard
+struct:CompatibilityKey
+struct:RevisionedQueryDatabase
+struct:TestCodegenEvaluatorGate
+fn:wait_until_entered
+fn:release
+struct:TestBackendBatchEvaluatorGate
+fn:wait_until_all_entered_and_release
+fn:peak
+fn:entered
+struct:ProviderObservationCounters
+struct:ObservedLookupRoot
+enum:LookupObservationKey
+fn:body_lookup_root_identity
+struct:BackendRootCandidate
+struct:OptimizedCfgBatchKey
+struct:RawCfgBatchKey
+struct:RawCfgBatchOutput
+fn:new
+struct:OptimizedCfgBatchOutput
+struct:CodegenUnitBatchKey
+struct:CodegenUnitBatchOutput
+struct:ObjectProjectionBatchKey
+struct:ObjectProjectionBatchOutput
+enum:BackendRootPublicationInput
+struct:PublishedBackendRootMetrics
+struct:InputStampRetentionMetrics
+struct:ModuleIndexEntry
+struct:ModuleIndex
+struct:ProjectedModuleIndex
+enum:StableDeclarationClassificationFailure
+enum:DeclarationBodyPlanFailure
+struct:WarningStaticCallHead
+enum:WarningBodyReferencesValue
+struct:WarningBodyReferencesBatchValue
+struct:FrontierChildExecution
+enum:WarningBodyReferencesFailure
+enum:DeclarationShellBatchFailure
+enum:SemanticNucleusBatchFailure
+struct:SemanticNucleusProjection
+struct:LookupNameKey
+struct:LookupImportKey
+enum:ImportInputTransition
+fn:project_transaction_diagnostics
+enum:OverlayJustification
+fn:function_definition_key
+fn:declaration_candidate_for_stable_key
+enum:BodyTransactionRequestFailure
+struct:BodyClosureRequest
+fn:execution_for
+fn:was_retained
+fn:accrue_reachability_work
+fn:accrue_candidate_body_plan_work
+use:crate
+fn:semantic_nucleus_failure_is_internal_error
+fn:collect_instance_anonymous_nominals
+fn:durable_type_from_instance_key
+fn:durable_value_from_argument
+fn:semantic_candidate_import_occurrences
+fn:with_declaration_memo_retention
+fn:with_query_concurrency
+fn:with_interner_limit
+fn:arm_codegen_evaluator_gate_for_test
+fn:arm_codegen_batch_evaluator_gate_for_test
+fn:runtime_metrics_for_test
+fn:inject_body_transaction_failure_for_test
+fn:cancel_constraint_generation_after_nodes_for_test
+fn:cancel_frontier_constraint_generation_after_nodes_for_test
+fn:arm_frontier_rendezvous_for_test
+fn:constraint_generation_visits_for_test
+fn:constraint_generation_attempted_siblings_for_test
+fn:constraint_generation_post_cancel_attempts_for_test
+fn:constraint_generation_phase_for_test
+fn:provider_observation_metrics
+fn:promote_published_lookup_root
+fn:refresh_published_body_lookup_root
+fn:lookup_pressure_metrics
+const:SOURCE_INPUT
+fn:current_parse_revision
+fn:parse_family
+fn:selected_parse_terminal
+fn:last_good_parse_terminal
+fn:last_good_parse_record
+fn:request_parse
+fn:current_semantic_revision
+fn:cfg
+fn:raw_cfg_batch
+fn:optimized_cfg
+fn:optimized_cfg_batch
+fn:codegen_unit
+fn:codegen_unit_batch
+fn:object_projection_batch
+fn:begin_backend_root
+fn:retain_backend_optimized_cfg_batch
+fn:retain_backend_codegen_batch
+fn:retain_backend_object_projection_batch
+fn:publish_backend_root
+fn:backend_root_metrics_for_test
+fn:raw_cfg_handoff_matches_terminal_for_test
+fn:backend_cfg_key_is_retained_for_test
+fn:object_projection_key_is_retained_for_test
+fn:query_evictions_for_test
+fn:projected_declaration_shells
+fn:projected_declaration_shells_for_modules
+fn:body_transaction
+fn:body_closure
+fn:body_source_basis_projection
+fn:warning_body_reference_frontier
+fn:body_produced_anonymous_projection
+fn:body_input
+fn:body_toolchain_demands
+fn:any_body_transaction_terminal
+fn:any_successful_body_transaction_for_test
+fn:has_retained_body_key
+fn:retained_body_identity_states_for_test
+fn:retained_body_transaction_origins_for_test
+fn:retained_body_transaction_for_test
+fn:projected_declaration_semantics
+fn:projected_declaration_semantics_for_modules
+fn:begin_import_inputs
+fn:import_frontier
+fn:current_import_revision
+fn:import_frontier_roots_requested
+fn:exact_import_groups_dispatched
+fn:import_view_full_leaves_published
+fn:import_view_overlay_leaves_published
+fn:import_view_ledger_entries_cloned
+fn:import_view_source_entries_compared
+fn:import_view_read_entries_compared
+fn:identity_resolution
+fn:lineage_additions
+fn:clear_lineage_additions
+fn:exact_import_groups
+fn:publication_cone_retention_failures
+fn:stage_module_parses
+fn:publish_import_batch
+fn:publish_trusted_successor_view
+fn:import_ledger
+fn:current_import_view_state
+fn:source_revision
+fn:module_source_input
+fn:parse_program_extension
+fn:parse_program
+fn:compose_candidate_module_rirs
+fn:projected_module_indexes
+fn:select_parse
+fn:parse_attempt_view
+fn:parse_origin_attempt_ids
+fn:runtime_retention_metrics
+fn:body_reachability_metrics
+fn:input_stamp_retention_metrics
+fn:set_module_input_retention_for_test
+fn:module_source_stamp_for_test
+fn:execution
+struct:ReceiverTypeIdentity
+fn:new
+enum:CompilerBodyProviderIncomplete
+enum:CompilerBodyProviderStatus
+struct:CompilerBodyProviderQueries
+struct:CompilerBodyFactProvider
+struct:CompilerBodyDurableSource
+fn:new
+fn:finish_status
+fn:probe_comptime_call
+enum:ProviderTypeFactsFailure
+struct:ProviderTypeFacts
+fn:new
+struct:SignatureFacts
+fn:new
+struct:ProviderProbeOutcome
+fn:probe_body_facts
+fn:probe_ready_body_facts
+fn:publish_lookup_root
+fn:production_declarations
+fn:durable_decl
+struct:DurableDeclSource
+fn:from_declarations
+fn:with_anonymous_nominals
+struct:EndpointNominalRender
+fn:endpoint_display
+fn:endpoint_is_copy
+fn:endpoint_nominal_render
+"#;
+
+fn crate_visible_declaration_identities(source: &str) -> Vec<String> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let declaration = line.trim_start().strip_prefix("pub(crate) ")?;
+            let identifiers = code_identifiers(declaration);
+            let keyword = identifiers.iter().find(|identifier| {
+                matches!(
+                    **identifier,
+                    "fn" | "struct"
+                        | "enum"
+                        | "union"
+                        | "trait"
+                        | "type"
+                        | "const"
+                        | "static"
+                        | "mod"
+                        | "use"
+                )
+            })?;
+            let name = identifiers
+                .iter()
+                .skip_while(|identifier| *identifier != keyword)
+                .nth(1)?;
+            Some(format!("{keyword}:{name}"))
+        })
+        .collect()
+}
+
 const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("artifact_views", include_str!("artifact_views.rs")),
     ("backend", include_str!("backend.rs")),
@@ -236,10 +689,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("parsed_modules", include_str!("parsed_modules.rs")),
     ("program_image_plan", include_str!("program_image_plan.rs")),
     ("queries", include_str!("queries.rs")),
-    (
-        "revisioned_query_database",
-        include_str!("revisioned_query_database.rs"),
-    ),
+    ("revisioned_query_database", REVISIONED_DATABASE_SOURCE),
     (
         "semantic_query_nucleus",
         include_str!("semantic_query_nucleus.rs"),
@@ -313,7 +763,7 @@ fn the_driver_reads_accessor_declaration_rules_from_the_shared_rule_module() {
     // the RIR producers. Spelling one here is how the two declaration-time
     // producers drifted before.
     let driver = [
-        include_str!("revisioned_query_database.rs"),
+        REVISIONED_DATABASE_SOURCE,
         include_str!("semantic_query_nucleus.rs"),
     ]
     .concat();
@@ -350,7 +800,7 @@ fn the_driver_reads_accessor_declaration_rules_from_the_shared_rule_module() {
 fn cfg_queries_own_local_semantic_materialization_and_terminal_domains() {
     let cfg = include_str!("cfg_query.rs");
     let domains = include_str!("durable_cfg.rs");
-    let database = include_str!("revisioned_query_database.rs");
+    let database = REVISIONED_DATABASE_SOURCE;
     for required in [
         "CfgSemanticInput::Body",
         "synthesize_canonical_drop_glue(",
@@ -460,7 +910,7 @@ fn cfg_queries_own_local_semantic_materialization_and_terminal_domains() {
 fn codegen_queries_consume_only_registered_optimized_cfg_domains() {
     let cfg = include_str!("cfg_query.rs");
     let codegen = include_str!("codegen_query.rs");
-    let database = include_str!("revisioned_query_database.rs");
+    let database = REVISIONED_DATABASE_SOURCE;
     for required in [
         "pub(crate) codegen: Arc<CfgCodegenDomain>",
         "record.codegen.symbol_mappings",
@@ -509,7 +959,7 @@ fn bounded_symbol_space_constructor_is_owner_only() {
     // this inventory is the scoped-authority gate that keeps its only normal
     // build caller inside RevisionSymbolSpace, while the public test seam
     // remains CompilerSession::with_interner_limit (cfg(test) only).
-    let database = include_str!("revisioned_query_database.rs");
+    let database = REVISIONED_DATABASE_SOURCE;
     let production = database.rsplit_once("#[cfg(test)]").unwrap().0;
     assert_eq!(
         production
@@ -581,7 +1031,7 @@ fn warning_body_projection_stays_parse_only_and_below_rir_body_analysis() {
         );
     }
 
-    let runtime = include_str!("revisioned_query_database.rs");
+    let runtime = REVISIONED_DATABASE_SOURCE;
     for forbidden in [
         "compiler.warning-body-syntax",
         "WarningBodySyntaxQueryKey",
@@ -593,11 +1043,7 @@ fn warning_body_projection_stays_parse_only_and_below_rir_body_analysis() {
             "warning reachability regained a peer syntax path: {forbidden}"
         );
     }
-    let projection_family = source_between_exact_boundaries(
-        runtime,
-        "let parse_for_warning_call_heads = parse_modules.clone();",
-        "        let classifications_for_warning_references =",
-    );
+    let projection_family = registered_family_source("compiler.warning-call-head-projection");
     for required in [
         "compiler.warning-call-head-projection",
         "parse_for_warning_call_heads",
@@ -614,11 +1060,7 @@ fn warning_body_projection_stays_parse_only_and_below_rir_body_analysis() {
             "warning call-head terminal regained syntax/lowering work: {forbidden}"
         );
     }
-    let evaluator = source_between_exact_boundaries(
-        runtime,
-        "let classifications_for_warning_references =",
-        "        // Body analysis is a canonical registered evaluator.",
-    );
+    let evaluator = registered_family_source("compiler.warning-body-references");
     for forbidden in [
         "raw_declaration_bodies",
         "declaration_signature_projections",
@@ -698,7 +1140,7 @@ fn semantic_signatures_preserve_parser_type_structure_without_a_text_grammar() {
         );
     }
 
-    let runtime = include_str!("revisioned_query_database.rs");
+    let runtime = REVISIONED_DATABASE_SOURCE;
     let provider = source_between_exact_boundaries(
         runtime,
         "impl rue_air::SemanticTypeSyntaxProvider<",
@@ -718,10 +1160,14 @@ fn semantic_signatures_preserve_parser_type_structure_without_a_text_grammar() {
             "semantic nucleus provider regained a rendered-type grammar: {forbidden}"
         );
     }
+    let semantic_phase = REVISIONED_DATABASE_PHASES
+        .iter()
+        .find_map(|(name, source)| (*name == "body").then_some(*source))
+        .expect("body phase source");
     let resolver = source_between_exact_boundaries(
-        runtime,
+        semantic_phase,
         "fn resolve_parsed_semantic_signature(",
-        "\nimpl RevisionedQueryDatabase {",
+        "\n/// The revision-scoped owner of the shared symbol equality space",
     );
     assert!(resolver.contains("resolve_structured_semantic_type_syntax"));
     for forbidden in [
@@ -774,10 +1220,7 @@ fn compiler_uses_air_synthetic_type_identity_policy() {
             "local_semantic_materialization.rs",
             include_str!("local_semantic_materialization.rs"),
         ),
-        (
-            "revisioned_query_database.rs",
-            include_str!("revisioned_query_database.rs"),
-        ),
+        ("revisioned_query_database.rs", REVISIONED_DATABASE_SOURCE),
     ] {
         for peer in [".strip_prefix(\"Str(\")", ".starts_with(\"Str(\")"] {
             assert!(
@@ -790,7 +1233,7 @@ fn compiler_uses_air_synthetic_type_identity_policy() {
 
 #[test]
 fn body_transaction_has_no_complete_declaration_candidate_map() {
-    let runtime = include_str!("revisioned_query_database.rs");
+    let runtime = REVISIONED_DATABASE_SOURCE;
     let method = source_between_exact_boundaries(
         runtime,
         "struct BodyTransactionEvaluator {",
@@ -835,7 +1278,7 @@ fn body_transaction_has_no_complete_declaration_candidate_map() {
 
 #[test]
 fn anonymous_body_transaction_has_one_candidate_artifact_path_and_no_frontend_reentry() {
-    let runtime = include_str!("revisioned_query_database.rs");
+    let runtime = REVISIONED_DATABASE_SOURCE;
     let transaction = source_between_exact_boundaries(
         runtime,
         "struct BodyTransactionEvaluator {",
@@ -882,7 +1325,7 @@ fn anonymous_body_transaction_has_one_candidate_artifact_path_and_no_frontend_re
 
 #[test]
 fn well_known_option_resolution_stays_per_body_exact_and_fail_closed() {
-    let runtime = include_str!("revisioned_query_database.rs");
+    let runtime = REVISIONED_DATABASE_SOURCE;
     let method = source_between_exact_boundaries(
         runtime,
         "struct BodyTransactionEvaluator {",
@@ -1329,6 +1772,12 @@ fn unsupported_api_layout(source: &str, root: bool) -> Option<String> {
         {
             return Some(trimmed.to_owned());
         }
+        if trimmed.starts_with("include!(\"registrations/") {
+            // Registration fragments are expression snippets composed inside
+            // the canonical constructor. They are inventoried separately by
+            // the family-owner guard below.
+            continue;
+        }
         if trimmed.starts_with("include!(") || trimmed.starts_with("pub macro ") {
             return Some(trimmed.to_owned());
         }
@@ -1361,6 +1810,14 @@ fn unsupported_api_layout(source: &str, root: bool) -> Option<String> {
         test_only_condition = false;
     }
     for block in macro_blocks(source) {
+        let registration_macro = block
+            .trim_start()
+            .strip_prefix("macro_rules!")
+            .and_then(|header| header.trim_start().split_whitespace().next())
+            .is_some_and(|name| name.starts_with("register_"));
+        if !root && registration_macro {
+            continue;
+        }
         if root || code_identifiers(block).contains(&"pub") {
             return Some(block.lines().next().unwrap_or("macro_rules!").to_owned());
         }
@@ -1885,7 +2342,7 @@ fn per_body_query_boundary_is_stable_independent_and_cache_free() {
     assert!(!transaction.contains("Canceled"));
     assert!(!transaction.contains("NonTerminal"));
 
-    let runtime = include_str!("revisioned_query_database.rs");
+    let runtime = REVISIONED_DATABASE_SOURCE;
     assert!(runtime.contains("compiler.body-transaction"));
     for redundant_projection in [
         "\"compiler.body-references\"",
@@ -2168,7 +2625,7 @@ fn compiler_parallelism_has_one_query_budget_and_no_peer_parallel_frontier() {
     let root = include_str!("lib.rs");
     let cfg = include_str!("queries.rs");
     let backend = include_str!("backend.rs");
-    let database = include_str!("revisioned_query_database.rs");
+    let database = REVISIONED_DATABASE_SOURCE;
     assert!(
         root.contains("QUERY_CONCURRENCY")
             && root.contains("configure_thread_pool")
@@ -2476,7 +2933,7 @@ fn query_attempts_have_one_family_owned_representation() {
 #[test]
 fn revisioned_parse_family_is_runtime_registered_without_a_selection_wrapper() {
     let session = include_str!("session.rs");
-    let runtime = include_str!("revisioned_query_database.rs");
+    let runtime = REVISIONED_DATABASE_SOURCE;
     for removed in [
         "parse: TypedQueryStore<ParseQuery>",
         "parse_inputs",
@@ -2659,7 +3116,12 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         "the retired shell-import recipe returned to canonical_semantic"
     );
     assert!(!canonical.contains("fn analyze_canonical_program("));
-    assert_eq!(runtime.matches(".evaluate_declaration_shell(").count(), 1);
+    assert_eq!(
+        registered_family_source("compiler.declaration-shell")
+            .matches(".evaluate_declaration_shell(")
+            .count(),
+        1
+    );
     assert_eq!(parsed.matches("fn evaluate_declaration_shell(").count(), 1);
     for (name, source) in &production {
         for removed in [
@@ -2698,16 +3160,14 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
     assert_eq!(runtime.matches(".declaration_import(").count(), 1);
     assert_eq!(parsed.matches("fn declaration_import(").count(), 1);
     assert_eq!(
-        runtime.matches("\"compiler.declaration-import\"").count(),
+        registered_family_source("compiler.declaration-import")
+            .matches("\"compiler.declaration-import\"")
+            .count(),
         1
     );
     assert!(!runtime.contains("Vec::remove"));
 
-    let toolchain_demand_evaluator = runtime
-        .split("let artifacts_for_toolchain_demands")
-        .nth(1)
-        .and_then(|tail| tail.split("let transactions_for_produced_anonymous").next())
-        .unwrap();
+    let toolchain_demand_evaluator = registered_family_source("compiler.body-toolchain-demands");
     assert!(toolchain_demand_evaluator.contains("DeclarationBodyPlanQueryKey"));
     assert!(toolchain_demand_evaluator.contains(".fallible_intrinsics()"));
     for forbidden in [
@@ -2843,11 +3303,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
             "declaration-import parser locator lost fixed range field {required}"
         );
     }
-    let declaration_import_evaluator = runtime
-        .split("let occurrences_for_declaration_import")
-        .nth(1)
-        .and_then(|tail| tail.split("        Self {").next())
-        .unwrap();
+    let declaration_import_evaluator = registered_family_source("compiler.declaration-import");
     for forbidden in [
         "module_rirs",
         "lower_module_rir",
@@ -2869,11 +3325,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
             "declaration-import evaluator lost canonical query delegation: {required}"
         );
     }
-    let resolve_import_evaluator = runtime
-        .split("let index_for_import_resolution")
-        .nth(1)
-        .and_then(|tail| tail.split("let occurrences_for_declaration_import").next())
-        .unwrap();
+    let resolve_import_evaluator = registered_family_source("compiler.resolve-import");
     for required in [
         "index.import_occurrence(&key.occurrence)",
         "exact_import_winner(",
@@ -2987,7 +3439,7 @@ fn canonical_semantic_body_has_no_compiler_owned_peer_algebra() {
 fn rue_1027_production_body_authority_is_query_owned_and_import_only() {
     let canonical = include_str!("canonical_semantic.rs");
     let session = include_str!("session.rs");
-    let database = include_str!("revisioned_query_database.rs");
+    let database = REVISIONED_DATABASE_SOURCE;
     let body_query = include_str!("body_query.rs");
 
     for removed_peer_assembler in [
@@ -3034,16 +3486,12 @@ fn rue_1027_production_body_authority_is_query_owned_and_import_only() {
 
 #[test]
 fn rue_1191_anonymous_digest_collision_authority_is_body_closure_owned() {
-    let database = include_str!("revisioned_query_database.rs");
+    let database = REVISIONED_DATABASE_SOURCE;
     let production = database
         .split("\n#[cfg(test)]\nmod tests")
         .next()
         .expect("production revisioned database source");
-    let closure = database
-        .split("let body_closures =")
-        .nth(1)
-        .and_then(|source| source.split("let closures_for_publication =").next())
-        .expect("registered body-closure evaluator");
+    let closure = registered_family_source("compiler.body-closure");
 
     assert!(closure.contains("anonymous_digest_owners"));
     assert!(closure.contains("compiler_anonymous_identity_digest"));
@@ -3089,7 +3537,7 @@ fn rue_1191_anonymous_digest_collision_authority_is_body_closure_owned() {
 
 #[test]
 fn durable_const_integer_semantics_use_the_shared_kernel() {
-    let source = include_str!("revisioned_query_database.rs");
+    let source = REVISIONED_DATABASE_SOURCE;
     let durable = include_str!("durable_comptime.rs");
     assert!(
         !source.contains("SemanticConstEvaluator"),
@@ -3126,7 +3574,7 @@ fn durable_const_integer_semantics_use_the_shared_kernel() {
 
 #[test]
 fn comptime_depth_consumers_use_the_air_authority() {
-    let database = include_str!("revisioned_query_database.rs");
+    let database = REVISIONED_DATABASE_SOURCE;
     assert!(
         !database.contains("SEMANTIC_COMPTIME_MAX_DEPTH"),
         "durable queries must not define a competing comptime depth constant"
@@ -3205,7 +3653,7 @@ fn durable_specialized_producer_issuance_has_one_ordered_kernel() {
         assert!(!producer_kernel.contains(forbidden));
         assert!(!instance_kernel.contains(forbidden));
     }
-    let source = include_str!("revisioned_query_database.rs");
+    let source = REVISIONED_DATABASE_SOURCE;
     let identity = include_str!("semantic_identity.rs");
     let identity_production = identity
         .split("\n#[cfg(test)]\nmod tests")
@@ -3266,7 +3714,7 @@ fn durable_specialized_producer_issuance_has_one_ordered_kernel() {
 #[test]
 fn durable_comptime_services_are_named_authority_operations() {
     let facade = include_str!("durable_comptime.rs");
-    let database = include_str!("revisioned_query_database.rs");
+    let database = REVISIONED_DATABASE_SOURCE;
     let production = database
         .split("#[cfg(test)]\nmod tests")
         .next()
@@ -3348,7 +3796,7 @@ fn durable_air_host_is_composition_not_a_peer_interpreter() {
 
 #[test]
 fn durable_roots_share_one_terminal_classifier() {
-    let database = include_str!("revisioned_query_database.rs");
+    let database = REVISIONED_DATABASE_SOURCE;
     assert_eq!(
         database.matches("fn durable_comptime_root_result(").count(),
         1,
@@ -3373,7 +3821,7 @@ fn durable_roots_share_one_terminal_classifier() {
 #[test]
 fn durable_projection_failures_have_one_shared_semantic_mapping() {
     let durable = include_str!("durable_comptime.rs");
-    let database = include_str!("revisioned_query_database.rs");
+    let database = REVISIONED_DATABASE_SOURCE;
     assert_eq!(
         durable
             .matches("pub(crate) fn durable_candidate_rir_semantic_failure(")
@@ -3564,7 +4012,7 @@ fn durable_constructor_diagnostics_use_the_air_interleaver() {
 
 #[test]
 fn candidate_plan_metrics_have_one_query_terminal_authority() {
-    let database = include_str!("revisioned_query_database.rs");
+    let database = REVISIONED_DATABASE_SOURCE;
     let queries = include_str!("queries.rs");
     let session = include_str!("session.rs");
     let pipeline = include_str!("pipeline_tests.rs");
