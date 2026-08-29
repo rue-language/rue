@@ -128,6 +128,12 @@ class BodyValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "unresolved reachable control transfer"):
                 validator._validate_bodies(Path("synthetic.a:member.o"), {"memcpy": root}, "elf", 62)
 
+    def test_x86_rodata_jump_table_is_not_a_helper_edge(self):
+        # FF /4 through a SIB no-base address is also how LLVM emits a local
+        # jump table. Its resolved .rodata target is not a callable body.
+        root = body("memcpy", bytes.fromhex("488b07ff24d500000000"), [(6, ".rodata.table", 11)])
+        validator._validate_bodies(Path("synthetic"), {"memcpy": root}, "elf", 62)
+
     def test_unresolved_macho_cross_member_control_transfer_is_rejected(self):
         root = body(
             "_memcpy",

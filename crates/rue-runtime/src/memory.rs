@@ -92,6 +92,220 @@ unsafe fn write_chunk(dst: *mut u8, value: u64) {
     unsafe { core::ptr::write_unaligned(dst.cast::<u64>(), value) }
 }
 
+#[inline(never)]
+unsafe fn copy_forward_tail(dst: *mut u8, src: *const u8, remaining: usize) {
+    match remaining {
+        0 => {}
+        1 => unsafe { *dst = *src },
+        2 => unsafe {
+            *dst = *src;
+            *dst.add(1) = *src.add(1);
+        },
+        3 => unsafe {
+            *dst = *src;
+            *dst.add(1) = *src.add(1);
+            *dst.add(2) = *src.add(2);
+        },
+        4 => unsafe {
+            *dst = *src;
+            *dst.add(1) = *src.add(1);
+            *dst.add(2) = *src.add(2);
+            *dst.add(3) = *src.add(3);
+        },
+        5 => unsafe {
+            *dst = *src;
+            *dst.add(1) = *src.add(1);
+            *dst.add(2) = *src.add(2);
+            *dst.add(3) = *src.add(3);
+            *dst.add(4) = *src.add(4);
+        },
+        6 => unsafe {
+            *dst = *src;
+            *dst.add(1) = *src.add(1);
+            *dst.add(2) = *src.add(2);
+            *dst.add(3) = *src.add(3);
+            *dst.add(4) = *src.add(4);
+            *dst.add(5) = *src.add(5);
+        },
+        7 => unsafe {
+            *dst = *src;
+            *dst.add(1) = *src.add(1);
+            *dst.add(2) = *src.add(2);
+            *dst.add(3) = *src.add(3);
+            *dst.add(4) = *src.add(4);
+            *dst.add(5) = *src.add(5);
+            *dst.add(6) = *src.add(6);
+        },
+        _ => unsafe { core::hint::unreachable_unchecked() },
+    }
+}
+
+#[inline(never)]
+unsafe fn copy_backward_tail(dst: *mut u8, src: *const u8, remaining: usize) {
+    match remaining {
+        0 => {}
+        1 => unsafe { *dst = *src },
+        2 => unsafe {
+            *dst.add(1) = *src.add(1);
+            *dst = *src;
+        },
+        3 => unsafe {
+            *dst.add(2) = *src.add(2);
+            *dst.add(1) = *src.add(1);
+            *dst = *src;
+        },
+        4 => unsafe {
+            *dst.add(3) = *src.add(3);
+            *dst.add(2) = *src.add(2);
+            *dst.add(1) = *src.add(1);
+            *dst = *src;
+        },
+        5 => unsafe {
+            *dst.add(4) = *src.add(4);
+            *dst.add(3) = *src.add(3);
+            *dst.add(2) = *src.add(2);
+            *dst.add(1) = *src.add(1);
+            *dst = *src;
+        },
+        6 => unsafe {
+            *dst.add(5) = *src.add(5);
+            *dst.add(4) = *src.add(4);
+            *dst.add(3) = *src.add(3);
+            *dst.add(2) = *src.add(2);
+            *dst.add(1) = *src.add(1);
+            *dst = *src;
+        },
+        7 => unsafe {
+            *dst.add(6) = *src.add(6);
+            *dst.add(5) = *src.add(5);
+            *dst.add(4) = *src.add(4);
+            *dst.add(3) = *src.add(3);
+            *dst.add(2) = *src.add(2);
+            *dst.add(1) = *src.add(1);
+            *dst = *src;
+        },
+        _ => unsafe { core::hint::unreachable_unchecked() },
+    }
+}
+
+#[inline(never)]
+unsafe fn set_tail(dst: *mut u8, value: u8, remaining: usize) {
+    match remaining {
+        0 => {}
+        1 => unsafe { *dst = value },
+        2 => unsafe {
+            *dst = value;
+            *dst.add(1) = value;
+        },
+        3 => unsafe {
+            *dst = value;
+            *dst.add(1) = value;
+            *dst.add(2) = value;
+        },
+        4 => unsafe {
+            *dst = value;
+            *dst.add(1) = value;
+            *dst.add(2) = value;
+            *dst.add(3) = value;
+        },
+        5 => unsafe {
+            *dst = value;
+            *dst.add(1) = value;
+            *dst.add(2) = value;
+            *dst.add(3) = value;
+            *dst.add(4) = value;
+        },
+        6 => unsafe {
+            *dst = value;
+            *dst.add(1) = value;
+            *dst.add(2) = value;
+            *dst.add(3) = value;
+            *dst.add(4) = value;
+            *dst.add(5) = value;
+        },
+        7 => unsafe {
+            *dst = value;
+            *dst.add(1) = value;
+            *dst.add(2) = value;
+            *dst.add(3) = value;
+            *dst.add(4) = value;
+            *dst.add(5) = value;
+            *dst.add(6) = value;
+        },
+        _ => unsafe { core::hint::unreachable_unchecked() },
+    }
+}
+
+#[inline(never)]
+unsafe fn compare_bounded(a: *const u8, b: *const u8, remaining: usize) -> i32 {
+    macro_rules! compare_byte {
+        ($offset:expr) => {{
+            // SAFETY: The caller established that the bounded range contains
+            // every byte in this explicitly unrolled comparison.
+            let left = unsafe { *a.add($offset) };
+            let right = unsafe { *b.add($offset) };
+            if left != right {
+                return i32::from(left) - i32::from(right);
+            }
+        }};
+    }
+    match remaining {
+        0 => {}
+        1 => compare_byte!(0),
+        2 => {
+            compare_byte!(0);
+            compare_byte!(1);
+        }
+        3 => {
+            compare_byte!(0);
+            compare_byte!(1);
+            compare_byte!(2);
+        }
+        4 => {
+            compare_byte!(0);
+            compare_byte!(1);
+            compare_byte!(2);
+            compare_byte!(3);
+        }
+        5 => {
+            compare_byte!(0);
+            compare_byte!(1);
+            compare_byte!(2);
+            compare_byte!(3);
+            compare_byte!(4);
+        }
+        6 => {
+            compare_byte!(0);
+            compare_byte!(1);
+            compare_byte!(2);
+            compare_byte!(3);
+            compare_byte!(4);
+            compare_byte!(5);
+        }
+        7 => {
+            compare_byte!(0);
+            compare_byte!(1);
+            compare_byte!(2);
+            compare_byte!(3);
+            compare_byte!(4);
+            compare_byte!(5);
+            compare_byte!(6);
+        }
+        8 => {
+            compare_byte!(0);
+            compare_byte!(1);
+            compare_byte!(2);
+            compare_byte!(3);
+            compare_byte!(4);
+            compare_byte!(5);
+            compare_byte!(6);
+            compare_byte!(7);
+        }
+        _ => unsafe { core::hint::unreachable_unchecked() },
+    }
+    0
+}
+
 #[inline(always)]
 unsafe fn copy_forward(mut dst: *mut u8, mut src: *const u8, mut remaining: usize) {
     while remaining >= CHUNK_SIZE {
@@ -106,13 +320,8 @@ unsafe fn copy_forward(mut dst: *mut u8, mut src: *const u8, mut remaining: usiz
         remaining -= CHUNK_SIZE;
     }
 
-    while remaining != 0 {
-        // SAFETY: The tail byte is within both caller-provided ranges.
-        unsafe { *dst = *src };
-        dst = unsafe { dst.add(1) };
-        src = unsafe { src.add(1) };
-        remaining -= 1;
-    }
+    // SAFETY: The remaining tail is smaller than one chunk.
+    unsafe { copy_forward_tail(dst, src, remaining) };
 }
 
 #[inline(always)]
@@ -125,11 +334,8 @@ unsafe fn copy_backward(dst: *mut u8, src: *const u8, mut remaining: usize) {
         unsafe { write_chunk(dst.add(remaining), value) };
     }
 
-    while remaining != 0 {
-        remaining -= 1;
-        // SAFETY: The tail byte is within both caller-provided ranges.
-        unsafe { *dst.add(remaining) = *src.add(remaining) };
-    }
+    // SAFETY: The remaining tail is smaller than one chunk.
+    unsafe { copy_backward_tail(dst, src, remaining) };
 }
 
 /// Copy `n` bytes from `src` to `dst`. The memory regions must not overlap.
@@ -184,12 +390,8 @@ pub unsafe fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
         cursor = unsafe { cursor.add(CHUNK_SIZE) };
         remaining -= CHUNK_SIZE;
     }
-    while remaining != 0 {
-        // SAFETY: The tail byte is within the caller-provided destination range.
-        unsafe { *cursor = byte };
-        cursor = unsafe { cursor.add(1) };
-        remaining -= 1;
-    }
+    // SAFETY: The remaining tail is smaller than one chunk.
+    unsafe { set_tail(cursor, byte, remaining) };
     dst
 }
 
@@ -252,31 +454,17 @@ pub unsafe fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
         if a != b {
             // Locate the first differing byte to preserve memcmp's ordering
             // and sign contract rather than comparing whole machine words.
-            let mut index = 0;
-            while index < CHUNK_SIZE {
-                // SAFETY: The byte is within the differing chunk.
-                let left = unsafe { *s1.add(offset + index) };
-                let right = unsafe { *s2.add(offset + index) };
-                if left != right {
-                    return i32::from(left) - i32::from(right);
-                }
-                index += 1;
-            }
+            // SAFETY: The complete differing chunk is valid.
+            return unsafe { compare_bounded(s1.add(offset), s2.add(offset), CHUNK_SIZE) };
         }
         offset += CHUNK_SIZE;
         remaining -= CHUNK_SIZE;
     }
-    while remaining != 0 {
-        // SAFETY: The tail byte is within both caller-provided ranges.
-        let a = unsafe { *s1.add(offset) };
-        let b = unsafe { *s2.add(offset) };
-        if a != b {
-            return i32::from(a) - i32::from(b);
-        }
-        offset += 1;
-        remaining -= 1;
+    if remaining == 0 {
+        return 0;
     }
-    0
+    // SAFETY: The remaining tail is smaller than one chunk.
+    unsafe { compare_bounded(s1.add(offset), s2.add(offset), remaining) }
 }
 
 /// Compare `n` bytes of memory at `s1` and `s2` for equality.
@@ -303,15 +491,11 @@ pub unsafe fn bcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
         offset += CHUNK_SIZE;
         remaining -= CHUNK_SIZE;
     }
-    while remaining != 0 {
-        // SAFETY: The tail byte is within both caller-provided ranges.
-        if unsafe { *s1.add(offset) != *s2.add(offset) } {
-            return 1;
-        }
-        offset += 1;
-        remaining -= 1;
+    if remaining == 0 {
+        return 0;
     }
-    0
+    // SAFETY: The remaining tail is smaller than one chunk.
+    unsafe { (compare_bounded(s1.add(offset), s2.add(offset), remaining) != 0) as i32 }
 }
 
 #[cfg(test)]
