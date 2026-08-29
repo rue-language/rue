@@ -46,7 +46,10 @@ class BodyValidationTests(unittest.TestCase):
 
     def test_local_backedge_with_chunk_access_is_valid(self):
         loop = body("memcpy", bytes.fromhex("488b07e900000000"), [(4, "local_loop", 4)])
-        validator._validate_bodies(Path("synthetic"), {"memcpy": loop}, "elf", 62)
+        local_loop = body("local_loop", bytes.fromhex("c3"))
+        validator._validate_bodies(
+            Path("synthetic"), {"memcpy": loop, "local_loop": local_loop}, "elf", 62
+        )
 
     def test_wrapper_follows_canonical_body(self):
         wrapper = body("memcpy", bytes.fromhex("e900000000"), [(1, "canonical", 4)])
@@ -78,6 +81,29 @@ class BodyValidationTests(unittest.TestCase):
                 "elf",
                 62,
             )
+
+    def test_unresolved_elf_control_transfer_is_rejected(self):
+        # A chunk access must not make an unresolved call look safe: a helper
+        # in another archive member could conceal a reserved-symbol cycle.
+        root = body("memcpy", bytes.fromhex("488b07e800000000"), [(4, "unknown_helper", 4)])
+        with self.assertRaisesRegex(AssertionError, "unresolved reachable control transfer"):
+            validator._validate_bodies(Path("synthetic.a:member.o"), {"memcpy": root}, "elf", 62)
+
+    def test_unresolved_macho_cross_member_control_transfer_is_rejected(self):
+        root = body(
+            "_memcpy",
+            (0xF9400020).to_bytes(4, "little") + (0x14000000).to_bytes(4, "little"),
+            [(4, "_cross_member_helper", 2)],
+        )
+        with self.assertRaisesRegex(AssertionError, "unresolved reachable control transfer"):
+            validator._validate_bodies(
+                Path("synthetic.a:member.o"), {"_memcpy": root}, "macho", 183
+            )
+
+    def test_non_control_external_relocation_is_ignored(self):
+        # Data relocations do not establish a callable edge and remain valid.
+        root = body("memcpy", bytes.fromhex("488b07"), [(0, "external_data", 1)])
+        validator._validate_bodies(Path("synthetic"), {"memcpy": root}, "elf", 62)
 
     def test_wrapper_skips_unrelated_outlined_helper(self):
         wrapper = body(
