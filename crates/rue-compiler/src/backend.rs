@@ -358,6 +358,22 @@ pub(crate) fn validate_production_call_relocations(
     relocations: &[rue_codegen::EmittedRelocation],
     symbol_mappings: &std::collections::BTreeMap<String, String>,
 ) -> CompileResult<()> {
+    // Resolve the canonical machine-name domain once. Relocation validation is
+    // then independent of the number of source/glue mappings, rather than
+    // rescanning every mapping for every emitted call.
+    let canonical_machine_symbols = symbol_mappings
+        .values()
+        .map(String::as_str)
+        .collect::<ahash::AHashSet<_>>();
+    validate_production_call_relocations_with_membership(relocations, |symbol| {
+        canonical_machine_symbols.contains(symbol)
+    })
+}
+
+fn validate_production_call_relocations_with_membership(
+    relocations: &[rue_codegen::EmittedRelocation],
+    is_canonical_machine_symbol: impl Fn(&str) -> bool,
+) -> CompileResult<()> {
     for relocation in relocations {
         let is_call = matches!(
             relocation.kind,
@@ -365,9 +381,7 @@ pub(crate) fn validate_production_call_relocations(
         );
         if !is_call
             || rue_runtime_abi::classify_export(&relocation.symbol).is_some()
-            || symbol_mappings
-                .values()
-                .any(|machine_name| machine_name == &relocation.symbol)
+            || is_canonical_machine_symbol(&relocation.symbol)
         {
             continue;
         }
@@ -429,37 +443,102 @@ fn main() -> i32 {
             "legacy".to_owned(),
             "__rue_sem_v1_projected".to_owned(),
         )]);
-        let relocation = |symbol: &str| rue_codegen::EmittedRelocation {
+        let relocation = |symbol: &str, kind| rue_codegen::EmittedRelocation {
             offset: 0,
             symbol: symbol.to_owned(),
-            kind: RelocationKind::X86Plt32,
+            kind,
             addend: -4,
         };
 
+        for kind in [RelocationKind::X86Plt32, RelocationKind::Aarch64Call26] {
+            assert!(
+                validate_production_call_relocations(
+                    &[relocation("__rue_sem_v1_projected", kind)],
+                    &mappings,
+                )
+                .is_ok()
+            );
+            assert!(
+                validate_production_call_relocations(
+                    &[relocation(
+                        rue_runtime_abi::RuntimeHelperId::DebugBool.symbol(),
+                        kind,
+                    )],
+                    &mappings,
+                )
+                .is_ok()
+            );
+            assert!(
+                validate_production_call_relocations(&[relocation("legacy", kind)], &mappings)
+                    .is_err()
+            );
+            assert!(
+                validate_production_call_relocations(
+                    &[relocation("__rue_drop_unprojected", kind)],
+                    &mappings,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn production_relocation_validation_keeps_one_canonical_membership_authority() {
+        let source = include_str!("backend.rs");
+        let production = source
+            .split_once("pub(crate) fn validate_production_call_relocations(")
+            .expect("production validator remains present")
+            .1
+            .split_once("fn validate_production_call_relocations_with_membership(")
+            .expect("membership loop remains separated from set construction")
+            .0;
+        assert!(production.contains("collect::<ahash::AHashSet<_>>()"));
+        assert!(production.contains("canonical_machine_symbols.contains(symbol)"));
         assert!(
-            validate_production_call_relocations(
-                &[relocation("__rue_sem_v1_projected")],
-                &mappings,
-            )
-            .is_ok()
+            !production.contains(".any("),
+            "the production path must not restore a per-relocation mapping scan"
         );
-        assert!(
-            validate_production_call_relocations(
-                &[relocation(
-                    rue_runtime_abi::RuntimeHelperId::DebugBool.symbol(),
-                )],
-                &mappings,
-            )
-            .is_ok()
-        );
-        assert!(validate_production_call_relocations(&[relocation("legacy")], &mappings).is_err());
-        assert!(
-            validate_production_call_relocations(
-                &[relocation("__rue_drop_unprojected")],
-                &mappings,
-            )
-            .is_err()
-        );
+    }
+
+    #[test]
+    fn production_call_symbol_validation_scales_with_relocation_count() {
+        const SYMBOLS: usize = 2048;
+        let mappings = (0..SYMBOLS)
+            .map(|index| {
+                (
+                    format!("source_{index}"),
+                    format!("__rue_sem_v1_projected_{index}"),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let relocations = (0..SYMBOLS)
+            .map(|index| rue_codegen::EmittedRelocation {
+                offset: index as u64,
+                symbol: format!("__rue_sem_v1_projected_{index}"),
+                kind: RelocationKind::X86Plt32,
+                addend: 0,
+            })
+            .collect::<Vec<_>>();
+
+        validate_production_call_relocations(&relocations, &mappings)
+            .expect("every canonical machine symbol must validate");
+
+        // The validation loop performs one membership operation per emitted
+        // call. Keeping the membership operation injectable makes the
+        // scaling contract observable without relying on wall-clock timing:
+        // a mapping-wide scan would perform SYMBOLS comparisons for each
+        // relocation instead.
+        let canonical = mappings
+            .values()
+            .map(String::as_str)
+            .collect::<ahash::AHashSet<_>>();
+        let membership_calls = std::cell::Cell::new(0usize);
+        validate_production_call_relocations_with_membership(&relocations, |symbol| {
+            membership_calls.set(membership_calls.get() + 1);
+            canonical.contains(symbol)
+        })
+        .expect("every canonical machine symbol must validate through the membership helper");
+        assert_eq!(membership_calls.get(), SYMBOLS);
     }
 
     fn projection_section(kind: SectionKind, atoms: &[&[u8]]) -> CodegenSection {

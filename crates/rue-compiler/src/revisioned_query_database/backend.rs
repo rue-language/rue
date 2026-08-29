@@ -845,6 +845,48 @@ pub(crate) struct OptimizedCfgBatchKey {
     /// batch constant-time for every holder.
     pub(super) digest: rue_query::StableKeyHash,
     pub(super) memo_hash: u64,
+    /// The validated positional authority for this batch. This is transport
+    /// data only: it is deliberately absent from equality, memo hashing, and
+    /// the stable digest so equivalent query keys retain their identity.
+    index: Arc<OptimizedCfgBatchIndex>,
+}
+
+/// Constant-time lookup authority for the values published by an optimized
+/// CFG batch.
+///
+/// The source slice is retained alongside the map and checked by identity at
+/// lookup time. That guard makes a position from an equivalent-but-different
+/// batch (or a stale position after a source slice is replaced) unusable while
+/// keeping the hot per-codegen-unit lookup O(1) on average.
+#[derive(Debug)]
+struct OptimizedCfgBatchIndex {
+    source: Arc<[crate::cfg_query::OptimizedCfgQueryKey]>,
+    positions: AHashMap<crate::cfg_query::OptimizedCfgQueryKey, usize>,
+}
+
+impl OptimizedCfgBatchIndex {
+    fn new(source: Arc<[crate::cfg_query::OptimizedCfgQueryKey]>) -> Self {
+        let mut positions = AHashMap::with_capacity(source.len());
+        for (position, key) in source.iter().enumerate() {
+            assert!(
+                positions.insert(key.clone(), position).is_none(),
+                "optimized-CFG batch contains duplicate query keys"
+            );
+        }
+        Self { source, positions }
+    }
+
+    fn position_of(
+        &self,
+        source: &Arc<[crate::cfg_query::OptimizedCfgQueryKey]>,
+        key: &crate::cfg_query::OptimizedCfgQueryKey,
+    ) -> Option<usize> {
+        if !Arc::ptr_eq(&self.source, source) {
+            return None;
+        }
+        let position = self.positions.get(key).copied()?;
+        (self.source.get(position) == Some(key)).then_some(position)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -899,12 +941,23 @@ impl OptimizedCfgBatchKey {
         let digest = hasher.finish128();
         let memo_hash = hasher.finish();
         Self {
+            index: Arc::new(OptimizedCfgBatchIndex::new(keys.clone())),
             keys,
             roots,
             generation,
             digest,
             memo_hash,
         }
+    }
+}
+
+impl crate::codegen_query::OptimizedCfgBatchLookup for OptimizedCfgBatchKey {
+    fn optimized_cfg_position(
+        &self,
+        source: &Arc<[crate::cfg_query::OptimizedCfgQueryKey]>,
+        key: &crate::cfg_query::OptimizedCfgQueryKey,
+    ) -> Option<usize> {
+        self.index.position_of(source, key)
     }
 }
 

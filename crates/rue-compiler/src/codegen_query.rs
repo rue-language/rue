@@ -15,6 +15,17 @@ use rue_query::{QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutcome, Q
 
 use crate::retained_charge::RetainedCharge;
 
+/// Internal bridge for the rooted backend's batch-slot authority. The
+/// implementation lives with `OptimizedCfgBatchKey` so its source guard can
+/// inspect the private authority while codegen remains the sole consumer.
+pub(crate) trait OptimizedCfgBatchLookup {
+    fn optimized_cfg_position(
+        &self,
+        source: &Arc<[crate::cfg_query::OptimizedCfgQueryKey]>,
+        key: &crate::cfg_query::OptimizedCfgQueryKey,
+    ) -> Option<usize>;
+}
+
 #[cfg(test)]
 use std::cell::Cell;
 
@@ -474,10 +485,7 @@ pub(crate) fn evaluate_codegen_unit(
             .optimized_cfg_batch
             .as_ref()
             .and_then(|batch_key| {
-                batch_key
-                    .keys
-                    .iter()
-                    .position(|candidate| candidate == &key.optimized_cfg)
+                batch_key.optimized_cfg_position(&batch_key.keys, &key.optimized_cfg)
             })
             .expect("codegen optimized-CFG key belongs to its batch");
         let value = batch.values[index].clone();
