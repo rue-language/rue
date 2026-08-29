@@ -77,6 +77,348 @@ fn returns_literal() {
 }
 
 #[test]
+fn print_and_println_share_an_ordered_byte_trace() {
+    let outcome = run(r#"fn main() -> i32 {
+            print("hé");
+            println("!");
+            print("");
+            0
+        }"#);
+    assert_eq!(outcome.stdout.as_bytes(), "hé!\n".as_bytes());
+}
+
+#[test]
+fn print_output_respects_the_raw_stdout_bound() {
+    let unsupported = run_with_stdout_cap("fn main() -> i32 { print(\"hello\"); 0 }", 3)
+        .expect_err("output crossing the bound must fail closed");
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes)
+    );
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn stdout_write_syscall_is_modeled_only_for_fd_one() {
+    let output = run(r#"fn main() -> i32 {
+            let p: ptr mut u8 = checked { @alloc(3, 1) };
+            checked {
+                @ptr_write(p, 65);
+                @ptr_write(@ptr_offset(p, 1), 66);
+                @ptr_write(@ptr_offset(p, 2), 67);
+            };
+            let count: i64 = checked { @syscall(1, 1, @ptr_to_int(p), 3) };
+            checked { @free(p, 3, 1); };
+            @intCast(count)
+        }"#);
+    assert_eq!(output.stdout, "ABC");
+    assert_eq!(output.exit_code, 3);
+
+    // A shorter requested length is the only partial-write behavior the
+    // deterministic model claims: it observes exactly that prefix and returns
+    // the requested count. It does not pretend to simulate an OS short write.
+    let requested_prefix = run(r#"fn main() -> i32 {
+            let p: ptr mut u8 = checked { @alloc(3, 1) };
+            checked {
+                @ptr_write(p, 65);
+                @ptr_write(@ptr_offset(p, 1), 66);
+                @ptr_write(@ptr_offset(p, 2), 67);
+            };
+            let count: i64 = checked { @syscall(1, 1, @ptr_to_int(p), 2) };
+            checked { @free(p, 3, 1); };
+            @intCast(count)
+        }"#);
+    assert_eq!(requested_prefix.stdout, "AB");
+    assert_eq!(requested_prefix.exit_code, 2);
+
+    // Two short atomic requests retain their call order. This tests a
+    // requested prefix, not an arbitrary OS short write.
+    let sequential = run(r#"fn main() -> i32 {
+            let p: ptr mut u8 = checked { @alloc(2, 1) };
+            checked { @ptr_write(p, 65); @ptr_write(@ptr_offset(p, 1), 66); };
+            let first: i64 = checked { @syscall(1, 1, @ptr_to_int(p), 1) };
+            let second: i64 = checked { @syscall(1, 1, @ptr_to_int(@ptr_offset(p, 1)), 1) };
+            checked { @free(p, 2, 1); };
+            @intCast(first + second)
+        }"#);
+    assert_eq!(sequential.stdout, "AB");
+    assert_eq!(sequential.exit_code, 2);
+
+    let cap_crossing = run_with_stdout_cap(
+        r#"fn main() -> i32 {
+            let p: ptr mut u8 = checked { @alloc(2, 1) };
+            checked { @ptr_write(p, 65); @ptr_write(@ptr_offset(p, 1), 66); };
+            let _: i64 = checked { @syscall(1, 1, @ptr_to_int(p), 1) };
+            let _: i64 = checked { @syscall(1, 1, @ptr_to_int(@ptr_offset(p, 1)), 1) };
+            0
+        }"#,
+        1,
+    )
+    .expect_err("a valid write crossing only the stdout cap must fail closed");
+    assert_eq!(
+        cap_crossing.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes)
+    );
+
+    let oversized = expect_unsupported(
+        r#"fn main() -> i32 {
+            let _: i64 = checked { @syscall(1, 1, 0, 513) };
+            0
+        }"#,
+    );
+    assert_eq!(
+        oversized.kind(),
+        UnsupportedKind::ExternalDependency(ExternalDependencyKind::SystemCall)
+    );
+
+    let wrong_fd = expect_unsupported(
+        r#"fn main() -> i32 {
+            let p: ptr mut u8 = checked { @alloc(1, 1) };
+            checked { @ptr_write(p, 65); };
+            let _: i64 = checked { @syscall(1, 2, @ptr_to_int(p), 1) };
+            0
+        }"#,
+    );
+    assert_eq!(
+        wrong_fd.kind(),
+        UnsupportedKind::ExternalDependency(ExternalDependencyKind::SystemCall)
+    );
+
+    let wrong_number = expect_unsupported(
+        r#"fn main() -> i32 {
+            let p: ptr mut u8 = checked { @alloc(1, 1) };
+            checked { @ptr_write(p, 65); };
+            let _: i64 = checked { @syscall(39, 1, @ptr_to_int(p), 1) };
+            0
+        }"#,
+    );
+    assert_eq!(
+        wrong_number.kind(),
+        UnsupportedKind::ExternalDependency(ExternalDependencyKind::SystemCall)
+    );
+
+    let invalid_pointer = expect_unsupported(
+        r#"fn main() -> i32 {
+            let _: i64 = checked { @syscall(1, 1, 123, 1) };
+            0
+        }"#,
+    );
+    assert_eq!(
+        invalid_pointer.kind(),
+        UnsupportedKind::ExternalDependency(ExternalDependencyKind::SystemCall)
+    );
+
+    let freed_pointer = expect_unsupported(
+        r#"fn main() -> i32 {
+            let p: ptr mut u8 = checked { @alloc(1, 1) };
+            checked { @ptr_write(p, 65); @free(p, 1, 1); };
+            let _: i64 = checked { @syscall(1, 1, @ptr_to_int(p), 1) };
+            0
+        }"#,
+    );
+    assert_eq!(
+        freed_pointer.kind(),
+        UnsupportedKind::ExternalDependency(ExternalDependencyKind::SystemCall)
+    );
+
+    let uninitialized_pointer = expect_unsupported(
+        r#"fn main() -> i32 {
+            let p: ptr mut u8 = checked { @alloc(1, 1) };
+            let _: i64 = checked { @syscall(1, 1, @ptr_to_int(p), 1) };
+            0
+        }"#,
+    );
+    assert_eq!(
+        uninitialized_pointer.kind(),
+        UnsupportedKind::ExternalDependency(ExternalDependencyKind::SystemCall)
+    );
+
+    let invalid = run(r#"fn main() -> i32 {
+            let p: ptr mut u8 = checked { @alloc(1, 1) };
+            checked { @byte_set(p, 255, 1); };
+            let _: i64 = checked { @syscall(1, 1, @ptr_to_int(p), 1) };
+            0
+        }"#);
+    let different_invalid = run(r#"fn main() -> i32 {
+            let p: ptr mut u8 = checked { @alloc(1, 1) };
+            checked { @byte_set(p, 254, 1); };
+            let _: i64 = checked { @syscall(1, 1, @ptr_to_int(p), 1) };
+            0
+        }"#);
+    assert_eq!(invalid.stdout, different_invalid.stdout);
+    assert_ne!(invalid.stdout_bytes, different_invalid.stdout_bytes);
+    assert_eq!(invalid.stdout_bytes, [255]);
+}
+
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
+    all(target_os = "macos", target_arch = "aarch64"),
+))]
+#[test]
+fn modeled_stdout_syscall_crossing_cap_is_a_resource_failure() {
+    let write_nr = host_write_syscall_number().expect("supported host write ABI");
+    let source = format!(
+        r#"fn main() -> i32 {{
+            let p: ptr mut u8 = checked {{ @alloc(2, 1) }};
+            checked {{ @ptr_write(p, 65); @ptr_write(@ptr_offset(p, 1), 66); }};
+            let _: i64 = checked {{ @syscall({write_nr}, 1, @ptr_to_int(p), 1) }};
+            let _: i64 = checked {{ @syscall({write_nr}, 1, @ptr_to_int(@ptr_offset(p, 1)), 1) }};
+            0
+        }}"#
+    );
+    let unsupported = run_with_stdout_cap(&source, 1)
+        .expect_err("a valid write crossing only the stdout cap must fail closed");
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes)
+    );
+}
+
+#[test]
+fn allocator_reuses_freed_small_blocks_by_size_class() {
+    let outcome = run(r#"fn main() -> i32 {
+            let first: ptr mut u8 = checked { @alloc(4006, 1) };
+            let first_address: u64 = checked { @ptr_to_int(first) };
+            checked { @free(first, 4006, 1); };
+
+            // 4005 and 4006 both round to the runtime allocator's 4096-byte
+            // small class, so this allocation reuses the freed block.
+            let same_class: ptr mut u8 = checked { @alloc(4005, 1) };
+            let same_address: u64 = checked { @ptr_to_int(same_class) };
+            let different_class: ptr mut u8 = checked { @alloc(8, 1) };
+            let different_address: u64 = checked { @ptr_to_int(different_class) };
+            checked {
+                @free(same_class, 4005, 1);
+                @free(different_class, 8, 1);
+            };
+            if first_address == same_address && first_address != different_address { 42 } else { 1 }
+        }"#);
+    assert_eq!(outcome.exit_code, 42);
+}
+
+#[test]
+fn recycled_storage_keeps_stale_pointer_provenance_dead() {
+    let unsupported = expect_unsupported(
+        r#"fn main() -> i32 {
+        let old: ptr mut u8 = checked { @alloc(8, 1) };
+        checked { @ptr_write(old, 65); @free(old, 8, 1); };
+        let fresh: ptr mut u8 = checked { @alloc(8, 1) };
+        checked { @ptr_read(old); };
+        let old_address: u64 = checked { @ptr_to_int(old) };
+        let fresh_address: u64 = checked { @ptr_to_int(fresh) };
+        if old_address == fresh_address { 0 } else { 1 }
+    }"#,
+    );
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::PointerRead,
+        ))
+    );
+    assert_eq!(
+        unsupported.detail(),
+        "pointer has stale allocation provenance"
+    );
+}
+
+#[test]
+fn recycled_storage_rejects_stale_pointer_derived_integer() {
+    let unsupported = expect_unsupported(
+        r#"fn main() -> i32 {
+        let old: ptr mut u8 = checked { @alloc(8, 1) };
+        let old_address: u64 = checked { @ptr_to_int(old) };
+        checked { @free(old, 8, 1); };
+        let fresh: ptr mut u8 = checked { @alloc(8, 1) };
+        let recovered: ptr mut u8 = checked { @int_to_ptr(old_address) };
+        checked { @ptr_read(recovered); };
+        let fresh_address: u64 = checked { @ptr_to_int(fresh) };
+        if fresh_address == old_address { 0 } else { 1 }
+    }"#,
+    );
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::IntToPointer,
+        ))
+    );
+}
+
+#[test]
+fn small_free_lists_follow_free_order_and_realloc_releases_old_blocks() {
+    let outcome = run(r#"fn main() -> i32 {
+        let a: ptr mut u8 = checked { @alloc(8, 1) };
+        let b: ptr mut u8 = checked { @alloc(8, 1) };
+        let a_address: u64 = checked { @ptr_to_int(a) };
+        let b_address: u64 = checked { @ptr_to_int(b) };
+        checked { @free(b, 8, 1); @free(a, 8, 1); };
+        let first: ptr mut u8 = checked { @alloc(8, 1) };
+        let first_address: u64 = checked { @ptr_to_int(first) };
+
+        let moved: ptr mut u8 = checked { @realloc(first, 8, 1, 16) };
+        let b_again: ptr mut u8 = checked { @alloc(8, 1) };
+        let b_again_address: u64 = checked { @ptr_to_int(b_again) };
+        checked { @free(moved, 16, 1); @free(b_again, 8, 1); };
+        if first_address == a_address
+            && first_address != b_address
+            && b_again_address == first_address
+        { 42 } else { 1 }
+    }"#);
+    assert_eq!(outcome.exit_code, 42);
+}
+
+#[test]
+fn recycled_extent_growth_is_chargeable_heap_metadata() {
+    let state = query_cfg_state("fn main() -> i32 { 0 }").expect("test state compiles");
+    let mut interp = Interp {
+        state: &state,
+        stdout_trace: Vec::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+        heap: vec![Allocation {
+            bytes: vec![0; 9],
+            initialized: vec![false; 9],
+            provenance: vec![None; 9],
+            root_ty: None,
+            freed: true,
+            generation: 1,
+            free_list_next: None,
+            origin: AllocationOrigin::Heap,
+            declared_alignment: 1,
+            owner_depth: None,
+        }],
+        small_free_heads: [
+            None,
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ],
+        heap_metadata_bytes: 128 * 1024 * 1024 - 1,
+    };
+    let error = interp
+        .do_alloc(16, false, 1)
+        .expect_err("reused extent growth must charge metadata");
+    assert!(matches!(
+        error,
+        Flow::Unsupported(Unsupported {
+            kind: UnsupportedKind::ResourceLimit(ResourceLimitKind::InterpreterSteps),
+            ..
+        })
+    ));
+}
+
+#[test]
 fn cfg_boundary_differential_is_deterministic() {
     let source = "fn square(x: i32) -> i32 { x * x } fn main() -> i32 { square(3) }";
     let first = run_source_cfg_differential(source).expect("CFG boundaries agree");
@@ -1580,13 +1922,14 @@ fn representation_encode_decode_detects_planted_byte_mutation() {
     let state = query_cfg_state("fn main() -> i32 { 0 }").expect("test state compiles");
     let interp = Interp {
         state: &state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     let (mut bytes, initialized, provenance) =
@@ -1687,6 +2030,39 @@ fn allocator_contracts_reject_non_heap_and_mismatched_handles() {
             UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(kind))
         );
     }
+}
+
+#[test]
+fn allocator_rejects_overaligned_layouts_before_classification() {
+    let unsupported = expect_unsupported(
+        r#"fn main() -> i32 {
+            checked { let p: ptr mut u8 = @alloc(8, 8192); };
+            0
+        }"#,
+    );
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::Allocate,
+        ))
+    );
+    assert_eq!(unsupported.detail(), "invalid allocation alignment");
+
+    let realloc = expect_unsupported(
+        r#"fn main() -> i32 {
+            checked {
+                let p: ptr mut u8 = @alloc(8, 1);
+                let q: ptr mut u8 = @realloc(p, 8, 8192, 16);
+            };
+            0
+        }"#,
+    );
+    assert_eq!(
+        realloc.kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::Reallocate,
+        ))
+    );
 }
 
 #[test]
@@ -1864,6 +2240,58 @@ fn realloc_grows_and_preserves() {
         }
     }"#;
     assert_eq!(run(src).exit_code, 112);
+}
+
+#[test]
+fn realloc_same_small_class_keeps_address() {
+    let src = r#"fn main() -> i32 {
+        checked {
+            let p: ptr mut u8 = @alloc(9, 1);
+            let before: u64 = @ptr_to_int(p);
+            @byte_set(p, 65, 9);
+            let q: ptr mut u8 = @realloc(p, 9, 1, 10);
+            let after: u64 = @ptr_to_int(q);
+            let value: u8 = @ptr_read(q);
+            @free(q, 10, 1);
+            if before == after && value == 65 { 42 } else { 1 }
+        }
+    }"#;
+    assert_eq!(run(src).exit_code, 42);
+}
+
+#[test]
+fn realloc_different_small_class_moves_and_preserves_prefix() {
+    let src = r#"fn main() -> i32 {
+        checked {
+            let p: ptr mut u8 = @alloc(16, 1);
+            let before: u64 = @ptr_to_int(p);
+            @byte_set(p, 7, 16);
+            let q: ptr mut u8 = @realloc(p, 16, 1, 8);
+            let after: u64 = @ptr_to_int(q);
+            let value: u8 = @ptr_read(@ptr_offset(q, 7));
+            @free(q, 8, 1);
+            if before != after && value == 7 { 42 } else { 1 }
+        }
+    }"#;
+    assert_eq!(run(src).exit_code, 42);
+}
+
+#[test]
+fn realloc_destination_uses_freed_small_class_head() {
+    let src = r#"fn main() -> i32 {
+        checked {
+            let released: ptr mut u8 = @alloc(16, 1);
+            let released_address: u64 = @ptr_to_int(released);
+            @free(released, 16, 1);
+
+            let narrow: ptr mut u8 = @alloc(8, 1);
+            let wide: ptr mut u8 = @realloc(narrow, 8, 1, 16);
+            let wide_address: u64 = @ptr_to_int(wide);
+            @free(wide, 16, 1);
+            if released_address == wide_address { 42 } else { 1 }
+        }
+    }"#;
+    assert_eq!(run(src).exit_code, 42);
 }
 
 /// A `@realloc` too large to satisfy returns null; the original allocation and

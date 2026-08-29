@@ -1,10 +1,7 @@
 //! Exact model-gap inventory for the expanded `rue-spec` corpus.
 
 use super::{InventoryScope, ModelGapAudit, ModelGapRegistration};
-use rue_oracle::{
-    ExternalDependencyKind, ModelGapKind, SemanticGapKind, UnsupportedIntrinsicKind,
-    UnsupportedRuntimeCallKind,
-};
+use rue_oracle::{ExternalDependencyKind, ModelGapKind, SemanticGapKind, UnsupportedIntrinsicKind};
 use std::fmt;
 
 /// Stable spec-corpus identity. The case name is the post-template-expansion
@@ -346,36 +343,6 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::ParseI64),
         &[],
     ),
-    Entry::new(
-        "types.strings",
-        "print_borrows_argument_string",
-        runtime_call(UnsupportedRuntimeCallKind::Print),
-        &[],
-    ),
-    Entry::new(
-        "types.strings",
-        "print_empty_writes_nothing_println_empty_writes_newline",
-        runtime_call(UnsupportedRuntimeCallKind::Print),
-        &[],
-    ),
-    Entry::new(
-        "types.strings",
-        "print_writes_bytes_without_newline",
-        runtime_call(UnsupportedRuntimeCallKind::Print),
-        &[],
-    ),
-    Entry::new(
-        "types.strings",
-        "println_appends_single_newline",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "types.strings",
-        "println_composes_with_to_string_and_concat",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
 ];
 
 pub(crate) fn audit(scope: InventoryScope) -> ModelGapAudit<CaseId> {
@@ -434,10 +401,6 @@ fn render_kind(kind: ModelGapKind) -> String {
 
 const fn intrinsic(kind: UnsupportedIntrinsicKind) -> ModelGapKind {
     ModelGapKind::Semantic(SemanticGapKind::Intrinsic(kind))
-}
-
-const fn runtime_call(kind: UnsupportedRuntimeCallKind) -> ModelGapKind {
-    ModelGapKind::Semantic(SemanticGapKind::RuntimeCall(kind))
 }
 
 const fn external(kind: ExternalDependencyKind) -> ModelGapKind {

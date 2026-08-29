@@ -123,6 +123,21 @@ pub enum RuntimeTarget {
     Aarch64Macos,
 }
 
+impl RuntimeTarget {
+    /// Direct `write(2)` syscall number for this supported runtime target.
+    ///
+    /// This is a shared ABI fact consumed by both the no-std runtime wrappers
+    /// and the reference oracle; target-specific register placement remains in
+    /// each runtime module.
+    pub const fn write_syscall_number(self) -> u64 {
+        match self {
+            Self::X86_64Linux => 1,
+            Self::Aarch64Linux => 64,
+            Self::Aarch64Macos => 4,
+        }
+    }
+}
+
 /// A composable set of runtime targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TargetSet(u8);
@@ -1787,6 +1802,13 @@ mod tests {
             }
             assert_eq!(helper.calling_convention, CallingConvention::TargetC);
         }
+    }
+
+    #[test]
+    fn write_syscall_numbers_are_centralized_per_supported_target() {
+        assert_eq!(RuntimeTarget::X86_64Linux.write_syscall_number(), 1);
+        assert_eq!(RuntimeTarget::Aarch64Linux.write_syscall_number(), 64);
+        assert_eq!(RuntimeTarget::Aarch64Macos.write_syscall_number(), 4);
     }
 
     #[test]

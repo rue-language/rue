@@ -1,10 +1,7 @@
 //! Exact model-gap inventory for the `rue-cli-tests` corpus.
 
 use super::{InventoryScope, ModelGapAudit, ModelGapRegistration};
-use rue_oracle::{
-    ExternalDependencyKind, ModelGapKind, SemanticGapKind, UnsupportedIntrinsicKind,
-    UnsupportedRuntimeCallKind,
-};
+use rue_oracle::{ExternalDependencyKind, ModelGapKind, SemanticGapKind, UnsupportedIntrinsicKind};
 use std::fmt;
 
 /// Stable CLI corpus identity. File paths are deliberately excluded: cases
@@ -66,27 +63,15 @@ impl Entry {
 /// Entries are generated from unknown-gap diagnostics emitted by the real
 /// production classifier, then reviewed into this typed list. Dynamic
 /// `Unsupported::detail` text is intentionally absent from the policy key. The
-/// Each entry records the first unsupported semantic boundary observed by the
+/// entries record the first unsupported semantic boundary observed by the
 /// current oracle. Representation-byte support has moved affected heap cases
-/// past byte copying; remaining entries are genuine runtime, syscall, pointer,
-/// or layout boundaries.
+/// past byte copying; remaining entries are genuine syscall, pointer, or
+/// layout boundaries.
 const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.arraybuf_library",
         "arraybuf_zero_sized_element",
         intrinsic(UnsupportedIntrinsicKind::PointerWrite),
-        &[],
-    ),
-    Entry::new(
-        "cli.const_init",
-        "string_const_prints_and_measures",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.enum_payloads",
-        "returned_nested_json_drops_safely",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
         &[],
     ),
     // std.fs File IO v0 (RUE-712, ADR-0057): pure-Rue fs over @syscall. The
@@ -328,47 +313,6 @@ const ENTRIES: &[Entry] = &[
         external(ExternalDependencyKind::SystemCall),
         &[],
     ),
-    // RUE-1758: the inlined-continuation lowering-order cases assert on stdout
-    // rather than an exit code, because lowering a use before its definition
-    // produced a WRONG VALUE — a `None` read as `Some(<uninitialized>)` — not a
-    // trap. `println` is therefore the first thing the oracle model cannot
-    // follow in each, exactly as for the IntMap key-extreme cases below.
-    Entry::new(
-        "cli.inlined_continuation_lowering_order",
-        "hand_written_option_none_survives_an_inlined_call",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.inlined_continuation_lowering_order",
-        "multi_slot_payload_option_keeps_its_none",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.inlined_continuation_lowering_order",
-        "one_byte_payload_option_keeps_its_none",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.inlined_continuation_lowering_order",
-        "present_and_absent_keys_both_answer_correctly",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.inlined_continuation_lowering_order",
-        "std_intmap_missing_key_stays_none_after_an_inlined_call",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    // The RUE-1636 cross-mechanism case builds a `StrBuf` and scans it byte by
-    // byte, so the oracle model stops at the runtime/output boundary like every
-    // other StrBuf-backed case here. The rest of the `cli.integer_class_width`
-    // section is plain integer arithmetic the oracle models directly, which is
-    // why this is the section's only entry.
-
     // RUE-954: the literal-threading regression cases invoke a real dup(2)
     // syscall, which the oracle does not model.
     Entry::new(
@@ -383,24 +327,12 @@ const ENTRIES: &[Entry] = &[
         external(ExternalDependencyKind::SystemCall),
         &["x86-64-linux"],
     ),
-    // RUE-682: only the std.hash cases that route bytes through StrBuf or
-    // ArrayBuf(u8) hit the runtime/output boundary. The three that hash `str` views
-    // directly — including `hash_known_answer_vectors`, which carries the
-    // published FNV-1a/64 vectors — ARE modeled, so the oracle differentially
-    // checks the hash arithmetic itself. That is the coverage worth having here;
-    // the container spellings are asserted to agree with `str` inside the cases.
-
     // ADR-0052 phase 3 (RUE-974): these cases remain registered only for the
     // unsupported target-layout/unaligned outcome they exercise; field
     // projection and allocation are modeled by the oracle.
     // ADR-0052 phase 5.5 (RUE-989): the narrow-access cases retain their
     // genuine target-layout gap, rather than treating field_ptr or alloc as
     // unmodeled operations.
-    // RUE-1786: the two over-rejection controls in this section are the only
-    // ones that RUN -- the rest assert a compile failure and are ineligible.
-    // Both build a real StrBuf, so they reach the same remaining unsupported
-    // boundary as every other StrBuf-backed case here.
-
     // RUE-978: these byte-surface cases depend on the target-specific mapping
     // behavior noted by their registrations; @alloc itself is modeled.
     Entry::new(
@@ -408,42 +340,6 @@ const ENTRIES: &[Entry] = &[
         "ptr_offset_forward_on_mmap_pointer",
         external(ExternalDependencyKind::SystemCall),
         &["x86-64-linux"],
-    ),
-    Entry::new(
-        "cli.print",
-        "print_borrows_string_reusable_after_call",
-        runtime_call(UnsupportedRuntimeCallKind::Print),
-        &[],
-    ),
-    Entry::new(
-        "cli.print",
-        "print_empty_and_println_empty",
-        runtime_call(UnsupportedRuntimeCallKind::Print),
-        &[],
-    ),
-    Entry::new(
-        "cli.print",
-        "print_no_trailing_newline",
-        runtime_call(UnsupportedRuntimeCallKind::Print),
-        &[],
-    ),
-    Entry::new(
-        "cli.print",
-        "print_utf8_bytes_verbatim",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.print",
-        "println_adds_single_newline",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.print",
-        "println_composed_with_to_string_and_concat",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
     ),
     Entry::new(
         "cli.slices",
@@ -459,91 +355,6 @@ const ENTRIES: &[Entry] = &[
         "cli.slices",
         "struct_element_slice_empty_view",
         intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
-        &[],
-    ),
-    // std.c C-string export contract (RUE-1710): the buffer and raw-pointer
-    // representation are modeled; these cases remain at the runtime/output
-    // boundary. The FFI-free round-trip case reaches `println` first instead,
-    // which is the runtime-call gap.
-    Entry::new(
-        "cli.std_c_strings",
-        "c_free_c_string_returns_block_to_its_own_size_class",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_c_strings",
-        "c_has_interior_nul_positions",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_c_strings",
-        "c_owned_c_string_roundtrip_without_ffi",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    // IntMap key extremes (RUE-1709). These cases assert on stdout rather than
-    // an exit code, because a hash that mishandles `i64::MIN` or that diverges
-    // between `_slot` and `_grow_to` produces a WRONG VALUE, not a trap — so
-    // `println` is the first thing the oracle model cannot follow in each.
-    Entry::new(
-        "cli.std_collections",
-        "intmap_extreme_keys_survive_growth",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_collections",
-        "intmap_key_i64_min_full_lifecycle",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_collections",
-        "intmap_negative_zero_positive_and_extreme_keys",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    // std.math at the type extremes (RUE-1708). Each case reports per-width
-    // answers on stdout, since the bugs produced traps and wrong booleans
-    // rather than distinguishable exit codes. `math_is_prime_small_and_negative`
-    // accumulates its answer into a `StrBuf` before printing, so the runtime
-    // output boundary is the first unsupported effect.
-    Entry::new(
-        "cli.std_core",
-        "math_gcd_at_type_min",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_core",
-        "math_gcd_signs_zero_and_unsigned",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_core",
-        "math_gcd_unrepresentable_result_panics",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_core",
-        "math_is_prime_at_type_maxima",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_core",
-        "math_is_prime_small_and_negative",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_core",
-        "math_lcm_zero_and_type_min",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
         &[],
     ),
     // std.env (RUE-935): argv/envp are captured process state, so the oracle
@@ -591,43 +402,6 @@ const ENTRIES: &[Entry] = &[
         external(ExternalDependencyKind::SystemCall),
         &[],
     ),
-    // std.fmt.to_radix's base contract (RUE-1707). The three in-contract cases
-    // render digits to stdout, which the oracle model cannot follow past the
-    // `StrBuf` copy or the `println`. `to_radix_base_1000_panics` joins them
-    // because it deliberately prints a line BEFORE the guard fires; the other
-    // out-of-contract cases (base 0/1/17/u64::MAX) produce no stdout at all and
-    // assert only the `@panic` trap, which is a harness observation rather than
-    // oracle debt, so they are absent here by design.
-    Entry::new(
-        "cli.std_fmt_radix",
-        "to_radix_all_bases_2_through_16",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_fmt_radix",
-        "to_radix_base_1000_panics",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_fmt_radix",
-        "to_radix_u64_max_at_contract_edges",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_fmt_radix",
-        "to_radix_zero_at_every_legal_base",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_m3",
-        "std_strbuf_formatting_and_text_consumers",
-        runtime_call(UnsupportedRuntimeCallKind::Print),
-        &[],
-    ),
     Entry::new(
         "cli.std_net_tcp",
         "tcp_connection_refused",
@@ -652,52 +426,18 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::PointerRead),
         &[],
     ),
+    // Output observation is modeled now; this case still reaches its genuine
+    // text parsing boundary while formatting the StrBuf consumers.
     Entry::new(
-        "cli.strbuf_library",
-        "strbuf_new_push_str_len_print",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.strbuf_library",
-        "strbuf_with_capacity_concat",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_phase1",
-        "to_string_all_integer_widths",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_phase1",
-        "to_string_i32_no_cast_needed",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.try_operator",
-        "try_string_payload",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
-        &[],
-    ),
-    Entry::new(
-        "cli.try_operator",
-        "try_unwrap_and_short_circuit",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
+        "cli.std_m3",
+        "std_strbuf_formatting_and_text_consumers",
+        intrinsic(UnsupportedIntrinsicKind::ParseI32),
         &[],
     ),
     Entry::new(
         "cli.unit_fields",
         "std_option_and_arraybuf_accept_unit",
         intrinsic(UnsupportedIntrinsicKind::PointerWrite),
-        &[],
-    ),
-    Entry::new(
-        "cli.wildcard_payload_binding",
-        "discarded_non_copy_payload_drops_once",
-        runtime_call(UnsupportedRuntimeCallKind::Println),
         &[],
     ),
     Entry::new(
@@ -794,10 +534,6 @@ fn render_kind(kind: ModelGapKind) -> String {
 
 const fn intrinsic(kind: UnsupportedIntrinsicKind) -> ModelGapKind {
     ModelGapKind::Semantic(SemanticGapKind::Intrinsic(kind))
-}
-
-const fn runtime_call(kind: UnsupportedRuntimeCallKind) -> ModelGapKind {
-    ModelGapKind::Semantic(SemanticGapKind::RuntimeCall(kind))
 }
 
 const fn external(kind: ExternalDependencyKind) -> ModelGapKind {

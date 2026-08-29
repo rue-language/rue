@@ -26,12 +26,13 @@
 compile_error!("rue-runtime only supports x86-64 Linux");
 
 use core::arch::asm;
+use rue_runtime_abi::RuntimeTarget;
 
 /// Linux syscall number for read (see `man 2 read`).
 const SYS_READ: i64 = 0;
 
 /// Linux syscall number for write (see `man 2 write`).
-const SYS_WRITE: i64 = 1;
+const SYS_WRITE: i64 = RuntimeTarget::X86_64Linux.write_syscall_number() as i64;
 
 /// Linux syscall number for mmap (see `man 2 mmap`).
 const SYS_MMAP: i64 = 9;

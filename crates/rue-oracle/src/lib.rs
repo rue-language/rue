@@ -55,11 +55,13 @@
 //! Generated-program mode has the stronger promise that no `Unsupported` kind
 //! is valid and reports every one as a generator-contract failure.
 //!
-//! - **All other CFG intrinsics.** The `Intrinsic` arm models `@dbg`, `@panic`,
-//!   `@assert`, compiler-inserted slice bounds checks, and the deterministic
-//!   heap/raw-pointer representation paths. Nondeterministic input and host
-//!   effects (`@read_line`, `@random_*`, and `@syscall`) remain typed gaps, as
-//!   do unsupported layout and external-effect boundaries.
+//! - **CFG intrinsics and runtime output.** The `Intrinsic` arm models `@dbg`,
+//!   `@panic`, `@assert`, compiler-inserted slice bounds checks, deterministic
+//!   heap/raw-pointer representation paths, and the exact target `write(1, ..)`
+//!   syscall shape. Nondeterministic input and host effects (`@read_line`,
+//!   `@random_*`, and all other `@syscall` calls) remain typed gaps, as do
+//!   unsupported layout and external-effect boundaries. String print/println
+//!   runtime calls append to the same ordered fd-1 byte trace as modeled writes.
 //! - **`String::capacity`/`reserve`/`with_capacity` capacity behavior** — the
 //!   exact capacity value is implementation-defined, so `capacity` is reported
 //!   as a typed gap rather than guessed. Specified bounds and growth/preservation
@@ -72,6 +74,7 @@ use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, Place, PlaceBase, Projecti
 use rue_compiler::{
     CompileErrors, CompileOptions, CompilerSession, PreviewFeatures, SourceSnapshot,
 };
+use rue_runtime_abi::RuntimeTarget;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
@@ -262,8 +265,13 @@ impl fmt::Display for TrapKind {
 pub struct Outcome {
     /// Process exit code (the OS masks the returned `i32` to a `u8`).
     pub exit_code: i32,
-    /// Everything `@dbg` wrote, in order, newline-terminated per call.
+    /// Everything fd 1 received, in order, decoded lossily at the public
+    /// observation boundary.
     pub stdout: String,
+    /// The exact raw bytes observed on fd 1. Differential callers that need
+    /// byte identity must compare this field, rather than the lossy display
+    /// string above.
+    pub stdout_bytes: Vec<u8>,
     /// Everything the modeled runtime wrote to stderr, decoded with the same
     /// lossy UTF-8 boundary as the native differential runner so the resulting
     /// observation remains exactly comparable.
@@ -281,6 +289,15 @@ pub struct Outcome {
 /// remains exact; crossing it is surfaced explicitly and never accepted by
 /// comparing a truncated prefix.
 pub const MAX_STDOUT_BYTES: usize = 256 * 1024;
+
+/// Maximum size of a raw `write(1, ...)` observation that the differential
+/// oracle treats as deterministic.  The bound is the POSIX minimum `PIPE_BUF`:
+/// Within the controlled blocking stdout capture sink, the native runner drains
+/// concurrently and does not deliver signals to the child; combined with the
+/// POSIX atomicity guarantee for writes of this size or less, that gives a
+/// stable byte trace. Larger writes are retained as external syscall
+/// dependencies rather than guessing about an OS short write.
+pub const MAX_MODELED_STDOUT_WRITE_BYTES: usize = 512;
 
 /// Maximum number of raw bytes accepted from modeled runtime stderr.
 ///
@@ -708,13 +725,14 @@ fn run_state_with_output_limits(
             .spawn_scoped(scope, || {
                 Interp {
                     state: &state,
-                    stdout: String::new(),
+                    stdout_trace: Vec::new(),
                     stdout_bytes: 0,
                     stdout_cap,
                     stderr_cap,
                     budget,
                     depth: 0,
                     heap: Vec::new(),
+                    small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
                     heap_metadata_bytes: 0,
                 }
                 .run()
@@ -749,6 +767,32 @@ const STEP_BUDGET: u64 = 50_000_000;
 /// activations that fit in `WORKER_STACK`, so the bound always wins the race
 /// against stack exhaustion.
 const MAX_DEPTH: u32 = 2_000;
+
+/// The direct-write syscall number for the target executing this oracle. The
+/// oracle only models the ABI it can identify from its own compiled target;
+/// target-specific corpus filters remain authoritative for cross-target cases.
+const fn host_write_syscall_number() -> Option<u64> {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        Some(RuntimeTarget::X86_64Linux.write_syscall_number())
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        Some(RuntimeTarget::Aarch64Linux.write_syscall_number())
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        Some(RuntimeTarget::Aarch64Macos.write_syscall_number())
+    }
+    #[cfg(not(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "aarch64"),
+    )))]
+    {
+        None
+    }
+}
 
 /// Byte-address space reserved per abstract heap allocation when synthesizing a
 /// `@ptr_to_int` value. Comfortably larger than [`MAX_ALLOC_BYTES`] so an
@@ -809,6 +853,10 @@ enum Value {
 struct PtrTarget {
     /// Index of the owning [`Allocation`] in [`Interp::heap`].
     alloc: usize,
+    /// Allocation lifetime generation. Recycled storage keeps its synthetic
+    /// address, but every fresh lifetime gets a new generation so stale
+    /// pointers and pointer-derived integers cannot regain provenance.
+    generation: u64,
     /// Physical byte offset from the allocation base. This is the sole
     /// addressing authority for the representation-byte heap.
     byte_offset: u64,
@@ -861,11 +909,70 @@ struct Allocation {
     /// undefined use-after-free remains a typed oracle gap rather than
     /// receiving a deterministic value that native execution does not promise.
     freed: bool,
+    /// Lifetime generation for the synthetic address represented by this cell.
+    generation: u64,
+    /// Next entry in the explicit per-size-class free-list stack. The list is
+    /// linked through allocation cells so its order does not depend on heap
+    /// vector position.
+    free_list_next: Option<usize>,
     /// Allocator family and contract metadata. Promoted stack/text backing is
     /// never eligible for `@free`/`@realloc`/`@resize`.
     origin: AllocationOrigin,
     declared_alignment: u64,
     owner_depth: Option<u32>,
+}
+
+/// The runtime allocator's small-block class identity. The oracle retains
+/// abstract allocation bytes, but reuse must follow the same power-of-two
+/// class policy as `rue-allocator` so pointer-identity observations remain
+/// truthful after a matching `@free`/`@alloc` sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SmallAllocationClass {
+    Block(usize),
+}
+
+const ORACLE_PAGE_SIZE: usize = 4096;
+const ORACLE_MAX_SMALL_SIZE: usize = 16 * 1024;
+const ORACLE_MIN_CLASS_SIZE: usize = 8;
+const ORACLE_MIN_CLASS_SHIFT: usize = ORACLE_MIN_CLASS_SIZE.trailing_zeros() as usize;
+const ORACLE_MAX_CLASS_SHIFT: usize = ORACLE_MAX_SMALL_SIZE.trailing_zeros() as usize;
+const ORACLE_SMALL_CLASS_COUNT: usize = ORACLE_MAX_CLASS_SHIFT - ORACLE_MIN_CLASS_SHIFT + 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AllocationKind {
+    Small(usize),
+    Direct(usize),
+}
+
+fn small_allocation_class(size: i128, align: u64) -> Option<SmallAllocationClass> {
+    if size <= 0 || align == 0 || !align.is_power_of_two() || align as usize > ORACLE_PAGE_SIZE {
+        return None;
+    }
+    let size = usize::try_from(size).ok()?;
+    if size > ORACLE_MAX_SMALL_SIZE {
+        return None;
+    }
+    let required = size.max(align as usize).max(ORACLE_MIN_CLASS_SIZE);
+    let block_size = required.next_power_of_two();
+    (block_size <= ORACLE_MAX_SMALL_SIZE).then_some(SmallAllocationClass::Block(block_size))
+}
+
+fn allocation_kind(size: i128, align: u64) -> Option<AllocationKind> {
+    let size = usize::try_from(size).ok()?;
+    if size == 0 {
+        return None;
+    }
+    if let Some(SmallAllocationClass::Block(block_size)) =
+        small_allocation_class(size as i128, align)
+    {
+        return Some(AllocationKind::Small(block_size));
+    }
+    let mapping_size = size.checked_add(ORACLE_PAGE_SIZE - 1)? / ORACLE_PAGE_SIZE;
+    Some(AllocationKind::Direct(mapping_size * ORACLE_PAGE_SIZE))
+}
+
+fn small_class_index(block_size: usize) -> usize {
+    block_size.trailing_zeros() as usize - ORACLE_MIN_CLASS_SHIFT
 }
 
 impl Value {
@@ -1046,9 +1153,9 @@ fn unsupported_runtime_call_kind(kind: RuntimeCallKind) -> Option<UnsupportedRun
 
 struct Interp<'a> {
     state: &'a CompileState,
-    stdout: String,
-    /// Raw emitted byte count. `stdout.len()` can be larger because invalid
-    /// UTF-8 bytes render as the three-byte replacement character.
+    /// Canonical ordered raw-byte observation trace for file descriptor 1.
+    stdout_trace: Vec<u8>,
+    /// Raw emitted byte count, independent of decoded string length.
     stdout_bytes: usize,
     stdout_cap: usize,
     /// Maximum raw bytes retained for the single terminating runtime stderr
@@ -1066,6 +1173,7 @@ struct Interp<'a> {
     /// the interpreter (not a frame) so a pointer read across a call boundary
     /// still resolves after the address is passed to a callee.
     heap: Vec<Allocation>,
+    small_free_heads: [Option<usize>; ORACLE_SMALL_CLASS_COUNT],
     heap_metadata_bytes: usize,
 }
 
@@ -1108,6 +1216,7 @@ impl<'a> Interp<'a> {
     fn canonical_null_marker() -> PtrTarget {
         PtrTarget {
             alloc: usize::MAX,
+            generation: 0,
             byte_offset: 0,
         }
     }
@@ -1227,12 +1336,49 @@ impl<'a> Interp<'a> {
     /// through the same `byte_at` path the runtime's byte helpers model, so a
     /// text read rides entirely on the modeled allocation store.
     fn text_bytes(&self, val: &Value) -> Step<Vec<u8>> {
+        self.text_bytes_bounded(val, None)
+    }
+
+    /// Read a text header while enforcing an output-specific payload bound
+    /// before allocating or walking the claimed range. This keeps malformed
+    /// length words from turning a bounded failure into an unbounded
+    /// allocation or byte loop.
+    fn text_bytes_bounded(&self, val: &Value, max_len: Option<usize>) -> Step<Vec<u8>> {
         let gap = unsupported_intrinsic_kind("ptr_read");
         let Some((target, len)) = Self::text_ptr_len(val) else {
             return Err(unsupported(gap, "text value is not a materialized header"));
         };
         if len <= 0 {
             return Ok(Vec::new());
+        }
+        let len = match usize::try_from(len) {
+            Ok(len) => len,
+            Err(_) if max_len.is_some() => {
+                return Err(unsupported(
+                    UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
+                    format!(
+                        "stdout byte limit exceeded ({}-byte limit)",
+                        self.stdout_cap
+                    ),
+                ));
+            }
+            Err(_) => {
+                return Err(unsupported(
+                    gap,
+                    "text header length exceeds the host addressable range",
+                ));
+            }
+        };
+        if let Some(max_len) = max_len {
+            if len > max_len {
+                return Err(unsupported(
+                    UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
+                    format!(
+                        "stdout byte limit exceeded ({}-byte limit)",
+                        self.stdout_cap
+                    ),
+                ));
+            }
         }
         let Some(target) = target else {
             // A non-null length over a null buffer is a malformed header.
@@ -1241,9 +1387,9 @@ impl<'a> Interp<'a> {
                 "text header has a null buffer with nonzero length",
             ));
         };
-        let mut bytes = Vec::with_capacity(len as usize);
+        let mut bytes = Vec::with_capacity(len);
         for i in 0..len {
-            bytes.push(self.byte_at(&target, i, gap)?);
+            bytes.push(self.byte_at(&target, i as i128, gap)?);
         }
         Ok(bytes)
     }
@@ -1275,6 +1421,7 @@ impl<'a> Interp<'a> {
             );
             Value::Ptr(Some(PtrTarget {
                 alloc,
+                generation: self.heap[alloc].generation,
                 byte_offset: 0,
             }))
         };
@@ -1306,6 +1453,7 @@ impl<'a> Interp<'a> {
         );
         Value::Ptr(Some(PtrTarget {
             alloc,
+            generation: self.heap[alloc].generation,
             byte_offset: 0,
         }))
     }
@@ -1340,6 +1488,9 @@ impl<'a> Interp<'a> {
                         .is_some_and(|(pointee, _)| pointee == Type::U8)
                         && arg_types[1] == Type::U64
                 } else {
+                    // Aggregate helpers are emitted only for the canonical
+                    // `str`/`Str(N)` view ABI. `StrBuf` always takes the
+                    // projected pointer/length route.
                     self.is_str_like_type(arg_types[0])
                 };
                 text_matches && result_ty == Type::UNIT
@@ -1390,6 +1541,184 @@ impl<'a> Interp<'a> {
         } else {
             UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature)
         }
+    }
+
+    /// Execute the compiler's string output helpers against the one canonical
+    /// fd-1 byte trace. Aggregate calls carry a materialized text header;
+    /// projected calls carry the same header's byte pointer and length after
+    /// the native lowering has selected the projected ABI. Both routes read
+    /// through the representation-byte heap, preserving provenance,
+    /// initialization, liveness, bounds, and exact byte order.
+    fn eval_runtime_output_call(
+        &mut self,
+        kind: RuntimeCallKind,
+        args: &[Value],
+        arg_types: &[Type],
+    ) -> Step<Value> {
+        let projected = matches!(
+            kind,
+            RuntimeCallKind::StrPrintProjected | RuntimeCallKind::StrPrintlnProjected
+        );
+        let remaining = self.stdout_cap.saturating_sub(self.stdout_bytes);
+        let newline_bytes = if matches!(
+            kind,
+            RuntimeCallKind::StrPrintlnAggregate | RuntimeCallKind::StrPrintlnProjected
+        ) {
+            1
+        } else {
+            0
+        };
+        let max_payload = remaining.saturating_sub(newline_bytes);
+        let (bytes, newline) = if projected {
+            let [Value::Ptr(pointer), Value::Int(length)] = args else {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
+                    "projected output runtime value shape",
+                ));
+            };
+            if *length < 0 {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
+                    "projected output has negative length",
+                ));
+            }
+            let length = usize::try_from(*length).map_err(|_| {
+                unsupported(
+                    UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
+                    format!(
+                        "stdout byte limit exceeded ({}-byte limit)",
+                        self.stdout_cap
+                    ),
+                )
+            })?;
+            if length > max_payload {
+                return Err(unsupported(
+                    UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
+                    format!(
+                        "stdout byte limit exceeded ({}-byte limit)",
+                        self.stdout_cap
+                    ),
+                ));
+            }
+            if arg_types.len() != 2 {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity),
+                    "projected output runtime arity",
+                ));
+            }
+            let bytes = if length == 0 {
+                Vec::new()
+            } else {
+                let Some(pointer) = pointer else {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind("ptr_read"),
+                        "projected output has a null buffer with nonzero length",
+                    ));
+                };
+                (0..length)
+                    .map(|offset| {
+                        self.byte_at(
+                            pointer,
+                            offset as i128,
+                            unsupported_intrinsic_kind("ptr_read"),
+                        )
+                    })
+                    .collect::<Step<Vec<_>>>()?
+            };
+            (bytes, matches!(kind, RuntimeCallKind::StrPrintlnProjected))
+        } else {
+            let [value] = args else {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity),
+                    "aggregate output runtime arity",
+                ));
+            };
+            let bytes = self.text_bytes_bounded(value, Some(max_payload))?;
+            (bytes, matches!(kind, RuntimeCallKind::StrPrintlnAggregate))
+        };
+
+        self.observe_stdout(&bytes)?;
+        if newline {
+            self.observe_stdout(b"\n")?;
+        }
+        Ok(Value::Unit)
+    }
+
+    /// Model only a direct `write(1, buf, len)` syscall to the controlled,
+    /// blocking stdout capture sink. The native runner concurrently drains
+    /// that blocking pipe and does not deliver signals to the child; together
+    /// with the POSIX `PIPE_BUF` bound, this makes a small write atomic and
+    /// deterministic. Larger writes remain a typed external dependency
+    /// because an arbitrary OS short write is not an oracle contract. The
+    /// syscall number and argument order are target ABI facts; every other
+    /// syscall, descriptor, pointer shape, and target ambiguity remains
+    /// external. A valid pointer is resolved through the representation-byte
+    /// heap before any output is observed.
+    fn eval_stdout_syscall(&mut self, args: &[Value]) -> Step<Value> {
+        let gap = UnsupportedKind::ExternalDependency(ExternalDependencyKind::SystemCall);
+        let Some(write_nr) = host_write_syscall_number() else {
+            return Err(unsupported(
+                gap,
+                "stdout syscall ABI is not modeled for this host",
+            ));
+        };
+        if args.len() != 4 {
+            return Err(unsupported(
+                gap,
+                "syscall is not the target write(fd, buffer, length) shape",
+            ));
+        }
+        let syscall_number = args[0].as_int();
+        let fd = args[1].as_int();
+        if syscall_number != write_nr as i128 {
+            return Err(unsupported(
+                gap,
+                "syscall is not the target stdout write number",
+            ));
+        }
+        if fd != 1 {
+            return Err(unsupported(gap, "syscall write descriptor is not stdout"));
+        }
+        let length = args[3].as_int();
+        if length < 0 {
+            return Err(unsupported(gap, "syscall write length is negative"));
+        }
+        let length = u64::try_from(length)
+            .ok()
+            .and_then(|length| usize::try_from(length).ok())
+            .ok_or_else(|| unsupported(gap, "syscall write length exceeds host range"))?;
+        if length > MAX_MODELED_STDOUT_WRITE_BYTES {
+            return Err(unsupported(
+                gap,
+                "syscall write exceeds the deterministic atomic stdout bound",
+            ));
+        }
+        if length > self.stdout_cap.saturating_sub(self.stdout_bytes) {
+            return Err(unsupported(
+                UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
+                "syscall write exceeds the bounded stdout observation",
+            ));
+        }
+        if length == 0 {
+            return Ok(Value::Int(0));
+        }
+
+        let target = match &args[2] {
+            Value::AddressInt { value, provenance } => self
+                .address_target(*value as u128, &provenance.0)
+                .ok_or_else(|| unsupported(gap, "syscall write pointer has invalid provenance"))?,
+            _ => {
+                return Err(unsupported(
+                    gap,
+                    "syscall write pointer is not pointer-derived",
+                ));
+            }
+        };
+        let bytes = (0..length)
+            .map(|offset| self.byte_at(&target, offset as i128, gap))
+            .collect::<Step<Vec<_>>>()?;
+        self.observe_stdout(&bytes)?;
+        Ok(Value::Int(length as i128))
     }
 
     fn pointer_pointee(&self, ty: Type) -> Option<(Type, bool)> {
@@ -1955,26 +2284,19 @@ impl<'a> Interp<'a> {
         // (RUE-1010 §6.13); every other value uses the scalar `format_dbg`.
         // Reserve one byte for the trailing newline; the comparison form avoids
         // overflowing while computing `len + 1`, and rejecting an oversized
-        // value before decoding also bounds that temporary allocation.
-        let (formatted, emitted_len) = if self.is_text_type(ty) {
-            let bytes = self.text_bytes(val)?;
-            if bytes.len() >= remaining {
-                return Err(unsupported(
-                    UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
-                    format!(
-                        "stdout byte limit exceeded ({}-byte limit)",
-                        self.stdout_cap
-                    ),
-                ));
-            }
-            let len = bytes.len();
-            (String::from_utf8_lossy(&bytes).into_owned(), len)
+        // value before assembling output also bounds that temporary allocation.
+        let output = if self.is_text_type(ty) {
+            let bytes = self.text_bytes_bounded(val, Some(remaining.saturating_sub(1)))?;
+            // Text output is a byte observation, not a string formatting
+            // operation. Preserve invalid UTF-8 and every original byte in
+            // the canonical trace; the public `Outcome.stdout` display may
+            // decode it lossily only after execution has completed.
+            bytes
         } else {
             let formatted = format_dbg(val, ty)?;
-            let len = formatted.len();
-            (formatted.into_owned(), len)
+            formatted.into_owned().into_bytes()
         };
-        if emitted_len >= remaining {
+        if output.len() >= remaining {
             return Err(unsupported(
                 UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
                 format!(
@@ -1984,9 +2306,30 @@ impl<'a> Interp<'a> {
             ));
         }
 
-        self.stdout.push_str(&formatted);
-        self.stdout.push('\n');
-        self.stdout_bytes += emitted_len + 1;
+        let mut observed = Vec::with_capacity(output.len() + 1);
+        observed.extend_from_slice(&output);
+        observed.push(b'\n');
+        self.observe_stdout(&observed)
+    }
+
+    /// Append one ordered fd-1 observation, enforcing the shared raw-byte
+    /// bound. A write crossing the bound records exactly the prefix that fits
+    /// before returning a hard resource failure; callers never compare a
+    /// silently truncated output as agreement.
+    fn observe_stdout(&mut self, bytes: &[u8]) -> Step<()> {
+        let remaining = self.stdout_cap.saturating_sub(self.stdout_bytes);
+        let observed = bytes.len().min(remaining);
+        self.stdout_trace.extend_from_slice(&bytes[..observed]);
+        self.stdout_bytes += observed;
+        if observed != bytes.len() {
+            return Err(unsupported(
+                UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
+                format!(
+                    "stdout byte limit exceeded ({}-byte limit)",
+                    self.stdout_cap
+                ),
+            ));
+        }
         Ok(())
     }
 
@@ -1994,7 +2337,8 @@ impl<'a> Interp<'a> {
         match self.call("main", &[]) {
             Ok((v, _)) => Ok(Outcome {
                 exit_code: (v.as_int() & 0xFF) as i32,
-                stdout: self.stdout,
+                stdout: String::from_utf8_lossy(&self.stdout_trace).into_owned(),
+                stdout_bytes: self.stdout_trace.clone(),
                 stderr: String::new(),
                 panic: None,
             }),
@@ -2010,7 +2354,8 @@ impl<'a> Interp<'a> {
                 }
                 Ok(Outcome {
                     exit_code: 101,
-                    stdout: self.stdout,
+                    stdout: String::from_utf8_lossy(&self.stdout_trace).into_owned(),
+                    stdout_bytes: self.stdout_trace.clone(),
                     stderr: panic.stderr,
                     panic: Some(panic.kind),
                 })
@@ -3108,16 +3453,17 @@ impl<'a> Interp<'a> {
                     )?
                     .expect("preflight recognized this String builtin")
                 } else if missing_call_kind.is_some() {
-                    return Err(unsupported(
-                        self.classify_unsupported_runtime_call(
-                            runtime.expect("typed unsupported runtime call"),
-                            &argvals,
-                            &arg_types,
-                            &arg_modes,
-                            ty,
-                        ),
-                        format!("call to '{fname}'"),
-                    ));
+                    let runtime = runtime.expect("typed runtime output call");
+                    // Static validation above establishes the compiler/runtime
+                    // ABI. Keep the dynamic value check fail-closed before the
+                    // modeled output path executes.
+                    let kind = self.classify_unsupported_runtime_call(
+                        runtime, &argvals, &arg_types, &arg_modes, ty,
+                    );
+                    if kind.model_gap().is_none() {
+                        return Err(unsupported(kind, format!("call to '{fname}'")));
+                    }
+                    self.eval_runtime_output_call(runtime, &argvals, &arg_types)?
                 } else {
                     let typed_args: Vec<(Value, Type, CfgArgMode)> = argvals
                         .into_iter()
@@ -3176,6 +3522,15 @@ impl<'a> Interp<'a> {
                     // reinterpretation is exactly a `to_bits`/`from_bits` round
                     // trip in the value model (RUE-952).
                     self.eval_bit_cast(cfg, frame, &args, ty)?
+                } else if iname == "syscall" {
+                    let kind = self.classify_unsupported_intrinsic(cfg, v, &iname, &args, ty);
+                    if kind
+                        != UnsupportedKind::ExternalDependency(ExternalDependencyKind::SystemCall)
+                    {
+                        return Err(unsupported(kind, format!("intrinsic @{iname}")));
+                    }
+                    let values = self.eval_all(cfg, frame, &args)?;
+                    self.eval_stdout_syscall(&values)?
                 } else if iname != "dbg" {
                     // Classify first: the same static arity/signature validation
                     // that gates a model-gap registration also gates execution, so
@@ -3877,6 +4232,7 @@ impl<'a> Interp<'a> {
                 })?;
             let target = PtrTarget {
                 alloc: a,
+                generation: self.heap[a].generation,
                 byte_offset,
             };
             return self.ptr_cell_write(
@@ -4201,11 +4557,44 @@ impl<'a> Interp<'a> {
             provenance,
             root_ty,
             freed: false,
+            generation: 1,
+            free_list_next: None,
             origin,
             declared_alignment,
             owner_depth: (origin == AllocationOrigin::Promoted).then_some(self.depth),
         });
         self.heap.len() - 1
+    }
+
+    /// Return the head of a size-class free list. Lists are linked through the
+    /// freed allocation cells, while the head itself is stored by class so a
+    /// reuse never scans the abstract heap.
+    fn small_free_list_head(&self, block_size: usize) -> Option<usize> {
+        self.small_free_heads[small_class_index(block_size)]
+    }
+
+    fn push_small_free_list(&mut self, alloc: usize) {
+        let Some(SmallAllocationClass::Block(block_size)) = self
+            .heap
+            .get(alloc)
+            .and_then(|allocation| {
+                (allocation.origin == AllocationOrigin::Heap).then(|| {
+                    small_allocation_class(
+                        allocation.bytes.len() as i128,
+                        allocation.declared_alignment,
+                    )
+                })
+            })
+            .flatten()
+        else {
+            if let Some(allocation) = self.heap.get_mut(alloc) {
+                allocation.free_list_next = None;
+            }
+            return;
+        };
+        let head = self.small_free_list_head(block_size);
+        self.heap[alloc].free_list_next = head;
+        self.small_free_heads[small_class_index(block_size)] = Some(alloc);
     }
 
     /// Encode one typed value using Rue's target representation. All integer
@@ -4846,7 +5235,7 @@ impl<'a> Interp<'a> {
             return None;
         }
         let allocation = self.heap.get(alloc)?;
-        if allocation.freed {
+        if allocation.generation != provenance.generation || allocation.freed {
             return None;
         }
         let byte_off = u64::try_from(n % HEAP_SEG).ok()?;
@@ -4855,8 +5244,41 @@ impl<'a> Interp<'a> {
         }
         Some(PtrTarget {
             alloc,
+            generation: allocation.generation,
             byte_offset: byte_off,
         })
+    }
+
+    fn allocation_for_target(&self, target: &PtrTarget, gap: UnsupportedKind) -> Step<&Allocation> {
+        let allocation = self
+            .heap
+            .get(target.alloc)
+            .ok_or_else(|| unsupported(gap, "pointer to unknown allocation"))?;
+        if allocation.generation != target.generation {
+            return Err(unsupported(gap, "pointer has stale allocation provenance"));
+        }
+        if allocation.freed {
+            return Err(unsupported(gap, "pointer read after free"));
+        }
+        Ok(allocation)
+    }
+
+    fn allocation_for_target_mut(
+        &mut self,
+        target: &PtrTarget,
+        gap: UnsupportedKind,
+    ) -> Step<&mut Allocation> {
+        let allocation = self
+            .heap
+            .get_mut(target.alloc)
+            .ok_or_else(|| unsupported(gap, "pointer to unknown allocation"))?;
+        if allocation.generation != target.generation {
+            return Err(unsupported(gap, "pointer has stale allocation provenance"));
+        }
+        if allocation.freed {
+            return Err(unsupported(gap, "pointer read after free"));
+        }
+        Ok(allocation)
     }
 
     /// Read the typed view at `target` from canonical bytes.
@@ -4880,13 +5302,7 @@ impl<'a> Interp<'a> {
         gap: UnsupportedKind,
         aligned: bool,
     ) -> Step<Value> {
-        let alloc = self
-            .heap
-            .get(target.alloc)
-            .ok_or_else(|| unsupported(gap, "pointer to unknown allocation"))?;
-        if alloc.freed {
-            return Err(unsupported(gap, "pointer read after free"));
-        }
+        let alloc = self.allocation_for_target(target, gap)?;
         let layout = self
             .try_layout(ty)
             .ok_or_else(|| unsupported(gap, "pointee has no target layout"))?;
@@ -4967,13 +5383,7 @@ impl<'a> Interp<'a> {
         if aligned && !target.byte_offset.is_multiple_of(alignment) {
             return Err(unsupported(gap, "misaligned typed write"));
         }
-        let alloc = self
-            .heap
-            .get_mut(target.alloc)
-            .ok_or_else(|| unsupported(gap, "pointer to unknown allocation"))?;
-        if alloc.freed {
-            return Err(unsupported(gap, "pointer write after free"));
-        }
+        let alloc = self.allocation_for_target_mut(target, gap)?;
         let start = usize::try_from(target.byte_offset)
             .map_err(|_| unsupported(gap, "pointer write offset exceeds host range"))?;
         let end = start
@@ -4990,13 +5400,7 @@ impl<'a> Interp<'a> {
 
     /// Read one byte from a byte-store allocation at `target.byte_offset + offset`.
     fn byte_at(&self, target: &PtrTarget, offset: i128, gap: UnsupportedKind) -> Step<u8> {
-        let alloc = self
-            .heap
-            .get(target.alloc)
-            .ok_or_else(|| unsupported(gap, "pointer to unknown allocation"))?;
-        if alloc.freed {
-            return Err(unsupported(gap, "byte read after free"));
-        }
+        let alloc = self.allocation_for_target(target, gap)?;
         let at = (target.byte_offset as i128)
             .checked_add(offset)
             .ok_or_else(|| unsupported(gap, "byte offset overflow"))?;
@@ -5017,13 +5421,7 @@ impl<'a> Interp<'a> {
         count: usize,
         gap: UnsupportedKind,
     ) -> Step<(usize, usize, usize)> {
-        let allocation = self
-            .heap
-            .get(target.alloc)
-            .ok_or_else(|| unsupported(gap, "pointer to unknown allocation"))?;
-        if allocation.freed {
-            return Err(unsupported(gap, "byte access after free"));
-        }
+        let allocation = self.allocation_for_target(target, gap)?;
         let start = usize::try_from(target.byte_offset)
             .map_err(|_| unsupported(gap, "byte offset exceeds host range"))?;
         let end = start
@@ -5098,7 +5496,11 @@ impl<'a> Interp<'a> {
                     "place projection layout",
                 )
             })?;
-        Ok(PtrTarget { alloc, byte_offset })
+        Ok(PtrTarget {
+            alloc,
+            generation: self.heap[alloc].generation,
+            byte_offset,
+        })
     }
 
     /// `@bitCast` (RUE-952, spec 4.13:118): reinterpret the operand's
@@ -5259,13 +5661,7 @@ impl<'a> Interp<'a> {
                 let by = self.eval(cfg, frame, args[1])?.as_int();
                 match p {
                     Value::Ptr(Some(mut t)) => {
-                        let allocation = self
-                            .heap
-                            .get(t.alloc)
-                            .ok_or_else(|| unsupported(gap, "pointer offset allocation missing"))?;
-                        if allocation.freed {
-                            return Err(unsupported(gap, "pointer offset after free"));
-                        }
+                        let allocation = self.allocation_for_target(&t, gap)?;
                         let operand_ty = cfg.get_inst(args[0]).ty;
                         let (pointee_ty, _) = self
                             .pointer_pointee(operand_ty)
@@ -5415,7 +5811,7 @@ impl<'a> Interp<'a> {
     fn checked_alignment(&self, align: i128, gap: UnsupportedKind) -> Step<u64> {
         let align =
             u64::try_from(align).map_err(|_| unsupported(gap, "invalid allocation alignment"))?;
-        if align == 0 || !align.is_power_of_two() {
+        if align == 0 || !align.is_power_of_two() || align > ORACLE_PAGE_SIZE as u64 {
             return Err(unsupported(gap, "invalid allocation alignment"));
         }
         Ok(align)
@@ -5441,10 +5837,7 @@ impl<'a> Interp<'a> {
                 "allocator operation requires base ptr mut u8",
             ));
         }
-        let allocation = self
-            .heap
-            .get(target.alloc)
-            .ok_or_else(|| unsupported(gap, "allocation missing"))?;
+        let allocation = self.allocation_for_target(&target, gap)?;
         if allocation.origin != AllocationOrigin::Heap {
             return Err(unsupported(gap, "allocation is not allocator-owned"));
         }
@@ -5482,10 +5875,13 @@ impl<'a> Interp<'a> {
         }
         self.validate_allocator_contract(p.clone(), size, align, gap)?;
         if let Value::Ptr(Some(target)) = p {
-            self.heap
+            let allocation = self
+                .heap
                 .get_mut(target.alloc)
-                .ok_or_else(|| unsupported(gap, "allocation missing"))?
-                .freed = true;
+                .ok_or_else(|| unsupported(gap, "allocation missing"))?;
+            allocation.freed = true;
+            allocation.free_list_next = None;
+            self.push_small_free_list(target.alloc);
         }
         Ok(())
     }
@@ -5504,6 +5900,47 @@ impl<'a> Interp<'a> {
                 "allocation exceeds host range",
             )
         })?;
+
+        // `rue-allocator` recycles freed small blocks by power-of-two class.
+        // Reuse the abstract cell itself so pointer identity observes the
+        // same LIFO class behavior as native execution. Direct mappings are
+        // intentionally not reused: their OS address identity is not a
+        // deterministic language observation.
+        if let Some(SmallAllocationClass::Block(block_size)) = small_allocation_class(size, align)
+            && let Some(alloc) = self.small_free_list_head(block_size)
+        {
+            let old_len = self.heap[alloc].bytes.len();
+            let generation = self.heap[alloc].generation.checked_add(1).ok_or_else(|| {
+                unsupported(
+                    UnsupportedKind::ResourceLimit(ResourceLimitKind::InterpreterSteps),
+                    "allocation lifetime generation exhausted",
+                )
+            })?;
+            // Reuse replaces the logical extent. Account for any retained
+            // metadata growth before changing the allocation, so reuse cannot
+            // bypass the global heap-resource bound.
+            if count > old_len {
+                self.reserve_heap_metadata(count - old_len)?;
+            }
+            self.small_free_heads[small_class_index(block_size)] = self.heap[alloc].free_list_next;
+            let allocation = &mut self.heap[alloc];
+            allocation.bytes = vec![0; count];
+            allocation.initialized = vec![zeroed; count];
+            allocation.provenance = vec![None; count];
+            allocation.root_ty = None;
+            allocation.freed = false;
+            allocation.generation = generation;
+            allocation.free_list_next = None;
+            allocation.origin = AllocationOrigin::Heap;
+            allocation.declared_alignment = align;
+            allocation.owner_depth = None;
+            return Ok(Value::Ptr(Some(PtrTarget {
+                alloc,
+                generation,
+                byte_offset: 0,
+            })));
+        }
+
         self.reserve_heap_metadata(count)?;
         let alloc = self.heap_alloc_bytes(
             vec![0; count],
@@ -5515,17 +5952,17 @@ impl<'a> Interp<'a> {
         );
         Ok(Value::Ptr(Some(PtrTarget {
             alloc,
+            generation: self.heap[alloc].generation,
             byte_offset: 0,
         })))
     }
 
-    /// `@realloc`: grow/shrink an allocation, preserving the
-    /// first `min(old, new)` representation bytes and leaving growth
-    /// uninitialized. This
-    /// model keeps shrink-in-place and move-on-grow behavior; native pointer
-    /// identity is deliberately unspecified. Returns null on `new == 0` or allocator failure, leaving the
-    /// original allocation valid (spec 8.6:3), and traps on a `new * stride`
-    /// overflow like the compiled size arithmetic (spec 8.6:1).
+    /// `@realloc`: grow/shrink an allocation according to the runtime
+    /// allocator's size-class and page-mapping rules, preserving the first
+    /// `min(old, new)` representation bytes and leaving growth uninitialized.
+    /// Returns null on `new == 0` or allocator failure, leaving the original
+    /// allocation valid (spec 8.6:3), and traps on a `new * stride` overflow
+    /// like the compiled size arithmetic (spec 8.6:1).
     fn do_realloc(&mut self, p: Value, old_size: i128, align: i128, new_size: i128) -> Step<Value> {
         let align = self.checked_alignment(align, unsupported_intrinsic_kind("realloc"))?;
         if old_size < 0 || new_size < 0 {
@@ -5548,16 +5985,7 @@ impl<'a> Interp<'a> {
             }
             _ => return Ok(Value::Ptr(None)),
         };
-        if self
-            .heap
-            .get(target.alloc)
-            .is_some_and(|allocation| allocation.freed)
-        {
-            return Err(unsupported(
-                unsupported_intrinsic_kind("realloc"),
-                "realloc after free",
-            ));
-        }
+        self.allocation_for_target(&target, unsupported_intrinsic_kind("realloc"))?;
         if target.byte_offset != 0 {
             return Err(unsupported(
                 unsupported_intrinsic_kind("realloc"),
@@ -5592,27 +6020,13 @@ impl<'a> Interp<'a> {
         if new_size == 0 {
             if let Some(alloc) = self.heap.get_mut(target.alloc) {
                 alloc.freed = true;
+                alloc.free_list_next = None;
             }
+            self.push_small_free_list(target.alloc);
             return Ok(Value::Ptr(None));
         }
         if self.alloc_byte_size(new_size, 1)?.is_none() {
             return Ok(Value::Ptr(None));
-        }
-        if new_size <= old_size {
-            let new_len = usize::try_from(new_size).map_err(|_| {
-                unsupported(
-                    unsupported_intrinsic_kind("realloc"),
-                    "realloc size exceeds host range",
-                )
-            })?;
-            let allocation = &mut self.heap[target.alloc];
-            allocation.bytes.truncate(new_len);
-            allocation.initialized.truncate(new_len);
-            allocation.provenance.truncate(new_len);
-            return Ok(Value::Ptr(Some(PtrTarget {
-                alloc: target.alloc,
-                byte_offset: 0,
-            })));
         }
         let new_count = usize::try_from(new_size).map_err(|_| {
             unsupported(
@@ -5621,7 +6035,41 @@ impl<'a> Interp<'a> {
             )
         })?;
         self.materialize_cells_guard(new_size)?;
-        self.reserve_heap_metadata(new_count)?;
+        let old_kind = allocation_kind(old_size, align).ok_or_else(|| {
+            unsupported(
+                unsupported_intrinsic_kind("realloc"),
+                "old allocation has no allocator classification",
+            )
+        })?;
+        let new_kind = allocation_kind(new_size, align).ok_or_else(|| {
+            unsupported(
+                unsupported_intrinsic_kind("realloc"),
+                "new allocation has no allocator classification",
+            )
+        })?;
+
+        // The allocator can relabel storage in place only when both layouts
+        // select the same small class or the same page-rounded mapping.
+        if old_kind == new_kind {
+            let old_len = self.heap[target.alloc].bytes.len();
+            if new_count > old_len {
+                self.reserve_heap_metadata(new_count - old_len)?;
+            }
+            let allocation = &mut self.heap[target.alloc];
+            allocation.bytes.resize(new_count, 0);
+            allocation.initialized.resize(new_count, false);
+            allocation.provenance.resize(new_count, None);
+            return Ok(Value::Ptr(Some(PtrTarget {
+                alloc: target.alloc,
+                generation: allocation.generation,
+                byte_offset: 0,
+            })));
+        }
+
+        // A class/mapping change allocates through the canonical path, so the
+        // destination observes the real free-list order. The old allocation
+        // is retired only after destination allocation and copying succeed;
+        // any failure therefore leaves it live and usable.
         let (old_bytes, old_initialized, old_provenance) = {
             let old = self.heap.get(target.alloc).ok_or_else(|| {
                 unsupported(
@@ -5635,27 +6083,24 @@ impl<'a> Interp<'a> {
                 old.provenance.clone(),
             )
         };
-        let keep = old_size.max(0).min(new_size) as usize;
-        let mut bytes = vec![0; new_count];
-        let mut initialized = vec![false; new_count];
-        let mut provenance = vec![None; new_count];
-        let copy = keep.min(old_bytes.len());
-        bytes[..copy].copy_from_slice(&old_bytes[..copy]);
-        initialized[..copy].copy_from_slice(&old_initialized[..copy]);
-        provenance[..copy].clone_from_slice(&old_provenance[..copy]);
-        let alloc = self.heap_alloc_bytes(
-            bytes,
-            initialized,
-            provenance,
-            None,
-            AllocationOrigin::Heap,
-            align,
-        );
+        let new_pointer = self.do_alloc(new_size, false, i128::from(align))?;
+        let Value::Ptr(Some(new_target)) = new_pointer else {
+            return Ok(new_pointer);
+        };
+        let copy = old_bytes.len().min(new_count);
+        let destination = self.heap.get_mut(new_target.alloc).ok_or_else(|| {
+            unsupported(
+                unsupported_intrinsic_kind("realloc"),
+                "new allocation missing",
+            )
+        })?;
+        destination.bytes[..copy].copy_from_slice(&old_bytes[..copy]);
+        destination.initialized[..copy].copy_from_slice(&old_initialized[..copy]);
+        destination.provenance[..copy].clone_from_slice(&old_provenance[..copy]);
         self.heap[target.alloc].freed = true;
-        Ok(Value::Ptr(Some(PtrTarget {
-            alloc,
-            byte_offset: 0,
-        })))
+        self.heap[target.alloc].free_list_next = None;
+        self.push_small_free_list(target.alloc);
+        Ok(Value::Ptr(Some(new_target)))
     }
 
     /// Classify an allocation request by its total byte size:

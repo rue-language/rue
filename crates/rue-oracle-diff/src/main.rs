@@ -1097,8 +1097,14 @@ fn check_spec_case_with_known_gap(
             // whitespace-shaped oracle-vs-compiler divergence as agreement
             // (RUE-132's byte-exactness rule applies here too).
             let stdout_ok = case.expected_stdout.as_ref().is_none_or(|s| {
-                rue_test_runner::strip_block_boundary_newlines(&outcome.stdout)
-                    == rue_test_runner::strip_block_boundary_newlines(s)
+                let observed = rue_test_runner::strip_block_boundary_newlines(&outcome.stdout);
+                observed == rue_test_runner::strip_block_boundary_newlines(s)
+                    // The string comparison intentionally strips the fixture's
+                    // formatting boundary.  Raw bytes still have to be a
+                    // valid, lossless representation of the oracle output so
+                    // invalid UTF-8 cannot collapse into agreement through
+                    // `from_utf8_lossy`.
+                    && outcome.stdout_bytes == outcome.stdout.as_bytes()
             });
             // Match the real spec runner's two stderr paths: `runtime_error`
             // checks its own substring and returns early there; otherwise the
@@ -1379,11 +1385,14 @@ fn check_case_with_native(
                 }
             }
             let exit_ok = outcome.exit_code == expected_exit;
-            let stdout_ok = case.stdout.as_ref().is_none_or(|s| &outcome.stdout == s);
-            let missing_stdout = case
-                .stdout_contains
-                .iter()
-                .find(|expected| !outcome.stdout.contains(expected.as_str()));
+            let stdout_ok = case
+                .stdout
+                .as_ref()
+                .is_none_or(|s| outcome.stdout_bytes == s.as_bytes());
+            let missing_stdout = case.stdout_contains.iter().find(|expected| {
+                outcome.stdout_bytes != outcome.stdout.as_bytes()
+                    || !outcome.stdout.contains(expected.as_str())
+            });
             let missing_stderr = case
                 .runtime_error_contains
                 .iter()
@@ -2671,6 +2680,7 @@ files = [{ path = "probe.rue", source = "not Rue" }]
         let pre_optimization = Outcome {
             exit_code: 0,
             stdout: String::new(),
+            stdout_bytes: Vec::new(),
             stderr: String::new(),
             panic: None,
         };

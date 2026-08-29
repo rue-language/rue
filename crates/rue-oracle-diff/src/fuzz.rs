@@ -88,7 +88,9 @@ pub(crate) enum Compiled {
     /// compare *which* trap fired, not just that one did (RUE-339).
     Ran {
         exit: i32,
-        stdout: String,
+        /// Exact captured bytes. Diagnostics may render this lossily, but all
+        /// differential comparisons use the raw trace.
+        stdout: Vec<u8>,
         /// More stdout existed beyond [`MAX_STDOUT_BYTES`]; `stdout` is only a prefix.
         stdout_truncated: bool,
         stderr: String,
@@ -412,7 +414,7 @@ pub fn run(args: &[String]) -> ExitCode {
                         timeout_secs: cfg.timeout.as_secs(),
                         source: source.clone(),
                         oracle_exit: oracle.exit_code,
-                        oracle_stdout: oracle.stdout.clone(),
+                        oracle_stdout: oracle.stdout_bytes.clone(),
                         oracle_stderr: oracle.stderr.clone(),
                         oracle_panic: oracle.panic,
                         compiled: describe(&compiled),
@@ -496,7 +498,7 @@ pub(crate) fn classify(oracle: &rue_oracle::Outcome, compiled: &Compiled) -> Ver
                 ));
             }
             let exit_ok = oracle.exit_code == *exit;
-            let stdout_ok = &oracle.stdout == stdout;
+            let stdout_ok = oracle.stdout_bytes == *stdout;
             let stderr_ok = &oracle.stderr == stderr;
             if !exit_ok || !stdout_ok || !stderr_ok {
                 let mut r = String::new();
@@ -506,7 +508,8 @@ pub(crate) fn classify(oracle: &rue_oracle::Outcome, compiled: &Compiled) -> Ver
                 if !stdout_ok {
                     r += &format!(
                         "stdout: oracle {:?} vs compiled {:?}",
-                        oracle.stdout, stdout
+                        display_bytes(&oracle.stdout_bytes),
+                        display_bytes(stdout)
                     );
                 }
                 if !stderr_ok {
@@ -689,7 +692,7 @@ fn plant_test_miscompile(
 enum ProcessOutcome {
     Exited {
         status: ExitStatus,
-        stdout: String,
+        stdout: Vec<u8>,
         stdout_truncated: bool,
         stderr: String,
         stderr_truncated: bool,
@@ -764,9 +767,10 @@ fn wait_for_process(mut child: Child, timeout: Duration) -> std::io::Result<Proc
     // EOF and finish promptly.
     let stdout_capture = stdout_reader.join().unwrap_or_default();
     let stderr_capture = stderr_reader.join().unwrap_or_default();
-    // Lossy decode so garbage bytes from a miscompile surface as a stdout
-    // mismatch rather than silently becoming empty (as `read_to_string` would).
-    let stdout = String::from_utf8_lossy(&stdout_capture.bytes).into_owned();
+    // Keep stdout raw through ProcessOutcome and Compiled. Lossy conversion is
+    // reserved for diagnostics, so invalid bytes cannot collapse into a false
+    // differential agreement.
+    let stdout = stdout_capture.bytes;
     let stderr = String::from_utf8_lossy(&stderr_capture.bytes).into_owned();
 
     match status? {
@@ -856,7 +860,9 @@ struct Disagreement {
     timeout_secs: u64,
     source: String,
     oracle_exit: i32,
-    oracle_stdout: String,
+    /// Exact oracle stdout bytes; persisted diagnostics render escapes so
+    /// invalid sequences remain distinguishable.
+    oracle_stdout: Vec<u8>,
     oracle_stderr: String,
     oracle_panic: Option<TrapKind>,
     compiled: String,
@@ -873,7 +879,7 @@ impl Disagreement {
             reason = self.reason,
             exit = self.oracle_exit,
             panic = self.oracle_panic,
-            stdout = self.oracle_stdout,
+            stdout = display_bytes(&self.oracle_stdout),
             stderr = self.oracle_stderr,
             compiled = self.compiled,
             source = self.source,
@@ -897,8 +903,9 @@ fn describe(c: &Compiled) -> String {
                 "stdout"
             };
             format!(
-                "ran exit={exit} {label}={stdout:?} stdout-truncated={stdout_truncated} \
-                 stderr={stderr:?} stderr-truncated={stderr_truncated}"
+                "ran exit={exit} {label}={displayed_stdout:?} stdout-truncated={stdout_truncated} \
+                 stderr={stderr:?} stderr-truncated={stderr_truncated}",
+                displayed_stdout = display_bytes(stdout),
             )
         }
         Compiled::CompileRejected { exit, stderr } => {
@@ -912,6 +919,26 @@ fn describe(c: &Compiled) -> String {
         Compiled::Crash(sig) => format!("crash signal={sig}"),
         Compiled::Timeout => "timeout".to_string(),
     }
+}
+
+/// Render captured bytes for diagnostics and persisted repro metadata without
+/// losing identity. Printable ASCII stays readable; controls and every
+/// non-ASCII byte use deterministic escapes, so `0xff` and `0xfe` cannot
+/// collapse through lossy UTF-8 decoding.
+fn display_bytes(bytes: &[u8]) -> String {
+    let mut rendered = String::with_capacity(bytes.len());
+    for &byte in bytes {
+        match byte {
+            b'\\' => rendered.push_str("\\\\"),
+            b'"' => rendered.push_str("\\\""),
+            b'\n' => rendered.push_str("\\n"),
+            b'\r' => rendered.push_str("\\r"),
+            b'\t' => rendered.push_str("\\t"),
+            0x20..=0x7e => rendered.push(byte as char),
+            _ => rendered.push_str(&format!("\\x{byte:02x}")),
+        }
+    }
+    rendered
 }
 
 fn first_line(s: &str) -> String {
@@ -958,7 +985,10 @@ fn disagreement_repro_contents(d: &Disagreement) -> String {
         "oracle",
         &format!(
             "exit={} panic={:?} stdout={:?} stderr={:?}",
-            d.oracle_exit, d.oracle_panic, d.oracle_stdout, d.oracle_stderr
+            d.oracle_exit,
+            d.oracle_panic,
+            display_bytes(&d.oracle_stdout),
+            d.oracle_stderr
         ),
     );
     push_repro_comment(&mut contents, "compiled", &d.compiled);
@@ -1064,6 +1094,17 @@ mod tests {
         Outcome {
             exit_code: exit,
             stdout: stdout.to_string(),
+            stdout_bytes: stdout.as_bytes().to_vec(),
+            stderr: String::new(),
+            panic: None,
+        }
+    }
+
+    fn oc_bytes(exit: i32, stdout: &[u8]) -> Outcome {
+        Outcome {
+            exit_code: exit,
+            stdout: String::from_utf8_lossy(stdout).into_owned(),
+            stdout_bytes: stdout.to_vec(),
             stderr: String::new(),
             panic: None,
         }
@@ -1084,6 +1125,7 @@ mod tests {
         Outcome {
             exit_code: 101,
             stdout: String::new(),
+            stdout_bytes: Vec::new(),
             stderr: stderr.to_string(),
             panic: Some(kind),
         }
@@ -1093,7 +1135,7 @@ mod tests {
     fn ran(exit: i32, stdout: &str) -> Compiled {
         Compiled::Ran {
             exit,
-            stdout: stdout.to_string(),
+            stdout: stdout.as_bytes().to_vec(),
             stdout_truncated: false,
             stderr: String::new(),
             stderr_truncated: false,
@@ -1104,7 +1146,7 @@ mod tests {
     fn ran_trap(stderr: &str) -> Compiled {
         Compiled::Ran {
             exit: 101,
-            stdout: String::new(),
+            stdout: Vec::new(),
             stdout_truncated: false,
             stderr: stderr.to_string(),
             stderr_truncated: false,
@@ -1182,7 +1224,7 @@ mod tests {
     fn unexpected_stderr_on_normal_exit_fails_closed() {
         let compiled = Compiled::Ran {
             exit: 42,
-            stdout: "7\n".to_string(),
+            stdout: b"7\n".to_vec(),
             stdout_truncated: false,
             stderr: "unmodeled native diagnostic\n".to_string(),
             stderr_truncated: false,
@@ -1205,7 +1247,7 @@ mod tests {
         // Trap-category agreement cannot hide an earlier stdout mismatch.
         let compiled = Compiled::Ran {
             exit: 101,
-            stdout: "unexpected\n".to_string(),
+            stdout: b"unexpected\n".to_vec(),
             stdout_truncated: false,
             stderr: "error: integer overflow\n".to_string(),
             stderr_truncated: false,
@@ -1214,6 +1256,52 @@ mod tests {
             &trap(TrapKind::ArithmeticOverflow),
             &compiled
         )));
+    }
+
+    #[test]
+    fn invalid_native_stdout_bytes_cannot_agree_or_hide_diagnostics() {
+        let oracle = oc_bytes(0, &[0xff]);
+        let same = Compiled::Ran {
+            exit: 0,
+            stdout: vec![0xff],
+            stdout_truncated: false,
+            stderr: String::new(),
+            stderr_truncated: false,
+        };
+        assert!(matches!(classify(&oracle, &same), Verdict::Agree));
+
+        let compiled = Compiled::Ran {
+            exit: 0,
+            stdout: vec![0xfe],
+            stdout_truncated: false,
+            stderr: String::new(),
+            stderr_truncated: false,
+        };
+        let Verdict::Disagree(reason) = classify(&oracle, &compiled) else {
+            panic!("distinct invalid stdout bytes must disagree")
+        };
+        assert!(reason.contains("stdout:"), "diagnostic: {reason}");
+        assert!(reason.contains("\\xff"), "diagnostic: {reason}");
+        assert!(reason.contains("\\xfe"), "diagnostic: {reason}");
+
+        let disagreement = Disagreement {
+            seed: 1,
+            optimization: OptimizationLevel::O1,
+            timeout_secs: 1,
+            source: "fn main() -> i32 { 0 }\n".to_string(),
+            oracle_exit: oracle.exit_code,
+            oracle_stdout: oracle.stdout_bytes,
+            oracle_stderr: oracle.stderr,
+            oracle_panic: oracle.panic,
+            compiled: describe(&compiled),
+            reason,
+        };
+        let rendered = disagreement.render();
+        assert!(rendered.contains("\\xff"), "rendered: {rendered}");
+        assert!(rendered.contains("\\xfe"), "rendered: {rendered}");
+        let persisted = disagreement_repro_contents(&disagreement);
+        assert!(persisted.contains("\\xff"), "persisted: {persisted}");
+        assert!(persisted.contains("\\xfe"), "persisted: {persisted}");
     }
 
     #[test]
@@ -1282,12 +1370,13 @@ mod tests {
         let oracle = Outcome {
             exit_code: 0,
             stdout: String::new(),
+            stdout_bytes: Vec::new(),
             stderr: "retained prefix".to_string(),
             panic: None,
         };
         let compiled = Compiled::Ran {
             exit: 0,
-            stdout: String::new(),
+            stdout: Vec::new(),
             stdout_truncated: false,
             stderr: oracle.stderr.clone(),
             stderr_truncated: true,
@@ -1474,7 +1563,7 @@ mod tests {
             timeout_secs: 3,
             source: "fn main() -> i32 { 23 }\n".to_string(),
             oracle_exit: 101,
-            oracle_stdout: String::new(),
+            oracle_stdout: Vec::new(),
             oracle_stderr: "error: integer cast overflow\n".to_string(),
             oracle_panic: Some(TrapKind::IntegerCastOverflow),
             compiled: "compile-fail: first\rsecond".to_string(),
@@ -1736,7 +1825,10 @@ mod tests {
                     n,
                     "full stdout must be captured, not truncated"
                 );
-                assert!(matches!(classify(&oc(0, stdout), &result), Verdict::Agree));
+                assert!(matches!(
+                    classify(&oc_bytes(0, stdout), &result),
+                    Verdict::Agree
+                ));
             }
             other => panic!("expected Ran with full stdout, got {}", describe(other)),
         }
@@ -1766,7 +1858,7 @@ mod tests {
 
                 // Even an oracle outcome equal to the retained prefix cannot
                 // agree: additional compiled output was observed and drained.
-                let verdict = classify(&oc(0, stdout), &result);
+                let verdict = classify(&oc_bytes(0, stdout), &result);
                 assert!(
                     matches!(verdict, Verdict::Disagree(reason) if reason.contains("capture limit")),
                     "stdout overflow must disagree before prefix comparison"
