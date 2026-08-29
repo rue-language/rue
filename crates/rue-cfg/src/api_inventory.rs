@@ -177,6 +177,27 @@ fn constant_folding_uses_the_air_integer_semantics_kernel() {
 }
 
 #[test]
+fn dce_liveness_roots_only_reachable_block_instructions() {
+    let source = include_str!("opt/dce.rs");
+    let production = source
+        .split("\n#[cfg(test)]\nmod tests")
+        .next()
+        .expect("DCE production prefix");
+    let liveness = production
+        .split_once("fn compute_live_values(")
+        .and_then(|(_, rest)| rest.split_once("/// Check whether an instruction"))
+        .map(|(body, _)| body)
+        .expect("DCE liveness helper");
+
+    assert!(liveness.contains("for block in cfg.blocks()"));
+    assert!(liveness.contains("reachable.contains(block.id.as_u32())"));
+    assert!(
+        !liveness.contains("0..cfg.value_count()"),
+        "DCE liveness must not seed roots from the whole value arena"
+    );
+}
+
+#[test]
 fn validated_cfg_consuming_editor_conversion_does_not_copy_payloads() {
     let owner = include_str!("inst.rs");
     let conversion = owner
