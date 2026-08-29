@@ -5,7 +5,6 @@
 //! - Uses virtual registers (unlimited) that are later allocated to physical registers
 //! - Can be emitted to machine code or assembly text
 
-use ahash::AHashMap;
 use std::fmt;
 
 pub use rue_runtime_abi::ReturnBehavior;
@@ -19,6 +18,7 @@ pub use rue_runtime_abi::ReturnBehavior;
 const _: () = assert!(std::mem::size_of::<X86Inst>() <= 40);
 
 pub use crate::reg_class::{RegClass, VRegClasses};
+use crate::vreg::MirState;
 pub use crate::vreg::{LabelId, VReg};
 
 /// A physical x86-64 register.
@@ -995,22 +995,10 @@ impl fmt::Display for X86Inst {
 pub struct X86Mir {
     /// The instructions in this function.
     instructions: Vec<X86Inst>,
-    /// The next virtual register index.
-    next_vreg: u32,
-    /// The register class of each virtual register, one entry per register
-    /// minted by [`X86Mir::alloc_vreg_in`] and indexed by vreg index.
-    vreg_classes: VRegClasses,
+    /// Shared virtual-register and symbol-interning state.
+    state: MirState,
     /// The next label index.
     next_label: u32,
-    /// Symbol table for call targets.
-    ///
-    /// Stores symbol names indexed by `symbol_id` in `CallRel` instructions.
-    /// This avoids heap-allocating a String for every call instruction.
-    symbols: Vec<String>,
-    /// Index for O(1) symbol lookup during interning.
-    ///
-    /// Maps symbol names to their indices in the `symbols` vector.
-    symbol_index: AHashMap<String, u32>,
 }
 
 impl X86Mir {
@@ -1018,11 +1006,8 @@ impl X86Mir {
     pub fn new() -> Self {
         Self {
             instructions: Vec::new(),
-            next_vreg: 0,
-            vreg_classes: VRegClasses::new(),
+            state: MirState::new(),
             next_label: 0,
-            symbols: Vec::new(),
-            symbol_index: AHashMap::new(),
         }
     }
 
@@ -1031,16 +1016,7 @@ impl X86Mir {
     /// If the symbol already exists, returns its existing ID.
     /// Otherwise, adds it to the table and returns the new ID.
     pub fn intern_symbol(&mut self, symbol: &str) -> u32 {
-        // O(1) lookup via AHashMap
-        if let Some(&idx) = self.symbol_index.get(symbol) {
-            return idx;
-        }
-        // Add new symbol
-        let idx = self.symbols.len() as u32;
-        let owned = symbol.to_string();
-        self.symbol_index.insert(owned.clone(), idx);
-        self.symbols.push(owned);
-        idx
+        self.state.intern_symbol(symbol)
     }
 
     /// Get a symbol name by its ID.
@@ -1049,33 +1025,27 @@ impl X86Mir {
     /// Panics if the symbol_id is out of bounds.
     #[inline]
     pub fn get_symbol(&self, symbol_id: u32) -> &str {
-        &self.symbols[symbol_id as usize]
+        self.state.get_symbol(symbol_id)
     }
 
     /// Get the symbol table.
     #[inline]
     pub fn symbols(&self) -> &[String] {
-        &self.symbols
+        self.state.symbols()
     }
 
     /// Take ownership of the symbol table.
     ///
     /// Used during register allocation to transfer symbols to the rewritten MIR.
     pub fn take_symbols(&mut self) -> Vec<String> {
-        self.symbol_index.clear();
-        std::mem::take(&mut self.symbols)
+        self.state.take_symbols()
     }
 
     /// Set the symbol table.
     ///
     /// Used during register allocation to restore symbols from the pre-rewrite MIR.
     pub fn set_symbols(&mut self, symbols: Vec<String>) {
-        // Rebuild the index from the symbol table
-        self.symbol_index.clear();
-        for (idx, sym) in symbols.iter().enumerate() {
-            self.symbol_index.insert(sym.clone(), idx as u32);
-        }
-        self.symbols = symbols;
+        self.state.set_symbols(symbols);
     }
 
     /// Allocate a new general-purpose virtual register.
@@ -1094,22 +1064,19 @@ impl X86Mir {
     /// liveness hand allocation a table that covers every virtual register the
     /// function has.
     pub fn alloc_vreg_in(&mut self, class: RegClass) -> VReg {
-        let vreg = VReg::new(self.next_vreg);
-        self.next_vreg += 1;
-        self.vreg_classes.push(class);
-        vreg
+        self.state.alloc_vreg(class)
     }
 
     /// The register class of each virtual register.
     #[inline]
     pub fn vreg_classes(&self) -> &VRegClasses {
-        &self.vreg_classes
+        self.state.vreg_classes()
     }
 
     /// The register class of one virtual register.
     #[inline]
     pub fn vreg_class(&self, vreg: VReg) -> RegClass {
-        self.vreg_classes.class_of(vreg)
+        self.state.vreg_class(vreg)
     }
 
     /// Allocate a new label ID.
@@ -1122,7 +1089,7 @@ impl X86Mir {
     /// Get the number of virtual registers allocated.
     #[inline]
     pub fn vreg_count(&self) -> u32 {
-        self.next_vreg
+        self.state.vreg_count()
     }
 
     /// Get the number of instructions.
