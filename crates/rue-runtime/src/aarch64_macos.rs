@@ -27,6 +27,7 @@
 compile_error!("aarch64_macos module only supports aarch64 macOS");
 
 use core::arch::asm;
+use rue_runtime_abi::RuntimeTarget;
 
 /// macOS syscall number for exit (SYS_exit).
 const SYS_EXIT: u64 = 1;
@@ -35,7 +36,7 @@ const SYS_EXIT: u64 = 1;
 const SYS_READ: u64 = 3;
 
 /// macOS syscall number for write (SYS_write).
-const SYS_WRITE: u64 = 4;
+const SYS_WRITE: u64 = RuntimeTarget::Aarch64Macos.write_syscall_number();
 
 /// macOS syscall number for mmap (SYS_mmap).
 const SYS_MMAP: u64 = 197;

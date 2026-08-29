@@ -8,6 +8,70 @@ id = "runtime.syscall"
 spec_chapter = "9.2"
 name = "Syscall Intrinsic"
 
+# Direct write(1, ...) is part of the oracle differential observation
+# contract.  Keep one native case per supported target so each target's
+# authoritative syscall number and register ABI are exercised with the same
+# exact bytes and returned count.
+[[case]]
+name = "syscall_write_stdout_x86_64"
+spec = ["9.2:3", "9.2:4"]
+only_on = ["x86-64-linux"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(3, 1);
+        @ptr_write(@ptr_offset(p, 0), 72);
+        @ptr_write(@ptr_offset(p, 1), 73);
+        @ptr_write(@ptr_offset(p, 2), 10);
+        let result: i64 = @syscall(1, 1, @ptr_to_int(p), 3);
+        @free(p, 3, 1);
+        if result == 3 { 42 } else { 1 }
+    }
+}
+"""
+expected_stdout = "HI\n"
+exit_code = 42
+
+[[case]]
+name = "syscall_write_stdout_aarch64_linux"
+spec = ["9.2:3", "9.2:4"]
+only_on = ["aarch64-linux"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(3, 1);
+        @ptr_write(@ptr_offset(p, 0), 72);
+        @ptr_write(@ptr_offset(p, 1), 73);
+        @ptr_write(@ptr_offset(p, 2), 10);
+        let result: i64 = @syscall(64, 1, @ptr_to_int(p), 3);
+        @free(p, 3, 1);
+        if result == 3 { 42 } else { 1 }
+    }
+}
+"""
+expected_stdout = "HI\n"
+exit_code = 42
+
+[[case]]
+name = "syscall_write_stdout_aarch64_macos"
+spec = ["9.2:3", "9.2:4"]
+only_on = ["aarch64-macos"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(3, 1);
+        @ptr_write(@ptr_offset(p, 0), 72);
+        @ptr_write(@ptr_offset(p, 1), 73);
+        @ptr_write(@ptr_offset(p, 2), 10);
+        let result: i64 = @syscall(4, 1, @ptr_to_int(p), 3);
+        @free(p, 3, 1);
+        if result == 3 { 42 } else { 1 }
+    }
+}
+"""
+expected_stdout = "HI\n"
+exit_code = 42
+
 # Test that @syscall works (x86-64 Linux)
 # Note: only_on restricts this test to run only on matching host platforms
 [[case]]

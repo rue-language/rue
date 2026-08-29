@@ -26,12 +26,13 @@
 compile_error!("aarch64_linux module only supports aarch64 Linux");
 
 use core::arch::asm;
+use rue_runtime_abi::RuntimeTarget;
 
 /// Linux aarch64 syscall number for read (from asm-generic/unistd.h).
 const SYS_READ: u64 = 63;
 
 /// Linux aarch64 syscall number for write (from asm-generic/unistd.h).
-const SYS_WRITE: u64 = 64;
+const SYS_WRITE: u64 = RuntimeTarget::Aarch64Linux.write_syscall_number();
 
 /// Linux aarch64 syscall number for exit (from asm-generic/unistd.h).
 const SYS_EXIT: u64 = 93;

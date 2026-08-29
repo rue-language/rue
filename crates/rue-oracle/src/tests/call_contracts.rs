@@ -18,6 +18,23 @@ fn expect_modeled_value(result: Step<Option<Value>>) -> Option<Value> {
     }
 }
 
+fn expect_modeled_unit(result: Step<Value>) {
+    match result {
+        Ok(Value::Unit) => {}
+        Ok(value) => panic!("expected a modeled unit, got {value:?}"),
+        Err(Flow::Unsupported(_)) => panic!("expected a modeled unit, got Unsupported"),
+        Err(Flow::Panic(_)) => panic!("expected a modeled unit, got a panic"),
+    }
+}
+
+fn expect_observed(result: Step<()>) {
+    match result {
+        Ok(()) => {}
+        Err(Flow::Unsupported(_)) => panic!("expected a modeled observation, got Unsupported"),
+        Err(Flow::Panic(_)) => panic!("expected a modeled observation, got a panic"),
+    }
+}
+
 fn find_call_metadata(
     state: &CompileState,
     expected_name: &str,
@@ -54,13 +71,14 @@ fn stable_text_runtime_calls_require_exact_metadata() {
         .expect("stable text print probes must compile");
     let interp = Interp {
         state: &state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     for (runtime, kind) in [
@@ -141,19 +159,200 @@ fn stable_text_runtime_calls_require_exact_metadata() {
 }
 
 #[test]
-fn random_intrinsic_requires_exact_arity_and_result_type() {
-    let state = query_cfg_state("fn main() -> i32 { let n: u32 = @random_u32(); @intCast(n) }")
-        .expect("random probe must compile");
-    let (cfg, inst, args, result) = find_intrinsic_in_function(&state, "main", "random_u32");
+fn text_output_routes_reject_cross_abi_shapes() {
+    let strbuf = r#"pub struct StrBuf {
+            buf: ptr mut u8,
+            len: u64,
+            cap: u64,
+            fn len(borrow self) -> u64 { self.len }
+            fn as_ptr(borrow self) -> ptr mut u8 { self.buf }
+        }
+        drop fn StrBuf(self) { }"#;
+    let state = query_cfg_state_with_trusted_std(
+        "const strbuf = @import(\"std/strbuf.rue\"); const StrBuf = strbuf.StrBuf; fn main() -> i32 { let s: StrBuf = \"x\"; print(s); 0 }",
+        &[(2, "/project/std/strbuf.rue", strbuf)],
+    )
+        .expect("text output probe must compile");
     let interp = Interp {
         state: &state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
+        heap_metadata_bytes: 0,
+    };
+    let strbuf = state
+        .type_pool()
+        .lang_item_type(rue_air::LangItem::StrBuf)
+        .expect("text probe must register StrBuf");
+    assert_eq!(
+        interp.classify_unsupported_runtime_call(
+            RuntimeCallKind::StrPrintAggregate,
+            &[Value::str_view("x")],
+            &[strbuf],
+            &[CfgArgMode::Normal],
+            Type::UNIT,
+        ),
+        UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature)
+    );
+    assert_eq!(
+        interp.classify_unsupported_runtime_call(
+            RuntimeCallKind::StrPrintProjected,
+            &[Value::Ptr(None), Value::Int(0)],
+            &[Type::U64, Type::U64],
+            &[CfgArgMode::Normal, CfgArgMode::Normal],
+            Type::UNIT,
+        ),
+        UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature)
+    );
+}
+
+#[test]
+fn modeled_text_runtime_routes_share_the_ordered_trace() {
+    let state = query_cfg_state("fn main() -> i32 { print(\"x\"); 0 }")
+        .expect("text output probe must compile");
+    let mut interp = Interp {
+        state: &state,
+        stdout_trace: Vec::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+        heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
+        heap_metadata_bytes: 0,
+    };
+
+    let aggregate_ptr = interp.test_alloc_str_ptr("hé".as_bytes());
+    let Value::Ptr(Some(aggregate_target)) = aggregate_ptr else {
+        panic!("test text allocation must produce a pointer")
+    };
+    let aggregate = Value::Aggregate(vec![Value::Ptr(Some(aggregate_target)), Value::Int(3)]);
+    expect_modeled_unit(interp.eval_runtime_output_call(
+        RuntimeCallKind::StrPrintAggregate,
+        &[aggregate],
+        &[Type::U64],
+    ));
+
+    let projected_target = interp.test_alloc_str_ptr(b"!");
+    expect_modeled_unit(interp.eval_runtime_output_call(
+        RuntimeCallKind::StrPrintlnProjected,
+        &[projected_target, Value::Int(1)],
+        &[Type::U64, Type::U64],
+    ));
+
+    assert_eq!(interp.stdout_trace, "hé!\n".as_bytes());
+}
+
+#[test]
+fn output_routes_bound_claimed_lengths_before_reading() {
+    let state = query_cfg_state("fn main() -> i32 { print(\"x\"); 0 }")
+        .expect("text output probe must compile");
+    let mut interp = Interp {
+        state: &state,
+        stdout_trace: Vec::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+        heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
+        heap_metadata_bytes: 0,
+    };
+    let aggregate_huge = Value::Aggregate(vec![Value::Ptr(None), Value::Int(i128::MAX)]);
+    let aggregate_error = expect_flow_unsupported(interp.eval_runtime_output_call(
+        RuntimeCallKind::StrPrintAggregate,
+        &[aggregate_huge],
+        &[Type::U64],
+    ));
+    assert_eq!(
+        aggregate_error.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes)
+    );
+
+    let projected_error = expect_flow_unsupported(interp.eval_runtime_output_call(
+        RuntimeCallKind::StrPrintProjected,
+        &[Value::Ptr(None), Value::Int(i128::MAX)],
+        &[Type::U64, Type::U64],
+    ));
+    assert_eq!(
+        projected_error.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes)
+    );
+
+    let syscall_error = expect_flow_unsupported(interp.eval_stdout_syscall(&[
+        Value::Int(1),
+        Value::Int(1),
+        Value::Int(0),
+        Value::Int(u64::MAX as i128),
+    ]));
+    assert_eq!(
+        syscall_error.kind(),
+        UnsupportedKind::ExternalDependency(ExternalDependencyKind::SystemCall)
+    );
+
+    let pointer = interp.test_alloc_str_ptr(b"a");
+    let oob = expect_flow_unsupported(interp.eval_runtime_output_call(
+        RuntimeCallKind::StrPrintProjected,
+        &[pointer, Value::Int(2)],
+        &[Type::U64, Type::U64],
+    ));
+    assert_eq!(
+        oob.kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::PointerRead
+        ))
+    );
+}
+
+#[test]
+fn text_dbg_preserves_invalid_bytes_in_the_raw_trace() {
+    let state = query_cfg_state("fn main() -> i32 { print(\"x\"); 0 }")
+        .expect("text output probe must compile");
+    let (types, _, _) = find_call_metadata(&state, "__rue_str_print");
+    let mut interp = Interp {
+        state: &state,
+        stdout_trace: Vec::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+        heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
+        heap_metadata_bytes: 0,
+    };
+    let pointer = interp.test_alloc_str_ptr(&[0xff]);
+    let Value::Ptr(Some(target)) = pointer else {
+        panic!("test text allocation must produce a pointer")
+    };
+    let value = Value::Aggregate(vec![Value::Ptr(Some(target)), Value::Int(1)]);
+
+    expect_observed(interp.write_dbg(&value, types[0]));
+    assert_eq!(interp.stdout_trace, [0xff, b'\n']);
+}
+
+#[test]
+fn random_intrinsic_requires_exact_arity_and_result_type() {
+    let state = query_cfg_state("fn main() -> i32 { let n: u32 = @random_u32(); @intCast(n) }")
+        .expect("random probe must compile");
+    let (cfg, inst, args, result) = find_intrinsic_in_function(&state, "main", "random_u32");
+    let interp = Interp {
+        state: &state,
+        stdout_trace: Vec::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+        heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     assert_eq!(
@@ -213,13 +412,14 @@ fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
     .expect("probe must compile");
     let mut interp = Interp {
         state: &state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     // The builtin contract only needs the logical pointer kind. Look up the
@@ -321,13 +521,14 @@ fn panic_never_signature_is_an_oracle_contract_for_both_arities() {
     .expect("both panic arities must compile with the never contract");
     let interp = Interp {
         state: &state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     for function_name in ["panic_no_message", "panic_with_message"] {
@@ -447,13 +648,14 @@ fn user_call_layout_is_rejected_before_unmodeled_operands_run() {
         let cfg = &state.functions[main_index].cfg;
         let mut interp = Interp {
             state: &state,
-            stdout: String::new(),
+            stdout_trace: Vec::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
             stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
             heap: Vec::new(),
+            small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
             heap_metadata_bytes: 0,
         };
         let mut frame = Frame {
@@ -546,13 +748,14 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
         let cfg = &state.functions[main_index].cfg;
         let mut interp = Interp {
             state: &state,
-            stdout: String::new(),
+            stdout_trace: Vec::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
             stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
             heap: Vec::new(),
+            small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
             heap_metadata_bytes: 0,
         };
         let mut frame = Frame {
@@ -585,13 +788,14 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
         let (cfg, intrinsic, args, _) = find_intrinsic_in_function(&state, "main", name);
         let mut interp = Interp {
             state: &state,
-            stdout: String::new(),
+            stdout_trace: Vec::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
             stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
             heap: Vec::new(),
+            small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
             heap_metadata_bytes: 0,
         };
         let mut frame = Frame {
@@ -617,13 +821,14 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
     let (cfg, assertion, args, _) = find_intrinsic_in_function(&state, "main", "assert");
     let mut interp = Interp {
         state: &state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     let mut frame = Frame {
@@ -668,13 +873,14 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
     let state = query_cfg_state(source).expect("pointer provenance probe must compile");
     let interp = Interp {
         state: &state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
 
@@ -817,13 +1023,14 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
     drift_state.select_source_function("user_pointer");
     let drift_interp = Interp {
         state: &drift_state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     assert_eq!(
@@ -873,13 +1080,14 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         find_intrinsic_in_function(&extra_use_state, "main", "int_to_ptr");
     let extra_interp = Interp {
         state: &extra_use_state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     assert_eq!(
@@ -938,13 +1146,14 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
     assert_eq!(extra_init_cfg.value_use_count(slice_init), 2);
     let extra_init_interp = Interp {
         state: &extra_init_use_state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     assert_eq!(
@@ -1017,13 +1226,14 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
     assert_eq!(wrong_consumer_cfg.value_use_count(wrong_consumer_init), 1);
     let wrong_consumer_interp = Interp {
         state: &wrong_consumer_state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     assert_eq!(
@@ -1072,13 +1282,14 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         find_intrinsic_in_function(&wrong_init_state, "main", "int_to_ptr");
     let wrong_init_interp = Interp {
         state: &wrong_init_state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     assert_eq!(
@@ -1106,13 +1317,14 @@ fn validated_cfg_rejects_out_of_bounds_field_pointer_projection_metadata() {
         let (cfg, inst, args, result) = find_intrinsic_in_function(&state, "main", "field_ptr");
         let interp = Interp {
             state: &state,
-            stdout: String::new(),
+            stdout_trace: Vec::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
             stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
             heap: Vec::new(),
+            small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
             heap_metadata_bytes: 0,
         };
         assert_eq!(
@@ -1307,13 +1519,14 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
     .expect("Option intrinsic signature probe must compile");
     let interp = Interp {
         state: &state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     let (parse32_cfg, parse32_inst, parse32_args, parse32_result) =
@@ -1393,13 +1606,14 @@ fn read_line_requires_trusted_source_strbuf_payload_metadata() {
     .expect("trusted Option(StrBuf) @read_line probe must compile");
     let interp = Interp {
         state: &state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     let (cfg, inst, args, result) = find_intrinsic_in_function(&state, "line", "read_line");

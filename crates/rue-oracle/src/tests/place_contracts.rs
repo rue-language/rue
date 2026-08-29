@@ -65,6 +65,7 @@ fn core_str_length_is_modeled_and_inout_forwarding_threads_through_nested_calls(
         Outcome {
             exit_code: 2,
             stdout: String::new(),
+            stdout_bytes: Vec::new(),
             stderr: String::new(),
             panic: None,
         }
@@ -119,13 +120,14 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
     };
     let mut interp = Interp {
         state: &state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     let mut frame = Frame {
@@ -175,13 +177,14 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
         .expect("ordinary by-value Param instruction");
     let ordinary_interp = Interp {
         state: &ordinary_state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     let inout = expect_flow_unsupported(ordinary_interp.lvalue_of(ordinary_cfg, ordinary_param));
@@ -278,13 +281,14 @@ fn logical_inout_writability_is_distinct_from_the_by_reference_abi() {
     .expect("borrow/inout metadata probe must compile");
     let interp = Interp {
         state: &state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     let place_read = |name: &str| {
@@ -371,13 +375,14 @@ fn validated_cfg_rejects_invalid_owned_text_projection_metadata() {
     view_frame.locals[view_slot as usize] = Some(Value::Ptr(None));
     let mut view_interp = Interp {
         state: &view_state,
-        stdout: String::new(),
+        stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
         heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
     let width =
@@ -634,13 +639,14 @@ fn zero_sized_place_base_uses_the_canonical_boundary_slot() {
         let cfg = &state.functions[main_index].cfg;
         let interp = Interp {
             state: &state,
-            stdout: String::new(),
+            stdout_trace: Vec::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
             stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
             heap: Vec::new(),
+            small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
             heap_metadata_bytes: 0,
         };
         let CfgInstData::PlaceRead { place } = &cfg.get_inst(read_value).data else {
@@ -802,13 +808,14 @@ fn validated_cfg_allows_only_the_explicit_str_view_whole_place_read_coercion() {
         };
         let interp = Interp {
             state: &state,
-            stdout: String::new(),
+            stdout_trace: Vec::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
             stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
             heap: Vec::new(),
+            small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
             heap_metadata_bytes: 0,
         };
         assert!(interp.is_str_like_type(original_place.base_type));

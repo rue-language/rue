@@ -6,6 +6,7 @@ rue_crate(
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-cfg:rue-cfg",
         "//crates/rue-air:rue-air",
+        "//crates/rue-runtime-abi:rue-runtime-abi",
         "//third-party:lasso",
     ],
 )
