@@ -249,6 +249,7 @@ macro_rules! declare_runtime_helpers {
 
 rue_runtime_abi::for_each_runtime_helper!(declare_runtime_helpers);
 
+#[allow(unused_macros)]
 macro_rules! call_reserved_export_implementation {
     (memcpy($($argument:expr),*)) => { crate::memory::memcpy($($argument),*) };
     (memmove($($argument:expr),*)) => { crate::memory::memmove($($argument),*) };
@@ -269,6 +270,10 @@ macro_rules! declare_reserved_function {
         all unsafe $function:ident($($argument:ident : $rust_type:ty),* $(,)?)
         $(-> $result:ty)?
     ) => {
+        // These libc-shaped names must not be present in a libtest binary:
+        // the host test harness and its standard library may call them while
+        // starting up. Production staticlibs still expose the ABI boundary.
+        #[cfg(not(test))]
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $function($($argument: $rust_type),*) $(-> $result)? {
             // SAFETY: The reserved-export manifest records the complete caller

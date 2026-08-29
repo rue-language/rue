@@ -59,6 +59,11 @@ export_file(
     src = "src/string.rs",
 )
 
+export_file(
+    name = "runtime-lib-source",
+    src = "src/lib.rs",
+)
+
 rue_sh_test(
     name = "runtime-archives-test",
     platform = "native",
@@ -75,7 +80,10 @@ rue_sh_test(
 rue_sh_test(
     name = "runtime-archive-parser-test",
     test = "tests/test_validate_runtime_archives.py",
-    resources = ["tests/validate_runtime_archives.py"],
+    resources = ["tests/validate_runtime_archives.py", "src/lib.rs"],
+    env = {
+        "RUNTIME_LIB_SOURCE": "$(location :runtime-lib-source)",
+    },
 )
 
 # Unit tests for the runtime, compiled natively for the host WITHOUT the

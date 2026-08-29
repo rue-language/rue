@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Host-independent unit tests for the runtime archive shape guard."""
 
+import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -140,6 +142,25 @@ class BodyValidationTests(unittest.TestCase):
         root = body("memcpy", bytes.fromhex("488b07ff142500000000"), [(6, ".rodata.function_pointer", 11)])
         with self.assertRaisesRegex(AssertionError, "unresolved reachable control transfer"):
             validator._validate_bodies(Path("synthetic"), {"memcpy": root}, "elf", 62)
+
+
+class TestConfigurationTests(unittest.TestCase):
+    def test_libtest_disables_libc_shaped_reserved_exports(self):
+        declared_source = os.environ.get("RUNTIME_LIB_SOURCE")
+        source_path = Path(declared_source) if declared_source else None
+        if source_path is None or not source_path.is_file():
+            source_path = Path(__file__).parents[1] / "src" / "lib.rs"
+        source = source_path.read_text()
+        arm = re.search(
+            r"macro_rules! declare_reserved_function \{.*?\n    \(\n        aarch64_macos",
+            source,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(arm)
+        self.assertRegex(
+            arm.group(0),
+            r"(?s)all unsafe .*?#\[cfg\(not\(test\)\)\]\s+#\[unsafe\(no_mangle\)\]",
+        )
 
     def test_unresolved_macho_cross_member_control_transfer_is_rejected(self):
         root = body(
