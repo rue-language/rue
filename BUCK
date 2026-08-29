@@ -204,6 +204,17 @@ filegroup(
     visibility = ["PUBLIC"],
 )
 
+# The CLI harness has a hermetic source-shape regression for std.sort's
+# quicksort invariants. Materialize just the production file so that test
+# compilation does not need to depend on the entire standard-library tree.
+genrule(
+    name = "std-sort-source",
+    out = "std_sort.rue",
+    srcs = ["std/sort.rue"],
+    cmd = "cp $SRCS $OUT",
+    visibility = ["PUBLIC"],
+)
+
 # The example programs are runtime inputs to the CLI integration tests: the
 # suite compiles+runs every examples/*.rue through the real driver (RUE-48),
 # so an edit under examples/ MUST re-run the CLI suite (declared here as an

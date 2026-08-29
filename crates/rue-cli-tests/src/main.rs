@@ -4483,6 +4483,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn quicksort_source_guards_pin_pivot_and_stack_shape() {
+        // Keep the algorithm's two non-functional guarantees visible in the
+        // production source: median-of-three must remain the pivot selection,
+        // and only one of the two partitions may be recursive. The end-to-end
+        // cases below cover values; this guard catches a maintenance change
+        // that restores a fixed endpoint or dual recursion while preserving
+        // those examples' output.
+        let source = include_str!("std_sort.rue");
+        let body = source
+            .split("fn qsort_range(")
+            .nth(1)
+            .and_then(|body| body.split("pub fn quicksort(").next())
+            .expect("qsort_range source must remain present");
+        assert!(
+            body.contains("median_of_three(T, borrow xs, lo, mid, hi)"),
+            "qsort_range must use the deterministic median-of-three pivot"
+        );
+        assert!(body.contains("while lo < hi"));
+        let (before_left, branches) = body
+            .split_once("if left_len < right_len {")
+            .expect("qsort_range must choose the smaller partition explicitly");
+        let (left_branch, right_branch) = branches
+            .split_once("} else {")
+            .expect("qsort_range must have a complementary larger-partition branch");
+        assert!(left_branch.contains("if left_len > 1"));
+        assert!(left_branch.contains("qsort_range(T, inout xs, lo, store - 1)"));
+        assert!(left_branch.contains("lo = store + 1;"));
+        assert!(!left_branch.contains("qsort_range(T, inout xs, store + 1, hi)"));
+        assert!(right_branch.contains("if right_len > 1"));
+        assert!(right_branch.contains("qsort_range(T, inout xs, store + 1, hi)"));
+        assert!(right_branch.contains("hi = store - 1;"));
+        assert!(!right_branch.contains("qsort_range(T, inout xs, lo, store - 1)"));
+        assert_eq!(
+            body.matches("qsort_range(T, inout xs").count(),
+            2,
+            "qsort_range must have no recursive calls outside the two partition branches"
+        );
+        assert_eq!(
+            before_left.matches("qsort_range(T, inout xs").count(),
+            0,
+            "partition recursion must stay inside the smaller-side branches"
+        );
+    }
+
     fn corpus_from_toml(source: &str) -> LoadedCorpus {
         let profiles = r#"
             [timeout_profile.ordinary]

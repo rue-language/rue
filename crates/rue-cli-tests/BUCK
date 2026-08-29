@@ -11,6 +11,7 @@ rue_binary(
     mapped_srcs = {
         "cases/execution_contracts.toml": "src/execution_contracts.toml",
         "cases/examples_mosaic.toml": "src/examples_mosaic.toml",
+        "//:std-sort-source": "src/std_sort.rue",
     },
     deps = [
         "//crates/rue-linker:rue-linker",
@@ -59,4 +60,3 @@ command_alias(
     },
     visibility = ["PUBLIC"],
 )
-
