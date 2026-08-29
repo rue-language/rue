@@ -752,20 +752,28 @@ struct DiagnosticOutput<'a> {
     /// The path each file is known by, used to put a batch of diagnostics into
     /// source order before it reaches a formatter.
     paths: AHashMap<FileId, &'a str>,
-    text: MultiFileFormatter<'a>,
-    json: MultiFileJsonFormatter<'a>,
+    renderer: DiagnosticRenderer<'a>,
+}
+
+enum DiagnosticRenderer<'a> {
+    Text(MultiFileFormatter<'a>),
+    Json(MultiFileJsonFormatter<'a>),
 }
 
 impl<'a> DiagnosticOutput<'a> {
     fn new(format: ErrorFormat, sources: Vec<(FileId, SourceInfo<'a>)>) -> Self {
+        let paths = sources
+            .iter()
+            .map(|(file_id, info)| (*file_id, info.path))
+            .collect();
+        let renderer = match format {
+            ErrorFormat::Text => DiagnosticRenderer::Text(MultiFileFormatter::new(sources)),
+            ErrorFormat::Json => DiagnosticRenderer::Json(MultiFileJsonFormatter::new(sources)),
+        };
         Self {
             format,
-            paths: sources
-                .iter()
-                .map(|(file_id, info)| (*file_id, info.path))
-                .collect(),
-            text: MultiFileFormatter::new(sources.clone()),
-            json: MultiFileJsonFormatter::new(sources),
+            paths,
+            renderer,
         }
     }
 
@@ -827,8 +835,16 @@ impl<'a> DiagnosticOutput<'a> {
     /// to emit a bare object here while every batch path emitted an array.
     fn render_error(&self, error: &CompileError) -> String {
         match self.format {
-            ErrorFormat::Text => self.text.format_error(error).to_string(),
-            ErrorFormat::Json => format!("[{}]", self.json.format_error(error).to_json()),
+            ErrorFormat::Text => match &self.renderer {
+                DiagnosticRenderer::Text(formatter) => formatter.format_error(error),
+                DiagnosticRenderer::Json(_) => unreachable!("renderer format mismatch"),
+            },
+            ErrorFormat::Json => match &self.renderer {
+                DiagnosticRenderer::Json(formatter) => {
+                    format!("[{}]", formatter.format_error(error).to_json())
+                }
+                DiagnosticRenderer::Text(_) => unreachable!("renderer format mismatch"),
+            },
         }
     }
 
@@ -840,8 +856,14 @@ impl<'a> DiagnosticOutput<'a> {
                 .collect::<Vec<_>>(),
         );
         match self.format {
-            ErrorFormat::Text => self.text.format_errors(&errors),
-            ErrorFormat::Json => self.json.format_errors(&errors),
+            ErrorFormat::Text => match &self.renderer {
+                DiagnosticRenderer::Text(formatter) => formatter.format_errors(&errors),
+                DiagnosticRenderer::Json(_) => unreachable!("renderer format mismatch"),
+            },
+            ErrorFormat::Json => match &self.renderer {
+                DiagnosticRenderer::Json(formatter) => formatter.format_errors(&errors),
+                DiagnosticRenderer::Text(_) => unreachable!("renderer format mismatch"),
+            },
         }
     }
 
@@ -852,8 +874,14 @@ impl<'a> DiagnosticOutput<'a> {
             .cloned()
             .collect();
         match self.format {
-            ErrorFormat::Text => self.text.format_warnings(&warnings),
-            ErrorFormat::Json => self.json.format_warnings(&warnings),
+            ErrorFormat::Text => match &self.renderer {
+                DiagnosticRenderer::Text(formatter) => formatter.format_warnings(&warnings),
+                DiagnosticRenderer::Json(_) => unreachable!("renderer format mismatch"),
+            },
+            ErrorFormat::Json => match &self.renderer {
+                DiagnosticRenderer::Json(formatter) => formatter.format_warnings(&warnings),
+                DiagnosticRenderer::Text(_) => unreachable!("renderer format mismatch"),
+            },
         }
     }
 
@@ -3238,6 +3266,49 @@ mod tests {
         let batch = batch.as_array().expect("a JSON array, not a bare object");
         assert_eq!(batch.len(), 1);
         assert_eq!(batch[0]["severity"], "error");
+    }
+
+    #[test]
+    fn diagnostic_output_constructs_only_the_selected_renderer() {
+        let source = "fn main() -> i32 { 0 }\n";
+        let text = DiagnosticOutput::new(
+            ErrorFormat::Text,
+            vec![(FileId::DEFAULT, SourceInfo::new(source, "main.rue"))],
+        );
+        assert!(matches!(text.renderer, DiagnosticRenderer::Text(_)));
+
+        let json = DiagnosticOutput::new(
+            ErrorFormat::Json,
+            vec![(FileId::DEFAULT, SourceInfo::new(source, "main.rue"))],
+        );
+        assert!(matches!(json.renderer, DiagnosticRenderer::Json(_)));
+    }
+
+    #[test]
+    fn diagnostic_output_source_selects_one_renderer_construction() {
+        let source = include_str!("main.rs");
+        let production = source
+            .rsplit_once("#[cfg(test)]\nmod tests")
+            .map(|(production, _)| production)
+            .expect("main tests marker");
+
+        assert!(production.contains("enum DiagnosticRenderer"));
+        assert!(production.contains("match format"));
+        assert_eq!(
+            production
+                .matches("MultiFileFormatter::new(sources)")
+                .count(),
+            1,
+            "text formatter construction must be selected, not duplicated"
+        );
+        assert_eq!(
+            production
+                .matches("MultiFileJsonFormatter::new(sources)")
+                .count(),
+            1,
+            "JSON formatter construction must be selected, not duplicated"
+        );
+        assert!(!production.contains("sources.clone()"));
     }
 
     #[test]
