@@ -155,6 +155,21 @@ pub struct RuntimeMetrics {
     pub query_worker_active_ns: u64,
     /// Registered batch items observed in the ready queue.
     pub ready_items: u64,
+    /// Extra registered-batch worker slots requested from the shared scheduler.
+    ///
+    /// This is structural scheduling evidence: it counts desired logical slots,
+    /// not operating-system thread creation. A batch with N items requests
+    /// N - 1 extra slots because the donating parent supplies the remaining
+    /// scheduler lane.
+    pub batch_worker_slots_requested: u64,
+    /// Extra registered-batch worker slots granted from the shared scheduler.
+    pub batch_worker_slots_granted: u64,
+    /// Registered-batch scheduler lanes which entered their worker loop.
+    ///
+    /// This includes the donating parent's inline lane. It deliberately says
+    /// nothing about whether a lane maps to a newly created operating-system
+    /// thread; it proves that every granted logical lane reached execution.
+    pub batch_worker_lanes_entered: u64,
     /// Sum and maximum of ready-to-start delay for registered batch items.
     pub ready_wait_ns: u64,
     pub max_ready_wait_ns: u64,
@@ -226,6 +241,9 @@ pub(crate) struct Metrics {
     pub(crate) donated_permits: AtomicU64,
     pub(crate) query_worker_active_ns: AtomicU64,
     pub(crate) ready_items: AtomicU64,
+    pub(crate) batch_worker_slots_requested: AtomicU64,
+    pub(crate) batch_worker_slots_granted: AtomicU64,
+    pub(crate) batch_worker_lanes_entered: AtomicU64,
     pub(crate) ready_wait_ns: AtomicU64,
     pub(crate) max_ready_wait_ns: AtomicU64,
     pub(crate) longest_query_dependency_chain: AtomicU64,
@@ -319,6 +337,9 @@ impl Metrics {
             donated_permits: self.donated_permits.load(Ordering::Relaxed),
             query_worker_active_ns: self.query_worker_active_ns.load(Ordering::Relaxed),
             ready_items: self.ready_items.load(Ordering::Relaxed),
+            batch_worker_slots_requested: self.batch_worker_slots_requested.load(Ordering::Relaxed),
+            batch_worker_slots_granted: self.batch_worker_slots_granted.load(Ordering::Relaxed),
+            batch_worker_lanes_entered: self.batch_worker_lanes_entered.load(Ordering::Relaxed),
             ready_wait_ns: self.ready_wait_ns.load(Ordering::Relaxed),
             max_ready_wait_ns: self.max_ready_wait_ns.load(Ordering::Relaxed),
             longest_query_dependency_chain: self
