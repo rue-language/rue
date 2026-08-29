@@ -84,6 +84,11 @@ pub struct AstGen<'a> {
     /// inside an anonymous type are independent producers and obtain their
     /// anchors from the shared frontend walk when their root is entered.
     producer_root_depth: usize,
+    /// Fixed compiler spellings are interned on first use and cached for the
+    /// rest of this lowering session. Names carrying a counter remain
+    /// dynamically interned at their call sites.
+    self_symbol: Option<Spur>,
+    u64_symbol: Option<Spur>,
     normalize_symbol: Box<dyn Fn(Spur) -> Spur + 'a>,
     cancellation_check: Option<Box<dyn FnMut() -> bool + 'a>>,
     canceled: bool,
@@ -167,6 +172,8 @@ impl<'a> AstGen<'a> {
             anonymous_anchors: AHashMap::new(),
             authoritative_anonymous_anchors: false,
             producer_root_depth: 0,
+            self_symbol: None,
+            u64_symbol: None,
             normalize_symbol: Box::new(normalize_symbol),
             cancellation_check: None,
             canceled: false,
@@ -378,6 +385,24 @@ impl<'a> AstGen<'a> {
                 Spur::default()
             }
         }
+    }
+
+    fn intern_fixed_self(&mut self) -> Spur {
+        if let Some(symbol) = self.self_symbol {
+            return symbol;
+        }
+        let symbol = self.intern("self");
+        self.self_symbol = Some(symbol);
+        symbol
+    }
+
+    fn intern_fixed_u64(&mut self) -> Spur {
+        if let Some(symbol) = self.u64_symbol {
+            return symbol;
+        }
+        let symbol = self.intern("u64");
+        self.u64_symbol = Some(symbol);
+        symbol
     }
 
     fn with_structural_segment<T>(
@@ -1475,7 +1500,7 @@ impl<'a> AstGen<'a> {
             }
             Expr::SelfExpr(self_expr) => {
                 // `self` in method bodies is just a variable reference to the implicit self parameter
-                let name = self.intern("self");
+                let name = self.intern_fixed_self();
                 self.rir.add_inst(Inst {
                     data: InstData::VarRef { name, anchor: None },
                     span: self_expr.span,
@@ -1807,8 +1832,8 @@ impl<'a> AstGen<'a> {
 
         // let mut __p: u64 = 0;   (position — usize is u64)
         let p_name = self.intern(format!("@rue:for:pos:{n}"));
-        let u64_sym = self.intern("u64");
-        let u64_type = self.rir.add_named_type(u64_sym).unwrap_or_else(|error| {
+        let u64_symbol = self.intern_fixed_u64();
+        let u64_type = self.rir.add_named_type(u64_symbol).unwrap_or_else(|error| {
             if self.payload_error.is_none() {
                 self.payload_error = Some(type_syntax_build_error(error));
             }
@@ -3661,6 +3686,71 @@ mod tests {
             _ => false,
         });
         assert!(self_ref.is_some(), "Expected self VarRef instruction");
+        let self_symbol = interner.get("self").expect("self was interned once");
+        assert!(matches!(
+            self_ref.map(|(_, inst)| &inst.data),
+            Some(InstData::VarRef { name, .. }) if *name == self_symbol
+        ));
+    }
+
+    #[test]
+    fn fixed_generated_spellings_keep_the_interner_identity() {
+        let (rir, interner) = gen_rir("fn main() { for _ in [1] {} }");
+        let u64_symbol = interner.get("u64").expect("u64 was interned once");
+        assert!(rir.type_syntax().nodes().iter().any(|node| {
+            matches!(
+                node,
+                crate::RirTypeSyntaxNode::Named(symbol)
+                    if rir.type_syntax().symbol(*symbol) == Some(&u64_symbol)
+            )
+        }));
+    }
+
+    #[test]
+    fn fixed_generated_spellings_are_not_interned_when_unused() {
+        let (tokens, source_interner) = Lexer::new("fn main() -> i32 { 0 }").tokenize().unwrap();
+        let (ast, interner) = Parser::new(tokens, source_interner).parse().unwrap();
+        let before_len = interner.len();
+        let before_self = interner.get("self");
+        let before_u64 = interner.get("u64");
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let _rir = astgen.finish();
+        assert_eq!(interner.len(), before_len);
+        assert_eq!(interner.get("self"), before_self);
+        assert_eq!(interner.get("u64"), before_u64);
+    }
+
+    #[test]
+    fn fixed_generated_spellings_are_cached_after_first_use() {
+        let source = r#"
+            struct Point {
+                x: i32,
+                fn get_x(self) -> i32 { self + self }
+            }
+            fn main() { for _ in [1] {} for _ in [2] {} }
+        "#;
+        let (rir, interner) = gen_rir(source);
+        let self_symbol = interner.get("self").expect("self was interned once");
+        let self_refs: Vec<_> = rir
+            .iter()
+            .filter_map(|(_, inst)| match inst.data {
+                InstData::VarRef { name, .. } if name == self_symbol => Some(name),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(self_refs.len(), 2);
+        assert_eq!(self_refs[0], self_refs[1]);
+
+        let u64_symbol = interner.get("u64").expect("u64 was interned once");
+        assert_eq!(
+            rir.type_syntax()
+                .symbols()
+                .iter()
+                .filter(|symbol| **symbol == u64_symbol)
+                .count(),
+            1
+        );
     }
 
     #[test]

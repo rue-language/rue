@@ -579,11 +579,22 @@ impl<T> Clone for RirSlice<'_, T> {
 }
 
 impl<'a, T: 'a> RirSlice<'a, T> {
-    fn new(words: &'a [u32], width: usize, decode: fn(&[u32]) -> T) -> Self {
+    /// Construct a view over words that have not passed publication
+    /// validation. Decoding every record here keeps this boundary fail-closed:
+    /// callers cannot expose a slice whose decoder rejects one of its records.
+    fn new_unvalidated(words: &'a [u32], width: usize, decode: fn(&[u32]) -> T) -> Self {
         assert!(width != 0 && words.len().is_multiple_of(width));
         for record in words.chunks_exact(width) {
             decode(record);
         }
+        Self::new_validated(words, width, decode)
+    }
+
+    /// Construct a view after the owning RIR has passed publication
+    /// validation. Only fixed-width range invariants are checked here; records
+    /// remain borrowed and are decoded on iteration or indexed access.
+    fn new_validated(words: &'a [u32], width: usize, decode: fn(&[u32]) -> T) -> Self {
+        assert!(width != 0 && words.len().is_multiple_of(width));
         Self {
             words,
             width,
@@ -611,7 +622,9 @@ impl<'a, T: 'a> RirSlice<'a, T> {
     }
 
     pub fn get(&self, index: usize) -> Option<T> {
-        self.values().nth(index)
+        let start = index.checked_mul(self.width)?;
+        let end = start.checked_add(self.width)?;
+        Some((self.decode)(self.words.get(start..end)?))
     }
 
     pub fn to_vec(&self) -> Vec<T> {
@@ -1023,6 +1036,7 @@ fn encoded_enum_payload_record_extent<T>(payload: &[T]) -> Option<usize> {
 fn decode_match_record(
     words: &[u32],
     position: usize,
+    validated: bool,
 ) -> Option<(RirPatternView<'_>, InstRef, usize)> {
     let kind = *words.get(position + RECORD_KIND)?;
     let span = embedded_span(words, position)?;
@@ -1076,11 +1090,19 @@ fn decode_match_record(
                         words[position + MATCH_INT_NEGATIVE_OR_PATH_TYPE],
                     )?,
                     variant: decode_symbol_word(words[position + MATCH_INT_BODY_OR_PATH_VARIANT])?,
-                    bindings: RirSlice::new(
-                        &words[binding_start..binding_start + count],
-                        SYMBOL_SCHEMA.width,
-                        |record| validated_symbol_word(record[0]),
-                    ),
+                    bindings: if validated {
+                        RirSlice::new_validated(
+                            &words[binding_start..binding_start + count],
+                            SYMBOL_SCHEMA.width,
+                            |record| validated_symbol_word(record[0]),
+                        )
+                    } else {
+                        RirSlice::new_unvalidated(
+                            &words[binding_start..binding_start + count],
+                            SYMBOL_SCHEMA.width,
+                            |record| validated_symbol_word(record[0]),
+                        )
+                    },
                     span,
                 },
                 InstRef::from_raw(words[end - 1]),
@@ -1094,6 +1116,7 @@ fn decode_match_record(
 fn decode_directive_record(
     words: &[u32],
     position: usize,
+    validated: bool,
 ) -> Option<(RirDirectiveView<'_>, usize)> {
     let extent = decoded_directive_record_extent(words, position)?;
     let end = position.checked_add(extent)?;
@@ -1104,9 +1127,15 @@ fn decode_directive_record(
     Some((
         RirDirectiveView {
             name: decode_symbol_word(words[position + DIRECTIVE_NAME])?,
-            args: RirSlice::new(&words[args_start..end], SYMBOL_SCHEMA.width, |record| {
-                validated_symbol_word(record[0])
-            }),
+            args: if validated {
+                RirSlice::new_validated(&words[args_start..end], SYMBOL_SCHEMA.width, |record| {
+                    validated_symbol_word(record[0])
+                })
+            } else {
+                RirSlice::new_unvalidated(&words[args_start..end], SYMBOL_SCHEMA.width, |record| {
+                    validated_symbol_word(record[0])
+                })
+            },
             span: embedded_span(words, position)?,
         },
         extent,
@@ -1118,7 +1147,7 @@ fn decode_directive_record(
 /// Variable size due to args.
 
 /// The complete canonical RIR for one source revision.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub struct Rir {
     /// All instructions across the canonical module sequence.
     instructions: Vec<Inst>,
@@ -1137,7 +1166,22 @@ pub struct Rir {
     /// wrapping an `InstRef` onto the reserved null payload. Spec C.1:2
     /// requires a diagnostic, not a wrapped index.
     instruction_limit_exceeded: bool,
+    /// Set only after the complete owner passes publication validation. This
+    /// lets the same accessor API retain fail-closed construction for raw RIR
+    /// while giving published owners lazy fixed-record views.
+    views_validated: bool,
 }
+
+impl PartialEq for Rir {
+    fn eq(&self, other: &Self) -> bool {
+        self.instructions == other.instructions
+            && self.extra == other.extra
+            && self.type_syntax == other.type_syntax
+            && self.instruction_limit_exceeded == other.instruction_limit_exceeded
+    }
+}
+
+impl Eq for Rir {}
 
 /// Mutable construction-phase owner. Payload descriptors never leave this
 /// owner through the public API; callers add or replace complete nodes.
@@ -2642,6 +2686,8 @@ impl ValidatedRir {
         let rir = editor.into_unvalidated();
         rir.validate_payloads()?;
         rir.validate_context(context)?;
+        let mut rir = rir;
+        rir.views_validated = true;
         Ok(Self(rir))
     }
 
@@ -3604,7 +3650,7 @@ impl Rir {
                     });
                 }
             }
-            let (_, _, width) = decode_match_record(words, position).ok_or_else(|| {
+            let (_, _, width) = decode_match_record(words, position, false).ok_or_else(|| {
                 rir_payload_error! {
                     family: RirMatchArmsRange::FAMILY,
                     start: range.start(),
@@ -4196,17 +4242,18 @@ impl Rir {
                     reason: "symbol word is not representable",
                 });
             }
-            let (_, record_extent) = decode_directive_record(words, position).ok_or_else(|| {
-                rir_payload_error! {
-                    family: RirDirectivesRange::FAMILY,
-                    start: range.start(),
-                    extent: range.extent(),
-                    record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
-                    expected: record_width,
-                    actual: record_width,
-                    reason: "directive record failed schema decoding",
-                }
-            })?;
+            let (_, record_extent) =
+                decode_directive_record(words, position, false).ok_or_else(|| {
+                    rir_payload_error! {
+                        family: RirDirectivesRange::FAMILY,
+                        start: range.start(),
+                        extent: range.extent(),
+                        record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                        expected: record_width,
+                        actual: record_width,
+                        reason: "directive record failed schema decoding",
+                    }
+                })?;
             let end = position + record_extent;
             position = end;
         }
@@ -4362,12 +4409,25 @@ impl Rir {
         )
     }
 
+    fn fixed_view<'a, T: 'a>(
+        &self,
+        words: &'a [u32],
+        width: usize,
+        decode: fn(&[u32]) -> T,
+    ) -> RirSlice<'a, T> {
+        if self.views_validated {
+            RirSlice::new_validated(words, width, decode)
+        } else {
+            RirSlice::new_unvalidated(words, width, decode)
+        }
+    }
+
     fn ref_view<R>(
         &self,
         range: &R,
         parts: impl FnOnce(&R) -> (u32, u32, &'static str),
     ) -> RirSlice<'_, InstRef> {
-        RirSlice::new(
+        self.fixed_view(
             self.payload_words(range, parts)
                 .expect("validated RIR range"),
             REF_SCHEMA.width,
@@ -4475,7 +4535,7 @@ impl Rir {
         let data = self
             .payload_words(range, parts)
             .expect("validated RIR range");
-        RirSlice::new(data, CALL_ARG_SCHEMA.width, |chunk| RirCallArg {
+        self.fixed_view(data, CALL_ARG_SCHEMA.width, |chunk| RirCallArg {
             value: InstRef::from_raw(chunk[CALL_ARG_VALUE]),
             mode: RirArgMode::from_u32(chunk[CALL_ARG_MODE]),
         })
@@ -4521,7 +4581,7 @@ impl Rir {
         let data = self
             .payload_words(range, |r| (r.start(), r.extent(), RirParamsRange::FAMILY))
             .expect("validated RIR range");
-        RirSlice::new(data, PARAM_SCHEMA.width, |chunk| RirParam {
+        self.fixed_view(data, PARAM_SCHEMA.width, |chunk| RirParam {
             name: validated_symbol_word(chunk[PARAM_NAME]),
             ty: RirTypeSyntaxRef::from_u32(chunk[PARAM_TYPE]),
             mode: RirParamMode::from_u32(chunk[PARAM_MODE]),
@@ -4675,14 +4735,19 @@ impl Rir {
                 extra: words,
                 start: 0,
                 len: 0,
+                validated: self.views_validated,
             };
         }
         let view = RirMatchArms {
             extra: words,
             start: 1,
             len: words[0] as usize,
+            validated: self.views_validated,
         };
-        view.iter().for_each(drop);
+        if !view.validated {
+            let mut records = view.iter();
+            while records.next().is_some() {}
+        }
         view
     }
 
@@ -4719,7 +4784,7 @@ impl Rir {
                 (r.start(), r.extent(), RirFieldInitsRange::FAMILY)
             })
             .expect("validated RIR range");
-        RirSlice::new(data, FIELD_INIT_SCHEMA.width, |chunk| {
+        self.fixed_view(data, FIELD_INIT_SCHEMA.width, |chunk| {
             (
                 validated_symbol_word(chunk[FIELD_INIT_NAME]),
                 InstRef::from_raw(chunk[FIELD_INIT_VALUE]),
@@ -4782,7 +4847,7 @@ impl Rir {
         let data = self
             .payload_words(range, parts)
             .expect("validated RIR range");
-        RirSlice::new(data, FIELD_DECL_SCHEMA.width, |chunk| {
+        self.fixed_view(data, FIELD_DECL_SCHEMA.width, |chunk| {
             (
                 validated_symbol_word(chunk[FIELD_DECL_NAME]),
                 RirTypeSyntaxRef::from_u32(chunk[FIELD_DECL_TYPE]),
@@ -4876,14 +4941,19 @@ impl Rir {
                 extra: words,
                 start: 0,
                 len: 0,
+                validated: self.views_validated,
             };
         }
         let view = RirDirectives {
             extra: words,
             start: 1,
             len: words[0] as usize,
+            validated: self.views_validated,
         };
-        view.iter().for_each(drop);
+        if !view.validated {
+            let mut records = view.iter();
+            while records.next().is_some() {}
+        }
         view
     }
 
@@ -4937,7 +5007,7 @@ impl Rir {
         let words = self
             .payload_words(range, parts)
             .expect("validated RIR range");
-        RirSlice::new(words, SYMBOL_SCHEMA.width, |record| {
+        self.fixed_view(words, SYMBOL_SCHEMA.width, |record| {
             validated_symbol_word(record[0])
         })
     }
@@ -5017,6 +5087,7 @@ impl Rir {
                 .expect("validated RIR range"),
             position: 0,
             remaining: variant_count,
+            validated: self.views_validated,
         }
     }
 
@@ -5047,6 +5118,7 @@ pub struct RirEnumPayloads<'a> {
     words: &'a [u32],
     position: usize,
     remaining: usize,
+    validated: bool,
 }
 
 impl<'a> Iterator for RirEnumPayloads<'a> {
@@ -5058,16 +5130,24 @@ impl<'a> Iterator for RirEnumPayloads<'a> {
         }
         self.remaining -= 1;
         if self.words.is_empty() {
-            return Some(RirSlice::new(&[], SYMBOL_SCHEMA.width, |_| unreachable!()));
+            return Some(if self.validated {
+                RirSlice::new_validated(&[], SYMBOL_SCHEMA.width, |_| unreachable!())
+            } else {
+                RirSlice::new_unvalidated(&[], SYMBOL_SCHEMA.width, |_| unreachable!())
+            });
         }
         let (start, end) = enum_payload_record(self.words, self.position)
             .expect("validated enum payload descriptor");
         self.position = end;
-        Some(RirSlice::new(
-            &self.words[start..end],
-            SYMBOL_SCHEMA.width,
-            |record| RirTypeSyntaxRef::from_u32(record[0]),
-        ))
+        Some(if self.validated {
+            RirSlice::new_validated(&self.words[start..end], SYMBOL_SCHEMA.width, |record| {
+                RirTypeSyntaxRef::from_u32(record[0])
+            })
+        } else {
+            RirSlice::new_unvalidated(&self.words[start..end], SYMBOL_SCHEMA.width, |record| {
+                RirTypeSyntaxRef::from_u32(record[0])
+            })
+        })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -5083,6 +5163,7 @@ pub struct RirMatchArms<'a> {
     extra: &'a [u32],
     start: usize,
     len: usize,
+    validated: bool,
 }
 
 impl<'a> RirMatchArms<'a> {
@@ -5101,11 +5182,16 @@ impl<'a> RirMatchArms<'a> {
             extra: self.extra,
             pos: self.start,
             remaining: self.len,
+            validated: self.validated,
         }
     }
 
     pub fn get(&self, index: usize) -> Option<(RirPatternView<'a>, InstRef)> {
-        self.iter().nth(index)
+        let mut records = self.iter();
+        for _ in 0..index {
+            records.next()?;
+        }
+        records.next()
     }
 
     pub fn to_vec(&self) -> Vec<(RirPatternView<'a>, InstRef)> {
@@ -5118,6 +5204,7 @@ struct RirMatchArmsIter<'a> {
     extra: &'a [u32],
     pos: usize,
     remaining: usize,
+    validated: bool,
 }
 
 impl<'a> Iterator for RirMatchArmsIter<'a> {
@@ -5127,10 +5214,11 @@ impl<'a> Iterator for RirMatchArmsIter<'a> {
         if self.remaining == 0 {
             return None;
         }
-        let (pattern, body, extent) = match decode_match_record(self.extra, self.pos) {
-            Some(record) => record,
-            None => unreachable!("match record passed schema validation"),
-        };
+        let (pattern, body, extent) =
+            match decode_match_record(self.extra, self.pos, self.validated) {
+                Some(record) => record,
+                None => unreachable!("match record passed schema validation"),
+            };
         self.pos += extent;
         self.remaining -= 1;
         Some((pattern, body))
@@ -5149,6 +5237,7 @@ pub struct RirDirectives<'a> {
     extra: &'a [u32],
     start: usize,
     len: usize,
+    validated: bool,
 }
 
 impl<'a> RirDirectives<'a> {
@@ -5165,11 +5254,16 @@ impl<'a> RirDirectives<'a> {
             extra: self.extra,
             pos: self.start,
             remaining: self.len,
+            validated: self.validated,
         }
     }
 
     pub fn get(&self, index: usize) -> Option<RirDirectiveView<'a>> {
-        self.iter().nth(index)
+        let mut records = self.iter();
+        for _ in 0..index {
+            records.next()?;
+        }
+        records.next()
     }
 
     pub fn to_vec(&self) -> Vec<RirDirectiveView<'a>> {
@@ -5182,6 +5276,7 @@ struct RirDirectivesIter<'a> {
     extra: &'a [u32],
     pos: usize,
     remaining: usize,
+    validated: bool,
 }
 
 impl<'a> Iterator for RirDirectivesIter<'a> {
@@ -5191,10 +5286,11 @@ impl<'a> Iterator for RirDirectivesIter<'a> {
         if self.remaining == 0 {
             return None;
         }
-        let (directive, extent) = match decode_directive_record(self.extra, self.pos) {
-            Some(record) => record,
-            None => unreachable!("directive record passed schema validation"),
-        };
+        let (directive, extent) =
+            match decode_directive_record(self.extra, self.pos, self.validated) {
+                Some(record) => record,
+                None => unreachable!("directive record passed schema validation"),
+            };
         self.pos += extent;
         self.remaining -= 1;
         Some(directive)
@@ -6785,6 +6881,22 @@ mod typed_payload_tests {
     use lasso::ThreadedRodeo;
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
+    thread_local! {
+        static SLICE_DECODE_COUNT: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn counted_word(record: &[u32]) -> u32 {
+        SLICE_DECODE_COUNT.with(|count| count.set(count.get() + 1));
+        record[0]
+    }
+
+    fn reset_decode_count() {
+        SLICE_DECODE_COUNT.with(|count| count.set(0));
+    }
+
+    fn decode_count() -> usize {
+        SLICE_DECODE_COUNT.with(Cell::get)
+    }
 
     struct CountingAllocator;
 
@@ -6833,6 +6945,47 @@ mod typed_payload_tests {
             ALLOCATION_COUNT.with(Cell::get),
             ALLOCATION_BYTES.with(Cell::get),
         )
+    }
+
+    #[test]
+    fn validated_fixed_slice_decodes_only_requested_records() {
+        let words: Vec<u32> = (0..128).collect();
+        reset_decode_count();
+        let view = RirSlice::new_validated(&words, 1, counted_word);
+        assert_eq!(decode_count(), 0);
+        assert_eq!(view.get(97), Some(97));
+        assert_eq!(decode_count(), 1);
+        assert_eq!(view.get(13), Some(13));
+        assert_eq!(decode_count(), 2);
+        assert_eq!(view.get(usize::MAX), None);
+        assert_eq!(view.get(view.len()), None);
+        assert_eq!(decode_count(), 2);
+
+        let wide = RirSlice::new_validated(&[], 2, counted_word);
+        assert_eq!(wide.get(usize::MAX / 2), None); // checked start + width overflow
+        assert_eq!(wide.get(usize::MAX), None); // checked index * width overflow
+    }
+
+    #[test]
+    fn unvalidated_fixed_slice_sweeps_before_exposing_values() {
+        let words: Vec<u32> = (0..128).collect();
+        reset_decode_count();
+        let view = RirSlice::new_unvalidated(&words, 1, counted_word);
+        assert_eq!(decode_count(), words.len());
+        assert_eq!(view.get(0), Some(0));
+        assert_eq!(decode_count(), words.len() + 1);
+    }
+
+    #[test]
+    fn validated_fixed_slice_construction_has_no_record_scaled_allocations() {
+        let small = [0u32; 8];
+        let large = [0u32; 1024];
+        let (small_allocations, small_bytes) =
+            allocation_evidence(|| drop(RirSlice::new_validated(&small, 1, counted_word)));
+        let (large_allocations, large_bytes) =
+            allocation_evidence(|| drop(RirSlice::new_validated(&large, 1, counted_word)));
+        assert_eq!((small_allocations, small_bytes), (0, 0));
+        assert_eq!((large_allocations, large_bytes), (0, 0));
     }
 
     fn span() -> Span {
