@@ -43,6 +43,14 @@ use crate::{BlockId, Cfg, CfgEditError, Terminator};
 use ahash::AHashSet;
 use rue_air::FrozenTypeInternPool;
 
+#[cfg(test)]
+use std::cell::Cell;
+
+#[cfg(test)]
+std::thread_local! {
+    static PREHEADER_PRED_SCAN_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
 use super::CfgOptimizationError;
 
 /// Index of a [`NaturalLoop`] within its [`LoopForest`].
@@ -432,8 +440,17 @@ fn ensure_preheader_transaction(
     type_pool: &FrozenTypeInternPool,
     mut injection: PayloadFailureInjection,
 ) -> Result<BlockId, CfgOptimizationError> {
+    // Reusing an existing unconditional outside predecessor is a proof about
+    // the owner we were given, not an edit. Do it before creating the private
+    // transaction: the caller keeps the same owner and no validation or test
+    // injection work is needed on this no-mutation path.
+    let classification = classify_preheader(cfg, lp);
+    if let Some(ph) = classification.reusable {
+        return Ok(ph);
+    }
+
     let mut editor = cfg.clone();
-    let ph = ensure_preheader_in(&mut editor, lp, &mut injection)?;
+    let ph = ensure_preheader_in(&mut editor, lp, &classification.outside, &mut injection)?;
     injection.before_validation(&mut editor, ph);
     // Validate the materialized preheader with the materialization verifier, NOT
     // the strict `verify_with_type_pool`. Preheader materialization runs
@@ -459,35 +476,52 @@ fn ensure_preheader_transaction(
     Ok(ph)
 }
 
-fn ensure_preheader_in(
-    cfg: &mut Cfg,
-    lp: &NaturalLoop,
-    injection: &mut PayloadFailureInjection,
-) -> Result<BlockId, CfgEditError> {
-    let header = lp.header;
+struct PreheaderClassification {
+    outside: Vec<BlockId>,
+    reusable: Option<BlockId>,
+}
 
-    // Partition the header's predecessors: a pred inside the body is a latch
-    // (a back edge, kept targeting the header); a pred outside is a loop entry.
-    //
-    // Only the header's row is read, and this runs once per loop, so building
-    // the whole predecessor table here allocated a vector per block per loop
-    // to look at one of them.
+#[cfg(test)]
+fn reset_test_preheader_pred_scan_count() {
+    PREHEADER_PRED_SCAN_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn test_preheader_pred_scan_count() -> usize {
+    PREHEADER_PRED_SCAN_COUNT.with(Cell::get)
+}
+
+/// Classify a loop's header predecessors once, retaining the outside set for
+/// the materialization edit. Reuse is proved against the original owner before
+/// any transaction clone; materialization receives this same classification so
+/// it does not rescan the owner or its clone.
+fn classify_preheader(cfg: &Cfg, lp: &NaturalLoop) -> PreheaderClassification {
+    let header = lp.header;
+    #[cfg(test)]
+    PREHEADER_PRED_SCAN_COUNT.with(|count| count.set(count.get() + 1));
     let outside: Vec<BlockId> = cfg
         .predecessors_of(header)
         .into_iter()
-        .filter(|p| !lp.contains(*p))
+        .filter(|predecessor| !lp.contains(*predecessor))
         .collect();
+    let reusable = (outside.len() == 1)
+        .then(|| outside[0])
+        .filter(|&predecessor| {
+            matches!(
+                cfg.get_block(predecessor).terminator,
+                Terminator::Goto { target, .. } if target == header
+            )
+        });
+    PreheaderClassification { outside, reusable }
+}
 
-    // Reuse: exactly one outside predecessor whose terminator is an
-    // unconditional `Goto` to the header (its only successor). Such a block
-    // already dominates the header and runs once per entry.
-    if outside.len() == 1 {
-        let p = outside[0];
-        if matches!(cfg.get_block(p).terminator, Terminator::Goto { target, .. } if target == header)
-        {
-            return Ok(p);
-        }
-    }
+fn ensure_preheader_in(
+    cfg: &mut Cfg,
+    lp: &NaturalLoop,
+    outside: &[BlockId],
+    injection: &mut PayloadFailureInjection,
+) -> Result<BlockId, CfgEditError> {
+    let header = lp.header;
 
     // Otherwise insert a dedicated preheader `ph`. It takes the header's
     // parameter list (so outside edges keep their arity) and forwards those
@@ -512,7 +546,7 @@ fn ensure_preheader_in(
 
     // Redirect every outside edge from the header to `ph`, preserving each
     // edge's arguments (they now feed `ph`'s mirror parameters).
-    for p in outside {
+    for &p in outside {
         redirect_edges(cfg, p, header, ph, injection)?;
     }
 
@@ -970,6 +1004,48 @@ mod tests {
         assert_eq!(ph, entry, "the entry Goto is reused as the preheader");
         assert_eq!(cfg.block_count(), before, "no block inserted for reuse");
         cfg.verify().unwrap();
+    }
+
+    #[test]
+    fn preheader_reuse_is_a_noop_before_transaction_and_verification() {
+        let (mut cfg, entry, header, _body, _exit) = single_loop_goto_entry();
+        let dom = DominatorTree::compute(&cfg);
+        let forest = loops(&cfg, &dom);
+        let lp = loop_of(&forest, header);
+        let before_debug = format!("{cfg:?}");
+        let before_display = cfg.to_string();
+        let before_payload = cfg.payload_storage_stats();
+        let before_values = cfg.value_count();
+        let before_blocks = cfg.block_count();
+        let block_address = cfg.get_block(entry) as *const _;
+        let value_address = cfg.get_inst(cfg.get_block(header).insts[0]) as *const _;
+
+        // A stage-zero injection would corrupt the private candidate if the
+        // transaction or its verifier were entered. Reuse must return before
+        // either one is touched.
+        Cfg::reset_test_clone_count();
+        let ph = ensure_preheader_transaction(
+            &mut cfg,
+            lp,
+            &test_type_pool(),
+            PayloadFailureInjection {
+                fail_at: Some(0),
+                next: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(ph, entry);
+        assert_eq!(cfg.block_count(), before_blocks);
+        assert_eq!(cfg.value_count(), before_values);
+        assert_eq!(cfg.payload_storage_stats(), before_payload);
+        assert_eq!(format!("{cfg:?}"), before_debug);
+        assert_eq!(cfg.to_string(), before_display);
+        assert_eq!(cfg.get_block(entry) as *const _, block_address);
+        assert_eq!(
+            cfg.get_inst(cfg.get_block(header).insts[0]) as *const _,
+            value_address
+        );
+        assert_eq!(Cfg::test_clone_count(), 0);
     }
 
     #[test]
@@ -1431,6 +1507,78 @@ mod tests {
             stats.parent_body_visits, represented_body_memberships,
             "parentage must visit represented bodies, not every loop pair"
         );
+    }
+
+    #[test]
+    fn many_reusable_preheaders_do_not_clone_or_materialize() {
+        // Every loop has a distinct unconditional spine predecessor. Reuse is
+        // a pure owner query, so exercising many loops must not perform one
+        // private CFG clone per loop.
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let mut previous = entry;
+        const LOOPS: usize = 64;
+        for _ in 0..LOOPS {
+            let header = cfg.new_block();
+            let body = cfg.new_block();
+            let next = cfg.new_block();
+            cfg.set_terminator(previous, goto(header));
+            let condition = bool_const(&mut cfg, header);
+            cfg.set_terminator(header, branch(condition, body, next));
+            cfg.set_terminator(body, goto(header));
+            previous = next;
+        }
+        cfg.set_terminator(previous, Terminator::Return { value: None });
+        let dom = DominatorTree::compute(&cfg);
+        let forest = loops(&cfg, &dom);
+        assert_eq!(forest.len(), LOOPS);
+        let blocks_before = cfg.block_count();
+        Cfg::reset_test_clone_count();
+        for lp in forest.loops() {
+            ensure_preheader(&mut cfg, lp, &test_type_pool()).unwrap();
+        }
+        assert_eq!(cfg.block_count(), blocks_before);
+        assert_eq!(Cfg::test_clone_count(), 0);
+    }
+
+    #[test]
+    fn many_materialized_preheaders_classify_once_per_loop() {
+        // Each loop has two outside entries, forcing materialization. The
+        // classification carries that already-computed set into the private
+        // candidate, so one loop means one predecessor scan—not a scan for
+        // classification plus another scan in the owner and clone.
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let mut previous = entry;
+        const LOOPS: usize = 32;
+        for _ in 0..LOOPS {
+            let header = cfg.new_block();
+            let body = cfg.new_block();
+            let alternate = cfg.new_block();
+            let next = cfg.new_block();
+            let condition = bool_const(&mut cfg, previous);
+            cfg.set_terminator(previous, branch(condition, header, alternate));
+            cfg.set_terminator(alternate, goto(header));
+            let header_condition = bool_const(&mut cfg, header);
+            cfg.set_terminator(header, branch(header_condition, body, next));
+            cfg.set_terminator(body, goto(header));
+            previous = next;
+        }
+        cfg.set_terminator(previous, Terminator::Return { value: None });
+        let dom = DominatorTree::compute(&cfg);
+        let forest = loops(&cfg, &dom);
+        assert_eq!(forest.len(), LOOPS);
+        let blocks_before = cfg.block_count();
+        Cfg::reset_test_clone_count();
+        reset_test_preheader_pred_scan_count();
+        for lp in forest.loops() {
+            ensure_preheader(&mut cfg, lp, &test_type_pool()).unwrap();
+        }
+        assert_eq!(cfg.block_count(), blocks_before + LOOPS);
+        assert_eq!(Cfg::test_clone_count(), LOOPS);
+        assert_eq!(test_preheader_pred_scan_count(), LOOPS);
     }
 
     #[test]

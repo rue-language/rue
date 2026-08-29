@@ -42,7 +42,7 @@
 //!   the predecessor takes over the terminator, and each block parameter is
 //!   substituted by the corresponding `Goto` argument. Substitutions from
 //!   every merge in the pass are applied in one batched
-//!   [`Cfg::rewrite_value_uses`] sweep, so the pass performs a single global
+//!   [`Cfg::rewrite_value_uses_in_place`] sweep, so the pass performs a single global
 //!   use-rewrite regardless of how many blocks merge (RUE-794 work
 //!   discipline). Malformed parameter substitution is the RUE-347 ill-typed
 //!   edge class; `optimize()`'s post-pass verification checks every surviving
@@ -448,7 +448,9 @@ fn merge_chains(cfg: &mut Cfg, stats: &mut Stats) -> Result<(), crate::CfgEditEr
     let resolved: Vec<CfgValue> = (0..cfg.value_count())
         .map(|i| resolve(&subst, CfgValue::from_raw(i as u32)))
         .collect();
-    cfg.rewrite_value_uses(|v| resolved[v.as_u32() as usize])
+    // This editor is private to optimize_with_budget and is discarded on any
+    // error, so the in-place authority is the correct failure ownership here.
+    cfg.rewrite_value_uses_in_place(|v| resolved[v.as_u32() as usize])
 }
 
 #[cfg(test)]

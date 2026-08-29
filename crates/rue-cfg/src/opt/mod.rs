@@ -337,6 +337,9 @@ pub fn optimize_with_budget(
     let mut cfg = cfg.into_editor();
     let mut stats = OptimizationStats::default();
 
+    // Every pass below works on this private editor. If an in-place payload
+    // rewrite poisons it, publish_optimization returns the pass error before
+    // the editor can be published, so no caller observes partial state.
     let pass_result = (|| {
         match level {
             OptLevel::O0 => {
@@ -471,6 +474,22 @@ fn publish_optimization(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optimizer_rewrite_boundaries_are_explicitly_in_place() {
+        // These passes run inside optimize_with_budget's private editor. Keep
+        // this guard next to the pipeline so a future cleanup cannot silently
+        // reintroduce a whole-CFG transactional clone at each pass boundary.
+        for source in [
+            include_str!("cse.rs"),
+            include_str!("forward.rs"),
+            include_str!("peephole.rs"),
+            include_str!("simplify.rs"),
+        ] {
+            assert_eq!(source.matches("rewrite_value_uses(").count(), 0);
+            assert_eq!(source.matches("rewrite_value_uses_in_place(").count(), 1);
+        }
+    }
 
     #[test]
     fn optimizer_edit_failures_preserve_the_failure_kind() {

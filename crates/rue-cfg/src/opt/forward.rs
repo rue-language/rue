@@ -67,7 +67,7 @@
 //! ## Applying substitutions and cleanup
 //!
 //! Both rules record `subst[load] = value`; all substitutions apply in one
-//! [`Cfg::rewrite_value_uses`] sweep, resolving chains (a forwarded value may
+//! [`Cfg::rewrite_value_uses_in_place`] sweep, resolving chains (a forwarded value may
 //! itself be a forwarded load) exactly as [`super::cse`] and
 //! [`super::peephole`] do. A forwarded `Load` then has no remaining uses.
 //! Unlike CSE — which must overwrite a duplicated *trapping* op with a dead
@@ -276,7 +276,11 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     let resolved: Vec<CfgValue> = (0..cfg.value_count())
         .map(|i| resolve(&subst, CfgValue::from_raw(i as u32)))
         .collect();
-    cfg.rewrite_value_uses(|v| resolved[v.as_u32() as usize])?;
+    // The optimizer owns a private editor and discards it if this edit fails;
+    // an in-place sweep avoids cloning that complete editor. The editor may be
+    // poisoned on error, which is safe under optimize_with_budget's publish
+    // boundary.
+    cfg.rewrite_value_uses_in_place(|v| resolved[v.as_u32() as usize])?;
 
     Ok(stats)
 }

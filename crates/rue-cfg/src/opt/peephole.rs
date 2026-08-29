@@ -17,7 +17,7 @@
 //!   wrapping-arithmetic counterparts, `x/1`, `x|0`, `x^0`, `x<<0`, `x>>0`,
 //!   `x&x`, `x|x`, `!!x` — have every use re-pointed at the operand through one
 //!   batched
-//!   [`Cfg::rewrite_value_uses`] sweep. The identity instruction itself is
+//!   [`Cfg::rewrite_value_uses_in_place`] sweep. The identity instruction itself is
 //!   rewritten to a dead placeholder constant: DCE conservatively keeps any
 //!   arithmetic that might trap, so simply orphaning an `Add` would leave it
 //!   in the emitted code — but these shapes were selected precisely because
@@ -234,7 +234,10 @@ fn rewire_identities(cfg: &mut Cfg, stats: &mut Stats) -> Result<(), crate::CfgE
         }
         v
     };
-    cfg.rewrite_value_uses(resolve)
+    // optimize_with_budget owns this private editor and rejects/discards it
+    // on an edit error, so a poisoned in-place sweep is safe here and avoids a
+    // second whole-CFG copy.
+    cfg.rewrite_value_uses_in_place(resolve)
 }
 
 #[cfg(test)]
