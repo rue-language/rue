@@ -1296,9 +1296,9 @@ mod tests {
             );
         }
 
-        let provider_host = item(
+        let provider_type_host = item(
             PROVIDER_BODY_HOST_SOURCE,
-            "impl<P, S, K, M> OrdinaryBodyAnalysisHost for ProviderBodyHost<",
+            "impl<P, S, K, M> TypeResolutionHost for ProviderBodyHost<",
         );
         for required in [
             "resolve_structured_semantic_type_syntax_with(",
@@ -1307,7 +1307,7 @@ mod tests {
             "Some(definition.file_id)",
         ] {
             assert!(
-                provider_host.contains(required),
+                provider_type_host.contains(required),
                 "the query-backed host lost the shared type policy: {required}"
             );
         }
