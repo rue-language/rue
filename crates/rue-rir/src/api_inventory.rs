@@ -201,3 +201,95 @@ fn rir_structural_anchor_storage_is_tied_to_retained_charge() {
         "retained charge omits the structured type-syntax arena"
     );
 }
+
+#[test]
+fn fixed_payload_views_keep_the_validated_boundary_and_direct_indexing() {
+    let owner = include_str!("inst.rs");
+    let packed = include_str!("inst/packed.rs");
+
+    let slice = owner
+        .split("impl<'a, T: 'a> RirSlice<'a, T> {")
+        .nth(1)
+        .and_then(|rest| rest.split("impl<'a, T> IntoIterator for RirSlice").next())
+        .expect("RirSlice implementation");
+    let get = slice
+        .split("pub fn get(&self, index: usize) -> Option<T> {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n    }").next())
+        .expect("RirSlice::get implementation");
+    assert!(get.contains("checked_mul"));
+    assert!(get.contains("checked_add"));
+    assert!(!get.contains("nth"));
+
+    for accessor in [
+        "fn ref_view<R>(",
+        "fn call_arg_view<R>(",
+        "pub fn params(",
+        "pub fn field_inits(",
+        "fn field_decl_view<R>(",
+        "fn symbol_view<R>(",
+    ] {
+        let body = owner
+            .split(accessor)
+            .nth(1)
+            .and_then(|rest| rest.split("\n    }").next())
+            .unwrap_or_else(|| panic!("missing fixed accessor {accessor}"));
+        assert!(
+            body.contains("fixed_view"),
+            "{accessor} bypasses fixed_view"
+        );
+    }
+
+    let match_decoder = owner
+        .split("fn decode_match_record(")
+        .nth(1)
+        .and_then(|rest| rest.split("fn decode_directive_record(").next())
+        .expect("match decoder");
+    let match_bindings = match_decoder
+        .split("x if x == PatternKind::Path")
+        .nth(1)
+        .expect("path-pattern binding decoder");
+    assert!(match_bindings.contains("validated"));
+    assert!(match_bindings.contains("RirSlice::new_validated"));
+    assert!(match_bindings.contains("RirSlice::new_unvalidated"));
+
+    let directive_decoder = owner
+        .split("fn decode_directive_record(")
+        .nth(1)
+        .and_then(|rest| rest.split("/// Stored representation of directive").next())
+        .expect("directive decoder");
+    assert!(directive_decoder.contains("validated"));
+    assert!(directive_decoder.contains("RirSlice::new_validated"));
+    assert!(directive_decoder.contains("RirSlice::new_unvalidated"));
+
+    let enum_decoder = owner
+        .split("impl<'a> Iterator for RirEnumPayloads")
+        .nth(1)
+        .and_then(|rest| rest.split("impl ExactSizeIterator").next())
+        .expect("enum payload decoder");
+    assert!(enum_decoder.contains("validated"));
+    assert!(enum_decoder.contains("RirSlice::new_validated"));
+    assert!(enum_decoder.contains("RirSlice::new_unvalidated"));
+
+    for accessor in ["pub fn match_arms(", "pub fn directives("] {
+        let body = owner
+            .split(accessor)
+            .nth(1)
+            .and_then(|rest| rest.split("\n    }\n\n    pub fn").next())
+            .unwrap_or_else(|| panic!("missing variable accessor {accessor}"));
+        assert!(
+            body.contains("validated: self.views_validated"),
+            "{accessor} does not propagate validation state"
+        );
+    }
+
+    let enum_view = owner
+        .split("fn enum_payload_view<'a, R>(")
+        .nth(1)
+        .and_then(|rest| rest.split("    pub fn enum_payloads(").next())
+        .expect("enum payload view");
+    assert!(enum_view.contains("validated: self.views_validated"));
+
+    assert_eq!(owner.matches("views_validated = true").count(), 1);
+    assert_eq!(packed.matches("views_validated = true").count(), 1);
+}
