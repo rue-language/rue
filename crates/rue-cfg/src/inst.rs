@@ -14,6 +14,14 @@
 
 use std::fmt;
 
+#[cfg(test)]
+use std::cell::Cell;
+
+#[cfg(test)]
+std::thread_local! {
+    static CFG_CLONE_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
 // Compile-time size assertions to prevent silent size growth during refactoring.
 // These limits are set slightly above current sizes to allow minor changes,
 // but will catch significant size regressions.
@@ -1043,6 +1051,8 @@ impl Clone for Cfg {
     /// Clone the complete owner so every opaque payload range remains paired
     /// with the physical store whose positions it addresses.
     fn clone(&self) -> Self {
+        #[cfg(test)]
+        CFG_CLONE_COUNT.with(|count| count.set(count.get() + 1));
         Self {
             blocks: self
                 .blocks
@@ -1084,6 +1094,16 @@ impl Clone for Cfg {
 }
 
 impl Cfg {
+    #[cfg(test)]
+    pub(crate) fn reset_test_clone_count() {
+        CFG_CLONE_COUNT.with(|count| count.set(0));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_clone_count() -> usize {
+        CFG_CLONE_COUNT.with(Cell::get)
+    }
+
     /// Clone and atomically remap every request-local payload domain embedded
     /// in this CFG. Block and value numbers are structural within the graph;
     /// types, nominal IDs, symbols, strings, and spans are supplied by the
@@ -2756,9 +2776,12 @@ impl Cfg {
     /// mapped-away instructions themselves stay in the value arena as
     /// detached values for DCE to ignore.
     ///
-    /// This is the canonical use-rewrite for optimization passes that
-    /// substitute one value for another (e.g. block-merge parameter
-    /// substitution, RUE-911). One call visits every use site exactly once.
+    /// This is the canonical transactional use-rewrite for reusable CFG
+    /// owners. It clones the complete owner before the sweep, so an edit
+    /// failure leaves `self` byte-for-byte unchanged. Optimization passes
+    /// whose private editor is discarded on any error use
+    /// [`Self::rewrite_value_uses_in_place`] instead.
+    #[allow(dead_code)]
     pub(crate) fn rewrite_value_uses(
         &mut self,
         map: impl Fn(CfgValue) -> CfgValue,
@@ -2769,14 +2792,52 @@ impl Cfg {
         Ok(())
     }
 
+    #[cfg(test)]
+    fn rewrite_value_uses_with_failure(
+        &mut self,
+        map: impl Fn(CfgValue) -> CfgValue,
+        fail_at: usize,
+    ) -> Result<(), CfgEditError> {
+        let mut rewritten = self.clone();
+        rewritten.rewrite_value_uses_in_place_with_failure(map, fail_at)?;
+        *self = rewritten;
+        Ok(())
+    }
+
     /// The in-place variant of [`Self::rewrite_value_uses`]: one sweep over
     /// every use site, without the transactional whole-CFG copy. On failure
-    /// the CFG may be partially rewritten, so this is for callers that
-    /// discard the CFG on error — batch splice drivers discard the whole
-    /// batch, and the transactional wrapper discards its own clone.
+    /// the CFG may be partially rewritten (the editor is poisoned), so this
+    /// is only for callers that discard the private editor on error — the
+    /// optimizer's `publish_optimization` boundary and batch splice drivers.
     pub fn rewrite_value_uses_in_place(
         &mut self,
         map: impl Fn(CfgValue) -> CfgValue,
+    ) -> Result<(), CfgEditError> {
+        self.rewrite_value_uses_in_place_inner(map, |_| Ok(()))
+    }
+
+    #[cfg(test)]
+    fn rewrite_value_uses_in_place_with_failure(
+        &mut self,
+        map: impl Fn(CfgValue) -> CfgValue,
+        fail_at: usize,
+    ) -> Result<(), CfgEditError> {
+        let mut next = 0;
+        self.rewrite_value_uses_in_place_inner(map, |_| {
+            let stage = next;
+            next += 1;
+            (stage != fail_at)
+                .then_some(())
+                .ok_or(CfgEditError::CapacityFailure {
+                    family: "rewrite failure injection",
+                })
+        })
+    }
+
+    fn rewrite_value_uses_in_place_inner(
+        &mut self,
+        map: impl Fn(CfgValue) -> CfgValue,
+        mut before_payload: impl FnMut(&'static str) -> Result<(), CfgEditError>,
     ) -> Result<(), CfgEditError> {
         use CfgInstData::*;
         // Per-value ownership facts follow the values they describe: a
@@ -2829,6 +2890,7 @@ impl Cfg {
                         }
                         PlaceBase::Local(_) | PlaceBase::Param(_) => {}
                     }
+                    before_payload(payload::CfgProjections::FAMILY)?;
                     place.projections = payload::push_projections(
                         &mut self.projections,
                         payload::projections(&old_projections, &place.projections)
@@ -2854,6 +2916,7 @@ impl Cfg {
                         PlaceBase::Accessor(base) | PlaceBase::Indirect(base) => *base = map(*base),
                         PlaceBase::Local(_) | PlaceBase::Param(_) => {}
                     }
+                    before_payload(payload::CfgProjections::FAMILY)?;
                     place.projections = payload::push_projections(
                         &mut self.projections,
                         payload::projections(&old_projections, &place.projections)
@@ -2874,6 +2937,7 @@ impl Cfg {
                     )?;
                 }
                 Call { args, .. } | AccessorCall { args, .. } => {
+                    before_payload(payload::CfgCallArgs::FAMILY)?;
                     *args = payload::push_call_args(
                         &mut self.call_args,
                         payload::call_args(&old_call_args, args)
@@ -2885,6 +2949,7 @@ impl Cfg {
                     )?;
                 }
                 Intrinsic { args, .. } => {
+                    before_payload(payload::CfgIntrinsicArgs::FAMILY)?;
                     *args = payload::push_intrinsic_args(
                         &mut self.extra,
                         payload::intrinsic_args(&old_extra, args)
@@ -2894,6 +2959,7 @@ impl Cfg {
                     )?;
                 }
                 StructInit { fields, .. } => {
+                    before_payload(payload::CfgStructFields::FAMILY)?;
                     *fields = payload::push_struct_fields(
                         &mut self.extra,
                         payload::struct_fields(&old_extra, fields)
@@ -2903,6 +2969,7 @@ impl Cfg {
                     )?;
                 }
                 ArrayInit { elements } => {
+                    before_payload(payload::CfgArrayElements::FAMILY)?;
                     *elements = payload::push_array_elements(
                         &mut self.extra,
                         payload::array_elements(&old_extra, elements)
@@ -2912,6 +2979,7 @@ impl Cfg {
                     )?;
                 }
                 EnumVariant { payload: range, .. } => {
+                    before_payload(payload::CfgEnumPayload::FAMILY)?;
                     *range = payload::push_enum_payload(
                         &mut self.extra,
                         payload::enum_payload(&old_extra, range)
@@ -2933,6 +3001,7 @@ impl Cfg {
         for block in &mut self.blocks {
             match &mut block.terminator {
                 Terminator::Goto { args, .. } => {
+                    before_payload(payload::CfgGotoArgs::FAMILY)?;
                     *args = payload::push_goto_args(
                         &mut self.extra,
                         payload::goto_args(&old_extra, args)
@@ -2948,6 +3017,7 @@ impl Cfg {
                     ..
                 } => {
                     *cond = map(*cond);
+                    before_payload(payload::CfgThenArgs::FAMILY)?;
                     *then_args = payload::push_then_args(
                         &mut self.extra,
                         payload::then_args(&old_extra, then_args)
@@ -2955,6 +3025,7 @@ impl Cfg {
                             .copied()
                             .map(&map),
                     )?;
+                    before_payload(payload::CfgElseArgs::FAMILY)?;
                     *else_args = payload::push_else_args(
                         &mut self.extra,
                         payload::else_args(&old_extra, else_args)
@@ -4023,5 +4094,144 @@ mod tests {
                 }],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn rewrite_failure_poisoning_is_private_but_transactional_owner_is_unchanged() {
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "rewrite-failure".into(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let old = cfg.append_inst(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(1),
+                ty: Type::I32,
+                span: Span::new(3, 4),
+            },
+        );
+        let replacement = cfg.append_inst(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(2),
+                ty: Type::I32,
+                span: Span::new(5, 6),
+            },
+        );
+        let intrinsic = cfg
+            .append_intrinsic(
+                entry,
+                None,
+                Spur::default(),
+                [old],
+                Type::UNIT,
+                Span::new(7, 8),
+            )
+            .unwrap();
+        cfg.set_return(entry, None);
+        let before_debug = format!("{cfg:?}");
+        let before_display = cfg.to_string();
+        let before_payload = cfg.payload_storage_stats();
+
+        let mut poisoned = cfg.clone();
+        Cfg::reset_test_clone_count();
+        let error = poisoned
+            .rewrite_value_uses_in_place_with_failure(
+                |value| if value == old { replacement } else { value },
+                0,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            CfgEditError::CapacityFailure {
+                family: "rewrite failure injection"
+            }
+        ));
+        assert_eq!(Cfg::test_clone_count(), 0);
+        // The injected failure occurs after the old payload owner has been
+        // detached, so the private editor is intentionally not printable or
+        // verifiable. Its storage accounting proves that it was poisoned.
+        assert_ne!(poisoned.payload_storage_stats(), before_payload);
+
+        let mut transactional = cfg;
+        Cfg::reset_test_clone_count();
+        let error = transactional
+            .rewrite_value_uses_with_failure(
+                |value| if value == old { replacement } else { value },
+                0,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            CfgEditError::CapacityFailure {
+                family: "rewrite failure injection"
+            }
+        ));
+        assert_eq!(format!("{transactional:?}"), before_debug);
+        assert_eq!(transactional.to_string(), before_display);
+        assert_eq!(Cfg::test_clone_count(), 1);
+        assert_eq!(
+            transactional.get_intrinsic_args(&transactional.get_inst(intrinsic).data),
+            [old]
+        );
+    }
+
+    #[test]
+    fn large_value_rewrite_has_linear_payload_work_and_one_transaction_clone() {
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "rewrite-scaling".into(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let old = cfg.append_inst(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(1),
+                ty: Type::I32,
+                span: Span::new(1, 2),
+            },
+        );
+        let replacement = cfg.append_inst(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(2),
+                ty: Type::I32,
+                span: Span::new(3, 4),
+            },
+        );
+        const USES: usize = 256;
+        for _ in 0..USES {
+            cfg.append_intrinsic(
+                entry,
+                None,
+                Spur::default(),
+                [old],
+                Type::UNIT,
+                Span::new(5, 6),
+            )
+            .unwrap();
+        }
+        cfg.set_return(entry, None);
+
+        let mut in_place = cfg.clone();
+        Cfg::reset_test_clone_count();
+        let visits = Cell::new(0);
+        in_place
+            .rewrite_value_uses_in_place(|value| {
+                visits.set(visits.get() + 1);
+                if value == old { replacement } else { value }
+            })
+            .unwrap();
+        assert_eq!(visits.get(), USES);
+        assert_eq!(Cfg::test_clone_count(), 0);
+
+        let mut transactional = cfg;
+        Cfg::reset_test_clone_count();
+        let visits = Cell::new(0);
+        transactional
+            .rewrite_value_uses(|value| {
+                visits.set(visits.get() + 1);
+                if value == old { replacement } else { value }
+            })
+            .unwrap();
+        assert_eq!(visits.get(), USES);
+        assert_eq!(Cfg::test_clone_count(), 1);
     }
 }

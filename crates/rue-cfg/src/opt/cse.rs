@@ -82,7 +82,7 @@
 //! duplicate's trap is fully redundant. The FIRST occurrence is never touched.
 //!
 //! After every block, if anything was substituted, all uses are re-pointed at
-//! the surviving first values in ONE [`Cfg::rewrite_value_uses`] sweep (the same
+//! the surviving first values in ONE [`Cfg::rewrite_value_uses_in_place`] sweep (the same
 //! batched work discipline as [`super::peephole`] and [`super::simplify`],
 //! RUE-794). DCE then removes the now-unused `Const(0)` placeholders.
 
@@ -283,7 +283,10 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
         let resolved: Vec<CfgValue> = (0..cfg.value_count())
             .map(|i| resolve(&subst, CfgValue::from_raw(i as u32)))
             .collect();
-        cfg.rewrite_value_uses(|v| resolved[v.as_u32() as usize])?;
+        // This editor is private to optimize_with_budget and is discarded if
+        // the pass fails; in-place rewriting therefore preserves the pass
+        // boundary without a second whole-CFG clone.
+        cfg.rewrite_value_uses_in_place(|v| resolved[v.as_u32() as usize])?;
     }
 
     Ok(stats)
