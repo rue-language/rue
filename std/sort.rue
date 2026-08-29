@@ -60,28 +60,80 @@ pub fn insertion_sort(comptime T: type, inout xs: arraybuf.ArrayBuf(T)) {
     }
 }
 
-// Recursive Lomuto quicksort over the inclusive range `[lo, hi]`. The pivot is
-// the last element; ranges of length <= 1 are already sorted.
-fn qsort_range(comptime T: type, inout xs: arraybuf.ArrayBuf(T), lo: u64, hi: u64) {
-    if lo >= hi {
-        return;
-    }
-    let pivot = xs.get_or(hi, 0);
-    let mut store = lo;
-    let mut j = lo;
-    while j < hi {
-        let vj = xs.get_or(j, 0);
-        if vj < pivot {
-            swap_at(T, inout xs, store, j);
-            store += 1;
+// Return the index of the median value among three in-bounds indices. Choosing
+// from both ends and the midpoint keeps already sorted and reverse-sorted
+// inputs away from the fixed-endpoint quadratic partition pattern while
+// retaining deterministic, comparison-only ordering.
+fn median_of_three(comptime T: type, borrow xs: arraybuf.ArrayBuf(T), a: u64, b: u64, c: u64) -> u64 {
+    let va = xs.get_or(a, 0);
+    let vb = xs.get_or(b, 0);
+    let vc = xs.get_or(c, 0);
+    if va < vb {
+        if vb < vc {
+            return b;
         }
-        j += 1;
+        if va < vc {
+            return c;
+        }
+        return a;
     }
-    swap_at(T, inout xs, store, hi);
-    if store > lo {
-        qsort_range(T, inout xs, lo, store - 1);
+    if va < vc {
+        return a;
     }
-    qsort_range(T, inout xs, store + 1, hi);
+    if vb < vc {
+        return c;
+    }
+    b
+}
+
+// Quicksort over the inclusive range `[lo, hi]`. The median-of-three pivot is
+// deterministic and improves sorted/reverse-sorted inputs, but quicksort
+// remains an average-case O(n log n) algorithm rather than a worst-case bound.
+// Only the smaller partition is recursive; the larger one is carried by the
+// loop, so the call stack is bounded by O(log n) even when duplicates produce
+// a highly unbalanced partition.
+fn qsort_range(comptime T: type, inout xs: arraybuf.ArrayBuf(T), lo: u64, hi: u64) {
+    let mut lo = lo;
+    let mut hi = hi;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let pivot_index = median_of_three(T, borrow xs, lo, mid, hi);
+        swap_at(T, inout xs, pivot_index, hi);
+        let pivot = xs.get_or(hi, 0);
+        let mut store = lo;
+        let mut j = lo;
+        while j < hi {
+            let vj = xs.get_or(j, 0);
+            if vj < pivot {
+                swap_at(T, inout xs, store, j);
+                store += 1;
+            }
+            j += 1;
+        }
+        swap_at(T, inout xs, store, hi);
+
+        // For an inclusive range, these differences are the partition sizes:
+        // `store - lo` and `hi - store` are safe because `lo <= store <= hi`.
+        let left_len = store - lo;
+        let right_len = hi - store;
+        if left_len < right_len {
+            if left_len > 1 {
+                qsort_range(T, inout xs, lo, store - 1);
+            }
+            if store == hi {
+                return;
+            }
+            lo = store + 1;
+        } else {
+            if right_len > 1 {
+                qsort_range(T, inout xs, store + 1, hi);
+            }
+            if store == lo {
+                return;
+            }
+            hi = store - 1;
+        }
+    }
 }
 
 // Quicksort: average O(n log n), in place. Not stable.
