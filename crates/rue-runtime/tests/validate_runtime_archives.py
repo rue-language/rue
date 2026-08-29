@@ -599,45 +599,47 @@ def _normalized_target(target: str, expected_format: str) -> str:
 def _validate_bodies(path: Path, bodies: dict, expected_format: str,
                      expected_machine: int):
     """Validate symbol bodies and wrapper targets in one object."""
+    def reaches_chunk(current, seen):
+        if current["name"] in seen:
+            return False
+        seen = seen | {current["name"]}
+        # A reserved export must never call/jump to another reserved export,
+        # even when it also contains a word access. This catches accidental
+        # compiler-builtins recursion and tail recursion.
+        for offset, target, _ in current["relocs"]:
+            if not relocation_is_control_transfer(current["code"], offset,
+                                                   expected_machine):
+                continue
+            normalized = _normalized_target(target, expected_format)
+            if normalized in RESERVED_SYMBOLS and symbol in RESERVED_SYMBOLS:
+                raise AssertionError(
+                    f"{path}: {symbol} recursively transfers to reserved symbol {normalized}"
+                )
+        if has_non_stack_word_access(current["code"], expected_machine):
+            return True
+        # Optimizers may outline an unrelated check into a local helper while
+        # leaving the real chunk accessor as another relocation. Explore all
+        # local control-transfer candidates instead of choosing the first
+        # outlined helper and treating its byte-free body as canonical.
+        for offset, target, _ in current["relocs"]:
+            if not relocation_is_control_transfer(current["code"], offset,
+                                                   expected_machine) or not target:
+                continue
+            normalized = _normalized_target(target, expected_format)
+            target_body = bodies.get(target) or bodies.get(normalized) or bodies.get(
+                ".text." + normalized if expected_format == "elf" else "_" + normalized
+            )
+            if target_body is not None and reaches_chunk(target_body, seen):
+                return True
+        return False
+
     for symbol in CHUNKED_SYMBOLS:
         lookup = symbol if expected_format == "elf" else "_" + symbol
         body = bodies.get(lookup)
         if body is None:
             continue
-        current = body
-        seen = set()
-        while True:
-            # A reserved export must never call/jump to another reserved
-            # export, even when it also contains a word access. This catches
-            # accidental compiler-builtins recursion and tail recursion.
-            for offset, target, _ in current["relocs"]:
-                if not relocation_is_control_transfer(current["code"], offset,
-                                                       expected_machine):
-                    continue
-                normalized = _normalized_target(target, expected_format)
-                if normalized in RESERVED_SYMBOLS and symbol in RESERVED_SYMBOLS:
-                    raise AssertionError(
-                        f"{path}: {symbol} recursively transfers to reserved symbol {normalized}"
-                    )
-            if has_non_stack_word_access(current["code"], expected_machine):
-                break
-            target_body = None
-            for offset, target, _ in current["relocs"]:
-                if not relocation_is_control_transfer(current["code"], offset,
-                                                       expected_machine) or not target:
-                    continue
-                normalized = _normalized_target(target, expected_format)
-                target_body = bodies.get(target) or bodies.get(normalized) or bodies.get(
-                    ".text." + normalized if expected_format == "elf" else "_" + normalized
-                )
-                if target_body is not None:
-                    break
-            if target_body is None or target_body["name"] in seen:
-                raise AssertionError(
-                    f"{path}: {symbol} body has no non-stack machine-word access"
-                )
-            seen.add(current["name"])
-            current = target_body
+        if not reaches_chunk(body, set()):
+            raise AssertionError(f"{path}: {symbol} body has no non-stack machine-word access")
 
 
 def validate_chunked_primitives(path: Path, expected_format: str, expected_machine: int):
