@@ -59,8 +59,8 @@ impl LivenessAdapter for Aarch64LivenessAdapter<'_> {
         defs(inst)
     }
 
-    fn clobbers(&self, inst: &Self::Inst) -> Vec<Self::Reg> {
-        inst.clobbers().to_vec()
+    fn clobbers(&self, inst: &Self::Inst) -> &'static [Self::Reg] {
+        inst.clobbers()
     }
 
     fn is_non_returning(&self, inst: &Self::Inst) -> bool {
@@ -413,6 +413,97 @@ pub(crate) fn defs(inst: &Aarch64Inst) -> VRegList {
 mod tests {
     use super::*;
     use crate::aarch64::mir::Cond;
+
+    #[test]
+    fn clobbers_are_borrowed_static_slices() {
+        let mir = Aarch64Mir::new();
+        let adapter = Aarch64LivenessAdapter { mir: &mir };
+        let empty = Aarch64Inst::Ret;
+        let call = Aarch64Inst::call(7);
+        let div = Aarch64Inst::SdivRR {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+        };
+        let syscall = Aarch64Inst::Svc { imm: 0 };
+
+        // This compile-time signature check protects the ownership contract:
+        // the adapter cannot satisfy it by returning a temporary Vec.
+        fn require_static(_: &'static [Reg]) {}
+        require_static(adapter.clobbers(&empty));
+        require_static(adapter.clobbers(&call));
+        require_static(adapter.clobbers(&div));
+        require_static(adapter.clobbers(&syscall));
+
+        assert!(adapter.clobbers(&empty).is_empty());
+        let call_clobbers = adapter.clobbers(&call);
+        assert_eq!(
+            call_clobbers,
+            &[
+                Reg::X0,
+                Reg::X1,
+                Reg::X2,
+                Reg::X3,
+                Reg::X4,
+                Reg::X5,
+                Reg::X6,
+                Reg::X7,
+                Reg::X8,
+                Reg::X9,
+                Reg::X10,
+                Reg::X11,
+                Reg::X12,
+                Reg::X13,
+                Reg::X14,
+                Reg::X15,
+                Reg::X16,
+                Reg::X17,
+                Reg::Lr,
+            ]
+        );
+        assert!(!call_clobbers.contains(&Reg::X18));
+        assert!(!call_clobbers.contains(&Reg::Fp));
+        assert!(!call_clobbers.contains(&Reg::Sp));
+        assert!(adapter.clobbers(&div).is_empty());
+        let syscall_clobbers = adapter.clobbers(&syscall);
+        assert_eq!(
+            syscall_clobbers,
+            &[
+                Reg::X0,
+                Reg::X8,
+                Reg::X9,
+                Reg::X10,
+                Reg::X11,
+                Reg::X12,
+                Reg::X13,
+                Reg::X14,
+                Reg::X15,
+                Reg::X16,
+                Reg::X17,
+            ]
+        );
+        assert!(!syscall_clobbers.contains(&Reg::X1));
+        assert!(!syscall_clobbers.contains(&Reg::X18));
+        assert!(!syscall_clobbers.contains(&Reg::Fp));
+        assert!(!syscall_clobbers.contains(&Reg::Sp));
+
+        let mut mir = Aarch64Mir::new();
+        mir.push(empty);
+        mir.push(call);
+        mir.push(div);
+        mir.push(syscall);
+        let info = analyze(&mir);
+        assert!(info.clobbers_at(0).is_empty());
+        assert!(std::ptr::eq(
+            info.clobbers_at(1),
+            mir.instructions()[1].clobbers()
+        ));
+        assert!(info.clobbers_at(2).is_empty());
+        assert!(std::ptr::eq(
+            info.clobbers_at(3),
+            mir.instructions()[3].clobbers()
+        ));
+    }
 
     #[test]
     fn test_simple_liveness() {

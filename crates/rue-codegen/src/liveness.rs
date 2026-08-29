@@ -151,7 +151,7 @@ pub trait LivenessAdapter {
     /// Backend MIR instruction type.
     type Inst;
     /// Backend physical register type.
-    type Reg: Copy + Eq + std::hash::Hash;
+    type Reg: Copy + Eq + std::hash::Hash + 'static;
 
     /// Instruction sequence to analyze.
     fn instructions(&self) -> &[Self::Inst];
@@ -185,7 +185,7 @@ pub trait LivenessAdapter {
     fn defs(&self, inst: &Self::Inst) -> VRegList;
 
     /// Return physical registers clobbered by `inst`.
-    fn clobbers(&self, inst: &Self::Inst) -> Vec<Self::Reg>;
+    fn clobbers(&self, inst: &Self::Inst) -> &'static [Self::Reg];
 
     /// Whether `inst` never returns control to the instruction after it.
     ///
@@ -333,11 +333,11 @@ pub fn analyze<I, R>(
     get_successors: impl Fn(usize, &I, &AHashMap<LabelId, usize>) -> SuccessorList,
     get_uses: impl Fn(&I) -> VRegList,
     get_defs: impl Fn(&I) -> VRegList,
-    get_clobbers: impl Fn(&I) -> Vec<R>,
+    get_clobbers: impl Fn(&I) -> &'static [R],
     get_non_returning: impl Fn(&I) -> bool,
 ) -> LivenessInfo<R>
 where
-    R: Copy + Eq + std::hash::Hash,
+    R: Copy + Eq + std::hash::Hash + 'static,
 {
     analyze_inner(
         instructions,
@@ -365,11 +365,11 @@ pub fn analyze_with_debug<I, R>(
     get_successors: impl Fn(usize, &I, &AHashMap<LabelId, usize>) -> SuccessorList,
     get_uses: impl Fn(&I) -> VRegList,
     get_defs: impl Fn(&I) -> VRegList,
-    get_clobbers: impl Fn(&I) -> Vec<R>,
+    get_clobbers: impl Fn(&I) -> &'static [R],
     get_non_returning: impl Fn(&I) -> bool,
 ) -> (LivenessInfo<R>, LivenessDebugInfo)
 where
-    R: Copy + Eq + std::hash::Hash,
+    R: Copy + Eq + std::hash::Hash + 'static,
 {
     let (liveness, debug) = analyze_inner(
         instructions,
@@ -398,12 +398,12 @@ fn analyze_inner<I, R>(
     get_successors: impl Fn(usize, &I, &AHashMap<LabelId, usize>) -> SuccessorList,
     get_uses: impl Fn(&I) -> VRegList,
     get_defs: impl Fn(&I) -> VRegList,
-    get_clobbers: impl Fn(&I) -> Vec<R>,
+    get_clobbers: impl Fn(&I) -> &'static [R],
     get_non_returning: impl Fn(&I) -> bool,
     collect_debug: bool,
 ) -> (LivenessInfo<R>, Option<LivenessDebugInfo>)
 where
-    R: Copy + Eq + std::hash::Hash,
+    R: Copy + Eq + std::hash::Hash + 'static,
 {
     let num_insts = instructions.len();
 
@@ -502,7 +502,7 @@ where
     });
 
     // Step 6: Collect clobbers and the never-returning call sites (RUE-1224)
-    let clobbers_at: Vec<Vec<R>> = instructions.iter().map(|i| get_clobbers(i)).collect();
+    let clobbers_at: Vec<&'static [R]> = instructions.iter().map(&get_clobbers).collect();
     let non_returning_at: Vec<bool> = instructions.iter().map(&get_non_returning).collect();
 
     (
@@ -530,7 +530,7 @@ pub fn analyze_debug<I, R>(
     get_defs: impl Fn(&I) -> VRegList,
 ) -> LivenessDebugInfo
 where
-    R: Copy + Eq + std::hash::Hash,
+    R: Copy + Eq + std::hash::Hash + 'static,
 {
     analyze_with_debug(
         instructions,
@@ -540,7 +540,7 @@ where
         get_successors,
         get_uses,
         get_defs,
-        |_| Vec::<R>::new(),
+        |_| &[] as &'static [R],
         |_| false,
     )
     .1
@@ -990,6 +990,41 @@ mod tests {
         let _: VRegList = (0..5).map(VReg::new).collect();
     }
 
+    #[test]
+    fn large_mir_clobber_table_uses_one_borrowed_slice_pointer_per_instruction() {
+        const NUM_INSTRUCTIONS: usize = 4096;
+        static REPRESENTATIVE_CLOBBERS: [u32; 3] = [3, 5, 8];
+        let instructions = vec![TestInst::Ret; NUM_INSTRUCTIONS];
+
+        let info: LivenessInfo<u32> = analyze(
+            &instructions,
+            0,
+            VRegClasses::all_gp(0),
+            test_get_label,
+            |idx, inst, label_to_idx| {
+                test_get_successors(idx, inst, label_to_idx, NUM_INSTRUCTIONS)
+            },
+            test_get_uses,
+            test_get_defs,
+            |_| &REPRESENTATIVE_CLOBBERS,
+            |_| false,
+        );
+
+        // A clobber entry is only a fat pointer; the instruction table owns
+        // no per-entry register vectors or copied register elements.
+        assert_eq!(
+            std::mem::size_of::<&'static [u32]>(),
+            2 * std::mem::size_of::<usize>()
+        );
+        assert_eq!(info.clobbers_at.len(), NUM_INSTRUCTIONS);
+        assert!(info.clobbers_at.capacity() >= NUM_INSTRUCTIONS);
+        assert!(
+            info.clobbers_at
+                .iter()
+                .all(|clobbers| std::ptr::eq(*clobbers, &REPRESENTATIVE_CLOBBERS[..]))
+        );
+    }
+
     // Simple test instruction type
     #[derive(Debug, Clone)]
     enum TestInst {
@@ -1052,8 +1087,8 @@ mod tests {
         }
     }
 
-    fn test_get_clobbers(_inst: &TestInst) -> Vec<u32> {
-        Vec::new()
+    fn test_get_clobbers(_inst: &TestInst) -> &'static [u32] {
+        &[]
     }
 
     fn reset_dataflow_call_count() {
