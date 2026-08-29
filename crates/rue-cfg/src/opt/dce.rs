@@ -6,8 +6,9 @@
 //!
 //! ## Algorithm
 //!
-//! 1. Mark all side-effecting instructions as live (calls, stores, intrinsics, drops)
-//! 2. Mark all values used by terminators as live
+//! 1. Mark side-effecting instructions attached to reachable blocks as live
+//!    (calls, stores, intrinsics, drops)
+//! 2. Mark all values used by reachable terminators as live
 //! 3. Transitively mark all values used by live instructions
 //! 4. Remove dead instructions from basic blocks
 //! 5. Remove unreachable blocks, compacting the survivors into a dense block
@@ -83,44 +84,60 @@ impl BitSet {
 /// This marks live values and removes dead instructions from blocks.
 /// It also removes unreachable blocks.
 pub fn run(cfg: &mut Cfg) {
-    // Phase 1: Compute liveness
-    let live = compute_live_values(cfg);
+    // Reachability is the authority for both liveness roots and block
+    // pruning. Computing it first keeps unreachable blocks and detached
+    // value-arena husks from retaining otherwise dead operand chains.
+    let reachable = compute_reachable_blocks(cfg);
+
+    // Phase 1: Compute liveness for the reachable graph.
+    let live = compute_live_values(cfg, &reachable);
 
     // Phase 2: Remove dead instructions from blocks
     eliminate_dead_instructions(cfg, &live);
 
-    // Phase 3: Remove unreachable blocks
-    eliminate_unreachable_blocks(cfg);
+    // Phase 3: Remove unreachable blocks using the same reachability result.
+    eliminate_unreachable_blocks(cfg, &reachable);
 }
 
 /// Compute the set of live values in the CFG.
 ///
 /// A value is live if:
-/// - It has side effects, or
-/// - It's used by a terminator, or
+/// - It is an effecting or trapping instruction attached to a reachable block,
+/// - It's used by a reachable terminator, or
 /// - It's used by another live value
-fn compute_live_values(cfg: &Cfg) -> BitSet {
+///
+/// Detached arena values and instructions in unreachable blocks can still be
+/// retained as transitive operands of a live value, but they never seed
+/// liveness on their own.
+fn compute_live_values(cfg: &Cfg, reachable: &BitSet) -> BitSet {
     let mut live = BitSet::with_capacity(cfg.value_count());
     let mut worklist = Vec::new();
 
-    // Pass 1: Mark all side-effecting instructions as live
-    for i in 0..cfg.value_count() {
-        let value = CfgValue::from_raw(i as u32);
-        if has_side_effects(cfg, value) {
-            if live.insert(value.as_u32()) {
+    // Pass 1: Mark side-effecting or trapping instructions attached to
+    // reachable blocks as live. Detached values remain available as operands
+    // when reached transitively, but never become roots by themselves.
+    for block in cfg.blocks() {
+        if !reachable.contains(block.id.as_u32()) {
+            continue;
+        }
+        for &value in &block.insts {
+            if has_side_effects(cfg, value) && live.insert(value.as_u32()) {
                 worklist.push(value);
             }
         }
     }
 
-    // Pass 2: Mark all values used by terminators as live
+    // Pass 2: Mark values used by reachable terminators as live.
     for block in cfg.blocks() {
+        if !reachable.contains(block.id.as_u32()) {
+            continue;
+        }
         visit_terminator_uses(cfg, &block.terminator, |value| {
             if live.insert(value.as_u32()) {
                 worklist.push(value);
             }
         });
-        // Block parameters are also live if the block is reachable
+        // Reachable block parameters are also live.
         for (param_val, _) in &block.params {
             if live.insert(param_val.as_u32()) {
                 worklist.push(*param_val);
@@ -354,8 +371,7 @@ fn eliminate_dead_instructions(cfg: &mut Cfg, live: &BitSet) {
 /// the husk of a pruned region. Nothing outside the CFG may hold a `BlockId`
 /// across this pass; DCE is the last pass in the pipeline, and every pass
 /// derives block ids from the graph it is handed.
-fn eliminate_unreachable_blocks(cfg: &mut Cfg) {
-    let reachable = compute_reachable_blocks(cfg);
+fn eliminate_unreachable_blocks(cfg: &mut Cfg, reachable: &BitSet) {
     cfg.retain_blocks(|block_id| reachable.contains(block_id.as_u32()));
 }
 
@@ -398,7 +414,7 @@ pub(super) fn compute_reachable_blocks(cfg: &Cfg) -> BitSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CfgInst, CfgInstData};
+    use crate::{CfgArgMode, CfgCallArg, CfgInst, CfgInstData};
     use lasso::ThreadedRodeo;
     use rue_air::Type;
     use rue_span::Span;
@@ -434,6 +450,18 @@ mod tests {
         )
     }
 
+    fn add_wrapping_add(cfg: &mut Cfg, lhs: CfgValue, rhs: CfgValue, ty: Type) -> CfgValue {
+        let entry = cfg.entry;
+        cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::WrappingAdd(lhs, rhs),
+                ty,
+                span: Span::new(0, 0),
+            },
+        )
+    }
+
     fn finalize_cfg(cfg: &mut Cfg, ret_val: CfgValue) {
         let entry = cfg.entry;
         cfg.set_terminator(
@@ -442,6 +470,28 @@ mod tests {
                 value: Some(ret_val),
             },
         );
+    }
+
+    fn add_call(
+        cfg: &mut Cfg,
+        block: BlockId,
+        name: lasso::Spur,
+        value: CfgValue,
+        mode: CfgArgMode,
+    ) -> CfgValue {
+        let args = cfg.push_call_args([CfgCallArg { value, mode }]).unwrap();
+        cfg.add_inst_to_block(
+            block,
+            CfgInst {
+                data: CfgInstData::Call {
+                    runtime: None,
+                    name,
+                    args,
+                },
+                ty: Type::UNIT,
+                span: Span::new(0, 0),
+            },
+        )
     }
 
     #[test]
@@ -706,5 +756,149 @@ mod tests {
             CfgInstData::Call { name, .. } if *name == side_effect_sym => {}
             other => panic!("Expected Call, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_dce_ignores_side_effects_in_constant_false_branch() {
+        let mut cfg = make_cfg();
+        let entry = cfg.entry;
+        let lhs = add_const(&mut cfg, 10, Type::I32);
+        let rhs = add_const(&mut cfg, 20, Type::I32);
+        let pure_chain = add_wrapping_add(&mut cfg, lhs, rhs, Type::I32);
+        let condition = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::BoolConst(false),
+                ty: Type::BOOL,
+                span: Span::new(0, 0),
+            },
+        );
+
+        let dead_block = cfg.new_block();
+        let live_block = cfg.new_block();
+        let interner = ThreadedRodeo::new();
+        let dead_name = interner.get_or_intern("dead_effect");
+        let live_name = interner.get_or_intern("live_effect");
+        let dead_call = add_call(
+            &mut cfg,
+            dead_block,
+            dead_name,
+            pure_chain,
+            CfgArgMode::Normal,
+        );
+        let dead_result = add_const(&mut cfg, 0, Type::I32);
+        cfg.set_terminator(
+            dead_block,
+            Terminator::Return {
+                value: Some(dead_result),
+            },
+        );
+
+        let live_call = add_call(
+            &mut cfg,
+            live_block,
+            live_name,
+            condition,
+            CfgArgMode::Normal,
+        );
+        let trap_lhs = add_const(&mut cfg, i32::MAX as u32 as u64, Type::I32);
+        let trap_rhs = add_const(&mut cfg, 1, Type::I32);
+        let live_trap = cfg.add_inst_to_block(
+            live_block,
+            CfgInst {
+                data: CfgInstData::Add(trap_lhs, trap_rhs),
+                ty: Type::I32,
+                span: Span::new(0, 0),
+            },
+        );
+        let live_result = add_const(&mut cfg, 42, Type::I32);
+        cfg.set_terminator(
+            live_block,
+            Terminator::Return {
+                value: Some(live_result),
+            },
+        );
+        cfg.set_branch(entry, condition, dead_block, [], live_block, []);
+
+        // Constant-condition folding makes the dead arm unreachable before
+        // DCE. The dead call must not retain the pure chain, while the live
+        // effect and trapping operation remain attached.
+        super::super::simplify::run(&mut cfg).unwrap();
+        run(&mut cfg);
+
+        assert!(
+            cfg.blocks()
+                .iter()
+                .flat_map(|block| block.insts.iter())
+                .all(|value| *value != pure_chain && *value != lhs && *value != rhs),
+            "an unreachable effect must not root a reachable pure operand chain"
+        );
+        assert!(
+            cfg.blocks()
+                .iter()
+                .flat_map(|block| block.insts.iter())
+                .any(|value| *value == live_call),
+            "reachable effects must remain attached"
+        );
+        assert!(
+            cfg.blocks()
+                .iter()
+                .flat_map(|block| block.insts.iter())
+                .any(|value| *value == live_trap),
+            "reachable trapping instructions must remain attached"
+        );
+        assert!(
+            cfg.blocks()
+                .iter()
+                .all(|block| !block.insts.contains(&dead_call)),
+            "the constant-false branch must be eliminated"
+        );
+    }
+
+    #[test]
+    fn test_dce_ignores_detached_inline_call_husk() {
+        let mut cfg = make_cfg();
+        let lhs = add_const(&mut cfg, 10, Type::I32);
+        let rhs = add_const(&mut cfg, 20, Type::I32);
+        let pure_chain = add_wrapping_add(&mut cfg, lhs, rhs, Type::I32);
+        let result = add_const(&mut cfg, 42, Type::I32);
+        finalize_cfg(&mut cfg, result);
+
+        let interner = ThreadedRodeo::new();
+        let husk_name = interner.get_or_intern("inlined_call_husk");
+        let husk_args = cfg
+            .push_call_args([CfgCallArg {
+                value: pure_chain,
+                mode: CfgArgMode::Borrow,
+            }])
+            .unwrap();
+        // This models the detached Call left by inline_call after its attached
+        // call site has been replaced. It remains in the value arena but is
+        // deliberately not attached to a block.
+        let husk = cfg.add_inst(CfgInst {
+            data: CfgInstData::Call {
+                runtime: None,
+                name: husk_name,
+                args: husk_args,
+            },
+            ty: Type::UNIT,
+            span: Span::new(0, 0),
+        });
+
+        let reachable = compute_reachable_blocks(&cfg);
+        let live = compute_live_values(&cfg, &reachable);
+        assert!(live.contains(result.as_u32()));
+        assert!(!live.contains(husk.as_u32()));
+        assert!(!live.contains(pure_chain.as_u32()));
+
+        run(&mut cfg);
+
+        let attached: Vec<CfgValue> = cfg
+            .blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter().copied())
+            .collect();
+        assert_eq!(attached, vec![result]);
+        assert!(matches!(cfg.get_inst(husk).data, CfgInstData::Call { .. }));
     }
 }
