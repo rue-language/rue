@@ -443,17 +443,6 @@ fn metadata_requires_content_hash(
     }
 }
 
-fn cached_source_for_module(
-    snapshot: &SourceSnapshot,
-    module: &rue_compiler::ModuleId,
-) -> Option<Arc<String>> {
-    snapshot.files().find_map(|source| {
-        (snapshot.module_id(source.file_id) == Some(module))
-            .then(|| snapshot.shared_source_text(source.file_id))
-            .flatten()
-    })
-}
-
 /// Capture the ordered physical identities of symlink components traversed
 /// below a spelling's logical boundary. Ancestors shared by the host's path
 /// layout (for example `/var -> /private/var`) are deliberately outside the
@@ -538,8 +527,9 @@ fn reobserve_accepted_reads(
     let now = SystemTime::now();
     let mut observed = AHashMap::with_capacity(manifest.len());
     for entry in manifest.iter() {
-        let cached_source =
-            cached_source_for_module(snapshot, entry.module()).ok_or_else(|| {
+        let cached_source = snapshot
+            .shared_source_for_module(entry.module())
+            .ok_or_else(|| {
                 SourceLoadError::Message(format!(
                     "Error: accepted read for {} has no cached source",
                     entry.module()
@@ -852,12 +842,9 @@ impl ImportDiscoveryResult {
         for entry in self.read_manifest.iter() {
             let source = self
                 .source_snapshot
-                .files()
-                .find(|source| {
-                    self.source_snapshot.module_id(source.file_id) == Some(entry.module())
-                })
+                .shared_source_for_module(entry.module())
                 .expect("an accepted read has source bytes in the committed snapshot");
-            let fingerprint = WatchFingerprint::from_bytes(source.source.as_bytes());
+            let fingerprint = WatchFingerprint::from_bytes(source.as_bytes());
             paths.push(WatchInput::new(
                 PathBuf::from(entry.requested_path()),
                 PathBuf::from(entry.canonical_path()),
@@ -2250,6 +2237,21 @@ mod architecture_tests {
                 "host boundary must have exactly one call: {required_boundary}"
             );
         }
+    }
+
+    #[test]
+    fn accepted_read_module_sources_use_the_snapshot_projection() {
+        let production = production_before_tests(include_str!("source_loader.rs"));
+        let compact: String = production.split_whitespace().collect();
+        assert_eq!(
+            compact
+                .matches("shared_source_for_module(entry.module())")
+                .count(),
+            2,
+            "reobservation and watch-input construction must use the canonical projection"
+        );
+        assert!(!compact.contains("snapshot.files().find_map"));
+        assert!(!compact.contains("source_snapshot.files().find"));
     }
 
     #[test]

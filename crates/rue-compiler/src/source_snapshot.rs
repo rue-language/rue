@@ -125,18 +125,18 @@ struct SourceRecord {
     text: Arc<String>,
 }
 
-/// Deterministic work counters for the two identity questions a build asks once
-/// per module: "which file in this snapshot is bound to this module?" and
-/// "which accepted-read entry names this physical file?".
+/// Deterministic work counters for identity questions measured on the compiler's
+/// canonical query path: "which file in this snapshot is bound to this module?"
+/// and "which accepted-read entry names this physical file?".
 ///
-/// Both questions used to be answered by scanning the whole set, so each cost
-/// one pass over a set that grows with the program — quadratic in the depth of
-/// an import chain, and invisible to every counter the compiler published,
-/// because a scan dispatches nothing. These counters make the *examinations*
-/// countable, not just the dispatches: a question is one `*_lookups`, and each
-/// position examined while answering it is one `*_visits`. An index-answered
-/// question examines a bounded number of positions; a scan-answered one
-/// examines the whole set, so `visits / lookups` is the shape under test.
+/// The compiler query entry points use the counters to make their
+/// *examinations* countable, not just their dispatches: a question is one
+/// `*_lookups`, and each position examined while answering it is one
+/// `*_visits`. An index-answered question examines a bounded number of
+/// positions; a scan-answered one examines the whole set, so
+/// `visits / lookups` is the shape under test. The public source projection
+/// shares the same indexed resolver but intentionally does not meter its
+/// host-side reads.
 ///
 /// Determinism: every field counts work actually performed on the canonical
 /// query path, exactly like `parse_sources_materialized` and
@@ -488,6 +488,18 @@ impl SourceSnapshot {
         self.record(file_id).map(|record| record.text.clone())
     }
 
+    /// Share ownership of the source text bound to `module`.
+    ///
+    /// Module identity resolution remains owned by this snapshot, including
+    /// its segmented inverse index and origin checks. Callers that only need
+    /// the source payload do not need to reconstruct that mapping by scanning
+    /// diagnostic files.
+    pub fn shared_source_for_module(&self, module: &ModuleId) -> Option<Arc<String>> {
+        self.resolve_file_id_for_module(module)
+            .0
+            .and_then(|file_id| self.shared_source_text(file_id))
+    }
+
     /// Stable exact content identity for a request-local file.
     pub fn source_id(&self, file_id: FileId) -> Option<&SourceId> {
         self.record(file_id).map(|record| &record.source_id)
@@ -498,7 +510,27 @@ impl SourceSnapshot {
         self.record(file_id).map(|record| &record.module_id)
     }
 
-    /// The file this snapshot binds `module` to.
+    /// Resolve a module through the snapshot-owned segmented inverse.
+    ///
+    /// The visit count is returned to the metered compiler entry point, while
+    /// the public source projection consumes only the file identity. Keeping
+    /// both callers on this helper prevents the projection from growing a
+    /// second lookup implementation or manufacturing discarded measurements.
+    fn resolve_file_id_for_module(&self, module: &ModuleId) -> (Option<FileId>, u64) {
+        let mut visited = 0;
+        let found = self.data.segments.iter().find_map(|segment| {
+            // One hash probe per segment, then one record read for the hit.
+            visited += 1;
+            segment.module_index.get(module).map(|&position| {
+                visited += 1;
+                segment.contents[position].file_id
+            })
+        });
+        (found, visited)
+    }
+
+    /// The file this snapshot binds `module` to on the metered compiler query
+    /// path.
     ///
     /// A snapshot's [`SourceRevision`] rejects duplicate module identities, so
     /// this inverse is a function. Segments hold disjoint ascending file-id
@@ -517,15 +549,7 @@ impl SourceSnapshot {
         module: &ModuleId,
         meter: &IdentityResolutionMeter,
     ) -> Option<FileId> {
-        let mut visited = 0;
-        let found = self.data.segments.iter().find_map(|segment| {
-            // One hash probe per segment, then one record read for the hit.
-            visited += 1;
-            segment.module_index.get(module).map(|&position| {
-                visited += 1;
-                segment.contents[position].file_id
-            })
-        });
+        let (found, visited) = self.resolve_file_id_for_module(module);
         meter.record_module_resolution(visited);
         found
     }
@@ -825,6 +849,25 @@ mod tests {
     }
 
     #[test]
+    fn module_source_projection_delegates_to_the_indexed_resolver() {
+        let production = include_str!("source_snapshot.rs")
+            .split("\n#[cfg(test)]\nmod tests")
+            .next()
+            .expect("the production source precedes this test module");
+        let compact: String = production.split_whitespace().collect();
+
+        assert_eq!(
+            compact
+                .matches("resolve_file_id_for_module(module)")
+                .count(),
+            2,
+            "metered and public paths must share the one canonical resolver"
+        );
+        assert!(!compact.contains("files().find"));
+        assert!(!compact.contains("files().find_map"));
+    }
+
+    #[test]
     fn requires_exact_metadata_membership() {
         let descriptor = metadata(&[(2, "two.rue"), (4, "four.rue"), (8, "eight.rue")]);
         assert_eq!(
@@ -908,6 +951,59 @@ mod tests {
         assert_eq!(file.path, "src/main.rue");
         assert_eq!(file.source, "fn main() {}");
         assert!(snapshot.source(FileId::new(8)).is_none());
+    }
+
+    #[test]
+    fn module_source_projection_preserves_source_identity_and_rejects_foreign_modules() {
+        let file_id = FileId::new(7);
+        let source = Arc::new("fn main() {}".to_owned());
+        let snapshot = SourceSnapshot::new(
+            metadata(&[(7, "src/main.rue")]),
+            vec![(file_id, Arc::clone(&source))],
+        )
+        .unwrap();
+        let module = ModuleId::from_logical_path("src/main.rue").unwrap();
+
+        let projected = snapshot
+            .shared_source_for_module(&module)
+            .expect("the canonical module is present");
+        let indexed = snapshot.shared_source_text(file_id).unwrap();
+        assert!(Arc::ptr_eq(&projected, &indexed));
+        assert!(Arc::ptr_eq(&projected, &source));
+        assert!(
+            snapshot
+                .shared_source_for_module(&ModuleId::from_logical_path("stale.rue").unwrap())
+                .is_none()
+        );
+
+        let trusted_file = FileId::new(8);
+        let trusted_path = "\0rue-std/option.rue";
+        let physical_paths = [(trusted_file, "/toolchain/option.rue")]
+            .into_iter()
+            .map(|(file_id, path)| (file_id, path.to_owned()))
+            .collect();
+        let logical_paths = [(trusted_file, trusted_path.to_owned())]
+            .into_iter()
+            .collect();
+        let trusted_metadata = SourceMetadata::new_with_trusted_standard_library(
+            trusted_file,
+            physical_paths,
+            logical_paths,
+            [trusted_file].into_iter().collect(),
+        )
+        .unwrap();
+        let trusted_snapshot = SourceSnapshot::new(
+            trusted_metadata,
+            vec![(trusted_file, Arc::new("pub fn option() {}".to_owned()))],
+        )
+        .unwrap();
+        let counterfeit = ModuleId::from_logical_path(trusted_path).unwrap();
+        assert!(!counterfeit.is_trusted_standard_library());
+        assert!(
+            trusted_snapshot
+                .shared_source_for_module(&counterfeit)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1043,6 +1139,13 @@ mod tests {
                 .expect("every snapshot file has a module identity")
                 .clone();
             assert_eq!(snapshot.file_id_for_module(&module, &meter), Some(file_id));
+            let projected = snapshot
+                .shared_source_for_module(&module)
+                .expect("the canonical module projection is present");
+            assert!(Arc::ptr_eq(
+                &projected,
+                &snapshot.shared_source_text(file_id).unwrap()
+            ));
             // The scan this replaces is quadratic, so compare against it on a
             // sample rather than on every module.
             if position % 64 == 0 {
