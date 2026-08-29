@@ -580,7 +580,6 @@ def _x86_control_transfer_at(code: bytes, index: int, offset: int):
     parsed = _x86_modrm_end(code, cursor + 2, modrm, code[cursor - 1] if cursor > index else 0)
     if parsed is None:
         return None
-    end, _ = parsed
     mod = modrm >> 6
     rm = modrm & 7
     displacement = cursor + 2
@@ -592,27 +591,33 @@ def _x86_control_transfer_at(code: bytes, index: int, offset: int):
     if mod == 0 and rm == 5:
         return "call-or-branch" if offset == displacement else None
     if mod == 1:
-        displacement += 1
+        return "call-or-branch" if offset == displacement else None
     elif mod == 2:
-        displacement += 4
+        return "call-or-branch" if offset == displacement else None
     else:
         return None
-    return "call-or-branch" if offset == displacement else None
 
 
 def relocation_is_control_transfer(code: bytes, offset: int, machine: int,
                                     relocation_kind: int, expected_format: str):
     """Recognize only allowlisted relocations attached to decoded transfers."""
     if expected_format == "elf" and machine == 62:
-        if relocation_kind not in (2, 4, 41, 42):  # PC32, PLT32, GOTPCRELX variants
+        if relocation_kind not in (2, 4, 9, 10, 11, 41, 42):  # PC/PLT/GOT/absolute
             return None
         index = 0
         while index < len(code):
             decoded = _decode_x86_instruction(code, index)
             if decoded is None:
                 return None
-            if _x86_control_transfer_at(code, index, offset) is not None:
-                return _x86_control_transfer_at(code, index, offset)
+            transfer = _x86_control_transfer_at(code, index, offset)
+            if transfer is not None:
+                # E8/E9 carry PC-relative relocations; FF /2,/4 carry a
+                # memory displacement and may use absolute/GOT relocations.
+                direct_kinds = (2, 4)
+                indirect_kinds = (2, 9, 10, 11, 41, 42)
+                if transfer == "call-or-branch":
+                    return transfer if relocation_kind in indirect_kinds else None
+                return transfer if relocation_kind in direct_kinds else None
             index = decoded[0]
         return None
     if expected_format == "elf" and machine == 183:
