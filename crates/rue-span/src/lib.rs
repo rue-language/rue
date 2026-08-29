@@ -117,92 +117,126 @@ impl Span {
     pub const fn is_empty(&self) -> bool {
         self.start == self.end
     }
-
-    /// Compute the 1-based line number for this span's start position.
-    ///
-    /// Returns the line number (1-indexed) where this span begins.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if `self.start` exceeds `source.len()`.
-    /// In release builds, out-of-bounds offsets are clamped to `source.len()`.
-    #[inline]
-    pub fn line_number(&self, source: &str) -> usize {
-        debug_assert!(
-            (self.start as usize) <= source.len(),
-            "span start {} exceeds source length {}",
-            self.start,
-            source.len()
-        );
-        count_newlines(&source[..(self.start as usize).min(source.len())]) + 1
-    }
 }
 
-/// Count line terminators in `s`, per the spec's newline classification
-/// (2.3:1): LF (`\n`), CR (`\r`), and CRLF (`\r\n`) are each ONE newline. A
-/// bare CR — which older code ignored — begins a new line (RUE-534).
-#[inline]
-fn count_newlines(s: &str) -> usize {
-    let bytes = s.as_bytes();
-    let mut count = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\n' => count += 1,
-            b'\r' => {
-                count += 1;
-                // CRLF is a single terminator: skip the LF so it is not
-                // counted again.
-                if bytes.get(i + 1) == Some(&b'\n') {
-                    i += 1;
+/// A reusable source coordinate index.
+///
+/// The index records the logical start and content bounds of every source
+/// line once. Queries use binary search for the line and scan only that line's
+/// content for its Unicode-scalar column, so consumers do not rescan the
+/// source prefix for every diagnostic.
+/// LF, CR, and CRLF are each one line terminator (spec 2.3:1). For CRLF, the
+/// logical next-line start is the byte after CR: this preserves the historical
+/// coordinate behavior for offsets on the LF byte while the column start is
+/// the byte after the complete terminator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineIndex<'a> {
+    source: &'a str,
+    source_len: usize,
+    lines: Vec<LineEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LineEntry {
+    logical_start: usize,
+    content_start: usize,
+    content_end: usize,
+}
+
+impl<'a> LineIndex<'a> {
+    /// Build an index for `source`.
+    pub fn new(source: &'a str) -> Self {
+        let bytes = source.as_bytes();
+        let mut lines = vec![LineEntry {
+            logical_start: 0,
+            content_start: 0,
+            content_end: source.len(),
+        }];
+
+        for (offset, ch) in source.char_indices() {
+            match ch {
+                '\r' => {
+                    let crlf = bytes.get(offset + 1) == Some(&b'\n');
+                    lines
+                        .last_mut()
+                        .expect("line index always has a first line")
+                        .content_end = offset;
+                    lines.push(LineEntry {
+                        logical_start: offset + 1,
+                        content_start: offset + 1 + usize::from(crlf),
+                        content_end: source.len(),
+                    });
                 }
+                '\n' if offset > 0 && bytes[offset - 1] == b'\r' => {}
+                '\n' => {
+                    lines
+                        .last_mut()
+                        .expect("line index always has a first line")
+                        .content_end = offset;
+                    lines.push(LineEntry {
+                        logical_start: offset + 1,
+                        content_start: offset + 1,
+                        content_end: source.len(),
+                    });
+                }
+                _ => {}
             }
-            _ => {}
         }
-        i += 1;
-    }
-    count
-}
 
-/// Convert a byte offset to 1-based line and character-column numbers.
-///
-/// Returns `(line, column)` where both are 1-indexed. The column counts Unicode
-/// scalar values, matching diagnostic rendering.
-///
-/// If `offset` exceeds `source.len()`, the final source position is returned.
-#[inline]
-pub fn offset_to_line_col(source: &str, offset: u32) -> (u32, u32) {
-    let offset = offset as usize;
-    let mut line = 1;
-    let mut col = 1;
-    // Track whether the previous char was a CR so a following LF (CRLF) is not
-    // counted as a second line break (RUE-534).
-    let mut prev_cr = false;
-    for (i, ch) in source.char_indices() {
-        if i >= offset {
-            break;
+        Self {
+            source,
+            source_len: source.len(),
+            lines,
         }
-        match ch {
-            '\r' => {
-                // CR (and CR of a CRLF) begins a new line, per spec 2.3:1.
-                line += 1;
-                col = 1;
-                prev_cr = true;
-                continue;
-            }
-            '\n' if prev_cr => {
-                // The LF of a CRLF: the CR already advanced the line.
-                col = 1;
-            }
-            '\n' => {
-                line += 1;
-                col = 1;
-            }
-            _ => col += 1,
-        }
-        prev_cr = false;
     }
-    (line, col)
+
+    /// Return the 1-based line number for a byte offset, clamped to the source.
+    #[inline]
+    pub fn line_number(&self, offset: u32) -> u32 {
+        (self.line_index(offset as usize).saturating_add(1)) as u32
+    }
+
+    /// Return 1-based line and Unicode-scalar column numbers for a byte offset.
+    ///
+    /// Offsets inside a UTF-8 scalar resolve to the scalar's following column;
+    /// offsets at scalar boundaries resolve to that scalar's column, matching
+    /// the source-coordinate behavior used by diagnostics.
+    /// Out-of-bounds offsets resolve to the final source position.
+    #[inline]
+    pub fn line_col(&self, offset: u32) -> (u32, u32) {
+        let offset = (offset as usize).min(self.source_len);
+        let line_idx = self.line_index(offset);
+        let line = &self.lines[line_idx];
+        let coordinate_offset = offset.clamp(line.content_start, line.content_end);
+        // `content_start` is always a valid UTF-8 boundary. Keep the slice at
+        // that boundary and stop by absolute byte offset, so an offset inside
+        // a scalar is never used as a slicing boundary.
+        let scalar_count = self.source[line.content_start..]
+            .char_indices()
+            .take_while(|(start, _)| line.content_start + *start < coordinate_offset)
+            .count();
+        (
+            (line_idx as u32).saturating_add(1),
+            (scalar_count as u32).saturating_add(1),
+        )
+    }
+
+    #[inline]
+    fn line_index(&self, offset: usize) -> usize {
+        self.lines
+            .partition_point(|line| line.logical_start <= offset)
+            .saturating_sub(1)
+    }
+
+    /// Return the original source content for a 1-based line number.
+    ///
+    /// The returned slice excludes its LF, CR, or CRLF terminator. Bounds are
+    /// indexed once during construction and are therefore always valid UTF-8
+    /// boundaries.
+    pub fn line_content(&self, line_number: u32) -> Option<&'a str> {
+        let line = self.lines.get(line_number.checked_sub(1)? as usize)?;
+        Some(&self.source[line.content_start..line.content_end])
+    }
 }
 
 impl From<std::ops::Range<usize>> for Span {
@@ -230,6 +264,34 @@ impl From<std::ops::Range<u32>> for Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn historical_offset_to_line_col(source: &str, offset: u32) -> (u32, u32) {
+        let offset = offset as usize;
+        let mut line = 1;
+        let mut col = 1;
+        let mut prev_cr = false;
+        for (index, ch) in source.char_indices() {
+            if index >= offset {
+                break;
+            }
+            match ch {
+                '\r' => {
+                    line += 1;
+                    col = 1;
+                    prev_cr = true;
+                    continue;
+                }
+                '\n' if prev_cr => col = 1,
+                '\n' => {
+                    line += 1;
+                    col = 1;
+                }
+                _ => col += 1,
+            }
+            prev_cr = false;
+        }
+        (line, col)
+    }
 
     #[test]
     fn test_span_size() {
@@ -281,59 +343,66 @@ mod tests {
     }
 
     #[test]
-    fn test_span_line_number() {
+    fn test_line_index_line_number() {
         let source = "let x = 1;\nlet y = 2;\nlet z = 3;";
+        let index = LineIndex::new(source);
 
-        assert_eq!(Span::new(0, 10).line_number(source), 1);
-        assert_eq!(Span::new(11, 21).line_number(source), 2);
-        assert_eq!(Span::new(22, 32).line_number(source), 3);
+        assert_eq!(index.line_number(0), 1);
+        assert_eq!(index.line_number(11), 2);
+        assert_eq!(index.line_number(22), 3);
     }
 
     #[test]
     fn test_span_line_number_at_newline() {
         let source = "a\nb";
-        assert_eq!(Span::new(1, 2).line_number(source), 1);
-        assert_eq!(Span::new(2, 3).line_number(source), 2);
+        let index = LineIndex::new(source);
+        assert_eq!(index.line_number(1), 1);
+        assert_eq!(index.line_number(2), 2);
     }
 
     #[test]
-    fn test_offset_to_line_col_basic() {
+    fn test_line_index_basic() {
         let source = "line1\nline2\nline3";
+        let index = LineIndex::new(source);
 
-        assert_eq!(offset_to_line_col(source, 0), (1, 1));
-        assert_eq!(offset_to_line_col(source, 4), (1, 5));
-        assert_eq!(offset_to_line_col(source, 5), (1, 6));
-        assert_eq!(offset_to_line_col(source, 6), (2, 1));
-        assert_eq!(offset_to_line_col(source, 10), (2, 5));
-        assert_eq!(offset_to_line_col(source, 12), (3, 1));
-        assert_eq!(offset_to_line_col(source, 16), (3, 5));
+        assert_eq!(index.line_col(0), (1, 1));
+        assert_eq!(index.line_col(4), (1, 5));
+        assert_eq!(index.line_col(5), (1, 6));
+        assert_eq!(index.line_col(6), (2, 1));
+        assert_eq!(index.line_col(10), (2, 5));
+        assert_eq!(index.line_col(12), (3, 1));
+        assert_eq!(index.line_col(16), (3, 5));
     }
 
     #[test]
-    fn test_offset_to_line_col_bounds() {
-        assert_eq!(offset_to_line_col("", 0), (1, 1));
-        assert_eq!(offset_to_line_col("hello", 0), (1, 1));
-        assert_eq!(offset_to_line_col("hello", 2), (1, 3));
-        assert_eq!(offset_to_line_col("hello", 5), (1, 6));
-        assert_eq!(offset_to_line_col("hello", 100), (1, 6));
+    fn test_line_index_bounds() {
+        assert_eq!(LineIndex::new("").line_col(0), (1, 1));
+        assert_eq!(LineIndex::new("hello").line_col(0), (1, 1));
+        assert_eq!(LineIndex::new("hello").line_col(2), (1, 3));
+        assert_eq!(LineIndex::new("hello").line_col(5), (1, 6));
+        assert_eq!(LineIndex::new("hello").line_col(100), (1, 6));
     }
 
     #[test]
-    fn test_offset_to_line_col_at_newline() {
+    fn test_line_index_at_newline() {
         let source = "a\nb";
-        assert_eq!(offset_to_line_col(source, 0), (1, 1));
-        assert_eq!(offset_to_line_col(source, 1), (1, 2));
-        assert_eq!(offset_to_line_col(source, 2), (2, 1));
+        let index = LineIndex::new(source);
+        assert_eq!(index.line_col(0), (1, 1));
+        assert_eq!(index.line_col(1), (1, 2));
+        assert_eq!(index.line_col(2), (2, 1));
     }
 
     #[test]
-    fn test_offset_to_line_col_counts_chars_not_bytes() {
+    fn test_line_index_counts_chars_not_bytes() {
         let source = "éx\n🙂z";
-        assert_eq!(offset_to_line_col(source, 0), (1, 1));
-        assert_eq!(offset_to_line_col(source, 2), (1, 2)); // after `é`
-        assert_eq!(offset_to_line_col(source, 3), (1, 3)); // after `x`
-        assert_eq!(offset_to_line_col(source, 4), (2, 1)); // after newline
-        assert_eq!(offset_to_line_col(source, 8), (2, 2)); // after `🙂`
+        let index = LineIndex::new(source);
+        assert_eq!(index.line_col(0), (1, 1));
+        assert_eq!(index.line_col(1), (1, 2)); // inside `é`
+        assert_eq!(index.line_col(2), (1, 2)); // after `é`
+        assert_eq!(index.line_col(3), (1, 3)); // after `x`
+        assert_eq!(index.line_col(4), (2, 1)); // after newline
+        assert_eq!(index.line_col(5), (2, 2)); // inside `🙂`
+        assert_eq!(index.line_col(8), (2, 2)); // after `🙂`
     }
 
     #[test]
@@ -341,19 +410,67 @@ mod tests {
         // Spec 2.3:1: CR, LF, and CRLF are each one newline (RUE-534).
         // Bare CR (`a\rb`): the `b` is on line 2.
         let cr = "a\rb";
-        assert_eq!(offset_to_line_col(cr, 2), (2, 1));
-        assert_eq!(Span::new(2, 3).line_number(cr), 2);
+        let cr_index = LineIndex::new(cr);
+        assert_eq!(cr_index.line_col(2), (2, 1));
+        assert_eq!(cr_index.line_number(2), 2);
         // CRLF (`a\r\nb`): still ONE newline, `b` on line 2, not line 3.
         let crlf = "a\r\nb";
-        assert_eq!(offset_to_line_col(crlf, 3), (2, 1));
-        assert_eq!(Span::new(3, 4).line_number(crlf), 2);
+        let crlf_index = LineIndex::new(crlf);
+        assert_eq!(crlf_index.line_col(1), (1, 2)); // CR
+        assert_eq!(crlf_index.line_col(2), (2, 1)); // LF
+        assert_eq!(crlf_index.line_col(3), (2, 1)); // after terminator
+        assert_eq!(crlf_index.line_number(3), 2);
         // LF unchanged.
         let lf = "a\nb";
-        assert_eq!(offset_to_line_col(lf, 2), (2, 1));
-        assert_eq!(Span::new(2, 3).line_number(lf), 2);
+        let lf_index = LineIndex::new(lf);
+        assert_eq!(lf_index.line_col(2), (2, 1));
+        assert_eq!(lf_index.line_number(2), 2);
         // Mixed: two CR-only lines then the target on line 3.
         let mixed = "l1\rl2\rx";
-        assert_eq!(offset_to_line_col(mixed, 6), (3, 1));
-        assert_eq!(Span::new(6, 7).line_number(mixed), 3);
+        let mixed_index = LineIndex::new(mixed);
+        assert_eq!(mixed_index.line_col(6), (3, 1));
+        assert_eq!(mixed_index.line_number(6), 3);
+    }
+
+    #[test]
+    fn test_line_index_mixed_newlines_and_clamped_offsets() {
+        let source = "a\r\nb\rc\n終\n";
+        let index = LineIndex::new(source);
+
+        assert_eq!(index.line_content(1), Some("a"));
+        assert_eq!(index.line_content(2), Some("b"));
+        assert_eq!(index.line_content(3), Some("c"));
+        assert_eq!(index.line_content(4), Some("終"));
+        assert_eq!(index.line_content(5), Some(""));
+        assert_eq!(index.line_content(0), None);
+        assert_eq!(index.line_content(6), None);
+        assert_eq!(index.line_col(1), (1, 2)); // CR
+        assert_eq!(index.line_col(2), (2, 1)); // LF in CRLF
+        assert_eq!(index.line_col(4), (2, 2)); // bare CR
+        assert_eq!(index.line_col(5), (3, 1));
+        assert_eq!(index.line_col(7), (4, 1)); // first byte of `終`
+        assert_eq!(index.line_col(8), (4, 2)); // inside `終`
+        assert_eq!(index.line_col(10), (4, 2)); // LF after `終`
+        assert_eq!(index.line_col(source.len() as u32), (5, 1)); // EOF
+        assert_eq!(index.line_col(u32::MAX), (5, 1)); // out of bounds
+    }
+
+    #[test]
+    fn line_index_matches_historical_coordinates_at_every_byte_offset() {
+        for source in ["", "a", "\n", "\r", "\r\n", "a\r\nb\rc\n", "é\t終\r\n🙂\n"] {
+            let index = LineIndex::new(source);
+            for offset in 0..=(source.len() as u32 + 2) {
+                assert_eq!(
+                    index.line_col(offset),
+                    historical_offset_to_line_col(source, offset),
+                    "source={source:?}, offset={offset}"
+                );
+            }
+            assert_eq!(
+                index.line_col(u32::MAX),
+                historical_offset_to_line_col(source, u32::MAX),
+                "source={source:?}, offset=u32::MAX"
+            );
+        }
     }
 }

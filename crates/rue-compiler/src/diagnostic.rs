@@ -28,7 +28,7 @@ use std::io::IsTerminal;
 
 use ahash::AHashMap;
 use annotate_snippets::{Level, Renderer, Snippet};
-use rue_span::offset_to_line_col;
+use rue_span::LineIndex;
 
 use crate::{CompileError, CompileErrors, CompileWarning, Diagnostic, ErrorCode, FileId, Span};
 
@@ -190,37 +190,6 @@ impl<'a> RenderSource<'a> {
     }
 }
 
-/// Return the slice of `source` that becomes rendered line `line_no` (1-based).
-///
-/// Splits on LF, CR, and CRLF — each one line terminator (spec 2.3:1 / RUE-534)
-/// — mirroring how [`RenderSource`] builds the buffer whose lines annotate-
-/// snippets counts, so a rendered origin line maps back to the right original
-/// line even in CR/CRLF files. Returns `None` if `line_no` is out of range.
-fn nth_rendered_line(source: &str, line_no: usize) -> Option<&str> {
-    let bytes = source.as_bytes();
-    let mut start = 0;
-    let mut current = 1;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\n' | b'\r' => {
-                if current == line_no {
-                    return Some(&source[start..i]);
-                }
-                // CRLF is a single terminator: consume the trailing LF too.
-                if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
-                    i += 1;
-                }
-                i += 1;
-                start = i;
-                current += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    (current == line_no).then(|| &source[start..])
-}
-
 /// Map a tab-expanded display column back to the original-source character
 /// column on rendered line `line_no` (both 1-based).
 ///
@@ -230,8 +199,12 @@ fn nth_rendered_line(source: &str, line_no: usize) -> Option<&str> {
 /// the token (RUE-556). Only tabs change width (control chars map one glyph to
 /// one column), so walking the original line and charging four columns per tab
 /// recovers the coordinate JSON diagnostics and editors expect.
-fn original_col_for_expanded(source: &str, line_no: usize, expanded_col: usize) -> usize {
-    let Some(line) = nth_rendered_line(source, line_no) else {
+fn original_col_for_expanded(
+    line_index: &LineIndex<'_>,
+    line_no: usize,
+    expanded_col: usize,
+) -> usize {
+    let Some(line) = line_index.line_content(line_no as u32) else {
         return expanded_col;
     };
     let mut rendered_col = 1usize;
@@ -258,8 +231,11 @@ fn original_col_for_expanded(source: &str, line_no: usize, expanded_col: usize) 
 /// tab widens the column, this is a no-op (and cheap early-out) for tab-free
 /// input. The path/line/col text is plain even under color, so the rewrite is
 /// a byte-exact `replacen` that preserves any surrounding ANSI styling.
-fn correct_origin_columns(rendered: String, files: &[(&str, &str)]) -> String {
-    if !files.iter().any(|(_, src)| src.contains('\t')) {
+fn correct_origin_columns(
+    rendered: String,
+    files: &[(&str, &str, &LineIndex<'_>, bool)],
+) -> String {
+    if !files.iter().any(|(_, _, _, has_tabs)| *has_tabs) {
         return rendered;
     }
     let mut out = String::with_capacity(rendered.len());
@@ -271,14 +247,14 @@ fn correct_origin_columns(rendered: String, files: &[(&str, &str)]) -> String {
 
 /// Correct a single rendered line if it is a `--> path:line:col` origin whose
 /// column was inflated by tab expansion; otherwise return `None`.
-fn fix_origin_line(line: &str, files: &[(&str, &str)]) -> Option<String> {
+fn fix_origin_line(line: &str, files: &[(&str, &str, &LineIndex<'_>, bool)]) -> Option<String> {
     let marker = line.find("-->")?;
     if !is_origin_gutter(&line[..marker]) {
         return None;
     }
     let origin_start = skip_origin_prefix(line, marker + "-->".len());
 
-    for (path, source) in files {
+    for (path, _source, line_index, _has_tabs) in files {
         let Some(rendered_path) = line.get(origin_start..origin_start + path.len()) else {
             continue;
         };
@@ -302,7 +278,7 @@ fn fix_origin_line(line: &str, files: &[(&str, &str)]) -> Option<String> {
         let (Ok(line_no), Ok(col)) = (line_str.parse::<usize>(), col_str.parse::<usize>()) else {
             continue;
         };
-        let new_col = original_col_for_expanded(source, line_no, col);
+        let new_col = original_col_for_expanded(line_index, line_no, col);
         if new_col == col {
             continue;
         }
@@ -359,6 +335,44 @@ impl<'a> SourceInfo<'a> {
     /// Create a new SourceInfo with the given source and file path.
     pub fn new(source: &'a str, path: &'a str) -> Self {
         Self { source, path }
+    }
+}
+
+/// Per-file state prepared once when a formatter is constructed.
+///
+/// Both the source-coordinate index and human renderer are immutable for a
+/// formatter batch, so formatting another diagnostic never rebuilds either
+/// representation or rescans the source.
+struct SourceRecord<'a> {
+    info: SourceInfo<'a>,
+    line_index: LineIndex<'a>,
+    render_source: RenderSource<'a>,
+    has_tabs: bool,
+}
+
+impl<'a> SourceRecord<'a> {
+    fn new(info: SourceInfo<'a>) -> Self {
+        let line_index = LineIndex::new(info.source);
+        let render_source = RenderSource::new(info.source);
+        let has_tabs = info.source.contains('\t');
+        Self {
+            info,
+            line_index,
+            render_source,
+            has_tabs,
+        }
+    }
+}
+
+struct JsonSourceRecord<'a> {
+    info: SourceInfo<'a>,
+    line_index: LineIndex<'a>,
+}
+
+impl<'a> JsonSourceRecord<'a> {
+    fn new(info: SourceInfo<'a>) -> Self {
+        let line_index = LineIndex::new(info.source);
+        Self { info, line_index }
     }
 }
 
@@ -465,7 +479,7 @@ impl<'a> DiagnosticFormatter<'a> {
 /// ```
 pub struct MultiFileFormatter<'a> {
     /// Mapping from FileId to source information.
-    sources: AHashMap<FileId, SourceInfo<'a>>,
+    sources: AHashMap<FileId, SourceRecord<'a>>,
     /// The renderer for formatting diagnostics.
     renderer: Renderer,
 }
@@ -493,14 +507,22 @@ impl<'a> MultiFileFormatter<'a> {
         } else {
             Renderer::plain()
         };
+        // Preserve the historical last-wins behavior for duplicate file IDs,
+        // but do it before preparing any per-file cached state. This keeps a
+        // duplicate registration from constructing and immediately dropping
+        // an unnecessary line index or rendered source.
+        let sources: AHashMap<FileId, SourceInfo<'a>> = sources.into_iter().collect();
         Self {
-            sources: sources.into_iter().collect(),
+            sources: sources
+                .into_iter()
+                .map(|(file_id, info)| (file_id, SourceRecord::new(info)))
+                .collect(),
             renderer,
         }
     }
 
     /// Get the source info for a file ID, if it exists.
-    fn get_source(&self, file_id: FileId) -> Option<&SourceInfo<'a>> {
+    fn get_source(&self, file_id: FileId) -> Option<&SourceRecord<'a>> {
         self.sources.get(&file_id)
     }
 
@@ -512,7 +534,7 @@ impl<'a> MultiFileFormatter<'a> {
     /// (hash-map iteration order — RUE-175), so this returns None and the
     /// caller renders the message without a snippet. An exact
     /// `FileId::DEFAULT` entry is resolved by `get_source` before this method.
-    fn fallback_source(&self) -> Option<&SourceInfo<'a>> {
+    fn fallback_source(&self) -> Option<&SourceRecord<'a>> {
         (self.sources.len() == 1)
             .then(|| self.sources.values().next())
             .flatten()
@@ -641,8 +663,8 @@ impl<'a> MultiFileFormatter<'a> {
                     .get_source(span.file_id)
                     .or_else(|| self.fallback_source())
                 {
-                    let line = span.line_number(source_info.source);
-                    warning.kind.format_with_line(Some(line))
+                    let line = source_info.line_index.line_number(span.start);
+                    warning.kind.format_with_line(Some(line as usize))
                 } else {
                     warning.to_string()
                 }
@@ -756,20 +778,20 @@ impl<'a> MultiFileFormatter<'a> {
                 continue;
             };
 
-            render_sources.push((*file_id, source_info, RenderSource::new(source_info.source)));
+            render_sources.push((*file_id, source_info));
         }
 
-        for (file_id, source_info, render_source) in &render_sources {
+        for (file_id, source_info) in &render_sources {
             let spans = &file_spans[file_id];
 
             // Build snippet with all annotations for this file
-            let mut snippet = Snippet::source(render_source.source.as_ref())
-                .origin(source_info.path)
+            let mut snippet = Snippet::source(source_info.render_source.source.as_ref())
+                .origin(source_info.info.path)
                 .fold(true);
 
-            let source_len = source_info.source.len();
+            let source_len = source_info.info.source.len();
             for (span, label, span_level) in spans {
-                let (start, end) = render_source.map_span(*span, source_len);
+                let (start, end) = source_info.render_source.map_span(*span, source_len);
 
                 let annotation = span_level.span(start..end);
                 let annotation = if let Some(label_text) = label {
@@ -798,9 +820,16 @@ impl<'a> MultiFileFormatter<'a> {
         }
 
         let rendered = format!("{}", self.renderer.render(report));
-        let files: Vec<(&str, &str)> = render_sources
+        let files: Vec<(&str, &str, &LineIndex<'_>, bool)> = render_sources
             .iter()
-            .map(|(_, source_info, _)| (source_info.path, source_info.source))
+            .map(|(_, source_info)| {
+                (
+                    source_info.info.path,
+                    source_info.info.source,
+                    &source_info.line_index,
+                    source_info.has_tabs,
+                )
+            })
             .collect();
         correct_origin_columns(rendered, &files)
     }
@@ -887,12 +916,13 @@ fn normalize_json_range(span: Span, source: &str) -> (u32, u32) {
 fn make_json_span(
     path: &str,
     source: &str,
+    line_index: &LineIndex<'_>,
     span: Span,
     label: Option<String>,
     primary: bool,
 ) -> JsonSpan {
     let (start, end) = normalize_json_range(span, source);
-    let (line, column) = offset_to_line_col(source, start);
+    let (line, column) = line_index.line_col(start);
     JsonSpan {
         file: path.to_string(),
         start,
@@ -1089,19 +1119,25 @@ impl<'a> JsonDiagnosticFormatter<'a> {
 /// ```
 pub struct MultiFileJsonFormatter<'a> {
     /// Mapping from FileId to source information.
-    sources: AHashMap<FileId, SourceInfo<'a>>,
+    sources: AHashMap<FileId, JsonSourceRecord<'a>>,
 }
 
 impl<'a> MultiFileJsonFormatter<'a> {
     /// Create a new multi-file JSON diagnostic formatter.
     pub fn new(sources: impl IntoIterator<Item = (FileId, SourceInfo<'a>)>) -> Self {
+        // Deduplicate registrations before constructing coordinate indexes so
+        // each surviving FileId has exactly one cached record.
+        let sources: AHashMap<FileId, SourceInfo<'a>> = sources.into_iter().collect();
         Self {
-            sources: sources.into_iter().collect(),
+            sources: sources
+                .into_iter()
+                .map(|(file_id, info)| (file_id, JsonSourceRecord::new(info)))
+                .collect(),
         }
     }
 
     /// Get the source info for a file ID, if it exists.
-    fn get_source(&self, file_id: FileId) -> Option<&SourceInfo<'a>> {
+    fn get_source(&self, file_id: FileId) -> Option<&JsonSourceRecord<'a>> {
         self.sources.get(&file_id)
     }
 
@@ -1110,17 +1146,16 @@ impl<'a> MultiFileJsonFormatter<'a> {
     /// Like [`MultiFileFormatter::fallback_source`], this only guesses when
     /// exactly one source is registered. With multiple sources an unknown file
     /// ID must not be attributed to an arbitrary file (RUE-175).
-    fn fallback_source(&self) -> Option<&SourceInfo<'a>> {
+    fn fallback_source(&self) -> Option<&JsonSourceRecord<'a>> {
         (self.sources.len() == 1)
             .then(|| self.sources.values().next())
             .flatten()
     }
 
     /// Get the path and source for a span, using the span's file ID.
-    fn source_for_span(&self, span: Span) -> Option<(&str, &str)> {
+    fn source_for_span(&self, span: Span) -> Option<&JsonSourceRecord<'a>> {
         self.get_source(span.file_id)
             .or_else(|| self.fallback_source())
-            .map(|info| (info.path, info.source))
     }
 
     /// Format a compile error as JSON.
@@ -1128,16 +1163,31 @@ impl<'a> MultiFileJsonFormatter<'a> {
         let diag = error.diagnostic();
 
         let primary_span = error.span().and_then(|span| {
-            self.source_for_span(span)
-                .map(|(path, source)| make_json_span(path, source, span, None, true))
+            self.source_for_span(span).map(|source| {
+                make_json_span(
+                    source.info.path,
+                    source.info.source,
+                    &source.line_index,
+                    span,
+                    None,
+                    true,
+                )
+            })
         });
 
         let secondary_spans: Vec<JsonSpan> = diag
             .labels
             .iter()
             .filter_map(|label| {
-                self.source_for_span(label.span).map(|(path, source)| {
-                    make_json_span(path, source, label.span, Some(label.message.clone()), false)
+                self.source_for_span(label.span).map(|source| {
+                    make_json_span(
+                        source.info.path,
+                        source.info.source,
+                        &source.line_index,
+                        label.span,
+                        Some(label.message.clone()),
+                        false,
+                    )
                 })
             })
             .collect();
@@ -1147,15 +1197,14 @@ impl<'a> MultiFileJsonFormatter<'a> {
             .suggestions
             .iter()
             .filter_map(|s| {
-                self.source_for_span(s.span)
-                    .map(|(path, _)| JsonSuggestion {
-                        message: s.message.clone(),
-                        file: path.to_string(),
-                        start: s.span.start,
-                        end: s.span.end,
-                        replacement: s.replacement.clone(),
-                        applicability: s.applicability.to_string(),
-                    })
+                self.source_for_span(s.span).map(|source| JsonSuggestion {
+                    message: s.message.clone(),
+                    file: source.info.path.to_string(),
+                    start: s.span.start,
+                    end: s.span.end,
+                    replacement: s.replacement.clone(),
+                    applicability: s.applicability.to_string(),
+                })
             })
             .collect();
 
@@ -1175,16 +1224,31 @@ impl<'a> MultiFileJsonFormatter<'a> {
         let diag = warning.diagnostic();
 
         let primary_span = warning.span().and_then(|span| {
-            self.source_for_span(span)
-                .map(|(path, source)| make_json_span(path, source, span, None, true))
+            self.source_for_span(span).map(|source| {
+                make_json_span(
+                    source.info.path,
+                    source.info.source,
+                    &source.line_index,
+                    span,
+                    None,
+                    true,
+                )
+            })
         });
 
         let secondary_spans: Vec<JsonSpan> = diag
             .labels
             .iter()
             .filter_map(|label| {
-                self.source_for_span(label.span).map(|(path, source)| {
-                    make_json_span(path, source, label.span, Some(label.message.clone()), false)
+                self.source_for_span(label.span).map(|source| {
+                    make_json_span(
+                        source.info.path,
+                        source.info.source,
+                        &source.line_index,
+                        label.span,
+                        Some(label.message.clone()),
+                        false,
+                    )
                 })
             })
             .collect();
@@ -1194,15 +1258,14 @@ impl<'a> MultiFileJsonFormatter<'a> {
             .suggestions
             .iter()
             .filter_map(|s| {
-                self.source_for_span(s.span)
-                    .map(|(path, _)| JsonSuggestion {
-                        message: s.message.clone(),
-                        file: path.to_string(),
-                        start: s.span.start,
-                        end: s.span.end,
-                        replacement: s.replacement.clone(),
-                        applicability: s.applicability.to_string(),
-                    })
+                self.source_for_span(s.span).map(|source| JsonSuggestion {
+                    message: s.message.clone(),
+                    file: source.info.path.to_string(),
+                    start: s.span.start,
+                    end: s.span.end,
+                    replacement: s.replacement.clone(),
+                    applicability: s.applicability.to_string(),
+                })
             })
             .collect();
 
@@ -1240,6 +1303,108 @@ impl<'a> MultiFileJsonFormatter<'a> {
 mod tests {
     use super::*;
     use crate::{ErrorKind, Suggestion, WarningKind};
+
+    #[test]
+    fn formatter_records_cache_coordinate_and_render_authorities_once_per_file() {
+        let source = "head\r\n\téx\rfinal";
+        let file_id = FileId::new(7);
+        let text = MultiFileFormatter::with_color_choice(
+            [(file_id, SourceInfo::new(source, "test.rue"))],
+            ColorChoice::Never,
+        );
+        let record = text.sources.get(&file_id).expect("registered source");
+        let x = source.find('x').unwrap() as u32;
+        assert_eq!(record.line_index.line_col(x), (2, 3));
+        assert!(record.render_source.byte_map.is_some());
+
+        let json = MultiFileJsonFormatter::new([(file_id, SourceInfo::new(source, "test.rue"))]);
+        let record = json.sources.get(&file_id).expect("registered source");
+        assert_eq!(record.line_index.line_col(x), (2, 3));
+
+        let warning = CompileWarning::new(
+            WarningKind::UnusedVariable("x".to_string()),
+            Span::with_file(file_id, x, x + 1),
+        );
+        let warnings = vec![warning.clone(), warning.clone(), warning];
+        let _ = text.format_warnings(&warnings);
+        let json_warnings = json.format_warnings(&warnings);
+        assert_eq!(json_warnings.matches("test.rue").count(), 3);
+    }
+
+    #[test]
+    fn duplicate_file_ids_use_the_last_source_after_text_cache_deduplication() {
+        let file_id = FileId::new(7);
+        let first = SourceInfo::new("first\n", "first.rue");
+        let last = SourceInfo::new("last\n", "last.rue");
+        let formatter = MultiFileFormatter::with_color_choice(
+            [(file_id, first), (file_id, last)],
+            ColorChoice::Never,
+        );
+
+        let record = formatter.sources.get(&file_id).expect("registered source");
+        assert_eq!(formatter.sources.len(), 1);
+        assert_eq!(record.info.source, "last\n");
+        assert_eq!(record.info.path, "last.rue");
+        let error = CompileError::new(
+            ErrorKind::UndefinedVariable("last".to_string()),
+            Span::with_file(file_id, 0, 4),
+        );
+        let rendered = formatter.format_error(&error);
+        assert!(rendered.contains("--> last.rue:1:1"));
+        assert!(rendered.contains("1 | last"));
+        assert!(!rendered.contains("first.rue"));
+    }
+
+    #[test]
+    fn duplicate_file_ids_use_the_last_source_after_json_cache_deduplication() {
+        let file_id = FileId::new(7);
+        let first = SourceInfo::new("first\n", "first.rue");
+        let last = SourceInfo::new("last\n", "last.rue");
+        let formatter = MultiFileJsonFormatter::new([(file_id, first), (file_id, last)]);
+
+        let record = formatter.sources.get(&file_id).expect("registered source");
+        assert_eq!(formatter.sources.len(), 1);
+        assert_eq!(record.info.source, "last\n");
+        assert_eq!(record.info.path, "last.rue");
+        let error = CompileError::new(
+            ErrorKind::UndefinedVariable("last".to_string()),
+            Span::with_file(file_id, 0, 4),
+        );
+        let diagnostic = formatter.format_error(&error);
+        assert_eq!(diagnostic.spans[0].file, "last.rue");
+        assert_eq!(
+            (diagnostic.spans[0].line, diagnostic.spans[0].column),
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn formatter_text_and_json_keep_mixed_origin_coordinates_in_parity() {
+        let source = "head\r\n\téx\rfinal";
+        let file_id = FileId::new(7);
+        let x = source.find('x').unwrap() as u32;
+        let final_word = source.find("final").unwrap() as u32;
+        let error = CompileError::new(
+            ErrorKind::UndefinedVariable("x".to_string()),
+            Span::with_file(file_id, x, x + 1),
+        )
+        .with_label(
+            "later",
+            Span::with_file(file_id, final_word, final_word + 5),
+        );
+
+        let text = MultiFileFormatter::with_color_choice(
+            [(file_id, SourceInfo::new(source, "test.rue"))],
+            ColorChoice::Never,
+        );
+        let rendered = text.format_error(&error);
+        assert!(rendered.contains("--> test.rue:2:3"));
+
+        let json = MultiFileJsonFormatter::new([(file_id, SourceInfo::new(source, "test.rue"))]);
+        let spans = json.format_error(&error).spans;
+        assert_eq!((spans[0].line, spans[0].column), (2, 3));
+        assert_eq!((spans[1].line, spans[1].column), (3, 1));
+    }
 
     #[test]
     fn single_file_compatibility_wrappers_delegate_to_multifile_authorities() {
@@ -1418,6 +1583,61 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_source_has_one_live_coordinate_and_render_construction_path() {
+        let source = include_str!("diagnostic.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .expect("diagnostic tests marker");
+
+        assert_eq!(
+            production.matches("LineIndex::new(").count(),
+            2,
+            "one indexed coordinate cache per text/JSON source record"
+        );
+        assert_eq!(
+            production.matches("RenderSource::new(").count(),
+            1,
+            "human rendering must be constructed once per text source record"
+        );
+        assert!(production.contains("line_index.line_number("));
+        assert!(production.contains("line_index.line_col("));
+        assert!(production.contains("line_index.line_content("));
+        assert_eq!(
+            production
+                .matches(
+                    "let sources: AHashMap<FileId, SourceInfo<'a>> = sources.into_iter().collect();"
+                )
+                .count(),
+            2,
+            "raw source registrations must be deduplicated before cache construction"
+        );
+        assert_eq!(
+            production
+                .matches("(file_id, SourceRecord::new(info))")
+                .count(),
+            1
+        );
+        assert_eq!(
+            production
+                .matches("(file_id, JsonSourceRecord::new(info))")
+                .count(),
+            1
+        );
+        for forbidden in [
+            "Span::line_number(",
+            "offset_to_line_col(",
+            "count_newlines(",
+            "nth_rendered_line(",
+        ] {
+            assert!(
+                !production.contains(forbidden),
+                "disconnected prefix-scan API returned: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn test_format_error_with_span() {
         let source = "fn main() -> i32 { 1 + true }";
         let source_info = SourceInfo::new(source, "test.rue");
@@ -1562,10 +1782,17 @@ mod tests {
         let plain = "fn main() -> i32 {\n    return 0;\n}";
         let rendered = "  --> lib/main.rue:2:12\n";
 
-        for files in [
-            vec![("main.rue", plain), ("lib/main.rue", tabbed)],
-            vec![("lib/main.rue", tabbed), ("main.rue", plain)],
-        ] {
+        let plain_index = LineIndex::new(plain);
+        let tabbed_index = LineIndex::new(tabbed);
+        let first_files = [
+            ("main.rue", plain, &plain_index, false),
+            ("lib/main.rue", tabbed, &tabbed_index, true),
+        ];
+        let second_files = [
+            ("lib/main.rue", tabbed, &tabbed_index, true),
+            ("main.rue", plain, &plain_index, false),
+        ];
+        for files in [first_files.as_slice(), second_files.as_slice()] {
             assert_eq!(
                 fix_origin_line(rendered, &files),
                 Some("  --> lib/main.rue:2:9\n".to_string()),
@@ -1583,9 +1810,11 @@ mod tests {
         // `app/main.rue` has the same byte length as the rendered path, but
         // its source would produce a different non-noop correction. Path
         // equality must be checked before parsing the coordinate for it.
+        let wrong_index = LineIndex::new(wrong_source);
+        let correct_index = LineIndex::new(correct_source);
         let files = [
-            ("app/main.rue", wrong_source),
-            ("lib/main.rue", correct_source),
+            ("app/main.rue", wrong_source, &wrong_index, true),
+            ("lib/main.rue", correct_source, &correct_index, true),
         ];
         assert_eq!(
             fix_origin_line(rendered, &files),
@@ -1603,7 +1832,12 @@ mod tests {
         // considered. This also pins exact path anchoring for a Windows path.
         let path = r"C:\project\lib\main.rue";
         let rendered = format!("  --> {path}:2:12\n");
-        let files = [(path, plain), (path, tabbed)];
+        let plain_index = LineIndex::new(plain);
+        let tabbed_index = LineIndex::new(tabbed);
+        let files = [
+            (path, plain, &plain_index, false),
+            (path, tabbed, &tabbed_index, true),
+        ];
         assert_eq!(
             fix_origin_line(&rendered, &files),
             Some(format!("  --> {path}:2:9\n")),
@@ -1614,13 +1848,21 @@ mod tests {
     fn test_fix_origin_line_single_file_controls() {
         let tabbed = "fn main() -> i32 {\n\treturn nope;\n}";
         let plain = "fn main() -> i32 {\n    return nope;\n}";
+        let tabbed_index = LineIndex::new(tabbed);
+        let plain_index = LineIndex::new(plain);
 
         assert_eq!(
-            fix_origin_line("  --> main.rue:2:12\n", &[("main.rue", tabbed)]),
+            fix_origin_line(
+                "  --> main.rue:2:12\n",
+                &[("main.rue", tabbed, &tabbed_index, true)],
+            ),
             Some("  --> main.rue:2:9\n".to_string())
         );
         assert_eq!(
-            fix_origin_line("  --> main.rue:2:12\n", &[("main.rue", plain)]),
+            fix_origin_line(
+                "  --> main.rue:2:12\n",
+                &[("main.rue", plain, &plain_index, false)],
+            ),
             None
         );
     }
@@ -1646,7 +1888,7 @@ mod tests {
 
         // `\t` + "return " = 7 chars before `nope` -> column 9 in the original.
         assert_eq!(
-            crate::Span::new(start, start + 4).line_number(source),
+            LineIndex::new(source).line_number(start),
             2,
             "sanity: span is on line 2"
         );
@@ -1667,6 +1909,24 @@ mod tests {
             "caret must remain under `nope`:\n{}",
             output
         );
+    }
+
+    #[test]
+    fn test_tab_origin_correction_uses_indexed_line_near_eof() {
+        let source = "head\r\n\tnope\r\n";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let formatter = MultiFileFormatter::with_color_choice(
+            [(FileId::DEFAULT, source_info)],
+            ColorChoice::Never,
+        );
+        let start = source.find("nope").unwrap() as u32;
+        let output = formatter.format_error(&CompileError::new(
+            ErrorKind::UndefinedVariable("nope".to_string()),
+            Span::new(start, start + 4),
+        ));
+
+        assert!(output.contains("--> test.rue:2:2"), "origin:\n{output}");
+        assert!(!output.contains("--> test.rue:2:5"), "origin:\n{output}");
     }
 
     #[test]
@@ -1700,12 +1960,14 @@ mod tests {
         // Unit-level check of the inverse mapping: `\treturn nope;`, the token
         // `nope` sits at expanded column 12 but original column 9.
         let source = "fn main() {\n\treturn nope;\n}";
-        assert_eq!(original_col_for_expanded(source, 2, 12), 9);
+        let index = LineIndex::new(source);
+        assert_eq!(original_col_for_expanded(&index, 2, 12), 9);
         // Two leading tabs: expanded column 16 -> original column 10.
         let two = "fn main() {\n\t\treturn nope;\n}";
-        assert_eq!(original_col_for_expanded(two, 2, 16), 10);
+        let two_index = LineIndex::new(two);
+        assert_eq!(original_col_for_expanded(&two_index, 2, 16), 10);
         // A column before the first tab is unchanged.
-        assert_eq!(original_col_for_expanded(source, 1, 4), 4);
+        assert_eq!(original_col_for_expanded(&index, 1, 4), 4);
     }
 
     #[test]
@@ -2192,7 +2454,7 @@ mod tests {
         assert_eq!(json_warning.spans[0].end as usize, source.len());
         assert_eq!(
             (json_warning.spans[0].line, json_warning.spans[0].column),
-            offset_to_line_col(source, 10)
+            LineIndex::new(source).line_col(10)
         );
     }
 
