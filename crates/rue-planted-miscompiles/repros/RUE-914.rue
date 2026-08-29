@@ -1,0 +1,11 @@
+fn stale(x: i32) -> i32 {
+    let before = x + 1;
+    let p: ptr mut i32 = checked { @raw_mut(x) };
+    checked { @ptr_write(p, 999); };
+    let after = x + 1;
+    before + after
+}
+
+fn main() -> i32 {
+    stale(5)
+}

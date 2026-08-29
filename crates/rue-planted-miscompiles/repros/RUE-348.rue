@@ -1,0 +1,5 @@
+enum Opt { None, Some(i32) }
+
+fn main() -> i32 {
+    if Opt.Some(5) == Opt.Some(6) { 1 } else { 0 }
+}

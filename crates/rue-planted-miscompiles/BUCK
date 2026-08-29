@@ -1,0 +1,8 @@
+# Source-only laboratory inputs. Nothing in the production compiler graph
+# depends on this package; the root isolation gate and the opt-in study runner
+# are its only consumers.
+filegroup(
+    name = "lab-inputs",
+    srcs = glob(["patches/**", "repros/**"]),
+    visibility = ["PUBLIC"],
+)

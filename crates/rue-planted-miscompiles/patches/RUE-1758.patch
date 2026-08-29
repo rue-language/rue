@@ -1,0 +1,19 @@
+diff --git a/crates/rue-codegen/src/terminator_plan.rs b/crates/rue-codegen/src/terminator_plan.rs
+--- a/crates/rue-codegen/src/terminator_plan.rs
++++ b/crates/rue-codegen/src/terminator_plan.rs
+@@ -269,7 +269,14 @@ impl BlockOrder {
+     fn of(ctx: &CfgLowerContext<'_>) -> Self {
+-        let blocks = ctx.cfg.block_lowering_order();
++        // PLANTED RUE-1758: faithfully restore the historical arena-order
++        // lowering defect in this lab-only source variant.
++        let blocks: Vec<BlockId> = ctx
++            .cfg
++            .blocks()
++            .iter()
++            .map(|block| block.id)
++            .collect();
+         let mut position = vec![0; ctx.cfg.block_count()];
+         for (index, block) in blocks.iter().enumerate() {
+             position[block.as_u32() as usize] = index as u32;
+         }
+         Self { blocks, position }
