@@ -82,13 +82,9 @@ pub(crate) struct ExpressionAnalysisBreakdown {
     pub(crate) air_emission_validation_ns: u64,
 }
 
-/// The neutral receiver contract consumed by the canonical ordinary-body engine.
-///
-/// This is intentionally narrower than the eventual full engine state. It
-/// covers the body authority, semantic overlays, and exact point facts needed
-/// by the ordinary expression engine. Transaction publication remains outside
-/// this extraction.
-pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
+/// Cancellation authority and staged-frontier instrumentation hooks
+/// consulted between analysis steps.
+pub(crate) trait HostInterrupts {
     /// Check the owning query before bounded frontier work or canonical
     /// comptime evaluation.  Standalone hosts explicitly return `Ok(())`.
     fn check_canceled(&self) -> CompileResult<()>;
@@ -108,40 +104,23 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
     /// Marks the beginning of a staged selector frontier. Query-backed hosts
     /// use this only for test instrumentation; it has no semantic effect.
     fn staged_frontier_started(&self) {}
+}
 
+/// The body's own storage: its RIR, interner, type pool, parameter
+/// arena, known symbols, and lazy inference facts.
+pub(crate) trait BodyAuthority {
     type InferenceFacts<'a>: LazyInferenceFacts
     where
         Self: 'a;
-    fn inference_facts<'a>(&'a self, ctx: &'a InferenceContext) -> Self::InferenceFacts<'a>;
-    fn resolve_structured_type_syntax(
-        &mut self,
-        request: StructuredTypeSyntaxRequest<'_>,
-    ) -> TypeSyntaxResult;
-    fn resolve_type_module_prefix(
-        &mut self,
-        request: ModulePrefixRequest<'_>,
-    ) -> CompileResult<(ModuleId, Option<FileId>, String)>;
-    fn resolve_array_length(&mut self, request: ArrayLengthRequest<'_>) -> CompileResult<u64>;
 
-    fn record_expression_analysis_breakdown(&mut self, _breakdown: ExpressionAnalysisBreakdown) {}
+    fn inference_facts<'a>(&'a self, ctx: &'a InferenceContext) -> Self::InferenceFacts<'a>;
 
     fn body_param_data(&self, range: ParamRange) -> ParamRangeData;
-    fn allocate_method_params(
-        &mut self,
-        names: impl IntoIterator<Item = Spur>,
-        types: impl IntoIterator<Item = Type>,
-        modes: impl IntoIterator<Item = RirParamMode>,
-        comptime: impl IntoIterator<Item = bool>,
-    ) -> ParamRange;
-    fn install_anonymous_method(&mut self, key: (StructId, Spur), info: MethodInfo);
+
     fn known_symbols(&self) -> &KnownSymbols;
 
-    fn strbuf_type(&self) -> Option<Type>;
-    fn is_strbuf(&self, ty: Type) -> bool;
-    fn types_equivalent(&self, left: Type, right: Type) -> bool;
-    fn generated_structs(&self) -> &AHashMap<Spur, StructId>;
-
     fn body_interner(&self) -> &ThreadedRodeo;
+
     /// Fallible form used by every body-derived spelling. Canonical hosts
     /// route this through their owning revision symbol policy; standalone
     /// hosts retain their private interner and its exact Lasso classification.
@@ -150,82 +129,79 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
             .try_get_or_intern(text)
             .map_err(|error| error.kind())
     }
+
     fn body_type_pool(&self) -> &TypeInternPool;
+
+    fn body_rir_ref(&self) -> &Rir;
+
+    /// Whole-arena census of inline type-constructor head shapes (RUE-596),
+    /// taken by the body RIR index build. Zero proves the inference
+    /// precompute's reachability scan would collect no candidates.
+    fn body_inline_ctor_head_candidates(&self) -> usize;
+}
+
+/// Resolution of declaration-owned type syntax, array lengths, and
+/// type identity questions against the host's semantic overlays.
+pub(crate) trait TypeResolutionHost {
+    fn resolve_structured_type_syntax(
+        &mut self,
+        request: StructuredTypeSyntaxRequest<'_>,
+    ) -> TypeSyntaxResult;
+
+    fn resolve_type_module_prefix(
+        &mut self,
+        request: ModulePrefixRequest<'_>,
+    ) -> CompileResult<(ModuleId, Option<FileId>, String)>;
+
+    fn resolve_array_length(&mut self, request: ArrayLengthRequest<'_>) -> CompileResult<u64>;
+
+    fn strbuf_type(&self) -> Option<Type>;
+
+    fn is_strbuf(&self, ty: Type) -> bool;
+
+    fn types_equivalent(&self, left: Type, right: Type) -> bool;
+
+    fn resolve_body_type(&mut self, syntax: RirTypeSyntaxRef, span: Span) -> CompileResult<Type>;
+
+    fn resolve_body_type_with_substitutions(
+        &mut self,
+        syntax: RirTypeSyntaxRef,
+        span: Span,
+        type_substitutions: Option<&AHashMap<Spur, Type>>,
+        value_substitutions: Option<&AHashMap<Spur, ConstValue>>,
+    ) -> CompileResult<Type>;
+
+    fn well_known_option(&self, payload: Type) -> Option<Type>;
+
+    fn intern_array_type(&mut self, element: Type, length: u64) -> ArrayTypeId;
+}
+
+/// Exact declaration and call facts: functions, consts, modules,
+/// structs, builtins, and the target. Host facts, not analyzer
+/// callbacks.
+pub(crate) trait DeclarationFacts {
     fn struct_id_for_name(&self, name: Spur) -> Option<StructId>;
-    fn generated_structs_mut(&mut self) -> &mut AHashMap<Spur, StructId>;
-    fn generated_enums_mut(&mut self) -> &mut AHashMap<Spur, EnumId>;
-    fn anonymous_struct_id(
-        &self,
-        identity: &super::anon_structs::IssuedAnonymousNominalKey,
-    ) -> Option<StructId>;
-    fn anonymous_enum_id(
-        &self,
-        identity: &super::anon_structs::IssuedAnonymousNominalKey,
-    ) -> Option<EnumId>;
-    fn anonymous_struct_identities_mut(
-        &mut self,
-    ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId>;
-    fn anonymous_enum_identities_mut(
-        &mut self,
-    ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId>;
-    fn anonymous_digest_owner(
-        &self,
-        digest: u128,
-    ) -> Option<&super::anon_structs::IssuedAnonymousNominalKey>;
-    fn install_anonymous_digest_owner(
-        &mut self,
-        digest: u128,
-        identity: super::anon_structs::IssuedAnonymousNominalKey,
-    );
-    #[cfg(test)]
-    fn forced_anonymous_digest(
-        &self,
-        identity: &super::anon_structs::IssuedAnonymousNominalKey,
-    ) -> Option<u128>;
-    fn install_canonical_anonymous_type(
-        &mut self,
-        ty: Type,
-        identity: super::anon_structs::IssuedAnonymousNominalKey,
-    );
-    fn anonymous_struct_methods_mut(
-        &mut self,
-    ) -> &mut AHashMap<StructId, Vec<super::AnonMethodSig>>;
-    fn anonymous_struct_captures_mut(
-        &mut self,
-    ) -> &mut AHashMap<StructId, AHashMap<Spur, ConstValue>>;
-    fn anonymous_struct_ids_mut(&mut self) -> &mut AHashSet<StructId>;
-    fn anonymous_enum_ids_mut(&mut self) -> &mut AHashSet<EnumId>;
-    fn canonical_type_instance(
-        &self,
-        ty: Type,
-    ) -> Result<super::anon_structs::IssuedTypeInstanceKey, crate::SemanticBodyExportFailure>;
-    fn canonical_argument_value(
-        &self,
-        value: ConstValue,
-    ) -> Result<
-        crate::CanonicalArgumentValue<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
-        crate::SemanticBodyExportFailure,
-    >;
-    fn function_identity(
-        &self,
-        symbol: Spur,
-    ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure>;
+
     fn comptime_type_param_flags(&self, function: &FunctionCallInfo) -> Vec<bool>;
+
     fn function_param_type_syntax(
         &self,
         function: &FunctionCallInfo,
         param_index: usize,
     ) -> Option<StructuredTypeSyntax>;
+
     fn function_return_type_syntax(
         &self,
         function: &FunctionCallInfo,
     ) -> Option<StructuredTypeSyntax>;
+
     /// File whose declaration namespace owns the callable's retained type
     /// syntax. Provider-backed foreign callables override this; request-local
     /// callables use the body's span file.
     fn function_signature_root_file(&self, _function: &FunctionCallInfo) -> Option<FileId> {
         None
     }
+
     /// Reduce a comptime call whose body is not owned by this request. `None`
     /// means the callable is request-local and the ordinary evaluator should
     /// read its body; `Some` is the provider's exact reduction result and must
@@ -239,26 +215,171 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
     ) -> Option<CompileResult<Option<ConstValue>>> {
         None
     }
-    fn stable_definition_symbol_component(&self, token: &crate::SemanticDefinitionToken) -> String;
-    fn stable_module_symbol_component(&self, token: &crate::SemanticModuleToken) -> String;
-    fn resolve_body_type(&mut self, syntax: RirTypeSyntaxRef, span: Span) -> CompileResult<Type>;
-    fn resolve_body_type_with_substitutions(
-        &mut self,
-        syntax: RirTypeSyntaxRef,
+
+    fn function_info(&self, name: Spur) -> Option<FunctionCallInfo>;
+
+    fn function_body_info(&self, name: Spur) -> Option<FunctionInfo>;
+
+    fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
+
+    fn source_function_name(&self, name: Spur) -> Spur;
+
+    fn resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur>;
+
+    fn module_def(&self, module: ModuleId) -> ModuleDef;
+
+    fn struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId>;
+
+    fn builtin_struct(&self, name: Spur) -> Option<StructId>;
+
+    fn target(&self) -> Target;
+
+    fn builtin_arch_id(&self) -> Option<EnumId>;
+
+    fn builtin_os_id(&self) -> Option<EnumId>;
+
+    fn builtin_data_model_id(&self) -> Option<EnumId>;
+
+    fn destructor_span(&self, struct_id: StructId) -> Option<Span>;
+
+    fn infectious_linear_reason(&self, struct_id: StructId) -> Option<(String, String)>;
+
+    fn require_preview(
+        &self,
+        feature: rue_error::PreviewFeature,
+        what: &str,
         span: Span,
-        type_substitutions: Option<&AHashMap<Spur, Type>>,
-        value_substitutions: Option<&AHashMap<Spur, ConstValue>>,
-    ) -> CompileResult<Type>;
+    ) -> CompileResult<()>;
+
+    fn declaration_binding_active(&self) -> bool;
+
+    fn known_linear_during_binding(&self, ty: Type) -> Option<bool>;
+
+    fn known_drop_glue_during_binding(&self, ty: Type) -> Option<bool>;
+
+    fn trusted_try_producer(&self, ty: Type) -> Option<super::anon_structs::TrustedTryProducer>;
+
+    fn resolve_canonical_import(
+        &self,
+        import_path: &str,
+        span: Span,
+    ) -> CompileResult<crate::ModuleId>;
+}
+
+/// Request-local ledgers for anonymous nominals: issued identities,
+/// generated ids, captures, substitutions, and the stable-symbol
+/// components minted for them.
+pub(crate) trait AnonymousNominalLedger {
+    fn allocate_method_params(
+        &mut self,
+        names: impl IntoIterator<Item = Spur>,
+        types: impl IntoIterator<Item = Type>,
+        modes: impl IntoIterator<Item = RirParamMode>,
+        comptime: impl IntoIterator<Item = bool>,
+    ) -> ParamRange;
+
+    fn install_anonymous_method(&mut self, key: (StructId, Spur), info: MethodInfo);
+
+    fn generated_structs(&self) -> &AHashMap<Spur, StructId>;
+
+    fn generated_structs_mut(&mut self) -> &mut AHashMap<Spur, StructId>;
+
+    fn generated_enums_mut(&mut self) -> &mut AHashMap<Spur, EnumId>;
+
+    fn anonymous_struct_id(
+        &self,
+        identity: &super::anon_structs::IssuedAnonymousNominalKey,
+    ) -> Option<StructId>;
+
+    fn anonymous_enum_id(
+        &self,
+        identity: &super::anon_structs::IssuedAnonymousNominalKey,
+    ) -> Option<EnumId>;
+
+    fn anonymous_struct_identities_mut(
+        &mut self,
+    ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId>;
+
+    fn anonymous_enum_identities_mut(
+        &mut self,
+    ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId>;
+
+    fn anonymous_digest_owner(
+        &self,
+        digest: u128,
+    ) -> Option<&super::anon_structs::IssuedAnonymousNominalKey>;
+
+    fn install_anonymous_digest_owner(
+        &mut self,
+        digest: u128,
+        identity: super::anon_structs::IssuedAnonymousNominalKey,
+    );
+
+    #[cfg(test)]
+    fn forced_anonymous_digest(
+        &self,
+        identity: &super::anon_structs::IssuedAnonymousNominalKey,
+    ) -> Option<u128>;
+
+    fn install_canonical_anonymous_type(
+        &mut self,
+        ty: Type,
+        identity: super::anon_structs::IssuedAnonymousNominalKey,
+    );
+
+    fn anonymous_struct_methods_mut(
+        &mut self,
+    ) -> &mut AHashMap<StructId, Vec<super::AnonMethodSig>>;
+
+    fn anonymous_struct_captures_mut(
+        &mut self,
+    ) -> &mut AHashMap<StructId, AHashMap<Spur, ConstValue>>;
+
+    fn anonymous_struct_ids_mut(&mut self) -> &mut AHashSet<StructId>;
+
+    fn anonymous_enum_ids_mut(&mut self) -> &mut AHashSet<EnumId>;
+
+    fn canonical_type_instance(
+        &self,
+        ty: Type,
+    ) -> Result<super::anon_structs::IssuedTypeInstanceKey, crate::SemanticBodyExportFailure>;
+
+    fn canonical_argument_value(
+        &self,
+        value: ConstValue,
+    ) -> Result<
+        crate::CanonicalArgumentValue<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    >;
+
+    fn function_identity(
+        &self,
+        symbol: Spur,
+    ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure>;
+
+    fn stable_definition_symbol_component(&self, token: &crate::SemanticDefinitionToken) -> String;
+
+    fn stable_module_symbol_component(&self, token: &crate::SemanticModuleToken) -> String;
+
     fn replace_active_anonymous_producer(
         &mut self,
         producer: Option<IssuedStableProducerId>,
     ) -> Option<IssuedStableProducerId>;
-    fn body_rir_ref(&self) -> &Rir;
-    /// Whole-arena census of inline type-constructor head shapes (RUE-596),
-    /// taken by the body RIR index build. Zero proves the inference
-    /// precompute's reachability scan would collect no candidates.
-    fn body_inline_ctor_head_candidates(&self) -> usize;
+
     fn active_anonymous_producer(&self) -> Option<&IssuedStableProducerId>;
+
+    fn set_anon_struct_type_subst(&mut self, struct_id: StructId, subst: AHashMap<Spur, Type>);
+
+    fn anon_struct_type_subst(&self, struct_id: StructId) -> AHashMap<Spur, Type>;
+
+    fn anon_struct_captured_values(&self, struct_id: StructId) -> AHashMap<Spur, ConstValue>;
+}
+
+/// Mutable per-body analysis ledgers: work records, recovered errors,
+/// dependency observers, and deferred ownership gates.
+pub(crate) trait AnalysisLedgers {
+    fn record_expression_analysis_breakdown(&mut self, _breakdown: ExpressionAnalysisBreakdown) {}
+
     fn body_declaration_type_observer(
         &self,
     ) -> Option<&(
@@ -268,36 +389,23 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
         DeclarationTypeDependencySourceKind,
         DeclarationTypeDependencyKind,
     )>;
+
     fn body_analysis_work_mut(&mut self) -> &mut BodyAnalysisWork;
+
     fn record_resolved_declaration_type(&mut self, ty: Type);
+
     fn body_analysis_error_recovery(&self) -> bool;
+
     fn body_analysis_first_recovered_error(&self) -> Option<CompileError>;
+
     fn body_analysis_recovered_errors_mut(&mut self) -> &mut Vec<CompileError>;
 
-    // Exact declaration/call data used by the ordinary expression engine.
-    // These are host facts or request-local ledgers, not analyzer callbacks.
-    fn function_info(&self, name: Spur) -> Option<FunctionCallInfo>;
-    fn function_body_info(&self, name: Spur) -> Option<FunctionInfo>;
-    fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
-    fn source_function_name(&self, name: Spur) -> Spur;
-    fn resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur>;
-    fn module_def(&self, module: ModuleId) -> ModuleDef;
-    fn struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId>;
-    fn builtin_struct(&self, name: Spur) -> Option<StructId>;
-    fn target(&self) -> Target;
-    fn builtin_arch_id(&self) -> Option<EnumId>;
-    fn builtin_os_id(&self) -> Option<EnumId>;
-    fn builtin_data_model_id(&self) -> Option<EnumId>;
-    fn destructor_span(&self, struct_id: StructId) -> Option<Span>;
-    fn infectious_linear_reason(&self, struct_id: StructId) -> Option<(String, String)>;
-    fn well_known_option(&self, payload: Type) -> Option<Type>;
-    fn set_anon_struct_type_subst(&mut self, struct_id: StructId, subst: AHashMap<Spur, Type>);
-    fn anon_struct_type_subst(&self, struct_id: StructId) -> AHashMap<Spur, Type>;
-    fn anon_struct_captured_values(&self, struct_id: StructId) -> AHashMap<Spur, ConstValue>;
-
     fn body_dependency_observer(&self) -> Option<AnalyzedBodyOwnerEvent>;
+
     fn record_body_named_dependency(&mut self, target: super::NamedConstDependencyTargetEvent);
+
     fn record_body_callable_dependency(&mut self, symbol: Spur);
+
     fn record_specialization_dependency(
         &mut self,
         identity: crate::FunctionInstanceKey<
@@ -306,26 +414,35 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
         >,
     );
 
-    fn intern_array_type(&mut self, element: Type, length: u64) -> ArrayTypeId;
-    fn require_preview(
-        &self,
-        feature: rue_error::PreviewFeature,
-        what: &str,
-        span: Span,
-    ) -> CompileResult<()>;
-    fn declaration_binding_active(&self) -> bool;
-    fn known_linear_during_binding(&self, ty: Type) -> Option<bool>;
-    fn known_drop_glue_during_binding(&self, ty: Type) -> Option<bool>;
-    fn has_ctor_type_display(&self, ty: Type) -> bool;
-    fn record_body_ctor_type_display(&mut self, ty: Type, display: String);
-    fn friendly_type_display(&self, ty: Type) -> String;
-    fn trusted_try_producer(&self, ty: Type) -> Option<super::anon_structs::TrustedTryProducer>;
-    fn resolve_canonical_import(
-        &self,
-        import_path: &str,
-        span: Span,
-    ) -> CompileResult<crate::ModuleId>;
     fn deferred_ownership_gates_mut(&mut self) -> &mut Vec<super::DeferredOwnershipGate>;
+}
+
+/// The presentation authority for type names in body diagnostics.
+pub(crate) trait DiagnosticPresentation {
+    fn has_ctor_type_display(&self, ty: Type) -> bool;
+
+    fn record_body_ctor_type_display(&mut self, ty: Type, display: String);
+
+    fn friendly_type_display(&self, ty: Type) -> String;
+}
+
+/// The neutral receiver contract consumed by the canonical ordinary-body engine.
+///
+/// This is intentionally narrower than the eventual full engine state. It
+/// covers the body authority, semantic overlays, and exact point facts needed
+/// by the ordinary expression engine. Transaction publication remains outside
+/// this extraction.
+pub(crate) trait OrdinaryBodyAnalysisHost:
+    BodyAnalysisReadHost
+    + Sized
+    + HostInterrupts
+    + BodyAuthority
+    + TypeResolutionHost
+    + DeclarationFacts
+    + AnonymousNominalLedger
+    + AnalysisLedgers
+    + DiagnosticPresentation
+{
 }
 
 /// Inherent-method receiver for the generic ordinary-body algorithm.
@@ -390,7 +507,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         self.storage.active_anonymous_producer()
     }
     pub(crate) fn function_info(&self, name: Spur) -> Option<FunctionCallInfo> {
-        OrdinaryBodyAnalysisHost::function_info(self.storage, name)
+        DeclarationFacts::function_info(self.storage, name)
     }
     pub(crate) fn function_body_info(&self, name: Spur) -> Option<FunctionInfo> {
         self.storage.function_body_info(name)
@@ -402,26 +519,26 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         self.storage.function_identity(symbol)
     }
     pub(crate) fn value_const(&self, key: &(FileId, Spur)) -> Option<ConstInfo> {
-        OrdinaryBodyAnalysisHost::value_const(self.storage, key.0, key.1)
+        DeclarationFacts::value_const(self.storage, key.0, key.1)
     }
     pub(crate) fn source_function_name(&self, name: Spur) -> Spur {
-        OrdinaryBodyAnalysisHost::source_function_name(self.storage, name)
+        DeclarationFacts::source_function_name(self.storage, name)
     }
     pub(crate) fn resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
-        OrdinaryBodyAnalysisHost::resolve_function_name_local(self.storage, name, file)
+        DeclarationFacts::resolve_function_name_local(self.storage, name, file)
     }
     pub(crate) fn module_def(&self, module: ModuleId) -> ModuleDef {
-        OrdinaryBodyAnalysisHost::module_def(self.storage, module)
+        DeclarationFacts::module_def(self.storage, module)
     }
     pub(crate) fn file_module_is_trusted_standard_library(&self, file: FileId) -> bool {
         self.storage
             .endpoint_file_is_trusted_standard_library(file.index())
     }
     pub(crate) fn struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
-        OrdinaryBodyAnalysisHost::struct_in_file(self.storage, file, name)
+        DeclarationFacts::struct_in_file(self.storage, file, name)
     }
     pub(crate) fn builtin_struct(&self, name: Spur) -> Option<StructId> {
-        OrdinaryBodyAnalysisHost::builtin_struct(self.storage, name)
+        DeclarationFacts::builtin_struct(self.storage, name)
     }
     pub(crate) fn target(&self) -> Target {
         self.storage.target()
@@ -907,7 +1024,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         span: Span,
         values: Option<&AHashMap<Spur, ConstValue>>,
     ) -> CompileResult<u64> {
-        OrdinaryBodyAnalysisHost::resolve_array_length(
+        TypeResolutionHost::resolve_array_length(
             self.storage,
             super::fact_mode::ArrayLengthRequest {
                 length,
@@ -922,7 +1039,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         segments: &[&str],
         span: Span,
     ) -> CompileResult<(ModuleId, Option<FileId>, String)> {
-        OrdinaryBodyAnalysisHost::resolve_type_module_prefix(
+        TypeResolutionHost::resolve_type_module_prefix(
             self.storage,
             super::fact_mode::ModulePrefixRequest {
                 root_file,
@@ -1008,8 +1125,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         vals: &AHashMap<Spur, ConstValue>,
     ) -> Result<IssuedStableProducerId, crate::SemanticBodyExportFailure> {
         use crate::SemanticBodyExportFailure as F;
-        let function = OrdinaryBodyAnalysisHost::function_info(self.storage, name)
-            .ok_or(F::MissingStableIdentity)?;
+        let function =
+            DeclarationFacts::function_info(self.storage, name).ok_or(F::MissingStableIdentity)?;
         let flags = self.storage.comptime_type_param_flags(&function);
         let mut types = Vec::new();
         let mut values = Vec::new();

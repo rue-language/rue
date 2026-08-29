@@ -27,7 +27,9 @@ use super::fact_mode::{ArrayLengthRequest, ModulePrefixRequest, StructuredTypeSy
 use super::inference_ctx::{InferenceFactSource, InferenceGeneratedNominalOverlays};
 use super::info::{FunctionCallInfo, MethodCallInfo};
 use super::ordinary_engine::{
-    ExpressionAnalysisBreakdown, OrdinaryBodyAnalysisHost, OrdinaryBodyEngine,
+    AnalysisLedgers, AnonymousNominalLedger, BodyAuthority, DeclarationFacts,
+    DiagnosticPresentation, ExpressionAnalysisBreakdown, HostInterrupts, OrdinaryBodyAnalysisHost,
+    OrdinaryBodyEngine, TypeResolutionHost,
 };
 use super::semantic_body_export::SemanticBodyExportHost;
 use super::typeck::{
@@ -3589,12 +3591,10 @@ where
         let info = self.function_info_for_symbol(name)?;
         let params = self.state.param_data(info.params);
         let param_type_syntax = (0..params.types().len())
-            .map(|index| {
-                <Self as OrdinaryBodyAnalysisHost>::function_param_type_syntax(self, &info, index)
-            })
+            .map(|index| <Self as DeclarationFacts>::function_param_type_syntax(self, &info, index))
             .collect();
         let return_type_syntax =
-            <Self as OrdinaryBodyAnalysisHost>::function_return_type_syntax(self, &info);
+            <Self as DeclarationFacts>::function_return_type_syntax(self, &info);
         let param_comptime_type = self
             .durable_comptime_type_flags
             .borrow()
@@ -4233,7 +4233,7 @@ where
     }
 }
 
-impl<P, S, K, M> OrdinaryBodyAnalysisHost for ProviderBodyHost<'_, P, S, K, M>
+impl<P, S, K, M> HostInterrupts for ProviderBodyHost<'_, P, S, K, M>
 where
     P: BodyFactProvider,
     S: DurableNominalSource<K, M>
@@ -4244,11 +4244,6 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
-    type InferenceFacts<'b>
-        = HostInferenceFacts<'b, Self>
-    where
-        Self: 'b;
-
     fn check_canceled(&self) -> CompileResult<()> {
         if self.provider.is_canceled() {
             Err(CompileError::without_span(ErrorKind::InternalError(
@@ -4272,11 +4267,75 @@ where
     fn staged_frontier_started(&self) {
         self.provider.staged_frontier_started();
     }
+}
+
+impl<P, S, K, M> BodyAuthority for ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    type InferenceFacts<'b>
+        = HostInferenceFacts<'b, Self>
+    where
+        Self: 'b;
 
     fn inference_facts<'b>(&'b self, ctx: &'b InferenceContext) -> Self::InferenceFacts<'b> {
         HostInferenceFacts::new(ctx, self)
     }
 
+    fn body_param_data(&self, range: ParamRange) -> ParamRangeData {
+        self.state.param_data(range)
+    }
+
+    fn known_symbols(&self) -> &KnownSymbols {
+        &self.known
+    }
+
+    fn body_interner(&self) -> &ThreadedRodeo {
+        &self.interner
+    }
+
+    fn try_intern_body_symbol(&self, text: impl AsRef<str>) -> Result<Spur, lasso::LassoErrorKind> {
+        self.state.symbol_space().try_intern(text)
+    }
+
+    fn body_type_pool(&self) -> &TypeInternPool {
+        // This accessor is the engine's containment-read boundary. The pool's
+        // dirty check is O(1), so ordinary reads pay no graph walk; a batch that
+        // declared or completed composite types pays one metered join before
+        // the first containment-dependent read.
+        self.type_pool
+            .finalize_containment_metadata()
+            .expect("provider type materialization must produce an acyclic containment graph");
+        &self.type_pool
+    }
+
+    fn body_rir_ref(&self) -> &Rir {
+        self.rir.rir()
+    }
+
+    fn body_inline_ctor_head_candidates(&self) -> usize {
+        self.rir.rir_index().inline_ctor_head_candidates()
+    }
+}
+
+impl<P, S, K, M> TypeResolutionHost for ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
     fn resolve_structured_type_syntax(
         &mut self,
         request: StructuredTypeSyntaxRequest<'_>,
@@ -4360,30 +4419,6 @@ where
         result
     }
 
-    fn record_expression_analysis_breakdown(&mut self, breakdown: ExpressionAnalysisBreakdown) {
-        self.expression_breakdown = Some(breakdown);
-    }
-
-    fn body_param_data(&self, range: ParamRange) -> ParamRangeData {
-        self.state.param_data(range)
-    }
-    fn allocate_method_params(
-        &mut self,
-        names: impl IntoIterator<Item = Spur>,
-        types: impl IntoIterator<Item = Type>,
-        modes: impl IntoIterator<Item = RirParamMode>,
-        comptime: impl IntoIterator<Item = bool>,
-    ) -> ParamRange {
-        self.state.allocate_params(names, types, modes, comptime)
-    }
-    fn install_anonymous_method(&mut self, key: (StructId, Spur), info: MethodInfo) {
-        self.anonymous_methods
-            .borrow_mut()
-            .insert(key, MethodCallInfo::from_body(info));
-    }
-    fn known_symbols(&self) -> &KnownSymbols {
-        &self.known
-    }
     fn strbuf_type(&self) -> Option<Type> {
         if let Some(ty) = self.type_pool.lang_item_type(crate::LangItem::StrBuf) {
             return Some(ty);
@@ -4395,222 +4430,71 @@ where
             .ok()?;
         self.type_pool.lang_item_type(crate::LangItem::StrBuf)
     }
+
     fn is_strbuf(&self, ty: Type) -> bool {
         matches!(ty.kind(), TypeKind::Struct(id) if self.type_pool.is_strbuf(id))
     }
+
     fn types_equivalent(&self, left: Type, right: Type) -> bool {
         left == right
     }
-    fn generated_structs(&self) -> &AHashMap<Spur, StructId> {
-        &self.generated_structs
+
+    fn resolve_body_type(&mut self, syntax: RirTypeSyntaxRef, span: Span) -> CompileResult<Type> {
+        self.resolve_body_type_with_substitutions(syntax, span, None, None)
     }
-    fn body_interner(&self) -> &ThreadedRodeo {
-        &self.interner
+
+    fn resolve_body_type_with_substitutions(
+        &mut self,
+        syntax: RirTypeSyntaxRef,
+        span: Span,
+        type_substitutions: Option<&AHashMap<Spur, Type>>,
+        value_substitutions: Option<&AHashMap<Spur, ConstValue>>,
+    ) -> CompileResult<Type> {
+        let syntax = super::fact_mode::StructuredTypeSyntax {
+            arena: self.rir.rir().type_syntax().clone(),
+            root: syntax,
+        };
+        let interner = Arc::clone(&self.interner);
+        TypeResolutionHost::resolve_structured_type_syntax(
+            self,
+            StructuredTypeSyntaxRequest {
+                syntax: &syntax,
+                root_file: span.file_id,
+                span,
+                type_substitutions,
+                value_substitutions,
+            },
+        )
+        .map_err(|failure| semantic_type_syntax_compile_error(&interner, failure, span))
     }
-    fn try_intern_body_symbol(&self, text: impl AsRef<str>) -> Result<Spur, lasso::LassoErrorKind> {
-        self.state.symbol_space().try_intern(text)
+
+    fn well_known_option(&self, payload: Type) -> Option<Type> {
+        self.endpoint.well_known_option_for_payload(payload)
     }
-    fn body_type_pool(&self) -> &TypeInternPool {
-        // This accessor is the engine's containment-read boundary. The pool's
-        // dirty check is O(1), so ordinary reads pay no graph walk; a batch that
-        // declared or completed composite types pays one metered join before
-        // the first containment-dependent read.
-        self.type_pool
-            .finalize_containment_metadata()
-            .expect("provider type materialization must produce an acyclic containment graph");
-        &self.type_pool
+
+    fn intern_array_type(&mut self, element: Type, length: u64) -> ArrayTypeId {
+        self.type_pool.intern_array_from_type(element, length)
     }
+}
+
+impl<P, S, K, M> DeclarationFacts for ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
     fn struct_id_for_name(&self, name: Spur) -> Option<StructId> {
         self.generated_structs.get(&name).copied().or_else(|| {
             self.nominal_type_for_symbol(self.owner_file, name)
                 .and_then(|ty| ty.as_struct())
         })
     }
-    fn generated_structs_mut(&mut self) -> &mut AHashMap<Spur, StructId> {
-        &mut self.generated_structs
-    }
-    fn generated_enums_mut(&mut self) -> &mut AHashMap<Spur, EnumId> {
-        &mut self.generated_enums
-    }
-    fn anonymous_struct_id(
-        &self,
-        identity: &super::anon_structs::IssuedAnonymousNominalKey,
-    ) -> Option<StructId> {
-        self.anon_struct_identities
-            .get(identity)
-            .copied()
-            .or_else(|| {
-                self.consulted_anonymous_types
-                    .borrow()
-                    .iter()
-                    .find_map(|(ty, candidate)| {
-                        (candidate.with_canonical_producer().as_ref()
-                            == identity.with_canonical_producer().as_ref())
-                        .then(|| ty.as_struct())
-                        .flatten()
-                    })
-            })
-    }
-    fn anonymous_enum_id(
-        &self,
-        identity: &super::anon_structs::IssuedAnonymousNominalKey,
-    ) -> Option<EnumId> {
-        self.anon_enum_identities
-            .get(identity)
-            .copied()
-            .or_else(|| {
-                self.consulted_anonymous_types
-                    .borrow()
-                    .iter()
-                    .find_map(|(ty, candidate)| {
-                        (candidate.with_canonical_producer().as_ref()
-                            == identity.with_canonical_producer().as_ref())
-                        .then(|| ty.as_enum())
-                        .flatten()
-                    })
-            })
-    }
-    fn anonymous_struct_identities_mut(
-        &mut self,
-    ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId> {
-        &mut self.anon_struct_identities
-    }
-    fn anonymous_enum_identities_mut(
-        &mut self,
-    ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId> {
-        &mut self.anon_enum_identities
-    }
-    fn anonymous_digest_owner(
-        &self,
-        digest: u128,
-    ) -> Option<&super::anon_structs::IssuedAnonymousNominalKey> {
-        self.anonymous_digest_owners.get(&digest)
-    }
-    fn install_anonymous_digest_owner(
-        &mut self,
-        digest: u128,
-        identity: super::anon_structs::IssuedAnonymousNominalKey,
-    ) {
-        self.anonymous_digest_owners.insert(digest, identity);
-    }
-    #[cfg(test)]
-    fn forced_anonymous_digest(
-        &self,
-        _identity: &super::anon_structs::IssuedAnonymousNominalKey,
-    ) -> Option<u128> {
-        None
-    }
-    fn install_canonical_anonymous_type(
-        &mut self,
-        ty: Type,
-        identity: super::anon_structs::IssuedAnonymousNominalKey,
-    ) {
-        self.canonical_anonymous_types.insert(ty, identity);
-    }
-    fn anonymous_struct_methods_mut(
-        &mut self,
-    ) -> &mut AHashMap<StructId, Vec<super::AnonMethodSig>> {
-        &mut self.anon_struct_method_sigs
-    }
-    fn anonymous_struct_captures_mut(
-        &mut self,
-    ) -> &mut AHashMap<StructId, AHashMap<Spur, ConstValue>> {
-        &mut self.anon_struct_captured_values
-    }
-    fn anonymous_struct_ids_mut(&mut self) -> &mut AHashSet<StructId> {
-        &mut self.anonymous_struct_ids
-    }
-    fn anonymous_enum_ids_mut(&mut self) -> &mut AHashSet<EnumId> {
-        &mut self.anonymous_enum_ids
-    }
-    fn canonical_type_instance(
-        &self,
-        ty: Type,
-    ) -> Result<super::anon_structs::IssuedTypeInstanceKey, crate::SemanticBodyExportFailure> {
-        let recurse = |ty| self.canonical_type_instance(ty);
-        Ok(match ty.kind() {
-            TypeKind::I8 => TypeInstanceKey::I8,
-            TypeKind::I16 => TypeInstanceKey::I16,
-            TypeKind::I32 => TypeInstanceKey::I32,
-            TypeKind::I64 => TypeInstanceKey::I64,
-            TypeKind::U8 => TypeInstanceKey::U8,
-            TypeKind::U16 => TypeInstanceKey::U16,
-            TypeKind::U32 => TypeInstanceKey::U32,
-            TypeKind::U64 => TypeInstanceKey::U64,
-            TypeKind::Bool => TypeInstanceKey::Bool,
-            TypeKind::Unit => TypeInstanceKey::Unit,
-            TypeKind::Never => TypeInstanceKey::Never,
-            TypeKind::ComptimeType => TypeInstanceKey::ComptimeType,
-            TypeKind::Array(id) => {
-                let (element, len) = self.type_pool.array_def(id);
-                TypeInstanceKey::Array {
-                    element: Node::new(recurse(element)?),
-                    len,
-                }
-            }
-            TypeKind::PtrConst(id) => {
-                TypeInstanceKey::PtrConst(Node::new(recurse(self.type_pool.ptr_const_def(id))?))
-            }
-            TypeKind::PtrMut(id) => {
-                TypeInstanceKey::PtrMut(Node::new(recurse(self.type_pool.ptr_mut_def(id))?))
-            }
-            TypeKind::Struct(id) => match self.body_struct_identity(id)? {
-                crate::NominalInstanceKey::Builtin { kind, name } => {
-                    TypeInstanceKey::BuiltinNominal { kind, name }
-                }
-                identity => TypeInstanceKey::Nominal(identity),
-            },
-            TypeKind::Enum(id) => match self.body_enum_identity(id)? {
-                crate::NominalInstanceKey::Builtin { kind, name } => {
-                    TypeInstanceKey::BuiltinNominal { kind, name }
-                }
-                identity => TypeInstanceKey::Nominal(identity),
-            },
-            TypeKind::Module(id) => {
-                let (token, _) = self
-                    .module_tokens
-                    .borrow()
-                    .get(&id)
-                    .cloned()
-                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
-                TypeInstanceKey::Module(token)
-            }
-            TypeKind::Error => {
-                return Err(crate::SemanticBodyExportFailure::MissingStableIdentity);
-            }
-        })
-    }
-    fn canonical_argument_value(
-        &self,
-        value: ConstValue,
-    ) -> Result<
-        CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
-        crate::SemanticBodyExportFailure,
-    > {
-        Ok(match value {
-            ConstValue::Integer(value) => CanonicalArgumentValue::Integer(value),
-            ConstValue::Bool(value) => CanonicalArgumentValue::Bool(value),
-            ConstValue::Type(ty) => {
-                CanonicalArgumentValue::Type(Node::new(self.canonical_type_instance(ty)?))
-            }
-            ConstValue::Function(symbol) => CanonicalArgumentValue::Function(Node::new(
-                FunctionInstanceKey::Definition(self.function_identity(symbol.spur())?),
-            )),
-            ConstValue::String(symbol) => {
-                CanonicalArgumentValue::String(self.interner.resolve(&symbol.spur()).into())
-            }
-            ConstValue::Unit => CanonicalArgumentValue::Unit,
-        })
-    }
-    fn function_identity(
-        &self,
-        symbol: Spur,
-    ) -> Result<SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
-        let token = self
-            .function_token_for_symbol(symbol)
-            .map(|(token, _)| token);
-        token.ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)
-    }
+
     fn comptime_type_param_flags(&self, function: &FunctionCallInfo) -> Vec<bool> {
         if let Some(flags) = self
             .durable_comptime_type_flags
@@ -4661,6 +4545,7 @@ where
         assert_eq!(flags.len(), function.params.len());
         flags
     }
+
     fn function_param_type_syntax(
         &self,
         function: &FunctionCallInfo,
@@ -4690,6 +4575,7 @@ where
             root,
         })
     }
+
     fn function_return_type_syntax(
         &self,
         function: &FunctionCallInfo,
@@ -4718,12 +4604,14 @@ where
             root: *return_type,
         })
     }
+
     fn function_signature_root_file(&self, function: &FunctionCallInfo) -> Option<FileId> {
         self.durable_signature_files
             .borrow()
             .get(&function.params)
             .copied()
     }
+
     fn reduce_external_comptime_call(
         &mut self,
         name: Spur,
@@ -4900,122 +4788,64 @@ where
         }
         Some(Ok(value))
     }
-    fn stable_definition_symbol_component(&self, token: &SemanticDefinitionToken) -> String {
-        format!("d{}-{}", token.issuer(), token.slot())
-    }
-    fn stable_module_symbol_component(&self, token: &SemanticModuleToken) -> String {
-        format!("m{}-{}", token.issuer(), token.slot())
-    }
-    fn resolve_body_type(&mut self, syntax: RirTypeSyntaxRef, span: Span) -> CompileResult<Type> {
-        self.resolve_body_type_with_substitutions(syntax, span, None, None)
-    }
-    fn resolve_body_type_with_substitutions(
-        &mut self,
-        syntax: RirTypeSyntaxRef,
-        span: Span,
-        type_substitutions: Option<&AHashMap<Spur, Type>>,
-        value_substitutions: Option<&AHashMap<Spur, ConstValue>>,
-    ) -> CompileResult<Type> {
-        let syntax = super::fact_mode::StructuredTypeSyntax {
-            arena: self.rir.rir().type_syntax().clone(),
-            root: syntax,
-        };
-        let interner = Arc::clone(&self.interner);
-        OrdinaryBodyAnalysisHost::resolve_structured_type_syntax(
-            self,
-            StructuredTypeSyntaxRequest {
-                syntax: &syntax,
-                root_file: span.file_id,
-                span,
-                type_substitutions,
-                value_substitutions,
-            },
-        )
-        .map_err(|failure| semantic_type_syntax_compile_error(&interner, failure, span))
-    }
-    fn replace_active_anonymous_producer(
-        &mut self,
-        producer: Option<super::anon_structs::IssuedStableProducerId>,
-    ) -> Option<super::anon_structs::IssuedStableProducerId> {
-        std::mem::replace(&mut self.active_anonymous_producer, producer)
-    }
-    fn body_rir_ref(&self) -> &Rir {
-        self.rir.rir()
-    }
-    fn body_inline_ctor_head_candidates(&self) -> usize {
-        self.rir.rir_index().inline_ctor_head_candidates()
-    }
-    fn active_anonymous_producer(&self) -> Option<&super::anon_structs::IssuedStableProducerId> {
-        self.active_anonymous_producer.as_ref()
-    }
-    fn body_declaration_type_observer(
-        &self,
-    ) -> Option<&(
-        FileId,
-        String,
-        Option<String>,
-        DeclarationTypeDependencySourceKind,
-        DeclarationTypeDependencyKind,
-    )> {
-        None
-    }
-    fn body_analysis_work_mut(&mut self) -> &mut BodyAnalysisWork {
-        &mut self.body_work
-    }
-    fn record_resolved_declaration_type(&mut self, _ty: Type) {}
-    fn body_analysis_error_recovery(&self) -> bool {
-        false
-    }
-    fn body_analysis_first_recovered_error(&self) -> Option<CompileError> {
-        self.recovered_errors.first().cloned()
-    }
-    fn body_analysis_recovered_errors_mut(&mut self) -> &mut Vec<CompileError> {
-        &mut self.recovered_errors
-    }
+
     fn function_info(&self, name: Spur) -> Option<FunctionCallInfo> {
         self.function_info_for_symbol(name)
     }
+
     fn function_body_info(&self, name: Spur) -> Option<FunctionInfo> {
         self.endpoint.endpoint_function_info(name)
     }
+
     fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
         self.call_value_const(file, name)
     }
+
     fn source_function_name(&self, name: Spur) -> Spur {
         self.endpoint.endpoint_source_function_name(name)
     }
+
     fn resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
         self.function_for_file_symbol(file, name)
     }
+
     fn module_def(&self, module: ModuleId) -> ModuleDef {
         self.calls
             .module_def(module)
             .expect("provider body module must be registered before use")
     }
+
     fn struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
         self.nominal_type_for_symbol(file, name)?.as_struct()
     }
+
     fn builtin_struct(&self, name: Spur) -> Option<StructId> {
         self.endpoint.endpoint_builtin_or_generated_struct(name)
     }
+
     fn target(&self) -> Target {
         self.target
     }
+
     fn builtin_arch_id(&self) -> Option<EnumId> {
         self.intern_name("Arch")
             .and_then(|symbol| self.endpoint.endpoint_builtin_enum(symbol))
     }
+
     fn builtin_os_id(&self) -> Option<EnumId> {
         self.intern_name("Os")
             .and_then(|symbol| self.endpoint.endpoint_builtin_enum(symbol))
     }
+
     fn builtin_data_model_id(&self) -> Option<EnumId> {
         self.intern_name("DataModel")
             .and_then(|symbol| self.endpoint.endpoint_builtin_enum(symbol))
     }
+
     fn destructor_span(&self, _struct_id: StructId) -> Option<Span> {
         None
     }
+
     fn infectious_linear_reason(&self, struct_id: StructId) -> Option<(String, String)> {
         let ty = Type::new_struct(struct_id);
         let explicitly_linear = self
@@ -5044,37 +4874,7 @@ where
             .find(|field| self.type_pool.type_carries_linear(field.ty))
             .map(|field| (field.name.clone(), self.friendly_type_display(field.ty)))
     }
-    fn well_known_option(&self, payload: Type) -> Option<Type> {
-        self.endpoint.well_known_option_for_payload(payload)
-    }
-    fn set_anon_struct_type_subst(&mut self, struct_id: StructId, subst: AHashMap<Spur, Type>) {
-        self.anon_struct_type_subst.insert(struct_id, subst);
-    }
-    fn anon_struct_type_subst(&self, struct_id: StructId) -> AHashMap<Spur, Type> {
-        self.anon_struct_type_subst
-            .get(&struct_id)
-            .cloned()
-            .unwrap_or_default()
-    }
-    fn anon_struct_captured_values(&self, struct_id: StructId) -> AHashMap<Spur, ConstValue> {
-        self.anon_struct_captured_values
-            .get(&struct_id)
-            .cloned()
-            .unwrap_or_default()
-    }
-    fn body_dependency_observer(&self) -> Option<super::AnalyzedBodyOwnerEvent> {
-        None
-    }
-    fn record_body_named_dependency(&mut self, _target: super::NamedConstDependencyTargetEvent) {}
-    fn record_body_callable_dependency(&mut self, _symbol: Spur) {}
-    fn record_specialization_dependency(
-        &mut self,
-        _identity: FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
-    ) {
-    }
-    fn intern_array_type(&mut self, element: Type, length: u64) -> ArrayTypeId {
-        self.type_pool.intern_array_from_type(element, length)
-    }
+
     fn require_preview(
         &self,
         feature: rue_error::PreviewFeature,
@@ -5098,23 +4898,17 @@ where
             )))
         }
     }
+
     fn declaration_binding_active(&self) -> bool {
         false
     }
+
     fn known_linear_during_binding(&self, _ty: Type) -> Option<bool> {
         None
     }
+
     fn known_drop_glue_during_binding(&self, _ty: Type) -> Option<bool> {
         None
-    }
-    fn has_ctor_type_display(&self, ty: Type) -> bool {
-        self.ctor_displays.contains_key(&ty)
-    }
-    fn record_body_ctor_type_display(&mut self, ty: Type, display: String) {
-        self.ctor_displays.insert(ty, display);
-    }
-    fn friendly_type_display(&self, ty: Type) -> String {
-        Self::friendly_type_display(self, ty)
     }
 
     fn trusted_try_producer(&self, ty: Type) -> Option<super::anon_structs::TrustedTryProducer> {
@@ -5132,6 +4926,7 @@ where
             None => None,
         }
     }
+
     fn resolve_canonical_import(&self, import_path: &str, span: Span) -> CompileResult<ModuleId> {
         let target = self
             .source
@@ -5153,9 +4948,380 @@ where
                 )
             })
     }
+}
+
+impl<P, S, K, M> AnonymousNominalLedger for ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    fn allocate_method_params(
+        &mut self,
+        names: impl IntoIterator<Item = Spur>,
+        types: impl IntoIterator<Item = Type>,
+        modes: impl IntoIterator<Item = RirParamMode>,
+        comptime: impl IntoIterator<Item = bool>,
+    ) -> ParamRange {
+        self.state.allocate_params(names, types, modes, comptime)
+    }
+
+    fn install_anonymous_method(&mut self, key: (StructId, Spur), info: MethodInfo) {
+        self.anonymous_methods
+            .borrow_mut()
+            .insert(key, MethodCallInfo::from_body(info));
+    }
+
+    fn generated_structs(&self) -> &AHashMap<Spur, StructId> {
+        &self.generated_structs
+    }
+
+    fn generated_structs_mut(&mut self) -> &mut AHashMap<Spur, StructId> {
+        &mut self.generated_structs
+    }
+
+    fn generated_enums_mut(&mut self) -> &mut AHashMap<Spur, EnumId> {
+        &mut self.generated_enums
+    }
+
+    fn anonymous_struct_id(
+        &self,
+        identity: &super::anon_structs::IssuedAnonymousNominalKey,
+    ) -> Option<StructId> {
+        self.anon_struct_identities
+            .get(identity)
+            .copied()
+            .or_else(|| {
+                self.consulted_anonymous_types
+                    .borrow()
+                    .iter()
+                    .find_map(|(ty, candidate)| {
+                        (candidate.with_canonical_producer().as_ref()
+                            == identity.with_canonical_producer().as_ref())
+                        .then(|| ty.as_struct())
+                        .flatten()
+                    })
+            })
+    }
+
+    fn anonymous_enum_id(
+        &self,
+        identity: &super::anon_structs::IssuedAnonymousNominalKey,
+    ) -> Option<EnumId> {
+        self.anon_enum_identities
+            .get(identity)
+            .copied()
+            .or_else(|| {
+                self.consulted_anonymous_types
+                    .borrow()
+                    .iter()
+                    .find_map(|(ty, candidate)| {
+                        (candidate.with_canonical_producer().as_ref()
+                            == identity.with_canonical_producer().as_ref())
+                        .then(|| ty.as_enum())
+                        .flatten()
+                    })
+            })
+    }
+
+    fn anonymous_struct_identities_mut(
+        &mut self,
+    ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId> {
+        &mut self.anon_struct_identities
+    }
+
+    fn anonymous_enum_identities_mut(
+        &mut self,
+    ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId> {
+        &mut self.anon_enum_identities
+    }
+
+    fn anonymous_digest_owner(
+        &self,
+        digest: u128,
+    ) -> Option<&super::anon_structs::IssuedAnonymousNominalKey> {
+        self.anonymous_digest_owners.get(&digest)
+    }
+
+    fn install_anonymous_digest_owner(
+        &mut self,
+        digest: u128,
+        identity: super::anon_structs::IssuedAnonymousNominalKey,
+    ) {
+        self.anonymous_digest_owners.insert(digest, identity);
+    }
+
+    #[cfg(test)]
+    fn forced_anonymous_digest(
+        &self,
+        _identity: &super::anon_structs::IssuedAnonymousNominalKey,
+    ) -> Option<u128> {
+        None
+    }
+
+    fn install_canonical_anonymous_type(
+        &mut self,
+        ty: Type,
+        identity: super::anon_structs::IssuedAnonymousNominalKey,
+    ) {
+        self.canonical_anonymous_types.insert(ty, identity);
+    }
+
+    fn anonymous_struct_methods_mut(
+        &mut self,
+    ) -> &mut AHashMap<StructId, Vec<super::AnonMethodSig>> {
+        &mut self.anon_struct_method_sigs
+    }
+
+    fn anonymous_struct_captures_mut(
+        &mut self,
+    ) -> &mut AHashMap<StructId, AHashMap<Spur, ConstValue>> {
+        &mut self.anon_struct_captured_values
+    }
+
+    fn anonymous_struct_ids_mut(&mut self) -> &mut AHashSet<StructId> {
+        &mut self.anonymous_struct_ids
+    }
+
+    fn anonymous_enum_ids_mut(&mut self) -> &mut AHashSet<EnumId> {
+        &mut self.anonymous_enum_ids
+    }
+
+    fn canonical_type_instance(
+        &self,
+        ty: Type,
+    ) -> Result<super::anon_structs::IssuedTypeInstanceKey, crate::SemanticBodyExportFailure> {
+        let recurse = |ty| self.canonical_type_instance(ty);
+        Ok(match ty.kind() {
+            TypeKind::I8 => TypeInstanceKey::I8,
+            TypeKind::I16 => TypeInstanceKey::I16,
+            TypeKind::I32 => TypeInstanceKey::I32,
+            TypeKind::I64 => TypeInstanceKey::I64,
+            TypeKind::U8 => TypeInstanceKey::U8,
+            TypeKind::U16 => TypeInstanceKey::U16,
+            TypeKind::U32 => TypeInstanceKey::U32,
+            TypeKind::U64 => TypeInstanceKey::U64,
+            TypeKind::Bool => TypeInstanceKey::Bool,
+            TypeKind::Unit => TypeInstanceKey::Unit,
+            TypeKind::Never => TypeInstanceKey::Never,
+            TypeKind::ComptimeType => TypeInstanceKey::ComptimeType,
+            TypeKind::Array(id) => {
+                let (element, len) = self.type_pool.array_def(id);
+                TypeInstanceKey::Array {
+                    element: Node::new(recurse(element)?),
+                    len,
+                }
+            }
+            TypeKind::PtrConst(id) => {
+                TypeInstanceKey::PtrConst(Node::new(recurse(self.type_pool.ptr_const_def(id))?))
+            }
+            TypeKind::PtrMut(id) => {
+                TypeInstanceKey::PtrMut(Node::new(recurse(self.type_pool.ptr_mut_def(id))?))
+            }
+            TypeKind::Struct(id) => match self.body_struct_identity(id)? {
+                crate::NominalInstanceKey::Builtin { kind, name } => {
+                    TypeInstanceKey::BuiltinNominal { kind, name }
+                }
+                identity => TypeInstanceKey::Nominal(identity),
+            },
+            TypeKind::Enum(id) => match self.body_enum_identity(id)? {
+                crate::NominalInstanceKey::Builtin { kind, name } => {
+                    TypeInstanceKey::BuiltinNominal { kind, name }
+                }
+                identity => TypeInstanceKey::Nominal(identity),
+            },
+            TypeKind::Module(id) => {
+                let (token, _) = self
+                    .module_tokens
+                    .borrow()
+                    .get(&id)
+                    .cloned()
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                TypeInstanceKey::Module(token)
+            }
+            TypeKind::Error => {
+                return Err(crate::SemanticBodyExportFailure::MissingStableIdentity);
+            }
+        })
+    }
+
+    fn canonical_argument_value(
+        &self,
+        value: ConstValue,
+    ) -> Result<
+        CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        Ok(match value {
+            ConstValue::Integer(value) => CanonicalArgumentValue::Integer(value),
+            ConstValue::Bool(value) => CanonicalArgumentValue::Bool(value),
+            ConstValue::Type(ty) => {
+                CanonicalArgumentValue::Type(Node::new(self.canonical_type_instance(ty)?))
+            }
+            ConstValue::Function(symbol) => CanonicalArgumentValue::Function(Node::new(
+                FunctionInstanceKey::Definition(self.function_identity(symbol.spur())?),
+            )),
+            ConstValue::String(symbol) => {
+                CanonicalArgumentValue::String(self.interner.resolve(&symbol.spur()).into())
+            }
+            ConstValue::Unit => CanonicalArgumentValue::Unit,
+        })
+    }
+
+    fn function_identity(
+        &self,
+        symbol: Spur,
+    ) -> Result<SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
+        let token = self
+            .function_token_for_symbol(symbol)
+            .map(|(token, _)| token);
+        token.ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)
+    }
+
+    fn stable_definition_symbol_component(&self, token: &SemanticDefinitionToken) -> String {
+        format!("d{}-{}", token.issuer(), token.slot())
+    }
+
+    fn stable_module_symbol_component(&self, token: &SemanticModuleToken) -> String {
+        format!("m{}-{}", token.issuer(), token.slot())
+    }
+
+    fn replace_active_anonymous_producer(
+        &mut self,
+        producer: Option<super::anon_structs::IssuedStableProducerId>,
+    ) -> Option<super::anon_structs::IssuedStableProducerId> {
+        std::mem::replace(&mut self.active_anonymous_producer, producer)
+    }
+
+    fn active_anonymous_producer(&self) -> Option<&super::anon_structs::IssuedStableProducerId> {
+        self.active_anonymous_producer.as_ref()
+    }
+
+    fn set_anon_struct_type_subst(&mut self, struct_id: StructId, subst: AHashMap<Spur, Type>) {
+        self.anon_struct_type_subst.insert(struct_id, subst);
+    }
+
+    fn anon_struct_type_subst(&self, struct_id: StructId) -> AHashMap<Spur, Type> {
+        self.anon_struct_type_subst
+            .get(&struct_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn anon_struct_captured_values(&self, struct_id: StructId) -> AHashMap<Spur, ConstValue> {
+        self.anon_struct_captured_values
+            .get(&struct_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+impl<P, S, K, M> AnalysisLedgers for ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    fn record_expression_analysis_breakdown(&mut self, breakdown: ExpressionAnalysisBreakdown) {
+        self.expression_breakdown = Some(breakdown);
+    }
+
+    fn body_declaration_type_observer(
+        &self,
+    ) -> Option<&(
+        FileId,
+        String,
+        Option<String>,
+        DeclarationTypeDependencySourceKind,
+        DeclarationTypeDependencyKind,
+    )> {
+        None
+    }
+
+    fn body_analysis_work_mut(&mut self) -> &mut BodyAnalysisWork {
+        &mut self.body_work
+    }
+
+    fn record_resolved_declaration_type(&mut self, _ty: Type) {}
+
+    fn body_analysis_error_recovery(&self) -> bool {
+        false
+    }
+
+    fn body_analysis_first_recovered_error(&self) -> Option<CompileError> {
+        self.recovered_errors.first().cloned()
+    }
+
+    fn body_analysis_recovered_errors_mut(&mut self) -> &mut Vec<CompileError> {
+        &mut self.recovered_errors
+    }
+
+    fn body_dependency_observer(&self) -> Option<super::AnalyzedBodyOwnerEvent> {
+        None
+    }
+
+    fn record_body_named_dependency(&mut self, _target: super::NamedConstDependencyTargetEvent) {}
+
+    fn record_body_callable_dependency(&mut self, _symbol: Spur) {}
+
+    fn record_specialization_dependency(
+        &mut self,
+        _identity: FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+    ) {
+    }
+
     fn deferred_ownership_gates_mut(&mut self) -> &mut Vec<super::DeferredOwnershipGate> {
         &mut self.deferred_ownership
     }
+}
+
+impl<P, S, K, M> DiagnosticPresentation for ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    fn has_ctor_type_display(&self, ty: Type) -> bool {
+        self.ctor_displays.contains_key(&ty)
+    }
+
+    fn record_body_ctor_type_display(&mut self, ty: Type, display: String) {
+        self.ctor_displays.insert(ty, display);
+    }
+
+    fn friendly_type_display(&self, ty: Type) -> String {
+        Self::friendly_type_display(self, ty)
+    }
+}
+
+/// The umbrella host contract; the capability impls above supply
+/// every method, so nothing remains to implement here.
+impl<P, S, K, M> OrdinaryBodyAnalysisHost for ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
 }
 
 /// Run the canonical ordinary expression engine over one exact local RIR.
