@@ -59,8 +59,8 @@ impl LivenessAdapter for X86LivenessAdapter<'_> {
         defs(inst)
     }
 
-    fn clobbers(&self, inst: &Self::Inst) -> Vec<Self::Reg> {
-        inst.clobbers().to_vec()
+    fn clobbers(&self, inst: &Self::Inst) -> &'static [Self::Reg] {
+        inst.clobbers()
     }
 
     fn is_non_returning(&self, inst: &Self::Inst) -> bool {
@@ -469,6 +469,72 @@ pub fn defs(inst: &X86Inst) -> VRegList {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clobbers_are_borrowed_static_slices() {
+        let mir = X86Mir::new();
+        let adapter = X86LivenessAdapter { mir: &mir };
+        let empty = X86Inst::Ret;
+        let call = X86Inst::call(7);
+        let div = X86Inst::IdivR {
+            src: Operand::Physical(Reg::Rcx),
+        };
+        let syscall = X86Inst::Syscall;
+
+        // This compile-time signature check protects the ownership contract:
+        // the adapter cannot satisfy it by returning a temporary Vec.
+        fn require_static(_: &'static [Reg]) {}
+        require_static(adapter.clobbers(&empty));
+        require_static(adapter.clobbers(&call));
+        require_static(adapter.clobbers(&div));
+        require_static(adapter.clobbers(&syscall));
+
+        assert!(adapter.clobbers(&empty).is_empty());
+        let call_clobbers = adapter.clobbers(&call);
+        assert_eq!(
+            call_clobbers,
+            &[
+                Reg::Rax,
+                Reg::Rcx,
+                Reg::Rdx,
+                Reg::Rsi,
+                Reg::Rdi,
+                Reg::R8,
+                Reg::R9,
+                Reg::R10,
+                Reg::R11,
+            ]
+        );
+        assert!(!call_clobbers.contains(&Reg::Rsp));
+        assert!(!call_clobbers.contains(&Reg::Rbp));
+        assert!(!call_clobbers.contains(&Reg::R12));
+        assert_eq!(adapter.clobbers(&div), &[Reg::Rax, Reg::Rdx]);
+        let syscall_clobbers = adapter.clobbers(&syscall);
+        assert_eq!(syscall_clobbers, &[Reg::Rax, Reg::Rcx, Reg::R11]);
+        assert!(!syscall_clobbers.contains(&Reg::Rsp));
+        assert!(!syscall_clobbers.contains(&Reg::Rbp));
+        assert!(!syscall_clobbers.contains(&Reg::R12));
+
+        let mut mir = X86Mir::new();
+        mir.push(empty);
+        mir.push(call);
+        mir.push(div);
+        mir.push(syscall);
+        let info = analyze(&mir);
+        assert!(info.clobbers_at(0).is_empty());
+        assert!(std::ptr::eq(
+            info.clobbers_at(1),
+            mir.instructions()[1].clobbers()
+        ));
+        assert!(std::ptr::eq(
+            info.clobbers_at(2),
+            mir.instructions()[2].clobbers()
+        ));
+        assert!(std::ptr::eq(
+            info.clobbers_at(3),
+            mir.instructions()[3].clobbers()
+        ));
+    }
 
     #[test]
     fn test_simple_liveness() {

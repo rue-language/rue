@@ -379,13 +379,13 @@ impl LiveRange {
 /// This struct is target-independent and holds all the information needed
 /// by the register allocator. Each backend's `analyze()` function populates
 /// an instance of this type.
-pub struct LivenessInfo<Reg: Copy + Eq + std::hash::Hash> {
+pub struct LivenessInfo<Reg: Copy + Eq + std::hash::Hash + 'static> {
     /// Live range for each virtual register (indexed by vreg index).
     /// Uses dense Vec storage since VReg indices are contiguous.
     pub ranges: IndexMap<VReg, Option<LiveRange>>,
     /// For each instruction index, the physical registers clobbered by that instruction.
     /// This is used to prevent allocating vregs to registers that would be clobbered.
-    pub clobbers_at: Vec<Vec<Reg>>,
+    pub clobbers_at: Vec<&'static [Reg]>,
     /// For each instruction index, whether control can reach the instruction
     /// after it once it executes.
     ///
@@ -404,7 +404,7 @@ pub struct LivenessInfo<Reg: Copy + Eq + std::hash::Hash> {
     pub vreg_classes: VRegClasses,
 }
 
-impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
+impl<Reg: Copy + Eq + std::hash::Hash + 'static> LivenessInfo<Reg> {
     /// Create a new empty liveness info.
     pub fn new() -> Self {
         Self {
@@ -460,7 +460,7 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
 
     /// Get the physical registers clobbered at a given instruction index.
     pub fn clobbers_at(&self, inst_idx: usize) -> &[Reg] {
-        &self.clobbers_at[inst_idx]
+        self.clobbers_at[inst_idx]
     }
 
     /// Whether the instruction at `inst_idx` never returns control to the
@@ -2652,6 +2652,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rewrite_buffer_reuses_each_lane_after_drain_and_clear() {
+        let mut buffer = RewriteBuffer::new();
+        buffer.push_before("before-1");
+        buffer.push_main("main-1");
+        buffer.push_after("after-1");
+        let capacities = (
+            buffer.before.capacity(),
+            buffer.main.capacity(),
+            buffer.after.capacity(),
+        );
+
+        assert_eq!(
+            buffer.drain_ordered().collect::<Vec<_>>(),
+            ["before-1", "main-1", "after-1"]
+        );
+        assert_eq!(
+            (
+                buffer.before.len(),
+                buffer.main.len(),
+                buffer.after.len(),
+                buffer.before.capacity(),
+                buffer.main.capacity(),
+                buffer.after.capacity(),
+            ),
+            (0, 0, 0, capacities.0, capacities.1, capacities.2),
+        );
+
+        buffer.push_after("after-2");
+        buffer.push_before("before-2");
+        buffer.push_main("main-2");
+        assert_eq!(
+            (
+                buffer.before.capacity(),
+                buffer.main.capacity(),
+                buffer.after.capacity(),
+            ),
+            capacities,
+        );
+        assert_eq!(
+            buffer.drain_ordered().collect::<Vec<_>>(),
+            ["before-2", "main-2", "after-2"]
+        );
+
+        buffer.push_before("before-3");
+        buffer.push_main("main-3");
+        buffer.push_after("after-3");
+        buffer.clear();
+        assert_eq!(
+            (buffer.before.len(), buffer.main.len(), buffer.after.len()),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            (
+                buffer.before.capacity(),
+                buffer.main.capacity(),
+                buffer.after.capacity(),
+            ),
+            capacities,
+        );
+    }
+
     // ========================================
     // LiveRange tests
     // ========================================
@@ -2701,6 +2763,53 @@ mod tests {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     struct TestReg(u32);
 
+    static NO_CLOBBERS: &[TestReg] = &[];
+    static CLOBBERS_REG0: &[TestReg] = &[TestReg(0)];
+    static CLOBBERS_REG9: &[TestReg] = &[TestReg(9)];
+    static CLOBBERS_REG9_REG8: &[TestReg] = &[TestReg(9), TestReg(8)];
+
+    static REG0_AT_2: &[&'static [TestReg]] = &[
+        NO_CLOBBERS,
+        NO_CLOBBERS,
+        CLOBBERS_REG0,
+        NO_CLOBBERS,
+        NO_CLOBBERS,
+    ];
+    static REG0_AT_1_AND_3: &[&'static [TestReg]] = &[
+        NO_CLOBBERS,
+        CLOBBERS_REG0,
+        NO_CLOBBERS,
+        CLOBBERS_REG0,
+        NO_CLOBBERS,
+    ];
+    static REG0_AT_1: &[&'static [TestReg]] = &[NO_CLOBBERS, CLOBBERS_REG0];
+    static REG9_REG8_AT_2: &[&'static [TestReg]] = &[
+        NO_CLOBBERS,
+        NO_CLOBBERS,
+        CLOBBERS_REG9_REG8,
+        NO_CLOBBERS,
+        NO_CLOBBERS,
+    ];
+    static REG9_AT_2: &[&'static [TestReg]] = &[
+        NO_CLOBBERS,
+        NO_CLOBBERS,
+        CLOBBERS_REG9,
+        NO_CLOBBERS,
+        NO_CLOBBERS,
+    ];
+    static REG9_AT_2_AND_7: &[&'static [TestReg]] = &[
+        NO_CLOBBERS,
+        NO_CLOBBERS,
+        CLOBBERS_REG9,
+        NO_CLOBBERS,
+        NO_CLOBBERS,
+        NO_CLOBBERS,
+        NO_CLOBBERS,
+        CLOBBERS_REG9,
+        NO_CLOBBERS,
+        NO_CLOBBERS,
+    ];
+
     fn make_liveness(ranges: Vec<(u32, usize, usize)>) -> LivenessInfo<TestReg> {
         // Find max vreg index and max instruction index
         let max_vreg = ranges.iter().map(|(v, _, _)| *v).max().unwrap_or(0);
@@ -2712,18 +2821,21 @@ mod tests {
         }
 
         // Initialize clobbers_at based on max instruction index
-        info.clobbers_at = vec![Vec::new(); max_inst + 1];
+        info.clobbers_at = vec![&[]; max_inst + 1];
         info
     }
 
     fn make_liveness_with_clobbers(
         ranges: Vec<(u32, usize, usize)>,
-        clobbers: Vec<(usize, TestReg)>,
+        clobbers: &'static [&'static [TestReg]],
     ) -> LivenessInfo<TestReg> {
         let mut info = make_liveness(ranges);
-        for (idx, reg) in clobbers {
-            info.clobbers_at[idx].push(reg);
-        }
+        assert_eq!(
+            info.clobbers_at.len(),
+            clobbers.len(),
+            "static clobber table must cover the liveness instruction range"
+        );
+        info.clobbers_at = clobbers.to_vec();
         info
     }
 
@@ -2768,7 +2880,7 @@ mod tests {
         // before the guard branch and used after the label, so the trap call at
         // instruction 2 sits textually inside its range — but the trap aborts,
         // so on the path reaching the later use the call never ran.
-        let mut liveness = make_liveness_with_clobbers(vec![(0, 0, 4)], vec![(2, TestReg(0))]);
+        let mut liveness = make_liveness_with_clobbers(vec![(0, 0, 4)], REG0_AT_2);
         mark_non_returning(&mut liveness, &[2]);
         let index = ClobberIndex::build(&liveness, &[TestReg(0)]);
 
@@ -2780,8 +2892,7 @@ mod tests {
     fn clobber_index_still_sees_a_returning_call_beside_a_trap() {
         // A returning call at 1 and a trap at 3: only the returning one can
         // destroy a value whose later uses execute.
-        let mut liveness =
-            make_liveness_with_clobbers(vec![(0, 0, 4)], vec![(1, TestReg(0)), (3, TestReg(0))]);
+        let mut liveness = make_liveness_with_clobbers(vec![(0, 0, 4)], REG0_AT_1_AND_3);
         mark_non_returning(&mut liveness, &[3]);
         let index = ClobberIndex::build(&liveness, &[TestReg(0)]);
 
@@ -2798,10 +2909,7 @@ mod tests {
         // Same allocation shape as `caller_saved_is_preferred_...`, except the
         // clobber site is a never-returning call: now both intervals fit in the
         // caller-saved class and the prologue saves nothing.
-        let mut liveness = make_liveness_with_clobbers(
-            vec![(0, 0, 4), (1, 3, 4)],
-            vec![(2, TestReg(9)), (2, TestReg(8))],
-        );
+        let mut liveness = make_liveness_with_clobbers(vec![(0, 0, 4), (1, 3, 4)], REG9_REG8_AT_2);
         mark_non_returning(&mut liveness, &[2]);
         let file = RegisterFile::gp_only(SaveClasses {
             caller_saved: &[TestReg(9), TestReg(8)],
@@ -2978,7 +3086,7 @@ mod tests {
 
     #[test]
     fn clobber_index_answers_only_for_tracked_registers() {
-        let liveness = make_liveness_with_clobbers(vec![(0, 0, 4)], vec![(2, TestReg(0))]);
+        let liveness = make_liveness_with_clobbers(vec![(0, 0, 4)], REG0_AT_2);
         let index = ClobberIndex::build(&liveness, &[TestReg(0)]);
 
         assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 4)));
@@ -2991,7 +3099,7 @@ mod tests {
 
     #[test]
     fn clobber_index_tolerates_ranges_past_the_last_instruction() {
-        let liveness = make_liveness_with_clobbers(vec![(0, 0, 1)], vec![(1, TestReg(0))]);
+        let liveness = make_liveness_with_clobbers(vec![(0, 0, 1)], REG0_AT_1);
         let index = ClobberIndex::build(&liveness, &[TestReg(0)]);
 
         assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(0, usize::MAX)));
@@ -3001,10 +3109,7 @@ mod tests {
     #[test]
     fn caller_saved_is_preferred_and_call_crossing_intervals_avoid_it() {
         // v0 spans the clobber at instruction 2, v1 does not.
-        let liveness = make_liveness_with_clobbers(
-            vec![(0, 0, 4), (1, 3, 4)],
-            vec![(2, TestReg(9)), (2, TestReg(8))],
-        );
+        let liveness = make_liveness_with_clobbers(vec![(0, 0, 4), (1, 3, 4)], REG9_REG8_AT_2);
         let file = RegisterFile::gp_only(SaveClasses {
             caller_saved: &[TestReg(9), TestReg(8)],
             callee_saved: &[TestReg(0)],
@@ -3046,10 +3151,7 @@ mod tests {
         // its own. Because v0's save is paid either way and TestReg(0) encodes
         // better, the second pass gives v1 the callee-saved register instead
         // (RUE-1227) — at no cost, since the prologue is unchanged.
-        let liveness = make_liveness_with_clobbers(
-            vec![(0, 0, 2), (1, 3, 4)],
-            vec![(2, TestReg(9)), (2, TestReg(8))],
-        );
+        let liveness = make_liveness_with_clobbers(vec![(0, 0, 2), (1, 3, 4)], REG9_REG8_AT_2);
         let file = RegisterFile::gp_only(SaveClasses {
             caller_saved: &[TestReg(9), TestReg(8)],
             callee_saved: &[TestReg(0)],
@@ -3085,8 +3187,7 @@ mod tests {
         // spans the clobber, so the first pass commits no callee-saved
         // register at all, there is no sunk cost to reuse, and the second pass
         // is skipped outright. The prologue stays empty.
-        let liveness =
-            make_liveness_with_clobbers(vec![(0, 0, 1), (1, 3, 4)], vec![(2, TestReg(9))]);
+        let liveness = make_liveness_with_clobbers(vec![(0, 0, 1), (1, 3, 4)], REG9_AT_2);
         let file = RegisterFile::gp_only(SaveClasses {
             caller_saved: &[TestReg(9)],
             callee_saved: &[TestReg(0)],
@@ -3130,10 +3231,8 @@ mod tests {
         // This is exactly why the tiebreak cannot be a one-pass rule that
         // reuses whatever is in the save set so far: at v1 the allocator has
         // not yet seen v2.
-        let liveness = make_liveness_with_clobbers(
-            vec![(0, 0, 2), (1, 3, 5), (2, 4, 9)],
-            vec![(2, TestReg(9)), (7, TestReg(9))],
-        );
+        let liveness =
+            make_liveness_with_clobbers(vec![(0, 0, 2), (1, 3, 5), (2, 4, 9)], REG9_AT_2_AND_7);
         let file = RegisterFile::gp_only(SaveClasses {
             caller_saved: &[TestReg(9)],
             callee_saved: &[TestReg(0), TestReg(1)],
@@ -3170,10 +3269,8 @@ mod tests {
     fn eviction_never_hands_a_clobbered_caller_saved_register_to_a_spanning_interval() {
         // Only a caller-saved register exists, and every interval spans the
         // clobber, so nothing can hold a value: all three must spill.
-        let liveness = make_liveness_with_clobbers(
-            vec![(0, 0, 4), (1, 0, 4), (2, 0, 4)],
-            vec![(2, TestReg(9))],
-        );
+        let liveness =
+            make_liveness_with_clobbers(vec![(0, 0, 4), (1, 0, 4), (2, 0, 4)], REG9_AT_2);
         let file = RegisterFile::gp_only(SaveClasses {
             caller_saved: &[TestReg(9)],
             callee_saved: &[],
