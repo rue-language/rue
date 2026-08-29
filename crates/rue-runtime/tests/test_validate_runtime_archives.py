@@ -134,6 +134,13 @@ class BodyValidationTests(unittest.TestCase):
         root = body("memcpy", bytes.fromhex("488b07ff24d500000000"), [(6, ".rodata.table", 11)])
         validator._validate_bodies(Path("synthetic"), {"memcpy": root}, "elf", 62)
 
+    def test_x86_rodata_function_pointer_is_still_a_call_edge(self):
+        # FF /2 through the same SIB encoding is an indirect call, even when
+        # its function-pointer storage happens to reside in .rodata.
+        root = body("memcpy", bytes.fromhex("488b07ff142500000000"), [(6, ".rodata.function_pointer", 11)])
+        with self.assertRaisesRegex(AssertionError, "unresolved reachable control transfer"):
+            validator._validate_bodies(Path("synthetic"), {"memcpy": root}, "elf", 62)
+
     def test_unresolved_macho_cross_member_control_transfer_is_rejected(self):
         root = body(
             "_memcpy",

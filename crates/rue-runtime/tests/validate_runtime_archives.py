@@ -573,8 +573,10 @@ def _x86_control_transfer_at(code: bytes, index: int, offset: int):
     if opcode != 0xFF or cursor + 1 >= len(code):
         return None
     modrm = code[cursor + 1]
-    if ((modrm >> 3) & 7) not in (2, 4) or modrm >> 6 == 3:
+    operation = (modrm >> 3) & 7
+    if operation not in (2, 4) or modrm >> 6 == 3:
         return None
+    transfer = "indirect-call" if operation == 2 else "indirect-branch"
     # Relocations on indirect calls/jumps name the memory displacement. Find
     # that exact field rather than looking at bytes immediately before offset.
     parsed = _x86_modrm_end(code, cursor + 2, modrm, code[cursor - 1] if cursor > index else 0)
@@ -587,13 +589,13 @@ def _x86_control_transfer_at(code: bytes, index: int, offset: int):
         displacement += 1
         sib = code[cursor + 2]
         if mod == 0 and (sib & 7) == 5:
-            return "call-or-branch" if offset == displacement else None
+            return transfer if offset == displacement else None
     if mod == 0 and rm == 5:
-        return "call-or-branch" if offset == displacement else None
+        return transfer if offset == displacement else None
     if mod == 1:
-        return "call-or-branch" if offset == displacement else None
+        return transfer if offset == displacement else None
     elif mod == 2:
-        return "call-or-branch" if offset == displacement else None
+        return transfer if offset == displacement else None
     else:
         return None
 
@@ -615,7 +617,7 @@ def relocation_is_control_transfer(code: bytes, offset: int, machine: int,
                 # memory displacement and may use absolute/GOT relocations.
                 direct_kinds = (2, 4)
                 indirect_kinds = (2, 9, 10, 11, 41, 42)
-                if transfer == "call-or-branch":
+                if transfer in ("indirect-call", "indirect-branch"):
                     return transfer if relocation_kind in indirect_kinds else None
                 return transfer if relocation_kind in direct_kinds else None
             index = decoded[0]
@@ -691,7 +693,7 @@ def _validate_bodies(path: Path, bodies: dict, expected_format: str,
             # jump table, not a callable edge. It is resolved data even though
             # the machine instruction is an indirect branch; do not mistake it
             # for an unresolved helper call.
-            if transfer == "call-or-branch" and _is_local_data_target(target, expected_format):
+            if transfer == "indirect-branch" and _is_local_data_target(target, expected_format):
                 continue
             normalized = _normalized_target(target, expected_format)
             if normalized in RESERVED_SYMBOLS and symbol in RESERVED_SYMBOLS:
