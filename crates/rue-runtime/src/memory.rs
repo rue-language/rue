@@ -3,6 +3,68 @@
 //! These functions provide the same functionality as libc (memcpy, memmove, etc.)
 //! but are implemented in pure Rust without external dependencies.
 
+const CHUNK_SIZE: usize = core::mem::size_of::<u64>();
+
+// These helpers deliberately use unaligned u64 accesses. The caller contracts
+// below permit arbitrary byte alignment, while `read_unaligned` and
+// `write_unaligned` are defined for every alignment and do not call the
+// reserved memcpy/memmove/memset symbols on the supported targets.
+#[inline(always)]
+unsafe fn read_chunk(src: *const u8) -> u64 {
+    // SAFETY: Every caller has established that the complete chunk is inside
+    // its valid input range. `read_unaligned` places no alignment requirement
+    // on the pointer.
+    unsafe { core::ptr::read_unaligned(src.cast::<u64>()) }
+}
+
+#[inline(always)]
+unsafe fn write_chunk(dst: *mut u8, value: u64) {
+    // SAFETY: Every caller has established that the complete chunk is inside
+    // its valid output range. `write_unaligned` places no alignment
+    // requirement on the pointer.
+    unsafe { core::ptr::write_unaligned(dst.cast::<u64>(), value) }
+}
+
+#[inline(always)]
+unsafe fn copy_forward(mut dst: *mut u8, mut src: *const u8, mut remaining: usize) {
+    while remaining >= CHUNK_SIZE {
+        // SAFETY: The chunk is within both caller-provided ranges.
+        let value = unsafe { read_chunk(src) };
+        // SAFETY: The chunk is within the caller-provided destination range.
+        unsafe { write_chunk(dst, value) };
+        // SAFETY: The remaining range is valid, so advancing by one chunk
+        // stays within the allocation (or one-past its end).
+        dst = unsafe { dst.add(CHUNK_SIZE) };
+        src = unsafe { src.add(CHUNK_SIZE) };
+        remaining -= CHUNK_SIZE;
+    }
+
+    while remaining != 0 {
+        // SAFETY: The tail byte is within both caller-provided ranges.
+        unsafe { *dst = *src };
+        dst = unsafe { dst.add(1) };
+        src = unsafe { src.add(1) };
+        remaining -= 1;
+    }
+}
+
+#[inline(always)]
+unsafe fn copy_backward(dst: *mut u8, src: *const u8, mut remaining: usize) {
+    while remaining >= CHUNK_SIZE {
+        remaining -= CHUNK_SIZE;
+        // SAFETY: The chunk is within both caller-provided ranges.
+        let value = unsafe { read_chunk(src.add(remaining)) };
+        // SAFETY: The chunk is within the caller-provided destination range.
+        unsafe { write_chunk(dst.add(remaining), value) };
+    }
+
+    while remaining != 0 {
+        remaining -= 1;
+        // SAFETY: The tail byte is within both caller-provided ranges.
+        unsafe { *dst.add(remaining) = *src.add(remaining) };
+    }
+}
+
 /// Copy `n` bytes from `src` to `dst`. The memory regions must not overlap.
 ///
 /// # Safety
@@ -12,17 +74,9 @@
 /// - Either pointer may be null when `n == 0`
 /// - The memory regions must not overlap
 pub unsafe fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
-    let mut i = 0;
-    while i < n {
-        // SAFETY: We are within bounds because:
-        // - `i < n` is our loop invariant
-        // - Caller guarantees `dst` is valid for writes of `n` bytes
-        // - Caller guarantees `src` is valid for reads of `n` bytes
-        // - Caller guarantees the regions don't overlap
-        // The byte-by-byte copy is safe because u8 has no alignment requirements.
-        unsafe { *dst.add(i) = *src.add(i) };
-        i += 1;
-    }
+    // SAFETY: The caller upholds the validity and non-overlap requirements;
+    // copy_forward performs alignment-safe chunk and tail accesses.
+    unsafe { copy_forward(dst, src, n) };
     dst
 }
 
@@ -35,31 +89,13 @@ pub unsafe fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
 /// - Either pointer may be null when `n == 0`
 pub unsafe fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     if (dst as usize) < (src as usize) {
-        // Copy forwards when dst is before src (or they don't overlap)
-        let mut i = 0;
-        while i < n {
-            // SAFETY: We are within bounds because:
-            // - `i < n` is our loop invariant
-            // - Caller guarantees `dst` is valid for writes of `n` bytes
-            // - Caller guarantees `src` is valid for reads of `n` bytes
-            // Forward copy is correct when dst < src because we write to lower
-            // addresses before reading from them.
-            unsafe { *dst.add(i) = *src.add(i) };
-            i += 1;
-        }
+        // SAFETY: The caller upholds the validity requirements. Forward copy
+        // is overlap-safe when the destination starts below the source.
+        unsafe { copy_forward(dst, src, n) };
     } else {
-        // Copy backwards to handle overlap when dst >= src
-        let mut i = n;
-        while i > 0 {
-            i -= 1;
-            // SAFETY: We are within bounds because:
-            // - After decrement, `i < n` (we started at n and decremented before use)
-            // - Caller guarantees `dst` is valid for writes of `n` bytes
-            // - Caller guarantees `src` is valid for reads of `n` bytes
-            // Backward copy is correct when dst >= src because we write to higher
-            // addresses before reading from them.
-            unsafe { *dst.add(i) = *src.add(i) };
-        }
+        // SAFETY: The caller upholds the validity requirements. Backward copy
+        // is overlap-safe when the destination starts at or above the source.
+        unsafe { copy_backward(dst, src, n) };
     }
     dst
 }
@@ -72,14 +108,20 @@ pub unsafe fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
 /// - `dst` may be null when `n == 0`
 pub unsafe fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
     let byte = c as u8;
-    let mut i = 0;
-    while i < n {
-        // SAFETY: We are within bounds because:
-        // - `i < n` is our loop invariant
-        // - Caller guarantees `dst` is valid for writes of `n` bytes
-        // The byte write is safe because u8 has no alignment requirements.
-        unsafe { *dst.add(i) = byte };
-        i += 1;
+    let chunk = u64::from_ne_bytes([byte; CHUNK_SIZE]);
+    let mut remaining = n;
+    let mut cursor = dst;
+    while remaining >= CHUNK_SIZE {
+        // SAFETY: The chunk is within the caller-provided destination range.
+        unsafe { write_chunk(cursor, chunk) };
+        cursor = unsafe { cursor.add(CHUNK_SIZE) };
+        remaining -= CHUNK_SIZE;
+    }
+    while remaining != 0 {
+        // SAFETY: The tail byte is within the caller-provided destination range.
+        unsafe { *cursor = byte };
+        cursor = unsafe { cursor.add(1) };
+        remaining -= 1;
     }
     dst
 }
@@ -134,19 +176,38 @@ pub unsafe fn __rue_byte_move(dst: *mut u8, src: *const u8, size: u64) {
 /// - When `n > 0`, both pointers must be non-null and valid for reads of `n` bytes
 /// - Either pointer may be null when `n == 0`
 pub unsafe fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
-    let mut i = 0;
-    while i < n {
-        // SAFETY: We are within bounds because:
-        // - `i < n` is our loop invariant
-        // - Caller guarantees `s1` is valid for reads of `n` bytes
-        // - Caller guarantees `s2` is valid for reads of `n` bytes
-        // The byte reads are safe because u8 has no alignment requirements.
-        let a = unsafe { *s1.add(i) };
-        let b = unsafe { *s2.add(i) };
+    let mut offset = 0;
+    let mut remaining = n;
+    while remaining >= CHUNK_SIZE {
+        // SAFETY: The complete chunk is within both caller-provided ranges.
+        let a = unsafe { read_chunk(s1.add(offset)) };
+        let b = unsafe { read_chunk(s2.add(offset)) };
         if a != b {
-            return (a as i32) - (b as i32);
+            // Locate the first differing byte to preserve memcmp's ordering
+            // and sign contract rather than comparing whole machine words.
+            let mut index = 0;
+            while index < CHUNK_SIZE {
+                // SAFETY: The byte is within the differing chunk.
+                let left = unsafe { *s1.add(offset + index) };
+                let right = unsafe { *s2.add(offset + index) };
+                if left != right {
+                    return i32::from(left) - i32::from(right);
+                }
+                index += 1;
+            }
         }
-        i += 1;
+        offset += CHUNK_SIZE;
+        remaining -= CHUNK_SIZE;
+    }
+    while remaining != 0 {
+        // SAFETY: The tail byte is within both caller-provided ranges.
+        let a = unsafe { *s1.add(offset) };
+        let b = unsafe { *s2.add(offset) };
+        if a != b {
+            return i32::from(a) - i32::from(b);
+        }
+        offset += 1;
+        remaining -= 1;
     }
     0
 }
@@ -163,27 +224,278 @@ pub unsafe fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
 ///
 /// - When `n > 0`, both pointers must be non-null and valid for reads of `n` bytes
 /// - Either pointer may be null when `n == 0`
+#[inline(always)]
 pub unsafe fn bcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
-    let mut i = 0;
-    while i < n {
-        // SAFETY: We are within bounds because:
-        // - `i < n` is our loop invariant
-        // - Caller guarantees `s1` is valid for reads of `n` bytes
-        // - Caller guarantees `s2` is valid for reads of `n` bytes
-        // The byte reads are safe because u8 has no alignment requirements.
-        let a = unsafe { *s1.add(i) };
-        let b = unsafe { *s2.add(i) };
-        if a != b {
+    let mut offset = 0;
+    let mut remaining = n;
+    while remaining >= CHUNK_SIZE {
+        // SAFETY: The complete chunk is within both caller-provided ranges.
+        if unsafe { read_chunk(s1.add(offset)) != read_chunk(s2.add(offset)) } {
             return 1;
         }
-        i += 1;
+        offset += CHUNK_SIZE;
+        remaining -= CHUNK_SIZE;
+    }
+    while remaining != 0 {
+        // SAFETY: The tail byte is within both caller-provided ranges.
+        if unsafe { *s1.add(offset) != *s2.add(offset) } {
+            return 1;
+        }
+        offset += 1;
+        remaining -= 1;
     }
     0
 }
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
+    use self::std::vec;
+    use self::std::vec::Vec;
     use super::*;
+
+    #[test]
+    fn memcpy_handles_lengths_tails_and_all_alignments() {
+        for length in 0..=(CHUNK_SIZE * 4 + 3) {
+            for source_offset in 0..CHUNK_SIZE {
+                for destination_offset in 0..CHUNK_SIZE {
+                    let source = (0..128).map(|index| index as u8).collect::<Vec<_>>();
+                    let mut destination = vec![0xa5; 128];
+                    let destination_ptr =
+                        unsafe { destination.as_mut_ptr().add(destination_offset) };
+                    // SAFETY: Both slices contain the requested ranges and do
+                    // not overlap.
+                    let returned = unsafe {
+                        memcpy(destination_ptr, source.as_ptr().add(source_offset), length)
+                    };
+                    assert_eq!(returned, destination_ptr);
+                    assert!(
+                        destination[..destination_offset]
+                            .iter()
+                            .all(|&byte| byte == 0xa5)
+                    );
+                    assert_eq!(
+                        &destination[destination_offset..destination_offset + length],
+                        &source[source_offset..source_offset + length]
+                    );
+                    assert!(
+                        destination[destination_offset + length..]
+                            .iter()
+                            .all(|&byte| byte == 0xa5)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn memset_handles_lengths_tails_and_all_alignments() {
+        for length in 0..=(CHUNK_SIZE * 4 + 3) {
+            for destination_offset in 0..CHUNK_SIZE {
+                let mut destination = vec![0xa5; 128];
+                // SAFETY: The destination contains the requested range.
+                let destination_ptr = unsafe { destination.as_mut_ptr().add(destination_offset) };
+                let returned = unsafe { memset(destination_ptr, -0x12, length) };
+                assert_eq!(returned, destination_ptr);
+                assert!(
+                    destination[..destination_offset]
+                        .iter()
+                        .all(|&byte| byte == 0xa5)
+                );
+                assert!(
+                    destination[destination_offset..destination_offset + length]
+                        .iter()
+                        .all(|&byte| byte == 0xee)
+                );
+                assert!(
+                    destination[destination_offset + length..]
+                        .iter()
+                        .all(|&byte| byte == 0xa5)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn memmove_handles_overlap_directions_distances_and_tails() {
+        for length in 0..=(CHUNK_SIZE * 4 + 3) {
+            for distance in 1..=(CHUNK_SIZE + 2) {
+                for destination_after_source in [false, true] {
+                    let source_start = CHUNK_SIZE + 8;
+                    let destination_start = if destination_after_source {
+                        source_start + distance
+                    } else {
+                        source_start - distance
+                    };
+                    let mut actual = (0..192).map(|index| index as u8).collect::<Vec<_>>();
+                    let mut expected = actual.clone();
+                    expected.copy_within(source_start..source_start + length, destination_start);
+                    let destination_ptr = unsafe { actual.as_mut_ptr().add(destination_start) };
+                    // SAFETY: Both ranges are within the backing allocation.
+                    let returned = unsafe {
+                        memmove(destination_ptr, actual.as_ptr().add(source_start), length)
+                    };
+                    assert_eq!(returned, destination_ptr);
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn memmove_handles_same_pointer_and_disjoint_allocations() {
+        for length in 0..=(CHUNK_SIZE * 4 + 3) {
+            let source_start = CHUNK_SIZE + 3;
+            let mut same = (0..128).map(|index| index as u8).collect::<Vec<_>>();
+            let expected = same.clone();
+            let pointer = unsafe { same.as_mut_ptr().add(source_start) };
+            // SAFETY: A zero-length or identical source/destination range is
+            // valid under the memmove contract.
+            let returned = unsafe { memmove(pointer, pointer, length) };
+            assert_eq!(returned, pointer);
+            assert_eq!(same, expected);
+
+            let source = (0..128).map(|index| index as u8).collect::<Vec<_>>();
+            let mut destination = vec![0xa5; 128];
+            let destination_start = CHUNK_SIZE * 2 + 1;
+            let destination_ptr = unsafe { destination.as_mut_ptr().add(destination_start) };
+            // SAFETY: These are distinct allocations and both ranges are in bounds.
+            let returned =
+                unsafe { memmove(destination_ptr, source.as_ptr().add(source_start), length) };
+            assert_eq!(returned, destination_ptr);
+            assert_eq!(
+                &destination[destination_start..destination_start + length],
+                &source[source_start..source_start + length]
+            );
+            assert!(
+                destination[..destination_start]
+                    .iter()
+                    .all(|&byte| byte == 0xa5)
+            );
+            assert!(
+                destination[destination_start + length..]
+                    .iter()
+                    .all(|&byte| byte == 0xa5)
+            );
+        }
+    }
+
+    #[test]
+    fn memcmp_preserves_first_mismatch_order_and_sign() {
+        for length in 0..=(CHUNK_SIZE * 4 + 3) {
+            for left_offset in 0..CHUNK_SIZE {
+                for right_offset in 0..CHUNK_SIZE {
+                    let mut left = vec![0x55; length + CHUNK_SIZE * 2];
+                    let mut right = left.clone();
+                    // SAFETY: Both pointers name valid ranges of `length` bytes.
+                    assert_eq!(
+                        unsafe {
+                            memcmp(
+                                left.as_ptr().add(left_offset),
+                                right.as_ptr().add(right_offset),
+                                length,
+                            )
+                        },
+                        0
+                    );
+                    // SAFETY: The same pointer names a valid range, including
+                    // the zero-length case.
+                    assert_eq!(
+                        unsafe {
+                            memcmp(
+                                left.as_ptr().add(left_offset),
+                                left.as_ptr().add(left_offset),
+                                length,
+                            )
+                        },
+                        0
+                    );
+                    for mismatch in 0..length {
+                        left[left_offset + mismatch] = 0x00;
+                        right[right_offset + mismatch] = 0xff;
+                        // SAFETY: Both pointers name valid ranges of `length` bytes.
+                        let result = unsafe {
+                            memcmp(
+                                left.as_ptr().add(left_offset),
+                                right.as_ptr().add(right_offset),
+                                length,
+                            )
+                        };
+                        assert!(result < 0, "length={length}, mismatch={mismatch}");
+
+                        left[left_offset + mismatch] = 0xff;
+                        right[right_offset + mismatch] = 0x00;
+                        // SAFETY: Both pointers name valid ranges of `length` bytes.
+                        let result = unsafe {
+                            memcmp(
+                                left.as_ptr().add(left_offset),
+                                right.as_ptr().add(right_offset),
+                                length,
+                            )
+                        };
+                        assert!(result > 0, "length={length}, mismatch={mismatch}");
+                        left[left_offset + mismatch] = 0x55;
+                        right[right_offset + mismatch] = 0x55;
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bcmp_handles_chunks_tails_and_all_alignments() {
+        for length in 0..=(CHUNK_SIZE * 4 + 3) {
+            for left_offset in 0..CHUNK_SIZE {
+                for right_offset in 0..CHUNK_SIZE {
+                    let mut left = vec![0xa5; 128];
+                    let mut right = vec![0x5a; 128];
+                    for index in 0..=(CHUNK_SIZE * 4 + 3) {
+                        let value = (index as u8).wrapping_mul(29).wrapping_add(7);
+                        left[left_offset + index] = value;
+                        right[right_offset + index] = value;
+                    }
+                    // SAFETY: Both pointers name valid ranges of `length` bytes.
+                    assert_eq!(
+                        unsafe {
+                            bcmp(
+                                left.as_ptr().add(left_offset),
+                                right.as_ptr().add(right_offset),
+                                length,
+                            )
+                        },
+                        0
+                    );
+                    // SAFETY: The same pointer names a valid range.
+                    assert_eq!(
+                        unsafe {
+                            bcmp(
+                                left.as_ptr().add(left_offset),
+                                left.as_ptr().add(left_offset),
+                                length,
+                            )
+                        },
+                        0
+                    );
+                    for mismatch in 0..length {
+                        left[left_offset + mismatch] ^= 1;
+                        // SAFETY: The changed byte remains within the compared range.
+                        assert_ne!(
+                            unsafe {
+                                bcmp(
+                                    left.as_ptr().add(left_offset),
+                                    right.as_ptr().add(right_offset),
+                                    length,
+                                )
+                            },
+                            0
+                        );
+                        left[left_offset + mismatch] ^= 1;
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_bcmp_equal() {
@@ -207,6 +519,46 @@ mod tests {
         let b = b"";
         let result = unsafe { bcmp(a.as_ptr(), b.as_ptr(), 0) };
         assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn zero_length_accepts_null_and_distinct_pointers() {
+        let byte = 0u8;
+        let pointer = &byte as *const u8;
+        // SAFETY: All operations have zero length, so null pointers are valid
+        // under their documented contracts.
+        unsafe {
+            assert!(memcpy(core::ptr::null_mut(), pointer, 0).is_null());
+            assert!(memmove(pointer as *mut u8, core::ptr::null(), 0) == pointer as *mut u8);
+            assert!(memset(core::ptr::null_mut(), 0, 0).is_null());
+            assert_eq!(memcmp(core::ptr::null(), pointer, 0), 0);
+            assert_eq!(bcmp(pointer, core::ptr::null(), 0), 0);
+        }
+    }
+
+    #[test]
+    fn rue_memory_wrappers_preserve_primitive_behavior() {
+        let source = (0..64).map(|index| index as u8).collect::<Vec<_>>();
+        let mut destination = vec![0xa5; 72];
+        // SAFETY: Every wrapper range is valid, and the copy ranges do not overlap.
+        unsafe {
+            __rue_byte_copy(destination.as_mut_ptr().add(3), source.as_ptr().add(5), 35);
+        }
+        assert_eq!(&destination[3..38], &source[5..40]);
+        let mut expected = destination.clone();
+        expected.copy_within(3..38, 8);
+        // SAFETY: Both ranges are within this allocation and may overlap.
+        unsafe {
+            __rue_byte_move(
+                destination.as_mut_ptr().add(8),
+                destination.as_ptr().add(3),
+                35,
+            )
+        };
+        assert_eq!(destination, expected);
+        // SAFETY: The wrapper writes only within the destination range.
+        unsafe { __rue_byte_set(destination.as_mut_ptr().add(11), 0x1ee, 17) };
+        assert!(destination[11..28].iter().all(|&byte| byte == 0xee));
     }
 
     #[test]
