@@ -6,13 +6,76 @@
 const CHUNK_SIZE: usize = core::mem::size_of::<u64>();
 
 // These helpers deliberately use unaligned u64 accesses. The caller contracts
-// below permit arbitrary byte alignment, while `read_unaligned` and
-// `write_unaligned` are defined for every alignment and do not call the
-// reserved memcpy/memmove/memset symbols on the supported targets.
-// Keep the accessors out of the surrounding loops: otherwise an optimized
-// test binary can recognize the loop idiom and lower it back to an exported
-// reserved primitive, recursively re-entering its wrapper.
-#[inline(never)]
+// below permit arbitrary byte alignment. Inline assembly keeps the individual
+// accesses in the surrounding loops while making them opaque to LLVM's
+// loop-idiom lowering; otherwise an optimized test binary can lower a byte
+// loop back to an exported reserved primitive and recursively re-enter it.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn read_chunk(src: *const u8) -> u64 {
+    let value;
+    // SAFETY: Every caller has established that the complete chunk is inside
+    // its valid input range. x86 permits an unaligned integer load.
+    unsafe {
+        core::arch::asm!(
+            "mov {value}, [{src}]",
+            value = out(reg) value,
+            src = in(reg) src,
+            options(nostack, preserves_flags, readonly),
+        );
+    }
+    value
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn write_chunk(dst: *mut u8, value: u64) {
+    // SAFETY: Every caller has established that the complete chunk is inside
+    // its valid output range. x86 permits an unaligned integer store.
+    unsafe {
+        core::arch::asm!(
+            "mov [{dst}], {value}",
+            dst = in(reg) dst,
+            value = in(reg) value,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn read_chunk(src: *const u8) -> u64 {
+    let value;
+    // SAFETY: Every caller has established that the complete chunk is inside
+    // its valid input range. AArch64 permits an unaligned integer load.
+    unsafe {
+        core::arch::asm!(
+            "ldr {value}, [{src}]",
+            value = out(reg) value,
+            src = in(reg) src,
+            options(nostack, preserves_flags, readonly),
+        );
+    }
+    value
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn write_chunk(dst: *mut u8, value: u64) {
+    // SAFETY: Every caller has established that the complete chunk is inside
+    // its valid output range. AArch64 permits an unaligned integer store.
+    unsafe {
+        core::arch::asm!(
+            "str {value}, [{dst}]",
+            dst = in(reg) dst,
+            value = in(reg) value,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[inline(always)]
 unsafe fn read_chunk(src: *const u8) -> u64 {
     // SAFETY: Every caller has established that the complete chunk is inside
     // its valid input range. `read_unaligned` places no alignment requirement
@@ -20,7 +83,8 @@ unsafe fn read_chunk(src: *const u8) -> u64 {
     unsafe { core::ptr::read_unaligned(src.cast::<u64>()) }
 }
 
-#[inline(never)]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[inline(always)]
 unsafe fn write_chunk(dst: *mut u8, value: u64) {
     // SAFETY: Every caller has established that the complete chunk is inside
     // its valid output range. `write_unaligned` places no alignment
