@@ -596,12 +596,27 @@ def _normalized_target(target: str, expected_format: str) -> str:
     return target
 
 
+def _target_body(bodies: dict, target: str, expected_format: str):
+    normalized = _normalized_target(target, expected_format)
+    return bodies.get(target) or bodies.get(normalized) or bodies.get(
+        ".text." + normalized if expected_format == "elf" else "_" + normalized
+    )
+
+
+def _is_chunk_accessor(name: str) -> bool:
+    return bool(re.search(r"memory\d+(?:read_chunk|write_chunk)", name))
+
+
+def _is_canonical_body(name: str, symbol: str) -> bool:
+    return bool(re.search(r"memory\d+" + re.escape(symbol) + r"\d+h[0-9a-f]+E$", name))
+
+
 def _validate_bodies(path: Path, bodies: dict, expected_format: str,
                      expected_machine: int):
     """Validate symbol bodies and wrapper targets in one object."""
-    def reaches_chunk(current, seen):
+    def audit_reachable(current, seen, symbol):
         if current["name"] in seen:
-            return False
+            return
         seen = seen | {current["name"]}
         # A reserved export must never call/jump to another reserved export,
         # even when it also contains a word access. This catches accidental
@@ -615,21 +630,35 @@ def _validate_bodies(path: Path, bodies: dict, expected_format: str,
                 raise AssertionError(
                     f"{path}: {symbol} recursively transfers to reserved symbol {normalized}"
                 )
-        if has_non_stack_word_access(current["code"], expected_machine):
+            target_body = _target_body(bodies, target, expected_format)
+            if target_body is not None:
+                audit_reachable(target_body, seen, symbol)
+
+    def reaches_accessor(current, seen, root_name, symbol):
+        if current["name"] in seen:
+            return False
+        seen = seen | {current["name"]}
+        is_approved_body = (
+            current["name"] == root_name
+            or _is_canonical_body(current["name"], symbol)
+            or _is_chunk_accessor(current["name"])
+            or (symbol == "__rue_str_eq" and current["name"] in ("bcmp", "_bcmp"))
+        )
+        if is_approved_body and has_non_stack_word_access(current["code"], expected_machine):
             return True
+        if has_non_stack_word_access(current["code"], expected_machine):
+            return False
         # Optimizers may outline an unrelated check into a local helper while
         # leaving the real chunk accessor as another relocation. Explore all
-        # local control-transfer candidates instead of choosing the first
-        # outlined helper and treating its byte-free body as canonical.
+        # local control-transfer candidates, but only accept a canonical body or
+        # the named chunk accessors as proof of the required implementation.
         for offset, target, _ in current["relocs"]:
             if not relocation_is_control_transfer(current["code"], offset,
                                                    expected_machine) or not target:
                 continue
-            normalized = _normalized_target(target, expected_format)
-            target_body = bodies.get(target) or bodies.get(normalized) or bodies.get(
-                ".text." + normalized if expected_format == "elf" else "_" + normalized
-            )
-            if target_body is not None and reaches_chunk(target_body, seen):
+            target_body = _target_body(bodies, target, expected_format)
+            if target_body is not None and reaches_accessor(
+                    target_body, seen, root_name, symbol):
                 return True
         return False
 
@@ -638,7 +667,8 @@ def _validate_bodies(path: Path, bodies: dict, expected_format: str,
         body = bodies.get(lookup)
         if body is None:
             continue
-        if not reaches_chunk(body, set()):
+        audit_reachable(body, set(), symbol)
+        if not reaches_accessor(body, set(), body["name"], symbol):
             raise AssertionError(f"{path}: {symbol} body has no non-stack machine-word access")
 
 

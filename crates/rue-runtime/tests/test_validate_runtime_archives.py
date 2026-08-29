@@ -49,9 +49,35 @@ class BodyValidationTests(unittest.TestCase):
         validator._validate_bodies(Path("synthetic"), {"memcpy": loop}, "elf", 62)
 
     def test_wrapper_follows_canonical_body(self):
-        wrapper = body("memcpy", bytes.fromhex("e900000000"), [(1, "impl", 4)])
-        impl = body("impl", bytes.fromhex("488b07"))
-        validator._validate_bodies(Path("synthetic"), {"memcpy": wrapper, "impl": impl}, "elf", 62)
+        wrapper = body("memcpy", bytes.fromhex("e900000000"), [(1, "canonical", 4)])
+        canonical = body("_ZN11rue_runtime6memory6memcpy17h1234567890abcdefE", bytes.fromhex("488b07"))
+        validator._validate_bodies(
+            Path("synthetic"), {"memcpy": wrapper, "canonical": canonical}, "elf", 62
+        )
+
+    def test_unrelated_word_access_helper_is_not_chunk_proof(self):
+        wrapper = body("memcpy", bytes.fromhex("e900000000"), [(1, "helper", 4)])
+        helper = body("helper", bytes.fromhex("488b07"))
+        with self.assertRaisesRegex(AssertionError, "no non-stack machine-word access"):
+            validator._validate_bodies(
+                Path("synthetic"), {"memcpy": wrapper, "helper": helper}, "elf", 62
+            )
+
+    def test_later_branch_indirect_recursion_is_rejected(self):
+        wrapper = body(
+            "memcpy",
+            bytes.fromhex("e800000000e800000000"),
+            [(1, "good", 4), (6, "later", 4)],
+        )
+        good = body("good", bytes.fromhex("488b07"))
+        later = body("later", bytes.fromhex("e900000000"), [(1, "memcpy", 4)])
+        with self.assertRaisesRegex(AssertionError, "recursively transfers"):
+            validator._validate_bodies(
+                Path("synthetic"),
+                {"memcpy": wrapper, "good": good, "later": later},
+                "elf",
+                62,
+            )
 
     def test_wrapper_skips_unrelated_outlined_helper(self):
         wrapper = body(
@@ -60,7 +86,7 @@ class BodyValidationTests(unittest.TestCase):
             [(1, "outlined", 4), (6, "chunk", 4)],
         )
         outlined = body("outlined", bytes.fromhex("c3"))
-        chunk = body("chunk", bytes.fromhex("488b07"))
+        chunk = body("_ZN11rue_runtime6memory11write_chunk17h1234567890abcdefE", bytes.fromhex("488b07"))
         validator._validate_bodies(
             Path("synthetic"),
             {"memset": wrapper, "outlined": outlined, "chunk": chunk},
