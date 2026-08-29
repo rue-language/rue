@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use lasso::Spur;
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, OptionExt, WarningKind};
-use rue_rir::{InstData, InstRef, RirPattern};
+use rue_rir::{InstData, InstRef, RirPattern, RirPatternView};
 use rue_span::Span;
 
 use super::analysis::FirstClassStrSite;
@@ -873,9 +873,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ///
     /// The warning shapes and messages mirror the normal per-arm loop exactly,
     /// so a pruned match and an ordinary match report identical diagnostics.
-    fn warn_unreachable_pruned_arms(
+    fn warn_unreachable_pruned_arms<'r>(
         &self,
-        arms: impl Iterator<Item = (RirPattern, InstRef)>,
+        arms: impl Iterator<Item = (RirPatternView<'r>, InstRef)>,
         scrutinee_type: Type,
         ctx: &mut AnalysisContext,
     ) {
@@ -889,8 +889,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Any arm after a wildcard is unreachable.
             if let Some(first_wildcard_span) = wildcard_span {
                 let pat_str = match &pattern {
-                    RirPattern::Wildcard(_) => "_".to_string(),
-                    RirPattern::Int {
+                    RirPatternView::Wildcard(_) => "_".to_string(),
+                    RirPatternView::Int {
                         value, negative, ..
                     } => {
                         if *negative {
@@ -899,8 +899,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             value.to_string()
                         }
                     }
-                    RirPattern::Bool(b, _) => b.to_string(),
-                    RirPattern::Path {
+                    RirPatternView::Bool(b, _) => b.to_string(),
+                    RirPatternView::Path {
                         type_name, variant, ..
                     } => format!(
                         "{}.{}",
@@ -919,7 +919,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
 
             match &pattern {
-                RirPattern::Wildcard(_) => {
+                RirPatternView::Wildcard(_) => {
                     // A `_` after both booleans are already covered is
                     // unreachable. An integer scrutinee is never fully covered
                     // by literals, and enum patterns can't reach this path.
@@ -939,7 +939,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     }
                     wildcard_span = Some(pattern_span);
                 }
-                RirPattern::Int {
+                RirPatternView::Int {
                     value, negative, ..
                 } => {
                     // Every pattern already passed the caller's range check, so
@@ -969,7 +969,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         seen_ints.insert(n, pattern_span);
                     }
                 }
-                RirPattern::Bool(b, _) => {
+                RirPatternView::Bool(b, _) => {
                     let first_span_opt = if *b {
                         &mut bool_true_span
                     } else {
@@ -992,7 +992,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
                 // Enum patterns can't appear in a prunable match (they set
                 // `prunable = false` in the caller), so there's nothing to do.
-                RirPattern::Path { .. } => {}
+                RirPatternView::Path { .. } => {}
             }
         }
     }
@@ -1026,29 +1026,27 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if let Some(crate::sema::ComptimeSelection::Match { arm: selected_arm }) =
             ctx.comptime_selections.get(&match_inst)
         {
-            let arms = self
-                .body_rir_ref()
-                .match_arms(arms)
-                .iter()
-                .map(|(pattern, body)| (pattern.to_owned(), body))
-                .collect::<Vec<_>>();
-            let selected = arms.get(*selected_arm).map(|(_, body)| *body);
-            let mut prunable = !arms.is_empty() && selected.is_some();
+            // These scans only read pattern shapes, so they iterate the
+            // borrowed RIR view; nothing here needs the owned patterns the
+            // old per-arm materialization allocated (RUE-1661).
+            let arm_views = self.body_rir_ref().match_arms(arms);
+            let selected = arm_views.get(*selected_arm).map(|(_, body)| body);
+            let mut prunable = !arm_views.is_empty() && selected.is_some();
             let mut has_wildcard = false;
             let mut bool_true_covered = false;
             let mut bool_false_covered = false;
-            for (pattern, _) in arms.iter() {
+            for (pattern, _) in arm_views.iter() {
                 match pattern {
-                    RirPattern::Wildcard(_) => has_wildcard = true,
-                    RirPattern::Bool(b, _) => {
-                        if *b {
+                    RirPatternView::Wildcard(_) => has_wildcard = true,
+                    RirPatternView::Bool(b, _) => {
+                        if b {
                             bool_true_covered = true;
                         } else {
                             bool_false_covered = true;
                         }
                     }
-                    RirPattern::Int { .. } => {}
-                    RirPattern::Path { .. } => {
+                    RirPatternView::Int { .. } => {}
+                    RirPatternView::Path { .. } => {
                         prunable = false;
                         break;
                     }
@@ -1081,9 +1079,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // body is exempt from analysis, but a malformed later pattern
                 // remains a source error (for example `0 => ..., true => ...`
                 // on an integer scrutinee).
-                for (pattern, _) in arms.iter() {
-                    match pattern {
-                        RirPattern::Int {
+                for (pattern, _) in arm_views.iter() {
+                    match &pattern {
+                        RirPatternView::Int {
                             value: magnitude,
                             negative,
                             ..
@@ -1095,7 +1093,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 pattern.span(),
                             )?;
                         }
-                        RirPattern::Int { .. } => {
+                        RirPatternView::Int { .. } => {
                             return Err(CompileError::new(
                                 ErrorKind::TypeMismatch {
                                     expected: self.format_type_name(scrutinee_type),
@@ -1104,7 +1102,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 pattern.span(),
                             ));
                         }
-                        RirPattern::Bool(_, _) if scrutinee_type != Type::BOOL => {
+                        RirPatternView::Bool(_, _) if scrutinee_type != Type::BOOL => {
                             return Err(CompileError::new(
                                 ErrorKind::TypeMismatch {
                                     expected: self.format_type_name(scrutinee_type),
@@ -1124,7 +1122,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // skipped by the early return, so run them here. Only
                 // pattern shapes are inspected — no arm body is analyzed,
                 // honoring 4.14:19.
-                self.warn_unreachable_pruned_arms(arms.iter().cloned(), scrutinee_type, ctx);
+                self.warn_unreachable_pruned_arms(arm_views.iter(), scrutinee_type, ctx);
                 if let Some(body) = selected {
                     ctx.push_scope();
                     let boundary = ctx.enter_full_expression();
@@ -1150,20 +1148,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Option::Some(l) => .., Option::None => .. }`, RUE-6). Context does not
         // select the intrinsic nominal. Resolution errors are ignored — pattern
         // legality is checked on the normal path below.
-        let arms_for_expected = self
+        // Only the path patterns' type names (Copy symbols) feed this probe,
+        // so collect exactly those instead of cloning every arm's pattern
+        // (RUE-1661). The resolver needs `&mut self`, so the RIR view cannot
+        // stay borrowed across it.
+        let path_pattern_type_names = self
             .body_rir_ref()
             .match_arms(arms)
             .iter()
-            .map(|(pattern, body)| (pattern.to_owned(), body))
+            .filter_map(|(pattern, _)| match pattern {
+                RirPatternView::Path { type_name, .. } => Some(type_name),
+                _ => None,
+            })
             .collect::<Vec<_>>();
-        let expected_scrutinee = arms_for_expected.iter().find_map(|(pattern, _)| {
-            if let RirPattern::Path { type_name, .. } = &pattern {
-                self.resolve_type_with_ctx(*type_name, span, ctx)
-                    .ok()
-                    .filter(|ty| ty.is_enum())
-            } else {
-                None
-            }
+        let expected_scrutinee = path_pattern_type_names.into_iter().find_map(|type_name| {
+            self.resolve_type_with_ctx(type_name, span, ctx)
+                .ok()
+                .filter(|ty| ty.is_enum())
         });
         // Analyze the scrutinee under only the pattern-derived contract. The
         // match expression's own result expectation belongs to its arms.
@@ -1187,6 +1188,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
+        // The one owned materialization this match needs (RUE-1661): the
+        // per-arm loop below alternates pattern reads with `analyze_inst`
+        // calls that take `&mut self`, so the patterns must outlive the RIR
+        // borrow, and AIR lowering consumes their owned binding lists.
         let arms = self
             .body_rir_ref()
             .match_arms(arms)
@@ -2748,5 +2753,38 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let air_ref = air.add_block(&statements, last.air_ref, ty, span)?;
             Ok(AnalysisResult::with_continues(air_ref, ty, !diverged))
         }
+    }
+}
+
+#[cfg(test)]
+mod pattern_materialization_tests {
+    /// RUE-1661: `analyze_match` materializes owned patterns exactly once —
+    /// the per-arm loop whose AIR lowering consumes owned binding lists. The
+    /// comptime-selection scans, the pruned-arm warning pass, and the
+    /// expected-scrutinee probe all iterate the borrowed `RirPatternView`,
+    /// so a reintroduced whole-arm clone fails here.
+    #[test]
+    fn analyze_match_materializes_patterns_once() {
+        let production = include_str!("control_flow.rs")
+            .split_once("mod pattern_materialization_tests")
+            .expect("this test module marks the end of production code")
+            .0;
+        assert_eq!(
+            production.matches("pattern.to_owned()").count(),
+            1,
+            "only the per-arm analysis loop may materialize owned patterns"
+        );
+        let probe = production
+            .split_once("let path_pattern_type_names")
+            .expect("expected-scrutinee probe exists")
+            .1;
+        assert!(
+            probe
+                .split_once("let expected_scrutinee")
+                .expect("probe feeds the expected-scrutinee resolution")
+                .0
+                .contains("RirPatternView::Path { type_name, .. }"),
+            "the expected-scrutinee probe reads type names through the view"
+        );
     }
 }
