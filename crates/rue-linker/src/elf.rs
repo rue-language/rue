@@ -1102,6 +1102,22 @@ impl ObjectFile {
             }
         }
 
+        // The anchor a non-extern relocation resolves to: the first named
+        // symbol at offset 0 of each section. Precomputed once so each
+        // relocation probes a map instead of rescanning the whole symbol
+        // table — that scan was O(nreloc × nsyms) per object, and
+        // rustc-produced Mach-O objects use non-extern relocations heavily
+        // (RUE-1665). Synthesized anchors register here as they are minted.
+        let mut section_anchors: AHashMap<usize, usize> = AHashMap::new();
+        for (index, symbol) in symbols.iter().enumerate() {
+            if let Some(section) = symbol.section_index
+                && symbol.value == 0
+                && !symbol.name.is_empty()
+            {
+                section_anchors.entry(section).or_insert(index);
+            }
+        }
+
         // Parse relocations for each section
         for (section_index, nreloc, reloff) in section_reloc_info {
             check_parse_cancellation(cancellation)?;
@@ -1194,24 +1210,17 @@ impl ObjectFile {
                     // otherwise — real objects routinely have only local
                     // symbols, or none at all, at a section start.
                     // RUE-131 item 5c)
-                    symbols
-                        .iter()
-                        .position(|s| {
-                            s.section_index == Some(target_section)
-                                && s.value == 0
-                                && !s.name.is_empty()
-                        })
-                        .unwrap_or_else(|| {
-                            symbols.push(Symbol {
-                                name: sections[target_section].name.clone(),
-                                section_index: Some(target_section),
-                                value: 0,
-                                size: 0,
-                                binding: SymbolBinding::Local,
-                                sym_type: SymbolType::Section,
-                            });
-                            symbols.len() - 1
-                        })
+                    *section_anchors.entry(target_section).or_insert_with(|| {
+                        symbols.push(Symbol {
+                            name: sections[target_section].name.clone(),
+                            section_index: Some(target_section),
+                            value: 0,
+                            size: 0,
+                            binding: SymbolBinding::Local,
+                            sym_type: SymbolType::Section,
+                        });
+                        symbols.len() - 1
+                    })
                 };
 
                 // Convert Mach-O relocation type to our type
@@ -2214,6 +2223,75 @@ mod tests {
             relocs[0].addend, 3,
             "embedded target address must be re-based onto the section anchor"
         );
+    }
+
+    /// Non-extern relocations reuse an existing named symbol at offset 0 of
+    /// the target section rather than synthesizing a duplicate anchor, and
+    /// every relocation against the same section shares that one anchor. This
+    /// pins the semantics of the precomputed section→anchor index that
+    /// replaced the per-relocation symbol-table scan (RUE-1665).
+    #[test]
+    fn test_macho_non_extern_reuses_existing_section_anchor() {
+        let mut first_slot = vec![0u8; 8];
+        first_slot[0] = 0x13; // address of byte 3 within __cstring (addr 0x10)
+        let mut second_slot = vec![0u8; 8];
+        second_slot[0] = 0x15; // address of byte 5 within __cstring
+        let mut data = first_slot;
+        data.extend_from_slice(&second_slot);
+        let obj_bytes = build_test_macho(
+            &[
+                TestMachoSection {
+                    sectname: "__const",
+                    segname: "__TEXT",
+                    addr: 0,
+                    data,
+                    // Two non-extern UNSIGNED relocations against section 2.
+                    relocs: vec![
+                        (0, macho_r_info(2, false, 3, false, ARM64_RELOC_UNSIGNED)),
+                        (8, macho_r_info(2, false, 3, false, ARM64_RELOC_UNSIGNED)),
+                    ],
+                },
+                TestMachoSection {
+                    sectname: "__cstring",
+                    segname: "__TEXT",
+                    addr: 0x10,
+                    data: b"hi there".to_vec(),
+                    relocs: vec![],
+                },
+            ],
+            &[
+                TestMachoSymbol {
+                    name: "_main",
+                    n_type: N_EXT | N_SECT,
+                    n_sect: 1,
+                    n_value: 0,
+                },
+                // A LOCAL symbol at offset 0 of __cstring (n_value is the
+                // section's VM-layout address).
+                TestMachoSymbol {
+                    name: "l_str",
+                    n_type: N_SECT,
+                    n_sect: 2,
+                    n_value: 0x10,
+                },
+            ],
+        );
+
+        let obj = ObjectFile::parse(&obj_bytes).expect("parse");
+        assert_eq!(
+            obj.symbols.len(),
+            2,
+            "an existing offset-0 symbol must be reused, not duplicated"
+        );
+        let relocs = &obj.sections[0].relocations;
+        assert_eq!(relocs.len(), 2);
+        assert_eq!(obj.symbols[relocs[0].symbol_index].name, "l_str");
+        assert_eq!(
+            relocs[0].symbol_index, relocs[1].symbol_index,
+            "relocations against one section share one anchor"
+        );
+        assert_eq!(relocs[0].addend, 3);
+        assert_eq!(relocs[1].addend, 5);
     }
 
     /// Mach-O n_value is an address in the object's VM layout, not a

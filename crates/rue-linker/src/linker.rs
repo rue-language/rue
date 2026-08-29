@@ -689,15 +689,15 @@ fn apply_relocation(
 struct PendingRelocation {
     /// Patch offset within the home buffer.
     offset: u64,
-    /// Name of the referenced symbol.
-    sym_name: String,
-    /// Section the referenced symbol is defined in (None if undefined).
-    sym_section: Option<usize>,
-    /// Binding of the referenced symbol. LOCAL symbols must resolve within
-    /// their own object — resolving them by name across all objects lets
-    /// same-named locals in different objects shadow each other.
-    /// (RUE-131 item 2)
-    sym_binding: SymbolBinding,
+    /// Index of the referenced symbol in its object's symbol table. The
+    /// object table is immutable for the whole link, so the index stays
+    /// valid and the symbol's name, section, and binding are read through
+    /// it at apply time — cloning the name into every relocation allocated
+    /// thousands of Strings per link (RUE-1665). Validated against the
+    /// table by [`collect_section_relocations`]. LOCAL symbols must still
+    /// resolve within their own object (RUE-131 item 2); `obj_idx` scopes
+    /// that.
+    symbol_index: usize,
     /// Index of the object the relocation (and any local symbol) lives in.
     obj_idx: usize,
     rel_type: RelocationType,
@@ -776,9 +776,7 @@ fn collect_section_relocations(
 
         pending.push(PendingRelocation {
             offset,
-            sym_name: sym.name.clone(),
-            sym_section: sym.section_index,
-            sym_binding: sym.binding,
+            symbol_index: reloc.symbol_index,
             obj_idx,
             rel_type: reloc.rel_type,
             addend: reloc.addend,
@@ -800,7 +798,10 @@ fn collect_section_relocations(
 #[derive(Default)]
 struct SymbolAddresses {
     globals: AHashMap<String, u64>,
-    locals: AHashMap<(usize, String), u64>,
+    /// Nested per-object so a resolve probes with the borrowed symbol name;
+    /// a flat `(usize, String)`-keyed map forced an owned String key
+    /// allocation for every local lookup (RUE-1665).
+    locals: AHashMap<usize, AHashMap<String, u64>>,
 }
 
 impl SymbolAddresses {
@@ -808,7 +809,7 @@ impl SymbolAddresses {
     /// object only, globals/weaks by name.
     fn resolve(&self, obj_idx: usize, name: &str, binding: SymbolBinding) -> Option<u64> {
         match binding {
-            SymbolBinding::Local => self.locals.get(&(obj_idx, name.to_string())).copied(),
+            SymbolBinding::Local => self.locals.get(&obj_idx)?.get(name).copied(),
             SymbolBinding::Global | SymbolBinding::Weak => self.globals.get(name).copied(),
         }
     }
@@ -1691,7 +1692,9 @@ impl Linker {
                             SymbolBinding::Local => {
                                 symbol_addresses
                                     .locals
-                                    .insert((obj_idx, sym.name.clone()), addr);
+                                    .entry(obj_idx)
+                                    .or_default()
+                                    .insert(sym.name.clone(), addr);
                             }
                             SymbolBinding::Global | SymbolBinding::Weak => {
                                 // Honor the winner chosen in add_object for
@@ -1738,9 +1741,7 @@ impl Linker {
         // Apply relocations
         for PendingRelocation {
             offset: patch_offset,
-            sym_name,
-            sym_section,
-            sym_binding,
+            symbol_index,
             obj_idx,
             rel_type,
             addend,
@@ -1748,6 +1749,12 @@ impl Linker {
         } in pending_relocations
         {
             check_cancellation(cancellation)?;
+            // The referenced symbol, read through its validated index; the
+            // object table is immutable during the link (RUE-1665).
+            let sym = &self.objects[obj_idx].symbols[symbol_index];
+            let sym_name = sym.name.as_str();
+            let sym_section = sym.section_index;
+            let sym_binding = sym.binding;
             // Pick the buffer the patch site lives in and its base vaddr.
             // (PatchHome::Rodata is unused here: Mach-O merges rodata into
             // the text buffer.)
@@ -1764,14 +1771,14 @@ impl Linker {
             // leaving its relocation unpatched would produce invalid code.
             // (RUE-131 item 7)
             let target_vaddr =
-                if let Some(addr) = symbol_addresses.resolve(obj_idx, &sym_name, sym_binding) {
+                if let Some(addr) = symbol_addresses.resolve(obj_idx, sym_name, sym_binding) {
                     addr
                 } else if let Some(sec_idx) = sym_section {
                     // Section-relative symbol - resolve via the section's address
                     let obj = &self.objects[obj_idx];
                     if sec_idx >= obj.sections.len() {
                         return Err(LinkError::InvalidSectionIndex {
-                            symbol: sym_name.clone(),
+                            symbol: sym_name.to_string(),
                             section_index: sec_idx,
                             section_count: obj.sections.len(),
                         });
@@ -1828,7 +1835,7 @@ impl Linker {
                 target_vaddr,
                 addend,
                 rel_type,
-                &sym_name,
+                sym_name,
             )?;
         }
 
@@ -2132,7 +2139,9 @@ impl Linker {
                             SymbolBinding::Local => {
                                 symbol_addresses
                                     .locals
-                                    .insert((obj_idx, sym.name.clone()), addr);
+                                    .entry(obj_idx)
+                                    .or_default()
+                                    .insert(sym.name.clone(), addr);
                             }
                             SymbolBinding::Global | SymbolBinding::Weak => {
                                 // For duplicate weak definitions the winner was
@@ -2171,7 +2180,9 @@ impl Linker {
                     // Use section name as fallback
                     symbol_addresses
                         .locals
-                        .entry((obj_idx, section.name.clone()))
+                        .entry(obj_idx)
+                        .or_default()
+                        .entry(section.name.clone())
                         .or_insert(addr);
                 }
             }
@@ -2189,9 +2200,7 @@ impl Linker {
         // Apply relocations
         for PendingRelocation {
             offset,
-            sym_name,
-            sym_section,
-            sym_binding,
+            symbol_index,
             obj_idx,
             rel_type,
             addend,
@@ -2199,6 +2208,12 @@ impl Linker {
         } in pending_relocations
         {
             check_cancellation(cancellation)?;
+            // The referenced symbol, read through its validated index; the
+            // object table is immutable during the link (RUE-1665).
+            let sym = &self.objects[obj_idx].symbols[symbol_index];
+            let sym_name = sym.name.as_str();
+            let sym_section = sym.section_index;
+            let sym_binding = sym.binding;
             // Pick the buffer the patch site lives in and its base vaddr.
             // PC-relative relocations in rodata/data measure from their own
             // section's address, not the code segment's.
@@ -2209,14 +2224,14 @@ impl Linker {
             };
             // Try to resolve the symbol (locals only within their own object)
             let target_addr =
-                if let Some(addr) = symbol_addresses.resolve(obj_idx, &sym_name, sym_binding) {
+                if let Some(addr) = symbol_addresses.resolve(obj_idx, sym_name, sym_binding) {
                     addr
                 } else if let Some(sec_idx) = sym_section {
                     // Section-relative symbol - look up the section's address
                     let obj = &self.objects[obj_idx];
                     if sec_idx >= obj.sections.len() {
                         return Err(LinkError::InvalidSectionIndex {
-                            symbol: sym_name.clone(),
+                            symbol: sym_name.to_string(),
                             section_index: sec_idx,
                             section_count: obj.sections.len(),
                         });
@@ -2253,7 +2268,7 @@ impl Linker {
                         if sym_name.is_empty() {
                             "<empty>"
                         } else {
-                            &sym_name
+                            sym_name
                         },
                         rel_type
                     )));
@@ -2263,7 +2278,7 @@ impl Linker {
 
             // Patch the site; the per-kind encoding is shared with the
             // Mach-O path via `apply_relocation` (RUE-335).
-            apply_relocation(buf, offset, pc, target_addr, addend, rel_type, &sym_name)?;
+            apply_relocation(buf, offset, pc, target_addr, addend, rel_type, sym_name)?;
         }
 
         drop(relocate_span);
