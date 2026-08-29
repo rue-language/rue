@@ -1,0 +1,23 @@
+include!("parse_import/declaration_imports.rs");
+include!("parse_import/declaration_occurrence_indexes.rs");
+include!("parse_import/declaration_orders.rs");
+include!("parse_import/lookup_imports.rs");
+include!("parse_import/lookup_names.rs");
+include!("parse_import/module_indexes.rs");
+include!("parse_import/module_source_bases.rs");
+include!("parse_import/parse.rs");
+include!("parse_import/parse_module_batches.rs");
+include!("parse_import/parse_modules.rs");
+include!("parse_import/resolve_imports.rs");
+
+pub(super) use register_parse_import_declaration_imports;
+pub(super) use register_parse_import_declaration_occurrence_indexes;
+pub(super) use register_parse_import_declaration_orders;
+pub(super) use register_parse_import_lookup_imports;
+pub(super) use register_parse_import_lookup_names;
+pub(super) use register_parse_import_module_indexes;
+pub(super) use register_parse_import_module_source_bases;
+pub(super) use register_parse_import_parse;
+pub(super) use register_parse_import_parse_module_batches;
+pub(super) use register_parse_import_parse_modules;
+pub(super) use register_parse_import_resolve_imports;

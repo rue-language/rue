@@ -7793,7 +7793,7 @@ mod tests {
         assert!(!production.contains("RUE-1024 DELETION GATE"));
         let discovery = include_str!("import_discovery.rs");
         assert!(!discovery.contains("pub fn pending_requests("));
-        let revisioned = include_str!("revisioned_query_database.rs");
+        let revisioned = crate::revisioned_query_database::REVISIONED_DATABASE_SOURCE;
         for family in [
             "compiler.parse-module",
             "compiler.module-index",
@@ -7818,11 +7818,9 @@ mod tests {
         );
         assert!(!revisioned.contains("\"compiler.module-rir\""));
         assert!(!revisioned.contains(&["ModuleRir", "Value"].concat()));
-        let candidate_evaluator = revisioned
-            .split("let parse_for_declaration_body_plan_artifacts")
-            .nth(1)
-            .and_then(|tail| tail.split("let index_for_lookup").next())
-            .unwrap();
+        let candidate_evaluator = include_str!(
+            "revisioned_query_database/registrations/semantic/declaration_body_plan_artifacts.rs"
+        );
         assert!(candidate_evaluator.contains("lower_parsed_declaration_body_plan"));
         assert!(!candidate_evaluator.contains("lower_declaration_body_plan("));
         assert!(!candidate_evaluator.contains("lower_module_rir"));
