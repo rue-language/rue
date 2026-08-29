@@ -1251,218 +1251,6 @@ impl<'a> CfgLower<'a> {
         }
     }
 
-    /// Lower an `extern "C"` foreign call that crosses one or more aggregates by
-    /// value under SysV AMD64 (ADR-0064 P3). The classification comes from the
-    /// shared [`ForeignCallInputs`](crate::foreign_call::ForeignCallInputs)
-    /// authority; every aggregate is marshaled through its compact physical image
-    /// (C field order), so the native reversed-slot packing is never used.
-    fn lower_foreign_call(
-        &mut self,
-        inputs: crate::foreign_call::ForeignCallInputs,
-        primary: VReg,
-    ) -> crate::value_plan::MaterializedValue {
-        use crate::foreign_call::{ForeignArg, ForeignReturn};
-        let abi = rue_air::TargetCCallAbi::new(inputs.flavor);
-        let budget = ARG_REGS.len();
-
-        // Reserve sret storage first: a >16-byte aggregate return writes here and
-        // the buffer must survive the call. Its size is 16-aligned, preserving
-        // the call site's 16-byte stack alignment.
-        let mut sret_ptr: Option<VReg> = None;
-        let mut sret_storage: u32 = 0;
-        if let ForeignReturn::AggregateSret { image } = &inputs.ret {
-            sret_storage = image.storage_bytes;
-            self.mir.push(X86Inst::AddRI {
-                dst: Operand::Physical(Reg::Rsp),
-                imm: -checked_displacement_bytes(u64::from(sret_storage))
-                    .expect("foreign sret storage must fit displacement"),
-            });
-            let p = self.mir.alloc_vreg();
-            self.mir.push(X86Inst::MovRR {
-                dst: Operand::Virtual(p),
-                src: Operand::Physical(Reg::Rsp),
-            });
-            sret_ptr = Some(p);
-        }
-
-        // Physical argument operands: `int_ops` fill ARG_REGS in order, `stack_ops`
-        // are 8-byte outgoing-stack slots (ascending). The SysV sret pointer is the
-        // hidden first integer argument (rdi); AAPCS64's dedicated x8 never reaches
-        // this x86 path.
-        let mut int_ops: Vec<VReg> = Vec::new();
-        let mut stack_ops: Vec<VReg> = Vec::new();
-        if let Some(p) = sret_ptr {
-            assert!(
-                !abi.sret_pointer_in_dedicated_register(),
-                "x86-64 SysV must pass the sret pointer as the first integer argument"
-            );
-            int_ops.push(p);
-        }
-
-        for arg in &inputs.args {
-            match arg {
-                ForeignArg::Scalar { value } => {
-                    let v = self.get_vreg(*value);
-                    if int_ops.len() < budget {
-                        int_ops.push(v);
-                    } else {
-                        stack_ops.push(v);
-                    }
-                }
-                ForeignArg::AggregateRegisters { value, image } => {
-                    let ebs = self.image_arg_eightbytes(*value, image);
-                    // All-or-nothing: an aggregate uses registers only if all its
-                    // eightbytes fit in the remaining integer registers (SysV).
-                    if int_ops.len() + ebs.len() <= budget {
-                        int_ops.extend(ebs);
-                    } else {
-                        stack_ops.extend(ebs);
-                    }
-                }
-                ForeignArg::AggregateByvalStack { value, image } => {
-                    // SysV MEMORY class: the whole struct image sits in the
-                    // outgoing stack area (contiguous, ascending), consuming no
-                    // integer registers.
-                    let ebs = self.image_arg_eightbytes(*value, image);
-                    stack_ops.extend(ebs);
-                }
-                ForeignArg::AggregateByRefCopy { .. } => {
-                    panic!(
-                        "SysV AMD64 passes a >16-byte aggregate byval-on-stack, not by reference; \
-                         ByReferenceCopy is an AAPCS64-only class"
-                    )
-                }
-            }
-        }
-
-        // Emit the call frame: stack args first (reverse push so the first stack
-        // arg lands at the lowest address), then the integer args pushed and popped
-        // into ARG_REGS, matching the native `lower_call_plan` idiom.
-        let num_stack = stack_ops.len();
-        let stack_cell_bytes = checked_cell_region_bytes(
-            u64::try_from(num_stack).expect("foreign stack slot count must fit u64"),
-        )
-        .expect("foreign stack area must fit displacement");
-        let stack_bytes = checked_aligned_cell_region_bytes(
-            u64::try_from(num_stack).expect("foreign stack slot count must fit u64"),
-        )
-        .expect("foreign stack area must pass frame-budget preflight");
-        let needs_alignment = stack_bytes > stack_cell_bytes;
-        if needs_alignment {
-            self.mir.push(X86Inst::AddRI {
-                dst: Operand::Physical(Reg::Rsp),
-                imm: -i32::try_from(
-                    checked_cell_region_padding_bytes(
-                        u64::try_from(num_stack).expect("foreign stack slot count must fit u64"),
-                    )
-                    .expect("foreign stack alignment padding must fit displacement"),
-                )
-                .expect("foreign stack alignment padding must fit i32"),
-            });
-        }
-        for v in stack_ops.iter().rev() {
-            self.mir.push(X86Inst::MovRR {
-                dst: Operand::Physical(Reg::Rax),
-                src: Operand::Virtual(*v),
-            });
-            self.mir.push(X86Inst::Push {
-                src: Operand::Physical(Reg::Rax),
-            });
-        }
-        for v in int_ops.iter().rev() {
-            self.mir.push(X86Inst::MovRR {
-                dst: Operand::Physical(Reg::Rax),
-                src: Operand::Virtual(*v),
-            });
-            self.mir.push(X86Inst::Push {
-                src: Operand::Physical(Reg::Rax),
-            });
-        }
-        for index in 0..int_ops.len() {
-            self.mir.push(X86Inst::Pop {
-                dst: Operand::Physical(ARG_REGS[index]),
-            });
-        }
-        let symbol_id = self.intern_symbol(inputs.symbol_ref());
-        self.mir.push(X86Inst::call(symbol_id));
-        if num_stack > 0 || needs_alignment {
-            self.mir.push(X86Inst::AddRI {
-                dst: Operand::Physical(Reg::Rsp),
-                imm: checked_displacement_bytes(u64::from(stack_bytes))
-                    .expect("foreign stack area must fit displacement"),
-            });
-        }
-
-        // Reconstruct the Rue value from the C result.
-        let slots = match &inputs.ret {
-            ForeignReturn::ZeroSized => {
-                self.mir.push(X86Inst::MovRI32 {
-                    dst: Operand::Virtual(primary),
-                    imm: 0,
-                });
-                Vec::new()
-            }
-            ForeignReturn::Scalar { ext } => {
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(primary),
-                    src: Operand::Physical(Reg::Rax),
-                });
-                self.emit_c_return_extension(primary, *ext);
-                Vec::new()
-            }
-            ForeignReturn::AggregateRegisters { image } => {
-                // rax:rdx hold the return eightbytes (C field order). Store them to
-                // a scratch buffer, then read the native slots back through the
-                // compact image map so downstream sees the ascending decomposition.
-                let eb = image.eightbytes();
-                self.mir.push(X86Inst::AddRI {
-                    dst: Operand::Physical(Reg::Rsp),
-                    imm: -checked_displacement_bytes(u64::from(image.storage_bytes))
-                        .expect("foreign result storage must fit displacement"),
-                });
-                let buf = self.mir.alloc_vreg();
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(buf),
-                    src: Operand::Physical(Reg::Rsp),
-                });
-                let mut eb_vals = Vec::with_capacity(eb as usize);
-                for index in 0..eb as usize {
-                    let v = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(v),
-                        src: Operand::Physical(RET_REGS[index]),
-                    });
-                    eb_vals.push(v);
-                }
-                crate::agg_slots::store_slots_through_ptr(self, &eb_vals, buf, 0);
-                let native = crate::agg_slots::load_enum_slots_through_ptr(self, buf, &image.map);
-                self.mir.push(X86Inst::AddRI {
-                    dst: Operand::Physical(Reg::Rsp),
-                    imm: checked_displacement_bytes(u64::from(image.storage_bytes))
-                        .expect("foreign result storage must fit displacement"),
-                });
-                native
-            }
-            ForeignReturn::AggregateSret { image } => {
-                let p = sret_ptr.expect("an sret return reserved its storage pointer");
-                let native = crate::agg_slots::load_enum_slots_through_ptr(self, p, &image.map);
-                self.mir.push(X86Inst::AddRI {
-                    dst: Operand::Physical(Reg::Rsp),
-                    imm: checked_displacement_bytes(u64::from(sret_storage))
-                        .expect("foreign sret storage must fit displacement"),
-                });
-                native
-            }
-        };
-        if let Some(&slot) = slots.first() {
-            self.mir.push(X86Inst::MovRR {
-                dst: Operand::Virtual(primary),
-                src: Operand::Virtual(slot),
-            });
-        }
-        crate::value_plan::MaterializedValue { primary, slots }
-    }
-
     /// Materialize an aggregate argument's eightbytes (ADR-0064 P3): write its
     /// native slots into a scratch buffer as the compact C image, then load the
     /// whole eightbytes back so they pack in ascending C field order. The scratch
@@ -3164,7 +2952,9 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
         inputs: crate::foreign_call::ForeignCallInputs,
         result: VReg,
     ) -> crate::value_plan::ValueResult {
-        crate::value_plan::ValueResult::Materialized(self.lower_foreign_call(inputs, result))
+        crate::value_plan::ValueResult::Materialized(crate::foreign_call::lower_foreign_call(
+            self, inputs, result,
+        ))
     }
     fn emit_runtime_call(
         &mut self,
@@ -3234,6 +3024,190 @@ fn emit_marshal_tag_ne(mir: &mut X86Mir, tag: VReg, discriminant: u32, label: La
         });
     }
     mir.push(X86Inst::Jnz { label });
+}
+
+impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
+    fn target_c_flavor(&self) -> rue_air::TargetCAbiFlavor {
+        rue_air::TargetCAbiFlavor::SysVAmd64
+    }
+
+    fn foreign_int_arg_register_count(&self) -> usize {
+        ARG_REGS.len()
+    }
+
+    fn foreign_reserve_sret(&mut self, image: &crate::foreign_call::AggregateImage) -> VReg {
+        self.mir.push(X86Inst::AddRI {
+            dst: Operand::Physical(Reg::Rsp),
+            imm: -checked_displacement_bytes(u64::from(image.storage_bytes))
+                .expect("foreign sret storage must fit displacement"),
+        });
+        let ptr = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(ptr),
+            src: Operand::Physical(Reg::Rsp),
+        });
+        ptr
+    }
+
+    fn foreign_get_vreg(&mut self, value: CfgValue) -> VReg {
+        self.get_vreg(value)
+    }
+
+    fn foreign_image_arg_eightbytes(
+        &mut self,
+        value: CfgValue,
+        image: &crate::foreign_call::AggregateImage,
+    ) -> Vec<VReg> {
+        self.image_arg_eightbytes(value, image)
+    }
+
+    fn foreign_byref_copy(
+        &mut self,
+        _value: CfgValue,
+        _image: &crate::foreign_call::AggregateImage,
+    ) -> VReg {
+        panic!("SysV AMD64 does not pass foreign aggregates by reference")
+    }
+
+    fn foreign_emit_stack_args(&mut self, stack_ops: &[VReg]) {
+        let count = u64::try_from(stack_ops.len()).expect("foreign stack slot count must fit u64");
+        let cell_bytes =
+            checked_cell_region_bytes(count).expect("foreign stack area must fit displacement");
+        let stack_bytes = checked_aligned_cell_region_bytes(count)
+            .expect("foreign stack area must pass frame-budget preflight");
+        if stack_bytes > cell_bytes {
+            self.mir.push(X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rsp),
+                imm: -i32::try_from(
+                    checked_cell_region_padding_bytes(count)
+                        .expect("foreign stack alignment padding must fit displacement"),
+                )
+                .expect("foreign stack alignment padding must fit i32"),
+            });
+        }
+        for v in stack_ops.iter().rev() {
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rax),
+                src: Operand::Virtual(*v),
+            });
+            self.mir.push(X86Inst::Push {
+                src: Operand::Physical(Reg::Rax),
+            });
+        }
+    }
+
+    fn foreign_emit_register_args(&mut self, int_ops: &[VReg]) {
+        for v in int_ops.iter().rev() {
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rax),
+                src: Operand::Virtual(*v),
+            });
+            self.mir.push(X86Inst::Push {
+                src: Operand::Physical(Reg::Rax),
+            });
+        }
+        for (index, _) in int_ops.iter().enumerate() {
+            self.mir.push(X86Inst::Pop {
+                dst: Operand::Physical(ARG_REGS[index]),
+            });
+        }
+    }
+
+    fn foreign_assign_sret(&mut self, _sret_ptr: VReg) {
+        panic!("SysV AMD64 assigns sret through the first integer argument")
+    }
+
+    fn foreign_issue_call(&mut self, symbol: &str) {
+        let symbol_id = self.intern_symbol(symbol);
+        self.mir.push(X86Inst::call(symbol_id));
+    }
+
+    fn foreign_cleanup_stack(&mut self, stack_count: usize) {
+        if stack_count > 0 {
+            let stack_bytes = checked_aligned_cell_region_bytes(
+                u64::try_from(stack_count).expect("foreign stack slot count must fit u64"),
+            )
+            .expect("foreign stack area must pass frame-budget preflight");
+            self.mir.push(X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rsp),
+                imm: checked_displacement_bytes(u64::from(stack_bytes))
+                    .expect("foreign stack area must fit displacement"),
+            });
+        }
+    }
+
+    fn foreign_cleanup_byref(&mut self, _byref_bytes: u32) {}
+
+    fn foreign_zero_result(&mut self, primary: VReg) {
+        self.mir.push(X86Inst::MovRI32 {
+            dst: Operand::Virtual(primary),
+            imm: 0,
+        });
+    }
+
+    fn foreign_scalar_result(&mut self, primary: VReg, ext: rue_air::ScalarAbiExtension) {
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(primary),
+            src: Operand::Physical(Reg::Rax),
+        });
+        self.emit_c_return_extension(primary, ext);
+    }
+
+    fn foreign_register_result(
+        &mut self,
+        _primary: VReg,
+        image: &crate::foreign_call::AggregateImage,
+    ) -> Vec<VReg> {
+        self.mir.push(X86Inst::AddRI {
+            dst: Operand::Physical(Reg::Rsp),
+            imm: -checked_displacement_bytes(u64::from(image.storage_bytes))
+                .expect("foreign result storage must fit displacement"),
+        });
+        let buf = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(buf),
+            src: Operand::Physical(Reg::Rsp),
+        });
+        let mut eb_vals = Vec::with_capacity(image.eightbytes() as usize);
+        for index in 0..image.eightbytes() as usize {
+            let v = self.mir.alloc_vreg();
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Virtual(v),
+                src: Operand::Physical(RET_REGS[index]),
+            });
+            eb_vals.push(v);
+        }
+        crate::agg_slots::store_slots_through_ptr(self, &eb_vals, buf, 0);
+        let native = crate::agg_slots::load_enum_slots_through_ptr(self, buf, &image.map);
+        self.mir.push(X86Inst::AddRI {
+            dst: Operand::Physical(Reg::Rsp),
+            imm: checked_displacement_bytes(u64::from(image.storage_bytes))
+                .expect("foreign result storage must fit displacement"),
+        });
+        native
+    }
+
+    fn foreign_sret_result(
+        &mut self,
+        _primary: VReg,
+        image: &crate::foreign_call::AggregateImage,
+        sret_ptr: VReg,
+    ) -> Vec<VReg> {
+        let native = crate::agg_slots::load_enum_slots_through_ptr(self, sret_ptr, &image.map);
+        self.mir.push(X86Inst::AddRI {
+            dst: Operand::Physical(Reg::Rsp),
+            imm: checked_displacement_bytes(u64::from(image.storage_bytes))
+                .expect("foreign sret storage must fit displacement"),
+        });
+        native
+    }
+
+    fn foreign_move_primary(&mut self, primary: VReg, slot: VReg) {
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(primary),
+            src: Operand::Virtual(slot),
+        });
+    }
 }
 
 impl crate::agg_slots::SlotBackend for CfgLower<'_> {
