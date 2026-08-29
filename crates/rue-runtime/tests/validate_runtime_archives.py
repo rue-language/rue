@@ -631,8 +631,13 @@ def _validate_bodies(path: Path, bodies: dict, expected_format: str,
                     f"{path}: {symbol} recursively transfers to reserved symbol {normalized}"
                 )
             target_body = _target_body(bodies, target, expected_format)
-            if target_body is not None:
-                audit_reachable(target_body, seen, symbol)
+            if target_body is None:
+                destination = normalized or "<unnamed relocation>"
+                raise AssertionError(
+                    f"{path}: {symbol} has unresolved reachable control transfer "
+                    f"to {destination}"
+                )
+            audit_reachable(target_body, seen, symbol)
 
     def reaches_accessor(current, seen, root_name, symbol):
         if current["name"] in seen:
