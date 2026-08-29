@@ -560,32 +560,82 @@ def has_non_stack_word_access(code: bytes, machine: int) -> bool:
     return False
 
 
-def relocation_is_control_transfer(code: bytes, offset: int, machine: int):
-    if machine == 62:
-        for opcode_offset in (offset - 1, offset):
-            if 0 <= opcode_offset < len(code) and code[opcode_offset] in (0xE8, 0xE9, 0xEB):
-                return "call" if code[opcode_offset] == 0xE8 else "branch"
-        # Indirect calls/jumps use FF /2 or FF /4. Relocations are attached
-        # to the displacement/immediate, so account for the opcode and ModRM
-        # immediately before the relocation rather than treating every REX
-        # prefix as a transfer.
-        for opcode_offset in (offset - 2, offset - 1, offset):
-            if 0 <= opcode_offset + 1 < len(code):
-                opcode = code[opcode_offset]
-                if 0x40 <= opcode <= 0x4F and opcode_offset + 2 < len(code):
-                    opcode, modrm = code[opcode_offset + 1], code[opcode_offset + 2]
-                else:
-                    modrm = code[opcode_offset + 1]
-                if opcode == 0xFF and ((modrm >> 3) & 7) in (2, 4):
-                    return "call-or-branch"
+def _x86_control_transfer_at(code: bytes, index: int, offset: int):
+    """Classify a direct or RIP-relative indirect transfer at instruction index."""
+    cursor = index
+    while cursor < len(code) and 0x40 <= code[cursor] <= 0x4F:
+        cursor += 1
+    if cursor >= len(code):
         return None
-    if offset < 0 or offset + 4 > len(code):
+    opcode = code[cursor]
+    if opcode in (0xE8, 0xE9):
+        return ("call" if opcode == 0xE8 else "branch") if offset == cursor + 1 else None
+    if opcode != 0xFF or cursor + 1 >= len(code):
         return None
-    word = struct.unpack_from("<I", code, offset)[0]
-    if word & 0xfc000000 == 0x94000000:
-        return "call"
-    if word & 0xfc000000 == 0x14000000:
-        return "branch"
+    modrm = code[cursor + 1]
+    if ((modrm >> 3) & 7) not in (2, 4) or modrm >> 6 == 3:
+        return None
+    # Relocations on indirect calls/jumps name the memory displacement. Find
+    # that exact field rather than looking at bytes immediately before offset.
+    parsed = _x86_modrm_end(code, cursor + 2, modrm, code[cursor - 1] if cursor > index else 0)
+    if parsed is None:
+        return None
+    end, _ = parsed
+    mod = modrm >> 6
+    rm = modrm & 7
+    displacement = cursor + 2
+    if rm == 4:
+        displacement += 1
+        sib = code[cursor + 2]
+        if mod == 0 and (sib & 7) == 5:
+            return "call-or-branch" if offset == displacement else None
+    if mod == 0 and rm == 5:
+        return "call-or-branch" if offset == displacement else None
+    if mod == 1:
+        displacement += 1
+    elif mod == 2:
+        displacement += 4
+    else:
+        return None
+    return "call-or-branch" if offset == displacement else None
+
+
+def relocation_is_control_transfer(code: bytes, offset: int, machine: int,
+                                    relocation_kind: int, expected_format: str):
+    """Recognize only allowlisted relocations attached to decoded transfers."""
+    if expected_format == "elf" and machine == 62:
+        if relocation_kind not in (2, 4, 41, 42):  # PC32, PLT32, GOTPCRELX variants
+            return None
+        index = 0
+        while index < len(code):
+            decoded = _decode_x86_instruction(code, index)
+            if decoded is None:
+                return None
+            if _x86_control_transfer_at(code, index, offset) is not None:
+                return _x86_control_transfer_at(code, index, offset)
+            index = decoded[0]
+        return None
+    if expected_format == "elf" and machine == 183:
+        if relocation_kind not in (282, 283):  # JUMP26, CALL26
+            return None
+        if offset < 0 or offset + 4 > len(code):
+            return None
+        word = struct.unpack_from("<I", code, offset)[0]
+        if word & 0xfc000000 == 0x94000000:
+            return "call"
+        if word & 0xfc000000 == 0x14000000:
+            return "branch"
+        return None
+    if expected_format == "macho" and machine == MACHO_CPU_ARM64:
+        if relocation_kind != 2:  # ARM64_RELOC_BRANCH26
+            return None
+        if offset < 0 or offset + 4 > len(code):
+            return None
+        word = struct.unpack_from("<I", code, offset)[0]
+        if word & 0xfc000000 == 0x94000000:
+            return "call"
+        if word & 0xfc000000 == 0x14000000:
+            return "branch"
     return None
 
 
@@ -621,9 +671,10 @@ def _validate_bodies(path: Path, bodies: dict, expected_format: str,
         # A reserved export must never call/jump to another reserved export,
         # even when it also contains a word access. This catches accidental
         # compiler-builtins recursion and tail recursion.
-        for offset, target, _ in current["relocs"]:
+        for offset, target, kind in current["relocs"]:
             if not relocation_is_control_transfer(current["code"], offset,
-                                                   expected_machine):
+                                                   expected_machine, kind,
+                                                   expected_format):
                 continue
             normalized = _normalized_target(target, expected_format)
             if normalized in RESERVED_SYMBOLS and symbol in RESERVED_SYMBOLS:
@@ -657,9 +708,10 @@ def _validate_bodies(path: Path, bodies: dict, expected_format: str,
         # leaving the real chunk accessor as another relocation. Explore all
         # local control-transfer candidates, but only accept a canonical body or
         # the named chunk accessors as proof of the required implementation.
-        for offset, target, _ in current["relocs"]:
+        for offset, target, kind in current["relocs"]:
             if not relocation_is_control_transfer(current["code"], offset,
-                                                   expected_machine) or not target:
+                                                   expected_machine, kind,
+                                                   expected_format) or not target:
                 continue
             target_body = _target_body(bodies, target, expected_format)
             if target_body is not None and reaches_accessor(
