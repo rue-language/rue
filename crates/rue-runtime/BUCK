@@ -54,6 +54,11 @@ runtime_staticlib(
     visibility = ["PUBLIC"],
 )
 
+export_file(
+    name = "runtime-str-eq-source",
+    src = "src/string.rs",
+)
+
 rue_sh_test(
     name = "runtime-archives-test",
     platform = "native",
@@ -63,7 +68,14 @@ rue_sh_test(
         "RUNTIME_X86_64_LINUX": "$(location :rue-runtime-x86_64-unknown-linux-gnu)",
         "RUNTIME_AARCH64_LINUX": "$(location :rue-runtime-aarch64-unknown-linux-gnu)",
         "RUNTIME_AARCH64_MACOS": "$(location :rue-runtime-aarch64-apple-darwin)",
+        "RUNTIME_STRING_SOURCE": "$(location :runtime-str-eq-source)",
     },
+)
+
+rue_sh_test(
+    name = "runtime-archive-parser-test",
+    test = "tests/test_validate_runtime_archives.py",
+    resources = ["tests/validate_runtime_archives.py"],
 )
 
 # Unit tests for the runtime, compiled natively for the host WITHOUT the

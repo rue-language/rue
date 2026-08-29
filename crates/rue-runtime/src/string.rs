@@ -32,8 +32,8 @@ crate::define_runtime_implementation! {
     /// # Implementation
     ///
     /// Fast path: If lengths differ, strings cannot be equal (returns 0).
-    /// Slow path: Compare bytes one by one until a difference is found or
-    /// all bytes match.
+    /// Slow path: Compare through the runtime's alignment-safe chunked byte
+    /// equality primitive.
     ///
     /// # Safety
     ///
@@ -56,22 +56,12 @@ crate::define_runtime_implementation! {
             return 1;
         }
 
-        // Slow path: compare bytes one by one
-        // We avoid slice comparison (==) because it generates a call to bcmp,
-        // which is a libc function not available in our no_std runtime.
-        for i in 0..len1 as usize {
-            // SAFETY: Reading from both pointers is safe because:
-            // - `i < len1` (which equals len2) is our loop invariant
-            // - Caller guarantees `ptr1` is valid for reads of `len1` bytes
-            // - Caller guarantees `ptr2` is valid for reads of `len2` bytes
-            // - u8 has no alignment requirements
-            let b1 = unsafe { *ptr1.add(i) };
-            let b2 = unsafe { *ptr2.add(i) };
-            if b1 != b2 {
-                return 0;
-            }
-        }
-        1
+        // Use the canonical runtime comparison authority. This avoids Rust
+        // slice equality, which can lower to an external libc bcmp symbol,
+        // while retaining the same pointer-validity contract.
+        // SAFETY: Equal lengths and the caller's contract make both ranges
+        // valid for the comparison.
+        (unsafe { crate::memory::bcmp(ptr1, ptr2, len1 as usize) == 0 }) as u64
     }
 }
 
@@ -662,9 +652,68 @@ mod tests {
         // SAFETY: every pointer/length pair names a live byte array.
         unsafe {
             assert_eq!(__rue_str_eq(a.as_ptr(), 4, b.as_ptr(), 4), 1);
+            assert_eq!(__rue_str_eq(a.as_ptr(), 4, a.as_ptr(), 4), 1);
             assert_eq!(__rue_str_eq(a.as_ptr(), 4, c.as_ptr(), 5), 0);
             assert_eq!(__rue_str_eq(a.as_ptr(), 4, d.as_ptr(), 4), 0);
             assert_eq!(__rue_str_eq(a.as_ptr(), 0, d.as_ptr(), 0), 1);
+        }
+    }
+
+    #[test]
+    fn str_eq_zero_length_accepts_null_and_distinct_pointers() {
+        let byte = 0u8;
+        // SAFETY: Both views have zero length, so null pointers are valid.
+        unsafe {
+            assert_eq!(__rue_str_eq(core::ptr::null(), 0, &byte, 0), 1);
+            assert_eq!(__rue_str_eq(&byte, 0, core::ptr::null(), 0), 1);
+        }
+    }
+
+    #[test]
+    fn str_eq_handles_chunk_boundaries_and_unaligned_slices() {
+        let chunk_size = core::mem::size_of::<u64>();
+        for length in 0..=(chunk_size * 4 + 3) {
+            for left_offset in 0..chunk_size {
+                for right_offset in 0..chunk_size {
+                    let mut left = self::std::vec![0xa5; 128];
+                    let mut right = self::std::vec![0x5a; 128];
+                    for index in 0..=(chunk_size * 4 + 3) {
+                        let value = (index as u8).wrapping_mul(37).wrapping_add(11);
+                        left[left_offset + index] = value;
+                        right[right_offset + index] = value;
+                    }
+                    // SAFETY: Both pointers name valid buffers for `length`
+                    // bytes; offsets intentionally cover every byte alignment.
+                    unsafe {
+                        assert_eq!(
+                            __rue_str_eq(
+                                left.as_ptr().add(left_offset),
+                                length as u64,
+                                right.as_ptr().add(right_offset),
+                                length as u64,
+                            ),
+                            1
+                        );
+                    }
+                    for mismatch in 0..length {
+                        left[left_offset + mismatch] ^= 1;
+                        // SAFETY: The changed byte remains within the valid
+                        // string range and the two ranges have equal lengths.
+                        unsafe {
+                            assert_eq!(
+                                __rue_str_eq(
+                                    left.as_ptr().add(left_offset),
+                                    length as u64,
+                                    right.as_ptr().add(right_offset),
+                                    length as u64,
+                                ),
+                                0
+                            );
+                        }
+                        left[left_offset + mismatch] ^= 1;
+                    }
+                }
+            }
         }
     }
 
