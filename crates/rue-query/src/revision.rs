@@ -9,6 +9,7 @@ use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 
 use ahash::AHashSet;
 
+use crate::executor::ReusableBatchExecutor;
 use crate::*;
 
 pub(crate) static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
@@ -44,10 +45,13 @@ pub(crate) struct RuntimeCore {
     retention_sweep_cursor: AtomicU64,
     retention_sweep_claimed: AtomicBool,
     retention_sweep_pending: AtomicBool,
-    /// Spawned structured-batch workers currently alive across every root and
-    /// nesting depth. The caller always executes one child inline; this global
-    /// counter caps additional OS threads at `permits.maximum - 1`.
+    /// Granted structured-batch worker jobs currently live across every root
+    /// and nesting depth. The caller always executes one child inline; this
+    /// global counter caps additional jobs at `permits.maximum - 1` before the
+    /// reusable physical executor receives them.
     pub(crate) batch_workers: AtomicUsize,
+    /// Reusable physical mapping for slots granted by `batch_workers`.
+    pub(crate) batch_executor: ReusableBatchExecutor,
     pub(crate) next_task: AtomicU64,
     next_family: AtomicU64,
     pub(crate) next_node: AtomicU64,
@@ -454,6 +458,7 @@ impl QueryRuntime {
         retention_budgets: RetentionBudgets,
     ) -> Self {
         assert!(max_concurrency > 0, "query concurrency must be nonzero");
+        let batch_executor = ReusableBatchExecutor::new(max_concurrency.saturating_sub(1));
         Self {
             core: Arc::new(RuntimeCore {
                 identity: NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed),
@@ -479,6 +484,7 @@ impl QueryRuntime {
                 retention_sweep_claimed: AtomicBool::new(false),
                 retention_sweep_pending: AtomicBool::new(false),
                 batch_workers: AtomicUsize::new(0),
+                batch_executor,
                 next_task: AtomicU64::new(1),
                 next_family: AtomicU64::new(1),
                 next_node: AtomicU64::new(1),

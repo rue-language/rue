@@ -15,7 +15,7 @@ use crate::sanity::{is_commit, is_sha256_digest, is_utc_timestamp};
 use crate::{DisplayIdentityWork, EnvironmentFingerprint, median, median_absolute_deviation};
 
 /// Version of the retained-session raw report wire format.
-pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 8;
+pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 9;
 
 /// One retained-session edit class from ADR-0068's initial matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -778,6 +778,25 @@ pub struct ValidationWork {
     pub certificates_published: u64,
 }
 
+/// Query scheduler and physical worker measurements for one warm request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuerySchedulingMeasurements {
+    /// Active execution-permit time summed across query workers.
+    pub query_worker_active_ns: u64,
+    /// Extra logical registered-batch lanes requested and granted.
+    pub batch_worker_slots_requested: u64,
+    pub batch_worker_slots_granted: u64,
+    /// Registered-batch lanes entered, including donating-parent inline lanes.
+    pub batch_worker_lanes_entered: u64,
+    /// Actual reusable operating-system workers created during this request.
+    pub batch_worker_thread_births: u64,
+    /// Job dispatch plus post-worker-completion delivery tail. This excludes
+    /// time blocked waiting for useful worker execution and is not additive
+    /// with active time or request wall time.
+    pub batch_worker_coordinator_residual_ns: u64,
+}
+
 impl OracleComparison {
     fn warm(&self) -> &OutcomeIdentity {
         match self {
@@ -808,6 +827,8 @@ pub struct EditSample {
     pub validation: ValidationWork,
     /// Presentation-only query identity materialization during the warm request.
     pub display_identities: DisplayIdentityWork,
+    /// Logical scheduling, physical thread births, and coordinator residual.
+    pub query_scheduling: QuerySchedulingMeasurements,
     /// Retained memory and observation gauges at the endpoint.
     pub retention: RetainedGauges,
     /// Fresh-session correctness comparison performed outside timing.
@@ -1344,6 +1365,38 @@ pub fn validate_edit_report(manifest: &EditManifest, report: &EditReport) -> Edi
                 }
                 _ => {}
             }
+            let scheduling = sample.query_scheduling;
+            if scheduling.batch_worker_slots_granted > scheduling.batch_worker_slots_requested {
+                errors.push(finding(
+                    &sample_path,
+                    "granted batch-worker slots exceed requested slots",
+                ));
+            }
+            if scheduling.batch_worker_thread_births
+                > u64::from(sample.resolved_workers.saturating_sub(1))
+            {
+                errors.push(finding(
+                    &sample_path,
+                    "batch-worker thread births exceed runtime capacity",
+                ));
+            }
+            if scheduling.batch_worker_lanes_entered < scheduling.batch_worker_slots_granted {
+                errors.push(finding(
+                    &sample_path,
+                    "fewer batch-worker lanes entered than slots were granted",
+                ));
+            }
+            if sample.resolved_workers == 1
+                && (scheduling.batch_worker_slots_granted != 0
+                    || scheduling.batch_worker_lanes_entered != 0
+                    || scheduling.batch_worker_thread_births != 0
+                    || scheduling.batch_worker_coordinator_residual_ns != 0)
+            {
+                errors.push(finding(
+                    &sample_path,
+                    "single-worker warm request reported registered-batch threads",
+                ));
+            }
             if sample.transformation.id().trim().is_empty() {
                 errors.push(finding(&sample_path, "transformation id is empty"));
             }
@@ -1618,6 +1671,18 @@ pub struct DisplayIdentityWorkSummary {
     pub abort_fallback_bytes: EndpointSummary,
 }
 
+/// Median and MAD for warm-request query scheduling measurements.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuerySchedulingSummary {
+    pub query_worker_active_ns: EndpointSummary,
+    pub batch_worker_slots_requested: EndpointSummary,
+    pub batch_worker_slots_granted: EndpointSummary,
+    pub batch_worker_lanes_entered: EndpointSummary,
+    pub batch_worker_thread_births: EndpointSummary,
+    pub batch_worker_coordinator_residual_ns: EndpointSummary,
+}
+
 /// Fresh-link band derived from successful cumulative endpoints.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1654,6 +1719,8 @@ pub struct EditRowSummary {
     pub work: StructuralWorkSummary,
     /// Presentation-only query identity materialization.
     pub display_identities: DisplayIdentityWorkSummary,
+    /// Warm-request scheduler and physical-thread measurements.
+    pub query_scheduling: QuerySchedulingSummary,
 }
 
 /// Deterministic derived edit report.
@@ -1725,6 +1792,25 @@ fn derived_display_identity_work(samples: &[EditSample]) -> DisplayIdentityWorkS
             work.abort_fallback_materializations
         })),
         abort_fallback_bytes: summarize(&values(|work| work.abort_fallback_bytes)),
+    }
+}
+
+fn derived_query_scheduling(samples: &[EditSample]) -> QuerySchedulingSummary {
+    let values = |project: fn(&QuerySchedulingMeasurements) -> u64| {
+        samples
+            .iter()
+            .map(|sample| project(&sample.query_scheduling))
+            .collect::<Vec<_>>()
+    };
+    QuerySchedulingSummary {
+        query_worker_active_ns: summarize(&values(|work| work.query_worker_active_ns)),
+        batch_worker_slots_requested: summarize(&values(|work| work.batch_worker_slots_requested)),
+        batch_worker_slots_granted: summarize(&values(|work| work.batch_worker_slots_granted)),
+        batch_worker_lanes_entered: summarize(&values(|work| work.batch_worker_lanes_entered)),
+        batch_worker_thread_births: summarize(&values(|work| work.batch_worker_thread_births)),
+        batch_worker_coordinator_residual_ns: summarize(&values(|work| {
+            work.batch_worker_coordinator_residual_ns
+        })),
     }
 }
 
@@ -1805,6 +1891,7 @@ pub fn derive_edit_report(
                     }),
                     work: derived_work(&row.samples),
                     display_identities: derived_display_identity_work(&row.samples),
+                    query_scheduling: derived_query_scheduling(&row.samples),
                 }
             })
             .collect()
@@ -1832,7 +1919,7 @@ pub fn derive_edit_report(
         .map(|step| step.retention.current_bytes)
         .unwrap_or(0);
     Ok(EditSummary {
-        schema_version: 2,
+        schema_version: 3,
         fixture_revision: report.identity.fixture_revision,
         commit: report.identity.commit.clone(),
         target: report.identity.target.clone(),
@@ -1911,6 +1998,33 @@ pub fn render_edit_report_markdown(summary: &EditSummary) -> String {
         }
         out.push('\n');
 
+        out.push_str("## Query worker construction\n\n");
+        out.push_str("Counts and nanoseconds are median ± MAD for the warm request. Births count actual reusable OS workers created during that request; requested/granted/entered are logical scheduler evidence. Coordinator residual is synchronous job dispatch plus only the completion-delivery tail after each worker recorded completion. It excludes wait for useful execution and must not be added to worker-active or request wall time.\n\n");
+        out.push_str("| workload | scenario | workers | requested/granted/entered | OS-thread births | active ms | coordinator residual ms |\n");
+        out.push_str("| --- | --- | --- | ---: | ---: | ---: | ---: |\n");
+        for row in &summary.rows {
+            let work = &row.query_scheduling;
+            out.push_str(&format!(
+                "| {} | {} | {} | {} ± {}/{} ± {}/{} ± {} | {} ± {} | {:.3} ± {:.3} | {:.3} ± {:.3} |\n",
+                row.workload,
+                row.scenario.wire_name(),
+                row.worker_mode.wire_name(),
+                work.batch_worker_slots_requested.median,
+                work.batch_worker_slots_requested.mad,
+                work.batch_worker_slots_granted.median,
+                work.batch_worker_slots_granted.mad,
+                work.batch_worker_lanes_entered.median,
+                work.batch_worker_lanes_entered.mad,
+                work.batch_worker_thread_births.median,
+                work.batch_worker_thread_births.mad,
+                work.query_worker_active_ns.median as f64 / 1_000_000.0,
+                work.query_worker_active_ns.mad as f64 / 1_000_000.0,
+                work.batch_worker_coordinator_residual_ns.median as f64 / 1_000_000.0,
+                work.batch_worker_coordinator_residual_ns.mad as f64 / 1_000_000.0,
+            ));
+        }
+        out.push('\n');
+
         out.push_str("## Query display identities\n\n");
         out.push_str("Counts and UTF-8 key bytes are median ± MAD for identities the warm request actually formatted. Structured-wait values count only labels rendered for a detected wait cycle; registering an acyclic edge is free of display formatting. Shared family names are excluded.\n\n");
         out.push_str("| workload | scenario | workers | memo nodes count/bytes | structured waits count/bytes | abort fallbacks count/bytes |\n");
@@ -1957,7 +2071,7 @@ mod tests {
 
     const MANIFEST: &str = r#"
 schema_version = 2
-report_schema_version = 8
+report_schema_version = 9
 fixture_revision = 3
 timing_samples_per_row = 5
 structural_samples_per_row = 1
@@ -2140,6 +2254,21 @@ minimum_memory_bytes = 15000000000
                 abort_fallback_materializations: u64::from(sample_index),
                 abort_fallback_bytes: 2 * u64::from(sample_index),
             },
+            query_scheduling: if mode == WorkerMode::One {
+                QuerySchedulingMeasurements {
+                    query_worker_active_ns: 1_000_000 + u64::from(sample_index),
+                    ..Default::default()
+                }
+            } else {
+                QuerySchedulingMeasurements {
+                    query_worker_active_ns: 2_000_000 + u64::from(sample_index),
+                    batch_worker_slots_requested: 6,
+                    batch_worker_slots_granted: 3,
+                    batch_worker_lanes_entered: 4,
+                    batch_worker_thread_births: 3,
+                    batch_worker_coordinator_residual_ns: 100_000 + u64::from(sample_index),
+                }
+            },
             retention: gauges(sample_index),
             oracle: OracleComparison::Matched {
                 warm: identity.clone(),
@@ -2280,7 +2409,7 @@ minimum_memory_bytes = 15000000000
             first.rows.iter().map(|row| row.sample_count).sum::<u32>(),
             24
         );
-        assert_eq!(first.schema_version, 2);
+        assert_eq!(first.schema_version, 3);
         assert!(first.reference_host_eligible);
         assert_eq!(first.retention_query_evictions, 12);
         assert_eq!(
@@ -2291,6 +2420,22 @@ minimum_memory_bytes = 15000000000
             10
         );
         assert_eq!(first.rows[0].display_identities.memo_node_bytes.median, 100);
+        let automatic = first
+            .rows
+            .iter()
+            .find(|row| row.worker_mode == WorkerMode::Automatic)
+            .unwrap();
+        assert_eq!(
+            automatic.query_scheduling.batch_worker_thread_births.median,
+            3
+        );
+        assert_eq!(
+            automatic
+                .query_scheduling
+                .batch_worker_coordinator_residual_ns
+                .median,
+            100_000
+        );
         assert_eq!(
             first.rows[0]
                 .display_identities
@@ -2304,6 +2449,7 @@ minimum_memory_bytes = 15000000000
         );
         assert!(render_edit_report_markdown(&first).contains("12 query evictions"));
         assert!(render_edit_report_markdown(&first).contains("Query display identities"));
+        assert!(render_edit_report_markdown(&first).contains("Query worker construction"));
         assert_eq!(
             render_edit_report_markdown(&first),
             render_edit_report_markdown(&second)
@@ -2446,8 +2592,8 @@ minimum_memory_bytes = 15000000000
 
         let json = serde_json::to_string(&report(&manifest)).unwrap();
         let unknown = json.replacen(
-            "\"schema_version\":8",
-            "\"schema_version\":8,\"surprise\":true",
+            "\"schema_version\":9",
+            "\"schema_version\":9,\"surprise\":true",
             1,
         );
         assert!(

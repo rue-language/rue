@@ -75,9 +75,10 @@ pub use incremental::{
     EditManifestError, EditOutcome, EditReport, EditReportIdentity, EditReportRegime, EditRow,
     EditRowSummary, EditSample, EditScenario, EditScenarioDeclaration, EditSummary, EditValidation,
     EditWorkload, EndpointSummary, ExpectedEditOutcome, FailureStage, HostClass, LinkBandSummary,
-    OptimizationSetting, OracleComparison, OutcomeIdentity, OutcomeKind, PhaseWork, ReferenceHost,
-    RetainedGauges, RetentionSequence, RetentionStep, RetentionStepOutcome, RotationRule,
-    SourceShape, StructuralWork, StructuralWorkSummary, TransformationIdentity, ValidationFinding,
+    OptimizationSetting, OracleComparison, OutcomeIdentity, OutcomeKind, PhaseWork,
+    QuerySchedulingMeasurements, QuerySchedulingSummary, ReferenceHost, RetainedGauges,
+    RetentionSequence, RetentionStep, RetentionStepOutcome, RotationRule, SourceShape,
+    StructuralWork, StructuralWorkSummary, TransformationIdentity, ValidationFinding,
     ValidationWork, WorkerDeclaration, WorkerMode, derive_edit_report, render_edit_report_markdown,
     validate_edit_report,
 };

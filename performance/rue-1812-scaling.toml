@@ -1,0 +1,18 @@
+schema_version = 3
+revision = 4
+samples = 3
+args = []
+compiler_build_profile = "release_thin_lto"
+boundary = "fresh_source_to_native_v1"
+target = "x86-64-linux"
+workers = ["one", "two", "four", "eight", "automatic"]
+
+[[workloads]]
+id = "mosaic"
+source = "examples/mosaic/main.rue"
+question = "How does compilation scale to a medium multi-module application?"
+
+[[workloads]]
+id = "lattice"
+source = "examples/lattice/main.rue"
+question = "How does compilation scale to the largest maintained maturity rung in the scheduled curve?"

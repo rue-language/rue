@@ -1,0 +1,219 @@
+diff --git a/crates/rue-query/src/context.rs b/crates/rue-query/src/context.rs
+--- a/crates/rue-query/src/context.rs
++++ b/crates/rue-query/src/context.rs
+@@ -701,62 +701,71 @@ impl QueryContext {
+-        let mut workers = Vec::with_capacity(worker_claim.count);
+         let mut coordinator_measurement = BatchCoordinatorMeasurement::new(&self.task.core.metrics);
+-        for _ in 0..worker_claim.count {
+-            let queue = queue.clone();
+-            let items = items.clone();
+-            let family = (*family).clone();
+-            let parent = self.task.clone();
+-            let authority = batch_authority.clone();
+-            let tracing_dispatch = tracing_dispatch.clone();
+-            let tracing_parent = tracing_parent.clone();
+-            let dispatch_started = Instant::now();
+-            let (worker, born) = self.task.core.batch_executor.submit(move || {
+-                run_registered_batch_worker(
+-                    queue,
+-                    items,
+-                    family,
+-                    parent,
+-                    authority,
+-                    tracing_dispatch,
+-                    tracing_parent,
+-                )
+-            });
+-            coordinator_measurement
+-                .record_submission(born, duration_ns(dispatch_started.elapsed()));
+-            workers.push(worker);
+-        }
+-        let inline = run_registered_batch_worker(
+-            queue.clone(),
+-            items.clone(),
+-            (*family).clone(),
+-            self.task.clone(),
+-            batch_authority.clone(),
+-            tracing_dispatch.clone(),
+-            tracing_parent.clone(),
+-        );
+-        let mut completed = Vec::new();
+-        let mut panic = None;
+-        match inline {
+-            Ok(inline_completed) => completed.extend(inline_completed),
+-            Err(payload) => panic = Some(payload),
+-        }
+-        for worker in workers {
+-            let wait_started = Instant::now();
+-            let (submitted_result, worker_finished_at) = worker.join();
+-            // The worker timestamp separates useful-execution wait from
+-            // completion delivery without changing the structured wait. If
+-            // the worker was already done, the whole receive is coordinator
+-            // residual; otherwise only the completion-to-return tail is.
+-            coordinator_measurement.record_completion_residual(
+-                batch_completion_coordinator_residual_ns(
+-                    wait_started,
+-                    worker_finished_at,
+-                    Instant::now(),
+-                ),
++        let (mut completed, panic) = std::thread::scope(|scope| {
++            let mut workers = Vec::with_capacity(worker_claim.count);
++            for _ in 0..worker_claim.count {
++                let queue = queue.clone();
++                let items = items.clone();
++                let family = family.clone();
++                let parent = self.task.clone();
++                let authority = batch_authority.clone();
++                let tracing_dispatch = tracing_dispatch.clone();
++                let tracing_parent = tracing_parent.clone();
++                let spawn_started = Instant::now();
++                let worker = std::thread::Builder::new()
++                    .name("rue-query-batch".into())
++                    .stack_size(REGISTERED_BATCH_WORKER_STACK_BYTES)
++                    .spawn_scoped(scope, move || {
++                        let result = run_registered_batch_worker(
++                            queue,
++                            items,
++                            family,
++                            parent,
++                            authority,
++                            tracing_dispatch,
++                            tracing_parent,
++                        );
++                        (result, Instant::now())
++                    })
++                    .expect("registered batch worker thread must spawn");
++                coordinator_measurement
++                    .record_submission(1, duration_ns(spawn_started.elapsed()));
++                workers.push(worker);
++            }
++            let inline = run_registered_batch_worker(
++                queue.clone(),
++                items.clone(),
++                family.clone(),
++                self.task.clone(),
++                batch_authority.clone(),
++                tracing_dispatch.clone(),
++                tracing_parent.clone(),
+             );
+-            match submitted_result {
+-                Ok(Ok(worker_completed)) => completed.extend(worker_completed),
+-                Ok(Err(payload)) | Err(payload) if panic.is_none() => panic = Some(payload),
+-                Ok(Err(_)) | Err(_) => {}
++            let mut completed = Vec::new();
++            let mut panic = None;
++            match inline {
++                Ok(inline_completed) => completed.extend(inline_completed),
++                Err(payload) => panic = Some(payload),
+             }
+-        }
++            for worker in workers {
++                let wait_started = Instant::now();
++                let (worker_result, worker_finished_at) = worker
++                    .join()
++                    .expect("registered batch workers catch their own unwinds");
++                // Only the completion-to-join-return tail is coordinator
++                // residual when useful worker execution finished later than
++                // the join began.
++                coordinator_measurement.record_completion_residual(
++                    batch_completion_coordinator_residual_ns(
++                        wait_started,
++                        worker_finished_at,
++                        Instant::now(),
++                    ),
++                );
++                match worker_result {
++                    Ok(worker_completed) => completed.extend(worker_completed),
++                    Err(payload) if panic.is_none() => panic = Some(payload),
++                    Err(_) => {}
++                }
++            }
++            (completed, panic)
++        });
+         drop(coordinator_measurement);
+diff --git a/crates/rue-query/src/lib.rs b/crates/rue-query/src/lib.rs
+--- a/crates/rue-query/src/lib.rs
++++ b/crates/rue-query/src/lib.rs
+@@ -6,7 +6,6 @@
+ use std::sync::{Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+ mod context;
+-mod executor;
+ mod hash;
+ mod metrics;
+ mod node;
+diff --git a/crates/rue-perf-schema/src/boundary.rs b/crates/rue-perf-schema/src/boundary.rs
+--- a/crates/rue-perf-schema/src/boundary.rs
++++ b/crates/rue-perf-schema/src/boundary.rs
+@@ -840,10 +840,6 @@ impl BuildBoundaryEvidence {
+         if critical.batch_worker_slots_granted > critical.batch_worker_slots_requested {
+             return Err("granted batch-worker slots exceed requested slots".to_string());
+         }
+-        let thread_capacity = u64::from(configuration.resolved_workers.saturating_sub(1));
+-        if critical.batch_worker_thread_births > thread_capacity {
+-            return Err("batch-worker thread births exceed runtime capacity".to_string());
+-        }
+         if critical.batch_worker_lanes_entered < critical.batch_worker_slots_granted {
+             return Err("fewer batch-worker lanes entered than slots were granted".to_string());
+         }
+diff --git a/crates/rue-perf-schema/src/incremental.rs b/crates/rue-perf-schema/src/incremental.rs
+--- a/crates/rue-perf-schema/src/incremental.rs
++++ b/crates/rue-perf-schema/src/incremental.rs
+@@ -1372,14 +1372,6 @@ pub fn validate_incremental_run(
+                     "granted batch-worker slots exceed requested slots",
+                 ));
+             }
+-            if scheduling.batch_worker_thread_births
+-                > u64::from(sample.resolved_workers.saturating_sub(1))
+-            {
+-                errors.push(finding(
+-                    &sample_path,
+-                    "batch-worker thread births exceed runtime capacity",
+-                ));
+-            }
+             if scheduling.batch_worker_lanes_entered < scheduling.batch_worker_slots_granted {
+                 errors.push(finding(
+                     &sample_path,
+diff --git a/crates/rue-query/src/revision.rs b/crates/rue-query/src/revision.rs
+--- a/crates/rue-query/src/revision.rs
++++ b/crates/rue-query/src/revision.rs
+@@ -9,7 +9,6 @@ use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
+
+ use ahash::AHashSet;
+
+-use crate::executor::ReusableBatchExecutor;
+ use crate::*;
+
+ pub(crate) static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
+@@ -45,12 +44,9 @@ pub(crate) struct RuntimeCore {
+     retention_sweep_claimed: AtomicBool,
+     retention_sweep_pending: AtomicBool,
+-    /// Granted structured-batch worker jobs currently live across every root
+-    /// and nesting depth. The caller always executes one child inline; this
+-    /// global counter caps additional jobs at `permits.maximum - 1` before the
+-    /// reusable physical executor receives them.
++    /// Spawned structured-batch workers currently alive across every root and
++    /// nesting depth. The caller always executes one child inline; this global
++    /// counter caps additional OS threads at `permits.maximum - 1`.
+     pub(crate) batch_workers: AtomicUsize,
+-    /// Reusable physical mapping for slots granted by `batch_workers`.
+-    pub(crate) batch_executor: ReusableBatchExecutor,
+     pub(crate) next_task: AtomicU64,
+     next_family: AtomicU64,
+     pub(crate) next_node: AtomicU64,
+@@ -458,7 +454,6 @@ impl QueryRuntime {
+         retention_budgets: RetentionBudgets,
+     ) -> Self {
+         assert!(max_concurrency > 0, "query concurrency must be nonzero");
+-        let batch_executor = ReusableBatchExecutor::new(max_concurrency.saturating_sub(1));
+         Self {
+             core: Arc::new(RuntimeCore {
+                 identity: NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed),
+@@ -484,7 +479,6 @@ impl QueryRuntime {
+                 retention_sweep_claimed: AtomicBool::new(false),
+                 retention_sweep_pending: AtomicBool::new(false),
+                 batch_workers: AtomicUsize::new(0),
+-                batch_executor,
+                 next_task: AtomicU64::new(1),
+                 next_family: AtomicU64::new(1),
+                 next_node: AtomicU64::new(1),

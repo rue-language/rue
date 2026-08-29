@@ -86,7 +86,7 @@ struct BenchmarkJson {
     critical_path: Option<CompilerCriticalPathEvidence>,
 }
 
-const BENCHMARK_JSON_SCHEMA_VERSION: u32 = 17;
+const BENCHMARK_JSON_SCHEMA_VERSION: u32 = 18;
 
 fn deserialize_benchmark_schema_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where
@@ -617,11 +617,11 @@ mod tests {
         let error = serde_json::from_str::<BenchmarkJson>(r#"{"schema_version":16}"#)
             .err()
             .expect("retired benchmark JSON schema must be rejected");
-        assert!(error.to_string().contains("expected 17"));
+        assert!(error.to_string().contains("expected 18"));
     }
 
     #[test]
-    fn benchmark_json_schema_17_is_accepted_by_the_parser() {
+    fn benchmark_json_schema_18_is_accepted_by_the_parser() {
         let phase_accounting = PhaseAccounting {
             phase_ns: BTreeMap::new(),
             mixed_parallel_ns: 0,
@@ -629,14 +629,14 @@ mod tests {
             compiler_root_ns: 0,
         };
         let value = serde_json::json!({
-            "schema_version": 17,
+            "schema_version": 18,
             "phase_accounting": phase_accounting,
             "metadata": {"target": "x86_64-linux", "compiler_build_profile": "test"},
             "source_metrics": {"files": 0, "modules": 0, "bytes": 0, "lines": 0, "tokens": 0, "functions": 0},
             "compiler_work": CompilerWork::default(),
             "emitted_output": {"size_bytes": 0, "sha256": ""}
         });
-        let parsed: BenchmarkJson = serde_json::from_value(value).expect("schema 17 parses");
+        let parsed: BenchmarkJson = serde_json::from_value(value).expect("schema 18 parses");
         assert_eq!(parsed._schema_version, BENCHMARK_JSON_SCHEMA_VERSION);
     }
 

@@ -19,10 +19,10 @@ use rue_perf_schema::{
     DisplayIdentityWork, EDIT_REPORT_SCHEMA_VERSION, EditEndpoints, EditManifest, EditOutcome,
     EditReport, EditReportIdentity, EditReportRegime, EditRow, EditSample, EditScenario,
     ExpectedEditOutcome, FailureStage, OptimizationSetting, OracleComparison, OutcomeIdentity,
-    OutcomeKind, PhaseWork, RetainedGauges, RetentionSequence, RetentionStep, RetentionStepOutcome,
-    SourceShape, StructuralWork, TransformationIdentity, ValidationWork as ReportValidationWork,
-    WorkerMode, canonical_json, derive_edit_report, is_commit, render_edit_report_markdown,
-    validate_edit_report,
+    OutcomeKind, PhaseWork, QuerySchedulingMeasurements, RetainedGauges, RetentionSequence,
+    RetentionStep, RetentionStepOutcome, SourceShape, StructuralWork, TransformationIdentity,
+    ValidationWork as ReportValidationWork, WorkerMode, canonical_json, derive_edit_report,
+    is_commit, render_edit_report_markdown, validate_edit_report,
 };
 use serde::Deserialize;
 
@@ -847,6 +847,15 @@ pub(crate) fn measure_sample(request: SampleRequest<'_>) -> Result<SampleObserva
             work,
             validation,
             display_identities: report_display_identity_work(query_runtime.display_identities),
+            query_scheduling: QuerySchedulingMeasurements {
+                query_worker_active_ns: query_runtime.query_worker_active_ns,
+                batch_worker_slots_requested: query_runtime.batch_worker_slots_requested,
+                batch_worker_slots_granted: query_runtime.batch_worker_slots_granted,
+                batch_worker_lanes_entered: query_runtime.batch_worker_lanes_entered,
+                batch_worker_thread_births: query_runtime.batch_worker_thread_births,
+                batch_worker_coordinator_residual_ns: query_runtime
+                    .batch_worker_coordinator_residual_ns,
+            },
             retention,
             oracle,
         },
