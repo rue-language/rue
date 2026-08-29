@@ -544,6 +544,127 @@ mod tests {
         );
     }
 
+    #[test]
+    fn optimized_cfg_batch_index_is_stable_source_guarded_and_drives_wide_codegen() {
+        let snapshot = wide_reached_program(64, 7);
+        let mut session = CompilerSession::new();
+        publish_test_snapshot(&mut session, &snapshot).unwrap();
+        let options = CompileOptions {
+            opt_level: rue_cfg::OptLevel::O2,
+            ..CompileOptions::default()
+        };
+        let rooted = session.rooted_cfg(&options).unwrap();
+        let batch = rooted.optimized_cfg_batch.clone();
+
+        // Every reached key resolves to its exact value slot without a
+        // program-wide positional scan.
+        for (position, key) in batch.keys.iter().enumerate() {
+            assert_eq!(
+                crate::codegen_query::OptimizedCfgBatchLookup::optimized_cfg_position(
+                    &batch,
+                    &batch.keys,
+                    key,
+                ),
+                Some(position)
+            );
+        }
+
+        // Equivalent contents from a different source allocation are not a
+        // valid authority, and a key absent from the batch is rejected.
+        let foreign_source: Arc<[_]> = batch.keys.iter().cloned().collect();
+        assert_eq!(
+            crate::codegen_query::OptimizedCfgBatchLookup::optimized_cfg_position(
+                &batch,
+                &foreign_source,
+                &batch.keys[0],
+            ),
+            None,
+            "a position authority cannot cross source slices"
+        );
+        let mut counterfeit = batch.keys[0].clone();
+        counterfeit.opt_level = rue_cfg::OptLevel::O0;
+        assert_eq!(
+            crate::codegen_query::OptimizedCfgBatchLookup::optimized_cfg_position(
+                &batch,
+                &batch.keys,
+                &counterfeit,
+            ),
+            None
+        );
+
+        // Reconstructing an equal query key creates a different transport
+        // authority, but must not change any public query identity plane.
+        let equivalent = crate::revisioned_query_database::OptimizedCfgBatchKey::new(
+            batch.keys.iter().cloned().collect(),
+            batch.generation,
+            batch.roots.iter().cloned().collect(),
+        );
+        assert_eq!(batch, equivalent);
+        assert_eq!(batch.stable_identity(), equivalent.stable_identity());
+        let stable_digest = |key: &crate::revisioned_query_database::OptimizedCfgBatchKey| {
+            let mut hasher = rue_query::StableHasher::new();
+            key.stable_hash(&mut hasher);
+            hasher.finish128()
+        };
+        assert_eq!(stable_digest(&batch), stable_digest(&equivalent));
+        let memo_hash = |key: &crate::revisioned_query_database::OptimizedCfgBatchKey| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(key, &mut hasher);
+            std::hash::Hasher::finish(&hasher)
+        };
+        assert_eq!(memo_hash(&batch), memo_hash(&equivalent));
+
+        // Exercise the actual rooted consumer across all representative units;
+        // the source-shape guard below makes the lookup complexity observable
+        // without a wall-clock threshold.
+        drop(rooted);
+        session
+            .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+            .expect("the wide rooted codegen batch must use its validated slots");
+    }
+
+    #[test]
+    #[should_panic(expected = "optimized-CFG batch contains duplicate query keys")]
+    fn optimized_cfg_batch_index_rejects_duplicate_keys() {
+        let snapshot = wide_reached_program(2, 7);
+        let mut session = CompilerSession::new();
+        publish_test_snapshot(&mut session, &snapshot).unwrap();
+        let rooted = session.rooted_cfg(&CompileOptions::default()).unwrap();
+        let batch = rooted.optimized_cfg_batch;
+        let _duplicate = crate::revisioned_query_database::OptimizedCfgBatchKey::new(
+            Arc::from([batch.keys[0].clone(), batch.keys[0].clone()]),
+            batch.generation,
+            batch.roots,
+        );
+    }
+
+    #[test]
+    fn rooted_codegen_batch_lookup_keeps_the_constant_time_authority() {
+        let codegen = include_str!("codegen_query.rs");
+        assert!(
+            codegen
+                .contains("batch_key.optimized_cfg_position(&batch_key.keys, &key.optimized_cfg)")
+        );
+        assert!(
+            !codegen.contains(".position(|candidate| candidate == &key.optimized_cfg)"),
+            "rooted codegen must not restore the program-wide position scan"
+        );
+
+        let backend = include_str!("revisioned_query_database/backend.rs");
+        let authority = backend
+            .split_once("impl OptimizedCfgBatchIndex {")
+            .expect("optimized-CFG batch index authority remains present")
+            .1
+            .split_once("#[derive(Debug, Clone, PartialEq, Eq, Hash)]")
+            .expect("index authority remains before the raw batch key")
+            .0;
+        assert!(authority.contains("self.positions.get(key).copied()?"));
+        assert!(
+            !authority.contains(".position("),
+            "the canonical authority must not degrade to a positional scan"
+        );
+    }
+
     #[cfg(unix)]
     fn execute_compiled_output(output: &CompileOutput, label: &str) -> std::process::Output {
         use std::os::unix::fs::PermissionsExt;
