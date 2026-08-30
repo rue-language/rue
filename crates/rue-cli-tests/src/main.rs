@@ -1087,6 +1087,11 @@ struct WatchScenario {
     /// was acted on but never announced on the protocol.
     #[serde(default)]
     boundary_delay_ms: Option<u64>,
+    /// Hold the watcher between starting its re-observation monitor and the
+    /// re-observation itself, so an edit can deterministically land while
+    /// the import graph is being re-closed (RUE-1830).
+    #[serde(default)]
+    reobserve_delay_ms: Option<u64>,
     edits: Vec<WatchEdit>,
     expected_exit_codes: Vec<i32>,
 }
@@ -1098,6 +1103,7 @@ enum WatchScenarioKind {
     Cancel,
     Delete,
     SymlinkRetarget,
+    SupersedeReobserve,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2579,6 +2585,13 @@ fn run_watch_case(
             "delete watch scenario requires delete and restore edits",
         ));
     }
+    if scenario.kind == WatchScenarioKind::SupersedeReobserve
+        && (scenario.edits.len() != 2 || scenario.reobserve_delay_ms.is_none())
+    {
+        return Err(TestFailure::fatal(
+            "supersede-reobserve watch scenario needs two edits and a re-observation delay",
+        ));
+    }
     if scenario.kind == WatchScenarioKind::SymlinkRetarget && scenario.edits.len() != 1 {
         return Err(TestFailure::assertion(
             "symlink-retarget watch scenario requires exactly one edit",
@@ -2666,6 +2679,9 @@ fn run_watch_case(
     if let Some(delay) = scenario.boundary_delay_ms {
         command.env("RUE_WATCH_TEST_BOUNDARY_DELAY_MS", delay.to_string());
     }
+    if let Some(delay) = scenario.reobserve_delay_ms {
+        command.env("RUE_WATCH_TEST_REOBSERVE_DELAY_MS", delay.to_string());
+    }
     configure_process_group(&mut command);
     let mut child = command
         .spawn()
@@ -2750,11 +2766,39 @@ fn run_watch_case(
             WatchScenarioKind::SymlinkRetarget => {
                 wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
             }
+            WatchScenarioKind::SupersedeReobserve => {
+                // The first edit wakes the settled loop; the widened
+                // re-observation window then lets the second edit land while
+                // the import graph is re-closing, superseding the stale
+                // attempt before compilation ever starts (RUE-1830).
+                wait_for_watch_event(&mut child, &protocol, "change-detected", 1, deadline)?;
+                wait_for_watch_event(&mut child, &protocol, "reobserve-started", 1, deadline)?;
+                write_watch_edit(dir, &scenario.edits[1])?;
+                wait_for_watch_event(&mut child, &protocol, "reobserve-superseded", 1, deadline)?;
+                wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
+                let events = watch_events(&protocol);
+                let superseded = events
+                    .iter()
+                    .position(|event| event == "reobserve-superseded")
+                    .ok_or_else(|| "watch supersession anchor disappeared".to_string())?;
+                // The superseded attempt committed nothing: a fresh
+                // re-observation over the newest bytes follows it before the
+                // next compile can start.
+                events
+                    .iter()
+                    .skip(superseded + 1)
+                    .position(|event| event == "reobserve-ok")
+                    .ok_or_else(|| {
+                        "watch never reobserved the newest revision after supersession".to_string()
+                    })?;
+            }
         }
         assert_watch_program(contract, &program, scenario.expected_exit_codes[1])
             .map_err(|error| error.to_string())?;
-        if scenario.kind == WatchScenarioKind::Cancel
-            && watch_event_count(&protocol, "published") != 2
+        if matches!(
+            scenario.kind,
+            WatchScenarioKind::Cancel | WatchScenarioKind::SupersedeReobserve
+        ) && watch_event_count(&protocol, "published") != 2
         {
             return Err(format!(
                 "watch published a stale intermediate revision: expected exactly 2 publications, events were {:?}",

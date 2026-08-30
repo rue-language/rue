@@ -109,3 +109,31 @@ source = "fn main() -> i32 { 2 }\n"
 [[case.watch.edits]]
 path = "main.rue"
 source = "fn main() -> i32 { 3 }\n"
+
+# RUE-1830. A watch cycle used to start its change monitor only after
+# re-observation and import-graph closure had completed, so an edit landing
+# while discovery was still re-closing could not supersede the stale attempt:
+# it was noticed only once compilation proper began, or on the next cycle.
+# `reobserve_delay_ms` widens the re-closure window on purpose so the second
+# edit deterministically lands inside it. The superseded attempt must commit
+# nothing: exactly one fresh re-observation over the newest bytes follows, and
+# only the newest revision's output ever publishes.
+[[case]]
+name = "change_during_reobserve_supersedes_the_stale_attempt"
+files = [
+    { path = "main.rue", source = "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n" },
+    { path = "helper.rue", source = "pub fn answer() -> i32 { 1 }\n" },
+]
+
+[case.watch]
+kind = "supersede_reobserve"
+reobserve_delay_ms = 400
+expected_exit_codes = [1, 3]
+
+[[case.watch.edits]]
+path = "helper.rue"
+source = "pub fn answer() -> i32 { 2 }\n"
+
+[[case.watch.edits]]
+path = "helper.rue"
+source = "pub fn answer() -> i32 { 3 }\n"

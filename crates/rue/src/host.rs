@@ -40,7 +40,18 @@ impl FilesystemCompilerHost {
 
     /// Re-observe the exact accepted-read closure and publish its successor.
     pub fn reobserve(&mut self) -> Result<(), SourceLoadError> {
-        reload_from_filesystem(&mut self.state)
+        reload_from_filesystem(&mut self.state, None)
+    }
+
+    /// Re-observe like [`Self::reobserve`], aborting promptly with
+    /// [`SourceLoadError::Superseded`] once `supersession` reports a newer
+    /// source revision (RUE-1830). A superseded attempt commits no snapshot,
+    /// manifest, or graph; the caller restarts from the newest bytes.
+    pub fn reobserve_superseding(
+        &mut self,
+        supersession: &dyn Fn() -> bool,
+    ) -> Result<(), SourceLoadError> {
+        reload_from_filesystem(&mut self.state, Some(supersession))
     }
 
     /// Satisfy compiler-issued reached-body toolchain demands for this revision.
