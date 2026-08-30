@@ -1221,6 +1221,44 @@ mod tests {
         assert!(!recovered.elf.is_empty());
     }
 
+    /// RUE-1827: canceling the revision while machine-code generation is in
+    /// flight aborts the rooted backend request through the cooperative
+    /// cancellation contract — the tripwire cancels the token from INSIDE the
+    /// backend kernel's own probe, so the stale attempt exits before
+    /// completing its unit — and the canceled attempt records no failure
+    /// terminal: the same session recompiles cleanly afterward.
+    #[test]
+    fn in_progress_codegen_cancellation_aborts_without_poisoning_reuse() {
+        let snapshot = wide_reached_program(64, 7);
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let cancellation = rue_query::CancellationToken::new();
+        crate::codegen_query::set_codegen_cancellation_tripwire(Some((cancellation.clone(), 40)));
+
+        let canceled = session.rooted_codegen_internal_with_cancellation(
+            &options,
+            rue_codegen::BackendArtifactRequest::default(),
+            cancellation.clone(),
+        );
+
+        crate::codegen_query::set_codegen_cancellation_tripwire(None);
+        assert!(matches!(
+            canceled,
+            Err(crate::session::PipelineRequestControl::Abort(
+                rue_query::QueryAbort::Canceled
+            ))
+        ));
+        assert!(cancellation.is_canceled());
+
+        let recovered = crate::queries::compile_with_session(&mut session, &snapshot, &options)
+            .expect("a canceled backend kernel must not poison retained compiler terminals");
+        assert!(!recovered.elf.is_empty());
+    }
+
     #[test]
     fn failed_wide_batches_release_their_unpublished_child_cones_under_pressure() {
         const CHAIN_FUNCTIONS: usize = 33;

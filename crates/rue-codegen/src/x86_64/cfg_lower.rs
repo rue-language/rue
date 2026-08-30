@@ -80,6 +80,8 @@ const _: () = {
 pub struct CfgLower<'a> {
     /// Shared context with type helpers and chain tracing.
     ctx: CfgLowerContext<'a>,
+    /// Cooperative cancellation authority for this lowering (RUE-1827).
+    cancellation: crate::GenerationCancellation<'a>,
     /// Interner for resolving Spur to string
     interner: &'a ThreadedRodeo,
     symbols: crate::MachineSymbolResolver<'a>,
@@ -221,6 +223,15 @@ impl<'a> CfgLower<'a> {
     }
 
     /// Install the pipeline's local frame-slot decision (RUE-768).
+    /// Install the caller's cooperative cancellation authority (RUE-1827).
+    pub(crate) fn with_cancellation(
+        mut self,
+        cancellation: crate::GenerationCancellation<'a>,
+    ) -> Self {
+        self.cancellation = cancellation;
+        self
+    }
+
     pub(crate) fn with_local_storage(
         mut self,
         local_storage: &'a crate::local_storage::LocalSlotPlan,
@@ -263,6 +274,7 @@ impl<'a> CfgLower<'a> {
 
         Self {
             ctx: CfgLowerContext::new(cfg, type_pool),
+            cancellation: crate::GenerationCancellation::NONE,
             interner,
             symbols,
             mir: X86Mir::new(),
@@ -701,7 +713,14 @@ impl<'a> CfgLower<'a> {
             self.interner,
         )?;
         let ctx = self.ctx;
-        crate::terminator_plan::lower_cfg(&ctx, &mut self, None, RET_REGS.len() as u32);
+        let cancellation = self.cancellation;
+        crate::terminator_plan::lower_cfg(
+            &ctx,
+            &mut self,
+            None,
+            RET_REGS.len() as u32,
+            cancellation,
+        )?;
         Ok(self.mir)
     }
 
@@ -722,12 +741,14 @@ impl<'a> CfgLower<'a> {
         };
 
         let ctx = self.ctx;
+        let cancellation = self.cancellation;
         crate::terminator_plan::lower_cfg(
             &ctx,
             &mut self,
             Some(&mut debug_info),
             RET_REGS.len() as u32,
-        );
+            cancellation,
+        )?;
         Ok((self.mir, debug_info))
     }
 

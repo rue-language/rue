@@ -203,7 +203,9 @@ pub(crate) fn prepare_mir_with_backend<B: crate::backend::Backend>(
     target: rue_target::Target,
     symbols: crate::MachineSymbolResolver<'_>,
     request: crate::BackendArtifactRequest,
+    cancellation: crate::GenerationCancellation<'_>,
 ) -> CompileResult<(PreparedMir<B::Mir, B::Reg>, crate::BackendArtifacts)> {
+    cancellation.check()?;
     assert_eq!(
         target.arch(),
         B::ARCH,
@@ -238,27 +240,33 @@ pub(crate) fn prepare_mir_with_backend<B: crate::backend::Backend>(
             request,
             &param_storage,
             &local_storage,
+            cancellation,
         )?
     };
+    cancellation.check()?;
     let existing_slots =
         checked_slot_sum([frame_local_slots, homed_param_slots, u32::from(has_sret)])
             .ok_or_else(|| frame_budget_error(cfg, None))?;
     let (mut mir, num_spills, used_callee_saved) = {
         let _span = info_span!("register_allocation").entered();
-        B::allocate(mir, existing_slots, &mut artifacts, request)?
+        B::allocate(mir, existing_slots, &mut artifacts, request, cancellation)?
     };
+    cancellation.check()?;
     {
         let _span = info_span!("mir_peephole").entered();
         B::peephole(&mut mir);
     }
+    cancellation.check()?;
     {
         let _span = info_span!("mir_scheduling").entered();
         B::schedule(&mut mir);
     }
+    cancellation.check()?;
     {
         let _span = info_span!("mir_verification").entered();
         B::verify(&mir)?;
     }
+    cancellation.check()?;
 
     let total_locals = frame_local_slots
         .checked_add(num_spills)
@@ -302,9 +310,17 @@ pub(crate) fn generate_with_backend<B: crate::backend::Backend>(
     atoms: &[crate::LocalAtomProjection<'_>],
     require_complete_atoms: bool,
     request: crate::BackendArtifactRequest,
+    cancellation: crate::GenerationCancellation<'_>,
 ) -> CompileResult<crate::BackendProduct> {
-    let (mut prepared, mut artifacts) =
-        prepare_mir_with_backend::<B>(cfg, type_pool, interner, target, symbols, request)?;
+    let (mut prepared, mut artifacts) = prepare_mir_with_backend::<B>(
+        cfg,
+        type_pool,
+        interner,
+        target,
+        symbols,
+        request,
+        cancellation,
+    )?;
     let local_strings = {
         let _span = info_span!("string_table_compaction").entered();
         let (local_strings, remap) = crate::compact_string_table(
@@ -316,8 +332,15 @@ pub(crate) fn generate_with_backend<B: crate::backend::Backend>(
         B::remap_string_ids(&mut prepared.mir, &remap);
         local_strings
     };
+    cancellation.check()?;
     let _emission_span = info_span!("machine_emission").entered();
-    let machine_code = B::emit(&prepared, &local_strings, request, &mut artifacts)?;
+    let machine_code = B::emit(
+        &prepared,
+        &local_strings,
+        request,
+        &mut artifacts,
+        cancellation,
+    )?;
     Ok(crate::BackendProduct {
         machine_code,
         artifacts,
@@ -370,6 +393,7 @@ mod tests {
             _request: crate::BackendArtifactRequest,
             _param_storage: &crate::param_storage::ParamStoragePlan,
             local_storage: &crate::local_storage::LocalSlotPlan,
+            _cancellation: crate::GenerationCancellation<'_>,
         ) -> rue_error::CompileResult<(Self::Mir, crate::BackendArtifacts)> {
             record("lower");
             assert_eq!(local_storage.frame_local_slots(), 3);
@@ -381,6 +405,7 @@ mod tests {
             existing_slots: u32,
             _artifacts: &mut crate::BackendArtifacts,
             _request: crate::BackendArtifactRequest,
+            _cancellation: crate::GenerationCancellation<'_>,
         ) -> rue_error::CompileResult<(Self::Mir, u32, Vec<Self::Reg>)> {
             record("allocate");
             assert_eq!(existing_slots, 6);
@@ -420,6 +445,7 @@ mod tests {
             _local_strings: &[String],
             _request: crate::BackendArtifactRequest,
             _artifacts: &mut crate::BackendArtifacts,
+            _cancellation: crate::GenerationCancellation<'_>,
         ) -> rue_error::CompileResult<crate::MachineCode> {
             panic!("synthetic backend emitter is not part of this preparation test")
         }
@@ -487,6 +513,7 @@ mod tests {
             Target::X86_64Linux,
             crate::MachineSymbolResolver::default(),
             crate::BackendArtifactRequest::default(),
+            crate::GenerationCancellation::NONE,
         )
         .expect("synthetic pipeline should succeed");
 
@@ -516,6 +543,7 @@ mod tests {
             Target::Aarch64Linux,
             crate::MachineSymbolResolver::default(),
             crate::BackendArtifactRequest::default(),
+            crate::GenerationCancellation::NONE,
         );
     }
 

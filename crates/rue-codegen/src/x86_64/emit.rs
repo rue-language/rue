@@ -233,6 +233,8 @@ impl LabelOffsets {
 /// The emitter converts MIR instructions to machine code, producing both
 /// raw bytes and human-readable assembly text for each instruction.
 pub struct Emitter<'a> {
+    /// Cooperative cancellation authority for this emission (RUE-1827).
+    cancellation: crate::GenerationCancellation<'a>,
     mir: &'a X86Mir,
     /// Raw machine code bytes being emitted.
     code: Vec<u8>,
@@ -321,6 +323,7 @@ impl<'a> Emitter<'a> {
         let estimated_block_labels = num_instructions / 10;
 
         Self {
+            cancellation: crate::GenerationCancellation::NONE,
             mir,
             code: Vec::with_capacity(estimated_code_size),
             instructions: Vec::with_capacity(num_instructions),
@@ -463,6 +466,12 @@ impl<'a> Emitter<'a> {
     /// Emit machine code for all instructions.
     ///
     /// Returns (code bytes, relocations). This does not generate assembly text.
+    /// Install the caller's cooperative cancellation authority (RUE-1827).
+    pub fn with_cancellation(mut self, cancellation: crate::GenerationCancellation<'a>) -> Self {
+        self.cancellation = cancellation;
+        self
+    }
+
     pub fn emit(mut self) -> CompileResult<(Vec<u8>, Vec<EmittedRelocation>)> {
         // emit_asm is already false by default
         self.emit_internal()?;
@@ -527,6 +536,10 @@ impl<'a> Emitter<'a> {
         }
 
         for inst in self.mir.iter() {
+            // The per-instruction check bounds a stale attempt's residual
+            // work to one encoding (RUE-1827); without an authority it is a
+            // single branch.
+            self.cancellation.check()?;
             self.emit_inst(inst)?;
         }
         if self.frameless_frame_reference {

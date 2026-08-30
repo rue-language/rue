@@ -46,6 +46,7 @@ pub(crate) trait Backend {
         request: BackendArtifactRequest,
         param_storage: &crate::param_storage::ParamStoragePlan,
         local_storage: &crate::local_storage::LocalSlotPlan,
+        cancellation: crate::GenerationCancellation<'_>,
     ) -> CompileResult<(Self::Mir, BackendArtifacts)>;
 
     fn allocate(
@@ -53,6 +54,7 @@ pub(crate) trait Backend {
         existing_slots: u32,
         artifacts: &mut BackendArtifacts,
         request: BackendArtifactRequest,
+        cancellation: crate::GenerationCancellation<'_>,
     ) -> CompileResult<(Self::Mir, u32, Vec<Self::Reg>)>;
 
     fn peephole(mir: &mut Self::Mir);
@@ -74,5 +76,6 @@ pub(crate) trait Backend {
         local_strings: &[String],
         request: BackendArtifactRequest,
         artifacts: &mut BackendArtifacts,
+        cancellation: crate::GenerationCancellation<'_>,
     ) -> CompileResult<MachineCode>;
 }
