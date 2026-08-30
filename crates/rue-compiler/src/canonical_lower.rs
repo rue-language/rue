@@ -558,6 +558,11 @@ fn lower_parsed_declaration_body_plan_internal(
         .declaration_ast(candidate)
         .ok_or(DeclarationBodyPlanBuildFailure::MissingCandidate)?;
     let symbols = lasso::ThreadedRodeo::new();
+    // Module-local `Spur` -> candidate-local `Spur`. Without it the Nth
+    // occurrence of an identifier in one body paid an Nth full string hash plus
+    // a sharded concurrent-map probe, behind dynamic dispatch, for a mapping
+    // that cannot change within this lowering (RUE-1835).
+    let symbol_memo = RefCell::<AHashMap<lasso::Spur, lasso::Spur>>::new(AHashMap::new());
     let symbol_failure = RefCell::<Option<Arc<str>>>::new(None);
     let interner_failure = RefCell::<Option<lasso::LassoErrorKind>>::new(None);
     let aborted = RefCell::new(None);
@@ -577,9 +582,21 @@ fn lower_parsed_declaration_body_plan_internal(
         // walk and before validation or `finish_declaration_body_plan`, so the
         // sentinel can never key or publish a successful declaration artifact.
         let mut generator = AstGen::with_symbol_normalizer(&symbols, |local| {
+            // A memo hit is indistinguishable from re-interning:
+            // `try_get_or_intern` is deterministic and idempotent, and `symbols`
+            // is private to this lowering. Only successful resolutions are
+            // memoized, so the two failure paths below keep their existing
+            // sentinel behavior exactly (both are inspected immediately after
+            // this walk, and both are fatal).
+            if let Some(&cached) = symbol_memo.borrow().get(&local) {
+                return cached;
+            }
             match module.try_resolve_raw_symbol(local) {
                 Some(spelling) => match rue_lexer::try_intern(&symbols, spelling) {
-                    Ok(symbol) => symbol,
+                    Ok(symbol) => {
+                        symbol_memo.borrow_mut().insert(local, symbol);
+                        symbol
+                    }
                     Err(kind) => {
                         *interner_failure.borrow_mut() = Some(kind);
                         lasso::Spur::default()
@@ -1799,6 +1816,47 @@ mod tests {
     fn canonical_output_is_send_and_sync() {
         assert_send_sync::<SemanticSymbolUniverse>();
         assert_send_sync::<CanonicalRirOutput>();
+    }
+
+    /// RUE-1835: the body-plan symbol normalizer memoizes module-local ->
+    /// candidate-local `Spur`. A memo that returned a stale or cross-wired entry
+    /// would silently rename identifiers, which no size or timing check would
+    /// catch — so lower a body that repeats several distinct identifiers many
+    /// times and require the composed RIR to still match whole-module AstGen
+    /// exactly.
+    #[test]
+    fn repeated_symbols_lower_identically_through_the_normalizer_memo() {
+        let source = snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                r#"
+fn tangle(alpha: i32, beta: i32) -> i32 {
+    let delta = alpha + beta;
+    let epsilon = alpha + beta;
+    let zeta = delta + epsilon;
+    zeta + alpha + beta + delta + epsilon
+}
+"#,
+            )],
+            1,
+        );
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&source).unwrap();
+        let module = parsed.modules()[0].clone();
+        let old = lower_module_rir_with_work(module.clone()).unwrap();
+        let mut artifacts = AHashMap::new();
+        for key in module.definitions().declaration_keys_in_source_order() {
+            let artifact = lower_parsed_declaration_body_plan(&module, key, || Ok(())).unwrap();
+            artifacts.insert(key.clone(), Arc::new(artifact));
+        }
+        let composed =
+            compose_module_rir_from_candidate_artifacts(module, &artifacts, || Ok(())).unwrap();
+        assert_eq!(
+            RirPrinter::new(&composed.rir, composed.symbols.interner()).to_string(),
+            RirPrinter::new(&old.rir, old.symbols.interner()).to_string(),
+            "memoized symbol normalization diverged from whole-module AstGen"
+        );
     }
 
     #[test]
