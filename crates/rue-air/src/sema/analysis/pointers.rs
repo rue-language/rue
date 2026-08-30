@@ -14,7 +14,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         reachable: bool,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let reachable_edges = ctx.loop_break_stack.clone();
+        let reachable_edges = ctx.ownership.loop_break_stack.clone();
         let divergence_before = ctx.divergence_kinds;
         let result = self.analyze_inst(air, operand, ctx)?;
         if !reachable {
@@ -171,7 +171,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // struct-init field-literal coercion in `analyze_struct_init`; the
         // range check keeps `@ptr_write(p_u8, 300)` an honest E0800.
         let value_inst = self.body_rir_ref().get(args[1].value);
-        let reachable_edges_before_value = ctx.loop_break_stack.clone();
+        let reachable_edges_before_value = ctx.ownership.loop_break_stack.clone();
         let divergence_before_value = ctx.divergence_kinds;
         let value_result = match &value_inst.data {
             InstData::IntConst(value) if pointee_type.is_integer() => {
@@ -1014,7 +1014,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut arg_refs = Vec::with_capacity(args.len());
         let mut continues = true;
         for (i, arg) in args.iter().enumerate() {
-            let reachable_edges_before_arg = ctx.loop_break_stack.clone();
+            let reachable_edges_before_arg = ctx.ownership.loop_break_stack.clone();
             let divergence_before_arg = ctx.divergence_kinds;
             let arg_result = self.analyze_inst(air, arg.value, ctx)?;
             if !continues {

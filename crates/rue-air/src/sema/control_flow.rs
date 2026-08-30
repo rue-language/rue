@@ -17,8 +17,8 @@ use super::analysis::FirstClassStrSite;
 use super::anon_structs::TrustedTryProducer;
 use super::context::{
     AnalysisContext, AnalysisResult, ConstValue, DivergenceKind, DivergenceKinds, LocalVar,
-    LoopEdgeStates, union_move_maps,
 };
+use super::ownership_state::{LoopEdgeStates, union_move_maps};
 use crate::declaration_validation::{
     AccessorExitForm, AccessorMethodLink, AccessorYieldRootForm, accessor_method_link_error,
     accessor_yield_root_error,
@@ -36,12 +36,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &mut AnalysisContext,
         reachable_edges: &[LoopEdgeStates],
     ) {
-        assert_eq!(reachable_edges.len(), ctx.loop_break_stack.len());
+        assert_eq!(reachable_edges.len(), ctx.ownership.loop_break_stack.len());
         let mut restored = reachable_edges.to_vec();
-        for (reachable, analyzed) in restored.iter_mut().zip(&ctx.loop_break_stack) {
+        for (reachable, analyzed) in restored.iter_mut().zip(&ctx.ownership.loop_break_stack) {
             reachable.broke |= analyzed.broke;
         }
-        ctx.loop_break_stack = restored;
+        ctx.ownership.loop_break_stack = restored;
     }
 
     /// Analyze a control flow instruction.
@@ -107,7 +107,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // must already be consumed in the state in force at the edge
                 // (RUE-1614). The enclosing joins exclude this diverging arm,
                 // so no scope-exit check ever observes this state.
-                if let Some(record) = ctx.loop_break_stack.last() {
+                if let Some(record) = ctx.ownership.loop_break_stack.last() {
                     self.check_linear_values_at_exit_edge(ctx, record.first_unwound_frame, false)?;
                 }
                 ctx.divergence_kinds.insert(DivergenceKind::Exit);
@@ -118,9 +118,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // union-merged with the other breaks' states, it becomes the
                 // ownership state after the loop (RUE-1293; formal core §5.7,
                 // (Loop-Break): Σ_exit = join over the at-break states).
-                let break_depth = ctx.moved_scope_stack.len();
-                let break_moves = ctx.moved_vars.clone();
-                if let Some(record) = ctx.loop_break_stack.last_mut() {
+                let break_depth = ctx.ownership.moved_scope_stack.len();
+                let break_moves = ctx.ownership.moved_vars.clone();
+                if let Some(record) = ctx.ownership.loop_break_stack.last_mut() {
                     record.record_break(&break_moves, break_depth);
                 }
 
@@ -144,7 +144,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // edge and are dropped here, so a linear value they hold must
                 // already be consumed in the state in force at the edge
                 // (RUE-1614), exactly as at a break.
-                if let Some(record) = ctx.loop_break_stack.last() {
+                if let Some(record) = ctx.ownership.loop_break_stack.last() {
                     self.check_linear_values_at_exit_edge(ctx, record.first_unwound_frame, false)?;
                 }
                 ctx.divergence_kinds.insert(DivergenceKind::Exit);
@@ -155,9 +155,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // arm, so without the record a move on a continue path would
                 // vanish and the next iteration could re-use the value
                 // (RUE-1293, the continue-edge variant).
-                let continue_depth = ctx.moved_scope_stack.len();
-                let continue_moves = ctx.moved_vars.clone();
-                if let Some(record) = ctx.loop_break_stack.last_mut() {
+                let continue_depth = ctx.ownership.moved_scope_stack.len();
+                let continue_moves = ctx.ownership.moved_vars.clone();
+                if let Some(record) = ctx.ownership.loop_break_stack.last_mut() {
                     record.record_continue(&continue_moves, continue_depth);
                 }
 
@@ -223,10 +223,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return match taken_block {
                 Some(block) => {
                     ctx.push_scope();
-                    let boundary = ctx.enter_full_expression();
+                    let boundary = ctx.ownership.enter_full_expression();
                     let result = self.analyze_inst(air, block, ctx);
-                    let loans = ctx.nested_expression_loans(&boundary);
-                    ctx.exit_full_expression(boundary);
+                    let loans = ctx.ownership.nested_expression_loans(&boundary);
+                    ctx.ownership.exit_full_expression(boundary);
                     let result = result?;
                     let branch_divergence = ctx.divergence_kinds;
                     ctx.pop_scope();
@@ -275,27 +275,27 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // Condition must be bool
-        let boundary = ctx.enter_full_expression();
+        let boundary = ctx.ownership.enter_full_expression();
         let cond_result = ctx.with_expected_type(None, |ctx| self.analyze_inst(air, cond, ctx));
-        ctx.exit_full_expression(boundary);
+        ctx.ownership.exit_full_expression(boundary);
         let cond_result = cond_result?;
         let cond_divergence = ctx.divergence_kinds;
         ctx.divergence_kinds = DivergenceKinds::NONE;
-        let reachable_edges_after_condition = ctx.loop_break_stack.clone();
+        let reachable_edges_after_condition = ctx.ownership.loop_break_stack.clone();
 
         if let Some(else_b) = else_block {
             // Save move state before entering branches.
-            let saved_moves = ctx.moved_vars.clone();
+            let saved_moves = ctx.ownership.moved_vars.clone();
 
             // Analyze then branch with its own scope. Loans surviving the
             // arm's tail are harvested before its boundary closes and belong
             // to the enclosing full expression once both arms are analyzed
             // (ADR-0062 6.6:10, RUE-1678).
             ctx.push_scope();
-            let boundary = ctx.enter_full_expression();
+            let boundary = ctx.ownership.enter_full_expression();
             let then_result = self.analyze_inst(air, then_block, ctx);
-            let then_loans = ctx.nested_expression_loans(&boundary);
-            ctx.exit_full_expression(boundary);
+            let then_loans = ctx.ownership.nested_expression_loans(&boundary);
+            ctx.ownership.exit_full_expression(boundary);
             let then_result = then_result?;
             let mut then_divergence = ctx.divergence_kinds;
             ctx.divergence_kinds = DivergenceKinds::NONE;
@@ -316,17 +316,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx.pop_scope();
 
             // Capture then-branch's move state
-            let then_moves = ctx.moved_vars.clone();
+            let then_moves = ctx.ownership.moved_vars.clone();
 
             // Restore to saved state before analyzing else branch
-            ctx.moved_vars = saved_moves;
+            ctx.ownership.moved_vars = saved_moves;
 
             // Analyze else branch with its own scope
             ctx.push_scope();
-            let boundary = ctx.enter_full_expression();
+            let boundary = ctx.ownership.enter_full_expression();
             let else_result = self.analyze_inst(air, else_b, ctx);
-            let else_loans = ctx.nested_expression_loans(&boundary);
-            ctx.exit_full_expression(boundary);
+            let else_loans = ctx.ownership.nested_expression_loans(&boundary);
+            ctx.ownership.exit_full_expression(boundary);
             let else_result = else_result?;
             let mut else_divergence = ctx.divergence_kinds;
             ctx.divergence_kinds = DivergenceKinds::NONE;
@@ -358,14 +358,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             )?;
 
             // Capture else-branch's move state
-            let else_moves = ctx.moved_vars.clone();
+            let else_moves = ctx.ownership.moved_vars.clone();
 
             if !cond_result.continues {
                 Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_condition);
             }
 
             // Merge move states from both branches.
-            ctx.merge_branch_moves(
+            ctx.ownership.merge_branch_moves(
                 then_moves,
                 else_moves,
                 !then_continues,
@@ -432,12 +432,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // The then branch must have unit type (spec 4.6:5)
 
             // Save move state before entering then-branch.
-            let saved_moves = ctx.moved_vars.clone();
+            let saved_moves = ctx.ownership.moved_vars.clone();
 
             ctx.push_scope();
-            let boundary = ctx.enter_full_expression();
+            let boundary = ctx.ownership.enter_full_expression();
             let then_result = self.analyze_inst(air, then_block, ctx);
-            ctx.exit_full_expression(boundary);
+            ctx.ownership.exit_full_expression(boundary);
             let then_result = then_result?;
             let then_divergence = ctx.divergence_kinds;
             ctx.divergence_kinds = DivergenceKinds::NONE;
@@ -460,7 +460,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
 
             // Capture then-branch's move state
-            let then_moves = ctx.moved_vars.clone();
+            let then_moves = ctx.ownership.moved_vars.clone();
 
             if !cond_result.continues {
                 Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_condition);
@@ -469,10 +469,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // For if-without-else:
             if !then_result.continues {
                 // Then-branch diverges - code after if only runs if cond was false
-                ctx.moved_vars = saved_moves;
+                ctx.ownership.moved_vars = saved_moves;
             } else {
                 // Then-branch doesn't diverge - merge moves (union semantics).
-                ctx.merge_branch_moves(
+                ctx.ownership.merge_branch_moves(
                     then_moves,
                     saved_moves,
                     false, // then doesn't diverge
@@ -517,12 +517,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Snapshot move state before the loop: the condition and body
         // re-execute on every iteration, so a value moved in either is already
         // moved when the back edge re-enters the loop (see the recheck below).
-        let moves_before_loop = ctx.moved_vars.clone();
+        let moves_before_loop = ctx.ownership.moved_vars.clone();
 
         // While loop: condition must be bool, result is Unit
-        let boundary = ctx.enter_full_expression();
+        let boundary = ctx.ownership.enter_full_expression();
         let cond_result = self.analyze_inst(air, cond, ctx);
-        ctx.exit_full_expression(boundary);
+        ctx.ownership.exit_full_expression(boundary);
         let cond_result = cond_result?;
         let cond_divergence = ctx.divergence_kinds;
         ctx.divergence_kinds = DivergenceKinds::NONE;
@@ -530,19 +530,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Keep its ownership state separate from the body's fall-through:
         // a body that always diverges must not overwrite this zero-iteration
         // exit with an arbitrary state from one diverging arm.
-        let moves_after_condition = ctx.moved_vars.clone();
-        let reachable_edges_after_condition = ctx.loop_break_stack.clone();
+        let moves_after_condition = ctx.ownership.moved_vars.clone();
+        let reachable_edges_after_condition = ctx.ownership.loop_break_stack.clone();
 
         // Analyze body with its own scope. The loop_break_stack entry makes
         // breaks inside the body target this while loop, not an outer loop;
         // the flag itself is unused because a while loop is always `()`.
         ctx.push_scope();
         ctx.loop_depth += 1;
-        ctx.loop_break_stack
+        ctx.ownership
+            .loop_break_stack
             .push(LoopEdgeStates::entered_at(ctx.scope_stack.len() - 1));
-        let boundary = ctx.enter_full_expression();
+        let boundary = ctx.ownership.enter_full_expression();
         let body_result = self.analyze_inst(air, body, ctx);
-        ctx.exit_full_expression(boundary);
+        ctx.ownership.exit_full_expression(boundary);
         let body_result = body_result?;
         let body_divergence = ctx.divergence_kinds;
         ctx.divergence_kinds = DivergenceKinds::NONE;
@@ -551,7 +552,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // break-site snapshots still on the stack, so the record popped
         // afterwards describes the post-loop scope view.
         ctx.pop_scope();
-        let edge_record = ctx.loop_break_stack.pop().unwrap_or_default();
+        let edge_record = ctx.ownership.loop_break_stack.pop().unwrap_or_default();
         if !cond_result.continues {
             Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_condition);
         }
@@ -560,7 +561,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // continue-site states — a continue re-enters the loop exactly like
         // falling off the body's end — while a break path never re-enters.
         // Keep the joined state for the recheck below (RUE-1293).
-        let mut reachable_backedge_moves = body_result.continues.then(|| ctx.moved_vars.clone());
+        let mut reachable_backedge_moves = body_result
+            .continues
+            .then(|| ctx.ownership.moved_vars.clone());
         if let Some(continue_moves) = &continue_moves {
             reachable_backedge_moves = Some(match reachable_backedge_moves {
                 Some(fallthrough_moves) => union_move_maps(&fallthrough_moves, continue_moves),
@@ -587,7 +590,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 exit_moves = union_move_maps(&exit_moves, break_moves);
             }
         }
-        ctx.moved_vars = exit_moves;
+        ctx.ownership.moved_vars = exit_moves;
 
         // A while loop discards its body's result value on every iteration;
         // discarding a value that carries a linear value would implicitly
@@ -600,7 +603,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // The scratch Air and context are discarded - this pass exists only
         // for the checks.
         if backedge_reachable
-            && !ctx.in_loop_move_recheck
+            && !ctx.ownership.in_loop_move_recheck
             && reachable_backedge_moves.as_ref() != Some(&moves_before_loop)
         {
             let checkpoint = air.checkpoint();
@@ -610,26 +613,27 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // state: break-path moves never reach the back edge, and seeding
             // them would reject a value legitimately moved only on a path
             // that exits the loop (RUE-1293).
-            scratch_ctx.moved_vars =
+            scratch_ctx.ownership.moved_vars =
                 reachable_backedge_moves.expect("reachable back edge must have a move state");
             let recovered_before = self.body_analysis_recovered_errors_mut().len();
             let result = (|| -> CompileResult<()> {
-                let boundary = scratch_ctx.enter_full_expression();
+                let boundary = scratch_ctx.ownership.enter_full_expression();
                 let result = self.analyze_inst(air, cond, &mut scratch_ctx);
-                scratch_ctx.exit_full_expression(boundary);
+                scratch_ctx.ownership.exit_full_expression(boundary);
                 result?;
                 scratch_ctx.push_scope();
                 scratch_ctx.loop_depth += 1;
                 scratch_ctx
+                    .ownership
                     .loop_break_stack
                     .push(LoopEdgeStates::entered_at(
                         scratch_ctx.scope_stack.len() - 1,
                     ));
-                let boundary = scratch_ctx.enter_full_expression();
+                let boundary = scratch_ctx.ownership.enter_full_expression();
                 let result = self.analyze_inst(air, body, &mut scratch_ctx);
-                scratch_ctx.exit_full_expression(boundary);
+                scratch_ctx.ownership.exit_full_expression(boundary);
                 result?;
-                scratch_ctx.loop_break_stack.pop();
+                scratch_ctx.ownership.loop_break_stack.pop();
                 scratch_ctx.loop_depth -= 1;
                 scratch_ctx.pop_scope();
                 Ok(())
@@ -681,32 +685,33 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // (spec 4.8:17 / 4.8:21).
 
         // Snapshot move state before the body for the back-edge recheck below.
-        let moves_before_loop = ctx.moved_vars.clone();
+        let moves_before_loop = ctx.ownership.moved_vars.clone();
 
         ctx.push_scope();
         ctx.loop_depth += 1;
-        ctx.loop_break_stack
+        ctx.ownership
+            .loop_break_stack
             .push(LoopEdgeStates::entered_at(ctx.scope_stack.len() - 1));
         // A `for` over a named variable borrows it (shared) for the body's
         // duration (spec 4.8:26, RUE-233): record the borrow so a mutation of
         // the iterated collection inside the body is rejected (E0428).
         if let Some(var) = iter_borrow {
-            ctx.iter_borrows.push(var);
+            ctx.ownership.iter_borrows.push(var);
         }
-        let boundary = ctx.enter_full_expression();
+        let boundary = ctx.ownership.enter_full_expression();
         let body_result = self.analyze_inst(air, body, ctx);
-        ctx.exit_full_expression(boundary);
+        ctx.ownership.exit_full_expression(boundary);
         let body_result = body_result?;
         let body_divergence = ctx.divergence_kinds;
         ctx.divergence_kinds = DivergenceKinds::NONE;
         if iter_borrow.is_some() {
-            ctx.iter_borrows.pop();
+            ctx.ownership.iter_borrows.pop();
         }
         ctx.loop_depth -= 1;
         // pop_scope replays this scope's RUE-522 restoration onto the
         // break-site snapshots still on the stack (see analyze_while_loop).
         ctx.pop_scope();
-        let edge_record = ctx.loop_break_stack.pop().unwrap_or_default();
+        let edge_record = ctx.ownership.loop_break_stack.pop().unwrap_or_default();
         // Loop classification is purely syntactic (spec 4.8:21): a loop
         // containing a targeting `break` is unit-typed even when that break
         // is unreachable.
@@ -720,7 +725,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let has_reachable_break = break_moves.is_some();
         // The back edge carries the fall-through state joined with the
         // continue-site states; keep it for the recheck below (RUE-1293).
-        let mut reachable_backedge_moves = body_result.continues.then(|| ctx.moved_vars.clone());
+        let mut reachable_backedge_moves = body_result
+            .continues
+            .then(|| ctx.ownership.moved_vars.clone());
         if let Some(continue_moves) = &continue_moves {
             reachable_backedge_moves = Some(match reachable_backedge_moves {
                 Some(fallthrough_moves) => union_move_maps(&fallthrough_moves, continue_moves),
@@ -739,7 +746,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // the code after it unreachable; its state is left as the
         // fall-through, which nothing can observe.
         if let Some(break_moves) = break_moves {
-            ctx.moved_vars = break_moves;
+            ctx.ownership.moved_vars = break_moves;
         }
 
         // The loop discards its body's result value on every iteration;
@@ -749,7 +756,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Loop back-edge move check (see analyze_while_loop for details).
         if backedge_reachable
-            && !ctx.in_loop_move_recheck
+            && !ctx.ownership.in_loop_move_recheck
             && reachable_backedge_moves.as_ref() != Some(&moves_before_loop)
         {
             let checkpoint = air.checkpoint();
@@ -757,22 +764,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Seed with the back-edge state (fall-through joined with the
             // continue states), not the exit state: only the back edge's
             // moves reach the next iteration (RUE-1293).
-            scratch_ctx.moved_vars =
+            scratch_ctx.ownership.moved_vars =
                 reachable_backedge_moves.expect("reachable back edge must have a move state");
             let recovered_before = self.body_analysis_recovered_errors_mut().len();
             scratch_ctx.push_scope();
             scratch_ctx.loop_depth += 1;
             scratch_ctx
+                .ownership
                 .loop_break_stack
                 .push(LoopEdgeStates::entered_at(
                     scratch_ctx.scope_stack.len() - 1,
                 ));
             if let Some(var) = iter_borrow {
-                scratch_ctx.iter_borrows.push(var);
+                scratch_ctx.ownership.iter_borrows.push(var);
             }
-            let boundary = scratch_ctx.enter_full_expression();
+            let boundary = scratch_ctx.ownership.enter_full_expression();
             let result = self.analyze_inst(air, body, &mut scratch_ctx);
-            scratch_ctx.exit_full_expression(boundary);
+            scratch_ctx.ownership.exit_full_expression(boundary);
             air.rollback(checkpoint);
             for error in &mut self.body_analysis_recovered_errors_mut()[recovered_before..] {
                 *error = error
@@ -782,9 +790,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             result
                 .map_err(|e| e.with_note("value was moved in a previous iteration of the loop"))?;
             if iter_borrow.is_some() {
-                scratch_ctx.iter_borrows.pop();
+                scratch_ctx.ownership.iter_borrows.pop();
             }
-            scratch_ctx.loop_break_stack.pop();
+            scratch_ctx.ownership.loop_break_stack.pop();
             scratch_ctx.loop_depth -= 1;
             scratch_ctx.pop_scope();
         }
@@ -1125,10 +1133,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 self.warn_unreachable_pruned_arms(arm_views.iter(), scrutinee_type, ctx);
                 if let Some(body) = selected {
                     ctx.push_scope();
-                    let boundary = ctx.enter_full_expression();
+                    let boundary = ctx.ownership.enter_full_expression();
                     let result = self.analyze_inst(air, body, ctx);
-                    let loans = ctx.nested_expression_loans(&boundary);
-                    ctx.exit_full_expression(boundary);
+                    let loans = ctx.ownership.nested_expression_loans(&boundary);
+                    ctx.ownership.exit_full_expression(boundary);
                     let result = result?;
                     let selected_divergence = ctx.divergence_kinds;
                     ctx.pop_scope();
@@ -1168,16 +1176,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         });
         // Analyze the scrutinee under only the pattern-derived contract. The
         // match expression's own result expectation belongs to its arms.
-        let boundary = ctx.enter_full_expression();
+        let boundary = ctx.ownership.enter_full_expression();
         let scrutinee_result = ctx.with_expected_type(expected_scrutinee, |ctx| {
             self.analyze_inst(air, scrutinee, ctx)
         });
-        ctx.exit_full_expression(boundary);
+        ctx.ownership.exit_full_expression(boundary);
         let scrutinee_result = scrutinee_result?;
         let scrutinee_divergence = ctx.divergence_kinds;
         ctx.divergence_kinds = DivergenceKinds::NONE;
         let scrutinee_type = scrutinee_result.ty;
-        let reachable_edges_after_scrutinee = ctx.loop_break_stack.clone();
+        let reachable_edges_after_scrutinee = ctx.ownership.loop_break_stack.clone();
 
         // Validate that we can match on this type (integers, booleans, and enums)
         if !scrutinee_type.is_integer() && scrutinee_type != Type::BOOL && !scrutinee_type.is_enum()
@@ -1236,7 +1244,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // happen on every path). Arms are alternatives, not a sequence:
         // each is analyzed from this state and the per-arm results are
         // merged after the loop (see merge_arm_moves).
-        let moves_before_arms = ctx.moved_vars.clone();
+        let moves_before_arms = ctx.ownership.moved_vars.clone();
         let mut arm_move_states = Vec::with_capacity(arms.len());
         // Accessor loans harvested from each arm before its nested
         // full-expression boundary closed. Arms are alternatives, so these are
@@ -1476,7 +1484,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             // Each arm gets its own scope and starts from the pre-match
             // move state (only one arm executes at runtime).
-            ctx.moved_vars = moves_before_arms.clone();
+            ctx.ownership.moved_vars = moves_before_arms.clone();
             ctx.push_scope();
 
             // Materialize tuple-variant payload bindings (RUE-221) into fresh
@@ -1515,10 +1523,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
 
             // Analyze arm body
-            let boundary = ctx.enter_full_expression();
+            let boundary = ctx.ownership.enter_full_expression();
             let body_result = self.analyze_inst(air, *body, ctx);
-            let body_loans = ctx.nested_expression_loans(&boundary);
-            ctx.exit_full_expression(boundary);
+            let body_loans = ctx.ownership.nested_expression_loans(&boundary);
+            ctx.ownership.exit_full_expression(boundary);
             let body_result = body_result?;
             let mut body_divergence = ctx.divergence_kinds;
             ctx.divergence_kinds = DivergenceKinds::NONE;
@@ -1553,7 +1561,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             ctx.pop_scope();
             arm_move_states.push((
-                std::mem::take(&mut ctx.moved_vars),
+                std::mem::take(&mut ctx.ownership.moved_vars),
                 !body_result.continues,
                 body_divergence,
             ));
@@ -1671,7 +1679,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !scrutinee_result.continues {
             Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_scrutinee);
         }
-        ctx.merge_arm_moves(arm_move_states);
+        ctx.ownership.merge_arm_moves(arm_move_states);
 
         // Exhaustiveness checking
         let has_wildcard = wildcard_span.is_some();
@@ -2614,14 +2622,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // exclusive uses belong to the enclosing expression and must not
             // enter the child. The tail expression remains part of the
             // enclosing full expression and therefore needs no boundary.
-            let boundary = (!is_last).then(|| ctx.enter_full_expression());
+            let boundary = (!is_last).then(|| ctx.ownership.enter_full_expression());
             let outcome = if is_last {
                 self.analyze_inst(air, inst_ref, ctx)
             } else {
                 ctx.with_expected_type(None, |ctx| self.analyze_inst(air, inst_ref, ctx))
             };
             if let Some(boundary) = boundary {
-                ctx.exit_full_expression(boundary);
+                ctx.ownership.exit_full_expression(boundary);
             }
             let result = match outcome {
                 Ok(result) => result,
@@ -2688,7 +2696,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // current context for dead-suffix diagnostics and append-only data.
         let reachable_moves = diverged_context
             .as_ref()
-            .map(|reachable| reachable.moved_vars.clone());
+            .map(|reachable| reachable.ownership.moved_vars.clone());
         if diverged_context.is_some() {
             // Unchecked divergent edges were validated at the edge, while an
             // explicit panic edge has no scope-exit obligation. Keep only the
@@ -2701,7 +2709,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.check_unused_locals_in_current_scope(ctx);
 
         if let Some(moves) = reachable_moves {
-            ctx.moved_vars = moves;
+            ctx.ownership.moved_vars = moves;
         }
         if let Some(reachable_context) = diverged_context.as_ref() {
             // Dead suffixes are still analyzed for diagnostics, but their
@@ -2711,14 +2719,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // syntactic even when a break occurs only in unreachable code
             // (4.8:21).
             assert_eq!(
-                reachable_context.loop_break_stack.len(),
-                ctx.loop_break_stack.len()
+                reachable_context.ownership.loop_break_stack.len(),
+                ctx.ownership.loop_break_stack.len()
             );
-            let mut reachable_edges = reachable_context.loop_break_stack.clone();
-            for (reachable, analyzed) in reachable_edges.iter_mut().zip(&ctx.loop_break_stack) {
+            let mut reachable_edges = reachable_context.ownership.loop_break_stack.clone();
+            for (reachable, analyzed) in reachable_edges
+                .iter_mut()
+                .zip(&ctx.ownership.loop_break_stack)
+            {
                 reachable.broke |= analyzed.broke;
             }
-            ctx.loop_break_stack = reachable_edges;
+            ctx.ownership.loop_break_stack = reachable_edges;
         }
         // Pop scope to remove block-scoped variables. The reachable move
         // state is restored first so this frame removes dead locals and

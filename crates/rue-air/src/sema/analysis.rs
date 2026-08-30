@@ -19,7 +19,8 @@ use rue_span::{FileId, Span};
 use rue_target::{Arch, DataModel, Os};
 
 use super::InferenceContext;
-use super::context::{AnalysisContext, AnalysisResult, CallLoanKind, ConstValue};
+use super::context::{AnalysisContext, AnalysisResult, ConstValue};
+use super::ownership_state::CallLoanKind;
 use crate::inference::{
     Constraint, ConstraintContext, ConstraintGenerator, InferType, Unifier, UnifyResult,
 };

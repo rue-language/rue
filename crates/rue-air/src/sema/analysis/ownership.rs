@@ -5,8 +5,9 @@
 //! them. It extends the canonical body-analysis engine rather than
 //! introducing peer analysis state.
 
-use super::super::context::{FieldPath, LocalVar, ParamInfo, VariableMoveState};
+use super::super::context::{LocalVar, ParamInfo};
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
+use super::super::ownership_state::{FieldPath, VariableMoveState};
 use super::*;
 use crate::inst::AirPlaceRef;
 use crate::scope::ScopedContext;
@@ -243,7 +244,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &'ctx AnalysisContext,
         root: &Spur,
     ) -> Option<&'ctx VariableMoveState> {
-        ctx.moved_vars.get(root)
+        ctx.ownership.moved_vars.get(root)
     }
 
     /// Capture one root's move state for a scoped borrow operation.
@@ -254,7 +255,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> MoveStateSnapshot {
         MoveStateSnapshot {
             root,
-            state: root.and_then(|root| ctx.moved_vars.get(&root).cloned()),
+            state: root.and_then(|root| ctx.ownership.moved_vars.get(&root).cloned()),
         }
     }
 
@@ -264,7 +265,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         root: Option<Spur>,
         ctx: &AnalysisContext,
     ) -> Option<VariableMoveState> {
-        root.and_then(|root| ctx.moved_vars.get(&root).cloned())
+        root.and_then(|root| ctx.ownership.moved_vars.get(&root).cloned())
     }
 
     /// Restore one root exactly to its state before a scoped borrow.
@@ -276,10 +277,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if let Some(root) = snapshot.root {
             match snapshot.state {
                 Some(state) => {
-                    ctx.moved_vars.insert(root, state);
+                    ctx.ownership.moved_vars.insert(root, state);
                 }
                 None => {
-                    ctx.moved_vars.remove(&root);
+                    ctx.ownership.moved_vars.remove(&root);
                 }
             }
         }
@@ -310,9 +311,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         root: Option<Spur>,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let previous = std::mem::replace(&mut ctx.byref_arg_root, root);
+        let previous = std::mem::replace(&mut ctx.ownership.byref_arg_root, root);
         let result = self.analyze_inst(air, value, ctx);
-        ctx.byref_arg_root = previous;
+        ctx.ownership.byref_arg_root = previous;
         result
     }
 
@@ -1078,11 +1079,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         // (`byref_arg_root`, RUE-143) must not leak into it
                         // (in `f(inout a[take(x)])` the call `take(x)` moves
                         // x normally, even if x happens to be the root).
-                        let saved_byref_root = ctx.byref_arg_root.take();
+                        let saved_byref_root = ctx.ownership.byref_arg_root.take();
                         let divergence_before_index = ctx.divergence_kinds;
                         let base_continues = trace.continues;
                         let index_result = self.analyze_inst(air, *index, ctx);
-                        ctx.byref_arg_root = saved_byref_root;
+                        ctx.ownership.byref_arg_root = saved_byref_root;
                         let index_result = index_result?;
                         if !base_continues {
                             ctx.divergence_kinds = divergence_before_index;
@@ -1209,7 +1210,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// (Accessor-Call) rule: the receiver must be a place; the result is a
     /// second-class place whose shared or exclusive loan on the receiver root
     /// spans the enclosing full expression (registered in
-    /// `ctx.expression_loans`).
+    /// `ctx.ownership.expression_loans`).
     #[allow(clippy::too_many_arguments)]
     fn expand_accessor_call(
         &mut self,
@@ -1222,7 +1223,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<PlaceTrace> {
-        let expression_ledgers_before_call = ctx.checkpoint_expression_ledgers();
+        let expression_ledgers_before_call = ctx.ownership.checkpoint_expression_ledgers();
         let info = self
             .call_facts()
             .call_method_info(struct_id, method)
@@ -1248,9 +1249,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // per-function CFG query can depend on and splice the callee CFG.
         let receiver_span = self.body_rir_ref().get(receiver).span;
         let mut receiver_trace = {
-            let prev_byref_root = ctx.byref_arg_root.take();
+            let prev_byref_root = ctx.ownership.byref_arg_root.take();
             let trace = self.try_trace_place(receiver, air, ctx);
-            ctx.byref_arg_root = prev_byref_root;
+            ctx.ownership.byref_arg_root = prev_byref_root;
             trace?.ok_or_else(|| CompileError::new(ErrorKind::BorrowNonLvalue, receiver_span))?
         };
         let root = receiver_trace.root_var;
@@ -1263,8 +1264,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Its own `inout` entry is the accessor's enclosing exclusive access,
         // not a second loan; outer frames still represent genuinely nested
         // calls and must conflict.
-        let frame_count = ctx.call_loaned_roots.len();
-        for (frame_index, frame) in ctx.call_loaned_roots.iter().enumerate() {
+        let frame_count = ctx.ownership.call_loaned_roots.len();
+        for (frame_index, frame) in ctx.ownership.call_loaned_roots.iter().enumerate() {
             if frame.iter().any(|(r, kind, _view_materialized)| {
                 *r == root
                     && !(frame_index + 1 == frame_count && *kind == CallLoanKind::Inout)
@@ -1325,13 +1326,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         let accessor_continues = receiver_trace.continues && operands.continues;
         if !accessor_continues {
-            ctx.rollback_expression_ledgers(expression_ledgers_before_call);
+            ctx.ownership
+                .rollback_expression_ledgers(expression_ledgers_before_call);
         }
         if accessor_continues {
             // Mutable accessors carry an exclusive loan; shared and exclusive
             // accessor results conflict on the same root. The root loan list
             // is intentionally expression-scoped and root-granular.
-            if ctx.expression_loans.iter().any(|(r, _, kind)| {
+            if ctx.ownership.expression_loans.iter().any(|(r, _, kind)| {
                 *r == root && (*kind == CallLoanKind::Inout || loan_kind == CallLoanKind::Inout)
             }) {
                 return Err(CompileError::new(
@@ -1343,7 +1345,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ));
             }
             self.reject_accessor_loan_against_expression_ledgers(root, loan_kind, span, ctx)?;
-            ctx.expression_loans.push((root, span, loan_kind));
+            ctx.ownership.expression_loans.push((root, span, loan_kind));
         }
         ctx.accessor_call_insts.insert(inst_ref, (method, root));
         ctx.referenced_methods.insert((struct_id, method));
@@ -1412,6 +1414,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         )?;
         let ty = trace.result_type();
         let byref_consumer = ctx
+            .ownership
             .byref_arg_root
             .is_some_and(|root| root == trace.root_var);
         if !byref_consumer && self.type_has_drop_glue(ty) {
@@ -1686,9 +1689,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // has no place root, so this is a no-op there.
         let init_outcome = if iter_elem {
             let byref_root = super::root_variable_of(self.body_rir_ref(), init);
-            let prev = std::mem::replace(&mut ctx.byref_arg_root, byref_root);
+            let prev = std::mem::replace(&mut ctx.ownership.byref_arg_root, byref_root);
             let r = self.analyze_inst(air, init, ctx);
-            ctx.byref_arg_root = prev;
+            ctx.ownership.byref_arg_root = prev;
             r
         } else {
             self.analyze_inst(air, init, ctx)
@@ -1901,9 +1904,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> CompileResult<AnalysisResult> {
         // An ordinary value read is a shared use of the root. It cannot
         // overlap an exclusive accessor result in the same full expression.
-        if ctx.byref_arg_root != Some(name) {
+        if ctx.ownership.byref_arg_root != Some(name) {
             self.reject_accessor_shared_loan_conflict(name, "by a shared read", span, ctx)?;
-            ctx.expression_shared_reads.push((name, span));
+            ctx.ownership.expression_shared_reads.push((name, span));
         }
         // Check if it's a parameter — but a `let` that shadows the parameter
         // rebinds the name to a new local, and that local wins for all later
@@ -1915,9 +1918,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let name_str = self.body_interner().resolve(&name);
 
                 // Check if this parameter has been moved
-                if let Some(move_state) = ctx.moved_vars.get(&name) {
+                if let Some(move_state) = ctx.ownership.moved_vars.get(&name) {
                     if move_state.full_move.is_some()
-                        || (ctx.drop_intrinsic_operand != Some(name)
+                        || (ctx.ownership.drop_intrinsic_operand != Some(name)
                             && move_state.is_any_part_moved().is_some())
                     {
                         let moved_span = move_state
@@ -1939,14 +1942,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // marks the parameter moved nor counts as moving out of it. This is
                 // what permits forwarding an inout parameter: `f(inout v)` inside
                 // `fn g(inout v: T)`.
-                let is_byref_arg_use = ctx.byref_arg_root == Some(name);
+                let is_byref_arg_use = ctx.ownership.byref_arg_root == Some(name);
                 let mut moves_out = false;
                 if !self.is_type_copy(ty) {
                     match param_info.mode {
                         RirParamMode::Normal => {
                             if !is_byref_arg_use {
                                 self.reject_move_of_call_loaned_root(name, span, ctx)?;
-                                ctx.moved_vars
+                                ctx.ownership
+                                    .moved_vars
                                     .entry(name)
                                     .or_default()
                                     .mark_path_moved(&[], span);
@@ -2018,9 +2022,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let slot = local.slot;
 
             // Check if this variable has been moved
-            if let Some(move_state) = ctx.moved_vars.get(&name) {
+            if let Some(move_state) = ctx.ownership.moved_vars.get(&name) {
                 if move_state.full_move.is_some()
-                    || (ctx.drop_intrinsic_operand != Some(name)
+                    || (ctx.ownership.drop_intrinsic_operand != Some(name)
                         && move_state.is_any_part_moved().is_some())
                 {
                     let moved_span = move_state
@@ -2038,7 +2042,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             // If type is not Copy, mark as moved — unless this use is a by-ref
             // call argument, which borrows the variable rather than moving it.
-            let moves_out = !self.is_type_copy(ty) && ctx.byref_arg_root != Some(name);
+            let moves_out = !self.is_type_copy(ty) && ctx.ownership.byref_arg_root != Some(name);
             // A `for`-loop element binder over a non-Copy collection is a
             // non-owning shared borrow of an element the collection still owns
             // (spec 4.8:26): reading it is fine, but moving it out would let
@@ -2055,7 +2059,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
             if moves_out {
                 self.reject_move_of_call_loaned_root(name, span, ctx)?;
-                ctx.moved_vars
+                ctx.ownership
+                    .moved_vars
                     .entry(name)
                     .or_default()
                     .mark_path_moved(&[], span);
@@ -2303,7 +2308,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Reassigning a collection that an enclosing `for` loop is iterating
         // mutates a shared-borrowed value (spec 4.8:26, RUE-233) — E0428, just
         // like assigning through an explicit `borrow` parameter.
-        if ctx.iter_borrows.contains(&name) {
+        if ctx.ownership.iter_borrows.contains(&name) {
             return Err(CompileError::new(
                 ErrorKind::MutateBorrowedValue {
                     variable: name_str.to_string(),
@@ -2416,7 +2421,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 self.check_linear_overwrite(param_ty, discharged, true, span)?;
 
                 // Assignment to a parameter resets its move state
-                ctx.moved_vars.remove(&name);
+                ctx.ownership.moved_vars.remove(&name);
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::ParamStore {
@@ -2496,7 +2501,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // Assignment to a mutable variable resets its move state.
-        ctx.moved_vars.remove(&name);
+        ctx.ownership.moved_vars.remove(&name);
 
         // Emit store instruction
         let air_ref = air.add_inst(AirInst {
@@ -3050,19 +3055,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Try to trace this expression to a place (lvalue)
         if let Some(mut trace) = self.try_trace_place(inst_ref, air, ctx)? {
-            if !trace.via_accessor && ctx.byref_arg_root != Some(trace.root_var) {
+            if !trace.via_accessor && ctx.ownership.byref_arg_root != Some(trace.root_var) {
                 self.reject_accessor_shared_loan_conflict(
                     trace.root_var,
                     "by a shared read",
                     span,
                     ctx,
                 )?;
-                ctx.expression_shared_reads.push((trace.root_var, span));
+                ctx.ownership
+                    .expression_shared_reads
+                    .push((trace.root_var, span));
             }
             let field_type = trace.result_type();
 
             // Check if the root variable was fully moved (applies regardless of field type)
-            if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+            if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
                 if let Some(moved_span) = state.full_move {
                     let root_name = self.body_interner().resolve(&trace.root_var);
                     return Err(CompileError::new(
@@ -3128,7 +3135,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // (RUE-143): no move is recorded and the by-ref-param move
             // rejections don't apply — but reading through an already-moved
             // path is still a use-after-move.
-            let is_byref_arg_use = ctx.byref_arg_root == Some(trace.root_var);
+            let is_byref_arg_use = ctx.ownership.byref_arg_root == Some(trace.root_var);
 
             // A value-context projection through an untrackable index cannot
             // select a declared-linear place precisely.  Falling back to an
@@ -3180,7 +3187,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let mut marker_depth = trace.projections.len();
             if is_byref_arg_use {
                 let field_path = trace.field_path();
-                if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+                if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
                     if let Some(moved_span) = state.is_path_moved(&field_path) {
                         return Err(super::use_after_move_path_error(
                             self.body_interner(),
@@ -3216,7 +3223,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // this a use-after-move (RUE-279) — at the root the full-move
                 // check above already covers it.
                 if !destructured_path.is_empty()
-                    && let Some(state) = ctx.moved_vars.get(&trace.root_var)
+                    && let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var)
                     && let Some(moved_span) = state.is_path_or_descendant_moved(&destructured_path)
                 {
                     return Err(super::use_after_move_path_error(
@@ -3229,7 +3236,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
 
                 move_is_partial = !destructured_path.is_empty();
-                ctx.moved_vars
+                ctx.ownership
+                    .moved_vars
                     .entry(trace.root_var)
                     .or_default()
                     .mark_path_moved(&destructured_path, span);
@@ -3264,7 +3272,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // (`o.inner` cannot be passed by value once `o.inner.s` moved —
                 // spec 3.8, RUE-279), so check both directions here, unlike a
                 // Copy leaf read below which only cares about ancestors.
-                if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+                if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
                     // An exact or ancestor move always makes this place dead.
                     // The @drop exception waives only the descendant half of
                     // the ordinary check; at a branch join an exact move and
@@ -3282,7 +3290,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     let has_strict_descendant = state.partial_moves.iter().any(|(path, _)| {
                         path.len() > field_path.len() && path.starts_with(&field_path)
                     });
-                    if ctx.drop_intrinsic_operand != Some(trace.root_var) || !has_strict_descendant
+                    if ctx.ownership.drop_intrinsic_operand != Some(trace.root_var)
+                        || !has_strict_descendant
                     {
                         if let Some(moved_span) = state.is_path_or_descendant_moved(&field_path) {
                             return Err(super::use_after_move_path_error(
@@ -3298,7 +3307,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
                 // Mark this field path as moved
                 self.reject_move_of_call_loaned_root(trace.root_var, span, ctx)?;
-                ctx.moved_vars
+                ctx.ownership
+                    .moved_vars
                     .entry(trace.root_var)
                     .or_default()
                     .mark_path_moved(&field_path, span);
@@ -3334,7 +3344,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // exact path and every ancestor prefix (the full-move case
                 // was already rejected above).
                 let field_path = trace.field_path();
-                if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+                if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
                     if let Some(moved_span) = state.is_path_moved(&field_path) {
                         return Err(super::use_after_move_path_error(
                             self.body_interner(),
@@ -3602,14 +3612,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Try to trace this expression to a place (lvalue)
         if let Some(mut trace) = self.try_trace_place(inst_ref, air, ctx)? {
-            if !trace.via_accessor && ctx.byref_arg_root != Some(trace.root_var) {
+            if !trace.via_accessor && ctx.ownership.byref_arg_root != Some(trace.root_var) {
                 self.reject_accessor_shared_loan_conflict(
                     trace.root_var,
                     "by a shared read",
                     span,
                     ctx,
                 )?;
-                ctx.expression_shared_reads.push((trace.root_var, span));
+                ctx.ownership
+                    .expression_shared_reads
+                    .push((trace.root_var, span));
             }
             let elem_type = trace.result_type();
 
@@ -3627,7 +3639,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // moved has a disjoint path).
             {
                 let field_path = trace.field_path();
-                if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+                if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
                     if let Some(moved_span) = state.is_path_moved(&field_path) {
                         return Err(super::use_after_move_path_error(
                             self.body_interner(),
@@ -3687,7 +3699,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // index, so this catches the root's full move or this exact
             // element; the per-element check below also covers a moved-out
             // element, RUE-186).
-            let is_byref_arg_use = ctx.byref_arg_root == Some(trace.root_var);
+            let is_byref_arg_use = ctx.ownership.byref_arg_root == Some(trace.root_var);
             let declared_depth = self.declared_linear_destructure_depth(&trace, true);
             let is_destructor_self =
                 ctx.is_destructor && ctx.params.iter().any(|param| param.name == trace.root_var);
@@ -3749,7 +3761,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
             if is_byref_arg_use {
                 let field_path = trace.field_path();
-                if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+                if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
                     if let Some(moved_span) = state.is_path_moved(&field_path) {
                         return Err(super::use_after_move_path_error(
                             self.body_interner(),
@@ -3769,7 +3781,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
                 let destructured_path = trace.prefix_field_path(declared_depth).unwrap_or_default();
                 if !destructured_path.is_empty()
-                    && let Some(state) = ctx.moved_vars.get(&trace.root_var)
+                    && let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var)
                     && let Some(moved_span) = state.is_path_or_descendant_moved(&destructured_path)
                 {
                     return Err(super::use_after_move_path_error(
@@ -3780,7 +3792,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         moved_span,
                     ));
                 }
-                ctx.moved_vars
+                ctx.ownership
+                    .moved_vars
                     .entry(trace.root_var)
                     .or_default()
                     .mark_path_moved(&destructured_path, span);
@@ -3891,7 +3904,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // *before* analyzing it, in case this turns out to be a borrowing
         // String index (see below).
         let base_root = self.extract_root_variable(base);
-        let base_move_state_before = base_root.and_then(|v| ctx.moved_vars.get(&v).cloned());
+        let base_move_state_before =
+            base_root.and_then(|v| ctx.ownership.moved_vars.get(&v).cloned());
 
         // A byte/element index of StrBuf, str/Str(N), or a slice reads through
         // its base place; it does not consume that place. Classify a statically
@@ -3905,9 +3919,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 self.is_strbuf(ty) || self.is_str_like(ty) || self.slice_element_type(ty).is_some()
             })
         });
-        let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, borrowing_base_root);
+        let prev_byref_root =
+            std::mem::replace(&mut ctx.ownership.byref_arg_root, borrowing_base_root);
         let base_result = self.analyze_inst(air, base, ctx);
-        ctx.byref_arg_root = prev_byref_root;
+        ctx.ownership.byref_arg_root = prev_byref_root;
         let base_result = base_result?;
         let base_type = base_result.ty;
 
@@ -4099,10 +4114,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if let Some(var) = base_root {
             match base_move_state_before {
                 Some(state) => {
-                    ctx.moved_vars.insert(var, state);
+                    ctx.ownership.moved_vars.insert(var, state);
                 }
                 None => {
-                    ctx.moved_vars.remove(&var);
+                    ctx.ownership.moved_vars.remove(&var);
                 }
             }
         }
@@ -4210,10 +4225,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if let Some(var) = base_root {
             match base_move_state_before {
                 Some(state) => {
-                    ctx.moved_vars.insert(var, state);
+                    ctx.ownership.moved_vars.insert(var, state);
                 }
                 None => {
-                    ctx.moved_vars.remove(&var);
+                    ctx.ownership.moved_vars.remove(&var);
                 }
             }
         }
@@ -4294,10 +4309,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if let Some(var) = base_root {
             match base_move_state_before {
                 Some(state) => {
-                    ctx.moved_vars.insert(var, state);
+                    ctx.ownership.moved_vars.insert(var, state);
                 }
                 None => {
-                    ctx.moved_vars.remove(&var);
+                    ctx.ownership.moved_vars.remove(&var);
                 }
             }
         }
@@ -4463,18 +4478,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> CompileResult<AnalysisResult> {
         // The receiver is read, not consumed: analyze it as a borrow and undo
         // the move the analysis records.
-        let move_state_before = receiver_var.and_then(|v| ctx.moved_vars.get(&v).cloned());
-        let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, receiver_var);
+        let move_state_before =
+            receiver_var.and_then(|v| ctx.ownership.moved_vars.get(&v).cloned());
+        let prev_byref_root = std::mem::replace(&mut ctx.ownership.byref_arg_root, receiver_var);
         let recv_result = self.analyze_inst(air, receiver, ctx);
-        ctx.byref_arg_root = prev_byref_root;
+        ctx.ownership.byref_arg_root = prev_byref_root;
         let recv_result = recv_result?;
         if let Some(var) = receiver_var {
             match move_state_before {
                 Some(state) => {
-                    ctx.moved_vars.insert(var, state);
+                    ctx.ownership.moved_vars.insert(var, state);
                 }
                 None => {
-                    ctx.moved_vars.remove(&var);
+                    ctx.ownership.moved_vars.remove(&var);
                 }
             }
         }
@@ -4533,13 +4549,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             |(_, _, ty, _, _)| Ok(ty),
         )?;
         let previous_expected = ctx.expected_type.replace(destination_type);
-        let rhs_shared_reads_before = ctx.expression_shared_reads.len();
-        let rhs_exclusive_uses_before = ctx.expression_exclusive_uses.len();
+        let rhs_shared_reads_before = ctx.ownership.expression_shared_reads.len();
+        let rhs_exclusive_uses_before = ctx.ownership.expression_exclusive_uses.len();
         let value_result = self.analyze_inst(air, value, ctx);
         ctx.expected_type = previous_expected;
         let value_result = value_result?;
         self.reject_accessor_result_escape(value, AccessorEscapeSite::Store, span, ctx)?;
-        let reachable_edges_after_rhs = ctx.loop_break_stack.clone();
+        let reachable_edges_after_rhs = ctx.ownership.loop_break_stack.clone();
         let divergence_before_place = ctx.divergence_kinds;
         // A plain assignment's RHS is complete before the LHS place is
         // evaluated. Ordinary shared-read markers are expression-order
@@ -4554,9 +4570,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // populate the target's instruction entry.
         let cached = cached_before_rhs.or_else(|| ctx.accessor_place_refs.get(&place).copied());
         if cached.is_none() {
-            ctx.expression_shared_reads
+            ctx.ownership
+                .expression_shared_reads
                 .truncate(rhs_shared_reads_before);
-            ctx.expression_exclusive_uses
+            ctx.ownership
+                .expression_exclusive_uses
                 .truncate(rhs_exclusive_uses_before);
         }
         let (place_ref, root_var, mutable, place_continues) =
@@ -4623,7 +4641,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // out of the enclosing loop's reachable control-flow facts.
         let value_result = self.analyze_inst(air, value, ctx)?;
         self.reject_accessor_result_escape(value, AccessorEscapeSite::Store, span, ctx)?;
-        let reachable_edges_after_value = ctx.loop_break_stack.clone();
+        let reachable_edges_after_value = ctx.ownership.loop_break_stack.clone();
         let divergence_before_place = ctx.divergence_kinds;
         let traced = self.try_trace_place(base, air, ctx)?;
         if !value_result.continues {
@@ -4633,7 +4651,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         if let Some(mut trace) = traced {
             // Check if the root variable was fully moved
-            if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+            if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
                 if let Some(moved_span) = state.full_move {
                     let root_name = self.body_interner().resolve(&trace.root_var);
                     return Err(CompileError::new(
@@ -4760,10 +4778,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .any(|p| matches!(p.proj, AirProjection::Index { .. }))
             {
                 let assigned_path = trace.field_path();
-                if let Some(state) = ctx.moved_vars.get_mut(&trace.root_var) {
+                if let Some(state) = ctx.ownership.moved_vars.get_mut(&trace.root_var) {
                     state.mark_path_reinitialized(&assigned_path);
                     if state.is_empty() {
-                        ctx.moved_vars.remove(&trace.root_var);
+                        ctx.ownership.moved_vars.remove(&trace.root_var);
                     }
                 }
             }
@@ -4811,7 +4829,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // guard runs; remember that this exact path was new before the RHS.
         let rhs_element = self.direct_constant_array_element_path(value)?;
         let rhs_element_was_unmoved = rhs_element.as_ref().is_some_and(|(root, path)| {
-            ctx.moved_vars
+            ctx.ownership
+                .moved_vars
                 .get(root)
                 .is_none_or(|state| state.is_path_or_descendant_moved(path).is_none())
         });
@@ -4820,7 +4839,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // not become reachable loop back edges.
         let value_result = self.analyze_inst(air, value, ctx)?;
         self.reject_accessor_result_escape(value, AccessorEscapeSite::Store, span, ctx)?;
-        let reachable_edges_after_rhs = ctx.loop_break_stack.clone();
+        let reachable_edges_after_rhs = ctx.ownership.loop_break_stack.clone();
         let divergence_before_place = ctx.divergence_kinds;
         let traced = self.try_trace_place(base, air, ctx)?;
         if !value_result.continues {
@@ -4830,7 +4849,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         if let Some(mut trace) = traced {
             // Check if the root variable was fully moved
-            if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+            if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
                 if let Some(moved_span) = state.full_move {
                     let root_name = self.body_interner().resolve(&trace.root_var);
                     return Err(CompileError::new(
@@ -4904,7 +4923,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Analyze index. Index must be an integer type (signed or
             // unsigned) per spec 7.1:7; negative/out-of-range runtime indices
             // trap at runtime via the bounds check (RUE-81).
-            let reachable_edges_before_index = ctx.loop_break_stack.clone();
+            let reachable_edges_before_index = ctx.ownership.loop_break_stack.clone();
             let divergence_before_index = ctx.divergence_kinds;
             let index_result = self.analyze_inst(air, index, ctx)?;
             if !(value_result.continues && trace.continues) {
@@ -4961,7 +4980,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     rhs_element_was_unmoved
                         && *root == trace.root_var
                         && path == &trace.field_path()
-                        && ctx.moved_vars.get(root).is_some_and(|state| {
+                        && ctx.ownership.moved_vars.get(root).is_some_and(|state| {
                             state.partial_moves.iter().any(|(moved, _)| moved == path)
                         })
                 })
@@ -5006,10 +5025,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             {
                 if *k >= 0 {
                     let elem_path = vec![self.intern_index_path_segment(*k as u64)?];
-                    if let Some(state) = ctx.moved_vars.get_mut(&trace.root_var) {
+                    if let Some(state) = ctx.ownership.moved_vars.get_mut(&trace.root_var) {
                         state.mark_path_reinitialized(&elem_path);
                         if state.is_empty() {
-                            ctx.moved_vars.remove(&trace.root_var);
+                            ctx.ownership.moved_vars.remove(&trace.root_var);
                         }
                     }
                 }
@@ -5127,7 +5146,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let Some(local) = ctx.locals.get(symbol) else {
                 continue;
             };
-            let state = ctx.moved_vars.get(symbol);
+            let state = ctx.ownership.moved_vars.get(symbol);
             self.check_linear_binding_consumed(*symbol, local, state)?;
         }
 
@@ -5170,7 +5189,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &AnalysisContext,
         root: Spur,
     ) -> Option<VariableMoveState> {
-        ctx.moved_vars.get(&root).cloned()
+        ctx.ownership.moved_vars.get(&root).cloned()
     }
 
     /// The must-consume obligation for one binding against one move state —
@@ -5332,7 +5351,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Pushed pairwise with `frame` by `insert_local` and
             // `bind_comptime_type_var`, so `move_frame[k]` below is the same
             // binding as `frame[k]` (a desync would index out of bounds).
-            let move_frame = &ctx.moved_scope_stack[frame_idx];
+            let move_frame = &ctx.ownership.moved_scope_stack[frame_idx];
 
             // Resolve the binding each entry introduced (reverse order, so a
             // later same-name entry's saved shadow value feeds the earlier
@@ -5346,7 +5365,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 };
                 let state = match unwound_moves.get(symbol) {
                     Some(saved) => *saved,
-                    None => ctx.moved_vars.get(symbol),
+                    None => ctx.ownership.moved_vars.get(symbol),
                 };
                 resolved.push((*symbol, local, state));
                 unwound_locals.insert(*symbol, old_local.as_ref());
@@ -5367,7 +5386,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             for param in ctx.params {
                 let state = match unwound_moves.get(&param.name) {
                     Some(saved) => *saved,
-                    None => ctx.moved_vars.get(&param.name),
+                    None => ctx.ownership.moved_vars.get(&param.name),
                 };
                 self.check_linear_param_consumed(param, state, body_span)?;
             }
@@ -5597,7 +5616,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     pub(crate) fn check_array_elementwise_consumption(
         &self,
         ty: Type,
-        state: Option<&super::super::context::VariableMoveState>,
+        state: Option<&VariableMoveState>,
         symbol: Spur,
         decl_span: Span,
     ) -> CompileResult<ElementwiseConsumption> {
@@ -5721,7 +5740,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         assigned_path: &[Spur],
         ctx: &AnalysisContext,
     ) -> CompileResult<bool> {
-        let Some(state) = ctx.moved_vars.get(&root_var) else {
+        let Some(state) = ctx.ownership.moved_vars.get(&root_var) else {
             return Ok(false);
         };
         // The exact destination place was moved out on every path.
@@ -5856,7 +5875,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // CALLER's array holed, exactly like a whole or field move.
         self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
         let elem_path = vec![self.intern_index_path_segment(k as u64)?];
-        if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+        if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
             // Whole-element move: reject if the element itself or an ancestor
             // was already moved. A descendant move is also rejected except
             // for the matching explicit-@drop residue walk.
@@ -5873,7 +5892,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .partial_moves
                 .iter()
                 .any(|(path, _)| path.len() > elem_path.len() && path.starts_with(&elem_path));
-            if (ctx.drop_intrinsic_operand != Some(trace.root_var) || !has_strict_descendant)
+            if (ctx.ownership.drop_intrinsic_operand != Some(trace.root_var)
+                || !has_strict_descendant)
                 && let Some(moved_span) = state.is_path_or_descendant_moved(&elem_path)
             {
                 return Err(use_after_move_path_error(
@@ -5886,7 +5906,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
         }
         self.reject_move_of_call_loaned_root(trace.root_var, span, ctx)?;
-        ctx.moved_vars
+        ctx.ownership
+            .moved_vars
             .entry(trace.root_var)
             .or_default()
             .mark_path_moved(&elem_path, span);
@@ -5978,7 +5999,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !matches!(first.proj, AirProjection::Index { .. }) {
             return Ok(());
         }
-        let Some(state) = ctx.moved_vars.get(&trace.root_var) else {
+        let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) else {
             return Ok(());
         };
         match first.const_index {
@@ -6037,7 +6058,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ) {
             return Ok(());
         }
-        let Some(state) = ctx.moved_vars.get(&trace.root_var) else {
+        let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) else {
             return Ok(());
         };
         let element_move_span = state.partial_moves.iter().find_map(|(p, s)| {
@@ -6131,7 +6152,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
-        if ctx.iter_borrows.contains(&root_var) {
+        if ctx.ownership.iter_borrows.contains(&root_var) {
             return Err(CompileError::new(
                 ErrorKind::MutateBorrowedValue {
                     variable: self.body_interner().resolve(&root_var).to_string(),
@@ -6182,7 +6203,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
-        for frame in ctx.call_loaned_roots.iter().rev() {
+        for frame in ctx.ownership.call_loaned_roots.iter().rev() {
             if let Some((_, kind, _view_materialized)) = frame.iter().find(|(r, _, _)| *r == root) {
                 let variable = self.body_interner().resolve(&root).to_string();
                 let kw = kind.keyword();
@@ -6259,6 +6280,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
         let conflicting = ctx
+            .ownership
             .call_loaned_roots
             .iter()
             .flatten()
@@ -6293,8 +6315,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
-        if let Some((_, loan_span, _kind)) =
-            ctx.expression_loans.iter().find(|(r, _, _)| *r == root)
+        if let Some((_, loan_span, _kind)) = ctx
+            .ownership
+            .expression_loans
+            .iter()
+            .find(|(r, _, _)| *r == root)
         {
             return Err(CompileError::new(
                 ErrorKind::AccessorLoanConflict {
@@ -6319,6 +6344,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
         if let Some((_, exclusive_span)) = ctx
+            .ownership
             .expression_exclusive_uses
             .iter()
             .find(|(used_root, _)| *used_root == root)
@@ -6334,6 +6360,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         if kind == CallLoanKind::Inout
             && ctx
+                .ownership
                 .expression_shared_reads
                 .iter()
                 .any(|(read_root, _)| *read_root == root)
@@ -6360,11 +6387,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &mut AnalysisContext,
     ) {
         if !ctx
+            .ownership
             .expression_exclusive_uses
             .iter()
             .any(|(used_root, _)| *used_root == root)
         {
-            ctx.expression_exclusive_uses.push((root, span));
+            ctx.ownership.expression_exclusive_uses.push((root, span));
         }
     }
 
@@ -6376,6 +6404,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
         if let Some((_, loan_span, _kind)) = ctx
+            .ownership
             .expression_loans
             .iter()
             .find(|(r, _, kind)| *r == root && *kind == CallLoanKind::Inout)
@@ -6511,7 +6540,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         for (root, span, kind) in &loans {
             self.reject_accessor_loan_against_expression_ledgers(*root, *kind, *span, ctx)?;
         }
-        ctx.readmit_expression_loans(loans);
+        ctx.ownership.readmit_expression_loans(loans);
         Ok(())
     }
 
@@ -6800,7 +6829,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         //
         // Caught in either argument order, because the enclosing frame covers
         // the whole outer argument list before any of it is analyzed.
-        // `ctx.call_loaned_roots` holds only genuinely enclosing calls here:
+        // `ctx.ownership.call_loaned_roots` holds only genuinely enclosing calls here:
         // this call's own frame is pushed below.
         for arg in args.clone() {
             if !arg.is_inout() {
@@ -6811,13 +6840,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             else {
                 continue;
             };
-            let conflicting_outer_loan =
-                ctx.call_loaned_roots
-                    .iter()
-                    .flatten()
-                    .find(|(loaned, kind, view_materialized)| {
-                        *loaned == root && (*kind == CallLoanKind::Borrow || *view_materialized)
-                    });
+            let conflicting_outer_loan = ctx.ownership.call_loaned_roots.iter().flatten().find(
+                |(loaned, kind, view_materialized)| {
+                    *loaned == root && (*kind == CallLoanKind::Borrow || *view_materialized)
+                },
+            );
             if let Some((_, kind, view_materialized)) = conflicting_outer_loan {
                 let variable = self.body_interner().resolve(&root).to_string();
                 let loan_kind = kind.keyword();
@@ -6876,17 +6903,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         let pushed = !frame.is_empty();
         if pushed {
-            ctx.call_loaned_roots.push(frame);
+            ctx.ownership.call_loaned_roots.push(frame);
         }
         let result =
             self.analyze_call_args_coerced_inner(air, args.clone(), param_types, param_modes, ctx);
         if pushed {
-            ctx.call_loaned_roots.pop();
+            ctx.ownership.call_loaned_roots.pop();
         }
         let result = result?;
         // Re-check after the argument list is analyzed (RUE-1593): an accessor
         // expanded among THIS call's own arguments registered its loan in
-        // `ctx.expression_loans` only during the inner analysis, after the
+        // `ctx.ownership.expression_loans` only during the inner analysis, after the
         // pre-frame check above ran. A direct sibling by-ref use of the same
         // root — `use(v.get_ref(i), inout v)` or `use(inout v, v.get_ref(i))` —
         // is an exclusive use of the borrowed root within the same full
@@ -6953,7 +6980,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut temp_scope: Vec<AirRef> = Vec::new();
         let mut continues = true;
         for (i, arg) in args.enumerate() {
-            let reachable_edges_before_arg = ctx.loop_break_stack.clone();
+            let reachable_edges_before_arg = ctx.ownership.loop_break_stack.clone();
             let divergence_before_arg = ctx.divergence_kinds;
             // A `str` parameter (ADR-0043 Phase 3, RUE-324) is a first-class
             // 2-word value, not a `borrow`-materialized fat pointer. A string
@@ -7107,7 +7134,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             } else {
                 None
             };
-            let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, byref_root);
+            let prev_byref_root = std::mem::replace(&mut ctx.ownership.byref_arg_root, byref_root);
             // An elaborated operand is materialized at the parameter's type, so
             // a string literal at a `borrow StrBuf` position becomes the
             // literal-backed `cap == 0` header and an enum-typed fallible
@@ -7124,7 +7151,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if let Some(previous) = prev_expected {
                 ctx.expected_type = previous;
             }
-            ctx.byref_arg_root = prev_byref_root;
+            ctx.ownership.byref_arg_root = prev_byref_root;
             let mut arg_result = arg_result?;
             if !continues {
                 Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_arg);
@@ -7250,9 +7277,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(CompileError::new(ErrorKind::BorrowKeywordMissing, span));
         }
         let root = require_byref_place_arg(self.body_rir_ref(), arg)?;
-        let prev_byref_root = ctx.byref_arg_root.replace(root);
+        let prev_byref_root = ctx.ownership.byref_arg_root.replace(root);
         let trace = self.try_trace_place(arg.value, air, ctx);
-        ctx.byref_arg_root = prev_byref_root;
+        ctx.ownership.byref_arg_root = prev_byref_root;
         let trace = trace?.ok_or_else(|| CompileError::new(ErrorKind::BorrowNonLvalue, span))?;
 
         let arr_ty = trace.result_type();
@@ -7355,7 +7382,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Build a by-value `str` view `{ptr, len}` from a `borrow` argument whose
     /// parameter is `borrow s: str` (ADR-0043 two-types model, RUE-559).
     ///
-    /// The source place is *borrowed*: `ctx.byref_arg_root` is set while it is
+    /// The source place is *borrowed*: `ctx.ownership.byref_arg_root` is set while it is
     /// traced, so no move is recorded and the buffer stays owned by (and is
     /// dropped in) the caller — which also keeps the RUE-523 loan-frame check
     /// from misreading the view construction as a move of its own loan.
@@ -7386,9 +7413,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return self.elaborate_borrow_str_operand(air, arg, str_ty, ctx);
         }
         let root = require_byref_place_arg(self.body_rir_ref(), arg)?;
-        let prev_byref_root = ctx.byref_arg_root.replace(root);
+        let prev_byref_root = ctx.ownership.byref_arg_root.replace(root);
         let trace = self.try_trace_place(arg.value, air, ctx);
-        ctx.byref_arg_root = prev_byref_root;
+        ctx.ownership.byref_arg_root = prev_byref_root;
         let trace = trace?.ok_or_else(|| CompileError::new(ErrorKind::BorrowNonLvalue, span))?;
 
         let src_ty = trace.result_type();
