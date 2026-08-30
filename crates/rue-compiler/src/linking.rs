@@ -444,6 +444,11 @@ static RUNTIME_AARCH64_LINUX_VALIDATION: std::sync::OnceLock<Result<(), String>>
     std::sync::OnceLock::new();
 static RUNTIME_AARCH64_MACOS_VALIDATION: std::sync::OnceLock<Result<(), String>> =
     std::sync::OnceLock::new();
+/// Times the embedded runtime archive has actually been decoded. Parsing it
+/// materializes every member — headers, symbol tables, relocations, and a
+/// `Vec<u8>` per section — so this count is the real cost being avoided
+/// (RUE-1845).
+static RUNTIME_ARCHIVE_PARSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Return the embedded rue-runtime archive matching `target`.
 pub(crate) fn runtime_for_target(target: Target) -> &'static [u8] {
@@ -877,12 +882,48 @@ fn validate_runtime_archive(runtime_bytes: &[u8], target: Target) -> Result<Arch
     validate_parsed_runtime_archive(archive, runtime_bytes, target)
 }
 
+/// The per-target validation memo.
+fn embedded_runtime_validation(target: Target) -> &'static std::sync::OnceLock<Result<(), String>> {
+    match target {
+        Target::X86_64Linux => &RUNTIME_X86_64_LINUX_VALIDATION,
+        Target::Aarch64Linux => &RUNTIME_AARCH64_LINUX_VALIDATION,
+        Target::Aarch64Macos => &RUNTIME_AARCH64_MACOS_VALIDATION,
+    }
+}
+
+/// Validate the embedded runtime archive without materializing it.
+///
+/// The system-linker path writes the archive bytes to disk verbatim and never
+/// needs the parsed form. Once the per-target verdict is memoized there is
+/// nothing left to compute, so decoding several megabytes of archive only to
+/// drop it is pure overhead on every link after the first — including every
+/// warm rebuild in a retained `--watch` session, where the embedded bytes
+/// cannot change within the process (RUE-1845).
+fn validate_runtime_archive_only_with_cancellation(
+    runtime_bytes: &[u8],
+    target: Target,
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableLinkResult<()> {
+    check_cancellation(cancellation)?;
+    // The same physical-identity test the memo itself is keyed on: a
+    // caller-supplied archive that merely compares equal is still validated.
+    if std::ptr::eq(runtime_bytes, runtime_for_target(target))
+        && let Some(validation) = embedded_runtime_validation(target).get()
+    {
+        return validation
+            .clone()
+            .map_err(|error| compile_control(link_error(error)));
+    }
+    validate_runtime_archive_with_cancellation(runtime_bytes, target, cancellation).map(|_| ())
+}
+
 fn validate_runtime_archive_with_cancellation(
     runtime_bytes: &[u8],
     target: Target,
     cancellation: &rue_query::CancellationToken,
 ) -> CancellableLinkResult<Archive> {
     check_cancellation(cancellation)?;
+    RUNTIME_ARCHIVE_PARSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let archive = Archive::parse_strict_objects_with_cancellation(runtime_bytes, || {
         cancellation.is_canceled()
     })
@@ -902,11 +943,7 @@ fn validate_runtime_archive_with_cancellation(
     }
     check_cancellation(cancellation)?;
     let embedded_runtime = runtime_for_target(target);
-    let embedded_validation = match target {
-        Target::X86_64Linux => &RUNTIME_X86_64_LINUX_VALIDATION,
-        Target::Aarch64Linux => &RUNTIME_AARCH64_LINUX_VALIDATION,
-        Target::Aarch64Macos => &RUNTIME_AARCH64_MACOS_VALIDATION,
-    };
+    let embedded_validation = embedded_runtime_validation(target);
     if std::ptr::eq(runtime_bytes, embedded_runtime) {
         if let Some(validation) = embedded_validation.get() {
             validation
@@ -971,11 +1008,7 @@ fn validate_parsed_runtime_archive(
         validate_runtime_inventory(&inventory, runtime_target(target))
     };
     let embedded_runtime = runtime_for_target(target);
-    let embedded_validation = match target {
-        Target::X86_64Linux => &RUNTIME_X86_64_LINUX_VALIDATION,
-        Target::Aarch64Linux => &RUNTIME_AARCH64_LINUX_VALIDATION,
-        Target::Aarch64Macos => &RUNTIME_AARCH64_MACOS_VALIDATION,
-    };
+    let embedded_validation = embedded_runtime_validation(target);
     if std::ptr::eq(runtime_bytes, embedded_runtime) {
         embedded_validation.get_or_init(validate).clone()?;
     } else {
@@ -1252,7 +1285,7 @@ pub(crate) fn link_system_with_warnings_and_cancellation(
     let runtime_bytes = runtime_for_target(options.target);
     // The system linker consumes the archive bytes directly, so validate the
     // embedded target and typed ABI before writing them to disk.
-    validate_runtime_archive_with_cancellation(runtime_bytes, options.target, cancellation)?;
+    validate_runtime_archive_only_with_cancellation(runtime_bytes, options.target, cancellation)?;
     check_cancellation(cancellation)?;
 
     // Set up temporary directory with object files and runtime
@@ -2197,5 +2230,40 @@ mod runtime_archive_validation_tests {
         oversized[value_offset..value_offset + 8].copy_from_slice(&(value - 1).to_le_bytes());
         let err = validation_error(&oversized);
         assert!(err.contains("has size 2, expected 1 byte"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RUE-1845: the system-linker path writes the embedded archive bytes to
+    /// disk verbatim, so once the per-target verdict is memoized it must not
+    /// decode the archive again. The decode materializes every member, so this
+    /// is the cost the validation-only entry point exists to avoid.
+    #[test]
+    fn validating_the_embedded_runtime_stops_reparsing_it() {
+        let target = Target::X86_64Linux;
+        let bytes = runtime_for_target(target);
+        let cancellation = rue_query::CancellationToken::new();
+
+        // Prime the verdict. Whether this particular call is the one that
+        // parses depends on what else ran first in the process, so only the
+        // steady state below is asserted.
+        validate_runtime_archive_only_with_cancellation(bytes, target, &cancellation).unwrap();
+        assert!(
+            embedded_runtime_validation(target).get().is_some(),
+            "the verdict should be memoized after one validation"
+        );
+
+        let before = RUNTIME_ARCHIVE_PARSES.load(std::sync::atomic::Ordering::Relaxed);
+        for _ in 0..4 {
+            validate_runtime_archive_only_with_cancellation(bytes, target, &cancellation).unwrap();
+        }
+        assert_eq!(
+            RUNTIME_ARCHIVE_PARSES.load(std::sync::atomic::Ordering::Relaxed),
+            before,
+            "validating the embedded archive re-parsed it after the verdict was memoized"
+        );
     }
 }
