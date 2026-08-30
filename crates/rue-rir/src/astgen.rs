@@ -4153,6 +4153,9 @@ mod tests {
                 type_expr: array,
                 span,
             })),
+            // An array type literal, not a value-position anonymous
+            // struct/enum, so the body carries no anonymous type site.
+            contains_anonymous_type_literal: false,
             span,
         });
 

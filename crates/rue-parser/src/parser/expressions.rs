@@ -192,6 +192,11 @@ impl Parser {
                 }))
             }
             TokenKind::Struct => {
+                // The only two production sites for value-position anonymous
+                // type literals; the enclosing declaration reads the counter to
+                // decide whether its body needs an anonymous-site walk
+                // (RUE-1837).
+                self.anonymous_type_literals += 1;
                 let type_expr = self.anonymous_struct_type(true)?;
                 Ok(Expr::TypeLit(TypeLitExpr {
                     span: type_expr.span(),
@@ -199,6 +204,7 @@ impl Parser {
                 }))
             }
             TokenKind::Enum => {
+                self.anonymous_type_literals += 1;
                 self.bump();
                 let variants = self.enum_variants()?;
                 let span = self.span_from(start);

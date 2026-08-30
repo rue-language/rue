@@ -290,8 +290,11 @@ impl Parser {
         }
         self.expect(TokenKind::RParen)?;
         let (return_type, place_return) = self.return_type_with_place_mode()?;
+        let anonymous_mark = self.anonymous_literal_mark();
         let body = Expr::Block(self.block()?);
+        let contains_anonymous_type_literal = self.saw_anonymous_literal_since(anonymous_mark);
         Ok(Method {
+            contains_anonymous_type_literal,
             directives,
             name,
             receiver,
@@ -310,9 +313,12 @@ impl Parser {
         self.expect(TokenKind::LParen)?;
         let tok = self.expect(TokenKind::SelfValue)?;
         self.expect(TokenKind::RParen)?;
+        let anonymous_mark = self.anonymous_literal_mark();
         let body = Expr::Block(self.block()?);
+        let contains_anonymous_type_literal = self.saw_anonymous_literal_since(anonymous_mark);
         let span = self.span_from(start);
         Ok(Method {
+            contains_anonymous_type_literal,
             directives: Directives::new(),
             name: Ident {
                 name: self.syms.drop_marker,

@@ -119,6 +119,12 @@ pub struct ConstDecl {
     pub init: Box<Expr>,
     /// Span covering the entire const declaration
     pub span: Span,
+    /// Whether the body contains a value-position anonymous `struct {..}` or
+    /// `enum {..}` literal. Recorded by the parser, which has the only two
+    /// production sites, so the definition index can skip the full
+    /// `anonymous_type_sites` body walk for the overwhelming majority of
+    /// declarations that contain none (RUE-1837).
+    pub contains_anonymous_type_literal: bool,
 }
 
 /// A struct declaration.
@@ -210,6 +216,12 @@ pub struct DropFn {
     pub body: Expr,
     /// Span covering the entire drop fn
     pub span: Span,
+    /// Whether the body contains a value-position anonymous `struct {..}` or
+    /// `enum {..}` literal. Recorded by the parser, which has the only two
+    /// production sites, so the definition index can skip the full
+    /// `anonymous_type_sites` body walk for the overwhelming majority of
+    /// declarations that contain none (RUE-1837).
+    pub contains_anonymous_type_literal: bool,
 }
 
 /// A method definition in an impl block.
@@ -231,6 +243,12 @@ pub struct Method {
     pub body: Expr,
     /// Span covering the entire method
     pub span: Span,
+    /// Whether the body contains a value-position anonymous `struct {..}` or
+    /// `enum {..}` literal. Recorded by the parser, which has the only two
+    /// production sites, so the definition index can skip the full
+    /// `anonymous_type_sites` body walk for the overwhelming majority of
+    /// declarations that contain none (RUE-1837).
+    pub contains_anonymous_type_literal: bool,
 }
 
 /// A place-returning function result qualifier (ADR-0062).
@@ -308,6 +326,12 @@ pub struct Function {
     pub export_abi: Option<String>,
     /// Span covering the entire function
     pub span: Span,
+    /// Whether the body contains a value-position anonymous `struct {..}` or
+    /// `enum {..}` literal. Recorded by the parser, which has the only two
+    /// production sites, so the definition index can skip the full
+    /// `anonymous_type_sites` body walk for the overwhelming majority of
+    /// declarations that contain none (RUE-1837).
+    pub contains_anonymous_type_literal: bool,
 }
 
 /// A foreign-declaration block: `extern "C" { fn getpid() -> i32; }`.

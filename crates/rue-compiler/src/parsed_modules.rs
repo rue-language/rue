@@ -2839,7 +2839,10 @@ fn build_definition_index(
                 vec![signature_prefix(function.span, function.body.span())?],
                 None,
                 Some(function.body.span()),
-                rue_rir::anonymous_type_sites(&function.body).into(),
+                declaration_anonymous_sites_for(
+                    function.contains_anonymous_type_literal,
+                    &function.body,
+                ),
             )?,
             Item::Struct(structure) => {
                 let owner_name = resolve_name(structure.name)?;
@@ -2902,7 +2905,10 @@ fn build_definition_index(
                         vec![signature_prefix(method.span, method.body.span())?],
                         None,
                         Some(method.body.span()),
-                        rue_rir::anonymous_type_sites(&method.body).into(),
+                        declaration_anonymous_sites_for(
+                            method.contains_anonymous_type_literal,
+                            &method.body,
+                        ),
                     )?;
                 }
             }
@@ -2951,7 +2957,10 @@ fn build_definition_index(
                     vec![signature_prefix(value.span, value.init.span())?],
                     Some(initializer),
                     None,
-                    rue_rir::anonymous_type_sites(&value.init).into(),
+                    declaration_anonymous_sites_for(
+                        value.contains_anonymous_type_literal,
+                        &value.init,
+                    ),
                 )?;
             }
             Item::DropFn(value) => push(
@@ -2975,7 +2984,7 @@ fn build_definition_index(
                 vec![signature_prefix(value.span, value.body.span())?],
                 None,
                 Some(value.body.span()),
-                rue_rir::anonymous_type_sites(&value.body).into(),
+                declaration_anonymous_sites_for(value.contains_anonymous_type_literal, &value.body),
             )?,
             Item::Extern(block) => {
                 for (function_index, function) in block.fns.iter().enumerate() {
@@ -3220,6 +3229,28 @@ fn candidate_parameter_mode(mode: rue_parser::ast::ParamMode) -> (DeclarationPar
         rue_parser::ast::ParamMode::Inout => (DeclarationParameterMode::Inout, false),
         rue_parser::ast::ParamMode::Comptime => (DeclarationParameterMode::Value, true),
     }
+}
+
+/// The anonymous-type-site table for a declaration body, walking it only when
+/// the parser recorded a value-position anonymous `struct {..}` / `enum {..}`
+/// literal inside it (RUE-1837).
+///
+/// `anonymous_type_sites` is a complete recursive traversal of the body
+/// expression tree, but anonymous type literals exist only inside comptime
+/// type-constructor bodies, so for nearly every declaration it visited every
+/// node to return an empty table. The empty result is shared, so a body without
+/// literals costs neither the walk nor an allocation. Behavior is identical:
+/// an empty table is exactly what the walk produced for these bodies.
+fn declaration_anonymous_sites_for(
+    contains_anonymous_type_literal: bool,
+    body: &rue_parser::Expr,
+) -> Arc<[rue_rir::AnonymousTypeSite]> {
+    static EMPTY: std::sync::OnceLock<Arc<[rue_rir::AnonymousTypeSite]>> =
+        std::sync::OnceLock::new();
+    if !contains_anonymous_type_literal {
+        return Arc::clone(EMPTY.get_or_init(|| Arc::from([])));
+    }
+    rue_rir::anonymous_type_sites(body).into()
 }
 
 fn signature_prefix(declaration: Span, payload: Span) -> CompileResult<Span> {
@@ -3515,6 +3546,60 @@ extern "C" { fn getpid() -> i32; }
                 )
             })
             .collect()
+    }
+
+    /// RUE-1837: the anonymous-site walk is gated on a parser-recorded flag, so
+    /// the gate is sound only if that flag is set for every body the walk would
+    /// have found a site in. Assert both directions on one module: the two
+    /// value-position literal forms still get their sites, and a body with none
+    /// gets the empty table the walk always produced for it.
+    #[test]
+    fn gated_anonymous_site_tables_still_record_every_literal() {
+        let source = snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                r#"
+fn plain(value: i32) -> i32 { value + value }
+fn Opt(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn Wrap(comptime T: type) -> type {
+    struct { value: T }
+}
+"#,
+            )],
+            1,
+        );
+        let parsed = parse_source_snapshot_modules(&source).unwrap();
+        let module = parsed.modules()[0].clone();
+
+        let mut kinds = Vec::new();
+        let mut empty_bodies = 0usize;
+        for key in module.definitions().declaration_keys_in_source_order() {
+            let sites = module
+                .declaration_anonymous_sites(key)
+                .expect("every indexed declaration has a site table");
+            if sites.is_empty() {
+                empty_bodies += 1;
+            }
+            kinds.extend(sites.iter().map(|site| site.kind));
+        }
+        kinds.sort_unstable_by_key(|kind| format!("{kind:?}"));
+
+        assert_eq!(
+            kinds,
+            vec![
+                rue_rir::AnonymousTypeSiteKind::Enum,
+                rue_rir::AnonymousTypeSiteKind::Struct
+            ],
+            "gating dropped an anonymous type site"
+        );
+        assert_eq!(
+            empty_bodies, 1,
+            "the literal-free body should have an empty table, and only it"
+        );
     }
 
     #[test]

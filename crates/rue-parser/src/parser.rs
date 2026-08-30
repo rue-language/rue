@@ -21,6 +21,11 @@ pub struct Parser {
     file_id: FileId,
     errors: diagnostics::ParserDiagnostics,
     interner_error: Option<lasso::LassoErrorKind>,
+    /// Count of value-position anonymous `struct {..}` / `enum {..}` literals
+    /// parsed so far. Declaration parsers compare it across their body parse to
+    /// record `contains_anonymous_type_literal` (RUE-1837); only the difference
+    /// across a body matters, so it never needs resetting.
+    anonymous_type_literals: usize,
 }
 struct PrimitiveTypeSpurs {
     i8: Spur,
@@ -108,6 +113,16 @@ impl PrimitiveTypeSpurs {
 }
 
 impl Parser {
+    /// Snapshot the anonymous-type-literal counter before parsing a body.
+    fn anonymous_literal_mark(&self) -> usize {
+        self.anonymous_type_literals
+    }
+
+    /// Whether any anonymous type literal was parsed since `mark`.
+    fn saw_anonymous_literal_since(&self, mark: usize) -> bool {
+        self.anonymous_type_literals != mark
+    }
+
     /// Create a parser from lexer tokens and their shared symbol interner.
     pub fn new(tokens: Vec<Token>, mut interner: ThreadedRodeo) -> Self {
         let file_id = tokens.first().map(|t| t.span.file_id).unwrap_or_default();
@@ -126,6 +141,7 @@ impl Parser {
             file_id,
             errors: diagnostics::ParserDiagnostics::default(),
             interner_error,
+            anonymous_type_literals: 0,
         }
     }
 
@@ -149,6 +165,7 @@ impl Parser {
             file_id,
             errors: diagnostics::ParserDiagnostics::default(),
             interner_error,
+            anonymous_type_literals: 0,
         }
     }
 

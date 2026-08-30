@@ -122,8 +122,11 @@ impl Parser {
         let name = self.ident()?;
         let params = self.params()?;
         let (return_type, place_return) = self.return_type_with_place_mode()?;
+        let anonymous_mark = self.anonymous_literal_mark();
         let body = Expr::Block(self.block()?);
+        let contains_anonymous_type_literal = self.saw_anonymous_literal_since(anonymous_mark);
         Ok(Function {
+            contains_anonymous_type_literal,
             directives,
             visibility,
             is_unchecked,
@@ -369,8 +372,11 @@ impl Parser {
         self.expect(TokenKind::LParen)?;
         let self_tok = self.expect(TokenKind::SelfValue)?;
         self.expect(TokenKind::RParen)?;
+        let anonymous_mark = self.anonymous_literal_mark();
         let body = Expr::Block(self.block()?);
+        let contains_anonymous_type_literal = self.saw_anonymous_literal_since(anonymous_mark);
         Ok(DropFn {
+            contains_anonymous_type_literal,
             type_name,
             self_param: SelfParam {
                 mode: ParamMode::Normal,
@@ -396,9 +402,12 @@ impl Parser {
             None
         };
         self.expect(TokenKind::Eq)?;
+        let anonymous_mark = self.anonymous_literal_mark();
         let init = Box::new(self.expr()?);
+        let contains_anonymous_type_literal = self.saw_anonymous_literal_since(anonymous_mark);
         self.expect(TokenKind::Semi)?;
         Ok(ConstDecl {
+            contains_anonymous_type_literal,
             directives,
             visibility,
             name,
