@@ -23,6 +23,8 @@
 #   scripts/rue frontend-manifest  Refresh the audited frontend corpus manifest
 #   scripts/rue fmt                Format the code (./fmt.sh)
 #   scripts/rue storage [args...]  Inspect or reclaim Buck outputs across worktrees
+#   scripts/rue storage reclaim-finished ROOT ...
+#                                  Explicitly reclaim outputs for finished roots
 #   scripts/rue gc [age]           Compatibility alias for host-wide stale cleanup
 #   scripts/rue cache [args...]    Provision the shared BuildBuddy action cache
 #   scripts/rue path               Print the absolute binary path (build if needed)

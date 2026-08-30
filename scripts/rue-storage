@@ -10,7 +10,8 @@ usage() {
 usage: scripts/rue-storage status
        scripts/rue-storage plan [STALE_AGE]
        scripts/rue-storage clean [STALE_AGE]
-       scripts/rue-storage guard
+       scripts/rue-storage guard [--finished-root RUE_ROOT ...]
+       scripts/rue-storage reclaim-finished RUE_ROOT [RUE_ROOT ...]
        scripts/rue-storage reset RUE_ROOT [RUE_ROOT ...]
 
 status inventories every registered Rue worktree and its buck-out size. plan
@@ -25,8 +26,10 @@ where ENOSPC is a real risk — between the floors the guard warns and
 proceeds, because on a busy multi-worktree host the free space held by
 active sibling builds is not reclaimable and blocking every build there
 starves the host without protecting it (RUE-1331). reset fully removes Buck
-outputs only from the exact registered roots named by the caller. Source
-worktrees are never removed.
+outputs only from the exact registered roots named by the caller. reclaim-finished
+does the same for caller-authorized finished roots, using Buck's non-preempting
+liveness check for each existing Buck isolation and preserving tracked and
+untracked source content. Source worktrees are never removed.
 EOF
 }
 
@@ -51,7 +54,7 @@ hard_floor_gib=4
 
 collect_roots() {
     local inventory
-    if ! inventory="$(git -C "$repo_root" worktree list --porcelain 2>/dev/null)"; then
+    if ! inventory="$(git_reclaim -C "$repo_root" worktree list --porcelain 2>/dev/null)"; then
         echo "error: cannot inventory registered worktrees; refusing cleanup (fail-closed)" >&2
         return 1
     fi
@@ -80,13 +83,25 @@ human_kib() {
 
 source_state() {
     local out
-    if ! out="$(git -C "$1" status --porcelain 2>/dev/null)"; then
+    if ! out="$(git_reclaim -C "$1" status --porcelain 2>/dev/null)"; then
         printf 'unknown'
     elif [[ -n "$out" ]]; then
         printf 'dirty'
     else
         printf 'clean'
     fi
+}
+
+# Reclaim decisions must use the repository selected by each explicit -C
+# root, never ambient Git environment that could redirect inventory, identity,
+# or source-state probes to an unrelated checkout. Keep ordinary Git commands
+# on the same safe path as well; unsetting the object/config selectors closes
+# the remaining ways for a caller's environment to change repository meaning.
+git_reclaim() {
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+        -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+        -u GIT_CEILING_DIRECTORIES -u GIT_DISCOVERY_ACROSS_FILESYSTEM \
+        -u GIT_NAMESPACE git "$@"
 }
 
 cache_state() {
@@ -295,6 +310,9 @@ guard_low_disk() {
     pressure="$(emergency_pressure)" || return 1
     after="$(describe_free)" || return 1
     if [[ "$pressure" == low ]]; then
+        if (( ${#FINISHED_EVIDENCE_ROOTS[@]} > 0 )); then
+            report_finished_evidence
+        fi
         echo "warning: host filesystem still has only ${after} free; trying largest legacy Buck roots while preserving active work" >&2
         # Escalation is best-effort; the hard floor below makes the decision.
         reset_legacy_under_pressure || true
@@ -331,6 +349,650 @@ canonical_registered_root() {
     return 1
 }
 
+# The explicit reclaim path has a stricter inventory contract than the
+# host-wide status/TTL commands. Every entry must be a usable Rue checkout and
+# every canonical path must be unique; otherwise an alias could make the
+# caller authorize a different checkout than the one inspected.
+canonical_reclaim_root() {
+    local requested="$1" canonical root root_canonical roots seen=""
+    if ! canonical="$(cd "$requested" 2>/dev/null && pwd -P)"; then
+        echo "error: reclaim-finished target is not a directory: $requested" >&2
+        return 1
+    fi
+    if [[ "$canonical" == *$'\n'* ]]; then
+        echo "error: reclaim-finished target path is ambiguous; refusing reclaim: $requested" >&2
+        return 1
+    fi
+    roots="$(collect_roots)" || return 1
+    while IFS= read -r root; do
+        [[ -n "$root" ]] || continue
+        if ! is_rue_root "$root"; then
+            echo "error: registered worktree is not a usable Rue checkout; refusing reclaim: $root" >&2
+            return 1
+        fi
+        if ! root_canonical="$(cd "$root" 2>/dev/null && pwd -P)"; then
+            echo "error: cannot canonicalize registered worktree; refusing reclaim: $root" >&2
+            return 1
+        fi
+        if [[ "$root_canonical" == *$'\n'* ]]; then
+            echo "error: registered worktree path is ambiguous; refusing reclaim: $root" >&2
+            return 1
+        fi
+        if [[ "$seen" == *$'\n'"$root_canonical"$'\n'* ]]; then
+            echo "error: registered worktree inventory has ambiguous duplicate root: $root_canonical" >&2
+            return 1
+        fi
+        seen+=$'\n'"$root_canonical"$'\n'
+        if [[ "$root_canonical" == "$canonical" ]]; then
+            verify_reclaim_git_identity "$root_canonical" || return 1
+            printf '%s\n' "$root_canonical"
+        fi
+    done <<<"$roots"
+    if [[ "$seen" != *$'\n'"$canonical"$'\n'* ]]; then
+        echo "error: reclaim-finished target is not a registered Rue worktree: $requested" >&2
+        return 1
+    fi
+}
+
+canonical_git_path() {
+    local base="$1" path="$2"
+    if [[ "$path" == /* ]]; then
+        cd "$path" 2>/dev/null && pwd -P
+    else
+        cd "$base/$path" 2>/dev/null && pwd -P
+    fi
+}
+
+verify_reclaim_git_identity() {
+    local root="$1" coordinator_common candidate_common candidate_git_dir candidate_top pointer expected_pointer
+    if ! coordinator_common="$(git_reclaim -C "$repo_root" rev-parse --git-common-dir 2>/dev/null)" ||
+        ! coordinator_common="$(canonical_git_path "$repo_root" "$coordinator_common")"; then
+        echo "error: cannot inspect coordinator Git identity; refusing reclaim for $root" >&2
+        return 1
+    fi
+    if ! candidate_common="$(git_reclaim -C "$root" rev-parse --git-common-dir 2>/dev/null)" ||
+        ! candidate_common="$(canonical_git_path "$root" "$candidate_common")" ||
+        [[ "$candidate_common" != "$coordinator_common" ]]; then
+        echo "error: target is not in the coordinator's Git worktree family; refusing reclaim for $root" >&2
+        return 1
+    fi
+    if ! candidate_git_dir="$(git_reclaim -C "$root" rev-parse --git-dir 2>/dev/null)" ||
+        ! candidate_git_dir="$(canonical_git_path "$root" "$candidate_git_dir")"; then
+        echo "error: cannot inspect target Git worktree admin directory; refusing reclaim for $root" >&2
+        return 1
+    fi
+    if [[ "$candidate_git_dir" != "$coordinator_common" ]]; then
+        case "$candidate_git_dir/" in
+            "$coordinator_common/worktrees/"*) ;;
+            *)
+                echo "error: target Git worktree admin directory is outside the coordinator mapping; refusing reclaim for $root" >&2
+                return 1
+                ;;
+        esac
+        if [[ -L "$candidate_git_dir/gitdir" || ! -f "$candidate_git_dir/gitdir" ]] ||
+            ! IFS= read -r pointer <"$candidate_git_dir/gitdir" ||
+            [[ -z "$pointer" || "$pointer" == gitdir:* ]]; then
+            echo "error: target Git worktree admin back-pointer is missing; refusing reclaim for $root" >&2
+            return 1
+        fi
+        if [[ -L "$root/.git" || ! -f "$root/.git" ]]; then
+            echo "error: target Git worktree link file is missing; refusing reclaim for $root" >&2
+            return 1
+        fi
+        expected_pointer="$(canonical_file_path "$root" "$root/.git")" || return 1
+        # Git may write a relative back-pointer when the worktree uses
+        # --relative-paths; it is relative to the admin directory, not root.
+        if ! pointer="$(canonical_file_path "$candidate_git_dir" "$pointer")" ||
+            [[ "$pointer" != "$expected_pointer" ]]; then
+            echo "error: target Git worktree admin back-pointer does not match its registered root; refusing reclaim for $root" >&2
+            return 1
+        fi
+    else
+        # A linked worktree has a .git file, while the coordinator's main
+        # checkout has a real .git directory. Do not accept a main-looking
+        # candidate whose .git merely points at the coordinator metadata.
+        if [[ -L "$root/.git" || ! -d "$root/.git" ]] ||
+            ! candidate_git_dir="$(cd "$root/.git" 2>/dev/null && pwd -P)" ||
+            [[ "$candidate_git_dir" != "$coordinator_common" ]]; then
+            echo "error: target main-worktree Git metadata does not match the coordinator; refusing reclaim for $root" >&2
+            return 1
+        fi
+    fi
+    if ! candidate_top="$(git_reclaim -C "$root" rev-parse --show-toplevel 2>/dev/null)" ||
+        ! candidate_top="$(cd "$candidate_top" 2>/dev/null && pwd -P)" ||
+        [[ "$candidate_top" != "$root" ]]; then
+        echo "error: target Git top-level does not match its registered root; refusing reclaim for $root" >&2
+        return 1
+    fi
+    if [[ "${2:-}" == print-admin ]]; then
+        printf '%s\n' "$candidate_git_dir"
+    fi
+}
+
+filesystem_identity() {
+    local path="$1" identity
+    # GNU stat's -f means filesystem statistics (not file dev:inode), so try
+    # its exact file form first. BSD/macOS rejects -c and then provides the
+    # equivalent fields through -f.
+    if identity="$(stat -c '%d:%i' "$path" 2>/dev/null)" &&
+        [[ "$identity" =~ ^[0-9]+:[0-9]+$ ]]; then
+        printf '%s\n' "$identity"
+        return 0
+    fi
+    if identity="$(stat -f '%d:%i' "$path" 2>/dev/null)" &&
+        [[ "$identity" =~ ^[0-9]+:[0-9]+$ ]]; then
+        printf '%s\n' "$identity"
+        return 0
+    fi
+    echo "error: cannot inspect filesystem identity for $path; refusing reclaim" >&2
+    return 1
+}
+
+canonical_file_path() {
+    local base="$1" path="$2" directory filename canonical_directory
+    if [[ "$path" == /* ]]; then
+        directory="${path%/*}"
+        filename="${path##*/}"
+    else
+        directory="$base/${path%/*}"
+        filename="${path##*/}"
+    fi
+    [[ -n "$directory" ]] || directory=/
+    if ! canonical_directory="$(cd "$directory" 2>/dev/null && pwd -P)"; then
+        return 1
+    fi
+    printf '%s/%s\n' "$canonical_directory" "$filename"
+}
+
+# `du` is part of the validation boundary for explicit cleanup. A failed or
+# malformed size probe must not be interpreted as an empty buck-out.
+reclaim_size_kib() {
+    local root="$1" kib
+    if [[ ! -e "$root/buck-out" && ! -L "$root/buck-out" ]]; then
+        printf '0\n'
+        return 0
+    fi
+    if [[ -L "$root/buck-out" || ! -d "$root/buck-out" ]]; then
+        echo "error: Buck output root is not a directory; refusing reclaim for $root" >&2
+        return 1
+    fi
+    if ! kib="$(du -sk "$root/buck-out" 2>/dev/null | awk 'NR == 1 && $1 ~ /^[0-9]+$/ { print $1; found = 1 } END { if (!found) exit 1 }')" ||
+        [[ ! "$kib" =~ ^[0-9]+$ ]]; then
+        echo "error: cannot inspect Buck output size for $root; refusing reclaim" >&2
+        return 1
+    fi
+    printf '%s\n' "$kib"
+}
+
+# Enumerate only the isolation directories that already exist under this
+# root. Each Buck operation is scoped to one such isolation, so a newly-created
+# alternate isolation is never swept by a broad default clean. Every
+# directory, including Buck's default v2 isolation, is passed explicitly as
+# --isolation-dir so inherited isolation settings cannot retarget cleanup.
+run_isolation_clean() {
+    local root="$1" path="$2" mode="$3" expected_admin="${4:-}" expected_admin_identity="${5:-}" expected_identity="${6:-}" expected_output_identity="${7:-}" expected_isolation_identity="${8:-}" isolation
+    local current_admin current_admin_identity current_identity
+    local -a args=()
+    (
+        cd "$root" 2>/dev/null || return 1
+        validate_isolation_path "$root" "$path" || return 1
+        validate_pinned_output_identity "$root" "$expected_output_identity" || return 1
+        validate_pinned_path_identity "$path" "$expected_isolation_identity" || return 1
+        if [[ "$mode" == destructive ]]; then
+            verify_registered_reclaim_root "$root" || return 1
+            current_admin="$(verify_reclaim_git_identity "$root" print-admin)" || return 1
+            current_admin_identity="$(filesystem_identity "$current_admin")" || return 1
+            current_identity="$(filesystem_identity "$root")" || return 1
+            if [[ "$current_admin" != "$expected_admin" ||
+                "$current_admin_identity" != "$expected_admin_identity" ||
+                "$current_identity" != "$expected_identity" ]]; then
+                echo "error: registered worktree identity changed since reclaim validation; refusing reclaim for $root" >&2
+                return 1
+            fi
+        fi
+        if [[ "$path" == "$root/buck-out" ]]; then
+            isolation=v2
+        else
+            isolation="${path##*/}"
+        fi
+        args=(--isolation-dir "$isolation" clean)
+        if [[ "$mode" == preflight ]]; then
+            args+=(--dry-run --exit-when notidle)
+            "$repo_root/buck2" "${args[@]}" >/dev/null
+        elif [[ "$mode" == evidence ]]; then
+            args+=(--stale 1w --tracked-only --dry-run --exit-when notidle)
+            "$repo_root/buck2" "${args[@]}" >/dev/null
+        else
+            args+=(--exit-when notidle)
+            "$repo_root/buck2" "${args[@]}"
+        fi
+    )
+}
+
+validate_isolation_path() {
+    local root="$1" path="$2"
+    if [[ -L "$root/buck-out" || ! -d "$root/buck-out" ]]; then
+        echo "error: Buck output root changed while reclaiming; refusing reclaim for $root" >&2
+        return 1
+    fi
+    if [[ "$path" != "$root/buck-out" && "$path" != "$root/buck-out/"* ]]; then
+        echo "error: Buck isolation path is outside buck-out; refusing reclaim for $root: $path" >&2
+        return 1
+    fi
+    if [[ -L "$path" || ! -d "$path" ]]; then
+        echo "error: Buck isolation changed while reclaiming; refusing reclaim for $root: $path" >&2
+        return 1
+    fi
+}
+
+reclaim_output_identity() {
+    local root="$1"
+    if [[ ! -e "$root/buck-out" && ! -L "$root/buck-out" ]]; then
+        printf 'absent\n'
+    else
+        filesystem_identity "$root/buck-out"
+    fi
+}
+
+validate_pinned_output_identity() {
+    local root="$1" expected="$2" current
+    current="$(reclaim_output_identity "$root")" || return 1
+    if [[ "$current" != "$expected" ]]; then
+        echo "error: Buck output root identity changed during reclaim; refusing reclaim for $root" >&2
+        return 1
+    fi
+}
+
+validate_pinned_path_identity() {
+    local path="$1" expected="$2" current
+    current="$(filesystem_identity "$path")" || return 1
+    if [[ "$current" != "$expected" ]]; then
+        echo "error: Buck isolation identity changed during reclaim; refusing reclaim for $path" >&2
+        return 1
+    fi
+}
+
+isolation_identity_snapshot() {
+    local snapshot="$1" path
+    while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        filesystem_identity "$path" || return 1
+    done <<<"$snapshot"
+}
+
+snapshot_identity_at() {
+    local identities="$1" wanted="$2" index=0 identity
+    while IFS= read -r identity; do
+        if (( index == wanted )); then
+            printf '%s\n' "$identity"
+            return 0
+        fi
+        index=$((index + 1))
+    done <<<"$identities"
+    return 1
+}
+
+verify_registered_reclaim_root() {
+    local target="$1" roots root canonical found=0 seen=""
+    roots="$(collect_roots)" || return 1
+    while IFS= read -r root; do
+        [[ -n "$root" ]] || continue
+        if ! is_rue_root "$root" ||
+            ! canonical="$(cd "$root" 2>/dev/null && pwd -P)"; then
+            echo "error: registered worktree inventory changed or became unusable; refusing reclaim for $target" >&2
+            return 1
+        fi
+        if [[ "$canonical" == *$'\n'* ]]; then
+            echo "error: registered worktree path became ambiguous; refusing reclaim for $target" >&2
+            return 1
+        fi
+        if [[ "$seen" == *$'\n'"$canonical"$'\n'* ]]; then
+            echo "error: registered worktree inventory became ambiguous; refusing reclaim for $target" >&2
+            return 1
+        fi
+        seen+=$'\n'"$canonical"$'\n'
+        [[ "$canonical" == "$target" ]] && found=1
+    done <<<"$roots"
+    if (( found == 0 )); then
+        echo "error: reclaim target is no longer a registered Rue worktree; refusing reclaim for $target" >&2
+        return 1
+    fi
+}
+
+validate_isolation_snapshot() {
+    local root="$1" snapshot="$2" current
+    if ! current="$(snapshot_isolations "$root")" || [[ "$current" != "$snapshot" ]]; then
+        echo "error: Buck isolation set changed since liveness preflight; refusing reclaim for $root" >&2
+        return 1
+    fi
+}
+
+validate_post_reclaim_snapshot() {
+    local root="$1" initial="$2" current path residual
+    if ! current="$(snapshot_isolations "$root")"; then
+        return 1
+    fi
+    while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        case $'\n'"$initial"$'\n' in
+            *$'\n'"$path"$'\n'*) ;;
+            *)
+                echo "error: new Buck isolation appeared during reclaim; refusing to continue for $root: $path" >&2
+                return 1
+                ;;
+        esac
+        if ! residual="$(find "$path" ! -type d -print -quit 2>/dev/null)"; then
+            echo "error: cannot inspect residual Buck output after reclaiming $root" >&2
+            return 1
+        fi
+        if [[ -n "$residual" ]]; then
+            echo "warning: Buck retained output in the cleaned isolation for $root: $residual" >&2
+        fi
+    done <<<"$current"
+}
+
+# Output a newline-separated snapshot of direct isolation paths. Direct files
+# are retained as a compatibility fixture for the default v2 isolation; a
+# mixture of files and directories, or any symlink, is ambiguous and refused.
+snapshot_isolations() {
+    local root="$1" path snapshot="" default_path="" found=0 direct=0
+    if [[ -L "$root/buck-out" ]]; then
+        echo "error: Buck output root is a symlink; refusing reclaim for $root" >&2
+        return 1
+    fi
+    if [[ ! -e "$root/buck-out" ]]; then
+        return 0
+    fi
+    if [[ ! -d "$root/buck-out" ]]; then
+        echo "error: Buck output root is not a directory; refusing reclaim for $root" >&2
+        return 1
+    fi
+    for path in "$root"/buck-out/* "$root"/buck-out/.[!.]* "$root"/buck-out/..?*; do
+        [[ -e "$path" || -L "$path" ]] || continue
+        if [[ "$path" == *$'\n'* ]]; then
+            echo "error: Buck isolation path contains a newline; refusing reclaim for $root" >&2
+            return 1
+        fi
+        if [[ -L "$path" ]]; then
+            echo "error: Buck isolation is a symlink; refusing reclaim for $root: $path" >&2
+            return 1
+        elif [[ -d "$path" ]]; then
+            found=1
+            if [[ "${path##*/}" == v2 ]]; then
+                default_path="$path"
+            else
+                snapshot+="${snapshot:+$'\n'}${path}"
+            fi
+        elif [[ -f "$path" ]]; then
+            direct=1
+        else
+            echo "error: unknown direct Buck output entry; refusing reclaim for $root: $path" >&2
+            return 1
+        fi
+    done
+    if (( found > 0 && direct > 0 )); then
+        echo "error: Buck output mixes direct files and isolation directories; refusing reclaim for $root" >&2
+        return 1
+    fi
+    if (( found == 0 && direct > 0 )); then
+        snapshot="$root/buck-out"
+    elif [[ -n "$default_path" ]]; then
+        snapshot="${default_path}${snapshot:+$'\n'}${snapshot}"
+    fi
+    printf '%s\n' "$snapshot"
+}
+
+clean_isolation_snapshot() {
+    local root="$1" mode="$2" snapshot="$3" expected_admin="${4:-}" expected_admin_identity="${5:-}" expected_identity="${6:-}" expected_output_identity="${7:-}" expected_isolation_identities="${8:-}" path path_index=0 expected_path_identity
+    validate_isolation_snapshot "$root" "$snapshot" || return 1
+    [[ -n "$snapshot" ]] || return 0
+    while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        expected_path_identity="$(snapshot_identity_at "$expected_isolation_identities" "$path_index")" || return 1
+        run_isolation_clean "$root" "$path" "$mode" "$expected_admin" "$expected_admin_identity" "$expected_identity" "$expected_output_identity" "$expected_path_identity" || return 1
+        path_index=$((path_index + 1))
+    done <<<"$snapshot"
+}
+
+reclaim_finished_roots() {
+    local requested root state kib before after reclaimed existing index snapshot admin identity current_admin current_identity current_admin_identity output_identity isolation_identities initial_snapshot initial_output_identity initial_isolation_identities current_snapshot current_isolation_identities
+    local -a roots=() states=() sizes=() isolation_snapshots=() isolation_identity_snapshots=() output_identities=() admin_dirs=() admin_identities=() root_identities=()
+    # Resolve and inspect every requested root before invoking Buck for any
+    # root. The caller's explicit list is the finishedness signal; clean and
+    # dirty source states are both accepted.
+    for requested in "$@"; do
+        root="$(canonical_reclaim_root "$requested")" || return 1
+        if [[ "$root" == "$repo_root" ]]; then
+            echo "error: refusing reclaim-finished for the current coordinator worktree: $requested" >&2
+            return 1
+        fi
+        if (( ${#roots[@]} > 0 )); then
+            for existing in "${roots[@]}"; do
+                if [[ "$existing" == "$root" ]]; then
+                    echo "error: reclaim-finished target was named more than once: $requested" >&2
+                    return 1
+                fi
+            done
+        fi
+        # Pin the registered Git/root identity and output generation before any
+        # source, size, or isolation probes. A replacement during those probes
+        # must not become the new accepted baseline.
+        admin="$(verify_reclaim_git_identity "$root" print-admin)" || return 1
+        admin_identity="$(filesystem_identity "$admin")" || return 1
+        identity="$(filesystem_identity "$root")" || return 1
+        initial_output_identity="$(reclaim_output_identity "$root")" || return 1
+        initial_snapshot="$(snapshot_isolations "$root")" || return 1
+        initial_isolation_identities="$(isolation_identity_snapshot "$initial_snapshot")" || return 1
+        state="$(source_state "$root")"
+        if [[ "$state" == unknown ]]; then
+            echo "error: cannot inspect source state for $root; refusing reclaim" >&2
+            return 1
+        fi
+        kib="$(reclaim_size_kib "$root")" || return 1
+        output_identity="$(reclaim_output_identity "$root")" || return 1
+        if [[ "$output_identity" != "$initial_output_identity" ]]; then
+            echo "error: Buck output generation changed during initial reclaim validation; refusing reclaim for $root" >&2
+            return 1
+        fi
+        current_snapshot="$(snapshot_isolations "$root")" || return 1
+        current_isolation_identities="$(isolation_identity_snapshot "$current_snapshot")" || return 1
+        if [[ "$current_snapshot" != "$initial_snapshot" ||
+            "$current_isolation_identities" != "$initial_isolation_identities" ]]; then
+            echo "error: Buck isolation generation changed during initial reclaim validation; refusing reclaim for $root" >&2
+            return 1
+        fi
+        current_admin="$(verify_reclaim_git_identity "$root" print-admin)" || return 1
+        current_admin_identity="$(filesystem_identity "$current_admin")" || return 1
+        current_identity="$(filesystem_identity "$root")" || return 1
+        if [[ "$current_admin" != "$admin" ||
+            "$current_admin_identity" != "$admin_identity" ||
+            "$current_identity" != "$identity" ]]; then
+            echo "error: registered worktree identity changed during initial reclaim validation; refusing reclaim for $root" >&2
+            return 1
+        fi
+        snapshot="$initial_snapshot"
+        isolation_identities="$initial_isolation_identities"
+        roots+=("$root")
+        states+=("$state")
+        sizes+=("$kib")
+        isolation_snapshots+=("$snapshot")
+        isolation_identity_snapshots+=("$isolation_identities")
+        output_identities+=("$output_identity")
+        admin_dirs+=("$admin")
+        admin_identities+=("$admin_identity")
+        root_identities+=("$identity")
+    done
+
+    # Probe every snapshotted target while all targets are still untouched. This
+    # closes the common multi-root case where a later active daemon would
+    # otherwise be discovered only after an earlier root had been reclaimed.
+    # The destructive call below repeats the authority check because a daemon
+    # can become active between this harmless probe and cleanup.
+    for index in "${!roots[@]}"; do
+        root="${roots[$index]}"
+        [[ -n "${isolation_snapshots[$index]}" ]] || continue
+        if ! clean_isolation_snapshot "$root" preflight "${isolation_snapshots[$index]}" "" "" "" "${output_identities[$index]}" "${isolation_identity_snapshots[$index]}"; then
+            echo "error: Buck refused reclaim-finished preflight for $root (the worktree may be active); no roots reclaimed" >&2
+            return 1
+        fi
+    done
+
+    for index in "${!roots[@]}"; do
+        root="${roots[$index]}"
+        if ! validate_isolation_snapshot "$root" "${isolation_snapshots[$index]}"; then
+            return 1
+        fi
+        validate_pinned_output_identity "$root" "${output_identities[$index]}" || return 1
+        verify_registered_reclaim_root "$root" || return 1
+        current_admin="$(verify_reclaim_git_identity "$root" print-admin)" || return 1
+        current_admin_identity="$(filesystem_identity "$current_admin")" || return 1
+        current_identity="$(filesystem_identity "$root")" || return 1
+        if [[ "$current_admin" != "${admin_dirs[$index]}" ||
+            "$current_admin_identity" != "${admin_identities[$index]}" ||
+            "$current_identity" != "${root_identities[$index]}" ]]; then
+            echo "error: registered worktree identity changed since reclaim validation; refusing reclaim for $root" >&2
+            return 1
+        fi
+        if [[ -z "${isolation_snapshots[$index]}" ]]; then
+            printf 'reclaim-finished: %s — zero Buck output; reclaimed 0 KiB\n' "$root"
+            continue
+        fi
+        before="$(reclaim_size_kib "$root")" || return 1
+        printf 'reclaim-finished: %s (caller-authorized finished root; source %s)\n' "$root" "${states[$index]}"
+        # Buck owns the liveness decision for this exact isolation.
+        current_admin="$(verify_reclaim_git_identity "$root" print-admin)" || return 1
+        current_admin_identity="$(filesystem_identity "$current_admin")" || return 1
+        current_identity="$(filesystem_identity "$root")" || return 1
+        if [[ "$current_admin" != "${admin_dirs[$index]}" ||
+            "$current_admin_identity" != "${admin_identities[$index]}" ||
+            "$current_identity" != "${root_identities[$index]}" ]]; then
+            echo "error: registered worktree identity changed since reclaim validation; refusing reclaim for $root" >&2
+            return 1
+        fi
+        if ! clean_isolation_snapshot "$root" destructive "${isolation_snapshots[$index]}" "${admin_dirs[$index]}" "${admin_identities[$index]}" "${root_identities[$index]}" "${output_identities[$index]}" "${isolation_identity_snapshots[$index]}"; then
+            echo "error: Buck refused reclaim-finished for $root (the worktree may be active); no further roots reclaimed" >&2
+            return 1
+        fi
+        verify_registered_reclaim_root "$root" || return 1
+        current_admin="$(verify_reclaim_git_identity "$root" print-admin)" || return 1
+        current_admin_identity="$(filesystem_identity "$current_admin")" || return 1
+        current_identity="$(filesystem_identity "$root")" || return 1
+        if [[ "$current_admin" != "${admin_dirs[$index]}" ||
+            "$current_admin_identity" != "${admin_identities[$index]}" ||
+            "$current_identity" != "${root_identities[$index]}" ]]; then
+            echo "error: registered worktree identity changed during reclaim; refusing terminal success for $root" >&2
+            return 1
+        fi
+        after="$(reclaim_size_kib "$root")" || return 1
+        if ! validate_post_reclaim_snapshot "$root" "${isolation_snapshots[$index]}"; then
+            return 1
+        fi
+        reclaimed=$((before - after))
+        if (( reclaimed < 0 )); then
+            printf 'reclaim-finished: %s — observed output growth of %s (residual %s)\n' "$root" "$(human_kib "$((-reclaimed))")" "$(human_kib "$after")"
+        elif (( after > 0 )); then
+            printf 'reclaim-finished: %s — reclaimed %s (residual %s)\n' "$root" "$(human_kib "$reclaimed")" "$(human_kib "$after")"
+        else
+            printf 'reclaim-finished: %s — reclaimed %s\n' "$root" "$(human_kib "$reclaimed")"
+        fi
+    done
+}
+
+validate_finished_evidence() {
+    local requested root state existing admin admin_identity root_identity
+    local -a evidence_roots=() evidence_admin_dirs=() evidence_admin_identities=() evidence_root_identities=()
+    for requested in "$@"; do
+        root="$(canonical_reclaim_root "$requested")" || return 1
+        if [[ "$root" == "$repo_root" ]]; then
+            echo "error: --finished-root cannot name the current coordinator worktree: $requested" >&2
+            return 1
+        fi
+        if (( ${#evidence_roots[@]} > 0 )); then
+            for existing in "${evidence_roots[@]}"; do
+                if [[ "$existing" == "$root" ]]; then
+                    echo "error: --finished-root named the same registered root more than once: $requested" >&2
+                    return 1
+                fi
+            done
+        fi
+        state="$(source_state "$root")"
+        [[ "$state" != unknown ]] || {
+            echo "error: cannot inspect --finished-root source state for $root; refusing guard evidence" >&2
+            return 1
+        }
+        admin="$(verify_reclaim_git_identity "$root" print-admin)" || return 1
+        admin_identity="$(filesystem_identity "$admin")" || return 1
+        root_identity="$(filesystem_identity "$root")" || return 1
+        evidence_roots+=("$root")
+        evidence_admin_dirs+=("$admin")
+        evidence_admin_identities+=("$admin_identity")
+        evidence_root_identities+=("$root_identity")
+    done
+    FINISHED_EVIDENCE_ROOTS=("${evidence_roots[@]}")
+    FINISHED_EVIDENCE_ADMIN_DIRS=("${evidence_admin_dirs[@]}")
+    FINISHED_EVIDENCE_ADMIN_IDENTITIES=("${evidence_admin_identities[@]}")
+    FINISHED_EVIDENCE_ROOT_IDENTITIES=("${evidence_root_identities[@]}")
+}
+
+validate_finished_evidence_identity() {
+    local index="$1" root current_admin current_admin_identity current_identity
+    root="${FINISHED_EVIDENCE_ROOTS[$index]}"
+    verify_registered_reclaim_root "$root" || return 1
+    current_admin="$(verify_reclaim_git_identity "$root" print-admin)" || return 1
+    current_admin_identity="$(filesystem_identity "$current_admin")" || return 1
+    current_identity="$(filesystem_identity "$root")" || return 1
+    if [[ "$current_admin" != "${FINISHED_EVIDENCE_ADMIN_DIRS[$index]}" ||
+        "$current_admin_identity" != "${FINISHED_EVIDENCE_ADMIN_IDENTITIES[$index]}" ||
+        "$current_identity" != "${FINISHED_EVIDENCE_ROOT_IDENTITIES[$index]}" ]]; then
+        echo "error: caller-supplied finished-root identity changed; refusing guard evidence for $root" >&2
+        return 1
+    fi
+}
+
+report_finished_evidence() {
+    local index root kib snapshot quoted_root output_identity isolation_identities
+    for index in "${!FINISHED_EVIDENCE_ROOTS[@]}"; do
+        root="${FINISHED_EVIDENCE_ROOTS[$index]}"
+        validate_finished_evidence_identity "$index" || return 1
+        kib="$(reclaim_size_kib "$root")" || return 1
+        (( kib > 0 )) || continue
+        # This non-destructive probe lets Buck reject a live daemon and shows
+        # whether the normal one-week tracked cleanup still has output to
+        # consider. A successful probe plus nonzero output is caller evidence;
+        # it is never auto-reclaimed here.
+        snapshot="$(snapshot_isolations "$root")" || return 1
+        output_identity="$(reclaim_output_identity "$root")" || return 1
+        isolation_identities="$(isolation_identity_snapshot "$snapshot")" || return 1
+        if ! clean_isolation_snapshot "$root" evidence "$snapshot" "" "" "" "$output_identity" "$isolation_identities" >/dev/null 2>&1; then
+            continue
+        fi
+        validate_finished_evidence_identity "$index" || return 1
+        kib="$(reclaim_size_kib "$root")" || return 1
+        (( kib > 0 )) || continue
+        quoted_root="$(printf '%q' "$root")"
+        printf 'warning: caller-supplied finished root is eligible for reclaim-finished: %s\n' "$root" >&2
+        printf 'warning: reclaim it explicitly with: scripts/rue storage reclaim-finished %s\n' "$quoted_root" >&2
+    done
+}
+
+FINISHED_EVIDENCE_ROOTS=()
+FINISHED_EVIDENCE_ADMIN_DIRS=()
+FINISHED_EVIDENCE_ADMIN_IDENTITIES=()
+FINISHED_EVIDENCE_ROOT_IDENTITIES=()
+
+guard_command() {
+    local -a finished_evidence=()
+    while [[ $# -gt 0 ]]; do
+        [[ "$1" == --finished-root && $# -ge 2 && -n "$2" ]] || { usage >&2; return 2; }
+        finished_evidence+=("$2")
+        shift 2
+    done
+    if (( ${#finished_evidence[@]} > 0 )); then
+        validate_finished_evidence "${finished_evidence[@]}"
+    fi
+    guard_low_disk
+}
+
 reset_roots() {
     local requested root
     # Resolve every target before cleaning any of them, so a typo cannot cause
@@ -357,8 +1019,11 @@ case "$command" in
         stale_all "$command" "${1:-1w}"
         ;;
     guard)
-        [[ $# -eq 0 ]] || { usage >&2; exit 2; }
-        guard_low_disk
+        guard_command "$@"
+        ;;
+    reclaim-finished)
+        [[ $# -gt 0 ]] || { usage >&2; exit 2; }
+        reclaim_finished_roots "$@"
         ;;
     reset)
         [[ $# -gt 0 ]] || { usage >&2; exit 2; }
