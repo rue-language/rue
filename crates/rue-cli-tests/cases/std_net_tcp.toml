@@ -403,10 +403,11 @@ stdout = "1\n"
 # Darwin's orderly FIN semantics may allow sends after a peer EOF. Shut down
 # the peer's receive direction, close it, and shut down the client's send
 # direction before making bounded sends until Darwin reports EPIPE/ECONNRESET;
-# MSG_NOSIGNAL proves that error is returned safely.
+# MSG_NOSIGNAL proves that error is returned safely. Once the peer is already
+# gone, Darwin may report ENOTCONN or ECONNRESET from the shutdown itself.
 [[case]]
 name = "tcp_macos_write_after_peer_read_shutdown"
-description = "Darwin reports a bounded post-peer-close write as ConnectionReset without SIGPIPE."
+description = "Darwin reports a bounded post-peer-close write as ConnectionReset without SIGPIPE, allowing NotConnected or ConnectionReset from the prior shutdown."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
 only_on = ["aarch64-macos"]
@@ -461,10 +462,18 @@ fn main() -> i32 {
     }
 
     // Closing the local send direction makes the EPIPE result deterministic
-    // after the peer has gone away, while still exercising MSG_NOSIGNAL.
+    // after the peer has gone away, while still exercising MSG_NOSIGNAL. On
+    // Darwin, shutdown may instead report ENOTCONN/ECONNRESET once the peer is
+    // already gone; either is an expected peer-gone outcome.
     match client.shutdown(std.net.Shutdown.Write) {
         RUnit.Ok(u) => {},
-        RUnit.Err(e) => { return fail(108); },
+        RUnit.Err(e) => {
+            match e {
+                std.net.NetworkError.NotConnected => {},
+                std.net.NetworkError.ConnectionReset => {},
+                _ => { return fail(108); },
+            }
+        },
     }
 
     let mut attempts: u64 = 0;
