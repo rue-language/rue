@@ -13,24 +13,23 @@
 //
 //     const std = @import("std");
 //     let addr = std.net.SockAddr.v4(std.net.Ipv4Addr.localhost(), 8080);
-//     let bytes = addr.to_sockaddr_in();     // Linux sockaddr_in, 16 bytes
+//     let bytes = addr.to_sockaddr_in();     // target sockaddr_in, 16 bytes
 //
-// PLATFORM SCOPE (ADR-0060 §7): the marshalled layout is Linux `sockaddr_in`,
-// identical on the two v1 targets (x86-64 Linux and aarch64 Linux). macOS
-// IPv4 differs (`sin_len` first byte, different ABI details) and is an
-// explicit unsupported case until RUE-986; socket constructors on macOS
-// return `Unsupported` rather than guessing Darwin layouts (RUE-983).
+// PLATFORM SCOPE (ADR-0060 §7): the marshalled layout is the target's IPv4
+// `sockaddr_in`. Linux uses a native/little-endian family field; Darwin uses
+// `sin_len` followed by the one-byte family field. Both supported layouts are
+// exactly 16 bytes and are selected by the target-aware ABI helpers below.
 
 const binary = @import("binary.rue");
 const option = @import("option.rue");
 const result = @import("result.rue");
 
-// The AF_INET address-family value shared by both v1 Linux targets.
+// The AF_INET address-family value shared by the supported targets.
 fn _af_inet() -> u16 {
     2
 }
 
-// Byte size of the marshalled Linux `sockaddr_in`. Callers pass this as the
+// Byte size of the marshalled target `sockaddr_in`. Callers pass this as the
 // address length at the syscall boundary and validate kernel-returned lengths
 // against it before decoding.
 pub fn sockaddr_in_len() -> u64 {
@@ -84,11 +83,12 @@ pub struct SockAddr {
         SockAddr { ip: IpAddr.V4(ip), port: port }
     }
 
-    // Encode this address as the Linux `sockaddr_in` byte layout (ADR-0060
-    // §3), 16 bytes:
+    // Encode this address as the target `sockaddr_in` byte layout (ADR-0060
+    // §3), 16 bytes. Linux starts with the native/little-endian AF_INET
+    // family; Darwin starts with sin_len=16 and AF_INET in byte 1:
     //
     //   | bytes  | encoding                                            |
-    //   | 0..2   | AF_INET family, native/little-endian on v1 targets  |
+    //   | 0..2   | Linux family, or Darwin sin_len and one-byte family   |
     //   | 2..4   | port, big-endian (network order)                    |
     //   | 4..8   | the four IPv4 octets in network order               |
     //   | 8..16  | zero padding                                        |
@@ -96,27 +96,42 @@ pub struct SockAddr {
     // Every multi-byte field states its order through std.binary; nothing
     // here depends on Rue struct layout matching C.
     fn to_sockaddr_in(self) -> [u8; 16] {
-        let fam = binary.u16_to_le_bytes(_af_inet());
         let pb = binary.u16_to_be_bytes(self.port);
         match self.ip {
-            IpAddr.V4(v4) => [
-                fam[0], fam[1],
-                pb[0], pb[1],
-                v4.a, v4.b, v4.c, v4.d,
-                0, 0, 0, 0, 0, 0, 0, 0,
-            ],
+            IpAddr.V4(v4) => match @target_os() {
+                Os.Linux => {
+                    let fam = binary.u16_to_le_bytes(_af_inet());
+                    [
+                        fam[0], fam[1],
+                        pb[0], pb[1],
+                        v4.a, v4.b, v4.c, v4.d,
+                        0, 0, 0, 0, 0, 0, 0, 0,
+                    ]
+                },
+                Os.Macos => [
+                    16, @intCast(_af_inet()),
+                    pb[0], pb[1],
+                    v4.a, v4.b, v4.c, v4.d,
+                    0, 0, 0, 0, 0, 0, 0, 0,
+                ],
+            },
         }
     }
 
-    // Decode a kernel-filled Linux `sockaddr_in`. Returns `None` unless the
-    // family field is AF_INET; the caller has already validated the returned
-    // address length against `sockaddr_in_len()` at the syscall boundary
-    // (ADR-0060 §3). The trailing padding bytes are ignored.
+    // Decode a kernel-filled target `sockaddr_in`. Returns `None` unless the
+    // target's family (and Darwin sin_len) is valid; the caller has already
+    // validated the returned address length at the syscall boundary (ADR-0060
+    // §3). The trailing padding bytes are ignored.
     fn from_sockaddr_in(b: [u8; 16]) -> option.Option(SockAddr) {
         let O = option.Option(SockAddr);
-        let fam = binary.u16_from_le_bytes([b[0], b[1]]);
-        if fam != _af_inet() {
-            return O.None;
+        match @target_os() {
+            Os.Linux => {
+                let fam = binary.u16_from_le_bytes([b[0], b[1]]);
+                if fam != _af_inet() { return O.None; }
+            },
+            Os.Macos => {
+                if b[0] != 16 || b[1] != @intCast(_af_inet()) { return O.None; }
+            },
         }
         let port = binary.u16_from_be_bytes([b[2], b[3]]);
         let ip = Ipv4Addr.new(b[4], b[5], b[6], b[7]);
@@ -125,14 +140,12 @@ pub struct SockAddr {
 }
 
 // ===========================================================================
-// Blocking TCP v1 (RUE-983, ADR-0060 §1/§5/§6/§7).
+// Blocking TCP v1 (RUE-983/RUE-986, ADR-0060 §1/§5/§6/§7).
 //
-// Pure Rue over `@syscall`, Linux x86-64 and aarch64 only. Constructors are
-// the fail-closed platform boundary: on macOS they return
-// `NetworkError.Unsupported` BEFORE any socket syscall (no guessed Darwin
-// numbers; real Darwin support is RUE-986). Because no constructor succeeds
-// off-Linux, every method and drop below runs only over Linux descriptors,
-// so the syscall tables carry Linux numbers keyed by architecture alone.
+// Pure Rue over `@syscall`, with one target-aware socket ABI authority. The
+// helpers below select syscall numbers, constants, errno values, and
+// sockaddr bytes; constructors use the same selections on every supported
+// target and fail closed for any unsupported target.
 //
 // Descriptor ownership follows ADR-0057 §4 exactly as std.fs.File: scope exit
 // closes a live fd via `drop fn`; consuming `close(self)` first swaps in the
@@ -147,7 +160,7 @@ const arraybuf = @import("arraybuf.rue");
 // categories are mapped; everything else falls through to `Other(i64)` with
 // the raw errno, so no error is ever lost.
 pub enum NetworkError {
-    Unsupported,          // not a v1 platform (macOS until RUE-986)
+    Unsupported,          // target has no supported socket ABI
     PermissionDenied,     // EACCES, EPERM
     AddressInUse,         // EADDRINUSE
     AddressNotAvailable,  // EADDRNOTAVAIL
@@ -169,103 +182,226 @@ pub enum Shutdown {
     Both,   // SHUT_RDWR
 }
 
-// Whether this target runs real v1 network syscalls. The single fail-closed
-// platform gate (ADR-0060 §7): macOS waits for RUE-986.
+// Whether this target runs real v1 network syscalls. Keep this gate next to the
+// ABI tables so a future target cannot issue a table row accidentally.
 fn _net_supported() -> bool {
-    match @target_os() {
-        Os.Linux => true,
-        Os.Macos => false,
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => true,
+                Os.Macos => false,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => true,
+                Os.Macos => true,
+            }
+        },
     }
 }
 
 // ---------------------------------------------------------------------------
-// Linux socket syscall numbers, keyed by architecture. These are only issued
-// behind `_net_supported()` (see the section comment), so no Darwin numbers
-// appear here.
+// Target-aware socket ABI authority. Darwin syscall numbers are the BSD trap
+// numbers used by the AArch64 macOS target; Linux rows preserve the original
+// x86-64/AArch64 behavior byte-for-byte.
 // ---------------------------------------------------------------------------
 
 fn _sys_socket() -> u64 {
     match @target_arch() {
-        Arch.X86_64 => 41,
-        Arch.Aarch64 => 198,
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 41,
+                Os.Macos => 97,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 198,
+                Os.Macos => 97,
+            }
+        },
     }
 }
 
 fn _sys_connect() -> u64 {
     match @target_arch() {
-        Arch.X86_64 => 42,
-        Arch.Aarch64 => 203,
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 42,
+                Os.Macos => 98,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 203,
+                Os.Macos => 98,
+            }
+        },
     }
 }
 
 fn _sys_accept() -> u64 {
     match @target_arch() {
-        Arch.X86_64 => 43,
-        Arch.Aarch64 => 202,
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 43,
+                Os.Macos => 30,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 202,
+                Os.Macos => 30,
+            }
+        },
     }
 }
 
 fn _sys_bind() -> u64 {
     match @target_arch() {
-        Arch.X86_64 => 49,
-        Arch.Aarch64 => 200,
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 49,
+                Os.Macos => 104,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 200,
+                Os.Macos => 104,
+            }
+        },
     }
 }
 
 fn _sys_listen() -> u64 {
     match @target_arch() {
-        Arch.X86_64 => 50,
-        Arch.Aarch64 => 201,
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 50,
+                Os.Macos => 106,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 201,
+                Os.Macos => 106,
+            }
+        },
     }
 }
 
 fn _sys_getsockname() -> u64 {
     match @target_arch() {
-        Arch.X86_64 => 51,
-        Arch.Aarch64 => 204,
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 51,
+                Os.Macos => 32,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 204,
+                Os.Macos => 32,
+            }
+        },
     }
 }
 
 fn _sys_shutdown() -> u64 {
     match @target_arch() {
-        Arch.X86_64 => 48,
-        Arch.Aarch64 => 210,
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 48,
+                Os.Macos => 134,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 210,
+                Os.Macos => 134,
+            }
+        },
     }
 }
 
 fn _sys_net_read() -> u64 {
     match @target_arch() {
-        Arch.X86_64 => 0,
-        Arch.Aarch64 => 63,
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 0,
+                Os.Macos => 3,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 63,
+                Os.Macos => 3,
+            }
+        },
     }
 }
 
-// Linux `sendto(2)` with MSG_NOSIGNAL is the socket-specific write path. The
-// null destination and zero address length use the already-connected peer;
-// unlike `write(2)`, MSG_NOSIGNAL suppresses SIGPIPE for these sends only.
+// `sendto(2)` is the socket-specific write path. The null destination and zero
+// address length use the already-connected peer; per-target MSG_NOSIGNAL
+// suppresses SIGPIPE without changing the public write result.
 fn _sys_net_sendto() -> u64 {
     match @target_arch() {
-        Arch.X86_64 => 44,
-        Arch.Aarch64 => 206,
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 44,
+                Os.Macos => 133,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 206,
+                Os.Macos => 133,
+            }
+        },
     }
 }
 
-fn _msg_nosignal() -> u64 { 0x4000 }
+// Darwin's SDK defines MSG_NOSIGNAL as 0x80000; Linux defines it as 0x4000.
+fn _msg_nosignal() -> u64 {
+    match @target_os() {
+        Os.Linux => 0x4000,
+        Os.Macos => 0x80000,
+    }
+}
 
 fn _sys_net_close() -> u64 {
     match @target_arch() {
-        Arch.X86_64 => 3,
-        Arch.Aarch64 => 57,
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 3,
+                Os.Macos => 6,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 57,
+                Os.Macos => 6,
+            }
+        },
     }
 }
 
-// Linux socket constants, identical on both v1 architectures.
+// Socket constants are shared by the supported kernels.
 fn _sock_stream() -> u64 { 1 }
 fn _default_backlog() -> u64 { 128 }
 
-// Normalize a POSITIVE Linux errno into `NetworkError` (asm-generic values,
-// same on x86-64 and aarch64).
+// Normalize a POSITIVE target errno into `NetworkError`. Darwin's errno values
+// differ from Linux (notably EAGAIN=35, EADDRINUSE=48, and ECONNREFUSED=61).
 fn _normalize_net_errno(e: i64) -> NetworkError {
+    match @target_os() {
+        Os.Linux => _normalize_linux_errno(e),
+        Os.Macos => _normalize_macos_errno(e),
+    }
+}
+
+fn _normalize_linux_errno(e: i64) -> NetworkError {
     // EPERM=1 EINTR=4 EBADF=9 EAGAIN=11 EACCES=13 EINVAL=22 EADDRINUSE=98
     // EADDRNOTAVAIL=99 ECONNABORTED=103 ECONNRESET=104 EPIPE=32 ENOTCONN=107
     // ETIMEDOUT=110 ECONNREFUSED=111
@@ -292,6 +428,43 @@ fn _normalize_net_errno(e: i64) -> NetworkError {
     } else if e == 4 {
         NetworkError.Interrupted
     } else if e == 11 {
+        NetworkError.WouldBlock
+    } else if e == 22 {
+        NetworkError.InvalidInput
+    } else if e == 9 {
+        NetworkError.InvalidInput
+    } else {
+        NetworkError.Other(e)
+    }
+}
+
+fn _normalize_macos_errno(e: i64) -> NetworkError {
+    // EPERM=1 EINTR=4 EBADF=9 EAGAIN=35 EACCES=13 EINVAL=22 EADDRINUSE=48
+    // EADDRNOTAVAIL=49 ECONNABORTED=53 ECONNRESET=54 EPIPE=32 ENOTCONN=57
+    // ETIMEDOUT=60 ECONNREFUSED=61.
+    if e == 1 {
+        NetworkError.PermissionDenied
+    } else if e == 13 {
+        NetworkError.PermissionDenied
+    } else if e == 48 {
+        NetworkError.AddressInUse
+    } else if e == 49 {
+        NetworkError.AddressNotAvailable
+    } else if e == 61 {
+        NetworkError.ConnectionRefused
+    } else if e == 54 {
+        NetworkError.ConnectionReset
+    } else if e == 32 {
+        NetworkError.ConnectionReset
+    } else if e == 53 {
+        NetworkError.ConnectionAborted
+    } else if e == 57 {
+        NetworkError.NotConnected
+    } else if e == 60 {
+        NetworkError.TimedOut
+    } else if e == 4 {
+        NetworkError.Interrupted
+    } else if e == 35 {
         NetworkError.WouldBlock
     } else if e == 22 {
         NetworkError.InvalidInput
@@ -410,8 +583,8 @@ pub struct TcpStream {
     // Send the bytes of `buf` in a single `sendto(2)` with MSG_NOSIGNAL;
     // the null destination uses the connected peer and suppresses SIGPIPE
     // for this socket send. It may send fewer than `buf.len()` (the count is
-    // returned). Use `write_all` for the whole-buffer guarantee. Linux EPIPE
-    // is normalized to ConnectionReset, like ECONNRESET.
+    // returned). Use `write_all` for the whole-buffer guarantee. EPIPE is
+    // normalized to ConnectionReset, like ECONNRESET, on every supported OS.
     fn write(inout self, borrow buf: arraybuf.ArrayBuf(u8)) -> result.Result(u64, NetworkError) {
         let R = result.Result(u64, NetworkError);
         let n = buf.len();
