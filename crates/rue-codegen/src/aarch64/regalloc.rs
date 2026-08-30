@@ -1316,18 +1316,18 @@ impl RegAllocBackend for Aarch64Backend {
         }
     }
 
-    fn analyze(mir: &Self::Mir) -> LivenessInfo<Self::Reg> {
-        liveness::analyze(mir)
+    fn analyze_with_loops(mir: &Self::Mir) -> (LivenessInfo<Self::Reg>, LoopInfo) {
+        liveness::analyze_with_loops(mir)
     }
 
-    fn analyze_with_debug(
+    fn analyze_with_debug_and_loops(
         mir: &Self::Mir,
-    ) -> (LivenessInfo<Self::Reg>, crate::regalloc::LivenessDebugInfo) {
-        liveness::analyze_with_debug(mir)
-    }
-
-    fn analyze_loops(mir: &Self::Mir) -> LoopInfo {
-        liveness::analyze_loops(mir)
+    ) -> (
+        LivenessInfo<Self::Reg>,
+        crate::regalloc::LivenessDebugInfo,
+        LoopInfo,
+    ) {
+        liveness::analyze_with_debug_and_loops(mir)
     }
 
     fn coalesce_candidates(instructions: &[Self::Inst]) -> Vec<CoalesceCandidate> {

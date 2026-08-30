@@ -252,6 +252,45 @@ where
     )
 }
 
+/// Compute liveness and loop information together for a target adapter.
+pub fn analyze_with_loops_adapter<A>(adapter: &A) -> (LivenessInfo<A::Reg>, LoopInfo)
+where
+    A: LivenessAdapter,
+{
+    analyze_with_loops(
+        adapter.instructions(),
+        adapter.vreg_count(),
+        adapter.vreg_classes().clone(),
+        |inst| adapter.label(inst),
+        |idx, inst, label_to_idx| adapter.successors(idx, inst, label_to_idx),
+        |inst| adapter.uses(inst),
+        |inst| adapter.defs(inst),
+        |inst| adapter.clobbers(inst),
+        |inst| adapter.is_non_returning(inst),
+    )
+}
+
+/// Compute liveness, its diagnostic projection, and loop information together
+/// for a target adapter.
+pub fn analyze_with_debug_and_loops_adapter<A>(
+    adapter: &A,
+) -> (LivenessInfo<A::Reg>, LivenessDebugInfo, LoopInfo)
+where
+    A: LivenessAdapter,
+{
+    analyze_with_debug_and_loops(
+        adapter.instructions(),
+        adapter.vreg_count(),
+        adapter.vreg_classes().clone(),
+        |inst| adapter.label(inst),
+        |idx, inst, label_to_idx| adapter.successors(idx, inst, label_to_idx),
+        |inst| adapter.uses(inst),
+        |inst| adapter.defs(inst),
+        |inst| adapter.clobbers(inst),
+        |inst| adapter.is_non_returning(inst),
+    )
+}
+
 /// Compute loop information for any backend implementing [`LivenessAdapter`].
 pub fn analyze_loops_adapter<A>(adapter: &A) -> LoopInfo
 where
@@ -350,6 +389,7 @@ where
         get_clobbers,
         get_non_returning,
         false,
+        false,
     )
     .0
 }
@@ -371,7 +411,7 @@ pub fn analyze_with_debug<I, R>(
 where
     R: Copy + Eq + std::hash::Hash + 'static,
 {
-    let (liveness, debug) = analyze_inner(
+    let (liveness, debug, _) = analyze_inner(
         instructions,
         vreg_count,
         vreg_classes,
@@ -382,10 +422,87 @@ where
         get_clobbers,
         get_non_returning,
         true,
+        false,
     );
     (
         liveness,
         debug.expect("debug liveness requested from the canonical analysis"),
+    )
+}
+
+/// Compute production liveness and loop information in one walk of the MIR.
+///
+/// The register allocator needs both, and both derive from the same label map
+/// and successor lists. Computing them through separate entry points walked the
+/// instruction stream twice to rebuild byte-identical tables (RUE-1846).
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_with_loops<I, R>(
+    instructions: &[I],
+    vreg_count: u32,
+    vreg_classes: VRegClasses,
+    get_label: impl Fn(&I) -> Option<LabelId>,
+    get_successors: impl Fn(usize, &I, &AHashMap<LabelId, usize>) -> SuccessorList,
+    get_uses: impl Fn(&I) -> VRegList,
+    get_defs: impl Fn(&I) -> VRegList,
+    get_clobbers: impl Fn(&I) -> &'static [R],
+    get_non_returning: impl Fn(&I) -> bool,
+) -> (LivenessInfo<R>, LoopInfo)
+where
+    R: Copy + Eq + std::hash::Hash + 'static,
+{
+    let (liveness, _, loops) = analyze_inner(
+        instructions,
+        vreg_count,
+        vreg_classes,
+        get_label,
+        get_successors,
+        get_uses,
+        get_defs,
+        get_clobbers,
+        get_non_returning,
+        false,
+        true,
+    );
+    (
+        liveness,
+        loops.expect("loop info requested from the canonical analysis"),
+    )
+}
+
+/// As [`analyze_with_loops`], additionally retaining the diagnostic projection
+/// of the same dataflow.
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_with_debug_and_loops<I, R>(
+    instructions: &[I],
+    vreg_count: u32,
+    vreg_classes: VRegClasses,
+    get_label: impl Fn(&I) -> Option<LabelId>,
+    get_successors: impl Fn(usize, &I, &AHashMap<LabelId, usize>) -> SuccessorList,
+    get_uses: impl Fn(&I) -> VRegList,
+    get_defs: impl Fn(&I) -> VRegList,
+    get_clobbers: impl Fn(&I) -> &'static [R],
+    get_non_returning: impl Fn(&I) -> bool,
+) -> (LivenessInfo<R>, LivenessDebugInfo, LoopInfo)
+where
+    R: Copy + Eq + std::hash::Hash + 'static,
+{
+    let (liveness, debug, loops) = analyze_inner(
+        instructions,
+        vreg_count,
+        vreg_classes,
+        get_label,
+        get_successors,
+        get_uses,
+        get_defs,
+        get_clobbers,
+        get_non_returning,
+        true,
+        true,
+    );
+    (
+        liveness,
+        debug.expect("debug liveness requested from the canonical analysis"),
+        loops.expect("loop info requested from the canonical analysis"),
     )
 }
 
@@ -401,7 +518,8 @@ fn analyze_inner<I, R>(
     get_clobbers: impl Fn(&I) -> &'static [R],
     get_non_returning: impl Fn(&I) -> bool,
     collect_debug: bool,
-) -> (LivenessInfo<R>, Option<LivenessDebugInfo>)
+    collect_loops: bool,
+) -> (LivenessInfo<R>, Option<LivenessDebugInfo>, Option<LoopInfo>)
 where
     R: Copy + Eq + std::hash::Hash + 'static,
 {
@@ -420,6 +538,7 @@ where
                 live_ranges: IndexMap::new(),
                 vreg_count,
             }),
+            collect_loops.then(|| LoopInfo::no_loops(0)),
         );
     }
 
@@ -428,6 +547,12 @@ where
 
     // Step 2: Build successor lists for each instruction
     let successors = build_successor_lists(instructions, &label_to_idx, &get_successors);
+
+    // Loop info is a pure function of that successor table (RUE-1846). Deriving
+    // it here lets the allocator's two analyses share one label-map and
+    // successor-list construction; previously `analyze_loops` walked the
+    // instruction stream again to rebuild byte-identical tables.
+    let loop_info = collect_loops.then(|| compute_loop_info(num_insts, &successors));
 
     // Step 3: Pre-compute uses and defs for each instruction
     let inst_uses: Vec<VRegList> = instructions.iter().map(&get_uses).collect();
@@ -513,6 +638,7 @@ where
             vreg_classes,
         },
         debug,
+        loop_info,
     )
 }
 
@@ -1596,6 +1722,67 @@ mod tests {
         assert_eq!(loop_info.depth(2), 1, "Loop body");
         assert_eq!(loop_info.depth(3), 1, "Loop back-edge");
         assert_eq!(loop_info.depth(4), 0, "After loop");
+    }
+
+    #[test]
+    fn test_analyze_with_loops_matches_the_separate_analyses() {
+        // RUE-1846: the allocator now takes liveness and loop info from one
+        // walk of the MIR, sharing the label map and successor lists it used to
+        // build twice. That combined path must agree exactly with the two
+        // standalone analyses it replaced.
+        let loop_label = LabelId::new(0);
+        let instructions = vec![
+            TestInst::Def { dst: 0 },
+            TestInst::Label { id: loop_label },
+            TestInst::Use { src: 0 },
+            TestInst::Branch { label: loop_label },
+            TestInst::Ret,
+        ];
+        let num_insts = instructions.len();
+
+        let separate_liveness: LivenessInfo<u32> = analyze(
+            &instructions,
+            1,
+            VRegClasses::all_gp(1),
+            test_get_label,
+            |idx, inst, label_to_idx| test_get_successors(idx, inst, label_to_idx, num_insts),
+            test_get_uses,
+            test_get_defs,
+            test_get_clobbers,
+            |_| false,
+        );
+        let separate_loops =
+            analyze_loops(&instructions, test_get_label, |idx, inst, label_to_idx| {
+                test_get_successors(idx, inst, label_to_idx, num_insts)
+            });
+
+        let (combined_liveness, combined_loops): (LivenessInfo<u32>, _) = analyze_with_loops(
+            &instructions,
+            1,
+            VRegClasses::all_gp(1),
+            test_get_label,
+            |idx, inst, label_to_idx| test_get_successors(idx, inst, label_to_idx, num_insts),
+            test_get_uses,
+            test_get_defs,
+            test_get_clobbers,
+            |_| false,
+        );
+
+        for idx in 0..num_insts {
+            assert_eq!(
+                combined_loops.depth(idx),
+                separate_loops.depth(idx),
+                "loop depth diverged at instruction {idx}"
+            );
+        }
+        assert_eq!(
+            combined_liveness.range(VReg::new(0)),
+            separate_liveness.range(VReg::new(0)),
+            "live range diverged from the standalone analysis"
+        );
+        // The fixture really does contain a back-edge, so the comparison above
+        // is not vacuously over an all-zero depth vector.
+        assert_eq!(separate_loops.depth(2), 1, "fixture must contain a loop");
     }
 
     // ========================================
