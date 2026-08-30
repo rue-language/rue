@@ -60,7 +60,7 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
             SemanticSpecializationIdentity<SemanticDefinitionToken, SemanticModuleToken>,
         >,
     >,
-    method_references: &std::collections::HashSet<(crate::StructId, Spur)>,
+    method_references: &ahash::AHashSet<(crate::StructId, Spur)>,
 ) -> Result<SemanticBodyExport, F> {
     let warning_anchor = |span: Span| {
         if span.file_id != body_span.file_id

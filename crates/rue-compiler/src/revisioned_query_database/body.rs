@@ -840,6 +840,22 @@ pub(super) fn collect_durable_anonymous_nominal_dependencies(
     }
 }
 
+pub(super) fn enqueue_unselected_anonymous_dependencies(
+    selected: &BTreeMap<
+        crate::AnonymousNominalKey,
+        crate::durable_semantics::DurableAnonymousNominal,
+    >,
+    pending: &mut BTreeSet<crate::AnonymousNominalKey>,
+    dependencies: impl IntoIterator<Item = crate::AnonymousNominalKey>,
+) {
+    pending.extend(
+        dependencies
+            .into_iter()
+            .map(|dependency| dependency.with_canonical_producer().into_owned())
+            .filter(|dependency| !selected.contains_key(dependency)),
+    );
+}
+
 pub(crate) fn semantic_candidate_import_occurrences(
     rir: &rue_rir::ValidatedRir,
     symbols: &[&str],
@@ -1756,6 +1772,38 @@ impl SemanticNucleusTypeProvider<'_> {
         );
     }
 
+    pub(super) fn merge_anonymous_projections(
+        &mut self,
+        nominals: &[crate::durable_semantics::DurableAnonymousNominal],
+    ) -> Result<
+        (),
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        for nominal in nominals {
+            crate::durable_semantics::merge_anonymous_nominal(
+                &mut self.anonymous_nominals,
+                nominal,
+            )
+            .map_err(|identity| {
+                Self::provider_failure_value(format!(
+                    "conflicting durable anonymous facts for {identity:?}"
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
+    fn anonymous_projection(
+        &self,
+        identity: &crate::AnonymousNominalKey,
+    ) -> Option<crate::durable_semantics::DurableAnonymousNominal> {
+        let identity = identity.with_canonical_producer();
+        self.anonymous_nominals.get(identity.as_ref()).cloned()
+    }
+
     pub(super) fn ffi_shape_failure(
         &mut self,
         ty: &crate::durable_semantics::DurableType,
@@ -2065,13 +2113,7 @@ impl SemanticNucleusTypeProvider<'_> {
                         return Err(error);
                     }
                 };
-                self.anonymous_nominals.extend(
-                    resolved
-                        .anonymous_nominals
-                        .iter()
-                        .cloned()
-                        .map(|nominal| (nominal.identity.clone(), nominal)),
-                );
+                self.merge_anonymous_projections(&resolved.anonymous_nominals)?;
                 let signature = resolved.signature;
                 let carries = match signature {
                     P::Struct {
@@ -2109,7 +2151,7 @@ impl SemanticNucleusTypeProvider<'_> {
                 Ok(carries)
             }
             T::AnonymousNominal(key) => {
-                let Some(nominal) = self.anonymous_nominals.get(key).cloned() else {
+                let Some(nominal) = self.anonymous_projection(key) else {
                     return Self::provider_failure(
                         "anonymous nominal is unavailable while checking linearity",
                     );
@@ -2285,7 +2327,7 @@ impl SemanticNucleusTypeProvider<'_> {
                 Ok(has_glue)
             }
             T::AnonymousNominal(key) => {
-                let nominal = self.anonymous_nominals.get(key).cloned().ok_or_else(|| {
+                let nominal = self.anonymous_projection(key).ok_or_else(|| {
                     Self::provider_failure_value(
                         "anonymous nominal is unavailable while checking drop glue",
                     )
@@ -2430,13 +2472,7 @@ impl SemanticNucleusTypeProvider<'_> {
                             ))
                         })?;
                 let resolved = self.resolved_signature(candidate)?;
-                self.anonymous_nominals.extend(
-                    resolved
-                        .anonymous_nominals
-                        .iter()
-                        .cloned()
-                        .map(|nominal| (nominal.identity.clone(), nominal)),
-                );
+                self.merge_anonymous_projections(&resolved.anonymous_nominals)?;
                 let is_copy = match resolved.signature {
                     P::Struct { is_copy, .. } => is_copy,
                     P::Enum { variants, .. } => {
@@ -2460,7 +2496,7 @@ impl SemanticNucleusTypeProvider<'_> {
                 Ok(is_copy)
             }
             T::AnonymousNominal(key) => {
-                let nominal = self.anonymous_nominals.get(key).cloned().ok_or_else(|| {
+                let nominal = self.anonymous_projection(key).ok_or_else(|| {
                     Self::provider_failure_value(
                         "anonymous nominal is unavailable while checking Copy",
                     )
@@ -2806,12 +2842,15 @@ impl SemanticNucleusTypeProvider<'_> {
                 ));
             };
             let resolved = provider.resolved_signature(candidate)?;
-            let anonymous = resolved
-                .anonymous_nominals
-                .iter()
-                .cloned()
-                .map(|nominal| (nominal.identity.clone(), nominal))
-                .collect::<BTreeMap<_, _>>();
+            let mut anonymous = BTreeMap::new();
+            for nominal in resolved.anonymous_nominals.iter() {
+                crate::durable_semantics::merge_anonymous_nominal(&mut anonymous, nominal)
+                    .map_err(|identity| {
+                        Self::provider_failure_value(format!(
+                            "conflicting durable anonymous facts for {identity:?}"
+                        ))
+                    })?;
+            }
             let mut neighbors = BTreeSet::new();
             match &resolved.signature {
                 P::Struct { fields, .. } => {
@@ -3091,12 +3130,7 @@ impl SemanticNucleusTypeProvider<'_> {
         let crate::durable_semantics::DurableConstValue::Type(value) = *value else {
             return Ok(None);
         };
-        self.anonymous_nominals.extend(
-            anonymous_nominals
-                .iter()
-                .cloned()
-                .map(|value| (value.identity.clone(), value)),
-        );
+        self.merge_anonymous_projections(&anonymous_nominals)?;
         self.dependencies.extend(dependencies.iter().cloned());
         let is_public = self.identity_key_visibility(&key)?;
         Ok(Some(rue_air::SemanticTypeFact {
@@ -5039,9 +5073,11 @@ impl BodyTransactionEvaluator {
             let body_payload_kinds = toolchain_demand.payload_kinds();
             let mut selected_anonymous = BTreeMap::new();
             let mut pending_anonymous = collect_instance_anonymous_nominals(&key.instance);
+            let canonical_instance = key.instance.with_collapsed_empty_specializations();
             while let Some(identity) = pending_anonymous.pop_first() {
+                let identity = identity.with_canonical_producer().into_owned();
                 if let crate::StableProducerId::Function(function) = &identity.producer
-                    && function.as_ref() != &key.instance
+                    && function.as_ref() != canonical_instance.as_ref()
                 {
                     let produced = match context.query_registered(
                         &self.body_produced_anonymous,
@@ -5069,13 +5105,21 @@ impl BodyTransactionEvaluator {
                             return Err(QueryAbort::Canceled);
                         }
                     };
-                    selected_anonymous.extend(
-                        produced
-                            .0
-                            .iter()
-                            .cloned()
-                            .map(|nominal| (nominal.identity.clone(), nominal)),
-                    );
+                    for nominal in produced.0.iter() {
+                        if let Err(identity) = crate::durable_semantics::merge_anonymous_nominal(
+                            &mut selected_anonymous,
+                            nominal,
+                        ) {
+                            *producer_transport_failure.borrow_mut() = Some(Box::new(
+                                crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
+                                    Arc::from(format!(
+                                        "conflicting durable anonymous facts for {identity:?}"
+                                    )),
+                                ),
+                            ));
+                            return Err(QueryAbort::Canceled);
+                        }
+                    }
                 }
                 if !selected_anonymous.contains_key(&identity) {
                     let query = anonymous_nominal_query_key(&identity, &key.configuration)
@@ -5093,15 +5137,27 @@ impl BodyTransactionEvaluator {
                     else {
                         return Err(QueryAbort::Canceled);
                     };
-                    selected_anonymous.insert(nominal.identity.clone(), nominal.clone());
+                    if let Err(identity) = crate::durable_semantics::merge_anonymous_nominal(
+                        &mut selected_anonymous,
+                        nominal,
+                    ) {
+                        *producer_transport_failure.borrow_mut() = Some(Box::new(
+                            crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
+                                Arc::from(format!(
+                                    "conflicting durable anonymous facts for {identity:?}"
+                                )),
+                            ),
+                        ));
+                        return Err(QueryAbort::Canceled);
+                    }
                 }
                 if let Some(nominal) = selected_anonymous.get(&identity) {
                     let mut dependencies = BTreeSet::new();
                     collect_durable_anonymous_nominal_dependencies(nominal, &mut dependencies);
-                    pending_anonymous.extend(
-                        dependencies
-                            .into_iter()
-                            .filter(|dependency| !selected_anonymous.contains_key(dependency)),
+                    enqueue_unselected_anonymous_dependencies(
+                        &selected_anonymous,
+                        &mut pending_anonymous,
+                        dependencies,
                     );
                 }
             }
@@ -5254,7 +5310,19 @@ impl BodyTransactionEvaluator {
                     };
                     option_by_payload.push((payload, option_type.clone()));
                     for nominal in projection.anonymous_nominals.iter() {
-                        nominals.insert(nominal.identity.clone(), nominal.clone());
+                        if let Err(identity) = crate::durable_semantics::merge_anonymous_nominal(
+                            &mut nominals,
+                            nominal,
+                        ) {
+                            *well_known_resolution_failure.borrow_mut() =
+                                Some(WellKnownOptionResolutionFailure::WrongProjection {
+                                    payload: payload_kind,
+                                    detail: Arc::from(format!(
+                                        "conflicting durable anonymous facts for {identity:?}"
+                                    )),
+                                });
+                            return Err(QueryAbort::Canceled);
+                        }
                     }
                 }
                 crate::body_query::WellKnownOptionResolution {
@@ -5874,35 +5942,58 @@ impl BodyTransactionEvaluator {
                                         .map(crate::body_query::BodyReference::Callable),
                                 );
                                 collect_published_body_references(&body, &mut references);
-                                let produced = produced_anonymous_nominals
+                                let mut produced = BTreeMap::new();
+                                let conflict = produced_anonymous_nominals
                                     .0
                                     .iter()
                                     .chain(locally_produced.0.iter())
-                                    .cloned()
-                                    .map(|nominal| (nominal.identity.clone(), nominal))
-                                    .collect::<BTreeMap<_, _>>();
-                                crate::body_query::BodyTransaction::Success {
-                                    body: Arc::new(
-                                        crate::body_query::CanonicalBody::Specialization {
-                                            identity,
-                                            body,
-                                            dependencies: dependencies.into(),
-                                            dependency_boundary_complete: analyzed
-                                                .export
-                                                .dependency_boundary_complete,
-                                        },
-                                    ),
-                                    references: crate::body_query::BodyReferences(
-                                        references.into_iter().collect::<Vec<_>>().into(),
-                                    ),
-                                    produced_anonymous_nominals:
-                                        crate::body_query::BodyProducedAnonymousNominals(
-                                            produced.into_values().collect::<Vec<_>>().into(),
+                                    .find_map(|nominal| {
+                                        crate::durable_semantics::merge_anonymous_nominal(
+                                            &mut produced,
+                                            nominal,
+                                        )
+                                        .err()
+                                    });
+                                if let Some(identity) = conflict {
+                                    crate::body_query::BodyTransaction::DeterministicFailure {
+                                        diagnostic_basis: None,
+                                        errors: crate::CompileErrors::from(
+                                            crate::CompileError::without_span(
+                                                rue_error::ErrorKind::OutputPublication(format!(
+                                                    "provider specialization produced conflicting anonymous facts for {identity:?}"
+                                                )),
+                                            ),
                                         ),
-                                    consulted_anonymous_nominals: consulted_anonymous_nominals
-                                        .clone(),
-                                    lookup_observations:
-                                        crate::body_query::BodyLookupObservations::default(),
+                                        references: crate::body_query::BodyReferences(
+                                            Arc::from([]),
+                                        ),
+                                        lookup_observations:
+                                            crate::body_query::BodyLookupObservations::default(),
+                                    }
+                                } else {
+                                    crate::body_query::BodyTransaction::Success {
+                                        body: Arc::new(
+                                            crate::body_query::CanonicalBody::Specialization {
+                                                identity,
+                                                body,
+                                                dependencies: dependencies.into(),
+                                                dependency_boundary_complete: analyzed
+                                                    .export
+                                                    .dependency_boundary_complete,
+                                            },
+                                        ),
+                                        references: crate::body_query::BodyReferences(
+                                            references.into_iter().collect::<Vec<_>>().into(),
+                                        ),
+                                        produced_anonymous_nominals:
+                                            crate::body_query::BodyProducedAnonymousNominals(
+                                                produced.into_values().collect::<Vec<_>>().into(),
+                                            ),
+                                        consulted_anonymous_nominals: consulted_anonymous_nominals
+                                            .clone(),
+                                        lookup_observations:
+                                            crate::body_query::BodyLookupObservations::default(),
+                                    }
                                 }
                             }
                             _ => crate::body_query::BodyTransaction::DeterministicFailure {
@@ -5936,7 +6027,8 @@ impl BodyTransactionEvaluator {
                     ))
                     .with_terminal_kind(QueryTerminalKind::Failure));
                 };
-                let Some(owner_fact) = selected_anonymous.get(owner_identity) else {
+                let canonical_owner = owner_identity.with_canonical_producer();
+                let Some(owner_fact) = selected_anonymous.get(canonical_owner.as_ref()) else {
                     return Ok(QueryOutput::success(Self::lowering_failure(
                         &definition,
                         "anonymous member owner fact is unavailable",
@@ -7095,12 +7187,23 @@ impl RevisionedQueryDatabase {
                         ..
                     } = &resolution
                     {
-                        anonymous_nominals.extend(
-                            projected
-                                .iter()
-                                .cloned()
-                                .map(|value| (value.identity.clone(), value)),
-                        );
+                        for value in projected.iter() {
+                            if let Err(identity) = crate::durable_semantics::merge_anonymous_nominal(
+                                &mut anonymous_nominals,
+                                value,
+                            ) {
+                                return Err(SemanticNucleusBatchFailure::Stable {
+                                    declaration: Some(declaration.clone()),
+                                    failure: Box::new(
+                                        crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
+                                            Arc::from(format!(
+                                                "conflicting durable anonymous facts for {identity:?}"
+                                            )),
+                                        ),
+                                    ),
+                                });
+                            }
+                        }
                         dependencies.extend(projected_dependencies.iter().cloned());
                         for gate in deferred_ownership.iter() {
                             let Value::DeferredOwnership = request(Key::DeferredOwnership(
@@ -7224,13 +7327,23 @@ impl RevisionedQueryDatabase {
                             unreachable!("deferred ownership query returned the wrong projection")
                         };
                     }
-                    anonymous_nominals.extend(
-                        signature
-                            .anonymous_nominals
-                            .iter()
-                            .cloned()
-                            .map(|value| (value.identity.clone(), value)),
-                    );
+                    for value in signature.anonymous_nominals.iter() {
+                        if let Err(identity) = crate::durable_semantics::merge_anonymous_nominal(
+                            &mut anonymous_nominals,
+                            value,
+                        ) {
+                            return Err(SemanticNucleusBatchFailure::Stable {
+                                declaration: Some(declaration.clone()),
+                                failure: Box::new(
+                                    crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
+                                        Arc::from(format!(
+                                            "conflicting durable anonymous facts for {identity:?}"
+                                        )),
+                                    ),
+                                ),
+                            });
+                        }
+                    }
                     dependencies.extend(signature.dependencies.iter().cloned());
                     let is_c_export = matches!(
                         &signature.signature,

@@ -1143,14 +1143,6 @@ pub struct SemanticImportedBody<K, M> {
     pub param_modes: ParamSlotModes,
     pub allow_unreachable_code: bool,
     pub warnings: Arc<[rue_error::CompileWarning]>,
-    /// The body's recorded method references projected into the importing
-    /// session's live `(receiver, method)` keys. Import hosts that resolve
-    /// nominals (the staged-body importer) populate this; validation-only
-    /// hosts leave it empty because no reachability consumer reads it there.
-    ///
-    /// Kept on the std hasher: `rue-compiler` and `rue-cfg` construct and walk
-    /// this field, so its hasher is part of AIR's public surface.
-    pub method_references: std::collections::HashSet<(crate::StructId, lasso::Spur)>,
 }
 
 #[derive(Debug, Clone)]

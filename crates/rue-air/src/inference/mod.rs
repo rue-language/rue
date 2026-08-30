@@ -51,6 +51,9 @@ mod unify;
 // Re-export all public types
 pub use constraint::{Constraint, Substitution};
 pub(crate) use generate::LazyInferenceFacts;
+pub(crate) use generate::expr_types_in_rir_order;
+#[cfg(test)]
+pub(crate) use generate::with_expr_types_test_layout;
 pub use generate::{
     ConstraintContext, ConstraintGenerator, ExprInfo, FrontierParamOverlay, FunctionSig,
     LocalVarInfo, MethodSig, ParamVarInfo,

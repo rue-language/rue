@@ -293,17 +293,7 @@ pub(super) struct CanonicalAnonymousNominalRegistry {
     // never iterated, so map order cannot affect the durable projection.
     pub(super) by_identity:
         AHashMap<crate::AnonymousNominalKey, Rc<crate::durable_semantics::DurableAnonymousNominal>>,
-}
-
-/// Whether an anonymous shape declares any method.
-pub(super) fn anonymous_shape_declares_methods(
-    shape: &crate::durable_semantics::DurableAnonymousNominalShape,
-) -> bool {
-    matches!(
-        shape,
-        crate::durable_semantics::DurableAnonymousNominalShape::Struct { methods, .. }
-            if !methods.is_empty()
-    )
+    conflicting: AHashSet<crate::AnonymousNominalKey>,
 }
 
 impl CanonicalAnonymousNominalRegistry {
@@ -321,21 +311,34 @@ impl CanonicalAnonymousNominalRegistry {
         nominals: impl IntoIterator<Item = &'nominal crate::durable_semantics::DurableAnonymousNominal>,
     ) {
         for nominal in nominals {
-            let identity = nominal.identity.with_canonical_producer().into_owned();
-            match self.by_identity.entry(identity) {
+            let nominal = nominal.with_canonical_identity();
+            let identity = nominal.identity.clone();
+            if self.conflicting.contains(&identity) {
+                continue;
+            }
+            match self.by_identity.entry(identity.clone()) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(Rc::new(nominal.clone()));
+                    entry.insert(Rc::new(nominal));
                 }
                 std::collections::hash_map::Entry::Occupied(mut entry) => {
-                    // A declaration projection may carry only the anonymous
-                    // shape while a later producer-body fact carries methods.
-                    // Never replace that richer authority with a thin repeat;
-                    // otherwise equal canonical producer forms could make a
-                    // later lookup repeat the producer query.
-                    if anonymous_shape_declares_methods(&nominal.shape)
-                        || !anonymous_shape_declares_methods(&entry.get().shape)
-                    {
-                        entry.insert(Rc::new(nominal.clone()));
+                    // Declaration and producer-body projections may omit
+                    // capture/method metadata they do not consume. Reconcile
+                    // only that explicit thin/rich relation; disagreeing
+                    // shapes or two different non-empty metadata payloads
+                    // poison the identity permanently.
+                    match crate::durable_semantics::reconcile_anonymous_nominals(
+                        entry.get(),
+                        &nominal,
+                    ) {
+                        Ok(reconciled) => {
+                            if entry.get().as_ref() != &reconciled {
+                                entry.insert(Rc::new(reconciled));
+                            }
+                        }
+                        Err(_) => {
+                            entry.remove();
+                            self.conflicting.insert(identity);
+                        }
                     }
                 }
             }
@@ -345,10 +348,15 @@ impl CanonicalAnonymousNominalRegistry {
     pub(super) fn get(
         &self,
         identity: &crate::AnonymousNominalKey,
-    ) -> Option<Rc<crate::durable_semantics::DurableAnonymousNominal>> {
-        self.by_identity
-            .get(identity.with_canonical_producer().as_ref())
-            .cloned()
+    ) -> Result<
+        Option<Rc<crate::durable_semantics::DurableAnonymousNominal>>,
+        crate::AnonymousNominalKey,
+    > {
+        let identity = identity.with_canonical_producer();
+        if self.conflicting.contains(identity.as_ref()) {
+            return Err(identity.into_owned());
+        }
+        Ok(self.by_identity.get(identity.as_ref()).cloned())
     }
 }
 
@@ -580,12 +588,15 @@ impl<'a> CompilerBodyDurableSource<'a> {
         }
     }
 
-    pub(super) fn anonymous_nominal(
+    fn try_anonymous_nominal(
         &self,
         key: &crate::AnonymousNominalKey,
-    ) -> Option<Rc<crate::durable_semantics::DurableAnonymousNominal>> {
+    ) -> Result<
+        Option<Rc<crate::durable_semantics::DurableAnonymousNominal>>,
+        crate::AnonymousNominalKey,
+    > {
         use rue_air::BodyFactProvider;
-        let cached = self.dynamic_anonymous.borrow().get(key);
+        let cached = self.dynamic_anonymous.borrow().get(key)?;
         let cached_has_methods = cached.as_ref().is_some_and(|nominal| {
             matches!(
                 &nominal.shape,
@@ -596,7 +607,7 @@ impl<'a> CompilerBodyDurableSource<'a> {
             )
         });
         if cached_has_methods {
-            return cached;
+            return Ok(cached);
         }
         let body_producer: Option<std::borrow::Cow<'_, crate::FunctionInstanceKey>> =
             match &key.producer {
@@ -617,8 +628,8 @@ impl<'a> CompilerBodyDurableSource<'a> {
                 Some(crate::body_query::ProducedAnonymous::Produced(produced)) => {
                     let mut dynamic = self.dynamic_anonymous.borrow_mut();
                     dynamic.extend(produced.0.iter());
-                    if let Some(nominal) = dynamic.get(key) {
-                        return Some(nominal);
+                    if let Some(nominal) = dynamic.get(key)? {
+                        return Ok(Some(nominal));
                     }
                 }
                 Some(crate::body_query::ProducedAnonymous::ProducerFailed(_)) | None => {}
@@ -638,13 +649,18 @@ impl<'a> CompilerBodyDurableSource<'a> {
                 crate::StableDefinitionKey,
                 ModuleId,
             >>::reduce_comptime_call(self, definition, &[], &[]);
-            if let Some(nominal) = self.dynamic_anonymous.borrow().get(key) {
-                return Some(nominal);
+            if let Some(nominal) = self.dynamic_anonymous.borrow().get(key)? {
+                return Ok(Some(nominal));
             }
         }
         let producer = match &key.producer {
             crate::StableProducerId::Definition(definition) => definition,
-            crate::StableProducerId::Function(function) => function_definition_key(function)?,
+            crate::StableProducerId::Function(function) => {
+                let Some(producer) = function_definition_key(function) else {
+                    return Ok(None);
+                };
+                producer
+            }
         };
         let facts = self
             .candidate(producer)
@@ -652,7 +668,29 @@ impl<'a> CompilerBodyDurableSource<'a> {
             .unwrap_or_default();
         let mut dynamic = self.dynamic_anonymous.borrow_mut();
         dynamic.extend(facts.iter());
-        dynamic.get(key).or(cached)
+        dynamic.get(key)
+    }
+
+    pub(super) fn anonymous_nominal(
+        &self,
+        key: &crate::AnonymousNominalKey,
+    ) -> Option<Rc<crate::durable_semantics::DurableAnonymousNominal>> {
+        match self.try_anonymous_nominal(key) {
+            Ok(nominal) => nominal,
+            Err(identity) => {
+                *self
+                    .provider
+                    .queries
+                    .producer_transport_failure
+                    .borrow_mut() = Some(Box::new(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(Arc::from(
+                        format!("conflicting durable anonymous facts for {identity:?}"),
+                    )),
+                ));
+                self.provider.observe_abort(QueryAbort::Canceled);
+                None
+            }
+        }
     }
 
     pub(super) fn signature(
@@ -1904,7 +1942,7 @@ pub(super) fn project_provider_produced_anonymous_nominals(
         rue_air::SemanticParameterMode::Borrow => Mode::Borrow,
         rue_air::SemanticParameterMode::Inout => Mode::Inout,
     };
-    values
+    let projected = values
         .iter()
         .map(|value| {
             let identity = value
@@ -1987,8 +2025,15 @@ pub(super) fn project_provider_produced_anonymous_nominals(
                     .into(),
             ))
         })
-        .collect::<Result<Vec<_>, _>>()
-        .map(|values| crate::body_query::BodyProducedAnonymousNominals(values.into()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut by_identity = BTreeMap::new();
+    for nominal in &projected {
+        crate::durable_semantics::merge_complete_anonymous_nominal(&mut by_identity, nominal)
+            .map_err(|_| rue_air::SemanticStableResolutionFailure::Ambiguous)?;
+    }
+    Ok(crate::body_query::BodyProducedAnonymousNominals(
+        by_identity.into_values().collect::<Vec<_>>().into(),
+    ))
 }
 
 #[allow(dead_code)]

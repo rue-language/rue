@@ -864,7 +864,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // This ensures all array types are created before the conversion loop, which
         // enables parallelization of function analysis (mutation happens here, not in
         // infer_type_to_type).
-        for (_, infer_ty) in &expr_types {
+        //
+        // `expr_types` is an unordered lookup map. RIR instruction order is the
+        // canonical order for pool allocation; relying on a map walk here would
+        // make array Type values depend on the process hash seed.
+        let ordered_expr_types = crate::inference::expr_types_in_rir_order(&expr_types);
+        for (_, infer_ty) in &ordered_expr_types {
             let resolved = unifier.resolve_infer_type(infer_ty);
             self.pre_create_array_types_from_infer_type(&resolved);
         }
@@ -873,7 +878,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Since we pre-created all array types above, infer_type_to_type only
         // performs lookups (no mutation).
         let mut resolved_types = AHashMap::new();
-        for (inst_ref, infer_ty) in &expr_types {
+        for (inst_ref, infer_ty) in ordered_expr_types {
             let resolved = unifier.resolve_infer_type(infer_ty);
             let concrete_ty = self.infer_type_to_type(&resolved);
             resolved_types.insert(*inst_ref, concrete_ty);

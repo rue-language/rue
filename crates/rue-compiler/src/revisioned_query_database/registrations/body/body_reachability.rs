@@ -675,13 +675,22 @@ $runtime
                                     });
                                 break;
                             };
-                            produced_anonymous.extend(
-                                produced
-                                    .0
-                                    .iter()
-                                    .cloned()
-                                    .map(|nominal| (nominal.identity.clone(), nominal)),
-                            );
+                            let conflict = produced.0.iter().find_map(|nominal| {
+                                crate::durable_semantics::merge_anonymous_nominal(
+                                    &mut produced_anonymous,
+                                    nominal,
+                                )
+                                .err()
+                            });
+                            if let Some(identity) = conflict {
+                                fatal = Some(crate::body_query::BodyClosureFatal::BodyAvailability {
+                                    instance: instance.as_ref().clone(),
+                                    detail: Arc::from(format!(
+                                        "conflicting anonymous facts for {identity:?}"
+                                    )),
+                                });
+                                break;
+                            }
                         }
                         for reference in references.0.iter() {
                             match reference {

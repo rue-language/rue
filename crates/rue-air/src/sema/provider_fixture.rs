@@ -758,6 +758,44 @@ impl ProviderFixture {
         )
     }
 
+    pub(crate) fn probe_consulted_anonymous_struct_conflict(
+        &self,
+        source: &str,
+        function: &str,
+        identity: &AnonymousNominalKey<FixtureKey, FixtureModule>,
+    ) -> CompileResult<super::provider_body_host::ConsultedAnonymousConflictProbe> {
+        let (tokens, interner) = Lexer::new(source).tokenize().expect("fixture source lexes");
+        let (ast, interner) = Parser::new(tokens, interner)
+            .parse()
+            .expect("fixture source parses");
+        assert_eq!(ast.items.len(), 1, "conflict probe carries one body");
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let editor = astgen.finish_editor();
+        let source_lengths = [(self.facts.file, source.len() as u32)];
+        let rir = ValidatedRir::finish(
+            editor,
+            &RirValidationContext {
+                symbol_count: interner.len(),
+                source_lengths: &source_lengths,
+            },
+        )
+        .expect("fixture RIR validates");
+        let bundle = BodyRirBundle::new(
+            rir,
+            rue_rir::SharedSymbolSpace::adopt(std::sync::Arc::new(interner)),
+        );
+        super::provider_body_host::probe_consulted_anonymous_struct_conflict(
+            &UnconsultedFactProvider,
+            FixtureFactSource(Rc::new(self.facts.clone())),
+            &bundle,
+            FixtureKey::function(function),
+            function,
+            identity,
+            &self.well_known,
+        )
+    }
+
     /// Run one exact comptime specialization through the production provider
     /// body host. This is the fixture equivalent of the compiler's
     /// specialization query and lets tests exercise recursive body evaluation

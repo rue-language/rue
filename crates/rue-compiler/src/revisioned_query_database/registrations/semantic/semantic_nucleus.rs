@@ -432,11 +432,7 @@ $runtime
                                 substitutions: BTreeMap::new(),
                                 value_substitutions: BTreeMap::new(),
                                 deferred_value_parameters: BTreeMap::new(),
-                                anonymous_nominals: anonymous_nominals
-                                    .iter()
-                                    .cloned()
-                                    .map(|nominal| (nominal.identity.clone(), nominal))
-                                    .collect(),
+                                anonymous_nominals: BTreeMap::new(),
                                 dependency_source,
                                 dependency_kind:
                                     rue_air::DeclarationTypeDependencyKind::Signature,
@@ -444,6 +440,19 @@ $runtime
                                 deferred_ownership: BTreeSet::new(),
                                 ownership_properties: BTreeMap::new(),
                             };
+                            if let Err(error) = provider
+                                .merge_anonymous_projections(anonymous_nominals.as_ref())
+                            {
+                                match error {
+                                    rue_air::SemanticProviderError::Failure(failure) => {
+                                        return Ok(QueryOutput::success(Value::Failure(failure))
+                                            .with_terminal_kind(QueryTerminalKind::Failure));
+                                    }
+                                    rue_air::SemanticProviderError::Abort(abort) => {
+                                        return Err(abort);
+                                    }
+                                }
+                            }
                             let gate_type_name = deferred_gate_type_diagnostic_name(
                                 context,
                                 family,
@@ -1125,10 +1134,23 @@ $runtime
                                                 };
                                                 match dependency {
                                                     Value::AnonymousNominal(value) => {
-                                                        anonymous_nominals.insert(
-                                                            value.identity.clone(),
-                                                            value.clone(),
-                                                        );
+                                                        if let Err(identity) =
+                                                            crate::durable_semantics::merge_anonymous_nominal(
+                                                                &mut anonymous_nominals,
+                                                                value,
+                                                            )
+                                                        {
+                                                            return Ok(QueryOutput::success(
+                                                                Value::Failure(Failure::Resolution(
+                                                                    Arc::from(format!(
+                                                                        "conflicting durable anonymous facts for {identity:?}"
+                                                                    )),
+                                                                )),
+                                                            )
+                                                            .with_terminal_kind(
+                                                                QueryTerminalKind::Failure,
+                                                            ));
+                                                        }
                                                     }
                                                     Value::Failure(failure) => {
                                                         return Ok(QueryOutput::success(
