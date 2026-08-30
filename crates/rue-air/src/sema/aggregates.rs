@@ -129,7 +129,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut payload_refs: Vec<AirRef> = Vec::with_capacity(args.len());
         let mut continues = true;
         for (i, arg) in args.iter().enumerate() {
-            let reachable_edges_before_arg = ctx.loop_break_stack.clone();
+            let reachable_edges_before_arg = ctx.ownership.loop_break_stack.clone();
             let divergence_before_arg = ctx.divergence_kinds;
             let expected = payload_types[i];
             let arg_result = ctx
@@ -491,7 +491,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut source_order: Vec<usize> = Vec::with_capacity(field_inits.len());
 
         for &(init_field_name, field_value) in &field_inits {
-            let reachable_edges_before_field = ctx.loop_break_stack.clone();
+            let reachable_edges_before_field = ctx.ownership.loop_break_stack.clone();
             let divergence_before_field = ctx.divergence_kinds;
             let init_name = self.body_interner().resolve(&init_field_name).to_owned();
             let field_idx = field_index_map[init_name.as_str()];
@@ -1191,7 +1191,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut air_elems = Vec::with_capacity(elem_refs.len());
         let mut continues = true;
         for elem_ref in elem_refs {
-            let reachable_edges_before_elem = ctx.loop_break_stack.clone();
+            let reachable_edges_before_elem = ctx.ownership.loop_break_stack.clone();
             let divergence_before_elem = ctx.divergence_kinds;
             let elem_result = self.analyze_inst(air, elem_ref, ctx)?;
             if !continues {

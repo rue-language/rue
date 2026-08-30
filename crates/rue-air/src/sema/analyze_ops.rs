@@ -327,7 +327,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         match &inst.data {
             InstData::And { lhs, rhs } => {
                 let lhs_result = self.analyze_inst(air, *lhs, ctx)?;
-                let reachable_edges_after_lhs = ctx.loop_break_stack.clone();
+                let reachable_edges_after_lhs = ctx.ownership.loop_break_stack.clone();
                 let divergence_before_rhs = ctx.divergence_kinds;
                 let rhs_result = self.analyze_inst(air, *rhs, ctx)?;
                 if !lhs_result.continues {
@@ -361,7 +361,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             InstData::Or { lhs, rhs } => {
                 let lhs_result = self.analyze_inst(air, *lhs, ctx)?;
-                let reachable_edges_after_lhs = ctx.loop_break_stack.clone();
+                let reachable_edges_after_lhs = ctx.ownership.loop_break_stack.clone();
                 let divergence_before_rhs = ctx.divergence_kinds;
                 let rhs_result = self.analyze_inst(air, *rhs, ctx)?;
                 if !lhs_result.continues {

@@ -1531,6 +1531,10 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
             include_str!("sema/ordinary_engine.rs"),
         ),
         ("sema/output", include_str!("sema/output.rs")),
+        (
+            "sema/ownership_state",
+            include_str!("sema/ownership_state.rs"),
+        ),
         ("sema/provider", include_str!("sema/provider.rs")),
         (
             "sema/provider_accessor_tests",
@@ -3557,6 +3561,10 @@ fn sema_diagnostics_use_the_friendly_type_display_authority() {
             include_str!("sema/ordinary_engine.rs"),
         ),
         ("sema/output", include_str!("sema/output.rs")),
+        (
+            "sema/ownership_state",
+            include_str!("sema/ownership_state.rs"),
+        ),
         ("sema/provider", include_str!("sema/provider.rs")),
         (
             "sema/provider_body_host",

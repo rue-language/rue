@@ -576,7 +576,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Analyze all arguments. Slice parameters (ADR-0043, RUE-322) coerce a
         // `borrow arr` argument into a by-value fat pointer here.
-        let expression_ledgers_before_call = ctx.checkpoint_expression_ledgers();
+        let expression_ledgers_before_call = ctx.ownership.checkpoint_expression_ledgers();
         let CallOperands {
             args: air_args,
             temp_scope,
@@ -804,7 +804,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 continues && !return_type.is_never(),
             );
             if !result.continues {
-                ctx.rollback_expression_ledgers(expression_ledgers_before_call);
+                ctx.ownership
+                    .rollback_expression_ledgers(expression_ledgers_before_call);
             }
             Ok(result)
         } else {
@@ -821,7 +822,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             )?;
             record_reachable_never_call(ctx, continues, return_type);
             if !result.continues {
-                ctx.rollback_expression_ledgers(expression_ledgers_before_call);
+                ctx.ownership
+                    .rollback_expression_ledgers(expression_ledgers_before_call);
             }
             Ok(result)
         }
@@ -971,7 +973,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Analyze the receiver expression. When it is a by-ref receiver,
         // `byref_arg_root` makes the var-ref / field / index reads borrow the
         // place instead of moving out of it (restored afterwards).
-        let expression_ledgers_before_call = ctx.checkpoint_expression_ledgers();
+        let expression_ledgers_before_call = ctx.ownership.checkpoint_expression_ledgers();
         let mut receiver_result =
             self.analyze_with_borrow_root(air, receiver, receiver_byref_root, ctx)?;
         let receiver_continues = receiver_result.continues;
@@ -1269,7 +1271,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         let receiver_frame_pushed = receiver_frame.is_some();
         if let Some(frame) = receiver_frame {
-            ctx.call_loaned_roots.push(frame);
+            ctx.ownership.call_loaned_roots.push(frame);
         }
         let args_result = self.analyze_call_operands(
             air,
@@ -1281,7 +1283,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx,
         );
         if receiver_frame_pushed {
-            ctx.call_loaned_roots.pop();
+            ctx.ownership.call_loaned_roots.pop();
         }
         let args_result = args_result?;
         // Re-check the receiver after the argument list is analyzed
@@ -1339,7 +1341,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             self.record_completed_exclusive_use(root, span, ctx);
         }
         if !call.continues {
-            ctx.rollback_expression_ledgers(expression_ledgers_before_call);
+            ctx.ownership
+                .rollback_expression_ledgers(expression_ledgers_before_call);
         }
         Ok(call)
     }
@@ -1470,7 +1473,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // materialize their by-value fat-pointer views exactly like direct
         // calls do (RUE-559) — std functions taking `borrow s: str` are called
         // this way.
-        let expression_ledgers_before_call = ctx.checkpoint_expression_ledgers();
+        let expression_ledgers_before_call = ctx.ownership.checkpoint_expression_ledgers();
         let CallOperands {
             args: air_args,
             temp_scope,
@@ -1496,7 +1499,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         )?;
         record_reachable_never_call(ctx, continues, fn_info.return_type);
         if !result.continues {
-            ctx.rollback_expression_ledgers(expression_ledgers_before_call);
+            ctx.ownership
+                .rollback_expression_ledgers(expression_ledgers_before_call);
         }
         Ok(result)
     }
@@ -1645,7 +1649,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // path as free and module-member calls. In particular, `borrow str`
         // and `[T]` parameters are physical by-value views even though their
         // source modes remain Borrow (RUE-634).
-        let expression_ledgers_before_call = ctx.checkpoint_expression_ledgers();
+        let expression_ledgers_before_call = ctx.ownership.checkpoint_expression_ledgers();
         let CallOperands {
             args: air_args,
             temp_scope,
@@ -1679,7 +1683,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         )?;
         record_reachable_never_call(ctx, continues, return_type);
         if !result.continues {
-            ctx.rollback_expression_ledgers(expression_ledgers_before_call);
+            ctx.ownership
+                .rollback_expression_ledgers(expression_ledgers_before_call);
         }
         Ok(result)
     }

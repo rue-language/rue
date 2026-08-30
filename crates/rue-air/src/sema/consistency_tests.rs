@@ -1611,12 +1611,11 @@ mod tests {
         // mutation, scoped borrow state, or move-marker cancellation.
         for (name, source) in OWNERSHIP_PEER_SOURCES {
             for forbidden in [
-                "ctx.moved_vars",
+                ".moved_vars",
                 "AirInstData::PlaceRead",
                 ".make_place(",
                 ".cancel_move_marker(",
-                "std::mem::replace(&mut ctx.byref_arg_root",
-                "ctx.byref_arg_root.replace(",
+                ".byref_arg_root",
             ] {
                 assert!(
                     !source.contains(forbidden),
@@ -1628,7 +1627,7 @@ mod tests {
         // Control-flow joins deliberately snapshot and merge the complete move
         // lattice. They are the sole non-ownership exception because their
         // authority is path convergence, not individual place semantics.
-        assert!(CONTROL_FLOW_SOURCE.contains("ctx.moved_vars"));
+        assert!(CONTROL_FLOW_SOURCE.contains("ctx.ownership.moved_vars"));
 
         for (name, source) in OWNERSHIP_PEER_SOURCES
             .iter()
@@ -1729,7 +1728,7 @@ mod tests {
             );
         }
         for forbidden in [
-            "ctx.moved_vars",
+            ".moved_vars",
             "AirInstData::PlaceRead",
             "AirInstData::PlaceWrite",
             "struct PlaceTrace",

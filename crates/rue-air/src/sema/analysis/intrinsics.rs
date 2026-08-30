@@ -7,7 +7,7 @@
 
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
-use crate::sema::context::FieldPath;
+use crate::sema::ownership_state::FieldPath;
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     // ========================================================================
@@ -846,7 +846,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         reachable: bool,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let reachable_edges = ctx.loop_break_stack.clone();
+        let reachable_edges = ctx.ownership.loop_break_stack.clone();
         let divergence_before = ctx.divergence_kinds;
         let result = self.analyze_inst(air, operand, ctx)?;
         if !reachable {
@@ -1000,15 +1000,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let drop_path = self.drop_operand_path(args[0].value)?;
         let root = root_variable_of(self.body_rir_ref(), args[0].value);
         let before_state = root.and_then(|root| self.drop_operand_move_state(ctx, root));
-        let previous_drop_operand = ctx.drop_intrinsic_operand;
+        let previous_drop_operand = ctx.ownership.drop_intrinsic_operand;
         // Only a statically recognized place gets the partial-residue
         // exception. A non-place operand (for example `@drop(make(x))`) is
         // an ordinary expression: nested by-value uses must still diagnose a
         // moved value, and there is no direct MarkMoved place for CFG to
         // elaborate as residue.
-        ctx.drop_intrinsic_operand = drop_path.as_ref().and(root);
+        ctx.ownership.drop_intrinsic_operand = drop_path.as_ref().and(root);
         let arg_result = self.analyze_inst(air, args[0].value, ctx);
-        ctx.drop_intrinsic_operand = previous_drop_operand;
+        ctx.ownership.drop_intrinsic_operand = previous_drop_operand;
         let arg_result = arg_result?;
         let arg_type = arg_result.ty;
 
@@ -1219,7 +1219,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut extra_data = vec![cond_result.air_ref];
         let mut temp_scope = Vec::new();
         if args.len() > 1 {
-            let reachable_edges_before_message = ctx.loop_break_stack.clone();
+            let reachable_edges_before_message = ctx.ownership.loop_break_stack.clone();
             let divergence_before_message = ctx.divergence_kinds;
             let msg_result = self.analyze_inst_for_projection(air, args[1].value, ctx)?;
             if !cond_result.continues {
