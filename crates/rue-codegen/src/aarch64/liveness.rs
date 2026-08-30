@@ -237,6 +237,7 @@ fn uses(inst: &Aarch64Inst) -> VRegList {
         Aarch64Inst::Sxtb { src, .. }
         | Aarch64Inst::Sxth { src, .. }
         | Aarch64Inst::Sxtw { src, .. }
+        | Aarch64Inst::Uxtw { src, .. }
         | Aarch64Inst::Uxtb { src, .. }
         | Aarch64Inst::Uxth { src, .. } => {
             add_if_virtual(src, &mut result);
@@ -367,6 +368,7 @@ pub(crate) fn defs(inst: &Aarch64Inst) -> VRegList {
         Aarch64Inst::Sxtb { dst, .. }
         | Aarch64Inst::Sxth { dst, .. }
         | Aarch64Inst::Sxtw { dst, .. }
+        | Aarch64Inst::Uxtw { dst, .. }
         | Aarch64Inst::Uxtb { dst, .. }
         | Aarch64Inst::Uxth { dst, .. } => {
             add_if_virtual(dst, &mut result);

@@ -254,6 +254,16 @@ impl fmt::Display for Operand {
     }
 }
 
+/// Display an operand in the 32-bit register view used by `Movzx32To64`.
+/// Virtual registers have no physical width name, so the `movl` mnemonic on
+/// the instruction remains the width authority before register allocation.
+fn fmt_operand32(operand: &Operand, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match operand {
+        Operand::Virtual(vreg) => write!(f, "{}", vreg),
+        Operand::Physical(reg) => write!(f, "{}", reg.name32()),
+    }
+}
+
 impl From<VReg> for Operand {
     fn from(vreg: VReg) -> Self {
         Operand::Virtual(vreg)
@@ -480,6 +490,13 @@ pub enum X86Inst {
 
     /// `movsxd dst, src` - Sign-extend 32-bit to 64-bit.
     Movsx32To64 { dst: Operand, src: Operand },
+
+    /// `mov dst32, src32` - Zero-extend 32-bit to 64-bit via a 32-bit write.
+    ///
+    /// In 64-bit mode, any write to a 32-bit general-purpose register clears
+    /// the destination's upper half. This is the canonical register-to-register
+    /// u32-to-u64 normalization instruction.
+    Movzx32To64 { dst: Operand, src: Operand },
 
     /// `movzx dst, src` - Zero-extend 8-bit to 64-bit.
     Movzx8To64 { dst: Operand, src: Operand },
@@ -830,6 +847,12 @@ impl fmt::Display for X86Inst {
             X86Inst::Movsx8To64 { dst, src } => write!(f, "movsx {}, byte {}", dst, src),
             X86Inst::Movsx16To64 { dst, src } => write!(f, "movsx {}, word {}", dst, src),
             X86Inst::Movsx32To64 { dst, src } => write!(f, "movsxd {}, {}", dst, src),
+            X86Inst::Movzx32To64 { dst, src } => {
+                write!(f, "movl ")?;
+                fmt_operand32(dst, f)?;
+                write!(f, ", ")?;
+                fmt_operand32(src, f)
+            }
             X86Inst::Movzx8To64 { dst, src } => write!(f, "movzx {}, byte {}", dst, src),
             X86Inst::Movzx16To64 { dst, src } => write!(f, "movzx {}, word {}", dst, src),
             X86Inst::TestRR { src1, src2 } => write!(f, "test {}, {}", src1, src2),
@@ -1257,5 +1280,20 @@ mod tests {
             imm: 42,
         };
         assert_eq!(format!("{}", inst), "mov rdi, 42");
+    }
+
+    #[test]
+    fn test_movzx32_to64_display_uses_32_bit_operands() {
+        let inst = X86Inst::Movzx32To64 {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Physical(Reg::R9),
+        };
+        assert_eq!(format!("{}", inst), "movl eax, r9d");
+
+        let inst = X86Inst::Movzx32To64 {
+            dst: Operand::Virtual(VReg::new(2)),
+            src: Operand::Virtual(VReg::new(3)),
+        };
+        assert_eq!(format!("{}", inst), "movl v2, v3");
     }
 }

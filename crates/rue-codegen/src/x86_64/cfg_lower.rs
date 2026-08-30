@@ -1238,11 +1238,7 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(X86Inst::Movzx16To64 { dst, src })
             }
             ScalarAbiExtension::Unsigned { from_bits: 32 } => {
-                // x86-64 has no `movzxd`; a 64-bit `shl`/`shr` pair zero-extends
-                // the low 32 bits (the low half survives, the high half is
-                // cleared by the logical right shift).
-                self.mir.push(X86Inst::ShlRI { dst, imm: 32 });
-                self.mir.push(X86Inst::ShrRI { dst, imm: 32 });
+                self.mir.push(X86Inst::Movzx32To64 { dst, src });
             }
             ScalarAbiExtension::Signed { from_bits }
             | ScalarAbiExtension::Unsigned { from_bits } => {
@@ -2074,17 +2070,10 @@ impl<'a> CfgLower<'a> {
                         dst: operand,
                         src: operand,
                     }),
-                    // x86-64 has no register-to-register 32-bit zero extension
-                    // in this instruction set, so clear bits 32..63 with the
-                    // 64-bit shift pair.
                     BitCastForm::Zero32 => {
-                        self.mir.push(X86Inst::ShlRI {
+                        self.mir.push(X86Inst::Movzx32To64 {
                             dst: operand,
-                            imm: 32,
-                        });
-                        self.mir.push(X86Inst::ShrRI {
-                            dst: operand,
-                            imm: 32,
+                            src: operand,
                         });
                     }
                 }
@@ -3610,6 +3599,31 @@ mod tests {
     };
     use rue_cfg::{CfgArgMode, CfgCallArg, CfgInst, CfgInstData, PlaceBase, Projection};
     use rue_span::{FileId, Span};
+
+    #[test]
+    fn zero32_consumers_use_canonical_move_not_shift_pair() {
+        let source = include_str!("cfg_lower.rs");
+        let foreign = source
+            .split("ScalarAbiExtension::Unsigned { from_bits: 32 } => {")
+            .nth(1)
+            .expect("foreign u32 return extension must remain present")
+            .split("ScalarAbiExtension::Signed { from_bits }")
+            .next()
+            .expect("foreign extension match arm must have a following arm");
+        assert!(foreign.contains("X86Inst::Movzx32To64"));
+        assert!(!foreign.contains("X86Inst::ShlRI"));
+        assert!(!foreign.contains("X86Inst::ShrRI"));
+        let bitcast = source
+            .split("BitCastForm::Zero32 => {")
+            .nth(1)
+            .expect("BitCastForm::Zero32 consumer must remain present")
+            .split("\n                    }\n                }")
+            .next()
+            .expect("BitCastForm::Zero32 arm must be bounded");
+        assert!(bitcast.contains("X86Inst::Movzx32To64"));
+        assert!(!bitcast.contains("X86Inst::ShlRI"));
+        assert!(!bitcast.contains("X86Inst::ShrRI"));
+    }
 
     #[test]
     fn marshal_tag_cmp_imm_covers_i32_boundary() {

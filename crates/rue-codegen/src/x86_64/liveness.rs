@@ -258,6 +258,7 @@ pub fn uses(inst: &X86Inst) -> VRegList {
         | X86Inst::Movsx8To64 { src, .. }
         | X86Inst::Movsx16To64 { src, .. }
         | X86Inst::Movsx32To64 { src, .. }
+        | X86Inst::Movzx32To64 { src, .. }
         | X86Inst::Movzx8To64 { src, .. }
         | X86Inst::Movzx16To64 { src, .. } => {
             add_if_virtual(src, &mut result);
@@ -416,6 +417,7 @@ pub fn defs(inst: &X86Inst) -> VRegList {
         | X86Inst::Movsx8To64 { dst, .. }
         | X86Inst::Movsx16To64 { dst, .. }
         | X86Inst::Movsx32To64 { dst, .. }
+        | X86Inst::Movzx32To64 { dst, .. }
         | X86Inst::Movzx8To64 { dst, .. }
         | X86Inst::Movzx16To64 { dst, .. } => {
             add_if_virtual(dst, &mut result);

@@ -177,6 +177,7 @@ fn get_latency(inst: &X86Inst) -> u32 {
         | X86Inst::Movsx8To64 { .. }
         | X86Inst::Movsx16To64 { .. }
         | X86Inst::Movsx32To64 { .. }
+        | X86Inst::Movzx32To64 { .. }
         | X86Inst::Movzx8To64 { .. }
         | X86Inst::Movzx16To64 { .. } => 1,
 
@@ -360,6 +361,7 @@ pub(super) fn regs_read(inst: &X86Inst) -> RegList<Reg> {
         | X86Inst::Movsx8To64 { src, .. }
         | X86Inst::Movsx16To64 { src, .. }
         | X86Inst::Movsx32To64 { src, .. }
+        | X86Inst::Movzx32To64 { src, .. }
         | X86Inst::Movzx8To64 { src, .. }
         | X86Inst::Movzx16To64 { src, .. } => {
             add_if_phys(src, &mut result);
@@ -500,6 +502,7 @@ pub(super) fn regs_written(inst: &X86Inst) -> RegList<Reg> {
         | X86Inst::Movsx8To64 { dst, .. }
         | X86Inst::Movsx16To64 { dst, .. }
         | X86Inst::Movsx32To64 { dst, .. }
+        | X86Inst::Movzx32To64 { dst, .. }
         | X86Inst::Movzx8To64 { dst, .. }
         | X86Inst::Movzx16To64 { dst, .. } => {
             add_if_phys(dst, &mut result);

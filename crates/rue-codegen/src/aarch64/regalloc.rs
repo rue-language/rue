@@ -695,6 +695,13 @@ impl RegAlloc {
                 })?;
             }
 
+            Aarch64Inst::Uxtw { dst, src } => {
+                Self::emit_binop(context, mir, dst, src, |d, s| Aarch64Inst::Uxtw {
+                    dst: d,
+                    src: s,
+                })?;
+            }
+
             Aarch64Inst::Uxtb { dst, src } => {
                 Self::emit_binop(context, mir, dst, src, |d, s| Aarch64Inst::Uxtb {
                     dst: d,
@@ -1411,7 +1418,7 @@ mod tests {
     use super::liveness;
     use super::{
         ALLOCATABLE_REGS, Aarch64Inst, Aarch64Mir, CALLEE_SAVED_REGS, CALLER_SAVED_REGS, Operand,
-        Reg, RegAlloc, VReg,
+        Reg, RegAlloc, SCRATCH_SOURCE_A, SCRATCH_VALUE, VReg,
     };
     use crate::reg_class::RegClass;
     use crate::regalloc::{Allocation, RegAllocBackend, RematerializeOp};
@@ -2488,6 +2495,169 @@ mod tests {
                 if dst.is_physical() && src1.is_physical() && src2.is_physical())
         });
         assert!(has_add, "AddRR should be rewritten with physical registers");
+    }
+
+    #[test]
+    fn test_uxtw_spilled_source_reloads_before_move() {
+        let mut mir = Aarch64Mir::new();
+        let count = ALLOCATABLE_REGS.len() + 2;
+        let vregs: Vec<VReg> = (0..count).map(|_| mir.alloc_vreg()).collect();
+        define_loaded_values(&mut mir, &vregs);
+        mir.push(Aarch64Inst::Uxtw {
+            dst: Operand::Virtual(vregs[0]),
+            src: Operand::Virtual(vregs[count - 1]),
+        });
+        for &vreg in &vregs[1..] {
+            mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Virtual(vreg),
+            });
+        }
+        let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
+        assert_eq!(num_spills, 2);
+        let index = mir
+            .instructions()
+            .iter()
+            .position(|inst| matches!(inst, Aarch64Inst::Uxtw { .. }))
+            .expect("rewritten Uxtw should be present");
+        assert!(matches!(
+            mir.instructions().get(index.checked_sub(1).unwrap()),
+            Some(Aarch64Inst::Ldr {
+                dst: Operand::Physical(dst),
+                base: Reg::Fp,
+                ..
+            }) if *dst == SCRATCH_SOURCE_A
+        ));
+        assert!(matches!(
+            mir.instructions().get(index),
+            Some(Aarch64Inst::Uxtw {
+                dst: Operand::Physical(dst),
+                src: Operand::Physical(src),
+            }) if *src == SCRATCH_SOURCE_A && *dst != *src
+        ));
+        assert!(!matches!(
+            mir.instructions().get(index + 1),
+            Some(Aarch64Inst::Str { .. })
+        ));
+    }
+
+    #[test]
+    fn test_uxtw_spilled_destination_stores_after_move() {
+        let mut mir = Aarch64Mir::new();
+        let count = ALLOCATABLE_REGS.len() + 2;
+        let vregs: Vec<VReg> = (0..count).map(|_| mir.alloc_vreg()).collect();
+        define_loaded_values(&mut mir, &vregs);
+        mir.push(Aarch64Inst::Uxtw {
+            dst: Operand::Virtual(vregs[count - 1]),
+            src: Operand::Virtual(vregs[count - 2]),
+        });
+        for &vreg in &vregs[1..] {
+            mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Virtual(vreg),
+            });
+        }
+        let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
+        assert_eq!(num_spills, 1);
+        let index = mir
+            .instructions()
+            .iter()
+            .position(|inst| matches!(inst, Aarch64Inst::Uxtw { .. }))
+            .expect("rewritten Uxtw should be present");
+        assert!(matches!(
+            mir.instructions().get(index),
+            Some(Aarch64Inst::Uxtw {
+                dst: Operand::Physical(dst),
+                src: Operand::Physical(src),
+            }) if *dst == SCRATCH_VALUE && *src != *dst
+        ));
+        assert!(matches!(
+            mir.instructions().get(index + 1),
+            Some(Aarch64Inst::Str {
+                base: Reg::Fp,
+                src: Operand::Physical(src),
+                ..
+            }) if *src == SCRATCH_VALUE
+        ));
+    }
+
+    #[test]
+    fn test_uxtw_both_spilled_reloads_then_stores() {
+        let mut mir = Aarch64Mir::new();
+        let count = ALLOCATABLE_REGS.len() + 3;
+        let vregs: Vec<VReg> = (0..count).map(|_| mir.alloc_vreg()).collect();
+        define_loaded_values(&mut mir, &vregs);
+        mir.push(Aarch64Inst::Uxtw {
+            dst: Operand::Virtual(vregs[count - 1]),
+            src: Operand::Virtual(vregs[count - 2]),
+        });
+        for &vreg in &vregs[1..] {
+            mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Virtual(vreg),
+            });
+        }
+        let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
+        assert_eq!(num_spills, 2);
+        let index = mir
+            .instructions()
+            .iter()
+            .position(|inst| matches!(inst, Aarch64Inst::Uxtw { .. }))
+            .expect("rewritten Uxtw should be present");
+        assert!(matches!(
+            mir.instructions().get(index.checked_sub(1).unwrap()),
+            Some(Aarch64Inst::Ldr {
+                dst: Operand::Physical(dst),
+                base: Reg::Fp,
+                ..
+            }) if *dst == SCRATCH_SOURCE_A
+        ));
+        assert!(matches!(
+            mir.instructions().get(index),
+            Some(Aarch64Inst::Uxtw {
+                dst: Operand::Physical(dst),
+                src: Operand::Physical(src),
+            }) if *dst == SCRATCH_VALUE && *src == SCRATCH_SOURCE_A
+        ));
+        assert!(matches!(
+            mir.instructions().get(index + 1),
+            Some(Aarch64Inst::Str {
+                base: Reg::Fp,
+                src: Operand::Physical(src),
+                ..
+            }) if *src == SCRATCH_VALUE
+        ));
+    }
+
+    #[test]
+    fn test_uxtw_preserves_src_dst_identity() {
+        let mut mir = Aarch64Mir::new();
+        let vreg = mir.alloc_vreg();
+        mir.push(Aarch64Inst::Ldr {
+            dst: Operand::Virtual(vreg),
+            base: Reg::X1,
+            offset: 0,
+        });
+        mir.push(Aarch64Inst::Uxtw {
+            dst: Operand::Virtual(vreg),
+            src: Operand::Virtual(vreg),
+        });
+        mir.push(Aarch64Inst::MovRR {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Virtual(vreg),
+        });
+        let mir = RegAlloc::new(mir, 0).allocate().unwrap();
+        let inst = mir
+            .instructions()
+            .iter()
+            .find_map(|inst| match inst {
+                Aarch64Inst::Uxtw { dst, src } => Some((dst, src)),
+                _ => None,
+            })
+            .expect("identity Uxtw should be preserved");
+        assert!(
+            matches!((inst.0, inst.1), (Operand::Physical(dst), Operand::Physical(src)) if dst == src)
+        );
     }
 
     #[test]

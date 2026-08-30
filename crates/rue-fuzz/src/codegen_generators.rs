@@ -187,6 +187,8 @@ pub fn arb_x86_inst_physical() -> BoxedStrategy<X86Inst> {
         (arb_physical_operand(), arb_physical_operand())
             .prop_map(|(dst, src)| X86Inst::Movsx32To64 { dst, src }),
         (arb_physical_operand(), arb_physical_operand())
+            .prop_map(|(dst, src)| X86Inst::Movzx32To64 { dst, src }),
+        (arb_physical_operand(), arb_physical_operand())
             .prop_map(|(dst, src)| X86Inst::Movzx8To64 { dst, src }),
         (arb_physical_operand(), arb_physical_operand())
             .prop_map(|(dst, src)| X86Inst::Movzx16To64 { dst, src }),
@@ -429,6 +431,11 @@ pub fn arb_aarch64_inst_physical() -> BoxedStrategy<Aarch64Inst> {
             arb_aarch64_physical_operand(),
         )
             .prop_map(|(dst, src)| Aarch64Inst::MvnRR { dst, src }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+        )
+            .prop_map(|(dst, src)| Aarch64Inst::Uxtw { dst, src }),
         (
             arb_aarch64_physical_operand(),
             arb_aarch64_physical_operand(),
