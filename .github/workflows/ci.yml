@@ -41,7 +41,7 @@ jobs:
           path: |
             ~/.cache/dotslash
             ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
           restore-keys: |
             dotslash-linux-x64-
 
@@ -170,7 +170,7 @@ jobs:
           path: |
             ~/.cache/dotslash
             ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
           restore-keys: |
             dotslash-linux-x64-
 
@@ -246,7 +246,7 @@ jobs:
           path: |
             ~/.cache/dotslash
             ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
           restore-keys: |
             dotslash-linux-x64-
 
@@ -330,7 +330,7 @@ jobs:
           path: |
             ~/.cache/dotslash
             ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
           restore-keys: |
             dotslash-linux-x64-
 
@@ -647,7 +647,7 @@ jobs:
           path: |
             ~/.cache/dotslash
             ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
           restore-keys: |
             dotslash-linux-x64-
 
@@ -860,7 +860,7 @@ jobs:
           path: |
             ~/.cache/dotslash
             ~/Library/Caches/dotslash
-          key: dotslash-${{ matrix.name }}-${{ hashFiles('buck2') }}
+          key: dotslash-${{ matrix.name }}-${{ hashFiles('buck2-bin') }}
           restore-keys: |
             dotslash-${{ matrix.name }}-
 
@@ -985,7 +985,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
           restore-keys: |
             dotslash-linux-x64-
 
@@ -1034,7 +1034,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
           restore-keys: |
             dotslash-linux-x64-
 
@@ -1104,7 +1104,7 @@ jobs:
           path: |
             ~/.cache/dotslash
             ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2', 'btd') }}
+          key: dotslash-linux-x64-${{ hashFiles('buck2-bin', 'btd') }}
           restore-keys: |
             dotslash-linux-x64-
 
@@ -1243,7 +1243,7 @@ jobs:
           path: |
             ~/.cache/dotslash
             ~/Library/Caches/dotslash
-          key: dotslash-${{ matrix.cache_name }}-${{ hashFiles('buck2') }}
+          key: dotslash-${{ matrix.cache_name }}-${{ hashFiles('buck2-bin') }}
           restore-keys: |
             dotslash-${{ matrix.cache_name }}-
 
@@ -1321,7 +1321,7 @@ jobs:
           path: |
             ~/.cache/dotslash
             ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
           restore-keys: |
             dotslash-linux-x64-
 
@@ -1385,7 +1385,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
           restore-keys: |
             dotslash-linux-x64-
 
@@ -1488,7 +1488,7 @@ jobs:
           path: |
             ~/.cache/dotslash
             ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
           restore-keys: |
             dotslash-linux-x64-
       - name: Validate aggregate gate and platform responsibilities
