@@ -90,9 +90,8 @@ use super::provider_module_registry::ProviderModuleRegistry;
 use crate::builtin_universe::BuiltinUniverse;
 use crate::types::{EnumDef, EnumId, LangItem, StructDef, StructField, StructId, Type};
 use crate::{
-    AnonymousNominalKey, FunctionInstanceKey, ParamArena, ParamRange, SemanticImportConstValue,
-    SemanticImportNominalKind, SemanticImportType, SemanticParameterMode, StableProducerId,
-    TypeInternPool,
+    AnonymousNominalKey, ParamArena, ParamRange, SemanticImportConstValue,
+    SemanticImportNominalKind, SemanticImportType, SemanticParameterMode, TypeInternPool,
 };
 
 /// The durable body of a named nominal: its field / variant vocabulary plus the
@@ -605,7 +604,7 @@ impl<K, M, S> Clone for ProviderIdentityContext<K, M, S> {
 impl<K, M, S> ProviderIdentityContext<K, M, S>
 where
     K: Clone + Eq + Hash,
-    M: Eq + Hash,
+    M: Clone + Eq + Hash,
     S: DurableNominalSource<K, M>,
 {
     /// Create the single identity universe for one provider-driven body over
@@ -788,7 +787,7 @@ impl<K, M, S> Clone for ProviderBodyAnalysisState<K, M, S> {
 impl<K, M, S> ProviderBodyAnalysisState<K, M, S>
 where
     K: Clone + Eq + Hash,
-    M: Eq + Hash,
+    M: Clone + Eq + Hash,
     S: DurableNominalSource<K, M>,
 {
     pub fn new(source: S, space: SharedSymbolSpace) -> Self {
@@ -911,39 +910,10 @@ struct MethodSignature {
     returns_inout: bool,
 }
 
-fn anonymous_nominal_keys_canonically_equal<K: Eq, M: Eq>(
-    left: &AnonymousNominalKey<K, M>,
-    right: &AnonymousNominalKey<K, M>,
-) -> bool {
-    fn collapsed<K, M>(mut function: &FunctionInstanceKey<K, M>) -> &FunctionInstanceKey<K, M> {
-        while let FunctionInstanceKey::Specialization { base, arguments } = function
-            && arguments.types.is_empty()
-            && arguments.values.is_empty()
-        {
-            function = base;
-        }
-        function
-    }
-
-    // The producer carries the comptime arguments the nominal was minted
-    // under, so comparing it compares them too (RUE-1699).
-    left.kind == right.kind
-        && left.anchor == right.anchor
-        && match (&left.producer, &right.producer) {
-            (StableProducerId::Definition(left), StableProducerId::Definition(right)) => {
-                left == right
-            }
-            (StableProducerId::Function(left), StableProducerId::Function(right)) => {
-                collapsed(left) == collapsed(right)
-            }
-            _ => false,
-        }
-}
-
 impl<K, M, S> BodyIdentityPool<K, M, S>
 where
     K: Clone + Eq + Hash,
-    M: Eq + Hash,
+    M: Clone + Eq + Hash,
     S: DurableNominalSource<K, M>,
 {
     /// Create an empty pool with the builtin enums and the core `str` identity
@@ -1231,15 +1201,23 @@ where
                 }
             }
             S::Nominal(key) => self.mint_named(key)?,
+            // Canonicalize the probe, exactly as `find_or_create_anon` and
+            // `resolve_well_known_registry_type` already do, instead of falling
+            // back to a linear scan with a recursive key comparator per
+            // candidate (RUE-1839).
+            //
+            // Every production insertion into `anon_nominals` is canonical:
+            // `record_anonymous_identity` is reached only from `mint_anon_struct`
+            // and `mint_anon_enum`, which are called only by `find_or_create_anon`
+            // after it canonicalizes — the sole bypass is `#[cfg(test)]`. So the
+            // hashed lookup is complete, and strictly more complete than the scan
+            // was: `with_canonical_producer` collapses the whole producer spine,
+            // while the scan's comparator collapsed only outermost
+            // empty-argument `Specialization` wrappers.
             S::AnonymousNominal(key) => self
                 .anon_nominals
-                .get(key)
+                .get(key.with_canonical_producer().as_ref())
                 .copied()
-                .or_else(|| {
-                    self.anon_nominals.iter().find_map(|(candidate, ty)| {
-                        anonymous_nominal_keys_canonically_equal(candidate, key).then_some(*ty)
-                    })
-                })
                 .ok_or(IdentityMintError::MissingAnonymous)?,
             S::Array { element, len } => {
                 let element = self.resolve(element)?;
@@ -2767,7 +2745,7 @@ pub(in crate::sema) struct ConstIdentityHandle {
 impl<K, M, S> BodyIdentityPool<K, M, S>
 where
     K: Clone + Eq + Hash,
-    M: Eq + Hash,
+    M: Clone + Eq + Hash,
     S: DurableNominalSource<K, M> + DurableConstSource<K, M>,
 {
     /// Assemble a [`ConstInfo`] from a durable value-const record and the exact
@@ -2988,7 +2966,7 @@ impl BodyRirBundle {
     pub fn provider_identity_context<K, M, S>(&self, source: S) -> ProviderIdentityContext<K, M, S>
     where
         K: Clone + Eq + Hash,
-        M: Eq + Hash,
+        M: Clone + Eq + Hash,
         S: DurableNominalSource<K, M>,
     {
         ProviderIdentityContext::with_space_mode(source, self.space.clone(), false)
@@ -2997,7 +2975,7 @@ impl BodyRirBundle {
     pub fn provider_body_state<K, M, S>(&self, source: S) -> ProviderBodyAnalysisState<K, M, S>
     where
         K: Clone + Eq + Hash,
-        M: Eq + Hash,
+        M: Clone + Eq + Hash,
         S: DurableNominalSource<K, M>,
     {
         ProviderBodyAnalysisState::new(source, self.space.clone())
@@ -3009,7 +2987,7 @@ impl BodyRirBundle {
     ) -> Result<ProviderBodyAnalysisState<K, M, S>, IdentityMintError>
     where
         K: Clone + Eq + Hash,
-        M: Eq + Hash,
+        M: Clone + Eq + Hash,
         S: DurableNominalSource<K, M>,
     {
         ProviderBodyAnalysisState::try_new(source, self.space.clone())
@@ -5065,6 +5043,52 @@ mod tests {
         assert_eq!(pool.find_or_create_anon(&key).unwrap(), minted);
         pool.find_or_create_anon(&other).unwrap();
         assert_eq!(pool.find_or_create_anon(&key).unwrap(), minted);
+    }
+
+    /// RUE-1839: `resolve`'s anonymous arm canonicalizes its probe instead of
+    /// falling back to a linear scan with a recursive key comparator run per
+    /// registered nominal. A caller handing the non-collapsed
+    /// `Specialization { base, arguments: [] }` spelling — the
+    /// declaration-signature projection's quirk — must still resolve the
+    /// identity minted under the collapsed form. That coverage is exactly what
+    /// the deleted scan provided, so it is asserted directly here.
+    #[test]
+    fn anonymous_arm_resolves_a_non_canonical_probe_by_hash() {
+        use crate::semantic_identity::FunctionInstanceKey;
+        let collapsed = AnonymousNominalKey {
+            kind: AnonymousNominalKind::Struct,
+            producer: StableProducerId::Function(Node::new(FunctionInstanceKey::Definition(7u32))),
+            anchor: rue_rir::RirStructuralAnchor::new(vec![
+                rue_rir::RirStructuralPathSegment::AnonymousType(0),
+            ]),
+        };
+        let wrapped = AnonymousNominalKey {
+            producer: StableProducerId::Function(Node::new(FunctionInstanceKey::Specialization {
+                base: Node::new(FunctionInstanceKey::Definition(7u32)),
+                arguments: CanonicalArguments::default(),
+            })),
+            ..collapsed.clone()
+        };
+        assert_ne!(collapsed, wrapped, "the raw spellings are distinct keys");
+
+        let shape = DurableAnonymousShape::Struct {
+            fields: vec![(Arc::from("v"), DType::I32)],
+            struct_method_names: Vec::new(),
+        };
+        let mut pool = anon_pool([], [(collapsed.clone(), shape)], []);
+        let minted = pool.find_or_create_anon(&collapsed).unwrap();
+
+        // Only the canonical key is registered, so an exact hash probe of the
+        // wrapped spelling misses.
+        assert!(
+            !pool.anon_nominals.contains_key(&wrapped),
+            "registry should hold the canonical key only"
+        );
+        // `resolve` still finds it — by canonicalizing the probe, not by scanning.
+        assert_eq!(
+            pool.resolve(&DType::AnonymousNominal(wrapped)).unwrap(),
+            minted
+        );
     }
 
     /// Collapsed and non-collapsed spellings of ONE producer mint ONE identity:
