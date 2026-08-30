@@ -5690,4 +5690,108 @@ mod tests {
             "every fixture struct must be observed in some body-local pool"
         );
     }
+    /// RUE-1824: a session/snapshot mismatch is an API precondition, rejected
+    /// before any semantic, CFG, or backend work runs or is recorded.
+    #[test]
+    fn session_snapshot_mismatch_is_rejected_before_any_pipeline_work() {
+        let published = snapshot_with_file_id(1, "fn main() -> i32 { 0 }");
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&published)
+            .into_result()
+            .unwrap();
+        let work_before = format!("{:?}", session.work());
+
+        let assert_rejected = |session: &mut CompilerSession, snapshot: &SourceSnapshot| {
+            let errors =
+                crate::queries::compile_with_session(session, snapshot, &CompileOptions::default())
+                    .unwrap_err();
+            assert!(
+                matches!(
+                    &errors.as_slice()[0].kind,
+                    ErrorKind::InvalidCompilerInput(reason)
+                        if reason.contains("differs from the published parsed program")
+                ),
+                "{errors:?}"
+            );
+        };
+
+        // Byte-different content under the same identity.
+        let different = snapshot_with_file_id(1, "fn main() -> i32 { 1 }");
+        assert_rejected(&mut session, &different);
+
+        // Byte-identical content relocated to a new physical path: the
+        // source revision is shared, so only exact physical membership can
+        // reject it.
+        let file_id = FileId::new(1);
+        let relocated_metadata = SourceMetadata::new(
+            file_id,
+            [(file_id, "/moved/main.rue".to_owned())]
+                .into_iter()
+                .collect(),
+            [(file_id, "main.rue".to_owned())].into_iter().collect(),
+        )
+        .unwrap();
+        let relocated = SourceSnapshot::new(
+            relocated_metadata,
+            vec![(file_id, Arc::new("fn main() -> i32 { 0 }".to_owned()))],
+        )
+        .unwrap();
+        assert_eq!(published.source_revision(), relocated.source_revision());
+        assert_rejected(&mut session, &relocated);
+
+        // Neither rejection performed or recorded any pipeline work.
+        assert_eq!(work_before, format!("{:?}", session.work()));
+
+        // The exact published snapshot still compiles.
+        crate::queries::compile_with_session(&mut session, &published, &CompileOptions::default())
+            .unwrap();
+    }
+
+    /// RUE-1824: the cancellation-aware entry point aborts an already
+    /// canceled request before judging its inputs, and rejects a mismatched
+    /// live request before any pipeline work.
+    #[test]
+    fn cancellation_takes_precedence_over_snapshot_mismatch() {
+        let published = snapshot_with_file_id(1, "fn main() -> i32 { 0 }");
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&published)
+            .into_result()
+            .unwrap();
+        let different = snapshot_with_file_id(1, "fn main() -> i32 { 1 }");
+
+        let canceled = rue_query::CancellationToken::new();
+        canceled.cancel();
+        let control = crate::queries::compile_with_session_with_cancellation(
+            &mut session,
+            &different,
+            &CompileOptions::default(),
+            canceled,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            control,
+            crate::session::PipelineRequestControl::Abort(rue_query::QueryAbort::Canceled)
+        ));
+
+        let work_before = format!("{:?}", session.work());
+        let control = crate::queries::compile_with_session_with_cancellation(
+            &mut session,
+            &different,
+            &CompileOptions::default(),
+            rue_query::CancellationToken::new(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            &control,
+            crate::session::PipelineRequestControl::Compile(errors)
+                if matches!(
+                    &errors.as_slice()[0].kind,
+                    ErrorKind::InvalidCompilerInput(reason)
+                        if reason.contains("differs from the published parsed program")
+                )
+        ));
+        assert_eq!(work_before, format!("{:?}", session.work()));
+    }
 }
