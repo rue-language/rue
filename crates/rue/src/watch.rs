@@ -33,6 +33,7 @@ const FAILED_REOBSERVE_RETRY: Duration = Duration::from_millis(250);
 // synchronization without wall-clock sleeps.
 const TEST_PROTOCOL_ENV: &str = "RUE_WATCH_TEST_PROTOCOL";
 const TEST_COMPILE_DELAY_ENV: &str = "RUE_WATCH_TEST_COMPILE_DELAY_MS";
+const TEST_REOBSERVE_DELAY_ENV: &str = "RUE_WATCH_TEST_REOBSERVE_DELAY_MS";
 const TEST_BOUNDARY_DELAY_ENV: &str = "RUE_WATCH_TEST_BOUNDARY_DELAY_MS";
 
 fn test_event(event: &str) {
@@ -48,6 +49,20 @@ fn test_event(event: &str) {
 
 fn test_compile_delay() {
     let Ok(delay) = std::env::var(TEST_COMPILE_DELAY_ENV) else {
+        return;
+    };
+    let Ok(milliseconds) = delay.parse::<u64>() else {
+        return;
+    };
+    thread::sleep(Duration::from_millis(milliseconds.min(5_000)));
+}
+
+// Hold the cycle between starting the re-observation monitor and the
+// re-observation itself. Test-only, like the compile delay: it exists so an
+// edit can deterministically land while the graph is being re-closed
+// (RUE-1830).
+fn test_reobserve_delay() {
+    let Ok(delay) = std::env::var(TEST_REOBSERVE_DELAY_ENV) else {
         return;
     };
     let Ok(milliseconds) = delay.parse::<u64>() else {
@@ -108,6 +123,37 @@ impl ChangeMonitor {
         }
     }
 
+    /// Monitor for edits landing after `baseline` — the debounced disk state
+    /// this cycle's re-observation is about to read (RUE-1830). The compile
+    /// monitor's comparison against the last committed observation would trip
+    /// immediately here: while re-observing, the pending edit IS the reason
+    /// the cycle runs, so only a post-baseline edit supersedes the attempt.
+    /// The thread stays silent on the test protocol; the superseded cycle
+    /// announces itself through its own milestone.
+    fn start_reobservation(inputs: Vec<WatchInput>, cancellation: CompilationCancellation) -> Self {
+        let baseline = current_fingerprints(&inputs);
+        let stop = Arc::new(AtomicBool::new(false));
+        let changed = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let thread_changed = changed.clone();
+        let thread = thread::spawn(move || {
+            let mut poll = PollBackoff::new();
+            while !thread_stop.load(Ordering::Acquire) {
+                if current_fingerprints(&inputs) != baseline {
+                    thread_changed.store(true, Ordering::Release);
+                    cancellation.cancel();
+                    return;
+                }
+                thread::park_timeout(poll.next_delay());
+            }
+        });
+        Self {
+            stop,
+            changed,
+            thread,
+        }
+    }
+
     fn changed(&self) -> bool {
         self.changed.load(Ordering::Acquire)
     }
@@ -132,8 +178,39 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
     loop {
         let cycle_started = Instant::now();
         if needs_reobserve {
-            match request.host.reobserve() {
+            // Observe edits WHILE the import graph re-closes: discovery can
+            // block on filesystem reads across several waves, and an edit
+            // landing then must supersede the stale attempt promptly instead
+            // of waiting for compilation proper to notice it (RUE-1830).
+            let stale_inputs = request.host.watch_inputs();
+            let reobserve_cancellation = CompilationCancellation::new();
+            let reobserve_monitor = ChangeMonitor::start_reobservation(
+                stale_inputs.clone(),
+                reobserve_cancellation.clone(),
+            );
+            test_event("reobserve-started");
+            test_reobserve_delay();
+            let reobserved = request
+                .host
+                .reobserve_superseding(&|| reobserve_cancellation.is_canceled());
+            reobserve_monitor.finish();
+            match reobserved {
                 Ok(()) => test_event("reobserve-ok"),
+                Err(SourceLoadError::Superseded) => {
+                    test_event("reobserve-superseded");
+                    print_watch_status(
+                        request.error_format,
+                        format!(
+                            "Watch re-observation superseded after {} ms; a newer source revision is available",
+                            cycle_started.elapsed().as_millis()
+                        ),
+                    );
+                    // The superseded attempt committed nothing. Let the burst
+                    // settle, then re-observe from the newest bytes;
+                    // `needs_reobserve` is still set.
+                    debounce(&stale_inputs);
+                    continue;
+                }
                 Err(error) => {
                     test_event("reobserve-error");
                     print_source_load_error(error, request.error_format);

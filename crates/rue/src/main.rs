@@ -1613,6 +1613,14 @@ pub(crate) fn render_source_load_error(
             error.to_string(),
             error_format,
         ),
+        // Watch supersession never surfaces as a user-facing failure: the
+        // watch loop consumes it and restarts from the newest bytes
+        // (RUE-1830). This rendering exists only for an unexpected escape.
+        SourceLoadError::Superseded => render_driver_error(
+            ErrorCode::DRIVER_SOURCE_LOAD,
+            "source observation superseded by a newer revision".to_owned(),
+            error_format,
+        ),
         SourceLoadError::Compiler { snapshot, errors } => {
             let infos = snapshot
                 .as_ref()

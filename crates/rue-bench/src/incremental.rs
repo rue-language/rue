@@ -1595,6 +1595,9 @@ fn source_load_error(error: SourceLoadError) -> String {
         SourceLoadError::Compiler { errors, .. } => errors.to_string(),
         SourceLoadError::Toolchain(error) => format!("{error:?}"),
         SourceLoadError::HermeticDenial(error) => format!("{error:?}"),
+        // The bench harness supplies no supersession probe, so its loads can
+        // never supersede (RUE-1830).
+        SourceLoadError::Superseded => "source observation superseded".to_owned(),
     }
 }
 

@@ -747,6 +747,11 @@ pub enum SourceLoadError {
     /// environmental error, not a program error — surfaced loudly with its own
     /// message.
     Toolchain(ToolchainIntegrityError),
+    /// A caller-supplied supersession probe reported a newer source revision
+    /// while import discovery was still re-closing the graph (RUE-1830). The
+    /// superseded attempt committed no snapshot, manifest, or graph; the
+    /// caller restarts observation from the newest bytes.
+    Superseded,
     /// A trusted toolchain module resolves to a path the hermetic build
     /// configuration forbids (RUE-1112). This is deterministically DISTINCT
     /// from a broken toolchain: the installation may be intact, but the sandbox
@@ -1065,6 +1070,7 @@ fn run_import_wave(
     frontier: &ImportDemandFrontier,
     source_manifest: Option<&SourceManifest>,
     reobserved_reads: Option<&AHashMap<String, AcceptedImportSource>>,
+    supersession: Option<&dyn Fn() -> bool>,
 ) -> Result<(ImportInputRevision, ImportDemandFrontier), SourceLoadError> {
     for attempt in 0..=WAVE_STAMP_RETRIES {
         let accepted_reads = assembler.accepted_read_manifest();
@@ -1077,6 +1083,7 @@ fn run_import_wave(
         )
         .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
         while !wave.is_complete() {
+            check_supersession(supersession)?;
             let observations = wave
                 .requests()
                 .iter()
@@ -1118,6 +1125,17 @@ fn run_import_wave(
     unreachable!("the wave retry loop returns or fails on its last attempt")
 }
 
+/// Fail promptly with [`SourceLoadError::Superseded`] once the caller's
+/// probe reports that a newer source revision replaced the bytes this
+/// discovery attempt is reading (RUE-1830). `None` keeps every check a no-op
+/// for one-shot loads and toolchain re-closes.
+fn check_supersession(supersession: Option<&dyn Fn() -> bool>) -> Result<(), SourceLoadError> {
+    if supersession.is_some_and(|probe| probe()) {
+        return Err(SourceLoadError::Superseded);
+    }
+    Ok(())
+}
+
 fn drive_import_discovery_to_close(
     assembler: &mut DiscoverySourceAssembler,
     staging: &mut CompilerSession,
@@ -1126,6 +1144,7 @@ fn drive_import_discovery_to_close(
     reobserved_reads: Option<&AHashMap<String, AcceptedImportSource>>,
     continuation: Option<ImportInputRevision>,
     reclose: Option<ReClose<'_>>,
+    supersession: Option<&dyn Fn() -> bool>,
 ) -> Result<ClosedDiscovery, SourceLoadError> {
     // Exactly one import-input request is opened per external request, here,
     // before the frontier loop below. Rounds inside that loop publish overlay
@@ -1166,6 +1185,10 @@ fn drive_import_discovery_to_close(
     let mut cumulative_witness_closures = 0_u32;
     let mut reroot_witness_closures = 0_u32;
     loop {
+        // A newer revision supersedes this attempt between rounds; the
+        // per-hop check inside the ordinary wave bounds a superseded
+        // attempt's residual filesystem work to one hop (RUE-1830).
+        check_supersession(supersession)?;
         // One frontier round: plan and frontier construction (which owns the
         // canonical parse of everything read so far), then the host reads that
         // answer the frontier's requests. Both halves are timed so a discovery
@@ -1350,6 +1373,7 @@ fn drive_import_discovery_to_close(
                     &frontier,
                     source_manifest,
                     reobserved_reads,
+                    supersession,
                 )?;
                 input_revision = revision;
                 previous_frontier = Some(published);
@@ -1522,6 +1546,7 @@ pub(crate) fn discover_and_load_imports(
         None,
         None,
         None,
+        None,
     )?;
 
     Ok(ImportDiscoveryResult {
@@ -1546,7 +1571,9 @@ pub(crate) fn discover_and_load_imports(
 // accepted-read closure through this filesystem soundness boundary.
 pub(crate) fn reload_from_filesystem(
     result: &mut ImportDiscoveryResult,
+    supersession: Option<&dyn Fn() -> bool>,
 ) -> Result<(), SourceLoadError> {
+    check_supersession(supersession)?;
     let source_manifest = result
         .source_manifest
         .as_ref()
@@ -1617,6 +1644,7 @@ pub(crate) fn reload_from_filesystem(
         Some(&reobserved),
         None,
         None,
+        supersession,
     )?;
     result.source_snapshot = close.snapshot;
     result.read_manifest = assembler.accepted_read_manifest();
@@ -1743,6 +1771,7 @@ pub(crate) fn acquire_reached_toolchain_modules(
                     None,
                     Some(delta.revision()),
                     Some(ReClose { delta: &delta }),
+                    None,
                 )
                 .map_err(|error| {
                     reclassify_reclose_failure(error, result.std_root.as_deref(), park.demands())
@@ -2967,7 +2996,8 @@ mod tests {
                 .expect("an empty std path means no configured toolchain");
 
         assert!(result.std_root.is_none());
-        reload_from_filesystem(&mut result).expect("reload preserves the empty-path contract");
+        reload_from_filesystem(&mut result, None)
+            .expect("reload preserves the empty-path contract");
         assert!(result.std_root.is_none());
     }
 
@@ -3130,7 +3160,7 @@ mod tests {
         let semantic_before = rooted_cfg(&mut result.session, &CompileOptions::default()).unwrap();
 
         fs::write(&leaf, leaf_source).unwrap();
-        reload_from_filesystem(&mut result).unwrap();
+        reload_from_filesystem(&mut result, None).unwrap();
         let semantic_after = rooted_cfg(&mut result.session, &CompileOptions::default()).unwrap();
 
         assert_eq!(module_source_id(&result, "leaf.rue"), source_id);
@@ -3163,7 +3193,7 @@ mod tests {
         // Same-length bytes make size useless, and this write happens inside the
         // timestamp window in which an unchanged mtime cannot establish order.
         fs::write(&leaf, "pub fn value() -> i32 { 2 }").unwrap();
-        reload_from_filesystem(&mut result).unwrap();
+        reload_from_filesystem(&mut result, None).unwrap();
 
         assert_ne!(module_source_id(&result, "leaf.rue"), source_id);
         assert!(
@@ -3203,7 +3233,7 @@ mod tests {
             discover_and_load_imports(main.to_str().unwrap(), Some(manifest), None).unwrap();
 
         fs::write(&manifest_path, "main.rue\n").unwrap();
-        match reload_from_filesystem(&mut result) {
+        match reload_from_filesystem(&mut result, None) {
             Err(SourceLoadError::Compiler { errors, .. }) => {
                 let rendered = errors.to_string();
                 assert!(rendered.contains("source manifest"), "{rendered}");
@@ -3236,7 +3266,7 @@ mod tests {
 
         fs::remove_file(&alias).unwrap();
         std::os::unix::fs::symlink(&second, &alias).unwrap();
-        reload_from_filesystem(&mut result).unwrap();
+        reload_from_filesystem(&mut result, None).unwrap();
 
         let second_canonical = fs::canonicalize(&second).unwrap();
         let leaf = result
@@ -3274,7 +3304,7 @@ mod tests {
         let source_id = module_source_id(&result, "alias.rue");
         let canonical = fs::canonicalize(&target).unwrap();
 
-        reload_from_filesystem(&mut result).unwrap();
+        reload_from_filesystem(&mut result, None).unwrap();
 
         assert_eq!(module_source_id(&result, "alias.rue"), source_id);
         assert!(
@@ -3301,7 +3331,7 @@ mod tests {
         let mut result = discover_and_load_imports(alias.to_str().unwrap(), None, None).unwrap();
         fs::remove_file(&alias).unwrap();
         std::os::unix::fs::symlink(&second, &alias).unwrap();
-        reload_from_filesystem(&mut result).unwrap();
+        reload_from_filesystem(&mut result, None).unwrap();
 
         let second_canonical = fs::canonicalize(&second).unwrap();
         assert!(
@@ -3337,7 +3367,7 @@ mod tests {
         fs::remove_file(&alias).unwrap();
         std::os::unix::fs::symlink(&std_dir, &alias).unwrap();
 
-        let error = reload_from_filesystem(&mut result)
+        let error = reload_from_filesystem(&mut result, None)
             .expect_err("a retained project retarget into std must fail closed");
         assert!(matches!(
             error,
@@ -3364,7 +3394,7 @@ mod tests {
         // Leave the requested alias in place but make its target disappear:
         // retained observation must not silently reuse the old canonical read.
         fs::remove_file(&target).unwrap();
-        reload_from_filesystem(&mut result).unwrap();
+        reload_from_filesystem(&mut result, None).unwrap();
         assert_eq!(
             result.revision.status(),
             ImportDiscoveryStatus::ClosedAttempted
@@ -3379,7 +3409,7 @@ mod tests {
 
         fs::remove_file(&alias).unwrap();
         std::os::unix::fs::symlink(&replacement, &alias).unwrap();
-        reload_from_filesystem(&mut result).unwrap();
+        reload_from_filesystem(&mut result, None).unwrap();
         assert!(
             result
                 .source_snapshot
@@ -3415,7 +3445,7 @@ mod tests {
         std::os::unix::fs::symlink(&second, &alias).unwrap();
         fs::write(&manifest_path, "main.rue\nfirst.rue\nsecond.rue\n").unwrap();
 
-        match reload_from_filesystem(&mut result) {
+        match reload_from_filesystem(&mut result, None) {
             Err(SourceLoadError::Compiler {
                 snapshot: Some(snapshot),
                 errors,
@@ -3531,6 +3561,9 @@ mod tests {
             }
             Err(SourceLoadError::HermeticDenial(error)) => {
                 panic!("import policy denial escaped as a hermetic toolchain denial: {error}")
+            }
+            Err(SourceLoadError::Superseded) => {
+                panic!("one-shot load supplies no supersession probe, so it can never supersede")
             }
             Ok(_) => panic!("policy denial unexpectedly closed successfully"),
         }
@@ -3732,6 +3765,9 @@ mod tests {
             SourceLoadError::HermeticDenial(error) => error.to_string(),
             SourceLoadError::Message(message) => message.clone(),
             SourceLoadError::Compiler { errors, .. } => errors.to_string(),
+            SourceLoadError::Superseded => {
+                panic!("these fixtures supply no supersession probe, so loads never supersede")
+            }
         }
     }
 
