@@ -234,12 +234,36 @@ fn compile_snapshot_impl(
     compile_with_session(&mut session, snapshot, options)
 }
 
+/// Reject a session/snapshot pairing whose published parsed program does not
+/// belong to this EXACT snapshot, returning the program's token count on a
+/// match. Snapshot membership is physical, not merely source-revision-deep: a
+/// relocated byte-identical snapshot must be rejected. Both compile entry
+/// points run this as a preflight so an invalid request pays for no semantic,
+/// CFG, or backend work and records no metrics or retained terminals, and
+/// finalization reuses the same helper so the two checks cannot drift
+/// (RUE-1824).
+fn require_published_snapshot_membership(
+    session: &CompilerSession,
+    snapshot: &SourceSnapshot,
+) -> Result<usize, CompileErrors> {
+    session
+        .published_owner()
+        .filter(|program| program.belongs_to_exact_snapshot(snapshot))
+        .map(|program| program.token_count())
+        .ok_or_else(|| {
+            CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                "compilation snapshot differs from the published parsed program".into(),
+            )))
+        })
+}
+
 pub(crate) fn compile_with_session(
     session: &mut CompilerSession,
     snapshot: &SourceSnapshot,
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
     let _span = info_span!("compile_pipeline").entered();
+    require_published_snapshot_membership(session, snapshot)?;
     let rooted = if matches!(options.linker, LinkerMode::Internal) {
         session
             .rooted_codegen_internal_with_cancellation(
@@ -269,11 +293,15 @@ pub(crate) fn compile_with_session_with_cancellation(
     cancellation: rue_query::CancellationToken,
 ) -> Result<CompileOutput, crate::session::PipelineRequestControl> {
     let _span = info_span!("compile_pipeline").entered();
+    // Cancellation takes precedence over precondition validation: an already
+    // canceled request aborts before its inputs are judged.
     if cancellation.is_canceled() {
         return Err(crate::session::PipelineRequestControl::Abort(
             rue_query::QueryAbort::Canceled,
         ));
     }
+    require_published_snapshot_membership(session, snapshot)
+        .map_err(crate::session::PipelineRequestControl::Compile)?;
     let rooted = if matches!(options.linker, LinkerMode::Internal) {
         session.rooted_codegen_internal_with_cancellation(
             options,
@@ -352,15 +380,10 @@ pub(crate) fn compile_rooted_with_session_with_cancellation(
         }
     };
     check_cancellation()?;
-    let source_tokens = session
-        .published_owner()
-        .filter(|program| program.belongs_to_exact_snapshot(snapshot))
-        .map(|program| program.token_count())
-        .ok_or_else(|| {
-            CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
-                "compilation snapshot differs from the published parsed program".into(),
-            )))
-        })
+    // The entry points already ran this preflight; repeating it here keeps
+    // the unstable objects-ready continuation endpoint honest and defends
+    // against a session whose published program changed mid-pipeline.
+    let source_tokens = require_published_snapshot_membership(session, snapshot)
         .map_err(crate::session::PipelineRequestControl::Compile)?;
     let mut total_source_bytes = 0_usize;
     let mut total_source_lines = 0_usize;
