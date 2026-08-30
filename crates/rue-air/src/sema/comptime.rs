@@ -1561,6 +1561,36 @@ mod value_domain_tests {
         NAMED_TYPE_MISSING.with(|missing| missing.set(false));
     }
 
+    /// RUE-1838: `ComptimeEnv::for_analysis` reports runtime locals through the
+    /// borrowed membership hook instead of snapshotting every in-scope local's
+    /// name on every per-expression probe. `is_runtime_local_name` is the only
+    /// reader of either spelling, so the two must be indistinguishable to it —
+    /// including for a name that is absent, where the hook must answer `false`
+    /// rather than fall through to a stale empty set.
+    #[test]
+    fn borrowed_local_membership_matches_a_snapshotted_name_set() {
+        let present = FakeName { ordinal: 21 };
+        let absent = FakeName { ordinal: 22 };
+
+        let mut snapshotted =
+            ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        snapshotted.runtime_local_names.insert(present.clone());
+
+        let live: AHashSet<FakeName> = [present.clone()].into_iter().collect();
+        let mut borrowed =
+            ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        borrowed.runtime_local_name_membership =
+            Some(std::sync::Arc::new(move |name| live.contains(name)));
+
+        assert!(snapshotted.is_runtime_local_name(&present));
+        assert!(borrowed.is_runtime_local_name(&present));
+        assert!(!snapshotted.is_runtime_local_name(&absent));
+        assert!(!borrowed.is_runtime_local_name(&absent));
+
+        // The hook-backed env carries no snapshot at all: that is the point.
+        assert!(borrowed.runtime_local_names.is_empty());
+    }
+
     #[test]
     fn named_array_length_classifies_lexical_bindings_before_global_lookup() {
         let name = FakeName { ordinal: 7 };
