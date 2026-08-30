@@ -262,8 +262,12 @@ impl<'a>
             // The borrowed-membership hook already exists and is already used by
             // the staged entry points; `is_runtime_local_name` consults both.
             runtime_local_names: AHashSet::new(),
-            runtime_local_name_membership: Some(std::sync::Arc::new(move |name| {
-                ctx.locals.contains_key(name)
+            runtime_local_name_membership: Some(std::sync::Arc::new({
+                // Capture only the locals map, not the whole context: `&ctx`
+                // is neither `Send` nor `Sync`, and an `Arc` over a closure
+                // holding it trips `clippy::arc_with_non_send_sync`.
+                let locals = &ctx.locals;
+                move |name: &Spur| locals.contains_key(name)
             })),
             runtime_binding_names: ctx.params.iter().map(|param| param.name).collect(),
             locals: AHashMap::new(),
