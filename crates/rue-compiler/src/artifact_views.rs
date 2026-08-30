@@ -1147,7 +1147,7 @@ fn statement_record(
                 rue_parser::LetPattern::Ident(ident) => (Some(resolved_ident(owner, ident)), "let"),
                 rue_parser::LetPattern::Wildcard(_) => (None, "let_wildcard"),
             };
-            let mut children = directive_records(owner, &statement.directives).collect::<Vec<_>>();
+            let mut children = directive_records(owner, statement.directives()).collect::<Vec<_>>();
             children.push(modifier_record(
                 statement.span,
                 "mutable",

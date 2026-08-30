@@ -362,9 +362,9 @@ mod tests {
         let Statement::Let(statement) = &body.statements[0] else {
             panic!("expected directed let statement");
         };
-        assert_eq!(statement.directives.len(), 2);
-        assert_eq!(statement.directives[0].args.len(), 2);
-        assert_eq!(statement.directives[1].args.len(), 1);
+        assert_eq!(statement.directives().len(), 2);
+        assert_eq!(statement.directives()[0].args.len(), 2);
+        assert_eq!(statement.directives()[1].args.len(), 1);
     }
 
     #[test]

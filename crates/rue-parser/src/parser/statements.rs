@@ -24,12 +24,12 @@ impl Parser {
         } else {
             None
         };
-        Ok(Expr::If(IfExpr {
+        Ok(Expr::If(Box::new(IfExpr {
             cond: Box::new(cond),
             then_block,
             else_block,
             span: self.span_from(start),
-        }))
+        })))
     }
     pub(super) fn while_expr(&mut self) -> PResult<Expr> {
         let start = self.start();
@@ -479,10 +479,12 @@ impl Parser {
         }
         self.bump();
         Ok(Statement::Let(LetStatement {
-            directives,
+            // Empty stays `None`: allocating for the common undirected `let`
+            // would trade the inline bytes for a heap trip (RUE-1836).
+            directives: (!directives.is_empty()).then(|| Box::new(directives)),
             is_mut,
             pattern,
-            ty,
+            ty: ty.map(Box::new),
             init,
             span: self.span_from(start),
         }))

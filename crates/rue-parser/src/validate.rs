@@ -254,7 +254,7 @@ impl Validator<'_> {
     fn check_statement(&mut self, statement: &Statement) {
         match statement {
             Statement::Let(l) => {
-                self.check_directives(&l.directives, DirectiveSite::Let);
+                self.check_directives(l.directives(), DirectiveSite::Let);
                 self.check_expr(&l.init);
             }
             Statement::Assign(a) => self.check_expr(&a.value),
