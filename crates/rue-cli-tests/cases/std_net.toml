@@ -1,16 +1,15 @@
-# std.net address model + Linux sockaddr_in marshalling (RUE-982, ADR-0060).
+# std.net address model + target sockaddr_in marshalling (RUE-982/RUE-986,
+# ADR-0060).
 #
 # The marshaller is the ONE place that knows the kernel byte layout, so these
-# cases pin it byte-for-byte: AF_INET family (native/little-endian), big-endian
-# port, four address octets in network order, zero padding, 16 bytes total.
-# Running on both CI Linux platforms is the x86-64/aarch64 layout-equivalence
-# check: the encoding is defined by std.binary, not by host byte order, so the
-# same exact stdout must hold on both.
+# cases pin it byte-for-byte: Linux native/little-endian family or Darwin
+# sin_len/family, big-endian port, four address octets in network order, zero
+# padding, 16 bytes total. Each target family is pinned independently.
 
 [section]
 id = "cli.std_net"
 name = "Standard library v1 — std.net addresses (RUE-982)"
-description = "Ipv4Addr/IpAddr/SockAddr and byte-exact Linux sockaddr_in marshalling."
+description = "Ipv4Addr/IpAddr/SockAddr and byte-exact target sockaddr_in marshalling."
 
 # Every byte of the marshalled sockaddr_in, plus octets() and the named
 # constructors. Port 0x1f90 (8080) has distinct hi/lo bytes, and the address
@@ -20,6 +19,7 @@ name = "net_sockaddr_in_exact_layout"
 description = "SockAddr.to_sockaddr_in emits AF_INET, be port, octets, zero padding."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
+only_on = ["x86-64-linux", "aarch64-linux"]
 files = [{ path = "main.rue", source = """
 const std = @import("std");
 
@@ -53,6 +53,34 @@ fn main() -> i32 {
 """ }]
 stdout = "2\n0\n31\n144\n10\n20\n30\n40\n8\n16\n127\n1\n0\n0\n"
 
+[[case]]
+name = "net_sockaddr_in_darwin_exact_layout"
+description = "Darwin sockaddr_in emits sin_len=16, AF_INET, be port, octets, zero padding."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+only_on = ["aarch64-macos"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let addr = std.net.SockAddr.v4(std.net.Ipv4Addr.new(10, 20, 30, 40), 0x1f90);
+    let b = addr.to_sockaddr_in();
+    @dbg(b[0]); @dbg(b[1]);
+    @dbg(b[2]); @dbg(b[3]);
+    @dbg(b[4]); @dbg(b[5]); @dbg(b[6]); @dbg(b[7]);
+    let mut zeros: i32 = 0;
+    let mut i: u64 = 8;
+    while i < 16 {
+        if b[i] == 0 { zeros = zeros + 1; }
+        i = i + 1;
+    }
+    @dbg(zeros);
+    @dbg(std.net.sockaddr_in_len());
+    0
+}
+""" }]
+stdout = "16\n2\n31\n144\n10\n20\n30\n40\n8\n16\n"
+
 # Kernel-filled decode: a valid buffer round-trips through from_sockaddr_in,
 # and a wrong family field is rejected as None instead of misread.
 [[case]]
@@ -60,6 +88,7 @@ name = "net_sockaddr_in_decode"
 description = "from_sockaddr_in validates AF_INET and reconstructs ip:port."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
+only_on = ["x86-64-linux", "aarch64-linux"]
 files = [{ path = "main.rue", source = """
 const std = @import("std");
 
@@ -86,3 +115,33 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "443\n192\n2\n1\n"
+
+[[case]]
+name = "net_sockaddr_in_darwin_decode"
+description = "Darwin from_sockaddr_in validates sin_len/family and reconstructs ip:port."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+only_on = ["aarch64-macos"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let O = std.option.Option(std.net.SockAddr);
+    let addr = std.net.SockAddr.v4(std.net.Ipv4Addr.new(192, 168, 1, 2), 443);
+    match std.net.SockAddr.from_sockaddr_in(addr.to_sockaddr_in()) {
+        O.Some(back) => {
+            @dbg(back.port);
+            let rb = back.to_sockaddr_in();
+            @dbg(rb[0]); @dbg(rb[1]); @dbg(rb[4]); @dbg(rb[7]);
+        },
+        O.None => { @dbg(0 - 1); },
+    }
+    let wrong_len: [u8; 16] = [15, 2, 0x01, 0xbb, 1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0];
+    match std.net.SockAddr.from_sockaddr_in(wrong_len) {
+        O.Some(x) => { @dbg(0 - 1); },
+        O.None => { @dbg(1); },
+    }
+    0
+}
+""" }]
+stdout = "443\n16\n2\n192\n2\n1\n"

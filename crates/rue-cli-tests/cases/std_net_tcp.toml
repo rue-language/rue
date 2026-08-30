@@ -1,18 +1,17 @@
 # std.net blocking TCP v1 (RUE-983, ADR-0060) — real sockets over loopback.
 #
-# The Linux cases run the whole blocking client/server surface in one process:
+# The loopback case runs the whole blocking client/server surface in one process:
 # bind on an ephemeral port (port 0 + local_addr, so no fixed port is
 # assumed), connect against the listen backlog, accept, byte round trip,
 # shutdown(Write) observed as EOF by the peer, and explicit consuming closes.
 # Deterministic RUE-984 multi-process loopback coverage extends this.
 #
-# macOS is the fail-closed unsupported platform until RUE-986: constructors
-# return NetworkError.Unsupported before any socket syscall, asserted by the
-# macOS-only case.
+# AArch64 macOS uses Darwin's socket syscall table and sin_len sockaddr layout;
+# the same loopback case runs natively there to cover the complete surface.
 
 [section]
 id = "cli.std_net_tcp"
-name = "Standard library v1 — std.net blocking TCP (RUE-983)"
+name = "Standard library v1 — std.net blocking TCP (RUE-983/RUE-986)"
 description = "TcpListener/TcpStream over loopback: connect/accept/read/write/shutdown/close."
 
 [[case]]
@@ -20,7 +19,7 @@ name = "tcp_loopback_round_trip"
 description = "bind(0)+local_addr, connect, accept, write_all->read, shutdown->EOF, closes."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
-only_on = ["x86-64-linux", "aarch64-linux"]
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
 files = [{ path = "main.rue", source = """
 const std = @import("std");
 
@@ -401,41 +400,153 @@ fn main() -> i32 {
 """ }]
 stdout = "1\n"
 
-# The fail-closed platform boundary: macOS constructors report Unsupported
-# without issuing a socket syscall (ADR-0060 §7, real Darwin ABI is RUE-986).
+# Darwin's orderly FIN semantics may allow sends after a peer EOF. Shut down
+# the peer's receive direction, close it, and shut down the client's send
+# direction before making bounded sends until Darwin reports EPIPE/ECONNRESET;
+# MSG_NOSIGNAL proves that error is returned safely.
 [[case]]
-name = "tcp_macos_unsupported"
-description = "bind and connect return NetworkError.Unsupported on macOS."
+name = "tcp_macos_write_after_peer_read_shutdown"
+description = "Darwin reports a bounded post-peer-close write as ConnectionReset without SIGPIPE."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
 only_on = ["aarch64-macos"]
 files = [{ path = "main.rue", source = """
 const std = @import("std");
 
+fn fail(code: i32) -> i32 {
+    @dbg(code);
+    1
+}
+
 fn main() -> i32 {
     let RL = std.result.Result(std.net.TcpListener, std.net.NetworkError);
     let RS = std.result.Result(std.net.TcpStream, std.net.NetworkError);
-    let addr = std.net.SockAddr.v4(std.net.Ipv4Addr.localhost(), 0);
-    match std.net.TcpListener.bind(addr) {
-        RL.Ok(l) => { let ignored = l.close(); @dbg(0); },
-        RL.Err(e) => {
-            match e {
-                std.net.NetworkError.Unsupported => { @dbg(1); },
-                _ => { @dbg(0); },
-            }
-        },
+    let RA = std.result.Result(std.net.SockAddr, std.net.NetworkError);
+    let RU = std.result.Result(u64, std.net.NetworkError);
+    let RUnit = std.result.Result((), std.net.NetworkError);
+
+    let mut listener = match std.net.TcpListener.bind(
+        std.net.SockAddr.v4(std.net.Ipv4Addr.localhost(), 0)
+    ) {
+        RL.Ok(l) => l,
+        RL.Err(e) => { return fail(101); },
+    };
+    let port: u16 = match listener.local_addr() {
+        RA.Ok(a) => a.port,
+        RA.Err(e) => { return fail(102); },
+    };
+    let mut client = match std.net.TcpStream.connect(
+        std.net.SockAddr.v4(std.net.Ipv4Addr.localhost(), port)
+    ) {
+        RS.Ok(s) => s,
+        RS.Err(e) => { return fail(103); },
+    };
+    let mut server = match listener.accept() {
+        RS.Ok(s) => s,
+        RS.Err(e) => { return fail(104); },
+    };
+    let mut payload = std.arraybuf.ArrayBuf(u8).new();
+    payload.push(170);
+    match client.write(borrow payload) {
+        RU.Ok(n) => {},
+        RU.Err(e) => { return fail(105); },
     }
-    let addr2 = std.net.SockAddr.v4(std.net.Ipv4Addr.localhost(), 1);
-    match std.net.TcpStream.connect(addr2) {
-        RS.Ok(s) => { let ignored = s.close(); @dbg(0); },
-        RS.Err(e) => {
-            match e {
-                std.net.NetworkError.Unsupported => { @dbg(2); },
-                _ => { @dbg(0); },
-            }
-        },
+    match server.shutdown(std.net.Shutdown.Read) {
+        RUnit.Ok(u) => {},
+        RUnit.Err(e) => { return fail(106); },
+    }
+    match server.close() {
+        RUnit.Ok(u) => {},
+        RUnit.Err(e) => { return fail(107); },
+    }
+
+    // Closing the local send direction makes the EPIPE result deterministic
+    // after the peer has gone away, while still exercising MSG_NOSIGNAL.
+    match client.shutdown(std.net.Shutdown.Write) {
+        RUnit.Ok(u) => {},
+        RUnit.Err(e) => { return fail(108); },
+    }
+
+    let mut attempts: u64 = 0;
+    let mut reset = false;
+    while attempts < 8 {
+        if reset { break; }
+        match client.write(borrow payload) {
+            RU.Ok(n) => {},
+            RU.Err(e) => {
+                match e {
+                    std.net.NetworkError.ConnectionReset => { reset = true; },
+                    _ => { return fail(109); },
+                }
+            },
+        }
+        attempts = attempts + 1;
+    }
+    if !reset { return fail(110); }
+    @dbg(1);
+    match client.close() {
+        RUnit.Ok(u) => {},
+        RUnit.Err(e) => { return fail(111); },
+    }
+    match listener.close() {
+        RUnit.Ok(u) => {},
+        RUnit.Err(e) => { return fail(112); },
     }
     0
 }
 """ }]
-stdout = "1\n2\n"
+stdout = "1\n"
+
+# Darwin errno values differ from Linux. Binding the same loopback port twice
+# deterministically exercises EADDRINUSE=48 -> AddressInUse without relying on
+# a vacant external service or a raw syscall test.
+[[case]]
+name = "tcp_macos_address_in_use_mapping"
+description = "Darwin EADDRINUSE is normalized to NetworkError.AddressInUse."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+only_on = ["aarch64-macos"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn fail(code: i32) -> i32 {
+    @dbg(code);
+    1
+}
+
+fn main() -> i32 {
+    let RL = std.result.Result(std.net.TcpListener, std.net.NetworkError);
+    let RA = std.result.Result(std.net.SockAddr, std.net.NetworkError);
+    let RUnit = std.result.Result((), std.net.NetworkError);
+    let mut first = match std.net.TcpListener.bind(
+        std.net.SockAddr.v4(std.net.Ipv4Addr.localhost(), 0)
+    ) {
+        RL.Ok(l) => l,
+        RL.Err(e) => { return fail(101); },
+    };
+    let port: u16 = match first.local_addr() {
+        RA.Ok(a) => a.port,
+        RA.Err(e) => { return fail(102); },
+    };
+    match std.net.TcpListener.bind(
+        std.net.SockAddr.v4(std.net.Ipv4Addr.localhost(), port)
+    ) {
+        RL.Ok(second) => {
+            let ignored = second.close();
+            return fail(103);
+        },
+        RL.Err(e) => {
+            match e {
+                std.net.NetworkError.AddressInUse => { @dbg(1); },
+                _ => { return fail(104); },
+            }
+        },
+    }
+    match first.close() {
+        RUnit.Ok(u) => {},
+        RUnit.Err(e) => { return fail(105); },
+    }
+    0
+}
+""" }]
+stdout = "1\n"

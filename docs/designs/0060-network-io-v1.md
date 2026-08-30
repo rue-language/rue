@@ -28,12 +28,13 @@ order conversion in reusable Rue library code rather than compiler intrinsics.
 
 ## Summary
 
-`std.net` v1 provides blocking TCP clients and servers on Linux x86-64 and
-aarch64. It supports IPv4 addresses through an extensible public address enum,
+`std.net` v1 provides blocking TCP clients and servers on Linux x86-64,
+aarch64, and AArch64 macOS. It supports IPv4 addresses through an extensible
+public address enum,
 marshals kernel socket addresses explicitly through a `SockAddr` abstraction,
 and exposes separate owned `TcpListener` and `TcpStream` descriptor types.
 Errors are normalized from errno into a target-independent network error enum.
-UDP, IPv6, DNS, TLS, macOS, and nonblocking/readiness APIs are outside v1.
+UDP, IPv6, DNS, TLS, and nonblocking/readiness APIs are outside v1.
 
 ## Context
 
@@ -51,17 +52,18 @@ design history may still describe the old carry-flag gap; they are historical,
 not evidence that the generic Darwin normalization bug remains. Current source,
 tests, and tracker state are authoritative.
 
-That generic fix does not make macOS networking ready. The network syscall ABI,
-constants, `sockaddr` layout (including Darwin's `sin_len`), errno mapping, and
-native loopback coverage still require target-specific work. RUE-986 owns that
-work.
+RUE-986 supplies the target-aware network syscall ABI, constants, `sockaddr`
+layout (including Darwin's `sin_len`), errno mapping, and native loopback
+coverage. The socket ABI remains isolated in `std.net`; generic syscall
+normalization is unchanged.
 
 ## Decision
 
-### 1. v1 is pure Rue, blocking TCP, on Linux
+### 1. v1 is pure Rue, blocking TCP, on Linux and AArch64 macOS
 
 `std.net` is Rue source over `@syscall`, following ADR-0057 and ADR-0034. v1
-targets Linux x86-64 and aarch64 only and provides the syscall operations needed
+targets Linux x86-64/aarch64 and AArch64 macOS and provides the syscall
+operations needed
 for a blocking TCP client and server:
 
 - `socket` and `connect` for clients;
@@ -110,11 +112,11 @@ C layout. It centralizes conversion between the public address value and the
 byte buffer passed to the kernel. Rue struct layout is not part of the C ABI and
 must not accidentally become a socket ABI promise.
 
-On the two v1 targets, Linux `sockaddr_in` is exactly 16 bytes:
+On every supported target, `sockaddr_in` is exactly 16 bytes:
 
 | Bytes | Encoding |
 | --- | --- |
-| 0..2 | native `AF_INET` family field; `02 00` on the supported little-endian Linux targets |
+| 0..2 | Linux native `AF_INET` (`02 00`), or Darwin `sin_len=16` and one-byte `AF_INET` (`10 02`) |
 | 2..4 | port as a big-endian `u16` |
 | 4..8 | the four IPv4 octets in network order |
 | 8..16 | eight zero bytes |
@@ -128,9 +130,8 @@ does not cast a `SockAddr` or `Ipv4Addr` value to a raw pointer and hope its
 physical representation matches the kernel.
 
 This boundary is deliberate isolation. IPv6 has a different structure and
-size; macOS IPv4 adds `sin_len` and has different ABI details. Adding either
-extends the `SockAddr` marshaller without exposing those kernel layouts through
-the public API.
+size; adding it extends the `SockAddr` marshaller without exposing kernel
+layouts through the public API.
 
 ### 4. Byte order is explicit, reusable Rue library code
 
@@ -141,9 +142,8 @@ targets. The helpers are not compiler intrinsics, and they do not use
 host-dependent C names such as `htons` that obscure which order is requested.
 
 This follows ADR-0059's rule that endianness policy remains source-defined over
-byte primitives. RUE-970, now Todo, owns the reusable helper surface. RUE-982 is
-blocked on it so `SockAddr` consumes the canonical helpers rather than growing a
-private competing conversion path.
+byte primitives. RUE-970 owns the reusable helper surface, and `SockAddr`
+consumes those helpers while selecting only the target-specific family prefix.
 
 ### 5. Listener and stream are distinct owned descriptor types
 
@@ -193,23 +193,23 @@ enum NetworkError {
 This list is an ADR-level contract, not a demand for speculative errno coverage:
 implementation should map useful, stable logical cases and route all remaining
 errors to `Other(i64)`. Raw errno values do not become the public matching API.
-For Linux socket sends, `sendto(2)` uses `MSG_NOSIGNAL` so a broken peer is
-reported to Rue instead of terminating the process with `SIGPIPE`; both
+For socket sends, `sendto(2)` uses the target-specific `MSG_NOSIGNAL` value
+(`0x4000` on Linux and `0x80000` on Darwin), so a broken peer is reported to
+Rue instead of terminating the process with `SIGPIPE`; both
 `ECONNRESET` and `EPIPE` map to `ConnectionReset`.
 `WouldBlock` remains available for unusual kernel/configuration behavior and
 future evolution even though v1 itself creates blocking sockets.
 
-Linux-only is a fail-closed platform boundary, not permission to issue guessed
-Darwin syscalls. On macOS, v1 network constructors return `Unsupported` without
-invoking a socket syscall. RUE-986 replaces that branch with the real Darwin
-ABI and execution coverage.
+The network ABI is a fail-closed target boundary: supported Linux and AArch64
+macOS select their explicit syscall tables, constants, and layouts; any other
+target returns `Unsupported` before issuing a socket syscall.
 
 ## Implementation Phases
 
 The implementation dependency chain is exact:
 
 - [x] **Reusable explicit-endian helpers** — RUE-970
-- [x] **IPv4 and `SockAddr` types plus Linux marshalling** — RUE-982, blocked by RUE-970
+- [x] **IPv4 and `SockAddr` types plus target marshalling** — RUE-982/RUE-986, blocked by RUE-970
 - [x] **Blocking `TcpListener`/`TcpStream` operations** — RUE-983, blocked by RUE-982
 - [ ] **Deterministic real-binary Linux loopback coverage** — RUE-984, blocked by RUE-983
 
@@ -219,8 +219,8 @@ port, impose bounded timeouts, and clean up both processes and descriptors on
 success or failure. This is real compiled-binary coverage, not only unit tests
 of marshalling helpers.
 
-RUE-985 (IPv6) and RUE-986 (macOS network ABI and coverage) are deferred bugs
-related to RUE-713; neither is in the v1 dependency chain.
+RUE-985 (IPv6) remains deferred work related to RUE-713; it is not in the v1
+dependency chain.
 
 ## Consequences
 
@@ -229,7 +229,7 @@ related to RUE-713; neither is in the v1 dependency chain.
 - Rue programs gain a minimal, useful TCP client and server facility without
   expanding the Rust runtime or its cross-target archive surface.
 - Explicit marshalling prevents accidental dependence on Rue struct layout and
-  gives IPv6 and macOS one well-defined extension point.
+  gives future IPv6 support one well-defined extension point.
 - Address and error APIs are portable shapes rather than Linux integer/layout
   details leaking into user code.
 - Separate affine listener and stream types make descriptor ownership and valid
@@ -237,7 +237,7 @@ related to RUE-713; neither is in the v1 dependency chain.
 
 ### Negative
 
-- v1 is Linux-only and IPv4-only.
+- v1 is IPv4-only.
 - Syscall numbers, socket constants, errno mappings, and ABI marshalling remain
   target-maintained library data.
 - Without traits, `File` and `TcpStream` have deliberately duplicated method
@@ -248,14 +248,13 @@ related to RUE-713; neither is in the v1 dependency chain.
 
 - The design adds no language feature, preview gate, compiler intrinsic, or
   runtime Rust helper.
-- DNS, TLS, UDP, IPv6, macOS, and readiness remain separable library work.
+- DNS, TLS, UDP, IPv6, and readiness remain separable library work.
 
 ## Alternatives Considered
 
-- **Support every current OS first.** Rejected: generic Darwin `@syscall` error
-  normalization is fixed by RUE-945, but network-specific constants, layouts,
-  errno details, and loopback validation remain substantial. RUE-986 owns that
-  work without blocking a coherent Linux v1.
+- **Support every current OS first.** Rejected: the target-aware table remains
+  deliberately limited to the three supported Rue targets; other OSes need
+  their own ABI review and fail closed.
 - **Pass Rue structs as C `sockaddr` structures.** Rejected: Rue does not promise
   that source structs have C layout. Explicit byte-buffer marshalling is checked,
   reviewable, and isolates target ABI differences.
@@ -275,8 +274,6 @@ related to RUE-713; neither is in the v1 dependency chain.
 ## Future Work
 
 - RUE-985: IPv6 address variants and kernel marshalling.
-- RUE-986: macOS socket ABI, constants, errno/layout details, `sin_len`, and
-  deterministic loopback coverage.
 - UDP, nonblocking/readiness, DNS, and TLS after their requirements are settled.
 
 ## References
@@ -287,4 +284,4 @@ related to RUE-713; neither is in the v1 dependency chain.
 - ADR-0059 — endianness remains explicit source-defined library policy
 - RUE-945 — implemented Darwin `@syscall` error normalization
 - RUE-970, RUE-982, RUE-983, RUE-984 — v1 implementation chain
-- RUE-985, RUE-986 — deferred IPv6 and macOS bugs
+- RUE-985 — deferred IPv6 work

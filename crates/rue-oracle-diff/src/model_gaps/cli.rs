@@ -412,7 +412,19 @@ const ENTRIES: &[Entry] = &[
         "cli.std_net_tcp",
         "tcp_loopback_round_trip",
         external(ExternalDependencyKind::SystemCall),
-        &["aarch64-linux", "x86-64-linux"],
+        &["aarch64-linux", "aarch64-macos", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.std_net_tcp",
+        "tcp_macos_address_in_use_mapping",
+        external(ExternalDependencyKind::SystemCall),
+        &["aarch64-macos"],
+    ),
+    Entry::new(
+        "cli.std_net_tcp",
+        "tcp_macos_write_after_peer_read_shutdown",
+        external(ExternalDependencyKind::SystemCall),
+        &["aarch64-macos"],
     ),
     Entry::new(
         "cli.std_net_tcp",
