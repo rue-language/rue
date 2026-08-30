@@ -4486,9 +4486,18 @@ impl CompilerSession {
         self.refresh_retention_metrics();
         match result {
             Ok(candidate) => {
-                if self.open_discovery.as_deref().is_some_and(|artifact| {
-                    artifact.source_revision != *candidate.source_revision()
-                }) {
+                // An open discovery artifact survives only an EXACT
+                // republication of its own snapshot. Source revisions exclude
+                // physical paths and presentation order, so a same-revision
+                // replacement update (relocated or reordered files) must still
+                // invalidate the artifact — otherwise its later close would
+                // republish the superseded snapshot, rolling physical and
+                // presentation state backward (RUE-1823).
+                if self
+                    .open_discovery
+                    .as_deref()
+                    .is_some_and(|artifact| !artifact.snapshot.is_same_exact_snapshot(snapshot))
+                {
                     self.open_discovery = None;
                 }
                 let exact = self.published.as_deref().is_some_and(|published| {
@@ -4605,9 +4614,18 @@ impl CompilerSession {
         self.metrics.synchronize();
         match result {
             Ok(candidate) => {
-                if self.open_discovery.as_deref().is_some_and(|artifact| {
-                    artifact.source_revision != *candidate.source_revision()
-                }) {
+                // An open discovery artifact survives only an EXACT
+                // republication of its own snapshot. Source revisions exclude
+                // physical paths and presentation order, so a same-revision
+                // replacement update (relocated or reordered files) must still
+                // invalidate the artifact — otherwise its later close would
+                // republish the superseded snapshot, rolling physical and
+                // presentation state backward (RUE-1823).
+                if self
+                    .open_discovery
+                    .as_deref()
+                    .is_some_and(|artifact| !artifact.snapshot.is_same_exact_snapshot(snapshot))
+                {
                     self.open_discovery = None;
                 }
                 let downstream_invalidated = self.published.is_some();
@@ -8394,6 +8412,198 @@ mod tests {
                 Arc::new("pub struct StrBuf { len: i64 }".to_owned()),
             )
             .unwrap();
+    }
+
+    /// Stage an OPEN freestanding import discovery (no pending imports) and
+    /// return the staging session with its staged snapshot (RUE-1823).
+    fn staged_open_discovery(sources: &[(&str, &str)]) -> (CompilerSession, SourceSnapshot) {
+        let ctx = continuation_std_context();
+        let mut assembler = crate::DiscoverySourceAssembler::new(
+            ctx.clone(),
+            sources[0].0,
+            sources[0].0,
+            crate::PhysicalFileIdentity::new(1, 1),
+            continuation_metadata(),
+            Arc::new(sources[0].1.to_owned()),
+        )
+        .unwrap();
+        for (index, (path, text)) in sources.iter().enumerate().skip(1) {
+            assembler
+                .add_explicit(
+                    *path,
+                    *path,
+                    crate::PhysicalFileIdentity::new(1 + index as u64, 1 + index as u64),
+                    continuation_metadata(),
+                    Arc::new((*text).to_owned()),
+                )
+                .unwrap();
+        }
+        let snapshot = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let mut session = CompilerSession::new();
+        session
+            .stage_import_discovery(
+                &snapshot,
+                ctx,
+                reads.shared_slice(),
+                crate::ImportObservationLedger::default(),
+            )
+            .unwrap();
+        assert!(
+            session.open_discovery.is_some(),
+            "staging leaves an open artifact"
+        );
+        (session, snapshot)
+    }
+
+    /// Rebuild `snapshot` from its own records — same files, identities, and
+    /// texts — optionally reversing the caller-supplied file order or
+    /// relocating every physical path under `/moved` (RUE-1823).
+    fn rebuilt_snapshot(
+        snapshot: &SourceSnapshot,
+        reverse: bool,
+        relocate: bool,
+    ) -> SourceSnapshot {
+        let physical = snapshot
+            .metadata()
+            .physical_paths()
+            .map(|(id, path)| {
+                let path = if relocate {
+                    format!("/moved{path}")
+                } else {
+                    path.to_owned()
+                };
+                (id, path)
+            })
+            .collect();
+        let logical = snapshot
+            .metadata()
+            .logical_paths()
+            .map(|(id, path)| (id, path.to_owned()))
+            .collect();
+        let metadata =
+            SourceMetadata::new(snapshot.metadata().root_file_id(), physical, logical).unwrap();
+        let mut files: Vec<_> = snapshot
+            .files()
+            .map(|view| {
+                (
+                    view.file_id,
+                    snapshot.shared_source_text(view.file_id).unwrap(),
+                )
+            })
+            .collect();
+        if reverse {
+            files.reverse();
+        }
+        SourceSnapshot::new(metadata, files).unwrap()
+    }
+
+    /// The stale close must reject with no published graph, diagnostics
+    /// snapshot replacement, continuation, or successor capability, and the
+    /// published snapshot must remain the replacement update's (RUE-1823).
+    fn assert_stale_close_rejected(session: &mut CompilerSession, replacement: &SourceSnapshot) {
+        assert!(
+            session.open_discovery.is_none(),
+            "a replacement update supersedes the open discovery artifact"
+        );
+        let errors = session
+            .close_import_discovery(crate::ImportObservationLedger::default())
+            .unwrap_err();
+        assert!(
+            matches!(
+                &errors.as_slice()[0].kind,
+                ErrorKind::InvalidCompilerInput(reason)
+                    if reason.contains("no successful parsed program")
+            ),
+            "stale close must be rejected outright: {errors:?}"
+        );
+        assert!(
+            session
+                .published_snapshot
+                .as_ref()
+                .unwrap()
+                .is_same_exact_snapshot(replacement),
+            "the rejected close must not replace the published snapshot"
+        );
+        assert!(session.continuation.is_none());
+        assert!(session.closed_discovery_continuation().is_none());
+        assert!(session.successor_delta_nonce.is_none());
+    }
+
+    /// A byte-identical snapshot relocated to new physical paths shares the
+    /// source revision, so revision-deep invalidation would let the old open
+    /// artifact close over it and republish the superseded physical state.
+    #[test]
+    fn relocated_snapshot_update_supersedes_the_open_discovery_artifact() {
+        let (mut session, staged) =
+            staged_open_discovery(&[("/project/main.rue", "fn main() -> i32 { 0 }")]);
+        let relocated = rebuilt_snapshot(&staged, false, true);
+        assert_eq!(
+            staged.source_revision(),
+            relocated.source_revision(),
+            "the relocated snapshot shares the source revision — that is the trap"
+        );
+        assert!(!staged.is_same_exact_snapshot(&relocated));
+        session.update(&relocated).into_result().unwrap();
+        assert_stale_close_rejected(&mut session, &relocated);
+    }
+
+    /// A byte-identical presentation-order change is likewise a replacement
+    /// publication: the old close would re-select the superseded order.
+    #[test]
+    fn presentation_reorder_update_supersedes_the_open_discovery_artifact() {
+        let (mut session, staged) = staged_open_discovery(&[
+            ("/project/main.rue", "fn main() -> i32 { 0 }"),
+            ("/project/lib.rue", "pub fn value() -> i32 { 1 }"),
+        ]);
+        let reordered = rebuilt_snapshot(&staged, true, false);
+        assert!(!staged.is_same_exact_snapshot(&reordered));
+        session
+            .update_for_presentation(&reordered)
+            .into_result()
+            .unwrap();
+        assert_stale_close_rejected(&mut session, &reordered);
+    }
+
+    /// Ordinary content-changing updates were already an invalidation
+    /// boundary through the source revision; that stays true.
+    #[test]
+    fn content_changing_update_supersedes_the_open_discovery_artifact() {
+        let (mut session, _) =
+            staged_open_discovery(&[("/project/main.rue", "fn main() -> i32 { 0 }")]);
+        let ctx = continuation_std_context();
+        let mut changed_assembler = crate::DiscoverySourceAssembler::new(
+            ctx,
+            "/project/main.rue",
+            "/project/main.rue",
+            crate::PhysicalFileIdentity::new(1, 1),
+            continuation_metadata(),
+            Arc::new("fn main() -> i32 { 1 }".to_owned()),
+        )
+        .unwrap();
+        let changed = changed_assembler.snapshot().unwrap();
+        session.update(&changed).into_result().unwrap();
+        assert_stale_close_rejected(&mut session, &changed);
+    }
+
+    /// An exact no-op update republishes the artifact's own snapshot, so the
+    /// open discovery stays valid and its close still succeeds: the
+    /// invalidation boundary is replacement, not republication.
+    #[test]
+    fn exact_noop_update_retains_the_open_discovery_artifact() {
+        let (mut session, staged) =
+            staged_open_discovery(&[("/project/main.rue", "fn main() -> i32 { 0 }")]);
+        let rebuilt = rebuilt_snapshot(&staged, false, false);
+        assert!(staged.is_same_exact_snapshot(&rebuilt));
+        session.update(&rebuilt).into_result().unwrap();
+        assert!(
+            session.open_discovery.is_some(),
+            "an exact no-op update must not supersede the open artifact"
+        );
+        let artifact = session
+            .close_import_discovery(crate::ImportObservationLedger::default())
+            .unwrap();
+        assert!(artifact.graph().is_some());
     }
 
     #[test]
