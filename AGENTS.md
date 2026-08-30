@@ -86,6 +86,7 @@ scripts/rue fmt                      # format changed Rust files
 scripts/rue storage status           # inventory Buck disk use across worktrees
 scripts/rue storage plan             # dry-run host-wide stale cleanup
 scripts/rue storage clean            # reclaim stale Buck2 artifacts host-wide
+scripts/rue storage reclaim-finished RUE_ROOT [RUE_ROOT ...] # explicit finished-root output reclaim
 scripts/rue cache install            # securely install the shared cache config
 scripts/rue cache apply --all        # provision current Git/Codex worktrees
 ```

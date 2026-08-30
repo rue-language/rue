@@ -69,7 +69,9 @@ scripts/rue storage status            # sizes, source state, and cache state
 scripts/rue storage plan [AGE]        # Buck dry-run in every registered worktree
 scripts/rue storage clean [AGE]       # stale + adaptive cleanup; default 1w
 scripts/rue storage guard             # run the build preflight explicitly
+scripts/rue storage guard --finished-root /exact/root # name caller-confirmed finished output
 scripts/rue storage reset /exact/root # full Buck reset of an explicit target
+scripts/rue storage reclaim-finished /exact/root # reclaim a caller-confirmed finished root
 ```
 
 Every `./buck2 build`, `test`, `run`, or `install` invocation runs the same
@@ -90,8 +92,29 @@ outputs and may promote older tracked, non-active outputs when the host is below
 the 20% target. `reset` is the migration escape hatch for an older worktree whose
 artifacts predate persisted materializer state; it validates every named path as
 a registered Rue worktree before it resets any of them. Neither command removes
-source files or worktrees. `scripts/rue gc` remains a compatibility alias for
-the host-wide one-week stale cleanup.
+source files or worktrees. `reclaim-finished` is the explicit lifecycle handoff
+for a root whose caller knows its work is finished: it accepts only exact
+registered Rue worktree roots, verifies their live Git identity belongs to the
+coordinator's worktree family, refuses the current checkout and ambiguous
+inventory entries, and uses Buck's `clean --exit-when notidle` liveness check
+for every existing isolation. Dirty source is valid and does not influence the
+finishedness decision. A root with no existing Buck isolation entries succeeds
+without invoking destructive cleanup. When pressure remains after ordinary TTL cleanup, `guard` may name
+caller-supplied `--finished-root` values that still have output and pass a
+non-destructive Buck probe, but never reclaims them automatically; run the
+printed command explicitly. If a later named root refuses its destructive
+liveness check, earlier roots may already have been reclaimed; the command
+stops immediately and never continues to later roots.
+Current, active, and zero-output roots are not reported as eligible. Reclaim
+stops on a changed output root or isolation set; residual Buck-owned metadata
+in a cleaned isolation is reported honestly rather than treated as a failed
+cleanup. A new isolation can leave an earlier isolation reclaimed while the
+command stops for review, just as a later named root can stop a multi-root
+command after earlier roots succeeded. Per-isolation liveness rechecks can
+similarly reclaim earlier isolations in the same root before a later isolation
+refuses and stops the command.
+`scripts/rue gc` remains a compatibility alias for the host-wide one-week
+stale cleanup.
 
 The default setup is for the shared **action cache**. Normal commands stay on
 `--prefer-local`; add `--prefer-remote` explicitly when remote execution is the
