@@ -23729,6 +23729,14 @@
       "platform": "x86_64-linux",
       "report": "48b4169529347567b0edae48c56c1218506c55cb742eca4824396b25a433401f",
       "suite_revision": 5
+    },
+    {
+      "commit": "2e8cdf40b25626268ef49c71880341e7838e0676",
+      "epoch": 5,
+      "finished_at": "2026-08-30T12:10:40Z",
+      "platform": "aarch64-macos",
+      "report": "5c3a9f9da5d45f49cb51a4be1b0d4a306eb5656da50af2ef6e68fc60437c7357",
+      "suite_revision": 5
     }
   ],
   "schema_version": 1
