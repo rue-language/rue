@@ -254,8 +254,17 @@ impl<'a>
             type_subst: ctx.comptime_type_vars.clone(),
             value_subst: ctx.comptime_value_vars.clone(),
             resolved_types: Some(ctx.resolved_types),
-            runtime_local_names: ctx.locals.keys().copied().collect(),
-            runtime_local_name_membership: None,
+            // Borrow the caller's live locals instead of snapshotting their
+            // names. `for_analysis` sits on per-expression probe paths (every
+            // array index, every borrow operand, every `comptime` block), so a
+            // fresh O(locals) set allocation and hash per probe made a body with
+            // L locals and I probe sites do O(L x I) redundant set-building.
+            // The borrowed-membership hook already exists and is already used by
+            // the staged entry points; `is_runtime_local_name` consults both.
+            runtime_local_names: AHashSet::new(),
+            runtime_local_name_membership: Some(std::sync::Arc::new(move |name| {
+                ctx.locals.contains_key(name)
+            })),
             runtime_binding_names: ctx.params.iter().map(|param| param.name).collect(),
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),
