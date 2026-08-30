@@ -194,6 +194,386 @@ class GateValidatorTests(unittest.TestCase):
             errors,
         )
 
+    def test_performance_pin_build_is_visible_and_timed(self):
+        changed = SOURCE.read_text().replace(
+            '          scripts/ci-timed "rue-bench build" -- ./buck2 build //crates/rue-bench:rue-bench\n',
+            "          # build moved to an untracked location\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("no executable ci-timed rue-bench build", errors)
+
+    def test_performance_pin_build_must_precede_warm_capture(self):
+        source = SOURCE.read_text()
+        visible = (
+            '          scripts/ci-timed "rue-bench build" -- ./buck2 build '
+            '//crates/rue-bench:rue-bench\n'
+        )
+        warm = (
+            '          BENCH="$(./buck2 build //crates/rue-bench:rue-bench '
+            '--show-simple-output 2>/dev/null | tail -1)"\n'
+        )
+        changed = source.replace(visible + warm, warm + visible, 1)
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("must precede the warm path-only capture", errors)
+
+    def test_performance_pin_build_cannot_follow_a_true_or_continuation(self):
+        source = SOURCE.read_text()
+        visible = (
+            '          scripts/ci-timed "rue-bench build" -- ./buck2 build '
+            '//crates/rue-bench:rue-bench\n'
+        )
+        changed = source.replace(
+            visible,
+            "          true || \\\n"
+            + visible,
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("exact straight-line command sequence", errors)
+
+    def test_performance_pin_build_cannot_follow_a_bang_continuation(self):
+        source = SOURCE.read_text()
+        visible = (
+            '          scripts/ci-timed "rue-bench build" -- ./buck2 build '
+            '//crates/rue-bench:rue-bench\n'
+        )
+        changed = source.replace(
+            visible,
+            "          ! \\\n"
+            + visible,
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("exact straight-line command sequence", errors)
+
+    def test_performance_pin_rejects_adjacent_hash_on_visible_target(self):
+        source = SOURCE.read_text()
+        changed = source.replace(
+            "//crates/rue-bench:rue-bench\n",
+            "//crates/rue-bench:rue-bench# || true\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("no executable ci-timed rue-bench build", errors)
+
+    def test_performance_pin_rejects_adjacent_hash_on_final_argument(self):
+        source = SOURCE.read_text()
+        changed = source.replace(
+            '          --compiler "$RUE"\n',
+            '          --compiler "$RUE"# || true\n',
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("exact straight-line command sequence", errors)
+
+    def test_performance_pin_rejects_a_gap_inside_the_backslash_chain(self):
+        source = SOURCE.read_text()
+        changed = source.replace(
+            '          "$BENCH" check-pins \\\n',
+            '          "$BENCH" check-pins \\\n\n',
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("exact straight-line command sequence", errors)
+
+    def test_performance_pin_rejects_spaces_after_a_backslash(self):
+        source = SOURCE.read_text()
+        changed = source.replace(
+            '          "$BENCH" check-pins \\\n',
+            '          "$BENCH" check-pins \\  \n',
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("exact straight-line command sequence", errors)
+
+    def test_performance_pin_build_cannot_be_disabled_by_a_branch(self):
+        source = SOURCE.read_text()
+        visible = (
+            '          scripts/ci-timed "rue-bench build" -- ./buck2 build '
+            '//crates/rue-bench:rue-bench\n'
+        )
+        changed = source.replace(
+            visible,
+            "          if false; then\n"
+            + visible
+            + "          fi\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("without an intervening command or control line", errors)
+
+    def test_performance_pin_build_cannot_be_hidden_in_a_heredoc(self):
+        source = SOURCE.read_text()
+        visible = (
+            '          scripts/ci-timed "rue-bench build" -- ./buck2 build '
+            '//crates/rue-bench:rue-bench\n'
+        )
+        changed = source.replace(
+            visible,
+            "          cat <<'RUE_BUILD'\n"
+            + visible
+            + "          RUE_BUILD\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("without an intervening command or control line", errors)
+
+    def test_performance_pin_step_cannot_be_conditionally_disabled(self):
+        source = SOURCE.read_text()
+        marker = "      - name: Check the performance pins still match the tree\n"
+        changed = source.replace(
+            marker,
+            marker + "        if: ${{ false }}\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("disabling or custom execution metadata", errors)
+
+    def test_performance_pin_step_cannot_ignore_failure(self):
+        source = SOURCE.read_text()
+        marker = "      - name: Check the performance pins still match the tree\n"
+        changed = source.replace(
+            marker,
+            marker + "        continue-on-error: true\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("disabling or custom execution metadata", errors)
+
+    def test_performance_pin_step_cannot_use_custom_shell_execution(self):
+        source = SOURCE.read_text()
+        marker = "      - name: Check the performance pins still match the tree\n"
+        changed = source.replace(
+            marker,
+            marker + "        shell: true {0}\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("disabling or custom execution metadata", errors)
+
+    def test_performance_pin_step_rejects_quoted_metadata_keys(self):
+        source = SOURCE.read_text()
+        marker = "      - name: Check the performance pins still match the tree\n"
+        changed = source.replace(
+            marker,
+            marker + "        'if': false\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("only comments or blanks may precede", errors)
+
+    def test_linux_premerge_cannot_ignore_performance_pin_failure(self):
+        source = SOURCE.read_text()
+        marker = "  linux-premerge:\n    runs-on: ubuntu-latest\n"
+        changed = source.replace(
+            marker,
+            marker + "    continue-on-error: true\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("job-level continue-on-error", errors)
+
+        changed = source.replace(
+            marker,
+            marker + "    'continue-on-error': true\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("job-level continue-on-error", errors)
+
+    def test_linux_premerge_execution_condition_is_pinned(self):
+        source = SOURCE.read_text()
+        marker = (
+            "  linux-premerge:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    name: premerge (linux-x64)\n"
+            "    if: ${{ always() }}\n"
+        )
+        changed = source.replace(
+            marker,
+            marker.replace("if: ${{ always() }}", "if: ${{ false }}"),
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("must contain exactly one direct job if", errors)
+
+    def test_linux_premerge_cannot_override_job_shell_defaults(self):
+        source = SOURCE.read_text()
+        marker = "  linux-premerge:\n    runs-on: ubuntu-latest\n"
+        changed = source.replace(
+            marker,
+            marker
+            + "    defaults:\n"
+            + "      run:\n"
+            + "        shell: true {0}\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("defaults overrides", errors)
+
+    def test_workflow_cannot_override_run_shell_defaults(self):
+        source = SOURCE.read_text()
+        changed = source.replace(
+            "jobs:\n",
+            'defaults: {run: {shell: "true {0}"}}\n\n'
+            "jobs:\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("workflow must not define top-level defaults", errors)
+
+    def test_performance_pin_failure_uploader_cannot_be_deleted(self):
+        source = SOURCE.read_text()
+        uploader = (
+            "      - name: Upload failing-suite output\n"
+            "        if: failure()\n"
+            "        uses: actions/upload-artifact@v6\n"
+            "        with:\n"
+            "          name: premerge-linux-x64-failure-logs\n"
+            "          path: ${{ runner.temp }}/rue-ci-failed-logs\n"
+            "          if-no-files-found: ignore\n"
+        )
+        changed = source.replace(uploader, "", 1)
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("failure-artifact uploader", errors)
+
+    def test_performance_pin_failure_uploader_must_follow_pin_step(self):
+        source = SOURCE.read_text()
+        uploader = (
+            "      - name: Upload failing-suite output\n"
+            "        if: failure()\n"
+            "        uses: actions/upload-artifact@v6\n"
+            "        with:\n"
+            "          name: premerge-linux-x64-failure-logs\n"
+            "          path: ${{ runner.temp }}/rue-ci-failed-logs\n"
+            "          if-no-files-found: ignore\n"
+        )
+        marker = "      - name: Check the performance pins still match the tree\n"
+        changed = source.replace(uploader, "", 1).replace(
+            marker,
+            uploader + marker,
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("must upload failing-suite output after", errors)
+
+    def test_performance_pin_failure_uploader_condition_is_pinned(self):
+        source = SOURCE.read_text()
+        changed = source.replace(
+            "      - name: Upload failing-suite output\n"
+            "        if: failure()\n",
+            "      - name: Upload failing-suite output\n"
+            "        if: always()\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("exact raw metadata mapping", errors)
+
+    def test_performance_pin_failure_uploader_path_is_pinned(self):
+        source = SOURCE.read_text()
+        changed = source.replace(
+            "          path: ${{ runner.temp }}/rue-ci-failed-logs\n",
+            "          path: ${{ runner.temp }}/other-logs\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("runner.temp", errors)
+
+    def test_performance_pin_failure_uploader_rejects_extra_metadata(self):
+        source = SOURCE.read_text()
+        marker = (
+            "      - name: Upload failing-suite output\n"
+            "        if: failure()\n"
+            "        uses: actions/upload-artifact@v6\n"
+        )
+        for extra in ("        continue-on-error: true\n", "        if: failure()\n"):
+            changed = source.replace(
+                marker,
+                marker.replace(
+                    "        uses: actions/upload-artifact@v6\n", extra
+                    + "        uses: actions/upload-artifact@v6\n"
+                ),
+                1,
+            )
+            errors = "\n".join(self.validate_text(changed))
+            self.assertIn("exact raw metadata mapping", errors)
+
+    def test_performance_pin_cannot_exit_after_path_capture(self):
+        source = SOURCE.read_text()
+        warm = (
+            '          BENCH="$(./buck2 build //crates/rue-bench:rue-bench '
+            '--show-simple-output 2>/dev/null | tail -1)"\n'
+        )
+        changed = source.replace(warm, warm + "          exit 0\n", 1)
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("exact straight-line command sequence", errors)
+
+    def test_performance_pin_step_cannot_ignore_failure_after_run_block(self):
+        source = SOURCE.read_text()
+        changed = source.replace(
+            '          --compiler "$RUE"\n',
+            '          --compiler "$RUE"\n'
+            "        continue-on-error: true\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("disabling or custom execution metadata", errors)
+
+    def test_performance_pin_cannot_ignore_check_pins_failure(self):
+        source = SOURCE.read_text()
+        changed = source.replace(
+            '          "$BENCH" check-pins \\\n',
+            '          # "$BENCH" check-pins \\\n',
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("exact straight-line command sequence", errors)
+
+    def test_performance_pin_cannot_ignore_check_pins_with_or_true(self):
+        source = SOURCE.read_text()
+        changed = source.replace(
+            '          --compiler "$RUE"\n',
+            '          --compiler "$RUE" || true\n',
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("exact straight-line command sequence", errors)
+
+    def test_performance_pin_build_cannot_be_satisfied_by_comment_or_other_step(self):
+        source = SOURCE.read_text()
+        visible = (
+            '          scripts/ci-timed "rue-bench build" -- ./buck2 build '
+            '//crates/rue-bench:rue-bench\n'
+        )
+        changed = source.replace(visible, "", 1).replace(
+            "          # Would this change stop runs entering their series? Decidable from this\n",
+            "          # " + visible.strip() + "\n"
+            "          # Would this change stop runs entering their series? Decidable from this\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("no executable ci-timed rue-bench build", errors)
+
+        changed = source.replace(visible, "", 1).replace(
+            "      - name: Check the performance pins still match the tree\n",
+            "      - name: Unrelated rue-bench build\n"
+            "        run: " + visible + "\n"
+            "      - name: Check the performance pins still match the tree\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("no executable ci-timed rue-bench build", errors)
+
+    def test_performance_pin_build_must_target_rue_bench_exactly(self):
+        changed = SOURCE.read_text().replace(
+            "//crates/rue-bench:rue-bench\n",
+            "//crates/rue:rue\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("targeting //crates/rue-bench:rue-bench", errors)
+
     def test_dedicated_lane_corpus_without_a_job_fails(self):
         # spec-tests is skipped by the premerge suite because it carries the
         # label, so dropping its platform-corpus entry would drop it entirely.

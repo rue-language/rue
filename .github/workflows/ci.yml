@@ -557,9 +557,10 @@ jobs:
 
       # RUE-1258's two performance gates deliberately live in different jobs,
       # because they cost two orders of magnitude apart. This one is decidable
-      # from the tree alone and is about a second of hashing next to a compiler
-      # this lane has already built, so it belongs where the build is. Its
-      # sibling reads the published series, costs minutes, and shares nothing
+      # from the tree alone and its pin computation is cheap. The explicit
+      # `rue-bench` build below may nevertheless be the first/cold build on a
+      # narrowed or cacheless run, so `ci-timed` owns that cost and its errors.
+      # Its sibling reads the published series, costs minutes, and shares nothing
       # with this lane but `rue-bench`; it is the `performance-staleness` job.
       #
       # Neither gate has a bypass. The remedy for either is declaring the next
@@ -573,6 +574,7 @@ jobs:
         run: |
           set -euo pipefail
           RUE="$(scripts/rue-bin)"
+          scripts/ci-timed "rue-bench build" -- ./buck2 build //crates/rue-bench:rue-bench
           BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
           "$BENCH" check-pins \
             --manifest performance/manifest.toml \

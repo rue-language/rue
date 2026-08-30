@@ -357,6 +357,209 @@ def lane_targets(lane: str, script: Path = AFFECTED_TARGETS_SCRIPT) -> set[str]:
     return set(result.stdout.split())
 
 
+PERFORMANCE_PINS_STEP = "Check the performance pins still match the tree"
+VISIBLE_RUE_BENCH_BUILD = (
+    'scripts/ci-timed "rue-bench build" -- ./buck2 build '
+    "//crates/rue-bench:rue-bench"
+)
+WARM_RUE_BENCH_CAPTURE = (
+    'BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output '
+    '2>/dev/null | tail -1)"'
+)
+PERFORMANCE_PINS_COMMANDS = (
+    "set -euo pipefail",
+    'RUE="$(scripts/rue-bin)"',
+    VISIBLE_RUE_BENCH_BUILD,
+    WARM_RUE_BENCH_CAPTURE,
+    '"$BENCH" check-pins \\',
+    "  --manifest performance/manifest.toml \\",
+    "  --repo-root . \\",
+    '  --compiler "$RUE"',
+)
+PERFORMANCE_FAILURE_UPLOADER = (
+    "        if: failure()",
+    "        uses: actions/upload-artifact@v6",
+    "        with:",
+    "          name: premerge-linux-x64-failure-logs",
+    "          path: ${{ runner.temp }}/rue-ci-failed-logs",
+    "          if-no-files-found: ignore",
+)
+
+
+def performance_pin_step_errors(workflow: str) -> list[str]:
+    """Keep the first rue-bench build visible and timed in the pin step.
+
+    The warm path lookup intentionally remains a separate command: it names
+    the binary after the visible build has completed. Restricting the check to
+    the named step prevents a copy in another linux-premerge step (or a
+    comment) from satisfying this failure-artifact and timing contract.
+    """
+    linux = job_blocks(workflow).get("linux-premerge", "")
+    step_matches = list(
+        re.finditer(
+            rf"^      - name: {re.escape(PERFORMANCE_PINS_STEP)}\n"
+            rf"(?P<body>.*?)(?=^      - |\Z)",
+            linux,
+            re.MULTILINE | re.DOTALL,
+        )
+    )
+    if not step_matches:
+        return [f"linux-premerge is missing the {PERFORMANCE_PINS_STEP!r} step"]
+    if len(step_matches) != 1:
+        return [
+            f"linux-premerge must contain exactly one {PERFORMANCE_PINS_STEP!r} step"
+        ]
+    step_match = step_matches[0]
+
+    job_if_lines = [
+        line.strip()
+        for line in linux.splitlines()
+        if not line.lstrip().startswith("#")
+        and re.match(r"^    (?:['\"]?if['\"]?)\s*:", line)
+    ]
+    if job_if_lines != ["if: ${{ always() }}"]:
+        return [
+            "linux-premerge must contain exactly one direct job if: "
+            "if: ${{ always() }}"
+        ]
+
+    linux_has_job_policy_override = any(
+        not line.lstrip().startswith("#")
+        and (
+            re.match(r"^    (?:['\"]?continue-on-error['\"]?)\s*:", line)
+            or re.match(r"^    (?:['\"]?defaults['\"]?|<<)\s*:", line)
+        )
+        for line in linux.splitlines()
+    )
+    if linux_has_job_policy_override:
+        return [
+            "linux-premerge must not use job-level continue-on-error or "
+            "defaults overrides for the performance-pin gate"
+        ]
+
+    step_body = step_match.group("body")
+    run_match = re.search(r"^        run: \|[+-]?\s*$", step_body, re.MULTILINE)
+    if not run_match:
+        return [
+            "the performance-pin step must contain a block-scalar shell run "
+            "for its straight-line prefix"
+        ]
+    run_line_count = sum(
+        bool(re.match(r"^        run: \|[+-]?\s*$", line))
+        for line in step_body.splitlines()
+    )
+    unexpected_metadata = [
+        line.strip()
+        for line in step_body.splitlines()
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and not re.match(r"^        run: \|[+-]?\s*$", line)
+        and not line.startswith("          ")
+    ]
+    if run_line_count != 1 or unexpected_metadata:
+        details = unexpected_metadata
+        if run_line_count != 1:
+            details = [f"run block occurs {run_line_count} times"] + details
+        return [
+            "the performance-pin step must not set disabling or custom "
+            "execution metadata; only comments or blanks may precede or "
+            "follow its run block: "
+            + ", ".join(details)
+        ]
+
+    # Keep only the block-scalar shell body. The step's YAML metadata and later
+    # steps are not executable lines in this named step.
+    shell_lines = []
+    run_body = step_body[run_match.end() :]
+    if run_body.startswith("\n"):
+        run_body = run_body[1:]
+    for line in run_body.splitlines():
+        if line.startswith("          "):
+            shell_lines.append(line[10:])
+        elif not line.strip():
+            shell_lines.append("")
+        else:
+            break
+    while shell_lines and shell_lines[-1] == "":
+        shell_lines.pop()
+
+    # Keep the de-indented physical shell lines intact. In particular, a `#`
+    # adjacent to a command is shell data rather than a source comment, and a
+    # blank/comment line inside this backslash chain must not disappear.
+    executable_lines = shell_lines
+    significant_lines = [line for line in executable_lines if line.strip()]
+    visible_builds = [
+        index
+        for index, line in enumerate(significant_lines)
+        if line == VISIBLE_RUE_BENCH_BUILD
+    ]
+    warm_captures = [
+        index
+        for index, line in enumerate(significant_lines)
+        if line == WARM_RUE_BENCH_CAPTURE
+    ]
+    if len(visible_builds) != 1:
+        errors = [
+            "the performance-pin step must visibly run exactly one ci-timed "
+            "rue-bench build targeting //crates/rue-bench:rue-bench"
+        ]
+        if not visible_builds:
+            errors.append(
+                "the performance-pin step has no executable ci-timed rue-bench build"
+            )
+        return errors
+    if len(warm_captures) != 1:
+        return [
+            "the performance-pin step must retain exactly one warm rue-bench "
+            "--show-simple-output path-only capture"
+        ]
+    if visible_builds[0] + 1 != warm_captures[0]:
+        return [
+            "the visible ci-timed rue-bench build must precede the warm "
+            "path-only capture in the performance-pin step without an "
+            "intervening command or control line"
+        ]
+    if tuple(executable_lines) != PERFORMANCE_PINS_COMMANDS:
+        return [
+            "the performance-pin step must keep the exact straight-line "
+            "command sequence through check-pins and all expected arguments"
+        ]
+
+    uploader_matches = list(
+        re.finditer(
+            r"^      - name: Upload failing-suite output\n"
+            r"(?P<body>.*?)(?=^      - |\Z)",
+            linux,
+            re.MULTILINE | re.DOTALL,
+        )
+    )
+    if len(uploader_matches) != 1:
+        return [
+            "linux-premerge must contain exactly one failure-artifact uploader "
+            "('Upload failing-suite output') step"
+        ]
+    uploader = uploader_matches[0]
+    if uploader.start() <= step_match.start():
+        return [
+            "linux-premerge must upload failing-suite output after the "
+            "performance-pin step"
+        ]
+    uploader_lines = [
+        line
+        for line in uploader.group("body").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if tuple(uploader_lines) != PERFORMANCE_FAILURE_UPLOADER:
+        return [
+            "linux-premerge failure-artifact uploader must retain its exact "
+            "raw metadata mapping: expected "
+            + repr(PERFORMANCE_FAILURE_UPLOADER)
+            + "; got "
+            + repr(tuple(uploader_lines))
+        ]
+    return []
+
+
 def lane_target_drift(workflow: str, script: Path = AFFECTED_TARGETS_SCRIPT) -> list[str]:
     """Reject native target lists in YAML; membership belongs to the graph.
 
@@ -542,6 +745,15 @@ def validate(
     workflow = ci_path.read_text()
     native_runner = native_runner_path.read_text()
     errors: list[str] = []
+    if any(
+        not line.lstrip().startswith("#")
+        and re.match(r"^(?:['\"]?defaults['\"]?|<<)\s*:", line)
+        for line in workflow.splitlines()
+    ):
+        errors.append(
+            "workflow must not define top-level defaults or merge overrides "
+            "that can replace the runner shell"
+        )
     try:
         valgrind_install = valgrind_install_path.read_text()
     except OSError as error:
@@ -630,6 +842,7 @@ def validate(
         errors.append("remote-execution must remain merge-group-only")
 
     linux = jobs.get("linux-premerge", "")
+    errors.extend(performance_pin_step_errors(workflow))
     for required in (
         "runs-on: ubuntu-latest",
         "Run complete target-independent premerge suite",
