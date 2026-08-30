@@ -15,9 +15,10 @@
 # is already concrete in the same pass (annotated binding, parameter, struct
 # field). Both aligned and unaligned variants share the machinery, so both are
 # covered here. When the pointer operand is NOT resolvable during constraint
-# generation — `@raw`/`@raw_mut`/`@ptr_offset` are themselves fresh variables —
-# the types stay free exactly as before and the old diagnostics are unchanged;
-# those pins live at the bottom of this file.
+# generation — for example an address-of operation over an inferred local, or
+# a pointer result whose type is context-dependent — the types stay free
+# exactly as before and the old diagnostics are unchanged; those pins live at
+# the bottom of this file.
 
 [section]
 id = "cli.ptr_pointee_inference"
@@ -39,6 +40,34 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "true\n"
+
+[[case]]
+name = "ptr_offset_wrong_arity_keeps_intrinsic_diagnostic"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let value: i64 = 7;
+    let p: ptr const i64 = checked { @raw(value) };
+    checked { @ptr_offset(p) };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0701", "ptr_offset", "expects 2 arguments"]
+compile_stderr_contains = ["main.rue:4:15"]
+
+[[case]]
+name = "ptr_offset_bad_offset_keeps_type_diagnostic"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let value: i64 = 7;
+    let p: ptr const i64 = checked { @raw(value) };
+    checked { @ptr_offset(p, true) };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0702", "ptr_offset", "integer offset"]
+compile_stderr_contains = ["main.rue:4:15"]
 
 # --- RUE-1341 repro 2: @intCast target comes from the pointee ---------------
 [[case]]
@@ -198,16 +227,15 @@ fn main() -> i32 {
 stdout = "200\n"
 
 # --- PIN: an unresolvable pointer operand keeps today's behavior ------------
-# `@raw_mut(b)` is itself a fresh inference variable, so the value operand has
-# no expectation to read and @intCast still cannot name a target. Inference
-# never guesses a pointee it cannot see, and this diagnostic is deliberately
-# unchanged by RUE-1341. Widening @raw/@raw_mut/@ptr_offset to publish their
-# own concrete types would retire this pin.
+# An inferred local has no concrete type while constraint generation visits its
+# address, so `@raw_mut(b)` remains free and the value operand has no
+# expectation to read. Inference never guesses a pointee it cannot see, and
+# this diagnostic is deliberately unchanged by RUE-1352.
 [[case]]
 name = "ptr_write_unresolved_pointer_operand_still_e0709"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut b: u8 = 0;
+    let mut b = 0;
     let x: i32 = 30;
     checked {
         @ptr_write(@raw_mut(b), @intCast(x));
@@ -234,3 +262,306 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["E0206"]
+
+# --- RUE-1352: address-of results publish their concrete pointee ------------
+[[case]]
+name = "raw_const_direct_read_infers_pointee"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let value: u16 = 4097;
+    let hit: bool = checked { @ptr_read(@raw(value)) == 4097 };
+    @dbg(hit);
+    0
+}
+""" }]
+stdout = "true\n"
+
+[[case]]
+name = "raw_mut_direct_write_infers_pointee"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut value: u8 = 0;
+    let source: i64 = 200;
+    checked { @ptr_write(@raw_mut(value), @intCast(source)); };
+    @dbg(value);
+    0
+}
+""" }]
+stdout = "200\n"
+
+[[case]]
+name = "field_ptr_direct_write_preserves_field_type"
+files = [{ path = "main.rue", source = """
+struct Pair { narrow: u8, wide: i64 }
+fn main() -> i32 {
+    let mut pair = Pair { narrow: 0, wide: 0 };
+    let source: i64 = 200;
+    checked { @ptr_write(@field_ptr(pair.narrow), @intCast(source)); };
+    @dbg(pair.narrow);
+    0
+}
+""" }]
+stdout = "200\n"
+
+[[case]]
+name = "const_pointer_cannot_assign_to_mutable_accessor_place"
+files = [{ path = "main.rue", source = """
+struct Holder {
+    slot: ptr mut u8,
+    fn slot_mut(inout self) -> inout ptr mut u8 { yield self.slot; }
+}
+fn main() -> i32 {
+    let mut value: u8 = 1;
+    let mut holder = Holder { slot: @raw_mut(value) };
+    holder.slot_mut() = @raw(value);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "ptr mut u8", "ptr const u8"]
+
+[[case]]
+name = "mutable_intrinsic_cannot_assign_to_const_local"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut value: u8 = 1;
+    let mut slot: ptr const u8 = checked { @raw(value) };
+    slot = @raw_mut(value);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "ptr const u8", "ptr mut u8"]
+
+[[case]]
+name = "raw_mut_cannot_be_annotated_as_const_pointer"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut value: u8 = 1;
+    let view: ptr const u8 = checked { @raw_mut(value) };
+    @ptr_to_int(view);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "ptr const u8", "ptr mut u8"]
+
+[[case]]
+name = "field_ptr_cannot_be_annotated_as_const_pointer"
+files = [{ path = "main.rue", source = """
+struct Pair { value: u8 }
+fn main() -> i32 {
+    let mut pair = Pair { value: 1 };
+    let view: ptr const u8 = checked { @field_ptr(pair.value) };
+    @ptr_to_int(view);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "ptr const u8", "ptr mut u8"]
+
+[[case]]
+name = "mutable_intrinsic_cannot_assign_to_const_accessor_place"
+files = [{ path = "main.rue", source = """
+struct Holder {
+    slot: ptr const u8,
+    fn slot_const(inout self) -> inout ptr const u8 { yield self.slot; }
+}
+fn main() -> i32 {
+    let mut value: u8 = 1;
+    let mut holder = Holder { slot: @raw(value) };
+    holder.slot_const() = @raw_mut(value);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "ptr const u8", "ptr mut u8"]
+
+[[case]]
+name = "indirect_mutable_pointer_does_not_coerce_to_const"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut value: u8 = 1;
+    let mutable: ptr mut u8 = checked { @raw_mut(value) };
+    let immutable: ptr const u8 = mutable;
+    @ptr_to_int(immutable);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "expected ptr const u8", "found ptr mut u8"]
+
+[[case]]
+name = "nested_pointer_arrays_do_not_coerce_mutability"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut value: u8 = 1;
+    let mutable: [ptr mut u8; 1] = checked { [@raw_mut(value)] };
+    let immutable: [ptr const u8; 1] = mutable;
+    @ptr_to_int(immutable[0]);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
+
+[[case]]
+name = "ptr_offset_preserves_const_and_mut_pointer_types"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let value: i64 = 4097;
+    let mut changed: u16 = 0;
+    let hit: bool = checked { @ptr_read(@ptr_offset(@raw(value), 0)) == 4097 };
+    let source: i64 = 4095;
+    checked { @ptr_write(@ptr_offset(@raw_mut(changed), 0), @intCast(source)); };
+    @dbg(hit);
+    @dbg(changed);
+    0
+}
+""" }]
+stdout = "true\n4095\n"
+
+[[case]]
+name = "raw_fixed_array_element_infers_pointee"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut values: [i64; 1] = [0];
+    let source: i32 = 4095;
+    checked { @ptr_write(@raw_mut(values[0]), @intCast(source)); };
+    @dbg(values[0]);
+    0
+}
+""" }]
+stdout = "4095\n"
+
+# A non-place operand remains sema-owned even when its value is concrete.
+[[case]]
+name = "raw_counterfeit_mismatch_keeps_place_diagnostic"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let p: ptr const u8 = checked { @raw(42) };
+    @ptr_to_int(p);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0485", "addressable place"]
+
+[[case]]
+name = "field_ptr_local_counterfeit_keeps_field_diagnostic"
+files = [{ path = "main.rue", source = """
+struct Pair { value: i64 }
+fn main() -> i32 {
+    let pair = Pair { value: 7 };
+    let fp: ptr mut u8 = checked { @field_ptr(pair) };
+    @ptr_to_int(fp);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0490", "field access"]
+
+[[case]]
+name = "field_ptr_index_counterfeit_keeps_field_diagnostic"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let values: [i64; 1] = [7];
+    let fp: ptr mut u8 = checked { @field_ptr(values[0]) };
+    @ptr_to_int(fp);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0490", "field access"]
+
+[[case]]
+name = "raw_string_index_counterfeit_keeps_place_diagnostic"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let text: str = "x";
+    let p: ptr const i64 = checked { @raw(text[0]) };
+    @ptr_to_int(p);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0485", "addressable place"]
+
+[[case]]
+name = "raw_comptime_alias_counterfeit_keeps_place_diagnostic"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let T = i64;
+    let p: ptr const u8 = checked { @raw(T) };
+    checked { @ptr_to_int(p); };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0485", "addressable place"]
+
+[[case]]
+name = "raw_fixed_array_out_of_bounds_keeps_bounds_diagnostic"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let values: [i64; 1] = [7];
+    let p: ptr const u8 = checked { @raw(values[2]) };
+    checked { @ptr_to_int(p); };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0902", "out of bounds"]
+compile_stderr_contains = ["main.rue:3:49"]
+
+[[case]]
+name = "raw_and_field_ptr_imported_types"
+files = [
+    { path = "main.rue", source = """
+const lib = @import("pointer_types.rue");
+fn main() -> i32 {
+    let mut pair = lib.Pair { value: 0 };
+    let source: i64 = 200;
+    checked { @ptr_write(@field_ptr(pair.value), @intCast(source)); };
+    @dbg(pair.value);
+    0
+}
+""" },
+    { path = "pointer_types.rue", source = """
+pub struct Pair { value: u8 }
+""" },
+]
+stdout = "200\n"
+
+[[case]]
+name = "generic_pointer_pointee_inference"
+files = [{ path = "main.rue", source = """
+fn round_trip(comptime T: type, value: T, source: i64) -> T {
+    let mut local = value;
+    checked {
+        let p = @raw_mut(local);
+        @ptr_write(p, @intCast(source));
+        @ptr_read(p)
+    }
+}
+fn main() -> i32 {
+    let result = checked { round_trip(u16, 0, 4095) };
+    @dbg(result);
+    0
+}
+""" }]
+stdout = "4095\n"
+
+[[case]]
+name = "int_to_ptr_remains_context_driven"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let addr: u64 = 0;
+    checked {
+        let p: ptr mut u8 = @int_to_ptr(addr);
+        @dbg(@ptr_to_int(p) == 0);
+    };
+    0
+}
+""" }]
+stdout = "true\n"

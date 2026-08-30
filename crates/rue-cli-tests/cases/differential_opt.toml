@@ -479,7 +479,7 @@ fn main() -> i32 {
         @dbg(v);
         let q: ptr mut i32 = @raw_mut(y);
         @ptr_write(q, 35);
-        let f: ptr const i32 = @field_ptr(s.a);
+        let f: ptr mut i32 = @field_ptr(s.a);
         let w: i32 = @ptr_read(f);
         @dbg(w);
     };
