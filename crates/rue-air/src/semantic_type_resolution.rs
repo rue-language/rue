@@ -568,7 +568,10 @@ fn resolve_unqualified_semantic_type<S, M, A, K, N, T, V, P>(
 where
     P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
 {
-    let accessing = provider.accessing_domain(root_scope);
+    // Computed lazily, next to the only readers below: the substituted,
+    // primitive and builtin fast paths resolve most names and all return before
+    // any visibility check, so eagerly deriving the domain here made every `i32`
+    // pay a path parse and an Arc<str> allocation it discarded (RUE-1840).
     if let Some(ty) = lift_provider(provider.substituted_type(root_scope, name))? {
         lift_provider(provider.observe_materialized_type(&ty))?;
         return Ok(Some(ty));
@@ -585,13 +588,19 @@ where
             fact,
             SemanticTypeFactKind::Struct,
             name,
-            &accessing,
+            &provider.accessing_domain(root_scope),
         )
         .map(Some);
     }
     if let Some(fact) = lift_provider(provider.root_enum_type(root_scope, name))? {
-        return select_named_type(provider, fact, SemanticTypeFactKind::Enum, name, &accessing)
-            .map(Some);
+        return select_named_type(
+            provider,
+            fact,
+            SemanticTypeFactKind::Enum,
+            name,
+            &provider.accessing_domain(root_scope),
+        )
+        .map(Some);
     }
     if let Some(fact) = lift_provider(provider.root_type_alias(root_scope, name))? {
         return select_named_type(
@@ -599,7 +608,7 @@ where
             fact,
             SemanticTypeFactKind::Constant,
             name,
-            &accessing,
+            &provider.accessing_domain(root_scope),
         )
         .map(Some);
     }
@@ -629,7 +638,8 @@ where
     if prefix.is_empty() || segments.iter().any(|segment| segment.is_empty()) {
         return Err(E::Semantic(F::UnknownType { syntax }));
     }
-    let accessing = provider.accessing_domain(root_scope);
+    // Deferred past the module-path resolution below, which can fail, and past
+    // the fact lookups: only a selected named type reads it (RUE-1840).
     let resolved = resolve_semantic_module_path(provider, root_scope, prefix)
         .map_err(|error| error.map_semantic(F::Path))?;
     if let Some(fact) = lift_provider(provider.module_struct_type(&resolved.module, name))? {
@@ -638,11 +648,17 @@ where
             fact,
             SemanticTypeFactKind::Struct,
             name,
-            &accessing,
+            &provider.accessing_domain(root_scope),
         );
     }
     if let Some(fact) = lift_provider(provider.module_enum_type(&resolved.module, name))? {
-        return select_named_type(provider, fact, SemanticTypeFactKind::Enum, name, &accessing);
+        return select_named_type(
+            provider,
+            fact,
+            SemanticTypeFactKind::Enum,
+            name,
+            &provider.accessing_domain(root_scope),
+        );
     }
     if let Some(fact) = lift_provider(provider.module_type_alias(&resolved.module, name))? {
         return select_named_type(
@@ -650,7 +666,7 @@ where
             fact,
             SemanticTypeFactKind::Constant,
             name,
-            &accessing,
+            &provider.accessing_domain(root_scope),
         );
     }
     Err(E::Semantic(F::UnknownModuleMember {
@@ -727,7 +743,6 @@ where
         use SemanticResolutionError as E;
         use SemanticTypeSyntaxFailure as F;
 
-        let accessing = provider.accessing_domain(root_scope);
         if call_segments.is_empty()
             || call_segments.iter().any(|segment| segment.is_empty())
             || (call_segments.len() > 1
@@ -756,6 +771,7 @@ where
                 expectation,
             })
         })?;
+        let accessing = provider.accessing_domain(root_scope);
         if !head
             .defining_domain
             .is_visible_from(&accessing, head.is_public)
@@ -1949,6 +1965,10 @@ mod tests {
     #[derive(Default)]
     struct Fixture {
         calls: Vec<String>,
+        /// Times `accessing_domain` was derived. RUE-1840 guards that the
+        /// fast paths never ask for it; a `Cell` because the hook takes
+        /// `&self` while the `calls` trace needs `&mut self`.
+        accessing_domain_calls: std::cell::Cell<usize>,
         reduced_arguments: Vec<String>,
         active_type_substitutions: BTreeMap<&'static str, &'static str>,
         active_value_substitutions: BTreeMap<&'static str, i64>,
@@ -2019,6 +2039,8 @@ mod tests {
         }
 
         fn accessing_domain(&self, scope: &&'static str) -> SemanticVisibilityDomain {
+            self.accessing_domain_calls
+                .set(self.accessing_domain_calls.get() + 1);
             SemanticVisibilityDomain::from_file_path(Some(scope))
         }
     }
@@ -2636,6 +2658,34 @@ mod tests {
                 } if constructor.as_ref() == "Outer"
             ));
         }
+    }
+
+    #[test]
+    fn fast_path_resolution_does_not_derive_the_visibility_domain() {
+        // RUE-1840: the substituted, primitive and builtin fast paths resolve
+        // most names and all return before any visibility check, so they must
+        // not pay for the accessing domain — a path parse plus an Arc<str>
+        // allocation that is then discarded. Only a selected named type reads
+        // it, and then exactly once.
+        let mut fixture = Fixture::default();
+        assert_eq!(resolve_type(&mut fixture, "i32"), Ok("primitive:i32"));
+        assert_eq!(
+            fixture.accessing_domain_calls.get(),
+            0,
+            "a primitive resolution derived the visibility domain"
+        );
+
+        let mut fixture = Fixture::default();
+        fixture.root_structs.insert(
+            ("app/main.rue", "Thing"),
+            fact("struct", "struct-site", true, "app/types.rue"),
+        );
+        assert_eq!(resolve_type(&mut fixture, "Thing"), Ok("struct"));
+        assert_eq!(
+            fixture.accessing_domain_calls.get(),
+            1,
+            "a selected named type must still derive the visibility domain"
+        );
     }
 
     #[test]
