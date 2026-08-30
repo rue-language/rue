@@ -122,8 +122,17 @@ fn pattern_charge(pattern: &ast::Pattern) -> u64 {
 
 fn statement_charge(statement: &ast::Statement) -> u64 {
     match statement {
-        ast::Statement::Let(statement) => directives_charge(&statement.directives)
-            .saturating_add(statement.ty.as_ref().map_or(0, type_charge))
+        ast::Statement::Let(statement) => statement
+            .directives
+            .as_ref()
+            .map_or(0, |directives| boxed_charge(directives, directives_charge))
+            // RUE-1836 boxed the annotation, so its own bytes are now heap.
+            .saturating_add(
+                statement
+                    .ty
+                    .as_ref()
+                    .map_or(0, |ty| boxed_charge(ty, type_charge)),
+            )
             .saturating_add(boxed_charge(&statement.init, expr_charge)),
         ast::Statement::Assign(statement) => {
             let target = match &statement.target {
@@ -156,9 +165,12 @@ fn expr_charge(expr: &ast::Expr) -> u64 {
         Expr::Unary(unary) => boxed_charge(&unary.operand, expr_charge),
         Expr::Paren(paren) => boxed_charge(&paren.inner, expr_charge),
         Expr::Block(block) => block_charge(block),
-        Expr::If(value) => boxed_charge(&value.cond, expr_charge)
-            .saturating_add(block_charge(&value.then_block))
-            .saturating_add(value.else_block.as_ref().map_or(0, block_charge)),
+        // RUE-1836 boxed the `IfExpr` itself, so charge its bytes as heap too.
+        Expr::If(value) => boxed_charge(value, |if_expr| {
+            boxed_charge(&if_expr.cond, expr_charge)
+                .saturating_add(block_charge(&if_expr.then_block))
+                .saturating_add(if_expr.else_block.as_ref().map_or(0, block_charge))
+        }),
         Expr::Match(value) => boxed_charge(&value.scrutinee, expr_charge).saturating_add(
             owned_slice_charge(&value.arms, |arm| {
                 pattern_charge(&arm.pattern).saturating_add(boxed_charge(&arm.body, expr_charge))

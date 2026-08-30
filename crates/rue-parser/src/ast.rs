@@ -694,7 +694,10 @@ pub enum Expr {
     /// Blocks without an explicit final expression store implicit unit.
     Block(BlockExpr),
     /// If expression (e.g., `if cond { a } else { b }`)
-    If(IfExpr),
+    ///
+    /// Boxed: `IfExpr` embeds both branch blocks inline, and at 120 bytes it
+    /// was the variant that set `Expr`'s size for every other node (RUE-1836).
+    If(Box<IfExpr>),
     /// Match expression (e.g., `match x { 1 => a, _ => b }`)
     Match(MatchExpr),
     /// While expression (e.g., `while cond { body }`)
@@ -1155,17 +1158,32 @@ impl LetPattern {
 /// A let binding statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LetStatement {
-    /// Directives applied to this let binding
-    pub directives: Directives,
+    /// Directives applied to this let binding.
+    ///
+    /// Boxed and optional: `Directives` is a `SmallVec` with one inline
+    /// `Directive`, so it costs 72 bytes on every `let` whether or not any
+    /// directive is present — and almost none are (RUE-1836). `None` is the
+    /// empty case; use [`LetStatement::directives`] to read either as a slice.
+    pub directives: Option<Box<Directives>>,
     /// Whether the binding is mutable
     pub is_mut: bool,
     /// The binding pattern (identifier or wildcard)
     pub pattern: LetPattern,
-    /// Optional type annotation
-    pub ty: Option<TypeExpr>,
+    /// Optional type annotation.
+    ///
+    /// Boxed: an inline `TypeExpr` costs 64 bytes on every `let`, annotated or
+    /// not, and a `Vec<Statement>` block body pays it per statement (RUE-1836).
+    pub ty: Option<Box<TypeExpr>>,
     /// Initializer expression
     pub init: Box<Expr>,
     pub span: Span,
+}
+
+impl LetStatement {
+    /// The directives on this binding, empty when there are none.
+    pub fn directives(&self) -> &[Directive] {
+        self.directives.as_ref().map_or(&[], |d| d.as_slice())
+    }
 }
 
 /// An assignment statement.
@@ -1914,7 +1932,9 @@ fn rebind_let_pattern(pattern: &mut LetPattern, file_id: FileId) {
 fn rebind_statement(statement: &mut Statement, file_id: FileId) {
     match statement {
         Statement::Let(binding) => {
-            rebind_directives(&mut binding.directives, file_id);
+            if let Some(directives) = binding.directives.as_deref_mut() {
+                rebind_directives(directives, file_id);
+            }
             rebind_let_pattern(&mut binding.pattern, file_id);
             if let Some(ty) = &mut binding.ty {
                 rebind_type(ty, file_id);
@@ -2406,5 +2426,59 @@ fn fmt_stmt(f: &mut fmt::Formatter<'_>, stmt: &Statement, level: usize) -> fmt::
             writeln!(f, "ExprStmt")?;
             fmt_expr(f, expr, level + 1)
         }
+    }
+}
+
+#[cfg(test)]
+mod size_guards {
+    use super::*;
+
+    /// RUE-1836. The AST is retained for the life of a module revision
+    /// (`ParsedModule` holds `ast: Arc<Ast>`, and `retained_charge()` bills its
+    /// bytes as session memory), and during parsing every `PResult<Expr>` return
+    /// and `Vec` push memcpys these values. Both costs scale with the *largest*
+    /// variant, so the common nodes pay for the rare shapes.
+    ///
+    /// Upper bounds rather than equalities: shrinking further is always welcome,
+    /// and these are 64-bit figures. Nothing else in the repo guarded AST sizes,
+    /// so any new variant could silently widen every node — these are the tests
+    /// the issue asked for, beside `rue-span`'s `test_span_size`.
+    #[test]
+    fn ast_nodes_stay_small() {
+        // Was 128: `Expr::If` inlined a 120-byte `IfExpr` holding both blocks.
+        assert!(
+            size_of::<Expr>() <= 96,
+            "Expr grew to {} bytes; the cap is StructLitExpr at {}",
+            size_of::<Expr>(),
+            size_of::<StructLitExpr>(),
+        );
+        // Was 192, driven by LetStatement.
+        assert!(
+            size_of::<Statement>() <= 96,
+            "Statement grew to {} bytes",
+            size_of::<Statement>(),
+        );
+        // Was 176: an inline `Directives` SmallVec plus an inline `TypeExpr`.
+        assert!(
+            size_of::<LetStatement>() <= 56,
+            "LetStatement grew to {} bytes",
+            size_of::<LetStatement>(),
+        );
+        // Was 144; inlines one `Expr`, so it tracks `Expr` above.
+        assert!(
+            size_of::<CallArg>() <= 112,
+            "CallArg grew to {} bytes",
+            size_of::<CallArg>(),
+        );
+    }
+
+    /// The boxes above only pay off while the nodes they point at stay off the
+    /// hot inline path. If `IfExpr` were ever inlined back into `Expr`, the
+    /// bound above would fail — but so would the intent, so state it directly.
+    #[test]
+    fn oversized_nodes_stay_behind_a_pointer() {
+        assert!(size_of::<IfExpr>() > size_of::<Expr>());
+        assert_eq!(size_of::<Option<Box<Directives>>>(), size_of::<usize>());
+        assert_eq!(size_of::<Option<Box<TypeExpr>>>(), size_of::<usize>());
     }
 }

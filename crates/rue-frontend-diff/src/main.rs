@@ -814,8 +814,8 @@ impl Shapes<'_> {
                             LetPattern::Wildcard(_) => UNDERSCORE * 256,
                         }
                 ),
-                self.directives(&v.directives),
-                v.ty.as_ref().map_or("_".into(), |t| self.ty(t)),
+                self.directives(v.directives()),
+                v.ty.as_deref().map_or("_".into(), |t| self.ty(t)),
                 self.expr(&v.init),
                 "_".into(),
             ),

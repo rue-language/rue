@@ -2066,7 +2066,7 @@ impl<'a> AstGen<'a> {
     fn gen_statement(&mut self, stmt: &Statement) -> InstRef {
         match stmt {
             Statement::Let(let_stmt) => {
-                let directives = self.convert_directives(&let_stmt.directives);
+                let directives = self.convert_directives(let_stmt.directives());
                 let name = match &let_stmt.pattern {
                     LetPattern::Ident(ident) => Some(self.symbol(ident.name)),
                     LetPattern::Wildcard(_) => None,
