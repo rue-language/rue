@@ -47,12 +47,10 @@ jobs:
         shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v6
-      - uses: facebook/install-dotslash@v2
-      - uses: actions/cache@v5
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
         with:
-          path: ~/.cache/dotslash
-          key: dotslash-repetitions-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: dotslash-repetitions-linux-x64-
+          cache-name: repetitions-linux-x64
       - name: Repeat correctness shard and retain every failure
         env:
           RUE_REPETITION_LOG_DIR: ${{ runner.temp }}/repetitions
@@ -103,12 +101,10 @@ jobs:
       targets: ${{ steps.inventory.outputs.targets }}
     steps:
       - uses: actions/checkout@v6
-      - uses: facebook/install-dotslash@v2
-      - uses: actions/cache@v5
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
         with:
-          path: ~/.cache/dotslash
-          key: dotslash-repetitions-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: dotslash-repetitions-linux-x64-
+          cache-name: repetitions-linux-x64
       - name: Enumerate every corpus that runs as a build action
         id: inventory
         # Both exclusions are the CLI corpus, which `repeat-cli-shards` above
@@ -149,12 +145,10 @@ jobs:
         target: ${{ fromJSON(needs.corpus-inventory.outputs.targets) }}
     steps:
       - uses: actions/checkout@v6
-      - uses: facebook/install-dotslash@v2
-      - uses: actions/cache@v5
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
         with:
-          path: ~/.cache/dotslash
-          key: dotslash-repetitions-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: dotslash-repetitions-linux-x64-
+          cache-name: repetitions-linux-x64
       - name: Execute the corpus against the current tree
         env:
           RUE_CORPUS_CACHE_FREE: "1"
@@ -183,12 +177,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: facebook/install-dotslash@v2
-      - uses: actions/cache@v5
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
         with:
-          path: ~/.cache/dotslash
-          key: dotslash-soak-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: dotslash-soak-linux-x64-
+          cache-name: soak-linux-x64
       - name: Soak the differential oracle under process oversubscription
         env:
           RUE_SOAK_LOG_DIR: ${{ runner.temp }}/soak

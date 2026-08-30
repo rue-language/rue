@@ -95,12 +95,15 @@ jobs:
         include:
           - os: ubuntu-24.04
             platform: x86_64-linux
+            cache_name: linux-x64
             image: ubuntu-24.04
           - os: ubuntu-24.04-arm
             platform: aarch64-linux
+            cache_name: linux-arm64
             image: ubuntu-24.04
           - os: macos-15
             platform: aarch64-macos
+            cache_name: macos-arm64
             image: macos-15
     runs-on: ${{ matrix.os }}
     name: measure (${{ matrix.platform }})
@@ -114,8 +117,10 @@ jobs:
         if: runner.os == 'macOS'
         run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
-      - name: Install dotslash
-        uses: facebook/install-dotslash@v2
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
+        with:
+          cache-name: ${{ matrix.cache_name }}
 
       - name: Build the compiler and the runner
         run: |
@@ -250,9 +255,11 @@ jobs:
         include:
           - os: ubuntu-24.04
             platform: x86_64-linux
+            cache_name: linux-x64
             image: ubuntu-24.04
           - os: ubuntu-24.04-arm
             platform: aarch64-linux
+            cache_name: linux-arm64
             image: ubuntu-24.04
     runs-on: ${{ matrix.os }}
     name: runtime (${{ matrix.platform }})
@@ -270,8 +277,10 @@ jobs:
       # Fetches `rue`'s pinned peers as well as its own tools: `zola` and `hugo`
       # at the repository root are dotslash shims, and the runtime leg runs both
       # against the same corpus gazette builds (ADR-0072 Decision 5).
-      - name: Install dotslash
-        uses: facebook/install-dotslash@v2
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
+        with:
+          cache-name: ${{ matrix.cache_name }}
 
       - name: Build the compiler and the runner
         run: |
@@ -424,8 +433,10 @@ jobs:
       - name: Select Xcode 16.2
         run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
-      - name: Install dotslash
-        uses: facebook/install-dotslash@v2
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
+        with:
+          cache-name: macos-arm64
 
       - name: Build the compiler and the runner
         run: |

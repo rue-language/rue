@@ -80,8 +80,8 @@ jobs:
           # than clone depth.
           fetch-depth: 0
 
-      - name: Setup dotslash
-        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
 
       - name: Build website
         run: website/build.sh

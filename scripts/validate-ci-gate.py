@@ -804,9 +804,14 @@ def validate(
         errors.append("ci-contract no longer runs the live graph validator")
     validator_invocation = "scripts/validate-ci-gate.py .github/workflows/ci.yml"
     validator_position = contract.find(validator_invocation)
-    if "facebook/install-dotslash@v2" not in contract:
+    # RUE-1825: the install is no longer spelled in the workflow — every job
+    # bootstraps through the one composite action that owns the install and its
+    # cache together. What this asserts is unchanged: the toolchain is there
+    # before the live Buck validator runs.
+    bootstrap = "uses: ./.github/actions/bootstrap-dotslash"
+    if bootstrap not in contract:
         errors.append("ci-contract must install dotslash before the live Buck validator")
-    elif validator_position < 0 or contract.index("facebook/install-dotslash@v2") > validator_position:
+    elif validator_position < 0 or contract.index(bootstrap) > validator_position:
         errors.append("ci-contract must install dotslash before the live Buck validator")
     if "--structural-only" in contract:
         errors.append("ci-contract must run live graph ownership validation, not structural-only mode")

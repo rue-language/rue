@@ -30,20 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install dotslash
-        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
-
-      # Cache the dotslash-downloaded buck2 binary (see the `test` job for the
-      # rationale on which paths are worth caching).
-      - name: Cache dotslash artifacts
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cache/dotslash
-            ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: |
-            dotslash-linux-x64-
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
 
       - name: Check formatting
         # Every crate package emits one directory-named `<crate>-fmt-check`
@@ -159,20 +147,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install dotslash
-        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
-
-      # Cache the dotslash-downloaded buck2 binary (see the `test` job for the
-      # rationale on which paths are worth caching).
-      - name: Cache dotslash artifacts
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cache/dotslash
-            ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: |
-            dotslash-linux-x64-
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
 
       # BuildBuddy remote action cache (RUE-316/RUE-1006). GitHub withholds
       # repo secrets from pull_request runs whose head branch lives in a fork —
@@ -235,20 +211,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install dotslash
-        uses: facebook/install-dotslash@v2
-
-      # Cache the dotslash-downloaded buck2 binary (see the `test` job for the
-      # rationale on which paths are worth caching).
-      - name: Cache dotslash artifacts
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cache/dotslash
-            ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: |
-            dotslash-linux-x64-
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
 
       - name: Require and provision remote execution
         env:
@@ -315,24 +279,8 @@ jobs:
         # count commits is the `performance-staleness` job, which takes its own
         # `fetch-depth: 0` checkout for the purpose (RUE-1258, RUE-1504).
 
-      - name: Install dotslash
-        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
-
-      # Cache the dotslash-downloaded buck2 binary (~/.cache/dotslash on
-      # Linux, ~/Library/Caches/dotslash on macOS; actions/cache skips paths
-      # that don't exist). The previous cache of buck-out/v2/gen +
-      # ~/.cache/buck2 was inert: OSS buck2 has no persistent action cache
-      # across daemon restarts, and ~/.cache/buck2 is not a path buck2 uses —
-      # multi-GB saved/restored for zero hits. (RUE-144)
-      - name: Cache dotslash artifacts
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cache/dotslash
-            ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: |
-            dotslash-linux-x64-
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
 
       # BuildBuddy remote action cache (RUE-316/RUE-1006/RUE-1019); see the
       # clippy job for the secret-availability contract. Compiler
@@ -638,20 +586,8 @@ jobs:
           # see the history fails rather than passing. (RUE-1258)
           fetch-depth: 0
 
-      - name: Install dotslash
-        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
-
-      # Same dotslash cache as the other Linux lanes; see linux-premerge for
-      # why these are the only paths worth caching (RUE-144).
-      - name: Cache dotslash artifacts
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cache/dotslash
-            ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: |
-            dotslash-linux-x64-
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
 
       # BuildBuddy remote action cache (RUE-316/RUE-1006/RUE-1019); see the
       # clippy job for the secret-availability contract. This lane builds the
@@ -851,20 +787,11 @@ jobs:
         if: runner.os == 'macOS' && steps.sel.outputs.run == 'true'
         run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
-      - name: Install dotslash
+      - name: Bootstrap dotslash
         if: steps.sel.outputs.run == 'true'
-        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
-
-      - name: Cache dotslash artifacts
-        if: steps.sel.outputs.run == 'true'
-        uses: actions/cache@v5
+        uses: ./.github/actions/bootstrap-dotslash
         with:
-          path: |
-            ~/.cache/dotslash
-            ~/Library/Caches/dotslash
-          key: dotslash-${{ matrix.name }}-${{ hashFiles('buck2-bin') }}
-          restore-keys: |
-            dotslash-${{ matrix.name }}-
+          cache-name: ${{ matrix.name }}
 
       - name: Provision remote build cache
         if: steps.sel.outputs.run == 'true'
@@ -978,18 +905,9 @@ jobs:
           RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
         run: scripts/ci-corpus-decision "compiler-reproducibility"
 
-      - name: Install dotslash
+      - name: Bootstrap dotslash
         if: steps.sel.outputs.run == 'true'
-        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
-
-      - name: Cache dotslash artifacts
-        if: steps.sel.outputs.run == 'true'
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: |
-            dotslash-linux-x64-
+        uses: ./.github/actions/bootstrap-dotslash
 
       - name: Verify compiler build reproducibility
         if: steps.sel.outputs.run == 'true'
@@ -1027,18 +945,9 @@ jobs:
           RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
         run: scripts/ci-corpus-decision "rue-program-digests"
 
-      - name: Install dotslash
+      - name: Bootstrap dotslash
         if: steps.sel.outputs.run == 'true'
-        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
-
-      - name: Cache dotslash artifacts
-        if: steps.sel.outputs.run == 'true'
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: |
-            dotslash-linux-x64-
+        uses: ./.github/actions/bootstrap-dotslash
 
       - name: Provision remote cache
         if: steps.sel.outputs.run == 'true'
@@ -1095,20 +1004,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install dotslash
+      - name: Bootstrap dotslash
         if: github.event_name == 'pull_request'
-        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
-
-      - name: Cache dotslash artifacts
-        if: github.event_name == 'pull_request'
-        uses: actions/cache@v5
+        uses: ./.github/actions/bootstrap-dotslash
         with:
-          path: |
-            ~/.cache/dotslash
-            ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2-bin', 'btd') }}
-          restore-keys: |
-            dotslash-linux-x64-
+          with-btd: 'true'
 
       - name: Provision remote build cache
         if: github.event_name == 'pull_request'
@@ -1234,20 +1134,11 @@ jobs:
         if: runner.os == 'macOS' && steps.sel.outputs.run == 'true'
         run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
-      - name: Install dotslash
+      - name: Bootstrap dotslash
         if: steps.sel.outputs.run == 'true'
-        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
-
-      - name: Cache dotslash artifacts
-        if: steps.sel.outputs.run == 'true'
-        uses: actions/cache@v5
+        uses: ./.github/actions/bootstrap-dotslash
         with:
-          path: |
-            ~/.cache/dotslash
-            ~/Library/Caches/dotslash
-          key: dotslash-${{ matrix.cache_name }}-${{ hashFiles('buck2-bin') }}
-          restore-keys: |
-            dotslash-${{ matrix.cache_name }}-
+          cache-name: ${{ matrix.cache_name }}
 
       - name: Provision remote build cache
         if: steps.sel.outputs.run == 'true'
@@ -1310,22 +1201,9 @@ jobs:
           RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
         run: scripts/ci-corpus-decision "release"
 
-      - name: Install dotslash
+      - name: Bootstrap dotslash
         if: steps.sel.outputs.run == 'true'
-        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
-
-      # Same dotslash cache as the other jobs (buck2 binary only; see the `test`
-      # job for why buck-out isn't worth caching).
-      - name: Cache dotslash artifacts
-        if: steps.sel.outputs.run == 'true'
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cache/dotslash
-            ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: |
-            dotslash-linux-x64-
+        uses: ./.github/actions/bootstrap-dotslash
 
       # BuildBuddy remote action cache (RUE-316/RUE-1006); see the clippy job
       # for the secret-availability contract.
@@ -1378,18 +1256,9 @@ jobs:
           RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
         run: scripts/ci-corpus-decision "valgrind"
 
-      - name: Install dotslash
+      - name: Bootstrap dotslash
         if: steps.sel.outputs.run == 'true'
-        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
-
-      - name: Cache dotslash artifacts
-        if: steps.sel.outputs.run == 'true'
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: |
-            dotslash-linux-x64-
+        uses: ./.github/actions/bootstrap-dotslash
 
       - name: Provision remote build cache
         if: steps.sel.outputs.run == 'true'
@@ -1482,17 +1351,8 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v6
-      - name: Install dotslash
-        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
-      - name: Cache dotslash artifacts
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cache/dotslash
-            ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: |
-            dotslash-linux-x64-
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
       - name: Validate aggregate gate and platform responsibilities
         run: scripts/validate-ci-gate.py .github/workflows/ci.yml
 
