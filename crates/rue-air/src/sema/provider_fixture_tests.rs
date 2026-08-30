@@ -10,12 +10,25 @@
 use rue_error::ErrorKind;
 use std::sync::Arc;
 
+use super::comptime::MAX_COMPTIME_CALL_DEPTH;
+use super::ordinary_engine::{
+    comptime_reduction_test_keys, comptime_reduction_test_stats,
+    reset_comptime_reduction_test_stats,
+};
 use super::provider_fixture::{
-    MethodShape, ProviderFixture, StructShape, error_source_slice, mode_param, value_param,
+    MethodShape, ProviderFixture, StructShape, comptime_type_param, comptime_value_param,
+    error_source_slice, mode_param, value_param, with_fixture_cancellation_after,
+    with_fixture_durable_integer,
+};
+use super::{
+    ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCompletedCallMemo, ComptimeMemoizedOutcome,
 };
 use crate::{
-    SemanticImportConstValue, SemanticImportNominalKind, SemanticImportType, StableDefinitionKind,
+    ConstValue, SemanticDefinitionToken, SemanticImportConstValue, SemanticImportNominalKind,
+    SemanticImportType, SemanticModuleToken, StableDefinitionKind, StableProducerId, Type,
 };
+use rue_rir::SymbolHandle;
+use rue_target::Target;
 
 // Migrated from `tests::test_analyze_addition`: ordinary expression typing on
 // the production provider path.
@@ -34,6 +47,404 @@ fn provider_body_types_integer_addition() {
     let add = air.get(crate::AirRef::from_raw(2));
     assert!(matches!(add.data, crate::AirInstData::Add(_, _)));
     assert_eq!(add.ty, crate::types::Type::I32);
+}
+
+#[test]
+fn provider_specialized_body_uses_local_comptime_memo_for_branching_recursion() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function(
+        "recur",
+        vec![comptime_value_param("n", SemanticImportType::I32)],
+        SemanticImportType::I32,
+    );
+    reset_comptime_reduction_test_stats();
+    let first = fixture.analyze_specialized(
+        "fn recur(comptime n: i32) -> i32 { comptime { if n <= 0 { 1 } else { recur(n - 1) + recur(n - 1) } } }",
+        "recur",
+        &[8],
+    )
+    .expect("branching comptime recursion analyzes");
+    let first_stats = comptime_reduction_test_stats();
+    assert_eq!(first.function.air.return_type(), crate::types::Type::I32);
+    assert_eq!(
+        first_stats.last_known_integer,
+        Some(128),
+        "the largest memoized child reduction is the exact 2^7 result"
+    );
+    assert!(
+        first
+            .function
+            .air
+            .iter()
+            .any(|(_, instruction)| matches!(instruction.data, crate::AirInstData::Const(256))),
+        "the specialized root must retain the exact 2^8 branch result"
+    );
+    assert_eq!(first_stats.misses, 8, "one miss per unique recursive state");
+    assert_eq!(
+        first_stats.hits, 8,
+        "the repeated branch hits the body memo"
+    );
+    assert_eq!(first_stats.publications, 8, "only completed states publish");
+    assert_eq!(
+        first_stats.canonical_issuances,
+        first_stats.misses + first_stats.hits,
+        "each local call issues its producer identity once without run-frame duplication"
+    );
+    assert_eq!(first_stats.non_successful_completions, 0);
+    assert!(first_stats.body_instances_dropped > 0);
+    assert_eq!(first_stats.max_entries, 8);
+    assert_eq!(first_stats.last_dropped_entries, 8);
+
+    // A second request gets a fresh body-local memo, yet the durable export
+    // remains deterministic byte-for-byte.
+    reset_comptime_reduction_test_stats();
+    let second = fixture
+        .analyze_specialized(
+            "fn recur(comptime n: i32) -> i32 { comptime { if n <= 0 { 1 } else { recur(n - 1) + recur(n - 1) } } }",
+            "recur",
+            &[8],
+        )
+        .expect("retained recursion analyzes");
+    let second_stats = comptime_reduction_test_stats();
+    assert_eq!(first.export.body, second.export.body);
+    assert_eq!(first_stats, second_stats);
+}
+
+#[test]
+fn provider_local_memo_hit_still_obeys_depth_before_lookup() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function(
+        "recur",
+        vec![comptime_value_param("n", SemanticImportType::I32)],
+        SemanticImportType::I32,
+    );
+    let source = "fn recur(comptime n: i32) -> i32 { comptime { if n == 66 { recur(0) + recur(65) } else if n <= 0 { 1 } else { recur(n - 1) } } }";
+    reset_comptime_reduction_test_stats();
+    let error = match fixture.analyze_specialized(
+        source,
+        "recur",
+        &[MAX_COMPTIME_CALL_DEPTH as i128 + 2],
+    ) {
+        Ok(_) => panic!("the cached zero state cannot bypass the depth gate"),
+        Err(error) => error,
+    };
+    let stats = comptime_reduction_test_stats();
+    assert_eq!(
+        stats.publications, 1,
+        "the shallow zero state was cached first"
+    );
+    assert_eq!(
+        stats.hits, 0,
+        "the only over-limit frame is rejected before lookup"
+    );
+    assert!(matches!(
+        &error.kind,
+        ErrorKind::ComptimeEvaluationFailed { reason }
+            if reason == "specialization of 'recur' exceeded the maximum nesting depth (64); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?"
+    ));
+    assert_eq!(error_source_slice(source, &error), source);
+}
+
+#[test]
+fn provider_specialized_body_failed_reduction_is_not_cached_and_retries() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function(
+        "looping",
+        vec![comptime_value_param("n", SemanticImportType::I32)],
+        SemanticImportType::I32,
+    );
+    let source = "fn looping(comptime n: i32) -> i32 { comptime { looping(n) } }";
+    reset_comptime_reduction_test_stats();
+    let first_error = match fixture.analyze_specialized(source, "looping", &[0]) {
+        Ok(_) => panic!("non-terminating comptime recursion is rejected"),
+        Err(error) => error,
+    };
+    let first_stats = comptime_reduction_test_stats();
+    assert!(matches!(
+        &first_error.kind,
+        ErrorKind::ComptimeEvaluationFailed { reason }
+            if reason == "specialization of 'looping' exceeded the maximum nesting depth (64); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?"
+    ));
+    assert_eq!(error_source_slice(source, &first_error), source);
+    assert_eq!(first_stats.publications, 0);
+    assert_eq!(first_stats.hits, 0);
+    assert!(first_stats.non_successful_completions > 0);
+    assert!(first_stats.misses > 0);
+
+    reset_comptime_reduction_test_stats();
+    let second_error = match fixture.analyze_specialized(source, "looping", &[0]) {
+        Ok(_) => panic!("a failed reduction must be retried"),
+        Err(error) => error,
+    };
+    let second_stats = comptime_reduction_test_stats();
+    assert_eq!(first_error.kind, second_error.kind);
+    assert_eq!(first_error.span(), second_error.span());
+    assert_eq!(first_stats, second_stats);
+}
+
+#[test]
+fn provider_specialized_body_canceled_reduction_is_not_cached() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function(
+        "recur",
+        vec![comptime_value_param("n", SemanticImportType::I32)],
+        SemanticImportType::I32,
+    );
+    reset_comptime_reduction_test_stats();
+    let canceled_error = match with_fixture_cancellation_after(100, || {
+        fixture.analyze_specialized(
+            "fn recur(comptime n: i32) -> i32 { comptime { if n <= 0 { 1 } else { recur(n - 1) + recur(n - 1) } } }",
+            "recur",
+            &[8],
+        )
+    }) {
+        Ok(_) => panic!("canceled reduction must not complete"),
+        Err(error) => error,
+    };
+    let canceled_stats = comptime_reduction_test_stats();
+    assert!(
+        matches!(canceled_error.kind, ErrorKind::InternalError(ref reason) if reason == "body analysis query canceled")
+    );
+    assert_eq!(canceled_stats.publications, 0);
+    assert_eq!(canceled_stats.hits, 0);
+    assert!(canceled_stats.non_successful_completions > 0);
+
+    reset_comptime_reduction_test_stats();
+    let retry = fixture
+        .analyze_specialized(
+            "fn recur(comptime n: i32) -> i32 { comptime { if n <= 0 { 1 } else { recur(n - 1) + recur(n - 1) } } }",
+            "recur",
+            &[8],
+        )
+        .expect("canceled reduction is retried in a fresh body");
+    let retry_stats = comptime_reduction_test_stats();
+    assert_eq!(retry.function.air.return_type(), crate::types::Type::I32);
+    assert_eq!(retry_stats.publications, 8);
+    assert_eq!(retry_stats.hits, 8);
+}
+
+#[test]
+fn provider_durable_first_comptime_query_bypasses_local_body_memo() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function(
+        "external",
+        vec![comptime_value_param("n", SemanticImportType::I32)],
+        SemanticImportType::I32,
+    );
+    fixture.declare_function("caller", Vec::new(), SemanticImportType::I32);
+    reset_comptime_reduction_test_stats();
+    let (body, durable_calls) = with_fixture_durable_integer("external", 77, || {
+        fixture
+            .analyze("fn caller() -> i32 { comptime { external(1) } }", "caller")
+            .expect("the durable comptime query produces its configured result")
+    });
+    let stats = comptime_reduction_test_stats();
+    assert_eq!(body.function.air.return_type(), crate::types::Type::I32);
+    assert_eq!(
+        durable_calls, 1,
+        "the durable result was actually consulted"
+    );
+    assert!(
+        body.function
+            .air
+            .iter()
+            .any(|(_, instruction)| matches!(instruction.data, crate::AirInstData::Const(77))),
+        "the AIR contains the exact durable reduction result"
+    );
+    assert_eq!(stats.misses, 0);
+    assert_eq!(stats.hits, 0);
+    assert_eq!(stats.publications, 0);
+}
+
+#[test]
+fn production_comptime_key_separates_real_identity_target_type_and_value() {
+    let mut fixture = ProviderFixture::new();
+    let marker = fixture.declare_struct("Marker", vec![("value", SemanticImportType::I32)], true);
+    fixture.declare_function(
+        "recur",
+        vec![
+            comptime_type_param("T"),
+            comptime_value_param("n", SemanticImportType::I32),
+            comptime_value_param("step", SemanticImportType::I32),
+        ],
+        SemanticImportType::I32,
+    );
+    reset_comptime_reduction_test_stats();
+    fixture
+        .analyze_specialized_with_types(
+            "fn recur(comptime T: type, comptime n: i32, comptime step: i32) -> i32 { comptime { if n <= 0 { step } else { recur(T, n - 1, step) } } }",
+            "recur",
+            &[SemanticImportType::Nominal(marker.clone())],
+            &[2, 7],
+        )
+        .expect("the production builder emits keys for real recursive calls");
+    let observed = comptime_reduction_test_keys();
+    assert!(
+        !observed.is_empty(),
+        "the test uses keys issued by the production path"
+    );
+    assert!(
+        observed.iter().any(|key| {
+            key.type_arguments.len() == 1
+                && key.type_arguments[0] == observed[0].type_arguments[0]
+                && key.value_arguments.as_ref() == [ConstValue::Integer(1), ConstValue::Integer(7)]
+        }),
+        "production keys retain the declared T, n, step order"
+    );
+    assert!(
+        observed.iter().any(|key| {
+            key.type_arguments.len() == 1
+                && key.type_arguments[0] == observed[0].type_arguments[0]
+                && key.value_arguments.as_ref() == [ConstValue::Integer(0), ConstValue::Integer(7)]
+        }),
+        "recursive production keys carry a distinct real value substitution"
+    );
+    let mut identity_fixture = ProviderFixture::new();
+    identity_fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    let identity_body = identity_fixture
+        .analyze(
+            "fn main() -> i32 { let A = struct { value: i32, fn helper() -> i32 { 0 } }; let B = struct { value: i32 }; 0 }",
+            "main",
+        )
+        .expect("the identity source produces real anonymous and symbol identities");
+    let mut anonymous_types = identity_body
+        .type_pool
+        .all_struct_ids()
+        .into_iter()
+        .filter(|id| identity_body.type_pool.is_anonymous_struct(*id))
+        .map(Type::new_struct);
+    let anonymous_a = anonymous_types.next().expect("first anonymous type");
+    let anonymous_b = anonymous_types.next().expect("second anonymous type");
+    let function_a = SymbolHandle::new(identity_body.interner.get("main").expect("main symbol"));
+    let function_b = SymbolHandle::new(
+        identity_body
+            .interner
+            .get("helper")
+            .expect("anonymous method symbol"),
+    );
+
+    type Producer = StableProducerId<SemanticDefinitionToken, SemanticModuleToken>;
+    type Memo = ComptimeCompletedCallMemo<Producer, Target, Type, ConstValue, ConstValue>;
+    let key = |producer, target, ty, value| ComptimeCallKey {
+        declaration: producer,
+        configuration: target,
+        type_arguments: Arc::from([ty]),
+        value_arguments: Arc::from([value, ConstValue::Integer(7)]),
+    };
+    let base = observed
+        .iter()
+        .find(|key| {
+            key.value_arguments.as_ref() == [ConstValue::Integer(1), ConstValue::Integer(7)]
+        })
+        .expect("production key is available")
+        .clone();
+    let mut memo = Memo::new();
+    memo.insert(
+        base.clone(),
+        ComptimeMemoizedOutcome::Known(ConstValue::Integer(17)),
+    )
+    .unwrap();
+    assert!(matches!(
+        memo.lookup(&base),
+        ComptimeCallMemoLookup::Memoized(ComptimeMemoizedOutcome::Known(ConstValue::Integer(17)))
+    ));
+    let function_base = key(
+        base.declaration.clone(),
+        base.configuration,
+        anonymous_a,
+        ConstValue::Function(function_a),
+    );
+    memo.insert(
+        function_base.clone(),
+        ComptimeMemoizedOutcome::Known(ConstValue::Integer(18)),
+    )
+    .unwrap();
+    assert!(matches!(
+        memo.lookup(&function_base),
+        ComptimeCallMemoLookup::Memoized(ComptimeMemoizedOutcome::Known(ConstValue::Integer(18)))
+    ));
+    let generic_specialization = observed
+        .iter()
+        .find(|candidate| candidate.declaration != base.declaration)
+        .expect("recursive states issue distinct generic specializations")
+        .declaration
+        .clone();
+    let mut other_fixture = ProviderFixture::new();
+    other_fixture.declare_function(
+        "other",
+        vec![
+            comptime_type_param("T"),
+            comptime_value_param("n", SemanticImportType::I32),
+            comptime_value_param("step", SemanticImportType::I32),
+        ],
+        SemanticImportType::I32,
+    );
+    reset_comptime_reduction_test_stats();
+    let other_marker =
+        other_fixture.declare_struct("Marker", vec![("value", SemanticImportType::I32)], true);
+    other_fixture
+        .analyze_specialized_with_types(
+            "fn other(comptime T: type, comptime n: i32, comptime step: i32) -> i32 { comptime { if n <= 0 { step } else { other(T, n - 1, step) } } }",
+            "other",
+            &[SemanticImportType::Nominal(other_marker)],
+            &[2, 7],
+        )
+        .expect("a second production callable issues a real identity");
+    // Each provider run owns request-local Type handles, so use the second
+    // production-issued declaration only after the memo's base substitutions
+    // have been fixed. The explicit key below isolates callable identity while
+    // preserving those substitutions.
+    let callable_issuer = comptime_reduction_test_keys()
+        .into_iter()
+        .find(|candidate| candidate.declaration != base.declaration)
+        .expect("the second callable has a distinct producer identity")
+        .declaration;
+    let callable_counterfeit = key(
+        callable_issuer,
+        base.configuration,
+        base.type_arguments[0],
+        base.value_arguments[0],
+    );
+    let generic_counterfeit = key(
+        generic_specialization,
+        base.configuration,
+        base.type_arguments[0],
+        base.value_arguments[0],
+    );
+    let target_counterfeit = key(
+        observed[0].declaration.clone(),
+        if base.configuration == Target::X86_64Linux {
+            Target::Aarch64Linux
+        } else {
+            Target::X86_64Linux
+        },
+        base.type_arguments[0],
+        base.value_arguments[0],
+    );
+    let type_counterfeit = key(
+        function_base.declaration.clone(),
+        function_base.configuration,
+        anonymous_b,
+        function_base.value_arguments[0],
+    );
+    let value_counterfeit = key(
+        function_base.declaration.clone(),
+        function_base.configuration,
+        function_base.type_arguments[0],
+        ConstValue::Function(function_b),
+    );
+    for counterfeit in [
+        callable_counterfeit,
+        generic_counterfeit,
+        target_counterfeit,
+        type_counterfeit,
+        value_counterfeit,
+    ] {
+        assert!(matches!(
+            memo.lookup(&counterfeit),
+            ComptimeCallMemoLookup::Miss
+        ));
+    }
 }
 
 // Migrated from `tests::test_undefined_variable`: the diagnostic keeps its
@@ -58,6 +469,73 @@ fn provider_body_reports_undefined_variable_with_exact_span() {
 // Migrated from `tests::test_use_after_move_error`: ownership diagnostics on
 // the production provider path, with the callee crossing the boundary as an
 // explicit durable signature fact.
+#[test]
+fn memoized_comptime_result_keeps_linear_ownership_diagnostic_on_production_path() {
+    let mut fixture = ProviderFixture::new();
+    let token = fixture.declare_struct_with(
+        "Token",
+        vec![("id", SemanticImportType::I32)],
+        false,
+        StructShape {
+            is_linear: true,
+            ..StructShape::default()
+        },
+    );
+    fixture.declare_function(
+        "recur",
+        vec![
+            comptime_type_param("T"),
+            comptime_value_param("n", SemanticImportType::I32),
+        ],
+        SemanticImportType::I32,
+    );
+    fixture.declare_function(
+        "consume",
+        vec![value_param("n", SemanticImportType::Nominal(token.clone()))],
+        SemanticImportType::I32,
+    );
+    reset_comptime_reduction_test_stats();
+    let source = "fn recur(comptime T: type, comptime n: i32) -> i32 {
+    let result = comptime { if n <= 0 { 1 } else { recur(T, n - 1) + recur(T, n - 1) } };
+    if n > 1 {
+        let TokenType = Token;
+        let token: TokenType = Token { id: 42 };
+        let consumed = consume(token);
+        consumed + token.id
+    } else {
+        result
+    }
+}";
+    let error = fixture
+        .analyze_specialized_with_types(
+            source,
+            "recur",
+            &[SemanticImportType::Nominal(token.clone())],
+            &[2],
+        )
+        .map(|_| ())
+        .expect_err("the move/use check still runs after a memoized child reduction");
+    let stats = comptime_reduction_test_stats();
+    assert!(
+        stats.publications > 0,
+        "the local memo published the successful child result"
+    );
+    assert!(
+        stats.hits > 0,
+        "the duplicate recursive child reaches the local memo"
+    );
+    assert!(
+        comptime_reduction_test_keys()
+            .iter()
+            .any(|key| key.type_arguments.len() == 1),
+        "the memoized child key retains the linear nominal type substitution"
+    );
+    assert!(
+        matches!(&error.kind, ErrorKind::UseAfterMove(..)),
+        "unexpected diagnostic after a memoized result: {error:?}"
+    );
+}
+
 #[test]
 fn provider_body_reports_use_after_move() {
     let mut fixture = ProviderFixture::new();

@@ -56,8 +56,8 @@ use rue_span::{FileId, Span};
 
 use super::comptime::{
     ComptimeAnonymousKind, ComptimeArgMode, ComptimeArrayLengthBinding, ComptimeCallAdmission,
-    ComptimeCallArgument, ComptimeCallPreparation, ComptimeDiagnosticSite, ComptimeEngine,
-    ComptimeEnv as GenericComptimeEnv, ComptimeFile, ComptimeFrame, ComptimeHost,
+    ComptimeCallArgument, ComptimeCallKey, ComptimeCallPreparation, ComptimeDiagnosticSite,
+    ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile, ComptimeFrame, ComptimeHost,
     ComptimeHostError, ComptimeHostResult, ComptimeIdentity, ComptimeMatchPattern,
     ComptimeMethodDescriptor, ComptimeName, ComptimeNamedValueResolution, ComptimeOutcome,
     ComptimeSelection, ComptimeSemanticRejection, ComptimeStructuredTypeResolution, ComptimeTrap,
@@ -595,6 +595,52 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         )
     }
 
+    /// Build the exact body-local key for one admitted callable. Parameter
+    /// order is part of the key's representation: the maps are convenient
+    /// binding state, but their hash iteration order is intentionally not a
+    /// semantic identity. The stable producer distinguishes callable and
+    /// imported/generic identities; the target distinguishes target-sensitive
+    /// intrinsic results; the concrete substitutions distinguish each state.
+    fn comptime_reduction_key(
+        &self,
+        name: Spur,
+        identity: super::anon_structs::IssuedStableProducerId,
+        type_bindings: &AHashMap<Spur, Type>,
+        value_bindings: &AHashMap<Spur, ConstValue>,
+    ) -> Option<
+        ComptimeCallKey<
+            super::anon_structs::IssuedStableProducerId,
+            rue_target::Target,
+            Type,
+            ConstValue,
+        >,
+    > {
+        let info = self.function_info(name)?;
+        let param_data = self.body_param_data(info.params);
+        let type_flags = self.comptime_type_param_flags(&info);
+        let mut type_arguments = Vec::new();
+        let mut value_arguments = Vec::new();
+        for (index, (parameter, _, _, is_comptime)) in param_data.iter().enumerate() {
+            if !*is_comptime {
+                continue;
+            }
+            if type_flags[index] {
+                type_arguments.push(*type_bindings.get(parameter)?);
+            } else {
+                value_arguments.push(*value_bindings.get(parameter)?);
+            }
+        }
+        let key = ComptimeCallKey {
+            declaration: identity,
+            configuration: self.target(),
+            type_arguments: type_arguments.into(),
+            value_arguments: value_arguments.into(),
+        };
+        #[cfg(test)]
+        self.record_comptime_reduction_key(&key);
+        Some(key)
+    }
+
     /// Complete a child call after the engine has evaluated its body. This
     /// hook owns only semantic bookkeeping; it never walks RIR or starts a
     /// second evaluator.
@@ -611,8 +657,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         _ticket: (),
         result: ComptimeOutcome<ConstValue, CompileError>,
     ) -> ComptimeOutcome<ConstValue, CompileError> {
+        #[cfg(test)]
+        if !matches!(result, ComptimeOutcome::Known(_)) {
+            self.record_non_successful_comptime_completion();
+        }
         if let (Some(name), ComptimeOutcome::Known(ConstValue::Type(ty))) = (frame.name, &result) {
             self.record_ctor_type_display(name, *ty, &frame.type_bindings, &frame.value_bindings);
+        }
+        if let (Some(identity), ComptimeOutcome::Known(value)) =
+            (frame.call_identity.clone(), &result)
+        {
+            if let Some(name) = frame.name
+                && let Some(key) = self.comptime_reduction_key(
+                    name,
+                    identity,
+                    &frame.type_bindings,
+                    &frame.value_bindings,
+                )
+            {
+                self.memoize_comptime_reduction(key, *value);
+            }
         }
         result
     }
@@ -2410,14 +2474,66 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
                 })
                 .map_err(Into::into);
         }
-        OrdinaryBodyEngine::prepare_comptime_call(
+        let name = admission.name;
+        let preparation = OrdinaryBodyEngine::prepare_comptime_call(
             self,
             admission,
             bound.callee_types,
             bound.callee_values,
             span,
         )
-        .map_err(Into::into)
+        .map_err(ComptimeHostError::HostFailure)?;
+        let Some(ComptimeCallPreparation::Enter { mut frame, ticket }) = preparation else {
+            return Ok(preparation);
+        };
+        // Canonicalization is an optimization input to the local lookup, not
+        // an admission gate. If it cannot issue an identity yet, leave the
+        // frame identity-less so `run_frame` preserves its established
+        // depth-first ordering: an over-limit call reports depth before the
+        // original canonicalization failure. A successful issuance is carried
+        // into the frame so a normal miss does not mint the same identity a
+        // second time after the depth check.
+        let identity = match self.canonical_function_producer(
+            name,
+            &frame.type_bindings,
+            &frame.value_bindings,
+        ) {
+            Ok(identity) => identity,
+            Err(_) => return Ok(Some(ComptimeCallPreparation::Enter { frame, ticket })),
+        };
+        // Admission already issued the exact identity used by the local
+        // lookup. Carry it into the frame so `run_frame` does not mint the
+        // same producer a second time after the depth check. The lookup itself
+        // happens in the engine only after that depth check.
+        frame.call_identity = Some(identity);
+        Ok(Some(ComptimeCallPreparation::Enter { frame, ticket }))
+    }
+    fn lookup_completed_comptime_call(
+        &mut self,
+        frame: &ComptimeFrame<ConstValue, Type, Spur, FileId, (), Self::CanonicalIdentity>,
+    ) -> ComptimeHostResult<Option<ConstValue>, Self::Failure> {
+        let Some(name) = frame.name else {
+            return Ok(None);
+        };
+        let Some(identity) = frame.call_identity.clone() else {
+            return Ok(None);
+        };
+        let Some(key) = self.comptime_reduction_key(
+            name,
+            identity,
+            &frame.type_bindings,
+            &frame.value_bindings,
+        ) else {
+            return Ok(None);
+        };
+        let Some(value) = self.lookup_comptime_reduction(&key) else {
+            #[cfg(test)]
+            self.record_comptime_reduction_miss();
+            return Ok(None);
+        };
+        self.check_canceled()
+            .map_err(ComptimeHostError::HostFailure)?;
+        Ok(Some(value))
     }
     fn finish_comptime_call(
         &mut self,

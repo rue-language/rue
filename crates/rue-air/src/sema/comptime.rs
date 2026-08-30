@@ -221,9 +221,11 @@ pub enum ComptimeMemoInsertError {
     AlreadyMemoized,
 }
 
-/// Completed call facts retained only for the lifetime of one evaluation.
-/// A missing key is intentionally distinct from a memoized not-ready or
-/// runtime-dependent outcome, so callers can turn misses into `Enter` frames.
+/// Completed call facts retained for the lifetime chosen by the host.
+/// The ordinary body host owns one instance per body analysis, so its entries
+/// are dropped at that boundary. A missing key is intentionally distinct from
+/// a memoized not-ready or runtime-dependent outcome, so callers can turn
+/// misses into `Enter` frames.
 #[derive(Debug)]
 pub struct ComptimeCompletedCallMemo<D, C, T, V, R> {
     outcomes: AHashMap<ComptimeCallKey<D, C, T, V>, ComptimeMemoizedOutcome<R>>,
@@ -738,6 +740,9 @@ mod value_domain_tests {
         static CALL_ARGUMENTS: RefCell<Vec<(FakeValue, bool)>> = const { RefCell::new(Vec::new()) };
         static BINDING_FINISHES: Cell<usize> = const { Cell::new(0) };
         static PREPARE_CALLS: Cell<usize> = const { Cell::new(0) };
+        static PREPARE_CANONICAL_PROBE: Cell<bool> = const { Cell::new(false) };
+        static CANONICAL_FAILURE_AFTER: Cell<Option<usize>> = const { Cell::new(None) };
+        static DEPTH_FAILURE_VARIANT: Cell<bool> = const { Cell::new(false) };
         static ALLOW_MODULE_CALLS: Cell<bool> = const { Cell::new(false) };
         static EVALUATED_METHOD_RECEIVER_MODE: Cell<u8> = const { Cell::new(0) };
         static EVALUATED_METHOD_RECEIVERS: RefCell<Vec<FakeValue>> = const { RefCell::new(Vec::new()) };
@@ -1421,6 +1426,7 @@ mod value_domain_tests {
     enum FakeFailure {
         Generic,
         Canceled,
+        DepthExceeded,
         NonFunctionMethod,
         OwnComptimeTypeParameter,
     }
@@ -1997,7 +2003,11 @@ mod value_domain_tests {
                     .borrow_mut()
                     .push((*site.program(), site.span().start, site.span().end))
             });
-            FAKE_FAILURE
+            if DEPTH_FAILURE_VARIANT.with(Cell::get) {
+                FakeFailure::DepthExceeded
+            } else {
+                FAKE_FAILURE
+            }
         }
         fn literal_out_of_range(
             &self,
@@ -2408,20 +2418,34 @@ mod value_domain_tests {
                 } else {
                     call_body
                 };
+                let frame = ComptimeFrame {
+                    program: 1,
+                    body,
+                    name: Some(admission.name.clone()),
+                    context: Some(FakeFile { index: 0 }),
+                    span: Span::new(0, 0),
+                    function_span: Span::new(0, 0),
+                    type_bindings: AHashMap::new(),
+                    value_bindings: AHashMap::new(),
+                    name_bindings: AHashMap::new(),
+                    call_identity: None,
+                    expected_result: expected,
+                };
+                if PREPARE_CANONICAL_PROBE.with(Cell::get) {
+                    // Model the ordinary host's pre-lookup identity probe. A
+                    // failure here must remain deferrable until `run_frame`
+                    // has performed its depth admission check.
+                    let _ = self.canonical_function_producer(
+                        &frame.program,
+                        &self.enter_count,
+                        admission.name,
+                        &frame.type_bindings,
+                        &frame.value_bindings,
+                        frame.span,
+                    );
+                }
                 return Ok(Some(ComptimeCallPreparation::Enter {
-                    frame: ComptimeFrame {
-                        program: 1,
-                        body,
-                        name: Some(admission.name),
-                        context: Some(FakeFile { index: 0 }),
-                        span: Span::new(0, 0),
-                        function_span: Span::new(0, 0),
-                        type_bindings: AHashMap::new(),
-                        value_bindings: AHashMap::new(),
-                        name_bindings: AHashMap::new(),
-                        call_identity: None,
-                        expected_result: expected,
-                    },
+                    frame,
                     ticket: self.enter_count,
                 }));
             }
@@ -2542,7 +2566,10 @@ mod value_domain_tests {
             PRODUCER_CALLS.with(|calls| {
                 calls.borrow_mut().push((*program, *ticket, name.ordinal));
             });
-            if matches!(self.finish_outcome, FakeFinishOutcome::CanonicalFailure) {
+            if matches!(self.finish_outcome, FakeFinishOutcome::CanonicalFailure)
+                || CANONICAL_FAILURE_AFTER
+                    .with(|after| after.get().is_some_and(|after| self.enter_count >= after))
+            {
                 return Err(FAKE_FAILURE.into());
             }
             Ok(FakeIdentity {
@@ -5716,7 +5743,7 @@ mod value_domain_tests {
     }
 
     #[test]
-    fn entered_frames_use_the_real_64_frame_budget_and_memoized_bypasses_it() {
+    fn entered_frames_use_the_real_64_frame_budget_and_prepared_outcomes_remain_ticket_free() {
         let mut editor = rue_rir::RirEditor::new();
         let interner = lasso::ThreadedRodeo::new();
         let symbol = interner.get_or_intern("loop");
@@ -5953,6 +5980,49 @@ mod value_domain_tests {
         TICKET_EVENTS.with(|events| assert!(events.borrow().is_empty()));
         PRODUCER_CALLS.with(|calls| {
             assert_eq!(calls.borrow().as_slice(), &[(1, 1, base)]);
+        });
+    }
+
+    #[test]
+    fn depth_rejection_precedes_prelookup_canonicalization_failure() {
+        let interner = lasso::ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("deep");
+        let mut root = rue_rir::RirEditor::new();
+        let root_call = root.add_call(symbol, &[], Span::new(13, 19)).unwrap();
+        let mut child = rue_rir::RirEditor::new();
+        let child_call = child.add_call(symbol, &[], Span::new(23, 29)).unwrap();
+        let mut host = FakeHost {
+            programs: vec![root.finish(), child.finish()],
+            type_symbol: SymbolHandle::new(symbol),
+            constant: None,
+            dependencies: Vec::new(),
+            call_plans: AHashMap::new(),
+            recursive: Some((MAX_COMPTIME_CALL_DEPTH + 2, child_call, child_call, None)),
+            enter_count: 0,
+            finish_outcome: FakeFinishOutcome::Identity,
+            finished: Vec::new(),
+            float_evaluations: Cell::new(0),
+        };
+        PREPARE_CANONICAL_PROBE.with(|enabled| enabled.set(true));
+        CANONICAL_FAILURE_AFTER.with(|after| after.set(Some(MAX_COMPTIME_CALL_DEPTH + 2)));
+        DEPTH_FAILURE_VARIANT.with(|enabled| enabled.set(true));
+        DIAGNOSTIC_SITES.with(|sites| sites.borrow_mut().clear());
+        PRODUCER_CALLS.with(|calls| calls.borrow_mut().clear());
+        let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+        let result = ComptimeEngine::new(&mut host)
+            .evaluate(ComptimeFrame::expression(0, root_call), &mut env);
+        PREPARE_CANONICAL_PROBE.with(|enabled| enabled.set(false));
+        CANONICAL_FAILURE_AFTER.with(|after| after.set(None));
+        DEPTH_FAILURE_VARIANT.with(|enabled| enabled.set(false));
+        assert!(matches!(
+            result,
+            ComptimeOutcome::HostFailure(FakeFailure::DepthExceeded)
+        ));
+        DIAGNOSTIC_SITES.with(|sites| {
+            assert_eq!(sites.borrow().as_slice(), &[(1, 0, 0)]);
+        });
+        PRODUCER_CALLS.with(|calls| {
+            assert!(calls.borrow().len() >= MAX_COMPTIME_CALL_DEPTH);
         });
     }
 
@@ -6455,8 +6525,12 @@ mod value_domain_tests {
     }
 
     #[test]
-    fn completed_memo_distinguishes_ordered_args_and_miss() {
-        type Memo = ComptimeCompletedCallMemo<u8, u8, u8, u8, u8>;
+    fn completed_memo_distinguishes_callable_target_and_ordered_args() {
+        // The declaration tuple stands in for the real producer's callable,
+        // imported-module, and generic-identity components. Keeping those
+        // components in one exact field catches counterfeit near-collision
+        // keys without depending on a particular issuer's token numbers.
+        type Memo = ComptimeCompletedCallMemo<(u8, u8, u8), u8, u8, u8, u8>;
         let key = |declaration, configuration, types: &[u8], values: &[u8]| ComptimeCallKey {
             declaration,
             configuration,
@@ -6464,7 +6538,7 @@ mod value_domain_tests {
             value_arguments: Arc::from(values),
         };
         let mut memo = Memo::new();
-        let base = key(7, 3, &[1, 2], &[3, 4]);
+        let base = key((7, 11, 13), 3, &[1, 2], &[3, 4]);
         assert!(matches!(memo.lookup(&base), ComptimeCallMemoLookup::Miss));
         memo.insert(base.clone(), ComptimeMemoizedOutcome::NotReady)
             .unwrap();
@@ -6473,19 +6547,23 @@ mod value_domain_tests {
             ComptimeCallMemoLookup::Memoized(ComptimeMemoizedOutcome::NotReady)
         ));
         assert!(matches!(
-            memo.lookup(&key(8, 3, &[1, 2], &[3, 4])),
+            memo.lookup(&key((8, 11, 13), 3, &[1, 2], &[3, 4])),
             ComptimeCallMemoLookup::Miss
         ));
         assert!(matches!(
-            memo.lookup(&key(7, 4, &[1, 2], &[3, 4])),
+            memo.lookup(&key((7, 11, 14), 3, &[1, 2], &[3, 4])),
             ComptimeCallMemoLookup::Miss
         ));
         assert!(matches!(
-            memo.lookup(&key(7, 3, &[2, 1], &[3, 4])),
+            memo.lookup(&key((7, 11, 13), 4, &[1, 2], &[3, 4])),
             ComptimeCallMemoLookup::Miss
         ));
         assert!(matches!(
-            memo.lookup(&key(7, 3, &[1, 2], &[4, 3])),
+            memo.lookup(&key((7, 11, 13), 3, &[2, 1], &[3, 4])),
+            ComptimeCallMemoLookup::Miss
+        ));
+        assert!(matches!(
+            memo.lookup(&key((7, 11, 13), 3, &[1, 2], &[4, 3])),
             ComptimeCallMemoLookup::Miss
         ));
         assert_eq!(memo.len(), 1);
@@ -6494,7 +6572,7 @@ mod value_domain_tests {
             memo.insert(base, ComptimeMemoizedOutcome::Known(9)),
             Err(ComptimeMemoInsertError::AlreadyMemoized)
         );
-        let trap_key = key(7, 3, &[1, 2], &[5]);
+        let trap_key = key((7, 11, 13), 3, &[1, 2], &[5]);
         let trap = ComptimeTrap {
             operation: "division by zero",
             span: Span::new(0, 0),
@@ -7147,6 +7225,24 @@ pub trait ComptimeHost {
         >,
         Self::Failure,
     >;
+    /// Look up a successful result in the host's evaluation-local completed
+    /// memo after the engine has admitted this frame's depth and canonical
+    /// identity. A hit returns directly without activating or finishing the
+    /// completion ticket. Durable hosts retain the default miss behavior;
+    /// ordinary body hosts may use this hook for their body-local memo.
+    fn lookup_completed_comptime_call(
+        &mut self,
+        _frame: &ComptimeFrame<
+            Self::Value,
+            Self::Type,
+            Self::Name,
+            Self::File,
+            Self::ProgramKey,
+            Self::CanonicalIdentity,
+        >,
+    ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
+        Ok(None)
+    }
     fn finish_comptime_call(
         &mut self,
         frame: &ComptimeFrame<
@@ -7161,7 +7257,9 @@ pub trait ComptimeHost {
         result: ComptimeOutcome<Self::Value, Self::Failure>,
     ) -> ComptimeOutcome<Self::Value, Self::Failure>;
     /// Activate a prepared completion ticket only after the engine has
-    /// admitted depth and issued the canonical producer identity.
+    /// admitted depth and has a canonical producer identity. A host may issue
+    /// that identity during preparation when it also needs it for admission;
+    /// the engine then carries it into the entered frame.
     fn enter_comptime_call(
         &mut self,
         _frame: &ComptimeFrame<
@@ -8057,15 +8155,22 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             ));
         }
         if let Some(name) = frame.name.clone() {
-            let canonical_identity = host_value!(self.host.canonical_function_producer(
-                &frame.program,
-                &ticket,
-                name,
-                &frame.type_bindings,
-                &frame.value_bindings,
-                frame.span,
-            ));
+            let canonical_identity = if let Some(identity) = frame.call_identity.clone() {
+                identity
+            } else {
+                host_value!(self.host.canonical_function_producer(
+                    &frame.program,
+                    &ticket,
+                    name,
+                    &frame.type_bindings,
+                    &frame.value_bindings,
+                    frame.span,
+                ))
+            };
             frame.call_identity = Some(canonical_identity);
+            if let Some(value) = host_value!(self.host.lookup_completed_comptime_call(&frame)) {
+                return ComptimeOutcome::Known(value);
+            }
             // Admission and canonical producer issuance are complete. Only
             // now may a host activate the opaque completion ticket carried by
             // this frame; depth/producer failures above never activate it.

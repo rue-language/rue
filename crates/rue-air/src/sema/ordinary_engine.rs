@@ -3,7 +3,9 @@
 //! [`OrdinaryBodyAnalysisHost`] names the state the algorithm actually needs;
 //! the query-backed provider host is its one production implementation. [`OrdinaryBodyEngine`] only gives that one generic algorithm an
 //! inherent-method receiver, which stable Rust cannot define on a trait. It
-//! owns no state, representation conversion, cache, or alternative policy.
+//! owns only a body-analysis-local successful comptime reduction memo in
+//! addition to the borrowed storage handle; it has no alternate semantic
+//! policy or representation conversion.
 
 use crate::Node;
 use ahash::{AHashMap, AHashSet};
@@ -19,6 +21,9 @@ use super::aggregate_resolution::is_accessible as aggregate_is_accessible;
 use super::analysis::FirstClassStrSite;
 use super::anon_structs::{
     IssuedCanonicalArguments, IssuedFunctionInstanceKey, IssuedStableProducerId,
+};
+use super::comptime::{
+    ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCompletedCallMemo, ComptimeMemoizedOutcome,
 };
 use super::context::{AnalysisContext, DivergenceKinds, ParamIndex, ParamInfo};
 use super::fact_mode::{
@@ -447,15 +452,141 @@ pub(crate) trait OrdinaryBodyAnalysisHost:
 
 /// Inherent-method receiver for the generic ordinary-body algorithm.
 ///
-/// The engine owns no analyzer representation and has no alternate semantic
-/// algorithm. Both concrete hosts enter the same methods through this receiver.
+/// The engine owns no analyzer representation or alternate semantic algorithm.
+/// It carries only the host-owned body-analysis-local successful reduction
+/// memo needed by the ordinary comptime path. Both concrete hosts enter the
+/// same methods through this receiver.
 pub(crate) struct OrdinaryBodyEngine<'h, H: OrdinaryBodyAnalysisHost> {
     storage: &'h mut H,
+    comptime_reduction_memo:
+        ComptimeCompletedCallMemo<IssuedStableProducerId, Target, Type, ConstValue, ConstValue>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ComptimeReductionTestStats {
+    pub(crate) misses: usize,
+    pub(crate) hits: usize,
+    pub(crate) publications: usize,
+    pub(crate) canonical_issuances: usize,
+    pub(crate) non_successful_completions: usize,
+    pub(crate) last_known_integer: Option<i128>,
+    pub(crate) max_entries: usize,
+    pub(crate) body_instances_dropped: usize,
+    pub(crate) last_dropped_entries: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static COMPTIME_REDUCTION_TEST_STATS: std::cell::Cell<ComptimeReductionTestStats> =
+        const { std::cell::Cell::new(ComptimeReductionTestStats {
+            misses: 0,
+            hits: 0,
+            publications: 0,
+            canonical_issuances: 0,
+            non_successful_completions: 0,
+            last_known_integer: None,
+            max_entries: 0,
+            body_instances_dropped: 0,
+            last_dropped_entries: 0,
+        }) };
+    static COMPTIME_REDUCTION_TEST_KEYS: std::cell::RefCell<Vec<ComptimeCallKey<IssuedStableProducerId, Target, Type, ConstValue>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_comptime_reduction_test_stats() {
+    COMPTIME_REDUCTION_TEST_STATS.with(|stats| stats.set(ComptimeReductionTestStats::default()));
+    COMPTIME_REDUCTION_TEST_KEYS.with(|keys| keys.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(crate) fn comptime_reduction_test_keys()
+-> Vec<ComptimeCallKey<IssuedStableProducerId, Target, Type, ConstValue>> {
+    COMPTIME_REDUCTION_TEST_KEYS.with(|keys| keys.borrow().clone())
+}
+
+#[cfg(test)]
+pub(crate) fn comptime_reduction_test_stats() -> ComptimeReductionTestStats {
+    COMPTIME_REDUCTION_TEST_STATS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn update_comptime_reduction_test_stats(update: impl FnOnce(&mut ComptimeReductionTestStats)) {
+    COMPTIME_REDUCTION_TEST_STATS.with(|stats| {
+        let mut current = stats.get();
+        update(&mut current);
+        stats.set(current);
+    });
 }
 
 impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn new(storage: &'h mut H) -> Self {
-        Self { storage }
+        Self {
+            storage,
+            comptime_reduction_memo: ComptimeCompletedCallMemo::new(),
+        }
+    }
+
+    pub(crate) fn lookup_comptime_reduction(
+        &self,
+        key: &ComptimeCallKey<IssuedStableProducerId, Target, Type, ConstValue>,
+    ) -> Option<ConstValue> {
+        match self.comptime_reduction_memo.lookup(key) {
+            ComptimeCallMemoLookup::Memoized(ComptimeMemoizedOutcome::Known(value)) => {
+                #[cfg(test)]
+                update_comptime_reduction_test_stats(|stats| stats.hits += 1);
+                Some(*value)
+            }
+            ComptimeCallMemoLookup::Memoized(_) | ComptimeCallMemoLookup::Miss => None,
+        }
+    }
+
+    pub(crate) fn memoize_comptime_reduction(
+        &mut self,
+        key: ComptimeCallKey<IssuedStableProducerId, Target, Type, ConstValue>,
+        value: ConstValue,
+    ) {
+        // The key is admitted only after a completed call has been evaluated.
+        // A duplicate would indicate an impossible second completion of the
+        // same frame, so retain the first successful result deterministically.
+        let insertion = self
+            .comptime_reduction_memo
+            .insert(key, ComptimeMemoizedOutcome::Known(value))
+            .is_ok();
+        #[cfg(test)]
+        if insertion {
+            update_comptime_reduction_test_stats(|stats| {
+                stats.publications += 1;
+                stats.last_known_integer = value.as_int_value();
+                stats.max_entries = stats.max_entries.max(self.comptime_reduction_memo.len());
+            });
+        }
+        #[cfg(not(test))]
+        let _ = insertion;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_comptime_reduction_miss(&self) {
+        update_comptime_reduction_test_stats(|stats| stats.misses += 1);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_comptime_reduction_key(
+        &self,
+        key: &ComptimeCallKey<IssuedStableProducerId, Target, Type, ConstValue>,
+    ) {
+        COMPTIME_REDUCTION_TEST_KEYS.with(|keys| keys.borrow_mut().push(key.clone()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_comptime_canonical_issuance(&self) {
+        update_comptime_reduction_test_stats(|stats| stats.canonical_issuances += 1);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_non_successful_comptime_completion(&self) {
+        update_comptime_reduction_test_stats(|stats| stats.non_successful_completions += 1);
     }
 
     pub(crate) fn check_canceled(&self) -> CompileResult<()> {
@@ -1124,6 +1255,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         tys: &AHashMap<Spur, Type>,
         vals: &AHashMap<Spur, ConstValue>,
     ) -> Result<IssuedStableProducerId, crate::SemanticBodyExportFailure> {
+        #[cfg(test)]
+        self.record_comptime_canonical_issuance();
         use crate::SemanticBodyExportFailure as F;
         let function =
             DeclarationFacts::function_info(self.storage, name).ok_or(F::MissingStableIdentity)?;
@@ -2359,5 +2492,15 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             ctx.referenced_functions,
             ctx.referenced_methods,
         ))
+    }
+}
+
+#[cfg(test)]
+impl<H: OrdinaryBodyAnalysisHost> Drop for OrdinaryBodyEngine<'_, H> {
+    fn drop(&mut self) {
+        update_comptime_reduction_test_stats(|stats| {
+            stats.body_instances_dropped += 1;
+            stats.last_dropped_entries = self.comptime_reduction_memo.len();
+        });
     }
 }
