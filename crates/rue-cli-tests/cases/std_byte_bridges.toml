@@ -52,6 +52,78 @@ args = ["main.rue", "-o", "prog"]
 exit_code = 0
 
 [[case]]
+name = "raw_byte_copy_helper_is_not_importable"
+description = "The RawBuf bulk-copy implementation remains container-internal and cannot be reached through ordinary std imports."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let zero: u64 = 0;
+    let p: ptr mut u8 = checked { @int_to_ptr(zero) };
+    std.rawbuf.copy_nonoverlapping_bytes(p, 0, p, 0, 0, 1);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["no member", "rawbuf"]
+
+[[case]]
+name = "arraybuf_copy_shims_are_not_receiver_methods"
+description = "ArrayBuf copy shims cannot be reached through a public receiver with a forged logical source bound."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+
+fn main() -> i32 {
+    let mut bytes = Bytes.with_capacity(1);
+    let source: S = "a";
+    bytes.copy_from_rawbuf(borrow source.core, 100, 101, 0, 1);
+    bytes.len = 1;
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["copy_from_rawbuf"]
+
+[[case]]
+name = "rawbuf_copy_shims_are_not_receiver_methods"
+description = "RawBuf same-owner copying cannot be reached through a StrBuf core receiver to read spare capacity."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let mut source: S = "a";
+    source.core.copy_range_within(0, 1, 1);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["copy_range_within"]
+
+[[case]]
+name = "rawbuf_range_copy_is_not_a_receiver_method"
+description = "The former RawBuf range-copy receiver surface cannot be used to supply an arbitrary logical source bound."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let mut destination: S = "a";
+    let source: S = "b";
+    destination.core.copy_range_from(borrow source.core, 0, 1, 0, 1);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["copy_range_from"]
+
+[[case]]
 name = "byte_range_bridges_reject_out_of_bounds_ranges"
 description = "The checked ArrayBuf(u8)-to-StrBuf range bridge traps before reading beyond the borrowed source."
 env = { RUE_STD_PATH = "${REAL_STD}" }
@@ -98,6 +170,44 @@ fn main() -> i32 {
     bytes.extend_from(borrow empty_bytes);
     bytes.extend_str(borrow empty_view);
     if !bytes.is_empty() || bytes.capacity() != bytes_cap { return 3; }
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+
+[[case]]
+name = "byte_range_bridges_cover_boundaries_and_large_ranges"
+description = "Both bridge directions copy boundary-aligned and large ranges in one ownership-independent result, including append into spare capacity."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+
+fn main() -> i32 {
+    let mut source = Bytes.with_capacity(128);
+    let mut i: u64 = 0;
+    while i < 128 {
+        source.push(@intCast(i));
+        i += 1;
+    }
+
+    let middle = S.from_byte_range(borrow source, 1, 126);
+    if middle.len() != 126 || middle[0] != 1 || middle[125] != 126 { return 1; }
+    let mut round_trip = middle.to_bytes();
+    if round_trip.len() != 126 || round_trip.get_or(0, 0) != 1 || round_trip.get_or(125, 0) != 126 { return 2; }
+
+    let mut target = S.with_capacity(160);
+    let target_cap = target.capacity();
+    target.append_byte_range(borrow source, 0, 128);
+    if target.len() != 128 || target.capacity() != target_cap { return 3; }
+    if target[0] != 0 || target[127] != 127 { return 4; }
+
+    // Mutating the copied ArrayBuf proves neither bridge aliases its source.
+    round_trip.set(0, 255);
+    if middle[0] != 1 || source.get_or(1, 0) != 1 { return 5; }
+    if source.len() != 128 || target.len() != 128 { return 6; }
     0
 }
 """ }]

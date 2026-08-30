@@ -10,9 +10,10 @@
 // growable containers own their heap through one primitive. StrBuf adds the
 // length and the byte-string algorithms on top. The packed bytes are still
 // read/written one at a time through `@ptr_read`/`@ptr_write` over a
-// `@ptr_offset` walk of the `ptr u8`, and in bulk through `@byte_copy`; only
-// the raw `{buf, cap}` ownership (allocate / grow / free / teardown) is
-// delegated to the core.
+// `@ptr_offset` walk of the `ptr u8`; bounded bulk copies are delegated to
+// `RawBuf`, which is the only owner of the byte-copy intrinsic. The raw
+// `{buf, cap}` ownership (allocate / grow / free / teardown) is delegated to
+// the same core.
 //
 // Interoperability with core `str` and `ArrayBuf(u8)` is explicit and copying:
 // `from_str`, `from_bytes`, and `to_bytes` create independent owners, while
@@ -32,27 +33,6 @@ fn read_packed_byte(source: ptr mut u8, index: u64) -> u8 {
 
 fn write_packed_byte(destination: ptr mut u8, index: u64, byte: u8) {
     checked { @ptr_write(@ptr_offset(destination, index), byte); };
-}
-
-fn copy_packed_bytes(
-    source: ptr mut u8,
-    source_start: u64,
-    destination: ptr mut u8,
-    destination_start: u64,
-    count: u64,
-) {
-    // A memcpy-shaped bulk copy (ADR-0058). Every StrBuf caller copies between
-    // two distinct allocations (a fresh block during grow/duplicate, a foreign
-    // buffer during append/concat), so the source and destination ranges never
-    // overlap — the non-overlapping `@byte_copy` contract holds. `@ptr_offset`
-    // cannot form the sub-range pointers because it strides by the typed-pointer
-    // slot size, so the byte offsets are folded into the addresses directly.
-    checked {
-        let source_ptr: ptr mut u8 = @int_to_ptr(@ptr_to_int(source) + source_start);
-        let destination_ptr: ptr mut u8 =
-            @int_to_ptr(@ptr_to_int(destination) + destination_start);
-        @byte_copy(destination_ptr, source_ptr, count);
-    };
 }
 
 pub struct StrBuf {
@@ -98,11 +78,7 @@ pub struct StrBuf {
             @panic("index out of bounds");
         }
         let mut out = Self.allocate(count);
-        let mut i: u64 = 0;
-        while i < count {
-            write_packed_byte(out.core.buf, i, source.get_or(start + i, 0));
-            i += 1;
-        }
+        arraybuf.copy_arraybuf_range(u8, borrow source, inout out.core, start, 0, count);
         out.len = count;
         out
     }
@@ -180,9 +156,24 @@ pub struct StrBuf {
             if checked { @ptr_to_int(replacement) } == 0 {
                 @panic("out of memory");
             }
-            copy_packed_bytes(self.core.buf, 0, replacement, 0, self.len);
-            self.core.buf = replacement;
-            self.core.cap = new_cap;
+            let R = rawbuf.RawBuf(u8);
+            let mut replacement_core = R.new();
+            replacement_core.buf = replacement;
+            replacement_core.cap = new_cap;
+            rawbuf.copy_rawbuf_range(
+                u8,
+                inout replacement_core,
+                borrow self.core,
+                0,
+                self.len,
+                0,
+                self.len,
+            );
+            self.core.buf = replacement_core.buf;
+            self.core.cap = replacement_core.cap;
+            let zero: u64 = 0;
+            replacement_core.buf = checked { @int_to_ptr(zero) };
+            replacement_core.cap = 0;
         } else {
             self.core.grow_to(new_cap);
         }
@@ -212,7 +203,15 @@ pub struct StrBuf {
         if source_len == 0 {
             return;
         }
-        copy_packed_bytes(other.core.buf, 0, self.core.buf, destination_start, source_len);
+        rawbuf.copy_rawbuf_range(
+            u8,
+            inout self.core,
+            borrow other.core,
+            0,
+            source_len,
+            destination_start,
+            source_len,
+        );
         self.len = destination_start + source_len;
     }
 
@@ -248,11 +247,14 @@ pub struct StrBuf {
         }
         self.grow(count);
         let destination_start = self.len;
-        let mut i: u64 = 0;
-        while i < count {
-            write_packed_byte(self.core.buf, destination_start + i, source.get_or(start + i, 0));
-            i += 1;
-        }
+        arraybuf.copy_arraybuf_range(
+            u8,
+            borrow source,
+            inout self.core,
+            start,
+            destination_start,
+            count,
+        );
         self.len = destination_start + count;
     }
 
@@ -266,7 +268,15 @@ pub struct StrBuf {
         if source_len == 0 {
             return;
         }
-        copy_packed_bytes(other.core.buf, 0, target.core.buf, destination_start, source_len);
+        rawbuf.copy_rawbuf_range(
+            u8,
+            inout target.core,
+            borrow other.core,
+            0,
+            source_len,
+            destination_start,
+            source_len,
+        );
         target.len = destination_start + source_len;
     }
 
@@ -276,7 +286,7 @@ pub struct StrBuf {
     fn duplicate(inout self) {
         let old_len = self.len;
         self.grow(old_len);
-        copy_packed_bytes(self.core.buf, 0, self.core.buf, old_len, old_len);
+        rawbuf.copy_rawbuf_range_within(u8, inout self.core, 0, old_len, old_len, old_len);
         self.len = old_len + old_len;
     }
 
@@ -291,7 +301,15 @@ pub struct StrBuf {
     // Clone always allocates, including for an empty or literal-backed value.
     fn copy(borrow self) -> Self {
         let mut result = Self.allocate(Self.initial_capacity(self.len));
-        copy_packed_bytes(self.core.buf, 0, result.core.buf, 0, self.len);
+        rawbuf.copy_rawbuf_range(
+            u8,
+            inout result.core,
+            borrow self.core,
+            0,
+            self.len,
+            0,
+            self.len,
+        );
         result.len = self.len;
         result
     }
@@ -301,11 +319,16 @@ pub struct StrBuf {
     fn to_bytes(borrow self) -> arraybuf.ArrayBuf(u8) {
         let Bytes = arraybuf.ArrayBuf(u8);
         let mut out = Bytes.with_capacity(self.len);
-        let mut i: u64 = 0;
-        while i < self.len {
-            out.push(read_packed_byte(self.core.buf, i));
-            i += 1;
-        }
+        rawbuf.copy_rawbuf_range(
+            u8,
+            inout out.core,
+            borrow self.core,
+            0,
+            self.len,
+            0,
+            self.len,
+        );
+        out.len = self.len;
         out
     }
 
@@ -456,7 +479,15 @@ pub struct StrBuf {
             return Self.new();
         }
         let mut result = Self.allocate(count);
-        copy_packed_bytes(self.core.buf, start, result.core.buf, 0, count);
+        rawbuf.copy_rawbuf_range(
+            u8,
+            inout result.core,
+            borrow self.core,
+            start,
+            self.len,
+            0,
+            count,
+        );
         result.len = count;
         result
     }
@@ -489,8 +520,24 @@ pub struct StrBuf {
             return Self.new();
         }
         let mut result = Self.allocate(total);
-        copy_packed_bytes(first.core.buf, 0, result.core.buf, 0, first.len);
-        copy_packed_bytes(second.core.buf, 0, result.core.buf, first.len, second.len);
+        rawbuf.copy_rawbuf_range(
+            u8,
+            inout result.core,
+            borrow first.core,
+            0,
+            first.len,
+            0,
+            first.len,
+        );
+        rawbuf.copy_rawbuf_range(
+            u8,
+            inout result.core,
+            borrow second.core,
+            0,
+            second.len,
+            first.len,
+            second.len,
+        );
         result.len = total;
         result
     }

@@ -421,3 +421,29 @@ pub fn ArrayBuf(comptime T: type) -> type {
         }
     }
 }
+
+// Directory-private bridge owned by ArrayBuf. Keeping this outside the public
+// type prevents user code from invoking a copy shim through an ArrayBuf
+// receiver. The source range is checked against this container's initialized
+// length; RawBuf separately checks the destination's real allocation capacity.
+fn copy_arraybuf_range(
+    comptime T: type,
+    borrow source: ArrayBuf(T),
+    inout destination: rawbuf.RawBuf(T),
+    start: u64,
+    destination_start: u64,
+    count: u64,
+) {
+    if start > source.len || count > source.len - start {
+        @panic("index out of bounds");
+    }
+    rawbuf.copy_rawbuf_range(
+        T,
+        inout destination,
+        borrow source.core,
+        start,
+        source.len,
+        destination_start,
+        count,
+    );
+}

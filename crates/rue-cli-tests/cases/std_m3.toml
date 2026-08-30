@@ -49,6 +49,43 @@ fn main() -> i32 {
 """ }]
 
 [[case]]
+name = "std_strings_trim_returns_independent_capacity_sized_ranges"
+description = "trim, trim_start, and trim_end preserve exact contents while empty results stay empty and retained slices use their own capacity."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 68
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let empty: S = "";
+    let blank: S = " \\t\\n";
+    let empty_trimmed = std.strings.trim(empty);
+    let blank_start = std.strings.trim_start(blank);
+    let blank_end = std.strings.trim_end(" \\t\\n");
+    if empty_trimmed.len() != 0 || empty_trimmed.capacity() != 0 { return 1; }
+    if blank_start.len() != 0 || blank_start.capacity() != 0 { return 2; }
+    if blank_end.len() != 0 || blank_end.capacity() != 0 { return 3; }
+
+    let start = std.strings.trim_start("  abc  ");
+    let end = std.strings.trim_end("  abc  ");
+    let both = std.strings.trim("  abc  ");
+    if start != "abc  " || end != "  abc" || both != "abc" { return 4; }
+    if start.capacity() != 16 || end.capacity() != 16 || both.capacity() != 16 { return 5; }
+
+    let large: S = "    abcdefghijklmnopqrstuvwxyz0123456789    ";
+    let source_copy = large.copy();
+    let mut retained = std.strings.trim(large);
+    if retained != "abcdefghijklmnopqrstuvwxyz0123456789" { return 6; }
+    if retained.len() != 36 || retained.capacity() != 36 { return 7; }
+    retained.push(90);
+    if source_copy != "    abcdefghijklmnopqrstuvwxyz0123456789    " { return 8; }
+    68
+}
+""" }]
+
+[[case]]
 name = "std_strings_m3"
 description = "bounds-checked bytes plus byte- and character-oriented string helpers (22 checks -> exit 62)."
 env = { RUE_STD_PATH = "${REAL_STD}" }

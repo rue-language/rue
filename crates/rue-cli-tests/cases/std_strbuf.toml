@@ -236,13 +236,14 @@ fn main() -> i32 {
 args = ["--emit", "mir", "main.rue"]
 compile_only = true
 # Backend views expose production machine symbols. These are the stable-symbol
-# hex payloads for duplicate, byte_range, concat_borrowed, and
-# copy_packed_bytes respectively.
+# hex payloads for duplicate, byte_range, concat_borrowed, and the RawBuf bulk
+# copy helper respectively.
 compile_stdout_contains = [
     "6475706c6963617465",
     "627974655f72616e6765",
     "636f6e6361745f626f72726f776564",
-    "636f70795f7061636b65645f6279746573",
+    "636f70795f7261776275665f72616e6765",
+    "636f70795f7261776275665f72616e67655f77697468696e",
 ]
 
 [[case]]
