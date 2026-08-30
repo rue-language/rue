@@ -772,17 +772,141 @@ impl<'a> ConstraintGenerator<'a> {
     }
 
     /// The pointee of a pointer operand whose type is *already* concrete at
-    /// constraint-generation time — an annotated binding, a parameter, a
-    /// pointer-returning intrinsic with a fixed result type. Returns `None` for
-    /// anything still standing on a type variable (`@raw`, `@ptr_offset`,
-    /// `@int_to_ptr`), because this pass has no substitution to consult: the
-    /// unifier has not run yet, so an unresolved operand carries no pointee to
-    /// read and must be left free rather than guessed (RUE-1341).
+    /// constraint-generation time — an annotated binding, a parameter, or a
+    /// pointer-returning intrinsic whose result was published by this pass.
+    /// Returns `None` for anything still standing on a type variable (such as
+    /// an unresolved `@raw`, `@ptr_offset`, or context-driven `@int_to_ptr`),
+    /// because the unifier has not run yet and this pass must leave the
+    /// genuinely unresolved pointee free rather than guess it (RUE-1341).
     fn concrete_pointee_type(&self, ty: &InferType) -> Option<Type> {
         match ty.as_concrete()?.kind() {
             TypeKind::PtrConst(ptr_id) => Some(self.type_pool.ptr_const_def(ptr_id)),
             TypeKind::PtrMut(ptr_id) => Some(self.type_pool.ptr_mut_def(ptr_id)),
             _ => None,
+        }
+    }
+
+    /// Convert a fully concrete inference type to its interned semantic type.
+    /// Array literals remain structural during constraint generation, so they
+    /// need the same canonicalization as annotated array types before they can
+    /// be used as a raw-pointer pointee. Unresolved elements stay unresolved.
+    fn concrete_type(&self, ty: &InferType) -> Option<Type> {
+        match ty {
+            InferType::Concrete(ty)
+                if !ty.is_error()
+                    && !ty.is_never()
+                    && !ty.is_comptime_type()
+                    && !ty.is_module() =>
+            {
+                Some(*ty)
+            }
+            InferType::Concrete(_) => None,
+            InferType::Array { element, length } => {
+                let element = self.concrete_type(element)?;
+                Some(Type::new_array(
+                    self.type_pool.intern_array_from_type(element, *length),
+                ))
+            }
+            InferType::Var(_) | InferType::IntLiteral => None,
+        }
+    }
+
+    /// Whether a RIR operand can name local/parameter storage. Sema remains
+    /// authoritative for place validity (including resolved field/index
+    /// types), but avoiding computed/module/constant operands here prevents a
+    /// speculative pointer result from masking its targeted diagnostic.
+    fn is_inference_place(&self, inst_ref: InstRef, ctx: &ConstraintContext) -> bool {
+        match self.rir.get(inst_ref).data {
+            InstData::VarRef { name, .. } => {
+                match ctx.locals.get(&name) {
+                    Some(local) => {
+                        // Comptime aliases and module values are represented
+                        // in inference as locals, but sema materializes their
+                        // uses as TypeConst rather than addressable runtime
+                        // storage. Keep those uses on sema's targeted place
+                        // diagnostic. A local shadows a parameter here, so
+                        // do not fall through to the parameter predicate.
+                        !matches!(
+                            local.ty,
+                            InferType::Concrete(ty)
+                                if ty.is_comptime_type() || ty.is_module()
+                        )
+                    }
+                    None => {
+                        // Captured comptime values are materialized by sema
+                        // as Const/TypeConst rather than Param AIR. Keep
+                        // those names free as well; ordinary parameters (and
+                        // their comptime modes when not captured) remain
+                        // addressable Param values.
+                        !self
+                            .comptime_values
+                            .is_some_and(|values| values.contains_key(&name))
+                            && ctx.contains_param(name)
+                    }
+                }
+            }
+            InstData::FieldGet { base, .. } => self.is_inference_place(base, ctx),
+            InstData::IndexGet { base, index } => {
+                // Only fixed-array indexing names addressable storage. String
+                // and slice indexing is a computed runtime read, even when
+                // the base and index are concrete; publishing a pointer for
+                // it would steal sema's E0485 place diagnostic.
+                let base_is_fixed_array = self.expr_types.get(&base).is_some_and(|ty| match ty {
+                    InferType::Array { .. } => true,
+                    InferType::Concrete(ty) => ty.as_array().is_some(),
+                    InferType::Var(_) | InferType::IntLiteral => false,
+                });
+                // Keep an invalid index owned by sema. An exact pointer
+                // result for `@raw(a[true])` could otherwise make a separate
+                // pointer annotation fail first with E0206.
+                let index_is_integer = self.expr_types.get(&index).is_some_and(|ty| match ty {
+                    InferType::Concrete(ty) => ty.is_integer(),
+                    InferType::Var(id) => self.int_literal_vars.contains(id),
+                    InferType::IntLiteral => true,
+                    InferType::Array { .. } => false,
+                });
+                // Sema diagnoses a direct constant index outside a fixed
+                // array as E0902 before it can form a PlaceRead. The
+                // inference pass has no authoritative constant evaluator, so
+                // only direct literals proven in bounds and runtime local/
+                // parameter indices may publish a pointer; folded constants
+                // and other computed expressions stay free for sema.
+                let index_is_publishable = match self.rir.get(index).data {
+                    InstData::IntConst(value) => {
+                        index_is_integer
+                            && self
+                                .expr_types
+                                .get(&base)
+                                .and_then(|ty| match ty {
+                                    InferType::Array { length, .. } => Some(*length),
+                                    InferType::Concrete(ty) => ty
+                                        .as_array()
+                                        .map(|array_id| self.type_pool.array_def(array_id).1),
+                                    InferType::Var(_) | InferType::IntLiteral => None,
+                                })
+                                .is_some_and(|length| value < length)
+                    }
+                    InstData::VarRef { name, .. } => {
+                        index_is_integer
+                            && match ctx.locals.get(&name) {
+                                Some(local) => !matches!(
+                                    local.ty,
+                                    InferType::Concrete(ty)
+                                        if ty.is_comptime_type() || ty.is_module()
+                                ),
+                                None => {
+                                    !self
+                                        .comptime_values
+                                        .is_some_and(|values| values.contains_key(&name))
+                                        && ctx.contains_param(name)
+                                }
+                            }
+                    }
+                    _ => false,
+                };
+                self.is_inference_place(base, ctx) && base_is_fixed_array && index_is_publishable
+            }
+            _ => false,
         }
     }
 
@@ -1692,7 +1816,7 @@ impl<'a> ConstraintGenerator<'a> {
                         && value_info.continues
                         && !Self::is_never_concrete(&value_info.ty)
                     {
-                        // Constrain value to match variable type
+                        // Assignment stores the value with its semantic type.
                         self.add_constraint(Constraint::equal(value_info.ty, target_ty, span));
                     }
                 }
@@ -2291,12 +2415,33 @@ impl<'a> ConstraintGenerator<'a> {
                 } else if intrinsic_name == "ptr_offset" {
                     // @ptr_offset: takes (ptr T, i64), returns ptr T
                     // The return type is the same as the input pointer type.
-                    // We create a fresh type variable for proper inference.
-                    for arg_ref in args.iter() {
-                        generate_intrinsic_arg!(*arg_ref);
+                    // Publish that identity when a well-formed call already
+                    // has a concrete pointer operand; unresolved pointers and
+                    // wrong-arity calls remain free so sema owns diagnostics.
+                    let typed_shape = args.len() == 2;
+                    let mut pointer_ty = None;
+                    let mut offset_is_integer = false;
+                    for (index, arg_ref) in args.iter().enumerate() {
+                        let info = generate_intrinsic_arg!(*arg_ref);
+                        if typed_shape {
+                            match index {
+                                0 => pointer_ty = self.concrete_type(&info.ty).filter(Type::is_ptr),
+                                1 => {
+                                    offset_is_integer = match info.ty {
+                                        InferType::Concrete(ty) => ty.is_integer(),
+                                        InferType::Var(id) => self.int_literal_vars.contains(&id),
+                                        InferType::IntLiteral => true,
+                                        InferType::Array { .. } => false,
+                                    };
+                                }
+                                _ => {}
+                            }
+                        }
                     }
-                    let result_var = self.fresh_var();
-                    InferType::Var(result_var)
+                    if !offset_is_integer {
+                        pointer_ty = None;
+                    }
+                    pointer_ty.map_or_else(|| InferType::Var(self.fresh_var()), InferType::Concrete)
                 } else if intrinsic_name == "place" {
                     // The trusted `@place(ptr)` bridge is represented as a
                     // pointer-shaped expression until accessor-yield analysis
@@ -2311,15 +2456,33 @@ impl<'a> ConstraintGenerator<'a> {
                     || intrinsic_name == "field_ptr"
                 {
                     // @raw / @raw_mut / @field_ptr: takes a place, returns a
-                    // pointer to it (RUE-301). The return type is a pointer
-                    // whose pointee is only known once the operand is analyzed,
-                    // so we create a fresh type variable for proper inference
-                    // (Sema fixes it to `ptr const T`/`ptr mut T`).
-                    for arg_ref in args.iter() {
-                        generate_intrinsic_arg!(*arg_ref);
+                    // pointer to it (RUE-301). If the operand is a concrete
+                    // local/parameter place, publish the exact interned
+                    // pointee now. Computed and module/constant operands stay
+                    // free so sema retains ownership of its place diagnostic.
+                    let typed_shape = args.len() == 1;
+                    let mut pointee = None;
+                    for (index, arg_ref) in args.iter().enumerate() {
+                        let info = generate_intrinsic_arg!(*arg_ref);
+                        let is_field_place =
+                            matches!(self.rir.get(*arg_ref).data, InstData::FieldGet { .. });
+                        if typed_shape
+                            && index == 0
+                            && self.is_inference_place(*arg_ref, ctx)
+                            && (intrinsic_name != "field_ptr" || is_field_place)
+                        {
+                            pointee = self.concrete_type(&info.ty);
+                        }
                     }
-                    let result_var = self.fresh_var();
-                    InferType::Var(result_var)
+                    match pointee {
+                        Some(pointee) if intrinsic_name == "raw" => InferType::Concrete(
+                            Type::new_ptr_const(self.type_pool.intern_ptr_const_from_type(pointee)),
+                        ),
+                        Some(pointee) => InferType::Concrete(Type::new_ptr_mut(
+                            self.type_pool.intern_ptr_mut_from_type(pointee),
+                        )),
+                        None => InferType::Var(self.fresh_var()),
+                    }
                 } else if intrinsic_name == "alloc" || intrinsic_name == "alloc_zeroed" {
                     // @alloc(size: u64, align: u64) -> ptr mut u8 and its
                     // zeroing twin (ADR-0059 Phase 3, RUE-961/RUE-968). Both
@@ -4837,6 +5000,59 @@ mod tests {
 
         assert_eq!(info.ty, InferType::Concrete(Type::BOOL));
         assert_eq!(cgen.constraints().len(), 0);
+    }
+
+    #[test]
+    fn pointer_intrinsics_publish_concrete_operand_types() {
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
+        let value_name = interner.get_or_intern("value");
+        let value = rir.add_inst(rue_rir::Inst {
+            data: InstData::VarRef {
+                name: value_name,
+                anchor: None,
+            },
+            span: Span::new(1, 6),
+        });
+        let raw = rir
+            .add_intrinsic(interner.get_or_intern("raw"), &[value], Span::new(0, 10))
+            .unwrap();
+        let offset = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(11, 12),
+        });
+        let moved = rir
+            .add_intrinsic(
+                interner.get_or_intern("ptr_offset"),
+                &[raw, offset],
+                Span::new(0, 20),
+            )
+            .unwrap();
+
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
+        let params = AHashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::UNIT);
+        ctx.locals.insert(
+            value_name,
+            LocalVarInfo {
+                ty: InferType::Concrete(Type::U16),
+                is_mut: false,
+                span: Span::new(1, 6),
+            },
+        );
+
+        let raw_ty = cgen.generate(raw, &mut ctx).ty;
+        let expected = Type::new_ptr_const(type_pool.intern_ptr_const_from_type(Type::U16));
+        assert_eq!(raw_ty, InferType::Concrete(expected));
+        assert_eq!(
+            cgen.generate(moved, &mut ctx).ty,
+            InferType::Concrete(expected)
+        );
     }
 
     #[test]
