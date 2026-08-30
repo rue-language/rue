@@ -245,6 +245,13 @@ impl QueryContext {
         }
     }
 
+    /// Borrowed cancellation authority of this task, for threading
+    /// cooperative checks into crates that do not depend on the query
+    /// runtime (RUE-1827).
+    pub fn cancellation(&self) -> &CancellationToken {
+        &self.task.cancellation
+    }
+
     /// Reads and records one exact leaf from this task's pinned revision.
     pub fn input(&self, input: InputIdentity) -> Result<u64, QueryAbort> {
         let stamp = self

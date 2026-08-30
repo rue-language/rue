@@ -1536,7 +1536,7 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
     pub fn allocate(mut self) -> CompileResult<B::Mir> {
         self.assign_registers();
         self.validate_spill_budget()?;
-        self.rewrite_instructions()?;
+        self.rewrite_instructions(crate::GenerationCancellation::NONE)?;
         Ok(self.mir)
     }
 
@@ -1544,7 +1544,7 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
     pub fn allocate_with_spills(mut self) -> CompileResult<(B::Mir, u32, Vec<B::Reg>)> {
         self.assign_registers();
         self.validate_spill_budget()?;
-        self.rewrite_instructions()?;
+        self.rewrite_instructions(crate::GenerationCancellation::NONE)?;
         Ok((self.mir, self.num_spills, self.used_callee_saved))
     }
 
@@ -1553,6 +1553,7 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
     pub fn allocate_with_artifacts(
         mut self,
         capture_regalloc: bool,
+        cancellation: crate::GenerationCancellation<'_>,
     ) -> CompileResult<(
         B::Mir,
         u32,
@@ -1560,14 +1561,16 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
         Option<LivenessDebugInfo>,
         Option<RegAllocDebugInfo<B::Reg>>,
     )> {
+        cancellation.check()?;
         let regalloc_debug = if capture_regalloc {
             Some(self.assign_registers_with_debug())
         } else {
             self.assign_registers();
             None
         };
+        cancellation.check()?;
         self.validate_spill_budget()?;
-        self.rewrite_instructions()?;
+        self.rewrite_instructions(cancellation)?;
         Ok((
             self.mir,
             self.num_spills,
@@ -1583,7 +1586,7 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
     ) -> CompileResult<(B::Mir, u32, Vec<B::Reg>, RegAllocDebugInfo<B::Reg>)> {
         let debug_info = self.assign_registers_with_debug();
         self.validate_spill_budget()?;
-        self.rewrite_instructions()?;
+        self.rewrite_instructions(crate::GenerationCancellation::NONE)?;
         Ok((
             self.mir,
             self.num_spills,
@@ -1635,7 +1638,10 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
             })
     }
 
-    fn rewrite_instructions(&mut self) -> CompileResult<()> {
+    fn rewrite_instructions(
+        &mut self,
+        cancellation: crate::GenerationCancellation<'_>,
+    ) -> CompileResult<()> {
         // The source instruction order is the canonical rewrite order. The
         // target hook classifies generated instructions into before/main/after
         // queues, and this driver drains them identically on both targets.
@@ -1653,6 +1659,10 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
         // empty, and `into_ordered` allocated a fourth to concatenate them.
         let mut buffer = RewriteBuffer::new();
         for (idx, inst) in old_instructions.into_iter().enumerate() {
+            // The per-instruction check bounds a stale attempt's residual
+            // work to one rewrite (RUE-1827); without an authority it is a
+            // single branch.
+            cancellation.check()?;
             if self.coalesce_result.is_eliminated(idx) {
                 continue;
             }

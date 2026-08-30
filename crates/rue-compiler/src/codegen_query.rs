@@ -34,6 +34,41 @@ thread_local! {
     static INJECT_CODEGEN_FAILURE: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Deterministic mid-backend cancellation for tests. Codegen units evaluate
+/// on query worker threads, so unlike the linker's thread-local tripwire this
+/// one is a process-global slot.
+#[cfg(test)]
+static CODEGEN_CANCELLATION_TRIPWIRE: std::sync::Mutex<
+    Option<(rue_query::CancellationToken, usize)>,
+> = std::sync::Mutex::new(None);
+
+/// Arm a deterministic mid-backend cancellation: the Nth cooperative probe
+/// inside machine-code generation cancels `token`, so the stale attempt must
+/// exit through the cancellation contract rather than completing the unit
+/// (RUE-1827). Mirrors `linking::set_link_cancellation_tripwire`.
+#[cfg(test)]
+pub(crate) fn set_codegen_cancellation_tripwire(
+    cancellation: Option<(rue_query::CancellationToken, usize)>,
+) {
+    *CODEGEN_CANCELLATION_TRIPWIRE.lock().unwrap() = cancellation;
+}
+
+/// One cooperative cancellation probe evaluation for the backend kernel.
+fn generation_probe_is_canceled(context: &QueryContext) -> bool {
+    #[cfg(test)]
+    {
+        let mut slot = CODEGEN_CANCELLATION_TRIPWIRE.lock().unwrap();
+        if let Some((token, remaining)) = slot.as_mut() {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                token.cancel();
+                *slot = None;
+            }
+        }
+    }
+    context.cancellation().is_canceled()
+}
+
 #[cfg(test)]
 pub(crate) fn with_test_codegen_failure_injection<T>(run: impl FnOnce() -> T) -> T {
     struct Reset;
@@ -551,30 +586,47 @@ pub(crate) fn evaluate_codegen_unit(
         &record.codegen.foreign_symbols,
     );
     context.record_work(rue_query::WorkItem::new("codegen.lowering.local", 1));
+    // The backend kernel has no query-runtime dependency; hand it this
+    // task's cancellation authority as a probe so a stale watch revision
+    // stops lowering/allocation/emission promptly instead of completing the
+    // unit (RUE-1827).
+    let probe = || generation_probe_is_canceled(context);
+    let cancellation = rue_codegen::GenerationCancellation::from_probe(&probe);
     let generated = match key.target.arch() {
-        rue_target::Arch::X86_64 => rue_codegen::x86_64::generate_product_with_symbols_and_atoms(
-            &record.cfg,
-            &record.type_pool,
-            &record.strings,
-            &record.interner,
-            key.target,
-            symbols,
-            &atoms,
-            key.request,
-        ),
-        rue_target::Arch::Aarch64 => rue_codegen::aarch64::generate_product_with_symbols_and_atoms(
-            &record.cfg,
-            &record.type_pool,
-            &record.strings,
-            &record.interner,
-            key.target,
-            symbols,
-            &atoms,
-            key.request,
-        ),
+        rue_target::Arch::X86_64 => {
+            rue_codegen::x86_64::generate_product_with_symbols_atoms_and_cancellation(
+                &record.cfg,
+                &record.type_pool,
+                &record.strings,
+                &record.interner,
+                key.target,
+                symbols,
+                &atoms,
+                key.request,
+                cancellation,
+            )
+        }
+        rue_target::Arch::Aarch64 => {
+            rue_codegen::aarch64::generate_product_with_symbols_atoms_and_cancellation(
+                &record.cfg,
+                &record.type_pool,
+                &record.strings,
+                &record.interner,
+                key.target,
+                symbols,
+                &atoms,
+                key.request,
+                cancellation,
+            )
+        }
     };
     let mut product = match generated {
         Ok(product) => product,
+        // A cooperative cancellation rejection is this task's own abort, not
+        // a codegen failure: it must not record a failure terminal.
+        Err(error) if rue_codegen::is_generation_canceled(&error) => {
+            return Err(QueryAbort::Canceled);
+        }
         Err(error) => return Ok(codegen_failure(error.into())),
     };
     if let Some(lowering) = &mut product.artifacts.lowering {

@@ -528,7 +528,8 @@ pub(crate) fn lower_cfg<A: CfgLowerAdapter>(
     adapter: &mut A,
     mut debug_info: Option<&mut crate::LoweringDebugInfo>,
     ret_reg_budget: u32,
-) {
+    cancellation: crate::GenerationCancellation<'_>,
+) -> rue_error::CompileResult<()> {
     adapter.preload_by_ref_params();
     let order = BlockOrder::of(ctx);
 
@@ -539,6 +540,9 @@ pub(crate) fn lower_cfg<A: CfgLowerAdapter>(
     }
 
     for &block_id in order.blocks() {
+        // The per-block check bounds a stale attempt's residual work to one
+        // block of lowering (RUE-1827).
+        cancellation.check()?;
         let block = ctx.cfg.get_block(block_id);
         let mut block_info = debug_info.as_deref_mut().map(|_| crate::BlockLoweringInfo {
             block_id: block.id,
@@ -610,6 +614,7 @@ pub(crate) fn lower_cfg<A: CfgLowerAdapter>(
             debug.blocks.push(info);
         }
     }
+    Ok(())
 }
 
 /// Stable, target-independent debug rendering of a normalized terminator.

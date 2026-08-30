@@ -283,6 +283,55 @@ pub struct BackendProduct {
     pub artifacts: BackendArtifacts,
 }
 
+/// Cooperative cancellation authority for one backend generation call
+/// (RUE-1827).
+///
+/// This crate has no query-runtime dependency, so cancellation arrives as a
+/// caller-owned probe; the query layer builds one from its cancellation
+/// token. [`GenerationCancellation::NONE`] makes every check a no-op branch,
+/// keeping callers without an authority — tests, drivers, tools — ergonomic
+/// and free of overhead. The shared pipeline checks at stage boundaries, and
+/// the per-block lowering walk, the per-instruction allocation rewrite, and
+/// the per-instruction emission loops check inside their unbounded work, so
+/// both architectures share one cancellation contract.
+#[derive(Clone, Copy, Default)]
+pub struct GenerationCancellation<'a> {
+    probe: Option<&'a dyn Fn() -> bool>,
+}
+
+/// Exact marker carried by a cancellation rejection. The message never
+/// reaches users: the query layer converts it to its own abort before the
+/// error can surface, via [`is_generation_canceled`].
+const GENERATION_CANCELED: &str = "backend generation canceled";
+
+impl<'a> GenerationCancellation<'a> {
+    /// No cancellation authority: every check is a no-op.
+    pub const NONE: GenerationCancellation<'static> = GenerationCancellation { probe: None };
+
+    /// A cancellation authority backed by `probe`; generation stops at the
+    /// next check once the probe returns true.
+    pub fn from_probe(probe: &'a dyn Fn() -> bool) -> Self {
+        Self { probe: Some(probe) }
+    }
+
+    /// Fail cooperatively when the caller's authority reports cancellation.
+    pub fn check(self) -> rue_error::CompileResult<()> {
+        match self.probe {
+            Some(probe) if probe() => Err(rue_error::CompileError::without_span(
+                rue_error::ErrorKind::InternalError(GENERATION_CANCELED.to_owned()),
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Whether `error` is this crate's cooperative-cancellation rejection.
+/// Callers with a cancellation authority use this to convert the rejection
+/// into their own abort channel instead of recording a codegen failure.
+pub fn is_generation_canceled(error: &rue_error::CompileError) -> bool {
+    matches!(&error.kind, rue_error::ErrorKind::InternalError(message) if message == GENERATION_CANCELED)
+}
+
 /// Stable local-data identity projected onto the current program string table.
 ///
 /// Multiple occurrence identities may intentionally share one dense ID when
@@ -793,6 +842,88 @@ mod tests {
             ),
         }
         .expect("production backend generation should succeed")
+    }
+
+    /// Both backends share one cooperative cancellation contract (RUE-1827):
+    /// a probe that trips mid-pipeline stops generation with the crate's
+    /// cancellation rejection, a counting probe proves the pipeline actually
+    /// consults the authority repeatedly (block/instruction-level checks),
+    /// and a live-but-quiet authority leaves the product identical to an
+    /// uncancellable run.
+    #[test]
+    fn generation_cancels_promptly_and_quiet_probes_change_nothing() {
+        use std::cell::Cell;
+
+        let (cfg, type_pool, interner) = test_cfg();
+        for target in [
+            rue_target::Target::X86_64Linux,
+            rue_target::Target::Aarch64Linux,
+        ] {
+            let generate = |cancellation: GenerationCancellation<'_>| match target.arch() {
+                rue_target::Arch::X86_64 => {
+                    x86_64::generate_product_with_symbols_atoms_and_cancellation(
+                        &cfg,
+                        &type_pool,
+                        &[],
+                        &interner,
+                        target,
+                        MachineSymbolResolver::default(),
+                        &[],
+                        BackendArtifactRequest::default(),
+                        cancellation,
+                    )
+                }
+                rue_target::Arch::Aarch64 => {
+                    aarch64::generate_product_with_symbols_atoms_and_cancellation(
+                        &cfg,
+                        &type_pool,
+                        &[],
+                        &interner,
+                        target,
+                        MachineSymbolResolver::default(),
+                        &[],
+                        BackendArtifactRequest::default(),
+                        cancellation,
+                    )
+                }
+            };
+
+            // An authority canceled from the first probe stops at entry.
+            let tripped = || true;
+            let error = generate(GenerationCancellation::from_probe(&tripped))
+                .expect_err("a tripped authority must stop generation");
+            assert!(is_generation_canceled(&error), "{error:?}");
+
+            // A counting authority that trips after a few checks stops
+            // mid-pipeline; the check count proves the pipeline consulted
+            // the authority more than once before tripping.
+            let remaining = Cell::new(3_u32);
+            let counting = || {
+                if remaining.get() == 0 {
+                    true
+                } else {
+                    remaining.set(remaining.get() - 1);
+                    false
+                }
+            };
+            let error = generate(GenerationCancellation::from_probe(&counting))
+                .expect_err("a counting authority must stop generation mid-pipeline");
+            assert!(is_generation_canceled(&error), "{error:?}");
+            assert_eq!(remaining.get(), 0);
+
+            // A quiet authority changes nothing relative to NONE.
+            let quiet = || false;
+            let with_authority = generate(GenerationCancellation::from_probe(&quiet)).unwrap();
+            let without_authority = generate(GenerationCancellation::NONE).unwrap();
+            assert_eq!(
+                with_authority.machine_code.code,
+                without_authority.machine_code.code
+            );
+            assert_eq!(
+                with_authority.machine_code.relocations.len(),
+                without_authority.machine_code.relocations.len()
+            );
+        }
     }
 
     #[test]

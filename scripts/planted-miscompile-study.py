@@ -30,7 +30,7 @@ PATCH_TARGETS = {
 PATCH_PREIMAGE_SHA256 = {
     "RUE-348": "5ee3154a1c860db866743d1e8a7a59123ad153e3b4f97888f8fef8d0cf1eb6d0",
     "RUE-914": "29be4acc44becb5df841089d0bfd7af545cec69da08d08ded392f35df7bde2bd",
-    "RUE-1758": "eddde415113e38eb02cc77b61045a6da5d3fe07f49e4d927bdc54bcd245106c0",
+    "RUE-1758": "cdb907ba09b8f17243aa6671d249f4f72b24cec00ac33854d3b0e07a83ad13cf",
 }
 FOCUSED_CLI = {
     "RUE-348": "enum_payload_equality_across_opt_levels",

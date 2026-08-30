@@ -55,6 +55,7 @@ pub(crate) fn prepare_backend(
         target,
         symbols,
         crate::BackendArtifactRequest::default(),
+        crate::GenerationCancellation::NONE,
     )
     .map(|(prepared, _)| prepared)
 }
@@ -79,12 +80,14 @@ impl Backend for Aarch64CodegenBackend {
         request: crate::BackendArtifactRequest,
         param_storage: &crate::param_storage::ParamStoragePlan,
         local_storage: &crate::local_storage::LocalSlotPlan,
+        cancellation: crate::GenerationCancellation<'_>,
     ) -> CompileResult<(Self::Mir, crate::BackendArtifacts)> {
         let (mir, lowering) = if request.lowering {
             let (mir, debug) =
                 CfgLower::new_with_symbols(cfg, type_pool, interner, target, symbols)
                     .with_param_storage(param_storage)
                     .with_local_storage(local_storage)
+                    .with_cancellation(cancellation)
                     .lower_with_debug()?;
             (mir, Some(debug))
         } else {
@@ -92,6 +95,7 @@ impl Backend for Aarch64CodegenBackend {
                 CfgLower::new_with_symbols(cfg, type_pool, interner, target, symbols)
                     .with_param_storage(param_storage)
                     .with_local_storage(local_storage)
+                    .with_cancellation(cancellation)
                     .lower()?,
                 None,
             )
@@ -112,10 +116,11 @@ impl Backend for Aarch64CodegenBackend {
         existing_slots: u32,
         artifacts: &mut crate::BackendArtifacts,
         request: crate::BackendArtifactRequest,
+        cancellation: crate::GenerationCancellation<'_>,
     ) -> CompileResult<(Self::Mir, u32, Vec<Self::Reg>)> {
         let (mir, spills, used, liveness, regalloc) =
             RegAlloc::new_with_artifacts(mir, existing_slots, request.liveness)
-                .allocate_with_artifacts(request.regalloc)?;
+                .allocate_with_artifacts(request.regalloc, cancellation)?;
         artifacts.liveness = liveness.map(|debug| debug.to_string());
         artifacts.regalloc = regalloc.map(|debug| debug.to_string());
         Ok((mir, spills, used))
@@ -163,6 +168,7 @@ impl Backend for Aarch64CodegenBackend {
         local_strings: &[String],
         request: crate::BackendArtifactRequest,
         artifacts: &mut crate::BackendArtifacts,
+        cancellation: crate::GenerationCancellation<'_>,
     ) -> CompileResult<MachineCode> {
         let emitter = Emitter::new(
             &prepared.mir,
@@ -174,7 +180,8 @@ impl Backend for Aarch64CodegenBackend {
         )
         .with_sret(prepared.has_sret)
         .with_frame_layout(prepared.frame_layout)
-        .with_param_homing(prepared.param_homing.clone());
+        .with_param_homing(prepared.param_homing.clone())
+        .with_cancellation(cancellation);
         if request.asm {
             let emitted = emitter.emit_all()?;
             artifacts.asm = Some(emitted.to_asm());
@@ -215,6 +222,7 @@ pub fn generate(
             &[],
             false,
             crate::BackendArtifactRequest::default(),
+            crate::GenerationCancellation::NONE,
         )?
         .machine_code,
     )
@@ -239,6 +247,7 @@ pub fn generate_with_symbols(
             &[],
             false,
             crate::BackendArtifactRequest::default(),
+            crate::GenerationCancellation::NONE,
         )?
         .machine_code,
     )
@@ -264,6 +273,7 @@ pub fn generate_with_symbols_and_atoms(
             atoms,
             true,
             crate::BackendArtifactRequest::default(),
+            crate::GenerationCancellation::NONE,
         )?
         .machine_code,
     )
@@ -280,7 +290,42 @@ pub fn generate_product_with_symbols_and_atoms(
     atoms: &[crate::LocalAtomProjection<'_>],
     request: crate::BackendArtifactRequest,
 ) -> CompileResult<crate::BackendProduct> {
+    generate_product_with_symbols_atoms_and_cancellation(
+        cfg,
+        type_pool,
+        strings,
+        interner,
+        target,
+        symbols,
+        atoms,
+        request,
+        crate::GenerationCancellation::NONE,
+    )
+}
+
+/// [`generate_product_with_symbols_and_atoms`] under a caller-owned
+/// cooperative cancellation authority (RUE-1827).
+pub fn generate_product_with_symbols_atoms_and_cancellation(
+    cfg: &ValidatedCfg,
+    type_pool: &FrozenTypeInternPool,
+    strings: &[String],
+    interner: &ThreadedRodeo,
+    target: Target,
+    symbols: crate::MachineSymbolResolver<'_>,
+    atoms: &[crate::LocalAtomProjection<'_>],
+    request: crate::BackendArtifactRequest,
+    cancellation: crate::GenerationCancellation<'_>,
+) -> CompileResult<crate::BackendProduct> {
     crate::codegen_pipeline::generate_with_backend::<Aarch64CodegenBackend>(
-        cfg, type_pool, strings, interner, target, symbols, atoms, true, request,
+        cfg,
+        type_pool,
+        strings,
+        interner,
+        target,
+        symbols,
+        atoms,
+        true,
+        request,
+        cancellation,
     )
 }

@@ -178,6 +178,7 @@ impl RegAlloc {
     pub(crate) fn allocate_with_artifacts(
         self,
         capture_regalloc: bool,
+        cancellation: crate::GenerationCancellation<'_>,
     ) -> CompileResult<(
         X86Mir,
         u32,
@@ -185,7 +186,8 @@ impl RegAlloc {
         Option<crate::LivenessDebugInfo>,
         Option<RegAllocDebugInfo<Reg>>,
     )> {
-        self.driver.allocate_with_artifacts(capture_regalloc)
+        self.driver
+            .allocate_with_artifacts(capture_regalloc, cancellation)
     }
 
     fn rewrite_inst(
