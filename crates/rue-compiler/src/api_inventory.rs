@@ -646,6 +646,29 @@ fn crate_visible_declaration_identities(source: &str) -> Vec<String> {
         .collect()
 }
 
+const DURABLE_COMPTIME_FACADE_SOURCE: &str = include_str!("durable_comptime.rs");
+const DURABLE_COMPTIME_DIAGNOSTICS_SOURCE: &str = include_str!("durable_comptime/diagnostics.rs");
+const DURABLE_COMPTIME_EFFECTS_SOURCE: &str = include_str!("durable_comptime/effects.rs");
+const DURABLE_COMPTIME_HOST_SOURCE: &str = include_str!("durable_comptime/host.rs");
+const DURABLE_COMPTIME_LIFECYCLE_SOURCE: &str = include_str!("durable_comptime/lifecycle.rs");
+const DURABLE_COMPTIME_PROJECTION_SOURCE: &str = include_str!("durable_comptime/projection.rs");
+const DURABLE_COMPTIME_SERVICES_SOURCE: &str = include_str!("durable_comptime/services.rs");
+const DURABLE_COMPTIME_STRUCTURED_SOURCE: &str = include_str!("durable_comptime/structured.rs");
+const DURABLE_COMPTIME_TARGET_SOURCE: &str = include_str!("durable_comptime/target.rs");
+const DURABLE_COMPTIME_ENGINE_ENTRY_SOURCE: &str =
+    include_str!("revisioned_query_database/body.rs");
+const DURABLE_COMPTIME_SOURCE: &str = concat!(
+    include_str!("durable_comptime.rs"),
+    include_str!("durable_comptime/diagnostics.rs"),
+    include_str!("durable_comptime/effects.rs"),
+    include_str!("durable_comptime/host.rs"),
+    include_str!("durable_comptime/lifecycle.rs"),
+    include_str!("durable_comptime/projection.rs"),
+    include_str!("durable_comptime/services.rs"),
+    include_str!("durable_comptime/structured.rs"),
+    include_str!("durable_comptime/target.rs"),
+);
+
 const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("artifact_views", include_str!("artifact_views.rs")),
     ("backend", include_str!("backend.rs")),
@@ -677,7 +700,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ),
     ("drop_glue", include_str!("drop_glue.rs")),
     ("durable_cfg", include_str!("durable_cfg.rs")),
-    ("durable_comptime", include_str!("durable_comptime.rs")),
+    ("durable_comptime", DURABLE_COMPTIME_SOURCE),
     ("durable_semantics", include_str!("durable_semantics.rs")),
     ("import_discovery", include_str!("import_discovery.rs")),
     ("import_graph", include_str!("import_graph.rs")),
@@ -3538,7 +3561,7 @@ fn rue_1191_anonymous_digest_collision_authority_is_body_closure_owned() {
 #[test]
 fn durable_const_integer_semantics_use_the_shared_kernel() {
     let source = REVISIONED_DATABASE_SOURCE;
-    let durable = include_str!("durable_comptime.rs");
+    let durable = DURABLE_COMPTIME_SOURCE;
     assert!(
         !source.contains("SemanticConstEvaluator"),
         "production declaration-time roots must not retain a second evaluator"
@@ -3596,20 +3619,23 @@ fn comptime_depth_consumers_use_the_air_authority() {
 
 #[test]
 fn durable_named_array_length_consumers_share_one_conversion_kernel() {
-    let durable = include_str!("durable_comptime.rs");
-    let host = durable
-        .split("impl<A: DurableComptimeHostAuthority")
-        .nth(1)
-        .expect("durable host implementation");
+    let host = DURABLE_COMPTIME_HOST_SOURCE;
     assert!(host.contains("classify_durable_named_array_length"));
     assert!(host.contains("durable_named_array_length_value"));
     assert!(host.contains("durable_named_array_length_failure"));
     assert!(host.contains("resolve_named_array_length"));
+    for kernel in [
+        "classify_durable_named_array_length",
+        "durable_named_array_length_value",
+        "durable_named_array_length_failure",
+    ] {
+        assert!(DURABLE_COMPTIME_PROJECTION_SOURCE.contains(kernel));
+    }
 }
 
 #[test]
 fn durable_specialized_producer_issuance_has_one_ordered_kernel() {
-    let durable = include_str!("durable_comptime.rs");
+    let durable = DURABLE_COMPTIME_LIFECYCLE_SOURCE;
     let producer_kernel = durable
         .split("pub(crate) fn canonical_specialized_function_producer(")
         .nth(1)
@@ -3713,7 +3739,7 @@ fn durable_specialized_producer_issuance_has_one_ordered_kernel() {
 
 #[test]
 fn durable_comptime_services_are_named_authority_operations() {
-    let facade = include_str!("durable_comptime.rs");
+    let facade = DURABLE_COMPTIME_SOURCE;
     let database = REVISIONED_DATABASE_SOURCE;
     let production = database
         .split("#[cfg(test)]\nmod tests")
@@ -3752,8 +3778,261 @@ fn durable_comptime_services_are_named_authority_operations() {
 }
 
 #[test]
+fn durable_comptime_responsibilities_have_exact_module_owners() {
+    let modules = [
+        ("diagnostics", DURABLE_COMPTIME_DIAGNOSTICS_SOURCE),
+        ("effects", DURABLE_COMPTIME_EFFECTS_SOURCE),
+        ("host", DURABLE_COMPTIME_HOST_SOURCE),
+        ("lifecycle", DURABLE_COMPTIME_LIFECYCLE_SOURCE),
+        ("projection", DURABLE_COMPTIME_PROJECTION_SOURCE),
+        ("services", DURABLE_COMPTIME_SERVICES_SOURCE),
+        ("structured", DURABLE_COMPTIME_STRUCTURED_SOURCE),
+        ("target", DURABLE_COMPTIME_TARGET_SOURCE),
+    ];
+    let declared_modules = DURABLE_COMPTIME_FACADE_SOURCE
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("mod "))
+        .filter_map(|module| module.strip_suffix(';'))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        declared_modules,
+        modules.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+        "the durable comptime facade must declare the exact reviewed responsibility modules"
+    );
+    for (name, _) in &modules {
+        assert_eq!(
+            DURABLE_COMPTIME_FACADE_SOURCE
+                .matches(&format!("pub(crate) use {name}::*;"))
+                .count(),
+            1,
+            "the durable comptime facade must reexport the {name} owner exactly once"
+        );
+    }
+    assert!(DURABLE_COMPTIME_FACADE_SOURCE.lines().count() < 80);
+    for forbidden in [
+        "pub(crate) struct ",
+        "pub(crate) enum ",
+        "pub(crate) trait ",
+        "pub(crate) fn ",
+        "impl<",
+        "impl ",
+    ] {
+        assert!(
+            !DURABLE_COMPTIME_FACADE_SOURCE.contains(forbidden),
+            "the durable comptime facade regained implementation authority through {forbidden}"
+        );
+    }
+
+    for (definition, owner, source) in [
+        (
+            "pub(crate) enum DurableComptimeFailure",
+            "diagnostics",
+            DURABLE_COMPTIME_DIAGNOSTICS_SOURCE,
+        ),
+        (
+            "pub(crate) struct DurableComptimeDiagnosticSite",
+            "diagnostics",
+            DURABLE_COMPTIME_DIAGNOSTICS_SOURCE,
+        ),
+        (
+            "pub(crate) enum DurableComptimeApplicationPolicy",
+            "effects",
+            DURABLE_COMPTIME_EFFECTS_SOURCE,
+        ),
+        (
+            "pub(crate) struct DurableComptimeEffects",
+            "effects",
+            DURABLE_COMPTIME_EFFECTS_SOURCE,
+        ),
+        (
+            "pub(crate) struct DurableComptimeSession",
+            "lifecycle",
+            DURABLE_COMPTIME_LIFECYCLE_SOURCE,
+        ),
+        (
+            "struct DurableComptimeCallToken {",
+            "lifecycle",
+            DURABLE_COMPTIME_LIFECYCLE_SOURCE,
+        ),
+        (
+            "pub(crate) fn finalize_registered_imports(",
+            "lifecycle",
+            DURABLE_COMPTIME_LIFECYCLE_SOURCE,
+        ),
+        (
+            "pub(crate) fn durable_type_from_instance_key(",
+            "projection",
+            DURABLE_COMPTIME_PROJECTION_SOURCE,
+        ),
+        (
+            "pub(crate) enum DurableComptimeValueFitFailure",
+            "projection",
+            DURABLE_COMPTIME_PROJECTION_SOURCE,
+        ),
+        (
+            "pub(crate) struct DurableComptimeScalarPolicy",
+            "projection",
+            DURABLE_COMPTIME_PROJECTION_SOURCE,
+        ),
+        (
+            "pub(crate) trait DurableComptimeSemanticAuthority",
+            "services",
+            DURABLE_COMPTIME_SERVICES_SOURCE,
+        ),
+        (
+            "pub(crate) trait DurableComptimeForeignCallAuthority",
+            "services",
+            DURABLE_COMPTIME_SERVICES_SOURCE,
+        ),
+        (
+            "pub(crate) struct DurableComptimeServices",
+            "services",
+            DURABLE_COMPTIME_SERVICES_SOURCE,
+        ),
+        (
+            "pub(crate) fn resolve_target_intrinsic_facts(",
+            "target",
+            DURABLE_COMPTIME_TARGET_SOURCE,
+        ),
+        (
+            "pub(crate) struct DurableComptimeHost<'a",
+            "host",
+            DURABLE_COMPTIME_HOST_SOURCE,
+        ),
+        (
+            "pub(crate) fn begin_durable_structured_type",
+            "structured",
+            DURABLE_COMPTIME_STRUCTURED_SOURCE,
+        ),
+        (
+            "pub(crate) fn resume_durable_structured_type",
+            "structured",
+            DURABLE_COMPTIME_STRUCTURED_SOURCE,
+        ),
+    ] {
+        assert!(source.contains(definition), "{owner} lost {definition}");
+        assert_eq!(
+            DURABLE_COMPTIME_SOURCE.matches(definition).count(),
+            1,
+            "{definition} must have exactly one durable comptime owner ({owner})"
+        );
+    }
+
+    let host_fields = DURABLE_COMPTIME_HOST_SOURCE
+        .split("pub(crate) struct DurableComptimeHost<'a")
+        .nth(1)
+        .and_then(|source| source.split("\n}").next())
+        .expect("bounded durable host fields");
+    assert!(host_fields.contains("services: DurableComptimeServices<'a, A>"));
+    assert!(!host_fields.contains("authority:"));
+    for (owner, source) in
+        std::iter::once(("facade", DURABLE_COMPTIME_FACADE_SOURCE)).chain(modules.iter().copied())
+    {
+        for forbidden in [
+            "ComptimeEngine::new",
+            "SemanticConstEvaluator",
+            "InstData::",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "the {owner} durable comptime owner regained peer evaluation authority through {forbidden}"
+            );
+        }
+    }
+    assert_eq!(
+        DURABLE_COMPTIME_ENGINE_ENTRY_SOURCE
+            .matches("ComptimeEngine::new")
+            .count(),
+        1,
+        "the compiler must construct AIR's evaluator exactly once, outside the durable adapter"
+    );
+
+    let lifecycle_production = DURABLE_COMPTIME_LIFECYCLE_SOURCE
+        .split("\n#[cfg(test)]\npub(super) mod test_support")
+        .next()
+        .expect("production lifecycle source");
+    assert_eq!(
+        lifecycle_production
+            .matches("DurableComptimeCallToken::new(")
+            .count(),
+        1,
+        "only reservation may mint a production call token"
+    );
+    assert_eq!(
+        lifecycle_production
+            .matches("DurableComptimeAdmittedCall::new(")
+            .count(),
+        1,
+        "only session admission may create a production admitted-call wrapper"
+    );
+    assert!(!lifecycle_production.contains("pub(super) struct DurableComptimeCallToken"));
+    assert!(
+        !lifecycle_production
+            .contains("pub(super) fn new(\n        token: DurableComptimeCallToken")
+    );
+
+    for (source, definition) in [
+        (
+            DURABLE_COMPTIME_EFFECTS_SOURCE,
+            "pub(crate) struct DurableComptimeEffects",
+        ),
+        (
+            DURABLE_COMPTIME_LIFECYCLE_SOURCE,
+            "pub(crate) struct DurableComptimeSession",
+        ),
+        (
+            DURABLE_COMPTIME_LIFECYCLE_SOURCE,
+            "pub(crate) struct DurableComptimeCallLifecycle",
+        ),
+    ] {
+        let fields = source
+            .split(definition)
+            .nth(1)
+            .and_then(|source| source.split("\n}").next())
+            .expect("bounded durable owner fields");
+        assert!(
+            !fields.contains("pub(super)"),
+            "durable owner state must stay private behind operations and cfg(test) inspectors"
+        );
+    }
+
+    for test_name in [
+        "scalar_policy_preserves_integer_precedence_and_fallbacks",
+        "scalar_policy_preserves_fit_and_arithmetic_diagnostics",
+        "type_intrinsic_policy_preserves_all_bounds_gates_and_mismatch",
+    ] {
+        assert!(DURABLE_COMPTIME_PROJECTION_SOURCE.contains(test_name));
+        assert!(!DURABLE_COMPTIME_DIAGNOSTICS_SOURCE.contains(test_name));
+    }
+    for test_name in [
+        "incremental_binding_preserves_type_then_value_order_and_substitution",
+        "incremental_binding_preserves_early_type_and_range_failures",
+        "incremental_binding_requires_direct_unit_for_type_arguments",
+        "diagnostic_sites_are_keyed_and_reject_unknown_programs",
+    ] {
+        assert!(DURABLE_COMPTIME_LIFECYCLE_SOURCE.contains(test_name));
+        assert!(!DURABLE_COMPTIME_PROJECTION_SOURCE.contains(test_name));
+        assert!(!DURABLE_COMPTIME_DIAGNOSTICS_SOURCE.contains(test_name));
+    }
+    assert!(!DURABLE_COMPTIME_PROJECTION_SOURCE.contains("DurableComptimeHost"));
+    assert!(!DURABLE_COMPTIME_PROJECTION_SOURCE.contains("query_registered"));
+    assert!(!DURABLE_COMPTIME_SERVICES_SOURCE.contains("fn eval("));
+    for invariant in [
+        "reservation may create exactly one admission token",
+        "admitted edge may\n//! create exactly one ticket",
+        "only the matching active lifecycle may enter\n//! or finish that ticket",
+        "Non-known AIR outcomes always clean up and never\n//! publish child effects",
+    ] {
+        assert!(
+            DURABLE_COMPTIME_LIFECYCLE_SOURCE.contains(invariant),
+            "lifecycle owner lost the documented one-shot invariant: {invariant}"
+        );
+    }
+}
+
+#[test]
 fn match_patterns_have_one_air_decoder_and_one_durable_kernel() {
-    let durable = include_str!("durable_comptime.rs");
+    let durable = DURABLE_COMPTIME_SOURCE;
     assert_eq!(
         durable
             .matches("pub(crate) fn durable_match_pattern_matches")
@@ -3773,21 +4052,20 @@ fn match_patterns_have_one_air_decoder_and_one_durable_kernel() {
 
 #[test]
 fn durable_air_host_is_composition_not_a_peer_interpreter() {
-    let durable = include_str!("durable_comptime.rs");
-    let host = durable
-        .split("pub(crate) struct DurableComptimeHost<")
+    let host = DURABLE_COMPTIME_HOST_SOURCE;
+    let host_fields = host
+        .split("pub(crate) struct DurableComptimeHost<'a")
         .nth(1)
-        .and_then(|source| {
-            source
-                .split("pub(crate) type DurableComptimeConstFrame =")
-                .next()
-        })
-        .expect("bounded durable AIR host composition");
+        .and_then(|source| source.split("\n}").next())
+        .expect("bounded durable host fields");
     assert!(host.contains("impl<A: DurableComptimeHostAuthority"));
     assert!(host.contains("rue_air::ComptimeHost"));
+    assert!(host.contains("services: DurableComptimeServices<'a, A>"));
+    assert!(host.contains("DurableComptimeServices::new(authority)"));
     assert!(host.contains("durable_session_mut()"));
     assert!(host.contains("DurableComptimeScalarPolicy"));
     assert!(host.contains("project_durable_anonymous_nominal"));
+    assert!(!host_fields.contains("authority:"));
     assert!(!host.contains("InstData::"));
     assert!(!host.contains("fn eval("));
     assert!(!host.contains("SemanticConstEvaluator"));
@@ -3820,7 +4098,7 @@ fn durable_roots_share_one_terminal_classifier() {
 
 #[test]
 fn durable_projection_failures_have_one_shared_semantic_mapping() {
-    let durable = include_str!("durable_comptime.rs");
+    let durable = DURABLE_COMPTIME_DIAGNOSTICS_SOURCE;
     let database = REVISIONED_DATABASE_SOURCE;
     assert_eq!(
         durable
@@ -3865,7 +4143,7 @@ fn durable_projection_failures_have_one_shared_semantic_mapping() {
 
 #[test]
 fn durable_diagnostic_sites_use_only_registered_program_provenance() {
-    let durable = include_str!("durable_comptime.rs");
+    let durable = DURABLE_COMPTIME_LIFECYCLE_SOURCE;
     let method = durable
         .split("pub(crate) fn diagnostic_site(")
         .nth(1)
@@ -3997,7 +4275,7 @@ fn import_resolution_remains_discovery_owned() {
 
 #[test]
 fn durable_constructor_diagnostics_use_the_air_interleaver() {
-    let durable = include_str!("durable_comptime.rs");
+    let durable = DURABLE_COMPTIME_PROJECTION_SOURCE;
     let presenter = durable
         .split_once("pub(crate) fn durable_type_diagnostic_name_with_parameters")
         .and_then(|(_, rest)| rest.split_once("pub(crate) fn inferred_durable_const_type_name"))
