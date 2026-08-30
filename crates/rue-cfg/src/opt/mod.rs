@@ -492,6 +492,34 @@ mod tests {
     }
 
     #[test]
+    fn unrolling_edits_the_graph_in_place() {
+        // RUE-1842, following RUE-1663: `unroll_one` used to run against a
+        // whole-CFG transactional clone that protected nothing. An `Err`
+        // propagates through `optimize_with_budget`'s `?` into
+        // `publish_optimization`, whose first statement is `pass_result?`, so
+        // the preserved original could never be read. RUE-1663 removed this
+        // clone class from the sibling passes but explicitly left unroll out,
+        // and the guard above does not watch it — hence this one.
+        let source = include_str!("unroll.rs");
+        assert_eq!(
+            source.matches("let mut edited = cfg.clone();").count(),
+            0,
+            "unroll reacquired a transactional whole-CFG clone"
+        );
+        // The remaining whole-graph clone in `unroll_one` is a different thing
+        // and is deliberately still here: it is the pristine read snapshot the
+        // pass copies original blocks from while it appends new ones and
+        // rewires original terminators. Narrowing it to the loop subgraph is
+        // tracked on RUE-1842; this assertion pins that it is the only one left,
+        // so its removal or duplication has to be a deliberate edit.
+        assert_eq!(
+            source.matches("let source = cfg.clone();").count(),
+            1,
+            "the pristine unroll snapshot moved; re-check what reads it"
+        );
+    }
+
+    #[test]
     fn optimizer_edit_failures_preserve_the_failure_kind() {
         let cfg = crate::Cfg::new(crate::Type::UNIT, 0, 0, "test".to_string(), vec![]);
         let type_pool = rue_air::TypeInternPool::new().freeze();

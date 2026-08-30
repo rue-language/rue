@@ -106,10 +106,15 @@ pub fn run_with_budget(
                 stats.budget_refusals += 1;
                 continue;
             }
-            let mut edited = cfg.clone();
-            match unroll_one(&mut edited, lp, trip) {
+            // Edited in place. The transactional clone this used to take
+            // protected nothing (RUE-1842, following RUE-1663): the `Err` arm
+            // propagates out of `run_with_budget`, through
+            // `optimize_with_budget`'s `?`, into `publish_optimization`, whose
+            // first statement is `pass_result?` — so a partially unrolled graph
+            // is never validated or published, and the preserved original was
+            // never read.
+            match unroll_one(cfg, lp, trip) {
                 Ok((blocks, values, instructions)) => {
-                    *cfg = edited;
                     stats.loops_unrolled += 1;
                     stats.blocks_cloned += blocks;
                     stats.values_cloned += values;

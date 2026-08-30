@@ -1004,6 +1004,34 @@ rue_sh_test(
     },
 )
 
+# RUE-1854: `buck2` is a wrapper script; the DotSlash manifest carrying the
+# pinned release digests is `buck2-bin`. A dotslash cache key hashing the
+# wrapper does not move when the pin is bumped, so actions/cache reports an
+# exact hit on a store without the new binary and never saves the downloaded
+# one back — every job re-downloads it on every run, silently, because
+# dotslash succeeds either way. The glob matches the validator's own default
+# discovery so a newly added workflow is covered the day it lands.
+filegroup(
+    name = "dotslash-cache-key-workflows",
+    srcs = glob([".github/workflows/*.yml", ".github/workflows/*.yaml"]),
+)
+
+rue_sh_test(
+    name = "dotslash-cache-key-validation",
+    test = "scripts/validate-dotslash-cache-keys.py",
+    args = ["$(location :dotslash-cache-key-workflows)/.github/workflows"],
+)
+
+rue_sh_test(
+    name = "dotslash-cache-key-tool-tests",
+    test = "scripts/test-dotslash-cache-keys.py",
+    resources = ["scripts/validate-dotslash-cache-keys.py"] +
+        [":gatelib-sources"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
 # The structural complement of the per-crate debug-assertion checks
 # (RUE-1525): those run only for crates that emit them, so deleting a crate
 # would leave its ledger entries permanently unchecked. This gate fails when
