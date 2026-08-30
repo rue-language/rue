@@ -32,8 +32,10 @@
 //! executes after the write on every path, so the write's block dominates every
 //! load and the stored value — computed *before* the store — is available at
 //! each load. This is the same dominance argument [`super::constopt`] makes for
-//! constants, now stated for general values. (`debug_assertions` builds verify
-//! it explicitly against [`crate::dominators`].)
+//! constants, now stated for general values. Every *cross-block* forward is
+//! verified explicitly against [`crate::dominators`] in all builds, not only
+//! `debug_assertions` ones; same-block forwards are skipped, dominance being
+//! reflexive.
 //!
 //! Note a subtlety the value form makes vacuous: the stored value could itself
 //! be a `Load` of another slot that some later write modifies between the store
@@ -92,6 +94,12 @@ pub struct Stats {
     pub loads_forwarded_single_write: u64,
     /// Loads forwarded by Rule 2 (block-local last store of a multi-write slot).
     pub loads_forwarded_block_local: u64,
+    /// Distinct cross-block (write, load) pairs verified against the dominator
+    /// tree. Zero means no tree was built: every Rule 1 forward was same-block,
+    /// where dominance is reflexive. Guards RUE-1844 — a regression that drops
+    /// the same-block skip or the dedupe shows up as a non-zero count in
+    /// `test_single_write_nonconst_forwarded`.
+    pub rule1_dominance_pairs_checked: u64,
 }
 
 /// Run value forwarding. Call at `-O2`/`-O3` after simplification and before
@@ -145,9 +153,12 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     // `last_store` table.
     // ------------------------------------------------------------------
     let mut subst: Vec<Option<CfgValue>> = vec![None; cfg.value_count()];
-    // (single-write block, forwarded load block) pairs for the dominance
-    // correctness check.
-    let mut rule1_dominance_checks: Vec<(BlockId, BlockId)> = Vec::new();
+    // Distinct (single-write block, forwarded load block) pairs for the
+    // dominance correctness check. Same-block pairs are never recorded:
+    // dominance is reflexive, so they cannot fail. After simplify's block
+    // merging most Rule 1 forwards are same-block, so this set is commonly
+    // empty and the dominator tree below is never built.
+    let mut rule1_dominance_checks: AHashSet<(BlockId, BlockId)> = AHashSet::new();
     // Rule 2 last whole-slot store per local, reset per block.
     let mut last_store: Vec<Option<CfgValue>> = vec![None; num_locals];
 
@@ -192,7 +203,9 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                         // Rule 1: global single-write forwarding.
                         subst[value.as_u32() as usize] = Some(write_value);
                         stats.loads_forwarded_single_write += 1;
-                        rule1_dominance_checks.push((write_block, block_id));
+                        if write_block != block_id {
+                            rule1_dominance_checks.insert((write_block, block_id));
+                        }
                     } else if !cfg.is_address_taken(slot) {
                         // Rule 2: block-local forwarding for multi-write slots.
                         if let Some(&Some(stored)) = last_store.get(slot as usize) {
@@ -261,6 +274,7 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     // Turn the definite-initialization argument for Rule 1 into an always-on
     // invariant: violating it would make the substitution below silently use a
     // value before its definition in release builds.
+    stats.rule1_dominance_pairs_checked = rule1_dominance_checks.len() as u64;
     if !rule1_dominance_checks.is_empty() {
         let dom = crate::dominators::DominatorTree::compute(cfg);
         for (write_block, load_block) in &rule1_dominance_checks {
@@ -364,6 +378,9 @@ mod tests {
         let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loads_forwarded_single_write, 1);
         assert_eq!(stats.loads_forwarded_block_local, 0);
+        // RUE-1844: the write and the load share a block, so dominance is
+        // reflexive and no pair is recorded — no dominator tree is built.
+        assert_eq!(stats.rule1_dominance_pairs_checked, 0);
         // The return now reads the Add directly.
         assert!(matches!(
             cfg.get_block(cfg.entry).terminator,
@@ -760,7 +777,7 @@ mod tests {
     fn test_single_write_forwards_across_blocks() {
         // A single-write slot forwards even into a different block: the write's
         // block dominates the load's block, so Rule 1 applies. (This also
-        // exercises the debug dominance assertion.)
+        // exercises the always-on cross-block dominance assertion.)
         let mut cfg = make_cfg(1);
         let c = push(&mut cfg, CfgInstData::Const(7), Type::I32);
         push(
@@ -781,6 +798,9 @@ mod tests {
 
         let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loads_forwarded_single_write, 1);
+        // RUE-1844: this pair really is cross-block, so it is recorded and
+        // verified against a dominator tree.
+        assert_eq!(stats.rule1_dominance_pairs_checked, 1);
         assert!(matches!(
             cfg.get_block(block2).terminator,
             Terminator::Return { value: Some(v) } if v == c
