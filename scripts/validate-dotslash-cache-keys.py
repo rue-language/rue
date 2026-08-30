@@ -27,14 +27,20 @@ WORKFLOW_PATTERNS = ("*.yml", "*.yaml")
 
 
 def workflows_in(directory: Path) -> list[Path]:
-    """Every workflow file in `directory`, in a stable order."""
+    """Every workflow or action file under `directory`, in a stable order.
+
+    The walk is recursive because the keys no longer live only in
+    `.github/workflows`: RUE-1825 moved the cache step into the composite
+    action at `.github/actions/bootstrap-dotslash/action.yml`, and a gate that
+    stopped at the top level of `.github` would have checked nothing.
+    """
 
     return sorted(
-        path for pattern in WORKFLOW_PATTERNS for path in directory.glob(pattern)
+        path for pattern in WORKFLOW_PATTERNS for path in directory.rglob(pattern)
     )
 
 
-DEFAULT_WORKFLOWS = workflows_in(ROOT / ".github" / "workflows")
+DEFAULT_WORKFLOWS = workflows_in(ROOT / ".github")
 # An `actions/cache` key for the dotslash store. The store path is what makes
 # it a dotslash cache, but the key prefix is the reviewed convention and is
 # what a new copy-pasted step carries.
@@ -87,12 +93,13 @@ def main() -> int:
         "workflows",
         nargs="*",
         type=Path,
-        help="workflow files, or a directory whose workflow files are all checked",
+        help="workflow or action files, or a directory whose files are all checked",
     )
     args = parser.parse_args()
 
     # A directory argument keeps the checked set identical to what CI actually
-    # runs: a workflow added tomorrow is covered without editing this gate.
+    # runs: a workflow or composite action added tomorrow is covered without
+    # editing this gate.
     workflows = [
         workflow
         for argument in args.workflows
@@ -108,7 +115,7 @@ def main() -> int:
         # A rename of the cache-key convention would otherwise turn this gate
         # into a vacuous pass over files it no longer recognizes.
         errors.append(
-            "no dotslash cache key found in any checked workflow; the gate would "
+            "no dotslash cache key found in any checked file; the gate would "
             "silently check nothing"
         )
     if errors:
@@ -118,7 +125,7 @@ def main() -> int:
 
     print(
         f"dotslash cache keys valid: {keys} key(s) across "
-        f"{len(workflows)} workflow(s) hash {PINNED_MANIFEST}"
+        f"{len(workflows)} file(s) hash {PINNED_MANIFEST}"
     )
     return 0
 

@@ -31,16 +31,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install dotslash
-        uses: facebook/install-dotslash@v2
-
-      - name: Cache dotslash artifacts
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: |
-            dotslash-linux-x64-
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
 
       - name: Provision remote build cache
         env:
@@ -108,18 +100,9 @@ jobs:
       - uses: actions/checkout@v6
         if: steps.select.outputs.run == 'true'
 
-      - name: Install dotslash
+      - name: Bootstrap dotslash
         if: steps.select.outputs.run == 'true'
-        uses: facebook/install-dotslash@v2
-
-      - name: Cache dotslash artifacts
-        if: steps.select.outputs.run == 'true'
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: |
-            dotslash-linux-x64-
+        uses: ./.github/actions/bootstrap-dotslash
 
       - name: Provision remote build cache
         if: steps.select.outputs.run == 'true'

@@ -1,0 +1,83 @@
+name: Bootstrap dotslash
+description: >-
+  Install the pinned dotslash launcher and cache the buck2 binary it downloads.
+
+# Every job that runs `./buck2` needs the same two steps, and for a long time
+# every one of them carried its own copy. The copies drifted: some cached only
+# the Linux store, some both; the key spelling varied between a literal
+# platform name, `matrix.name`, and `matrix.cache_name`; and eight install
+# sites (the four performance workflows and the website deploy) had no cache
+# step at all, so every scheduled run re-downloaded buck2 from the releases
+# CDN. RUE-1854 had already shown what a silently wrong cache costs here.
+#
+# This action is the single owner of that pairing. Installing dotslash without
+# its cache is no longer something a workflow can express, because installing
+# dotslash is no longer something a workflow does directly —
+# `//:dotslash-bootstrap-validation` fails any workflow that reaches for
+# `facebook/install-dotslash` itself.
+#
+# Callers keep their own `if:` on the `uses:` step; a skipped step runs none of
+# the steps inside, so conditional jobs neither install nor restore.
+inputs:
+  cache-name:
+    description: >-
+      Cache-key identity for this runner. The vocabulary is `linux-x64`,
+      `linux-arm64`, and `macos-arm64`, optionally prefixed with a scope that
+      keeps an on-demand workflow's store separate from required CI's
+      (`repetitions-linux-x64`, `soak-linux-x64`). Two runners that would
+      restore each other's binaries must never share a value.
+    required: false
+    default: linux-x64
+  with-btd:
+    description: >-
+      Set to `true` in a job that also runs `./btd`, so the key hashes btd's
+      pinned manifest as well and a btd pin bump invalidates the shared store.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Install dotslash
+      # Pinned: the moving `latest` branch broke macOS runners (sha256sum
+      # flags) on 2026-06-18.
+      uses: facebook/install-dotslash@v2
+
+    # `buck2` is a bash wrapper; the pinned release digests live in the
+    # `buck2-bin` DotSlash manifest, so that is what the key must hash — a key
+    # on the wrapper survives a pin bump, reports an exact hit on a store
+    # without the new binary, and (because an exact hit suppresses the save)
+    # never writes the downloaded one back. RUE-1854 is that bug, and
+    # `//:dotslash-cache-key-validation` is the gate that keeps it fixed.
+    #
+    # Both store paths are listed unconditionally: `~/.cache/dotslash` is the
+    # Linux location, `~/Library/Caches/dotslash` the macOS one, and
+    # actions/cache skips a path that does not exist. Caching the buck2 binary
+    # is the whole point — buck-out and ~/.cache/buck2 were cached once and
+    # were inert, since OSS buck2 keeps no action cache across daemon restarts
+    # (RUE-144).
+    - name: Cache dotslash artifacts
+      if: inputs.with-btd != 'true'
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cache/dotslash
+          ~/Library/Caches/dotslash
+        key: dotslash-${{ inputs.cache-name }}-${{ hashFiles('buck2-bin') }}
+        restore-keys: |
+          dotslash-${{ inputs.cache-name }}-
+
+    # The same step for a job that shares the store with btd. `hashFiles` takes
+    # its globs as separate literal arguments, so the two-manifest key cannot
+    # be folded into the one above by interpolating an input — the variant
+    # lives here rather than being copied back out into the workflows.
+    - name: Cache dotslash artifacts (with btd)
+      if: inputs.with-btd == 'true'
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cache/dotslash
+          ~/Library/Caches/dotslash
+        key: dotslash-${{ inputs.cache-name }}-${{ hashFiles('buck2-bin', 'btd') }}
+        restore-keys: |
+          dotslash-${{ inputs.cache-name }}-

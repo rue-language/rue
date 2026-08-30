@@ -34,20 +34,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install dotslash
-        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
-
-      # Cache the dotslash-downloaded buck2 binary. The previous cache of
-      # buck-out/v2/gen + ~/.cache/buck2 was inert — OSS buck2 has no
-      # persistent action cache across daemon restarts, and ~/.cache/buck2
-      # is not a path buck2 uses. (RUE-144)
-      - name: Cache dotslash artifacts
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2-bin') }}
-          restore-keys: |
-            dotslash-linux-x64-
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
 
       - name: Create seed corpus
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --init-corpus crates/rue-fuzz/spec-seeds

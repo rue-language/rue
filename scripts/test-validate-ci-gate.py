@@ -955,7 +955,7 @@ class GateValidatorTests(unittest.TestCase):
         source = SOURCE.read_text()
         prefix, contract = source.split("  ci-contract:\n", 1)
         contract = contract.replace(
-            "      - name: Install dotslash\n        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18\n",
+            "      - name: Bootstrap dotslash\n        uses: ./.github/actions/bootstrap-dotslash\n",
             "",
             1,
         )

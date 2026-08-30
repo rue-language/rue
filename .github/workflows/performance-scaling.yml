@@ -26,8 +26,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install dotslash
-        uses: facebook/install-dotslash@v2
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
 
       - name: Build the compiler and measurement runner
         run: ./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench --target-platforms //platforms:release

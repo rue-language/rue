@@ -1011,21 +1011,53 @@ rue_sh_test(
 # one back — every job re-downloads it on every run, silently, because
 # dotslash succeeds either way. The glob matches the validator's own default
 # discovery so a newly added workflow is covered the day it lands.
+#
+# RUE-1825 moved the cache step itself into the composite action, so the
+# sources are the whole `.github` tree and both gates below walk it: the
+# workflows are where an install may not appear, the action is where the one
+# surviving key lives.
 filegroup(
-    name = "dotslash-cache-key-workflows",
-    srcs = glob([".github/workflows/*.yml", ".github/workflows/*.yaml"]),
+    name = "dotslash-github-sources",
+    srcs = glob([
+        ".github/workflows/*.yml",
+        ".github/workflows/*.yaml",
+        ".github/actions/**/*.yml",
+        ".github/actions/**/*.yaml",
+    ]),
 )
 
 rue_sh_test(
     name = "dotslash-cache-key-validation",
     test = "scripts/validate-dotslash-cache-keys.py",
-    args = ["$(location :dotslash-cache-key-workflows)/.github/workflows"],
+    args = ["$(location :dotslash-github-sources)/.github"],
 )
 
 rue_sh_test(
     name = "dotslash-cache-key-tool-tests",
     test = "scripts/test-dotslash-cache-keys.py",
     resources = ["scripts/validate-dotslash-cache-keys.py"] +
+        [":gatelib-sources"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
+# RUE-1825: installing dotslash and caching the binary it downloads is one
+# operation, and copies of it drifted until eight install sites had lost the
+# cache half entirely. `.github/actions/bootstrap-dotslash` owns the pairing;
+# this gate keeps it the only owner, and fails if the action stops doing
+# either half rather than passing vacuously over conforming callers.
+rue_sh_test(
+    name = "dotslash-bootstrap-validation",
+    test = "scripts/validate-dotslash-bootstrap.py",
+    args = ["$(location :dotslash-github-sources)/.github"],
+    resources = [":gatelib-sources"],
+)
+
+rue_sh_test(
+    name = "dotslash-bootstrap-tool-tests",
+    test = "scripts/test-dotslash-bootstrap.py",
+    resources = ["scripts/validate-dotslash-bootstrap.py"] +
         [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
