@@ -397,15 +397,15 @@ fn revisioned_database_hub_and_registered_family_authority_are_structural() {
         });
     assert_eq!(
         (declarations.len(), fingerprint),
-        (202, 7_082_883_898_404_990_306),
+        (205, 12_983_246_186_944_960_561),
         "crate-visible declaration names, signatures, fields, or phase owners changed"
     );
 
-    // The split must preserve the original crate-visible declaration set. The
-    // baseline is an identity manifest extracted from the pre-split source;
-    // this catches newly widened helpers even when a source-shape fingerprint
-    // is accidentally updated alongside them. The cfg(test) registration
-    // manifest is intentionally an inventory-only addition and is excluded.
+    // The baseline began as the identity manifest extracted from the pre-split
+    // source and grows only for reviewed cross-module authorities. This catches
+    // accidentally widened helpers even when a source-shape fingerprint is
+    // updated alongside them. The cfg(test) registration manifest is
+    // intentionally an inventory-only addition and is excluded.
     let mut actual_identities = REVISIONED_DATABASE_PHASES
         .iter()
         .flat_map(|(_, source)| crate_visible_declaration_identities(source))
@@ -556,6 +556,8 @@ fn:projected_declaration_semantics_for_modules
 fn:begin_import_inputs
 fn:import_frontier
 fn:current_import_revision
+fn:restore_import_revision_after_abort
+fn:commit_import_request
 fn:import_frontier_roots_requested
 fn:exact_import_groups_dispatched
 fn:import_view_full_leaves_published
@@ -580,6 +582,7 @@ fn:parse_program
 fn:compose_candidate_module_rirs
 fn:projected_module_indexes
 fn:select_parse
+fn:select_parse_candidate
 fn:parse_attempt_view
 fn:parse_origin_attempt_ids
 fn:runtime_retention_metrics

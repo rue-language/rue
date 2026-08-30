@@ -401,6 +401,25 @@ where
         Ok(())
     }
 
+    /// Select a provisional current terminal without promoting it to the
+    /// last-good publication root. Callers use this while a larger transaction
+    /// is still open; only its successful commit may call [`Self::publish`].
+    pub fn publish_candidate(&mut self, terminal: &Arc<QueryTerminal<V>>) -> Result<(), PinError> {
+        self.current = Some(self.family.pin_terminal(terminal)?);
+        Ok(())
+    }
+
+    /// Restore the independently pinned last-good terminal as request-current.
+    /// Returns `false` and clears current when no successful publication exists.
+    pub fn reselect_last_good(&mut self) -> Result<bool, PinError> {
+        let Some(terminal) = self.last_good().cloned() else {
+            self.current = None;
+            return Ok(false);
+        };
+        self.current = Some(self.family.pin_terminal(&terminal)?);
+        Ok(true)
+    }
+
     /// Current selected attempt, including a deterministic failure.
     pub fn current(&self) -> Option<&Arc<QueryTerminal<V>>> {
         self.current.as_ref().map(TerminalPin::terminal)

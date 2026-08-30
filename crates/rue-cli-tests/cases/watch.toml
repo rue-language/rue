@@ -115,9 +115,9 @@ source = "fn main() -> i32 { 3 }\n"
 # while discovery was still re-closing could not supersede the stale attempt:
 # it was noticed only once compilation proper began, or on the next cycle.
 # `reobserve_delay_ms` widens the re-closure window on purpose so the second
-# edit deterministically lands inside it. The superseded attempt must commit
-# nothing: exactly one fresh re-observation over the newest bytes follows, and
-# only the newest revision's output ever publishes.
+# edit deterministically lands inside it. The cycle may retain a coherent close
+# only after its atomic commit boundary, but it must re-observe newest bytes
+# before compiling; only the newest revision's output ever publishes.
 [[case]]
 name = "change_during_reobserve_supersedes_the_stale_attempt"
 files = [

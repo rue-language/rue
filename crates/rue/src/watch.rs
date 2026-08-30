@@ -1,8 +1,7 @@
-#[cfg(test)]
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -13,8 +12,7 @@ use rue_compiler::{CompileOptions, LinkerMode};
 #[cfg(test)]
 use rue_driver::watch_inputs_changed_with_reader;
 use rue_driver::{
-    FilesystemCompilerHost, SourceLoadError, WatchFingerprint, WatchInput,
-    watch_input_fingerprints, watch_inputs_changed,
+    FilesystemCompilerHost, SourceLoadError, WatchFingerprint, WatchInput, watch_inputs_changed,
 };
 
 use crate::compile::{CancellableCompileRequest, CompileCycleOutcome, execute_cancellable};
@@ -33,7 +31,6 @@ const FAILED_REOBSERVE_RETRY: Duration = Duration::from_millis(250);
 // synchronization without wall-clock sleeps.
 const TEST_PROTOCOL_ENV: &str = "RUE_WATCH_TEST_PROTOCOL";
 const TEST_COMPILE_DELAY_ENV: &str = "RUE_WATCH_TEST_COMPILE_DELAY_MS";
-const TEST_REOBSERVE_DELAY_ENV: &str = "RUE_WATCH_TEST_REOBSERVE_DELAY_MS";
 const TEST_ACQUIRE_DELAY_ENV: &str = "RUE_WATCH_TEST_ACQUIRE_DELAY_MS";
 const TEST_BOUNDARY_DELAY_ENV: &str = "RUE_WATCH_TEST_BOUNDARY_DELAY_MS";
 
@@ -50,20 +47,6 @@ fn test_event(event: &str) {
 
 fn test_compile_delay() {
     let Ok(delay) = std::env::var(TEST_COMPILE_DELAY_ENV) else {
-        return;
-    };
-    let Ok(milliseconds) = delay.parse::<u64>() else {
-        return;
-    };
-    thread::sleep(Duration::from_millis(milliseconds.min(5_000)));
-}
-
-// Hold the cycle between starting the re-observation monitor and the
-// re-observation itself. Test-only, like the compile delay: it exists so an
-// edit can deterministically land while the graph is being re-closed
-// (RUE-1830).
-fn test_reobserve_delay() {
-    let Ok(delay) = std::env::var(TEST_REOBSERVE_DELAY_ENV) else {
         return;
     };
     let Ok(milliseconds) = delay.parse::<u64>() else {
@@ -137,6 +120,21 @@ struct ChangeMonitor {
     thread: thread::JoinHandle<()>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WatchObservation {
+    requested_route: Vec<WatchSymlinkObservation>,
+    requested_canonical: Option<PathBuf>,
+    requested_fingerprint: Option<WatchFingerprint>,
+    canonical_fingerprint: Option<WatchFingerprint>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WatchSymlinkObservation {
+    path: PathBuf,
+    target: PathBuf,
+    identity: Option<(u64, u64)>,
+}
+
 impl ChangeMonitor {
     fn start(inputs: Vec<WatchInput>, cancellation: CompilationCancellation) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
@@ -169,8 +167,12 @@ impl ChangeMonitor {
     /// the cycle runs, so only a post-baseline edit supersedes the attempt.
     /// The thread stays silent on the test protocol; the superseded cycle
     /// announces itself through its own milestone.
-    fn start_reobservation(inputs: Vec<WatchInput>, cancellation: CompilationCancellation) -> Self {
-        let baseline = current_fingerprints(&inputs);
+    fn start_reobservation(
+        inputs: Vec<WatchInput>,
+        cancellation: CompilationCancellation,
+    ) -> (Self, Vec<WatchObservation>) {
+        let baseline = current_observations(&inputs);
+        let thread_baseline = baseline.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let changed = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
@@ -178,7 +180,7 @@ impl ChangeMonitor {
         let thread = thread::spawn(move || {
             let mut poll = PollBackoff::new();
             while !thread_stop.load(Ordering::Acquire) {
-                if current_fingerprints(&inputs) != baseline {
+                if current_observations(&inputs) != thread_baseline {
                     thread_changed.store(true, Ordering::Release);
                     cancellation.cancel();
                     return;
@@ -186,11 +188,14 @@ impl ChangeMonitor {
                 thread::park_timeout(poll.next_delay());
             }
         });
-        Self {
-            stop,
-            changed,
-            thread,
-        }
+        (
+            Self {
+                stop,
+                changed,
+                thread,
+            },
+            baseline,
+        )
     }
 
     fn changed(&self) -> bool {
@@ -225,11 +230,10 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
             // no unobserved seam between them.
             let stale_inputs = request.host.watch_inputs();
             let cancellation = CompilationCancellation::new();
-            let monitor =
+            let (monitor, observation_baseline) =
                 ChangeMonitor::start_reobservation(stale_inputs.clone(), cancellation.clone());
             let superseded = || cancellation.is_canceled();
             test_event("reobserve-started");
-            test_reobserve_delay();
             let mut phase = ObservationPhase::Reobserve;
             let mut observed = request.host.reobserve_superseding(&superseded);
             if observed.is_ok() {
@@ -241,23 +245,28 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
                     &superseded,
                 );
             }
-            monitor.finish();
+            let monitor_changed = monitor.finish();
+            let changed =
+                monitor_changed || current_observations(&stale_inputs) != observation_baseline;
+            if changed || matches!(&observed, Err(SourceLoadError::Superseded)) {
+                test_event(phase.superseded_event());
+                print_watch_status(
+                    request.error_format,
+                    format!(
+                        "Watch re-observation superseded after {} ms; a newer source revision is available",
+                        cycle_started.elapsed().as_millis()
+                    ),
+                );
+                // Each phase commits either nothing or one coherent close. Let
+                // the burst settle, then re-observe the exact physical routes
+                // from the newest bytes; `needs_reobserve` remains set.
+                debounce(&stale_inputs);
+                continue;
+            }
             match observed {
                 Ok(()) => test_event("acquire-ok"),
                 Err(SourceLoadError::Superseded) => {
-                    test_event(phase.superseded_event());
-                    print_watch_status(
-                        request.error_format,
-                        format!(
-                            "Watch re-observation superseded after {} ms; a newer source revision is available",
-                            cycle_started.elapsed().as_millis()
-                        ),
-                    );
-                    // The superseded attempt committed nothing. Let the burst
-                    // settle, then re-observe from the newest bytes;
-                    // `needs_reobserve` is still set.
-                    debounce(&stale_inputs);
-                    continue;
+                    unreachable!("supersession was handled before source errors")
                 }
                 Err(error) => {
                     test_event(phase.error_event());
@@ -450,11 +459,11 @@ fn wait_for_change(inputs: &[WatchInput]) {
 }
 
 fn debounce(inputs: &[WatchInput]) {
-    let mut previous = current_fingerprints(inputs);
+    let mut previous = current_observations(inputs);
     let mut quiet_since = Instant::now();
     while quiet_since.elapsed() < QUIET_PERIOD {
         thread::sleep(POLL_INTERVAL);
-        let current = current_fingerprints(inputs);
+        let current = current_observations(inputs);
         if current != previous {
             previous = current;
             quiet_since = Instant::now();
@@ -511,8 +520,57 @@ fn cycle_boundary_action(changed: bool, monitor_changed: bool) -> CycleBoundary 
     }
 }
 
-fn current_fingerprints(inputs: &[WatchInput]) -> Vec<Option<WatchFingerprint>> {
-    watch_input_fingerprints(inputs)
+/// Capture the physical state at the beginning of a retained re-observation.
+///
+/// The accepted `WatchInput` still names the committed closure the loader is
+/// allowed to revisit, but its embedded fingerprint is necessarily stale after
+/// the edit that requested this cycle. Monitoring against that fingerprint
+/// would cancel every attempt immediately. This separate baseline observes the
+/// current requested route and both requested/canonical bytes, so only a later
+/// edit supersedes the attempt, including symlink retargets and appearances of
+/// previously absent candidates.
+fn current_observations(inputs: &[WatchInput]) -> Vec<WatchObservation> {
+    inputs
+        .iter()
+        .map(|input| WatchObservation {
+            requested_route: current_symlink_route(input.requested_path()),
+            requested_canonical: fs::canonicalize(input.requested_path()).ok(),
+            requested_fingerprint: WatchFingerprint::read(input.requested_path()),
+            canonical_fingerprint: WatchFingerprint::read(input.canonical_path()),
+        })
+        .collect()
+}
+
+fn current_symlink_route(path: &Path) -> Vec<WatchSymlinkObservation> {
+    let mut current = PathBuf::new();
+    let mut route = Vec::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        let Ok(target) = fs::read_link(&current) else {
+            continue;
+        };
+        let identity = fs::symlink_metadata(&current)
+            .ok()
+            .and_then(|metadata| symlink_identity(&metadata));
+        route.push(WatchSymlinkObservation {
+            path: current.clone(),
+            target,
+            identity,
+        });
+    }
+    route
+}
+
+#[cfg(unix)]
+fn symlink_identity(metadata: &fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+
+    Some((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+fn symlink_identity(_: &fs::Metadata) -> Option<(u64, u64)> {
+    None
 }
 
 #[cfg(test)]
@@ -620,6 +678,91 @@ mod tests {
         fs::write(&path, b"bravo").unwrap();
         assert!(inputs_changed(&inputs));
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn reobserve_baseline_accepts_the_triggering_edit_and_detects_the_next_one() {
+        let path = std::env::temp_dir().join(format!(
+            "rue-watch-reobserve-baseline-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, b"one").unwrap();
+        let inputs = vec![WatchInput::new(
+            path.clone(),
+            path.clone(),
+            WatchFingerprint::from_bytes(b"one"),
+        )];
+
+        fs::write(&path, b"two").unwrap();
+        let baseline = current_observations(&inputs);
+        assert_eq!(
+            current_observations(&inputs),
+            baseline,
+            "the edit which requested re-observation is the attempt baseline, not a new cancellation"
+        );
+
+        fs::write(&path, b"six").unwrap();
+        assert_ne!(
+            current_observations(&inputs),
+            baseline,
+            "a later same-length edit must supersede the in-flight re-observation"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reobserve_baseline_distinguishes_repeated_dangling_directory_retargets() {
+        let root = std::env::temp_dir().join(format!(
+            "rue-watch-reobserve-route-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let real = root.join("real");
+        fs::create_dir_all(&real).unwrap();
+        let leaf = real.join("leaf.rue");
+        fs::write(&leaf, b"source").unwrap();
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink("real", &alias).unwrap();
+        let requested = alias.join("leaf.rue");
+        let canonical = fs::canonicalize(&requested).unwrap();
+        let inputs = vec![WatchInput::new(
+            requested,
+            canonical,
+            WatchFingerprint::from_bytes(b"source"),
+        )];
+
+        fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink("missing-a", &alias).unwrap();
+        let baseline = current_observations(&inputs);
+        assert!(
+            baseline[0]
+                .requested_route
+                .iter()
+                .any(|component| component.target == Path::new("missing-a")),
+            "the baseline must retain the raw dangling directory route"
+        );
+        assert!(baseline[0].requested_fingerprint.is_none());
+
+        fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink("missing-b", &alias).unwrap();
+        assert_ne!(
+            current_observations(&inputs),
+            baseline,
+            "a second dangling directory retarget must supersede the in-flight observation"
+        );
+
+        fs::remove_file(alias).unwrap();
+        fs::remove_file(leaf).unwrap();
+        fs::remove_dir(real).unwrap();
+        fs::remove_dir(root).unwrap();
     }
 
     #[test]

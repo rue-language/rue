@@ -786,14 +786,7 @@ fn closed_continuation_for(
     let revision = session
         .begin_import_input_request(&snapshot, ctx.clone(), reads.clone())
         .unwrap();
-    let plan = session
-        .stage_import_discovery(
-            &snapshot,
-            ctx.clone(),
-            reads.shared_slice(),
-            crate::ImportObservationLedger::default(),
-        )
-        .unwrap();
+    let plan = session.stage_import_input_request(revision).unwrap();
     let roots = plan.demand_roots();
     let frontier = session
         .import_demand_frontier_for_roots(revision, &plan, crate::ImportDemandMode::Rooted, &roots)
@@ -802,8 +795,7 @@ fn closed_continuation_for(
         frontier.requests().is_empty(),
         "a freestanding root closes with an empty frontier",
     );
-    let ledger = session.import_observation_ledger(revision).unwrap();
-    session.close_import_discovery(ledger).unwrap();
+    session.close_import_input_request(revision).unwrap();
     // A bare close is non-authorizing: no demand set has been attached yet.
     assert!(
         session.closed_discovery_continuation().is_none(),
@@ -1094,6 +1086,171 @@ fn trusted_successor_publishes_additive_leaf_in_same_generation() {
         successor.source_revision().modules().len(),
         predecessor_modules.len() + 1,
     );
+}
+
+#[test]
+fn failed_trusted_successor_reclose_restores_exact_committed_selectors() {
+    let (mut session, token, frontier, _predecessor, _reads, mut assembler) = closed_continuation();
+    let retry_token = token.clone();
+    let committed_revision = session.queries.revisioned.current_import_revision();
+    let committed_attempt = session
+        .queries
+        .discovery_attempt
+        .clone()
+        .expect("the predecessor close selects its discovery attempt");
+    let committed_prior = session.queries.prior_discovery.clone();
+    let committed_order = session.batch_diagnostic_order.clone();
+    let committed_diagnostics = session
+        .diagnostics
+        .latest()
+        .cloned()
+        .expect("the predecessor close selects its diagnostic batch");
+    let committed_parse = session
+        .selected_parse_terminal()
+        .expect("the predecessor close selects its parse terminal");
+    let (committed_validated_snapshot, committed_validated_reads) = session
+        .validated_accepted_reads
+        .clone()
+        .expect("the predecessor close validates its accepted reads");
+
+    assembler
+        .add_explicit(
+            "/sdk/option.rue",
+            "/sdk/option.rue",
+            crate::PhysicalFileIdentity::new(2, 2),
+            continuation_metadata(),
+            Arc::new(
+                r#"const missing = @import("missing.rue"); pub fn Option(comptime T: type) -> type { enum { Some(T), None } }"#
+                    .to_owned(),
+            ),
+        )
+        .unwrap();
+    let successor = assembler.snapshot().unwrap();
+    let successor_reads = assembler.accepted_read_manifest();
+    let delta = session
+        .publish_trusted_toolchain_successor(token, &frontier, &successor, successor_reads.clone())
+        .expect("the trusted successor publishes");
+    session
+        .stage_import_discovery_successor(&delta)
+        .expect("the successor stage moves the provisional selectors");
+    session
+        .close_import_discovery_successor(&delta)
+        .expect_err("the unresolved successor import records a failed close");
+    assert!(
+        !Arc::ptr_eq(
+            session
+                .queries
+                .discovery_attempt
+                .as_ref()
+                .expect("the failed close selects its attempted discovery"),
+            &committed_attempt,
+        ),
+        "the regression must move the discovery-attempt selector before abort"
+    );
+    assert!(
+        session
+            .queries
+            .prior_discovery
+            .as_ref()
+            .is_some_and(|prior| Arc::ptr_eq(prior, &committed_attempt)),
+        "the failed close must retain the committed predecessor as prior discovery"
+    );
+    assert!(
+        !Arc::ptr_eq(
+            session
+                .diagnostics
+                .latest()
+                .expect("the failed close selects its diagnostics"),
+            &committed_diagnostics,
+        ),
+        "the regression must move the diagnostic selector before abort"
+    );
+    assert!(
+        !Arc::ptr_eq(
+            &session
+                .selected_parse_terminal()
+                .expect("the failed successor retains its staged parse terminal"),
+            &committed_parse,
+        ),
+        "the regression must move the parse selector before abort"
+    );
+
+    // A newer filesystem observation supersedes this failed successor before
+    // the driver aborts it. Beginning that request must invalidate the delta
+    // without checkpointing provisional selectors or a consumed continuation
+    // as though they were committed state.
+    session
+        .begin_import_input_request(
+            &successor,
+            continuation_std_context(),
+            successor_reads.clone(),
+        )
+        .expect("the superseding fresh request begins");
+    assert!(
+        session.stage_import_discovery_successor(&delta).is_err(),
+        "the fresh request invalidates the provisional successor delta"
+    );
+
+    session
+        .abort_import_input_request()
+        .expect("the failed successor round rolls back exactly");
+
+    assert_eq!(
+        session.queries.revisioned.current_import_revision(),
+        committed_revision,
+        "abort must reselect the committed predecessor revision"
+    );
+    assert!(Arc::ptr_eq(
+        session
+            .queries
+            .discovery_attempt
+            .as_ref()
+            .expect("abort restores the committed discovery attempt"),
+        &committed_attempt,
+    ));
+    match (
+        session.queries.prior_discovery.as_ref(),
+        committed_prior.as_ref(),
+    ) {
+        (Some(restored), Some(committed)) => assert!(Arc::ptr_eq(restored, committed)),
+        (None, None) => {}
+        _ => panic!("abort changed the prior-discovery selector"),
+    }
+    assert_eq!(session.batch_diagnostic_order, committed_order);
+    assert!(Arc::ptr_eq(
+        session
+            .diagnostics
+            .latest()
+            .expect("abort restores the committed diagnostic selector"),
+        &committed_diagnostics,
+    ));
+    assert!(Arc::ptr_eq(
+        &session
+            .selected_parse_terminal()
+            .expect("abort restores the committed parse selector"),
+        &committed_parse,
+    ));
+    let (restored_snapshot, restored_reads) = session
+        .validated_accepted_reads
+        .as_ref()
+        .expect("abort restores validated accepted reads");
+    assert!(restored_snapshot.is_same_exact_snapshot(&committed_validated_snapshot));
+    assert_eq!(restored_reads, &committed_validated_reads);
+    assert!(session.import_request_checkpoint.is_none());
+    assert!(session.successor_delta_nonce.is_none());
+    assert!(
+        session.stage_import_discovery_successor(&delta).is_err(),
+        "abort permanently invalidates the provisional successor delta"
+    );
+
+    let restored_token = session
+        .closed_discovery_continuation()
+        .expect("abort restores the exact authorizing continuation");
+    assert_eq!(restored_token.nonce, retry_token.nonce);
+    assert_eq!(restored_token.revision, retry_token.revision);
+    session
+        .publish_trusted_toolchain_successor(retry_token, &frontier, &successor, successor_reads)
+        .expect("the restored continuation authorizes a clean retry");
 }
 
 #[test]

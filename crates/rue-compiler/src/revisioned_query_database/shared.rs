@@ -674,6 +674,19 @@ pub(crate) struct RevisionedQueryDatabase {
         Arc<Mutex<TestBodyClosureAnonymousDigestForcing>>,
     pub(super) next_import_request: u64,
     pub(super) current_import_revision: Option<ImportInputRevision>,
+    /// The exact import-input revision adopted by the latest successful close.
+    /// Candidate request views may replace `current_import_revision` while open,
+    /// but this independently protects and restores the public semantic view.
+    pub(super) committed_import_revision: Option<ImportInputRevision>,
+    /// Runtime-view root for `committed_import_revision`. Module/import stores
+    /// have their own bounded histories, but every query against those inputs
+    /// also requires the shared runtime revision itself to remain published.
+    pub(super) committed_import_revision_pin: Option<
+        rue_query::RevisionPin<
+            CompatibilityKey<crate::session::ParseQueryKey>,
+            crate::session::ParseQueryRecord,
+        >,
+    >,
     /// Compatibility namespace shared by ordinary snapshot publication and
     /// rooted import publication. The first rooted request can bind an
     /// existing ordinary-update lineage to its observation context; later

@@ -70,6 +70,11 @@ pub(super) struct SuccessorState {
     pub(super) ledger: crate::ImportObservationLedger,
     /// The published lineage identity this state was read from.
     pub(super) revision: crate::ImportInputRevision,
+    /// The exact compiler-owned step that produced `revision`. Successor
+    /// staging uses this to bind request-local candidate chaining to the open
+    /// artifact that consumed the transition's parent, never to ambient parse
+    /// selection state.
+    pub(super) transition: crate::revisioned_query_database::ImportInputTransition,
     /// The appended module revisions (view sources minus the committed
     /// predecessor), in canonical module order.
     pub(super) delta: Arc<[crate::ModuleRevision]>,
@@ -81,8 +86,15 @@ pub(super) struct SuccessorState {
 /// existing capability protocol.
 pub(super) struct IncrementalImportStage {
     pub(super) revision: crate::ImportInputRevision,
-    pub(super) delta: Arc<[crate::ModuleRevision]>,
+    /// Modules added since the plan predecessor. Trusted-successor plans stay
+    /// anchored at the committed close, so this is cumulative across the
+    /// request and remains the close-time delta segment.
+    pub(super) plan_delta: Arc<[crate::ModuleRevision]>,
     pub(super) predecessor_plan: crate::ImportDiscoveryPlan,
+    /// Modules added since the exact parse predecessor. Unlike `plan_delta`,
+    /// this chains through request-local candidates and is empty when the same
+    /// immutable input revision is staged again for its closing witness.
+    pub(super) parse_delta: Arc<[crate::ModuleRevision]>,
     pub(super) predecessor_parse: Arc<rue_query::QueryTerminal<ParseQueryRecord>>,
     pub(super) inherited_parse_work: ParsedModulesWork,
 }
@@ -97,6 +109,16 @@ pub(super) struct ContinuationState {
     /// The exact sorted missing-demand set the rooted park attached, or `None`
     /// while the closed state is non-authorizing (no park has arrived for it).
     pub(super) attached_demands: Option<Arc<[crate::TrustedToolchainModuleDemand]>>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ImportRequestCheckpoint {
+    pub(super) validated_accepted_reads: Option<(SourceSnapshot, crate::AcceptedReadManifest)>,
+    pub(super) continuation: Option<ContinuationState>,
+    pub(super) discovery_attempt: Option<Arc<ImportDiscoveryRevisionArtifact>>,
+    pub(super) prior_discovery: Option<Arc<ImportDiscoveryRevisionArtifact>>,
+    pub(super) batch_diagnostic_order: Option<crate::shared_segments::SharedList<crate::ModuleId>>,
+    pub(super) diagnostics: DiagnosticAttemptStore,
 }
 
 /// Convert an unsatisfied trusted-toolchain park to the error a stable

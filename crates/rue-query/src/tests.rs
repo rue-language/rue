@@ -8746,6 +8746,13 @@ fn family_policy_and_selection_preserve_last_good_above_terminals() {
         )
         .unwrap();
     let mut selection = family.selection();
+    selection.publish(&success).unwrap();
+    selection.publish_candidate(&red).unwrap();
+    assert!(Arc::ptr_eq(selection.current().unwrap(), &red));
+    assert!(Arc::ptr_eq(selection.last_good().unwrap(), &success));
+    assert!(selection.reselect_last_good().unwrap());
+    assert!(Arc::ptr_eq(selection.current().unwrap(), &success));
+    assert!(Arc::ptr_eq(selection.last_good().unwrap(), &success));
     selection.publish(&red).unwrap();
     selection.publish(&failure).unwrap();
     assert!(Arc::ptr_eq(selection.current().unwrap(), &failure));
