@@ -12,6 +12,10 @@ rue_binary(
         "cases/execution_contracts.toml": "src/execution_contracts.toml",
         "cases/examples_mosaic.toml": "src/examples_mosaic.toml",
         "//:std-sort-source": "src/std_sort.rue",
+        "//:std-rawbuf-source": "src/std_rawbuf.rue",
+        "//:std-arraybuf-source": "src/std_arraybuf.rue",
+        "//:std-strbuf-source": "src/std_strbuf.rue",
+        "//:std-strings-source": "src/std_strings.rue",
     },
     deps = [
         "//crates/rue-linker:rue-linker",

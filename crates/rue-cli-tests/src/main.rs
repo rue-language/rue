@@ -4528,6 +4528,94 @@ mod tests {
         );
     }
 
+    fn rue_function_body<'a>(source: &'a str, marker: &str) -> &'a str {
+        let marker_start = source
+            .find(marker)
+            .unwrap_or_else(|| panic!("Rue source must contain {marker:?}"));
+        let open = source[marker_start..]
+            .find('{')
+            .map(|offset| marker_start + offset)
+            .expect("Rue function must have a body");
+        let mut depth = 0usize;
+        for (offset, byte) in source[open..].bytes().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[open + 1..open + offset];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("Rue function {marker:?} has an unterminated body");
+    }
+
+    #[test]
+    fn byte_range_source_inventory_pins_one_bulk_copy_path() {
+        let rawbuf = include_str!("std_rawbuf.rue");
+        let arraybuf = include_str!("std_arraybuf.rue");
+        let strbuf = include_str!("std_strbuf.rue");
+        let strings = include_str!("std_strings.rue");
+
+        let from_byte_range = rue_function_body(strbuf, "fn from_byte_range(");
+        let append_byte_range = rue_function_body(strbuf, "fn append_byte_range(");
+        let to_bytes = rue_function_body(strbuf, "fn to_bytes(");
+        assert!(from_byte_range.contains("copy_arraybuf_range("));
+        assert!(append_byte_range.contains("copy_arraybuf_range("));
+        assert!(to_bytes.contains("copy_rawbuf_range("));
+        for (name, body) in [
+            ("from_byte_range", from_byte_range),
+            ("append_byte_range", append_byte_range),
+            ("to_bytes", to_bytes),
+        ] {
+            assert!(!body.contains("while"), "{name} must remain one bulk call");
+            assert!(
+                !body.contains(".push("),
+                "{name} must not rebuild byte-by-byte"
+            );
+            assert!(
+                !body.contains("get_or("),
+                "{name} must not use per-byte lookup"
+            );
+        }
+
+        for marker in ["pub fn trim_start(", "pub fn trim_end(", "pub fn trim("] {
+            let body = rue_function_body(strings, marker);
+            assert!(
+                body.contains(".byte_range("),
+                "{marker} must return byte_range"
+            );
+            assert!(
+                !body.contains(".push("),
+                "{marker} must not rebuild byte-by-byte"
+            );
+            assert!(
+                !body.contains("get_or("),
+                "{marker} must not use per-byte lookup"
+            );
+            // The scan's while is intentional; the returned range must be the
+            // sole post-scan construction path rather than another loop.
+            let range = body.find(".byte_range(").expect("range call above");
+            assert!(!body[range..].contains("while"));
+        }
+
+        assert!(arraybuf.contains("\nfn copy_arraybuf_range("));
+        assert!(rawbuf.contains("\nfn copy_rawbuf_range("));
+        assert!(rawbuf.contains("\nfn copy_rawbuf_range_within("));
+        assert_eq!(rawbuf.matches("@byte_copy").count(), 1);
+        assert!(rawbuf.contains("fn copy_nonoverlapping_bytes("));
+        assert_eq!(
+            rawbuf.matches("copy_nonoverlapping_bytes(").count(),
+            3,
+            "one raw implementation plus the two thin RawBuf callers"
+        );
+        assert!(!strbuf.contains("@byte_copy"));
+        assert!(!arraybuf.contains("@byte_copy"));
+        assert!(!strings.contains("@byte_copy"));
+    }
+
     fn corpus_from_toml(source: &str) -> LoadedCorpus {
         let profiles = r#"
             [timeout_profile.ordinary]

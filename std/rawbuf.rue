@@ -36,6 +36,59 @@
 // string literal, §6.13.4) belongs here too, as a third case of the same
 // invariant, so both containers can share it; it is not modeled yet.
 
+// The sole raw byte-copy implementation. Callers pass validated logical
+// ranges; this private function performs the shared byte-size, address,
+// overlap, and intrinsic checks for both distinct-buffer bridges and
+// same-buffer non-overlap copies. It is deliberately not exported through the
+// std facade and accepts no user-visible pointer API.
+fn copy_nonoverlapping_bytes(
+    source: ptr mut u8,
+    source_start: u64,
+    destination: ptr mut u8,
+    destination_start: u64,
+    count: u64,
+    element_size: u64,
+) {
+    if count == 0 || element_size == 0 {
+        return;
+    }
+    if count > 18446744073709551615 / element_size {
+        @panic("out of memory");
+    }
+    if source_start > 18446744073709551615 / element_size
+        || destination_start > 18446744073709551615 / element_size {
+        @panic("index out of bounds");
+    }
+    let source_offset = source_start * element_size;
+    let destination_offset = destination_start * element_size;
+    let bytes = count * element_size;
+    let source_address = checked { @ptr_to_int(source) };
+    let destination_address = checked { @ptr_to_int(destination) };
+    if source_address == 0 || destination_address == 0 {
+        @panic("index out of bounds");
+    }
+    if source_address > 18446744073709551615 - source_offset
+        || destination_address > 18446744073709551615 - destination_offset {
+        @panic("index out of bounds");
+    }
+    let source_begin = source_address + source_offset;
+    let destination_begin = destination_address + destination_offset;
+    if source_begin > 18446744073709551615 - bytes
+        || destination_begin > 18446744073709551615 - bytes {
+        @panic("index out of bounds");
+    }
+    let source_end = source_begin + bytes;
+    let destination_end = destination_begin + bytes;
+    if source_begin < destination_end && destination_begin < source_end {
+        @panic("overlapping byte ranges");
+    }
+    checked {
+        let source_ptr: ptr mut u8 = @int_to_ptr(source_begin);
+        let destination_ptr: ptr mut u8 = @int_to_ptr(destination_begin);
+        @byte_copy(destination_ptr, source_ptr, bytes);
+    };
+}
+
 pub fn RawBuf(comptime T: type) -> type {
     struct {
         buf: ptr mut T,
@@ -131,4 +184,75 @@ pub fn RawBuf(comptime T: type) -> type {
             self.release();
         }
     }
+}
+
+// Copy a checked range between RawBuf allocations. This is module-private
+// rather than an associated method: RawBuf is a public type, and associated
+// methods would become callable through a user's `value.core` projection.
+// `source_bound` is supplied only by the owning container's logical length;
+// the destination bound is always the destination RawBuf's actual capacity.
+// The ranges must not overlap. A zero count is validated, then returns before
+// either pointer is inspected.
+fn copy_rawbuf_range(
+    comptime T: type,
+    inout destination: RawBuf(T),
+    borrow source: RawBuf(T),
+    source_start: u64,
+    source_bound: u64,
+    destination_start: u64,
+    count: u64,
+) {
+    @require_trivially_droppable(T);
+    if source_start > source_bound || count > source_bound - source_start {
+        @panic("index out of bounds");
+    }
+    if destination_start > destination.cap || count > destination.cap - destination_start {
+        @panic("index out of bounds");
+    }
+    let element_size: u64 = @intCast(@size_of(T));
+    if count == 0 || element_size == 0 {
+        return;
+    }
+    let source_ptr: ptr mut u8 = checked { @int_to_ptr(@ptr_to_int(source.buf)) };
+    let destination_ptr: ptr mut u8 = checked { @int_to_ptr(@ptr_to_int(destination.buf)) };
+    copy_nonoverlapping_bytes(
+        source_ptr,
+        source_start,
+        destination_ptr,
+        destination_start,
+        count,
+        element_size,
+    );
+}
+
+// Same-owner form used by StrBuf.duplicate. Its logical source bound is still
+// explicit because RawBuf owns spare capacity but has no initialized length.
+fn copy_rawbuf_range_within(
+    comptime T: type,
+    inout buffer: RawBuf(T),
+    source_start: u64,
+    source_bound: u64,
+    destination_start: u64,
+    count: u64,
+) {
+    @require_trivially_droppable(T);
+    if source_start > source_bound || count > source_bound - source_start {
+        @panic("index out of bounds");
+    }
+    if destination_start > buffer.cap || count > buffer.cap - destination_start {
+        @panic("index out of bounds");
+    }
+    let element_size: u64 = @intCast(@size_of(T));
+    if count == 0 || element_size == 0 {
+        return;
+    }
+    let base_ptr: ptr mut u8 = checked { @int_to_ptr(@ptr_to_int(buffer.buf)) };
+    copy_nonoverlapping_bytes(
+        base_ptr,
+        source_start,
+        base_ptr,
+        destination_start,
+        count,
+        element_size,
+    );
 }

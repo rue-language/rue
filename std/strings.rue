@@ -228,14 +228,7 @@ pub fn trim_start(s: StrBuf) -> StrBuf {
             scanning = false;
         }
     }
-    let mut out = StrBuf.new();
-    let mut i = start;
-    while i < n {
-        let c = bounded_byte_at(borrow s, i);
-        out.push(c);
-        i += 1;
-    }
-    out
+    s.byte_range(start, n - start)
 }
 
 // Copy of `s` with trailing ASCII whitespace removed.
@@ -251,14 +244,7 @@ pub fn trim_end(s: StrBuf) -> StrBuf {
             scanning = false;
         }
     }
-    let mut out = StrBuf.new();
-    let mut i: u64 = 0;
-    while i < end {
-        let c = bounded_byte_at(borrow s, i);
-        out.push(c);
-        i += 1;
-    }
-    out
+    s.byte_range(0, end)
 }
 
 // Copy of `s` with both leading and trailing ASCII whitespace removed.
@@ -284,14 +270,7 @@ pub fn trim(s: StrBuf) -> StrBuf {
             ec = false;
         }
     }
-    let mut out = StrBuf.new();
-    let mut i = start;
-    while i < end {
-        let c = bounded_byte_at(borrow s, i);
-        out.push(c);
-        i += 1;
-    }
-    out
+    s.byte_range(start, end - start)
 }
 
 // `s` concatenated `n` times (empty string when `n == 0`).

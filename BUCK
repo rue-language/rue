@@ -215,6 +215,41 @@ genrule(
     visibility = ["PUBLIC"],
 )
 
+# The CLI harness also pins the source shape of the byte-range bridge and trim
+# implementations. Keep these production inputs separate so that the unit
+# guard remains hermetic and only rebuilds when one of the relevant files does.
+genrule(
+    name = "std-rawbuf-source",
+    out = "std_rawbuf.rue",
+    srcs = ["std/rawbuf.rue"],
+    cmd = "cp $SRCS $OUT",
+    visibility = ["PUBLIC"],
+)
+
+genrule(
+    name = "std-arraybuf-source",
+    out = "std_arraybuf.rue",
+    srcs = ["std/arraybuf.rue"],
+    cmd = "cp $SRCS $OUT",
+    visibility = ["PUBLIC"],
+)
+
+genrule(
+    name = "std-strbuf-source",
+    out = "std_strbuf.rue",
+    srcs = ["std/strbuf.rue"],
+    cmd = "cp $SRCS $OUT",
+    visibility = ["PUBLIC"],
+)
+
+genrule(
+    name = "std-strings-source",
+    out = "std_strings.rue",
+    srcs = ["std/strings.rue"],
+    cmd = "cp $SRCS $OUT",
+    visibility = ["PUBLIC"],
+)
+
 # The example programs are runtime inputs to the CLI integration tests: the
 # suite compiles+runs every examples/*.rue through the real driver (RUE-48),
 # so an edit under examples/ MUST re-run the CLI suite (declared here as an
