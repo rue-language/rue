@@ -559,6 +559,31 @@ impl SourceSnapshot {
         &self.data.revision
     }
 
+    /// Whether `other` is this EXACT snapshot: the same files in the same
+    /// caller-supplied order, with identical module and source identity,
+    /// physical and logical paths, root file, and text content.
+    ///
+    /// Source revisions deliberately exclude physical location and
+    /// presentation order — a relocated or reordered snapshot shares a
+    /// revision without being the same snapshot — so revision equality must
+    /// never stand in for snapshot identity (RUE-1823).
+    pub(crate) fn is_same_exact_snapshot(&self, other: &SourceSnapshot) -> bool {
+        if Arc::ptr_eq(&self.data, &other.data) {
+            return true;
+        }
+        self.len() == other.len()
+            && self.metadata().root_file_id() == other.metadata().root_file_id()
+            && self.files().zip(other.files()).all(|(mine, theirs)| {
+                mine.file_id == theirs.file_id
+                    && mine.path == theirs.path
+                    && mine.source == theirs.source
+                    && self.module_id(mine.file_id) == other.module_id(theirs.file_id)
+                    && self.source_id(mine.file_id) == other.source_id(theirs.file_id)
+                    && self.metadata().logical_path(mine.file_id)
+                        == other.metadata().logical_path(theirs.file_id)
+            })
+    }
+
     /// Snapshot-owned exact source storage shared by all equal source texts.
     pub fn source_store(&self) -> &SourceStore {
         &self.data.source_store
