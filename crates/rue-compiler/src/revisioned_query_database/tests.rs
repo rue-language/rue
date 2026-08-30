@@ -6,7 +6,7 @@ use crate::{
     ImportObservation, PhysicalFileIdentity, SourceMetadata,
 };
 use rue_span::FileId;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
 fn semantic_comptime_call_depth_guard_restores_after_every_exit() {
@@ -7894,11 +7894,11 @@ fn compiler_body_anonymous_registry_is_canonical_and_indexed() {
         .map(|offset| registry_start + offset)
         .expect("anonymous registry remains separate from its consumer");
     let registry = &compiler[registry_start..registry_end];
-    assert!(registry.contains("with_canonical_producer().into_owned()"));
-    assert!(registry.contains("self.by_identity\n            .get("));
+    assert!(registry.contains("with_canonical_identity()"));
+    assert!(registry.contains("self.by_identity.get(identity.as_ref()).cloned()"));
 
     let lookup_start = compiler
-        .find("pub(super) fn anonymous_nominal(")
+        .find("fn try_anonymous_nominal(")
         .expect("body provider retains anonymous lookup");
     let lookup_end = compiler[lookup_start..]
         .find("\n    pub(super) fn signature(")
@@ -7906,6 +7906,9 @@ fn compiler_body_anonymous_registry_is_canonical_and_indexed() {
         .expect("anonymous lookup stays bounded");
     let lookup = &compiler[lookup_start..lookup_end];
     assert!(lookup.contains("dynamic.get(key)"));
+    assert!(lookup.contains("try_anonymous_nominal(key)"));
+    assert!(lookup.contains("producer_transport_failure"));
+    assert!(!lookup.contains(".or(cached)"));
     assert!(!lookup.contains(".values()"));
     assert!(!lookup.contains(".iter().find("));
 }
@@ -7951,24 +7954,192 @@ fn compiler_body_anonymous_registry_unifies_producers_and_keeps_rich_facts() {
                 has_body: false,
             }]),
         },
-        Arc::from([]),
+        Arc::from([(Arc::from("T"), rue_air::SemanticImportType::I32)]),
         Arc::from([]),
     );
 
     let mut registry = CanonicalAnonymousNominalRegistry::default();
     registry.extend([&thin]);
-    let canonical_thin = registry.get(&canonical).unwrap();
-    let wrapped_thin = registry.get(&wrapped).unwrap();
-    assert_eq!(canonical_thin.as_ref(), &thin);
+    let canonical_thin = registry.get(&canonical).unwrap().unwrap();
+    let wrapped_thin = registry.get(&wrapped).unwrap().unwrap();
+    assert_eq!(canonical_thin.as_ref(), &thin.with_canonical_identity());
     assert!(Rc::ptr_eq(&canonical_thin, &wrapped_thin));
     registry.extend([&rich]);
     registry.extend([&thin]);
 
     assert_eq!(registry.by_identity.len(), 1);
-    let canonical_rich = registry.get(&canonical).unwrap();
-    let wrapped_rich = registry.get(&wrapped).unwrap();
-    assert_eq!(canonical_rich.as_ref(), &rich);
+    let canonical_rich = registry.get(&canonical).unwrap().unwrap();
+    let wrapped_rich = registry.get(&wrapped).unwrap().unwrap();
+    assert_eq!(canonical_rich.as_ref(), &rich.with_canonical_identity());
     assert!(Rc::ptr_eq(&canonical_rich, &wrapped_rich));
+
+    let counterfeit = rich.with_shape(
+        crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+            fields: Arc::from([(Arc::from("counterfeit"), rue_air::SemanticImportType::I64)]),
+            methods: Arc::from([]),
+        },
+    );
+    registry.extend([&counterfeit]);
+    assert_eq!(registry.by_identity.len(), 0);
+    assert_eq!(registry.get(&canonical), Err(canonical.clone()));
+    assert_eq!(registry.get(&wrapped), Err(canonical.clone()));
+
+    let conflicting_captures = crate::durable_semantics::DurableAnonymousNominal::new(
+        canonical.clone(),
+        rich.shape.clone(),
+        Arc::from([(Arc::from("T"), rue_air::SemanticImportType::I64)]),
+        Arc::from([]),
+    );
+    let mut capture_registry = CanonicalAnonymousNominalRegistry::default();
+    capture_registry.extend([&rich]);
+    capture_registry.extend([&conflicting_captures]);
+    assert_eq!(capture_registry.by_identity.len(), 0);
+    assert_eq!(capture_registry.get(&canonical), Err(canonical));
+}
+
+#[test]
+fn anonymous_dependency_frontier_canonicalizes_aliases_before_deduplication() {
+    let canonical = anonymous_identity_for_digest_test(
+        "DependencyProducer",
+        rue_air::AnonymousNominalKind::Struct,
+    );
+    let crate::StableProducerId::Function(base) = canonical.producer.clone() else {
+        unreachable!("digest-test helper uses a function producer")
+    };
+    let mut wrapped = canonical.clone();
+    wrapped.producer =
+        crate::StableProducerId::Function(Node::new(crate::FunctionInstanceKey::Specialization {
+            base,
+            arguments: crate::CanonicalArguments::default(),
+        }));
+    let fact = crate::durable_semantics::DurableAnonymousNominal::new(
+        canonical.clone(),
+        crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+            fields: Arc::from([]),
+            methods: Arc::from([]),
+        },
+        Arc::from([]),
+        Arc::from([]),
+    );
+    let selected = BTreeMap::from([(canonical.clone(), fact)]);
+    let mut pending = BTreeSet::new();
+    enqueue_unselected_anonymous_dependencies(
+        &selected,
+        &mut pending,
+        [wrapped.clone(), canonical.clone()],
+    );
+    assert!(
+        pending.is_empty(),
+        "an alias of a selected identity must not re-enter the frontier"
+    );
+
+    enqueue_unselected_anonymous_dependencies(
+        &BTreeMap::new(),
+        &mut pending,
+        [wrapped, canonical.clone()],
+    );
+    assert_eq!(pending, BTreeSet::from([canonical]));
+}
+
+#[test]
+fn provider_produced_anonymous_projection_rejects_conflicting_duplicate_identity() {
+    let token = rue_air::SemanticDefinitionToken::new(4, 2);
+    let base = rue_air::FunctionInstanceKey::Definition(token);
+    let direct = rue_air::AnonymousNominalKey {
+        kind: rue_air::AnonymousNominalKind::Struct,
+        producer: rue_air::StableProducerId::Function(rue_air::Node::new(base.clone())),
+        anchor: rue_rir::RirStructuralAnchor::new(vec![
+            rue_rir::RirStructuralPathSegment::Body,
+            rue_rir::RirStructuralPathSegment::AnonymousType(0),
+        ]),
+    };
+    let mut alias = direct.clone();
+    alias.producer = rue_air::StableProducerId::Function(rue_air::Node::new(
+        rue_air::FunctionInstanceKey::Specialization {
+            base: rue_air::Node::new(base),
+            arguments: rue_air::CanonicalArguments::default(),
+        },
+    ));
+    let produced = |identity, field, ty| rue_air::SemanticProducedAnonymousNominal {
+        identity,
+        shape: rue_air::SemanticProducedAnonymousNominalShape::Struct {
+            fields: Arc::from([(Arc::from(field), ty)]),
+            methods: Arc::from([]),
+        },
+        type_captures: Arc::from([]),
+        value_captures: Arc::from([]),
+    };
+    let definitions = AHashMap::from([(
+        token,
+        crate::StableDefinitionKey::from_stable_parts(
+            ModuleId::from_validated_canonical("main.rue"),
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            "producer",
+            None,
+        ),
+    )]);
+    let result = project_provider_produced_anonymous_nominals(
+        &[
+            produced(direct, "a", rue_air::TypeInstanceKey::I32),
+            produced(alias, "b", rue_air::TypeInstanceKey::I64),
+        ],
+        &definitions,
+        &AHashMap::new(),
+    );
+    assert_eq!(
+        result,
+        Err(rue_air::SemanticStableResolutionFailure::Ambiguous)
+    );
+}
+
+#[test]
+fn provider_produced_anonymous_projection_rejects_relocated_thin_rich_duplicate() {
+    let first_token = rue_air::SemanticDefinitionToken::new(4, 2);
+    let second_token = rue_air::SemanticDefinitionToken::new(5, 2);
+    let identity = |token| rue_air::AnonymousNominalKey {
+        kind: rue_air::AnonymousNominalKind::Struct,
+        producer: rue_air::StableProducerId::Function(rue_air::Node::new(
+            rue_air::FunctionInstanceKey::Definition(token),
+        )),
+        anchor: rue_rir::RirStructuralAnchor::new(vec![
+            rue_rir::RirStructuralPathSegment::Body,
+            rue_rir::RirStructuralPathSegment::AnonymousType(0),
+        ]),
+    };
+    let produced = |token, type_captures| rue_air::SemanticProducedAnonymousNominal {
+        identity: identity(token),
+        shape: rue_air::SemanticProducedAnonymousNominalShape::Struct {
+            fields: Arc::from([(Arc::from("value"), rue_air::TypeInstanceKey::I32)]),
+            methods: Arc::from([]),
+        },
+        type_captures,
+        value_captures: Arc::from([]),
+    };
+    let thin = produced(first_token, Arc::from([]));
+    let rich = produced(
+        second_token,
+        Arc::from([(Arc::from("T"), rue_air::TypeInstanceKey::I32)]),
+    );
+    let stable_producer = crate::StableDefinitionKey::from_stable_parts(
+        ModuleId::from_validated_canonical("main.rue"),
+        crate::StableDefinitionNamespace::Value,
+        crate::StableDefinitionKind::Function,
+        "producer",
+        None,
+    );
+    let definitions = AHashMap::from([
+        (first_token, stable_producer.clone()),
+        (second_token, stable_producer),
+    ]);
+
+    for produced in [[thin.clone(), rich.clone()], [rich.clone(), thin.clone()]] {
+        assert_eq!(
+            project_provider_produced_anonymous_nominals(&produced, &definitions, &AHashMap::new(),),
+            Err(rue_air::SemanticStableResolutionFailure::Ambiguous),
+            "complete provider publications must conflict after token relocation in either order"
+        );
+    }
 }
 
 #[test]

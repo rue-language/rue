@@ -3296,21 +3296,46 @@ fn semantic_schema_scaffolding_stays_exhaustive_and_reviewable() {
 fn local_semantic_materialization_owns_complete_cfg_inputs_without_a_peer_cache() {
     let import = include_str!("semantic_import.rs");
     let providers = include_str!("sema/provider_body_host.rs");
+    let materialization = import
+        .split("pub struct SemanticLocalMaterialization")
+        .nth(1)
+        .and_then(|source| source.split("\n}").next())
+        .expect("local materialization declaration");
 
     for owned in [
         "pub air: crate::ValidatedAir",
         "pub type_pool: crate::FrozenTypeInternPool",
         "pub interner: Arc<ThreadedRodeo>",
-        "pub aggregate_types:",
+        "aggregate_types: ahash::AHashMap<",
         "pub strings: Vec<String>",
         "pub body_span: Span",
         "pub completeness: SemanticLocalCompleteness",
     ] {
         assert!(
-            import.contains(owned),
+            materialization.contains(owned),
             "local semantic materialization lost owned CFG input: {owned}"
         );
     }
+    let aggregate_accessors = import
+        .split("impl<K, M> SemanticLocalMaterialization<K, M>")
+        .nth(1)
+        .and_then(|source| source.split("/// An AIR type branded").next())
+        .expect("local materialization accessor implementation");
+    for accessor in [
+        "pub fn aggregate_type(",
+        "pub fn has_aggregate_type(",
+        "pub fn aggregate_type_count(",
+        "pub fn aggregate_type_entries(",
+    ] {
+        assert!(
+            aggregate_accessors.contains(accessor),
+            "local materialization lost accessor: {accessor}"
+        );
+    }
+    assert!(
+        !materialization.contains("pub aggregate_types:"),
+        "local materialization leaked its aggregate map"
+    );
     assert!(import.contains("pub fn new_local("));
     assert!(import.contains("pub fn materialize_local_body("));
     assert!(import.contains("local_completeness: Option<SemanticLocalCompleteness>"));
@@ -3344,16 +3369,133 @@ fn local_semantic_materialization_owns_complete_cfg_inputs_without_a_peer_cache(
         assert!(body.contains("pub interner: Arc<ThreadedRodeo>"));
     }
     for forbidden in ["Mutex<", "RwLock<", "QueryFamily<", "cache:", "selected:"] {
-        let materialization = import
-            .split("pub struct SemanticLocalMaterialization")
-            .nth(1)
-            .and_then(|source| source.split("\n}").next())
-            .expect("local materialization declaration");
         assert!(
             !materialization.contains(forbidden),
             "body-local materialization became peer state: {forbidden}"
         );
     }
+}
+
+#[test]
+fn semantic_hash_boundaries_pin_only_their_exact_authorities() {
+    fn region<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        source
+            .split(start)
+            .nth(1)
+            .and_then(|source| source.split(end).next())
+            .unwrap_or_else(|| panic!("missing guarded source region {start:?}..{end:?}"))
+    }
+
+    // 1. Expression inference is an AHash lookup table, while the production
+    // allocation call site imposes RIR order before creating array types.
+    let generate = include_str!("inference/generate.rs");
+    let generator = region(
+        generate,
+        "pub struct ConstraintGenerator<'a>",
+        "impl<'a> ConstraintGenerator<'a>",
+    );
+    assert!(generator.contains("expr_types: ahash::AHashMap<InstRef, InferType>"));
+    assert!(!generator.contains("std::collections::HashMap"));
+    let expr_api = region(
+        generate,
+        "/// Get the expression type mapping.",
+        "/// Enter a lexical scope:",
+    );
+    assert!(expr_api.contains("pub fn expr_types(&self) -> &ahash::AHashMap<InstRef, InferType>"));
+    assert!(expr_api.contains("ahash::AHashMap<InstRef, InferType>,"));
+    assert!(!expr_api.contains("std::collections::HashMap"));
+    let type_inference = include_str!("sema/analysis/type_inference.rs");
+    let array_allocation = region(
+        type_inference,
+        "// Pre-collect all array types from resolved InferTypes",
+        "let unification_resolution_ns",
+    );
+    let ordered = array_allocation
+        .find("expr_types_in_rir_order(&expr_types)")
+        .expect("production expression ordering call");
+    let precreate = array_allocation
+        .find("self.pre_create_array_types_from_infer_type(&resolved)")
+        .expect("production array precreation call");
+    assert!(ordered < precreate);
+    assert!(!array_allocation.contains("for (_, infer_ty) in &expr_types"));
+
+    // 2. Method reachability stays request-local AHash state through analysis
+    // and export; the imported body intentionally exposes no live-key set.
+    let context = include_str!("sema/context.rs");
+    let analysis_context = region(
+        context,
+        "pub(crate) struct AnalysisContext<'a>",
+        "impl<'a> AnalysisContext<'a>",
+    );
+    assert!(
+        analysis_context
+            .contains("pub(crate) referenced_methods: ahash::AHashSet<(StructId, Spur)>")
+    );
+    assert!(!analysis_context.contains("std::collections::HashSet"));
+    let export = include_str!("sema/semantic_body_export.rs");
+    let export_signature = region(export, "pub(crate) fn export_body", ") -> Result");
+    assert!(
+        export_signature.contains("method_references: &ahash::AHashSet<(crate::StructId, Spur)>")
+    );
+    assert!(!export_signature.contains("std::collections::HashSet"));
+    let specialized = include_str!("specialize.rs");
+    let specialized_body = region(specialized, "pub(crate) struct OneSpecializedBody", "\n}");
+    assert!(
+        specialized_body
+            .contains("pub(crate) referenced_methods: ahash::AHashSet<(StructId, Spur)>")
+    );
+    let provider = include_str!("sema/provider_body_host.rs");
+    let provider_body = region(provider, "pub struct ProviderOrdinaryBody", "\n}");
+    assert!(!provider_body.contains("referenced_methods"));
+    let semantic_body = include_str!("semantic_body.rs");
+    let imported_body = region(
+        semantic_body,
+        "pub struct SemanticImportedBody<K, M>",
+        "\n}",
+    );
+    assert!(!imported_body.contains("method_references"));
+    // 3-4. The two anonymous live-type registries use AHash only as lookup
+    // storage. Their ordering/selection helpers cannot consult a live pool id.
+    let provider_host = region(
+        provider,
+        "struct ProviderBodyHost<'a, P, S, K, M>",
+        "impl<'a, P, S, K, M> ProviderBodyHost",
+    );
+    assert!(provider_host.contains(
+        "canonical_anonymous_types:\n        ahash::AHashMap<Type, super::anon_structs::IssuedAnonymousNominalKey>"
+    ));
+    assert!(provider_host.contains(
+        "RefCell<ahash::AHashMap<Type, super::anon_structs::IssuedAnonymousNominalKey>>"
+    ));
+    assert!(!provider_host.contains("std::collections::HashMap"));
+    let anonymous_helpers = include_str!("sema/anon_structs.rs");
+    let export_order = region(
+        anonymous_helpers,
+        "fn anonymous_export_cmp",
+        "/// Project live anonymous entries",
+    );
+    let consulted_selection = region(
+        anonymous_helpers,
+        "pub(crate) fn canonical_consulted_type",
+        "#[cfg(test)]",
+    );
+    assert!(!export_order.contains("as_u32"));
+    assert!(!consulted_selection.contains("as_u32"));
+
+    // 5. CFG materialization owns a private AHash table and exports only
+    // hasher-neutral point/size/ordered-entry accessors.
+    let import = include_str!("semantic_import.rs");
+    let materialization = region(
+        import,
+        "pub struct SemanticLocalMaterialization<K, M>",
+        "\n}",
+    );
+    assert!(
+        materialization
+            .contains("aggregate_types: ahash::AHashMap<crate::Type, TypeInstanceKey<K, M>>")
+    );
+    assert!(!materialization.contains("pub aggregate_types:"));
+    assert!(!materialization.contains("std::collections::HashMap"));
 }
 
 #[test]

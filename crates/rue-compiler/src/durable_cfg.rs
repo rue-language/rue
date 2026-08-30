@@ -10,10 +10,22 @@ use crate::retained_charge::RetainedCharge;
 
 type CanonicalType = SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>;
 
+pub(crate) trait AggregateTypeLookup {
+    fn aggregate_type(&self, ty: Type) -> Option<&crate::TypeInstanceKey>;
+}
+
+impl AggregateTypeLookup
+    for rue_air::SemanticLocalMaterialization<crate::StableDefinitionKey, crate::ModuleId>
+{
+    fn aggregate_type(&self, ty: Type) -> Option<&crate::TypeInstanceKey> {
+        self.aggregate_type(ty)
+    }
+}
+
 #[cfg(test)]
 pub(crate) struct CfgTypeAdmissionIndex<'a> {
     pool: &'a rue_air::FrozenTypeInternPool,
-    aggregates: &'a std::collections::HashMap<Type, crate::TypeInstanceKey>,
+    aggregates: &'a dyn AggregateTypeLookup,
     live_by_stable: Option<AHashMap<CanonicalType, Type>>,
 }
 
@@ -21,7 +33,7 @@ pub(crate) struct CfgTypeAdmissionIndex<'a> {
 impl<'a> CfgTypeAdmissionIndex<'a> {
     pub(crate) fn new(
         pool: &'a rue_air::FrozenTypeInternPool,
-        aggregates: &'a std::collections::HashMap<Type, crate::TypeInstanceKey>,
+        aggregates: &'a dyn AggregateTypeLookup,
     ) -> Self {
         Self {
             pool,
@@ -120,7 +132,7 @@ fn live_instruction_kind(data: &AirInstData) -> rue_air::SemanticBodyInstKind {
 fn canonical_type_from_live_cached(
     ty: Type,
     pool: &rue_air::FrozenTypeInternPool,
-    aggregates: &std::collections::HashMap<Type, crate::TypeInstanceKey>,
+    aggregates: &dyn AggregateTypeLookup,
     stable_by_live: &mut AHashMap<Type, CanonicalType>,
 ) -> Result<CanonicalType, CfgDomainFailure> {
     if let Some(stable) = stable_by_live.get(&ty) {
@@ -164,9 +176,11 @@ fn canonical_type_from_live_cached(
             aggregates,
             stable_by_live,
         )?)),
-        K::Struct(_) | K::Enum(_) => {
-            canonical_type_from_instance(aggregates.get(&ty).ok_or(CfgDomainFailure::Missing)?)?
-        }
+        K::Struct(_) | K::Enum(_) => canonical_type_from_instance(
+            aggregates
+                .aggregate_type(ty)
+                .ok_or(CfgDomainFailure::Missing)?,
+        )?,
         K::Module(_) | K::Error => return Err(CfgDomainFailure::Unsupported),
     };
     stable_by_live.insert(ty, stable.clone());
@@ -231,7 +245,7 @@ fn record_cfg_type(
     types: &mut Vec<(Type, CanonicalType)>,
     ty: Type,
     pool: &rue_air::FrozenTypeInternPool,
-    aggregates: &std::collections::HashMap<Type, crate::TypeInstanceKey>,
+    aggregates: &dyn AggregateTypeLookup,
     stable_by_live: &mut AHashMap<Type, CanonicalType>,
 ) -> Result<(), CfgDomainFailure> {
     match canonical_type_from_live_cached(ty, pool, aggregates, stable_by_live) {
@@ -1093,7 +1107,7 @@ impl CfgDomainProjection {
             &mut types,
             air.return_type(),
             type_pool,
-            &materialization.aggregate_types,
+            materialization,
             &mut stable_by_live,
         )?;
         let mut stable_strings = Vec::new();
@@ -1104,7 +1118,7 @@ impl CfgDomainProjection {
                 &mut types,
                 current.ty,
                 type_pool,
-                &materialization.aggregate_types,
+                materialization,
                 &mut stable_by_live,
             )?;
             spans.push((
@@ -1123,7 +1137,7 @@ impl CfgDomainProjection {
                     &mut types,
                     *ty,
                     type_pool,
-                    &materialization.aggregate_types,
+                    materialization,
                     &mut stable_by_live,
                 )?,
                 AirInstData::IntCast { from_ty, .. } => {
@@ -1131,7 +1145,7 @@ impl CfgDomainProjection {
                         &mut types,
                         *from_ty,
                         type_pool,
-                        &materialization.aggregate_types,
+                        materialization,
                         &mut stable_by_live,
                     )?;
                 }
@@ -1167,7 +1181,7 @@ impl CfgDomainProjection {
                         &mut types,
                         ty,
                         type_pool,
-                        &materialization.aggregate_types,
+                        materialization,
                         &mut stable_by_live,
                     )?;
                 }
@@ -1178,7 +1192,7 @@ impl CfgDomainProjection {
                         &mut types,
                         ty,
                         type_pool,
-                        &materialization.aggregate_types,
+                        materialization,
                         &mut stable_by_live,
                     )?;
                 }
@@ -1190,7 +1204,7 @@ impl CfgDomainProjection {
                                 &mut types,
                                 ty,
                                 type_pool,
-                                &materialization.aggregate_types,
+                                materialization,
                                 &mut stable_by_live,
                             )?;
                         }
@@ -1204,7 +1218,7 @@ impl CfgDomainProjection {
                 &mut types,
                 place.base_type,
                 type_pool,
-                &materialization.aggregate_types,
+                materialization,
                 &mut stable_by_live,
             )?;
             for projection in air.get_place_projections(place) {
@@ -1216,7 +1230,7 @@ impl CfgDomainProjection {
                     &mut types,
                     ty,
                     type_pool,
-                    &materialization.aggregate_types,
+                    materialization,
                     &mut stable_by_live,
                 )?;
             }
@@ -1226,7 +1240,7 @@ impl CfgDomainProjection {
                 &mut types,
                 *ty,
                 type_pool,
-                &materialization.aggregate_types,
+                materialization,
                 &mut stable_by_live,
             )?;
         }
@@ -1318,7 +1332,7 @@ impl CfgDomainProjection {
                     match canonical_type_from_live_cached(
                         child,
                         type_pool,
-                        &materialization.aggregate_types,
+                        materialization,
                         &mut stable_by_live,
                     ) {
                         Ok(stable) => {
@@ -1466,6 +1480,14 @@ mod tests {
         projection_with(symbol, StableCfgSymbol::Intrinsic(Arc::from("stable")))
     }
 
+    struct EmptyAggregateTypes;
+
+    impl AggregateTypeLookup for EmptyAggregateTypes {
+        fn aggregate_type(&self, _ty: Type) -> Option<&crate::TypeInstanceKey> {
+            None
+        }
+    }
+
     #[test]
     fn type_admission_index_stays_lazy_when_domains_already_cover_types() {
         let interner = lasso::ThreadedRodeo::new();
@@ -1473,7 +1495,7 @@ mod tests {
         let old = projection(symbol);
         let mut current = projection(symbol);
         let pool = rue_air::TypeInternPool::new().freeze();
-        let aggregates = std::collections::HashMap::new();
+        let aggregates = EmptyAggregateTypes;
         let mut admission = CfgTypeAdmissionIndex::new(&pool, &aggregates);
 
         current.admit_stable_types(&old, &mut admission).unwrap();

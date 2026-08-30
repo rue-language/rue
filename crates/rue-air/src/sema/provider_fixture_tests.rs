@@ -16,9 +16,9 @@ use super::ordinary_engine::{
     reset_comptime_reduction_test_stats,
 };
 use super::provider_fixture::{
-    MethodShape, ProviderFixture, StructShape, comptime_type_param, comptime_value_param,
-    error_source_slice, mode_param, value_param, with_fixture_cancellation_after,
-    with_fixture_durable_integer,
+    FixtureKey, MethodShape, ProviderFixture, StructShape, comptime_type_param,
+    comptime_value_param, error_source_slice, mode_param, value_param,
+    with_fixture_cancellation_after, with_fixture_durable_integer,
 };
 use super::{
     ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCompletedCallMemo, ComptimeMemoizedOutcome,
@@ -807,6 +807,36 @@ fn provider_body_produces_anonymous_nominal_identity() {
         super::provider_body_host::SemanticProducedAnonymousNominalShape::Struct { fields, .. }
             if fields.len() == 1 && &*fields[0].0 == "value"
     ));
+}
+
+#[test]
+fn provider_body_consulted_identity_conflict_cannot_fall_through_to_mint() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    let identity = crate::AnonymousNominalKey {
+        kind: crate::AnonymousNominalKind::Struct,
+        producer: StableProducerId::Function(crate::Node::new(
+            crate::FunctionInstanceKey::Definition(FixtureKey::function("main")),
+        )),
+        anchor: rue_rir::RirStructuralAnchor::new(vec![
+            rue_rir::RirStructuralPathSegment::Body,
+            rue_rir::RirStructuralPathSegment::AnonymousType(0),
+        ]),
+    };
+    let probe = fixture
+        .probe_consulted_anonymous_struct_conflict("fn main() -> i32 { 0 }", "main", &identity)
+        .expect("counterfeit consulted registry reaches the production mint boundary");
+    let error = probe
+        .result
+        .expect_err("ambiguous consulted identities must not mint a replacement");
+    assert!(matches!(error.kind, ErrorKind::OutputPublication(_)));
+    assert_eq!(
+        probe.export_result,
+        Err(crate::SemanticBodyExportFailure::AmbiguousStableIdentity)
+    );
+    assert!(!probe.generated_symbol_was_added);
+    assert!(!probe.additional_canonical_type_was_published);
+    assert!(!probe.type_pool_len_changed);
 }
 
 // A fact that was never seeded fails closed: the miss surfaces as an ordinary

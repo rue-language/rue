@@ -5094,12 +5094,16 @@ impl CompilerSession {
             errors.extend(fatal_errors.iter().cloned());
         }
 
-        let mut anonymous = projection
-            .anonymous_nominals
-            .iter()
-            .cloned()
-            .map(|fact| (fact.identity.clone(), fact))
-            .collect::<BTreeMap<_, _>>();
+        let mut anonymous = BTreeMap::new();
+        for fact in projection.anonymous_nominals.iter() {
+            if let Err(identity) =
+                crate::durable_semantics::merge_anonymous_nominal(&mut anonymous, fact)
+            {
+                errors.push(CompileError::without_span(ErrorKind::OutputPublication(
+                    format!("conflicting anonymous facts for {identity:?}"),
+                )));
+            }
+        }
         for closure_body in closure.bodies.iter() {
             let rue_query::QueryOutcome::Success(bundle) = closure_body.bundle.outcome() else {
                 unreachable!("BodyAnalysisBundle publishes typed values")
@@ -5143,14 +5147,26 @@ impl CompilerSession {
                     .iter()
                     .chain(consulted_anonymous_nominals.0.iter())
                 {
-                    anonymous.insert(fact.identity.clone(), fact.clone());
+                    if let Err(identity) =
+                        crate::durable_semantics::merge_anonymous_nominal(&mut anonymous, fact)
+                    {
+                        errors.push(CompileError::without_span(ErrorKind::OutputPublication(
+                            format!("conflicting anonymous facts for {identity:?}"),
+                        )));
+                    }
                 }
             }
             if let Some(crate::body_query::ProducedAnonymous::Produced(produced)) =
                 &bundle.produced_anonymous
             {
                 for fact in produced.0.iter() {
-                    anonymous.insert(fact.identity.clone(), fact.clone());
+                    if let Err(identity) =
+                        crate::durable_semantics::merge_anonymous_nominal(&mut anonymous, fact)
+                    {
+                        errors.push(CompileError::without_span(ErrorKind::OutputPublication(
+                            format!("conflicting anonymous facts for {identity:?}"),
+                        )));
+                    }
                 }
             }
         }
@@ -5484,7 +5500,12 @@ impl CompilerSession {
                 &graph.declaration_index,
                 &graph.declarations,
                 &graph.anonymous_nominals,
-            );
+            )
+            .map_err(|error| {
+                CompileError::without_span(ErrorKind::OutputPublication(format!(
+                    "CFG materialization index rejected anonymous facts: {error:?}"
+                )))
+            })?;
         work.cfg.materialization_index_builds += 1;
         work.cfg.materialization_declarations_scanned += index_work.declarations_scanned;
         work.cfg.materialization_anonymous_nominals_scanned +=

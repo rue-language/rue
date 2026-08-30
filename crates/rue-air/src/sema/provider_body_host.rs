@@ -561,7 +561,7 @@ fn anonymous_identity_issuance_preserves_partial_failure_order() {
 
 /// Stable, request-independent description of an anonymous nominal created by
 /// one successful provider body transaction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SemanticProducedAnonymousNominal {
     pub identity: crate::AnonymousNominalKey<SemanticDefinitionToken, SemanticModuleToken>,
     pub shape: SemanticProducedAnonymousNominalShape,
@@ -579,7 +579,7 @@ pub struct SemanticProducedAnonymousNominal {
     >,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SemanticProducedAnonymousNominalShape {
     Struct {
         fields: Arc<
@@ -600,7 +600,7 @@ pub enum SemanticProducedAnonymousNominalShape {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SemanticProducedAnonymousMethodSignature {
     pub name: Arc<str>,
     pub has_self: bool,
@@ -617,7 +617,7 @@ pub struct SemanticProducedAnonymousMethodSignature {
     pub result: SemanticProducedAnonymousMethodType,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SemanticProducedAnonymousMethodType {
     SelfType,
     Concrete(TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>),
@@ -633,7 +633,6 @@ pub struct ProviderOrdinaryBody<K, M> {
     pub warnings: Vec<rue_error::CompileWarning>,
     pub strings: Vec<String>,
     pub referenced_functions: AHashSet<Spur>,
-    pub referenced_methods: std::collections::HashSet<(StructId, Spur)>,
     pub referenced_definitions: Vec<K>,
     pub referenced_values: Vec<K>,
     pub referenced_specializations:
@@ -1202,18 +1201,10 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     anon_struct_identities: AHashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId>,
     anon_enum_identities: AHashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId>,
     anonymous_digest_owners: AHashMap<u128, super::anon_structs::IssuedAnonymousNominalKey>,
-    /// Kept on the std hasher, unlike its neighbours: `produced_anonymous_nominals`
-    /// walks this map into the exported nominal payload and sorts that payload by
-    /// identity alone, so two entries sharing an identity would keep whatever
-    /// order the table iterated in. The sort key is not total over the entries,
-    /// which makes the iteration order reachable from an emitted artifact.
     canonical_anonymous_types:
-        std::collections::HashMap<Type, super::anon_structs::IssuedAnonymousNominalKey>,
-    /// Kept on the std hasher for the same class of reason: `anonymous_struct_id`
-    /// and `anonymous_enum_id` scan this map with `find_map`, which answers with
-    /// an arbitrary member of the matching set rather than a canonical one.
+        ahash::AHashMap<Type, super::anon_structs::IssuedAnonymousNominalKey>,
     consulted_anonymous_types:
-        RefCell<std::collections::HashMap<Type, super::anon_structs::IssuedAnonymousNominalKey>>,
+        RefCell<ahash::AHashMap<Type, super::anon_structs::IssuedAnonymousNominalKey>>,
     durable_anonymous_types: AHashMap<Type, crate::AnonymousNominalKey<K, M>>,
     anon_struct_method_sigs: AHashMap<StructId, Vec<super::AnonMethodSig>>,
     anon_struct_captured_values: AHashMap<StructId, AHashMap<Spur, ConstValue>>,
@@ -1376,8 +1367,8 @@ where
             anon_struct_identities: AHashMap::new(),
             anon_enum_identities: AHashMap::new(),
             anonymous_digest_owners: AHashMap::new(),
-            canonical_anonymous_types: std::collections::HashMap::new(),
-            consulted_anonymous_types: RefCell::new(std::collections::HashMap::new()),
+            canonical_anonymous_types: AHashMap::new(),
+            consulted_anonymous_types: RefCell::new(AHashMap::new()),
             durable_anonymous_types: AHashMap::new(),
             anon_struct_method_sigs: AHashMap::new(),
             anon_struct_captured_values: AHashMap::new(),
@@ -2901,138 +2892,133 @@ where
             })
         }
 
-        let mut identities = self
+        let identities = self
             .canonical_anonymous_types
             .iter()
             .filter(|(_, identity)| !initial.contains(*identity))
             .map(|(ty, identity)| (*ty, identity.clone()))
             .collect::<Vec<_>>();
-        identities
-            .sort_by(|(_, left), (_, right)| super::anon_structs::anonymous_key_cmp(left, right));
-        identities
-            .into_iter()
-            .map(|(ty, identity)| {
-                let (shape, type_captures, value_captures) = match ty.kind() {
-                    TypeKind::Struct(struct_id) => {
-                        let definition = self.type_pool.struct_def(struct_id);
-                        let fields = definition
-                            .fields
-                            .iter()
-                            .map(|field| {
-                                Ok((
-                                    Arc::from(field.name.as_str()),
-                                    self.canonical_type_instance(field.ty)?,
-                                ))
+        let exports = identities.into_iter().map(|(ty, identity)| {
+            let (shape, type_captures, value_captures) = match ty.kind() {
+                TypeKind::Struct(struct_id) => {
+                    let definition = self.type_pool.struct_def(struct_id);
+                    let fields = definition
+                        .fields
+                        .iter()
+                        .map(|field| {
+                            Ok((
+                                Arc::from(field.name.as_str()),
+                                self.canonical_type_instance(field.ty)?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                    let methods = self
+                        .anon_struct_method_sigs
+                        .get(&struct_id)
+                        .into_iter()
+                        .flat_map(|methods| methods.iter())
+                        .map(|method| {
+                            Ok(crate::SemanticProducedAnonymousMethodSignature {
+                                name: Arc::from(self.interner.resolve(&method.name)),
+                                has_self: method.has_self,
+                                self_mode: mode(method.self_mode),
+                                returns_borrow: method.returns_borrow,
+                                returns_inout: method.returns_inout,
+                                parameters: method
+                                    .param_types
+                                    .iter()
+                                    .zip(&method.param_modes)
+                                    .zip(&method.param_comptime)
+                                    .map(|((ty, parameter_mode), comptime)| {
+                                        Ok((
+                                            method_type(self, ty, &identity)?,
+                                            mode(*parameter_mode),
+                                            *comptime,
+                                        ))
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()?
+                                    .into(),
+                                result: method_type(self, &method.return_type, &identity)?,
                             })
-                            .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
-                        let methods = self
-                            .anon_struct_method_sigs
-                            .get(&struct_id)
-                            .into_iter()
-                            .flat_map(|methods| methods.iter())
-                            .map(|method| {
-                                Ok(crate::SemanticProducedAnonymousMethodSignature {
-                                    name: Arc::from(self.interner.resolve(&method.name)),
-                                    has_self: method.has_self,
-                                    self_mode: mode(method.self_mode),
-                                    returns_borrow: method.returns_borrow,
-                                    returns_inout: method.returns_inout,
-                                    parameters: method
-                                        .param_types
-                                        .iter()
-                                        .zip(&method.param_modes)
-                                        .zip(&method.param_comptime)
-                                        .map(|((ty, parameter_mode), comptime)| {
-                                            Ok((
-                                                method_type(self, ty, &identity)?,
-                                                mode(*parameter_mode),
-                                                *comptime,
-                                            ))
-                                        })
-                                        .collect::<Result<Vec<_>, _>>()?
-                                        .into(),
-                                    result: method_type(self, &method.return_type, &identity)?,
-                                })
-                            })
-                            .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
-                        let mut type_captures: Vec<(
-                            Arc<str>,
-                            TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
-                        )> = self
-                            .anon_struct_type_subst
-                            .get(&struct_id)
-                            .into_iter()
-                            .flat_map(|captures| captures.iter())
-                            .map(|(name, ty)| {
-                                Ok((
-                                    Arc::from(self.interner.resolve(name)),
-                                    self.canonical_type_instance(*ty)?,
-                                ))
-                            })
-                            .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
-                        type_captures.sort_by(|left, right| left.0.cmp(&right.0));
-                        let mut value_captures: Vec<(
-                            Arc<str>,
-                            CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
-                        )> = self
-                            .anon_struct_captured_values
-                            .get(&struct_id)
-                            .into_iter()
-                            .flat_map(|captures| captures.iter())
-                            .map(|(name, value)| {
-                                Ok((
-                                    Arc::from(self.interner.resolve(name)),
-                                    self.canonical_argument_value(*value)?,
-                                ))
-                            })
-                            .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
-                        value_captures.sort_by(|left, right| left.0.cmp(&right.0));
-                        (
-                            crate::SemanticProducedAnonymousNominalShape::Struct {
-                                fields: fields.into(),
-                                methods: methods.into(),
-                            },
-                            type_captures,
-                            value_captures,
-                        )
-                    }
-                    TypeKind::Enum(enum_id) => {
-                        let definition = self.type_pool.enum_def(enum_id);
-                        let variants = definition
-                            .variants
-                            .iter()
-                            .enumerate()
-                            .map(|(index, name)| {
-                                Ok((
-                                    name.clone(),
-                                    definition
-                                        .variant_payload(index)
-                                        .iter()
-                                        .map(|ty| self.canonical_type_instance(*ty))
-                                        .collect::<Result<Vec<_>, _>>()?
-                                        .into(),
-                                ))
-                            })
-                            .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
-                        (
-                            crate::SemanticProducedAnonymousNominalShape::Enum {
-                                variants: variants.into(),
-                            },
-                            Vec::new(),
-                            Vec::new(),
-                        )
-                    }
-                    _ => return Err(crate::SemanticBodyExportFailure::UnsupportedType),
-                };
-                Ok(crate::SemanticProducedAnonymousNominal {
-                    identity,
-                    shape,
-                    type_captures: type_captures.into(),
-                    value_captures: value_captures.into(),
-                })
+                        })
+                        .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                    let mut type_captures: Vec<(
+                        Arc<str>,
+                        TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+                    )> = self
+                        .anon_struct_type_subst
+                        .get(&struct_id)
+                        .into_iter()
+                        .flat_map(|captures| captures.iter())
+                        .map(|(name, ty)| {
+                            Ok((
+                                Arc::from(self.interner.resolve(name)),
+                                self.canonical_type_instance(*ty)?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                    type_captures.sort_by(|left, right| left.0.cmp(&right.0));
+                    let mut value_captures: Vec<(
+                        Arc<str>,
+                        CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
+                    )> = self
+                        .anon_struct_captured_values
+                        .get(&struct_id)
+                        .into_iter()
+                        .flat_map(|captures| captures.iter())
+                        .map(|(name, value)| {
+                            Ok((
+                                Arc::from(self.interner.resolve(name)),
+                                self.canonical_argument_value(*value)?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                    value_captures.sort_by(|left, right| left.0.cmp(&right.0));
+                    (
+                        crate::SemanticProducedAnonymousNominalShape::Struct {
+                            fields: fields.into(),
+                            methods: methods.into(),
+                        },
+                        type_captures,
+                        value_captures,
+                    )
+                }
+                TypeKind::Enum(enum_id) => {
+                    let definition = self.type_pool.enum_def(enum_id);
+                    let variants = definition
+                        .variants
+                        .iter()
+                        .enumerate()
+                        .map(|(index, name)| {
+                            Ok((
+                                name.clone(),
+                                definition
+                                    .variant_payload(index)
+                                    .iter()
+                                    .map(|ty| self.canonical_type_instance(*ty))
+                                    .collect::<Result<Vec<_>, _>>()?
+                                    .into(),
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                    (
+                        crate::SemanticProducedAnonymousNominalShape::Enum {
+                            variants: variants.into(),
+                        },
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                }
+                _ => return Err(crate::SemanticBodyExportFailure::UnsupportedType),
+            };
+            Ok(crate::SemanticProducedAnonymousNominal {
+                identity,
+                shape,
+                type_captures: type_captures.into(),
+                value_captures: value_captures.into(),
             })
-            .collect::<Result<Vec<_>, _>>()
-            .map(Arc::from)
+        });
+        super::anon_structs::collect_anonymous_exports(exports)
     }
 
     fn install_provider_anonymous_methods(
@@ -4992,41 +4978,51 @@ where
     fn anonymous_struct_id(
         &self,
         identity: &super::anon_structs::IssuedAnonymousNominalKey,
-    ) -> Option<StructId> {
-        self.anon_struct_identities
-            .get(identity)
-            .copied()
-            .or_else(|| {
-                self.consulted_anonymous_types
-                    .borrow()
-                    .iter()
-                    .find_map(|(ty, candidate)| {
-                        (candidate.with_canonical_producer().as_ref()
-                            == identity.with_canonical_producer().as_ref())
-                        .then(|| ty.as_struct())
-                        .flatten()
-                    })
-            })
+    ) -> Result<Option<StructId>, crate::SemanticBodyExportFailure> {
+        let local = self.anon_struct_identities.get(identity).copied();
+        let consulted = super::anon_structs::canonical_consulted_type(
+            self.consulted_anonymous_types.borrow().iter(),
+            identity,
+            crate::AnonymousNominalKind::Struct,
+        )?
+        .map(|ty| {
+            ty.as_struct()
+                .ok_or(crate::SemanticBodyExportFailure::WrongStableIdentityKind)
+        })
+        .transpose()?;
+        match (local, consulted) {
+            (Some(local), Some(consulted)) if local != consulted => {
+                Err(crate::SemanticBodyExportFailure::AmbiguousStableIdentity)
+            }
+            (Some(local), _) => Ok(Some(local)),
+            (_, Some(consulted)) => Ok(Some(consulted)),
+            (None, None) => Ok(None),
+        }
     }
 
     fn anonymous_enum_id(
         &self,
         identity: &super::anon_structs::IssuedAnonymousNominalKey,
-    ) -> Option<EnumId> {
-        self.anon_enum_identities
-            .get(identity)
-            .copied()
-            .or_else(|| {
-                self.consulted_anonymous_types
-                    .borrow()
-                    .iter()
-                    .find_map(|(ty, candidate)| {
-                        (candidate.with_canonical_producer().as_ref()
-                            == identity.with_canonical_producer().as_ref())
-                        .then(|| ty.as_enum())
-                        .flatten()
-                    })
-            })
+    ) -> Result<Option<EnumId>, crate::SemanticBodyExportFailure> {
+        let local = self.anon_enum_identities.get(identity).copied();
+        let consulted = super::anon_structs::canonical_consulted_type(
+            self.consulted_anonymous_types.borrow().iter(),
+            identity,
+            crate::AnonymousNominalKind::Enum,
+        )?
+        .map(|ty| {
+            ty.as_enum()
+                .ok_or(crate::SemanticBodyExportFailure::WrongStableIdentityKind)
+        })
+        .transpose()?;
+        match (local, consulted) {
+            (Some(local), Some(consulted)) if local != consulted => {
+                Err(crate::SemanticBodyExportFailure::AmbiguousStableIdentity)
+            }
+            (Some(local), _) => Ok(Some(local)),
+            (_, Some(consulted)) => Ok(Some(consulted)),
+            (None, None) => Ok(None),
+        }
     }
 
     fn anonymous_struct_identities_mut(
@@ -5322,6 +5318,131 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
+}
+
+#[cfg(test)]
+pub(crate) struct ConsultedAnonymousConflictProbe {
+    pub(super) result: CompileResult<(Type, bool)>,
+    pub(super) export_result:
+        Result<Arc<[crate::SemanticProducedAnonymousNominal]>, crate::SemanticBodyExportFailure>,
+    pub(super) generated_symbol_was_added: bool,
+    pub(super) additional_canonical_type_was_published: bool,
+    pub(super) type_pool_len_changed: bool,
+}
+
+/// Exercise the production host/ordinary-engine mint boundary with a
+/// deliberately counterfeit consulted registry. The two pre-existing live
+/// types are test input; the probe reports whether lookup incorrectly minted
+/// and published a third type after detecting their shared identity.
+#[cfg(test)]
+pub(super) fn probe_consulted_anonymous_struct_conflict<P, S, K, M>(
+    provider: &P,
+    source: S,
+    bundle: &BodyRirBundle,
+    key: K,
+    name: &str,
+    durable_identity: &crate::AnonymousNominalKey<K, M>,
+    well_known: &ProviderWellKnownOptionFacts<K, M>,
+) -> CompileResult<ConsultedAnonymousConflictProbe>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    let owner_file = bundle.source_file_id().ok_or_else(|| {
+        CompileError::without_span(ErrorKind::InvalidCompilerInput(
+            "conflict probe body has no source file".into(),
+        ))
+    })?;
+    let mut host = ProviderBodyHost::new(
+        provider,
+        source,
+        bundle,
+        key,
+        owner_file,
+        name,
+        crate::StableDefinitionKind::Function,
+        None,
+        Target::host().ok_or_else(|| {
+            CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                "conflict probe target is unavailable".into(),
+            ))
+        })?,
+        PreviewFeatures::new(),
+        well_known,
+    )
+    .map_err(identity_mint_compile_error)?
+    .ok_or_else(|| {
+        CompileError::without_span(ErrorKind::InvalidCompilerInput(
+            "conflict probe host could not be constructed".into(),
+        ))
+    })?;
+    let identity = host
+        .register_and_issue_anonymous_identity(durable_identity)
+        .ok_or_else(|| {
+            CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                "conflict probe identity could not be issued".into(),
+            ))
+        })?;
+    let first = Type::new_struct(host.type_pool.reserve_struct_id());
+    let second = Type::new_struct(host.type_pool.reserve_struct_id());
+    for (ty, name, field, field_ty) in [
+        (first, "counterfeit_a", "a", Type::I32),
+        (second, "counterfeit_b", "b", Type::I64),
+    ] {
+        let id = ty.as_struct().expect("probe types are structs");
+        let name_spur = host.intern_name(name).ok_or_else(|| {
+            CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                "conflict probe symbol could not be interned".into(),
+            ))
+        })?;
+        host.type_pool.complete_struct_registration(
+            id,
+            name_spur,
+            crate::types::StructDef {
+                name: Arc::from(name),
+                fields: vec![crate::types::StructField {
+                    name: field.to_owned(),
+                    ty: field_ty,
+                }],
+                is_copy: true,
+                is_linear: false,
+                declared_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+    }
+    host.consulted_anonymous_types
+        .borrow_mut()
+        .extend([(first, identity.clone()), (second, identity.clone())]);
+    host.canonical_anonymous_types
+        .extend([(first, identity.clone()), (second, identity.clone())]);
+    let generated_before = host.generated_structs.len();
+    let canonical_before = host.canonical_anonymous_types.len();
+    let type_pool_len_before = host.type_pool.len();
+    let result = OrdinaryBodyEngine::new(&mut host).find_or_create_anon_struct(
+        identity,
+        &[],
+        &[],
+        &AHashMap::new(),
+    );
+    let export_result = host.produced_anonymous_nominals(&AHashSet::new());
+    Ok(ConsultedAnonymousConflictProbe {
+        result,
+        export_result,
+        generated_symbol_was_added: host.generated_structs.len() != generated_before,
+        additional_canonical_type_was_published: host.canonical_anonymous_types.len()
+            != canonical_before,
+        type_pool_len_changed: host.type_pool.len() != type_pool_len_before,
+    })
 }
 
 /// Run the canonical ordinary expression engine over one exact local RIR.
@@ -5709,7 +5830,6 @@ where
             warnings,
             strings,
             referenced_functions,
-            referenced_methods,
             referenced_definitions,
             referenced_values,
             referenced_specializations,

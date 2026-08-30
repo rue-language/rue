@@ -563,10 +563,7 @@ pub struct SemanticLocalMaterialization<K, M> {
     pub allow_unreachable_code: bool,
     pub type_pool: crate::FrozenTypeInternPool,
     pub interner: Arc<ThreadedRodeo>,
-    /// Kept on the std hasher: `rue-compiler` reads this field directly and
-    /// passes it on by reference, so its hasher is part of AIR's public surface
-    /// rather than an internal choice.
-    pub aggregate_types: std::collections::HashMap<crate::Type, TypeInstanceKey<K, M>>,
+    aggregate_types: ahash::AHashMap<crate::Type, TypeInstanceKey<K, M>>,
     /// Exact caller-owned handles explicitly pre-materialized for a mandatory
     /// accessor splice, paired with their stable type identities.
     pub materialized_types: Vec<(crate::Type, SemanticImportType<K, M>)>,
@@ -574,6 +571,33 @@ pub struct SemanticLocalMaterialization<K, M> {
     pub warnings: Arc<[rue_error::CompileWarning]>,
     pub body_span: Span,
     pub completeness: SemanticLocalCompleteness,
+}
+
+impl<K, M> SemanticLocalMaterialization<K, M> {
+    /// Look up the stable identity for one complete local aggregate type.
+    ///
+    /// The backing table is deliberately private: callers should depend on
+    /// this narrow lookup rather than on AIR's map implementation or hasher.
+    pub fn aggregate_type(&self, ty: crate::Type) -> Option<&TypeInstanceKey<K, M>> {
+        self.aggregate_types.get(&ty)
+    }
+
+    pub fn has_aggregate_type(&self, ty: crate::Type) -> bool {
+        self.aggregate_types.contains_key(&ty)
+    }
+
+    pub fn aggregate_type_count(&self) -> usize {
+        self.aggregate_types.len()
+    }
+
+    /// Iterate aggregate identities in the canonical local type-pool order.
+    pub fn aggregate_type_entries(
+        &self,
+    ) -> impl Iterator<Item = (&crate::Type, &TypeInstanceKey<K, M>)> {
+        let mut entries = self.aggregate_types.iter().collect::<Vec<_>>();
+        entries.sort_unstable_by_key(|(ty, _)| ty.as_u32());
+        entries.into_iter()
+    }
 }
 
 /// An AIR type branded with the import epoch which issued it.
@@ -1188,7 +1212,6 @@ where
             ),
             allow_unreachable_code: body.allow_unreachable_code,
             warnings: Arc::from(warnings),
-            method_references: std::collections::HashSet::new(),
         })
     }
     pub fn new(
@@ -1636,7 +1659,7 @@ where
             })
             .collect::<Result<Vec<_>, SemanticBodyImportFailure>>()?;
         let complete_types = self.type_pool.complete_type_handles();
-        let mut aggregate_types = std::collections::HashMap::with_capacity(complete_types.len());
+        let mut aggregate_types = ahash::AHashMap::with_capacity(complete_types.len());
         for ty in complete_types {
             if matches!(
                 ty.kind(),
@@ -1657,7 +1680,6 @@ where
             param_modes,
             allow_unreachable_code,
             warnings,
-            method_references: _,
         } = imported;
         Ok(SemanticLocalMaterialization {
             identity,

@@ -136,7 +136,7 @@ impl SharedDeclarationFactIndex {
 pub(crate) struct LocalFactSelectionIndex<'facts> {
     declarations: &'facts [DurableDeclarationSemantic],
     shared: &'facts SharedDeclarationFactIndex,
-    anonymous: AHashMap<&'facts crate::AnonymousNominalKey, &'facts DurableAnonymousNominal>,
+    anonymous: AHashMap<crate::AnonymousNominalKey, &'facts DurableAnonymousNominal>,
 }
 
 impl<'facts> LocalFactSelectionIndex<'facts> {
@@ -144,21 +144,32 @@ impl<'facts> LocalFactSelectionIndex<'facts> {
         shared: &'facts SharedDeclarationFactIndex,
         declarations: &'facts [DurableDeclarationSemantic],
         anonymous_nominals: &'facts [DurableAnonymousNominal],
-    ) -> (Self, LocalFactSelectionIndexWork) {
+    ) -> Result<(Self, LocalFactSelectionIndexWork), LocalFactSelectionFailure> {
         let mut work = LocalFactSelectionIndexWork::default();
         let mut anonymous = AHashMap::with_capacity(anonymous_nominals.len());
         for nominal in anonymous_nominals {
             work.anonymous_nominals_scanned += 1;
-            anonymous.insert(&nominal.identity, nominal);
+            let identity = nominal.identity.with_canonical_producer().into_owned();
+            match anonymous.entry(identity.clone()) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(nominal);
+                }
+                std::collections::hash_map::Entry::Occupied(entry)
+                    if entry.get().with_canonical_identity()
+                        == nominal.with_canonical_identity() => {}
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    return Err(LocalFactSelectionFailure::ConflictingAnonymous(identity));
+                }
+            }
         }
-        (
+        Ok((
             Self {
                 declarations,
                 shared,
                 anonymous,
             },
             work,
-        )
+        ))
     }
 
     fn declaration(&self, key: &StableDefinitionKey) -> Option<&'facts DurableDeclarationSemantic> {
@@ -624,8 +635,9 @@ impl RetainedCharge for LocalMaterializationFacts {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LocalFactSelectionFailure {
-    MissingNamedNominal(StableDefinitionKey),
-    MissingAnonymousNominal(crate::AnonymousNominalKey),
+    MissingNamed(StableDefinitionKey),
+    MissingAnonymous(crate::AnonymousNominalKey),
+    ConflictingAnonymous(crate::AnonymousNominalKey),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1380,8 +1392,9 @@ pub(crate) fn select_materialization_facts(
                         .insert(crate::NominalInstanceKey::Named(key.clone()));
                 }
                 T::AnonymousNominal(key) => {
+                    let key = key.with_canonical_producer().into_owned();
                     self.opaque_nominals
-                        .insert(crate::NominalInstanceKey::Anonymous(Node::new(key.clone())));
+                        .insert(crate::NominalInstanceKey::Anonymous(Node::new(key)));
                 }
                 T::BuiltinNominal { kind, name } => {
                     self.builtin(
@@ -1408,8 +1421,14 @@ pub(crate) fn select_materialization_facts(
         }
 
         fn nominal(&mut self, nominal: &crate::NominalInstanceKey) {
+            let nominal = match nominal {
+                crate::NominalInstanceKey::Anonymous(key) => crate::NominalInstanceKey::Anonymous(
+                    Node::new(key.with_canonical_producer().into_owned()),
+                ),
+                _ => nominal.clone(),
+            };
             if self.seen_nominals.insert(nominal.clone()) {
-                self.pending_nominals.push(nominal.clone());
+                self.pending_nominals.push(nominal);
             }
         }
 
@@ -1509,7 +1528,7 @@ pub(crate) fn select_materialization_facts(
                     crate::NominalInstanceKey::Named(key) => {
                         let declaration =
                             self.index.declaration(&key).cloned().ok_or_else(|| {
-                                LocalFactSelectionFailure::MissingNamedNominal(key.clone())
+                                LocalFactSelectionFailure::MissingNamed(key.clone())
                             })?;
                         self.modules.insert(key.module().clone());
                         self.selected_declarations
@@ -1538,17 +1557,18 @@ pub(crate) fn select_materialization_facts(
                         }
                     }
                     crate::NominalInstanceKey::Anonymous(key) => {
+                        let canonical = key.with_canonical_producer().into_owned();
                         let nominal = self
                             .index
                             .anonymous
-                            .get(&*key)
+                            .get(&canonical)
                             .copied()
-                            .cloned()
                             .ok_or_else(|| {
-                                LocalFactSelectionFailure::MissingAnonymousNominal((*key).clone())
-                            })?;
+                                LocalFactSelectionFailure::MissingAnonymous((*key).clone())
+                            })?
+                            .with_canonical_identity();
                         self.selected_anonymous
-                            .insert((*key).clone(), nominal.clone());
+                            .insert(canonical.clone(), nominal.clone());
                         for (_, ty) in nominal.type_captures.iter() {
                             self.semantic_type(ty);
                         }
@@ -1569,7 +1589,9 @@ pub(crate) fn select_materialization_facts(
                                     if method.has_self && method.name.as_ref() == "__drop" {
                                         self.callable(&FunctionInstanceKey::AnonymousMember {
                                             owner: Node::new(crate::TypeInstanceKey::Nominal(
-                                                crate::NominalInstanceKey::Anonymous(key.clone()),
+                                                crate::NominalInstanceKey::Anonymous(Node::new(
+                                                    canonical.clone(),
+                                                )),
                                             )),
                                             member: crate::AnonymousMemberKey {
                                                 kind: crate::AnonymousMemberKind::Destructor,
@@ -1597,9 +1619,10 @@ pub(crate) fn select_materialization_facts(
                 match nominal {
                     crate::NominalInstanceKey::Builtin { .. } => {}
                     crate::NominalInstanceKey::Named(key) => {
-                        let declaration = self.index.declaration(&key).ok_or_else(|| {
-                            LocalFactSelectionFailure::MissingNamedNominal(key.clone())
-                        })?;
+                        let declaration = self
+                            .index
+                            .declaration(&key)
+                            .ok_or_else(|| LocalFactSelectionFailure::MissingNamed(key.clone()))?;
                         let payload = match declaration.payload {
                             DurableDeclarationPayload::Struct { .. } => {
                                 DurableDeclarationPayload::Struct {
@@ -1627,10 +1650,15 @@ pub(crate) fn select_materialization_facts(
                         );
                     }
                     crate::NominalInstanceKey::Anonymous(key) => {
+                        let canonical = key.with_canonical_producer().into_owned();
                         let nominal =
-                            self.index.anonymous.get(&*key).copied().ok_or_else(|| {
-                                LocalFactSelectionFailure::MissingAnonymousNominal((*key).clone())
-                            })?;
+                            self.index
+                                .anonymous
+                                .get(&canonical)
+                                .copied()
+                                .ok_or_else(|| {
+                                    LocalFactSelectionFailure::MissingAnonymous((*key).clone())
+                                })?;
                         let shape = match nominal.shape {
                             DurableAnonymousNominalShape::Struct { .. } => {
                                 DurableAnonymousNominalShape::Struct {
@@ -1644,8 +1672,10 @@ pub(crate) fn select_materialization_facts(
                                 }
                             }
                         };
-                        self.selected_anonymous
-                            .insert((*key).clone(), nominal.with_shape(shape));
+                        self.selected_anonymous.insert(
+                            canonical,
+                            nominal.with_shape(shape).with_canonical_identity(),
+                        );
                     }
                 }
             }
@@ -2095,8 +2125,7 @@ mod tests {
         )
         .unwrap();
         let ty = output
-            .aggregate_types
-            .iter()
+            .aggregate_type_entries()
             .find_map(|(ty, identity)| {
                 (identity
                     == &crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(
@@ -2205,7 +2234,8 @@ mod tests {
         let mut selection_body = body();
         selection_body.return_type = rue_air::SemanticImportType::Nominal(record);
         let shared = SharedDeclarationFactIndex::new(&declarations);
-        let (index, work) = LocalFactSelectionIndex::new(&shared, &declarations, &[]);
+        let (index, work) =
+            LocalFactSelectionIndex::new(&shared, &declarations, &[]).expect("facts are unique");
         assert_eq!(work, LocalFactSelectionIndexWork::default());
         let facts = select_materialization_facts(
             &FunctionInstanceKey::Definition(function.clone()),
@@ -2275,7 +2305,8 @@ mod tests {
             crate::semantic_identity::anonymous_nominal_digest(&identity)
         );
         let shared = SharedDeclarationFactIndex::new(&[]);
-        let (index, _) = LocalFactSelectionIndex::new(&shared, &[], std::slice::from_ref(&nominal));
+        let (index, _) = LocalFactSelectionIndex::new(&shared, &[], std::slice::from_ref(&nominal))
+            .expect("facts are unique");
         let symbols = AHashMap::from([(
             FunctionInstanceKey::Definition(function.clone()),
             Arc::from("probe"),
@@ -2316,6 +2347,98 @@ mod tests {
             DurableAnonymousNominalShape::Struct { fields, methods }
                 if fields.is_empty() && methods.is_empty()
         ));
+    }
+
+    #[test]
+    fn anonymous_fact_selection_index_rejects_conflicting_duplicate_identity() {
+        use rue_rir::{RirStructuralAnchor, RirStructuralPathSegment};
+
+        let function = definition(
+            ModuleId::from_validated_canonical("main.rue"),
+            StableDefinitionKind::Function,
+            "probe",
+            None,
+        );
+        let identity = crate::AnonymousNominalKey {
+            kind: crate::AnonymousNominalKind::Struct,
+            producer: crate::StableProducerId::Definition(function),
+            anchor: RirStructuralAnchor::new(vec![
+                RirStructuralPathSegment::Body,
+                RirStructuralPathSegment::AnonymousType(0),
+            ]),
+        };
+        let original = DurableAnonymousNominal::new(
+            identity.clone(),
+            DurableAnonymousNominalShape::Struct {
+                fields: Arc::from([(Arc::from("value"), rue_air::SemanticImportType::I32)]),
+                methods: Arc::from([]),
+            },
+            Arc::from([]),
+            Arc::from([]),
+        );
+        let counterfeit = original.with_shape(DurableAnonymousNominalShape::Struct {
+            fields: Arc::from([(Arc::from("counterfeit"), rue_air::SemanticImportType::I64)]),
+            methods: Arc::from([]),
+        });
+        let shared = SharedDeclarationFactIndex::new(&[]);
+        assert!(matches!(
+            LocalFactSelectionIndex::new(&shared, &[], &[original, counterfeit]),
+            Err(LocalFactSelectionFailure::ConflictingAnonymous(found))
+                if found == identity
+        ));
+    }
+
+    #[test]
+    fn anonymous_fact_selection_resolves_empty_specialization_alias_canonically() {
+        let function = definition(
+            ModuleId::from_validated_canonical("main.rue"),
+            StableDefinitionKind::Function,
+            "probe",
+            None,
+        );
+        let canonical = crate::AnonymousNominalKey {
+            kind: crate::AnonymousNominalKind::Struct,
+            producer: crate::StableProducerId::Function(Node::new(
+                FunctionInstanceKey::Definition(function.clone()),
+            )),
+            anchor: rue_rir::RirStructuralAnchor::new(vec![
+                rue_rir::RirStructuralPathSegment::Body,
+                rue_rir::RirStructuralPathSegment::AnonymousType(0),
+            ]),
+        };
+        let mut alias = canonical.clone();
+        alias.producer =
+            crate::StableProducerId::Function(Node::new(FunctionInstanceKey::Specialization {
+                base: Node::new(FunctionInstanceKey::Definition(function.clone())),
+                arguments: crate::CanonicalArguments::default(),
+            }));
+        let nominal = DurableAnonymousNominal::new(
+            canonical.clone(),
+            DurableAnonymousNominalShape::Struct {
+                fields: Arc::from([]),
+                methods: Arc::from([]),
+            },
+            Arc::from([]),
+            Arc::from([]),
+        );
+        let shared = SharedDeclarationFactIndex::new(&[]);
+        let (index, _) = LocalFactSelectionIndex::new(&shared, &[], std::slice::from_ref(&nominal))
+            .expect("canonical fact is unique");
+        let mut selection_body = body();
+        selection_body.return_type = rue_air::SemanticImportType::AnonymousNominal(alias);
+        let selected = select_materialization_facts(
+            &FunctionInstanceKey::Definition(function.clone()),
+            &selection_body,
+            &index,
+            &AHashMap::from([(
+                FunctionInstanceKey::Definition(function),
+                Arc::from("probe"),
+            )]),
+            &mut LocalMaterializationFactInterner::default(),
+        )
+        .expect("empty-specialization spelling selects the canonical fact");
+        assert_eq!(selected.anonymous_nominals.len(), 1);
+        assert_eq!(selected.anonymous_nominals[0].identity, canonical);
     }
 
     #[test]

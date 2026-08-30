@@ -1059,6 +1059,64 @@ fn provider_body_infers_array_types() {
     assert_eq!(body.function.air.return_type(), Type::I32);
 }
 
+#[test]
+fn provider_array_type_allocation_is_stable_across_expr_map_layouts() {
+    fn snapshot(seeds: [u64; 4], reverse_insertion: bool) -> Vec<(u32, u32, u64)> {
+        let body = crate::inference::with_expr_types_test_layout(seeds, reverse_insertion, || {
+            let mut fixture = ProviderFixture::new();
+            fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+            fixture.analyze(
+                "fn main() -> i32 {
+                        let flags = [true, false, true];
+                        let pairs = [[1, 2], [3, 4]];
+                        let values = [5, 6, 7, 8];
+                        if flags[0] { pairs[0][0] + values[0] } else { 0 }
+                    }",
+                "main",
+            )
+        })
+        .expect("array inference succeeds through the provider body path");
+        assert!(
+            body.function.air.iter().any(|(_, inst)| inst.ty.is_array()),
+            "the semantic artifact must retain array-typed instructions"
+        );
+        body.type_pool
+            .all_array_ids()
+            .into_iter()
+            .map(|id| {
+                let (element, length) = body.type_pool.array_def(id);
+                (Type::new_array(id).as_u32(), element.as_u32(), length)
+            })
+            .collect()
+    }
+
+    let configurations = [
+        ([1, 2, 3, 4], false),
+        ([91, 73, 55, 37], true),
+        ([0, 0, 0, 0], false),
+        ([u64::MAX, 0, u64::MAX, 0], true),
+        ([13, 21, 34, 55], false),
+        ([89, 144, 233, 377], true),
+        ([0x1234, 0x5678, 0x9abc, 0xdef0], false),
+        ([0xfedc, 0xba98, 0x7654, 0x3210], true),
+    ];
+    let baseline = snapshot(configurations[0].0, configurations[0].1);
+    for (seeds, reverse_insertion) in configurations.into_iter().skip(1) {
+        assert_eq!(
+            snapshot(seeds, reverse_insertion),
+            baseline,
+            "array allocation changed for seeds {seeds:?}, reverse insertion={reverse_insertion}"
+        );
+    }
+    assert_eq!(baseline.len(), 4);
+    let mut lengths = baseline
+        .iter()
+        .map(|(_, _, length)| *length)
+        .collect::<Vec<_>>();
+    lengths.sort_unstable();
+    assert_eq!(lengths, [2, 2, 3, 4]);
+}
+
 // Migrated from `tests::test_array_index_signed_type_is_accepted`: any integer
 // type indexes an array (spec 7.1:7); range violations trap at runtime.
 #[test]

@@ -91,12 +91,218 @@ impl DurableAnonymousNominal {
         }
     }
 
+    /// Rebuild this fact under the one canonical spelling of its producer.
+    /// Empty-specialization aliases and concrete references to the owning type
+    /// in method signatures are transport spellings, not distinct anonymous
+    /// content at durable merge boundaries.
+    pub(crate) fn with_canonical_identity(&self) -> Self {
+        let identity = self.identity.with_canonical_producer().into_owned();
+        let shape = normalize_anonymous_shape(&identity, &self.shape);
+        if identity == self.identity && shape == self.shape {
+            return self.clone();
+        }
+        Self::new(
+            identity,
+            shape,
+            self.type_captures.clone(),
+            self.value_captures.clone(),
+        )
+    }
+
     pub(crate) fn source_symbol(&self) -> &Arc<str> {
         &self.source_symbol
     }
 
     pub(crate) fn anonymous_identity_digest(&self) -> u128 {
         self.anonymous_digest
+    }
+}
+
+fn reconcile_optional_projection<T: Eq>(left: &Arc<[T]>, right: &Arc<[T]>) -> Option<Arc<[T]>> {
+    if left == right || right.is_empty() {
+        Some(left.clone())
+    } else if left.is_empty() {
+        Some(right.clone())
+    } else {
+        None
+    }
+}
+
+fn normalize_anonymous_method_type(
+    owner: &crate::AnonymousNominalKey,
+    ty: &DurableAnonymousMethodType,
+) -> DurableAnonymousMethodType {
+    match ty {
+        DurableAnonymousMethodType::Concrete(DurableType::AnonymousNominal(identity))
+            if identity.with_canonical_producer().as_ref() == owner =>
+        {
+            DurableAnonymousMethodType::SelfType
+        }
+        _ => ty.clone(),
+    }
+}
+
+fn anonymous_method_type_needs_normalization(
+    owner: &crate::AnonymousNominalKey,
+    ty: &DurableAnonymousMethodType,
+) -> bool {
+    matches!(
+        ty,
+        DurableAnonymousMethodType::Concrete(DurableType::AnonymousNominal(identity))
+            if identity.with_canonical_producer().as_ref() == owner
+    )
+}
+
+fn normalize_anonymous_methods(
+    owner: &crate::AnonymousNominalKey,
+    methods: &Arc<[DurableAnonymousMethodSignature]>,
+) -> Arc<[DurableAnonymousMethodSignature]> {
+    if !methods.iter().any(|method| {
+        anonymous_method_type_needs_normalization(owner, &method.result)
+            || method
+                .parameters
+                .iter()
+                .any(|(ty, _, _)| anonymous_method_type_needs_normalization(owner, ty))
+    }) {
+        return methods.clone();
+    }
+    methods
+        .iter()
+        .map(|method| DurableAnonymousMethodSignature {
+            name: method.name.clone(),
+            has_self: method.has_self,
+            self_mode: method.self_mode,
+            returns_borrow: method.returns_borrow,
+            returns_inout: method.returns_inout,
+            parameters: method
+                .parameters
+                .iter()
+                .map(|(ty, mode, comptime)| {
+                    (normalize_anonymous_method_type(owner, ty), *mode, *comptime)
+                })
+                .collect::<Vec<_>>()
+                .into(),
+            result: normalize_anonymous_method_type(owner, &method.result),
+            has_body: method.has_body,
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
+fn normalize_anonymous_shape(
+    owner: &crate::AnonymousNominalKey,
+    shape: &DurableAnonymousNominalShape,
+) -> DurableAnonymousNominalShape {
+    match shape {
+        DurableAnonymousNominalShape::Struct { fields, methods } => {
+            DurableAnonymousNominalShape::Struct {
+                fields: fields.clone(),
+                methods: normalize_anonymous_methods(owner, methods),
+            }
+        }
+        DurableAnonymousNominalShape::Enum { variants } => DurableAnonymousNominalShape::Enum {
+            variants: variants.clone(),
+        },
+    }
+}
+
+/// Reconcile two transport projections of one durable anonymous fact.
+///
+/// Producer evaluation and provider-local body analysis both carry the full
+/// materialized shape, but only the projection that needs an anonymous member
+/// environment is required to retain capture and method metadata. An empty
+/// metadata slice is therefore an admissible thin projection; a non-empty
+/// slice enriches it. Method projections may also spell the owner's type as
+/// either `SelfType` or the full anonymous identity; those spellings normalize
+/// before comparison. The materialized fields/variants must always agree, and
+/// two non-empty normalized metadata projections must agree exactly.
+pub(crate) fn reconcile_anonymous_nominals(
+    left: &DurableAnonymousNominal,
+    right: &DurableAnonymousNominal,
+) -> Result<DurableAnonymousNominal, crate::AnonymousNominalKey> {
+    let left = left.with_canonical_identity();
+    let right = right.with_canonical_identity();
+    if left.identity != right.identity {
+        return Err(right.identity);
+    }
+    let shape = match (&left.shape, &right.shape) {
+        (
+            DurableAnonymousNominalShape::Struct {
+                fields: left_fields,
+                methods: left_methods,
+            },
+            DurableAnonymousNominalShape::Struct {
+                fields: right_fields,
+                methods: right_methods,
+            },
+        ) if left_fields == right_fields => DurableAnonymousNominalShape::Struct {
+            fields: left_fields.clone(),
+            methods: reconcile_optional_projection(left_methods, right_methods)
+                .ok_or_else(|| left.identity.clone())?,
+        },
+        (
+            DurableAnonymousNominalShape::Enum {
+                variants: left_variants,
+            },
+            DurableAnonymousNominalShape::Enum {
+                variants: right_variants,
+            },
+        ) if left_variants == right_variants => DurableAnonymousNominalShape::Enum {
+            variants: left_variants.clone(),
+        },
+        _ => return Err(left.identity),
+    };
+    let type_captures = reconcile_optional_projection(&left.type_captures, &right.type_captures)
+        .ok_or_else(|| left.identity.clone())?;
+    let value_captures = reconcile_optional_projection(&left.value_captures, &right.value_captures)
+        .ok_or_else(|| left.identity.clone())?;
+    Ok(DurableAnonymousNominal::new(
+        left.identity,
+        shape,
+        type_captures,
+        value_captures,
+    ))
+}
+
+/// Insert one durable anonymous fact without permitting last-writer-wins
+/// replacement. Exact duplicates and compatible thin/rich projections
+/// reconcile; conflicting payloads for the same full canonical identity fail
+/// closed.
+pub(crate) fn merge_anonymous_nominal(
+    values: &mut std::collections::BTreeMap<crate::AnonymousNominalKey, DurableAnonymousNominal>,
+    nominal: &DurableAnonymousNominal,
+) -> Result<(), crate::AnonymousNominalKey> {
+    let nominal = nominal.with_canonical_identity();
+    match values.entry(nominal.identity.clone()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(nominal);
+            Ok(())
+        }
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            let reconciled = reconcile_anonymous_nominals(entry.get(), &nominal)?;
+            if entry.get() != &reconciled {
+                entry.insert(reconciled);
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Insert a complete producer publication. Unlike downstream projections,
+/// every producer export carries all method and capture metadata, so only an
+/// exact duplicate may share its full canonical identity.
+pub(crate) fn merge_complete_anonymous_nominal(
+    values: &mut std::collections::BTreeMap<crate::AnonymousNominalKey, DurableAnonymousNominal>,
+    nominal: &DurableAnonymousNominal,
+) -> Result<(), crate::AnonymousNominalKey> {
+    let nominal = nominal.with_canonical_identity();
+    match values.entry(nominal.identity.clone()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(nominal);
+            Ok(())
+        }
+        std::collections::btree_map::Entry::Occupied(entry) if entry.get() == &nominal => Ok(()),
+        std::collections::btree_map::Entry::Occupied(entry) => Err(entry.key().clone()),
     }
 }
 
@@ -367,5 +573,104 @@ mod tests {
         });
         assert_ne!(nominal, variant);
         assert_eq!(hash_of(&nominal), hash_of(&variant));
+    }
+
+    #[test]
+    fn anonymous_merge_reconciles_only_explicit_thin_projection_metadata() {
+        let identity = identity();
+        let fields: Arc<[(Arc<str>, DurableType)]> =
+            Arc::from([(Arc::from("value"), DurableType::I32)]);
+        let thin = DurableAnonymousNominal::new(
+            identity.clone(),
+            DurableAnonymousNominalShape::Struct {
+                fields: fields.clone(),
+                methods: Arc::from([]),
+            },
+            Arc::from([]),
+            Arc::from([]),
+        );
+        let method = DurableAnonymousMethodSignature {
+            name: Arc::from("get"),
+            has_self: true,
+            self_mode: DurableParameterMode::Value,
+            returns_borrow: false,
+            returns_inout: false,
+            parameters: Arc::from([]),
+            result: DurableAnonymousMethodType::Concrete(DurableType::I32),
+            has_body: true,
+        };
+        let rich = DurableAnonymousNominal::new(
+            identity.clone(),
+            DurableAnonymousNominalShape::Struct {
+                fields,
+                methods: Arc::from([method]),
+            },
+            Arc::from([(Arc::from("T"), DurableType::I32)]),
+            Arc::from([]),
+        );
+        for pair in [[&thin, &rich], [&rich, &thin]] {
+            let mut merged = std::collections::BTreeMap::new();
+            merge_anonymous_nominal(&mut merged, pair[0]).unwrap();
+            merge_anonymous_nominal(&mut merged, pair[1]).unwrap();
+            assert_eq!(merged.get(&identity), Some(&rich));
+        }
+
+        let conflicting_captures = DurableAnonymousNominal::new(
+            identity.clone(),
+            rich.shape.clone(),
+            Arc::from([(Arc::from("T"), DurableType::I64)]),
+            Arc::from([]),
+        );
+        let mut merged = std::collections::BTreeMap::new();
+        merge_anonymous_nominal(&mut merged, &rich).unwrap();
+        assert_eq!(
+            merge_anonymous_nominal(&mut merged, &conflicting_captures),
+            Err(identity)
+        );
+    }
+
+    #[test]
+    fn anonymous_merge_normalizes_self_method_type_spelling_in_both_orders() {
+        let identity = identity();
+        let method = |result| DurableAnonymousMethodSignature {
+            name: Arc::from("make"),
+            has_self: false,
+            self_mode: DurableParameterMode::Value,
+            returns_borrow: false,
+            returns_inout: false,
+            parameters: Arc::from([]),
+            result,
+            has_body: true,
+        };
+        let nominal = |result| {
+            DurableAnonymousNominal::new(
+                identity.clone(),
+                DurableAnonymousNominalShape::Struct {
+                    fields: Arc::from([]),
+                    methods: Arc::from([method(result)]),
+                },
+                Arc::from([]),
+                Arc::from([]),
+            )
+        };
+        let self_spelled = nominal(DurableAnonymousMethodType::SelfType);
+        let concrete_spelled = nominal(DurableAnonymousMethodType::Concrete(
+            DurableType::AnonymousNominal(identity.clone()),
+        ));
+
+        for pair in [
+            [&self_spelled, &concrete_spelled],
+            [&concrete_spelled, &self_spelled],
+        ] {
+            let mut merged = std::collections::BTreeMap::new();
+            merge_anonymous_nominal(&mut merged, pair[0]).unwrap();
+            merge_anonymous_nominal(&mut merged, pair[1]).unwrap();
+            assert_eq!(merged.get(&identity), Some(&self_spelled));
+
+            let mut complete = std::collections::BTreeMap::new();
+            merge_complete_anonymous_nominal(&mut complete, pair[0]).unwrap();
+            merge_complete_anonymous_nominal(&mut complete, pair[1]).unwrap();
+            assert_eq!(complete.get(&identity), Some(&self_spelled));
+        }
     }
 }

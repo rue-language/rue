@@ -232,7 +232,7 @@ pub(crate) struct AnalysisContext<'a> {
     pub referenced_functions: AHashSet<Spur>,
     /// Methods referenced during analysis of this function.
     /// Each entry is (struct_id, method_name) matching the key format in methods map.
-    pub referenced_methods: std::collections::HashSet<(StructId, Spur)>,
+    pub(crate) referenced_methods: ahash::AHashSet<(StructId, Spur)>,
     /// The type this expression is expected to produce, when sema knows it from
     /// a surrounding annotation or pattern. Set narrowly around a
     /// let-initializer (to the resolved annotation type) and around a `match`
@@ -517,7 +517,7 @@ impl<'a> AnalysisContext<'a> {
             comptime_type_vars: self.comptime_type_vars.clone(),
             comptime_value_vars: self.comptime_value_vars.clone(),
             referenced_functions: AHashSet::new(),
-            referenced_methods: std::collections::HashSet::new(),
+            referenced_methods: AHashSet::new(),
             expected_type: None,
             infer_ctx: self.infer_ctx,
             accessor_trailing_yield: self.accessor_trailing_yield,

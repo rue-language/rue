@@ -1653,30 +1653,27 @@ fn build_cfg(
             ));
         }
     };
-    let implicit_destructor_dependencies_complete =
-        output.implicit_named_destructors.iter().all(|id| {
-            materialized
-                .aggregate_types
-                .contains_key(&rue_air::Type::new_struct(*id))
-        });
+    let implicit_destructor_dependencies_complete = output
+        .implicit_named_destructors
+        .iter()
+        .all(|id| materialized.has_aggregate_type(rue_air::Type::new_struct(*id)));
     let mut implicit_destructor_targets = output
         .implicit_named_destructors
         .iter()
         .filter_map(|id| {
             materialized
-                .aggregate_types
-                .get(&rue_air::Type::new_struct(*id))
+                .aggregate_type(rue_air::Type::new_struct(*id))
                 .cloned()
         })
         .collect::<std::collections::BTreeSet<_>>();
     let implicit_drop_glue_dependencies_complete = output
         .implicit_drop_glue_types
         .iter()
-        .all(|ty| materialized.aggregate_types.contains_key(ty));
+        .all(|ty| materialized.has_aggregate_type(*ty));
     let implicit_drop_glue_targets = output
         .implicit_drop_glue_types
         .iter()
-        .filter_map(|ty| materialized.aggregate_types.get(ty).cloned())
+        .filter_map(|ty| materialized.aggregate_type(*ty).cloned())
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
@@ -1689,7 +1686,7 @@ fn build_cfg(
         // the live type pool for same-named structs outside this CFG's domain.
         implicit_destructor_targets.insert(owner.clone());
     }
-    let local_aggregate_type_aliases = materialized.aggregate_types.len();
+    let local_aggregate_type_aliases = materialized.aggregate_type_count();
     let local_materialized_type_handles = materialized.materialized_types.len();
     let interner_retained_charge = frozen_interner_retained_charge(&materialized.interner);
     let value = CfgValue::Available(Arc::new(CfgRecord {

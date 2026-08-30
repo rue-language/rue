@@ -20,6 +20,10 @@ use rue_rir::{InstData, InstRef, RepeatCount, Rir, RirTypeSyntaxNode, RirTypeSyn
 use rue_span::{FileId, Span};
 
 use ahash::AHashMap;
+#[cfg(test)]
+use ahash::RandomState;
+#[cfg(test)]
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -344,13 +348,10 @@ pub struct ConstraintGenerator<'a> {
     constraints: Vec<Constraint>,
     /// Mapping from RIR instruction to its inferred type.
     ///
-    /// Deliberately the std hasher while the rest of this generator uses
-    /// `AHashMap`: type inference walks this map to pre-create array types
-    /// (`pre_create_array_types_from_infer_type`), so its iteration order
-    /// decides the pool indices those array types receive, and those indices
-    /// are later a sort key (`sort_unstable_by_key(Type::as_u32)`). The order
-    /// is observable, so the hasher is not a free choice here.
-    expr_types: std::collections::HashMap<InstRef, InferType>,
+    /// Expression types are keyed by instruction reference. Consumers impose
+    /// instruction order before any operation whose result can observe type
+    /// pool allocation, so this remains an unordered fast lookup map.
+    expr_types: ahash::AHashMap<InstRef, InferType>,
     /// Whether each generated expression reaches its next evaluation point.
     expr_continues: AHashMap<InstRef, bool>,
     /// Function signatures (for call type checking). `None` when the generator
@@ -507,6 +508,74 @@ pub struct ConstraintGenerator<'a> {
     type_pool: &'a TypeInternPool,
 }
 
+/// Return expression types in canonical RIR order. Lookup storage is
+/// intentionally unordered, but array precreation must allocate composite
+/// types in instruction order so pool indices do not depend on hash buckets.
+pub(crate) fn expr_types_in_rir_order(
+    expr_types: &AHashMap<InstRef, InferType>,
+) -> Vec<(&InstRef, &InferType)> {
+    let mut ordered = expr_types.iter().collect::<Vec<_>>();
+    ordered.sort_unstable_by_key(|(inst_ref, _)| inst_ref.as_u32());
+    ordered
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct ExprTypesTestLayout {
+    state: RandomState,
+    reverse_insertion: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    static EXPR_TYPES_TEST_LAYOUT: RefCell<Option<ExprTypesTestLayout>> = const { RefCell::new(None) };
+}
+
+/// Run a production body-analysis transaction with a controlled expression-map
+/// layout. This is test-only instrumentation for proving that semantic output
+/// does not depend on AHash's seed or insertion order.
+#[cfg(test)]
+pub(crate) fn with_expr_types_test_layout<R>(
+    seeds: [u64; 4],
+    reverse_insertion: bool,
+    action: impl FnOnce() -> R,
+) -> R {
+    EXPR_TYPES_TEST_LAYOUT.with(|configured| {
+        let previous = configured.replace(Some(ExprTypesTestLayout {
+            state: RandomState::with_seeds(seeds[0], seeds[1], seeds[2], seeds[3]),
+            reverse_insertion,
+        }));
+        let result = action();
+        configured.replace(previous);
+        result
+    })
+}
+
+fn new_expr_types_map() -> AHashMap<InstRef, InferType> {
+    #[cfg(test)]
+    if let Some(layout) = EXPR_TYPES_TEST_LAYOUT.with(|configured| configured.borrow().clone()) {
+        return AHashMap::with_hasher(layout.state);
+    }
+    AHashMap::new()
+}
+
+fn finalize_expr_types_map(
+    expr_types: AHashMap<InstRef, InferType>,
+) -> AHashMap<InstRef, InferType> {
+    #[cfg(test)]
+    if let Some(layout) = EXPR_TYPES_TEST_LAYOUT.with(|configured| configured.borrow().clone()) {
+        let mut entries = expr_types.into_iter().collect::<Vec<_>>();
+        entries.sort_unstable_by_key(|(inst_ref, _)| inst_ref.as_u32());
+        if layout.reverse_insertion {
+            entries.reverse();
+        }
+        let mut rebuilt = AHashMap::with_hasher(layout.state);
+        rebuilt.extend(entries);
+        return rebuilt;
+    }
+    expr_types
+}
+
 impl<'a> ConstraintGenerator<'a> {
     #[inline]
     fn note_sibling_attempt(&self) {
@@ -585,7 +654,7 @@ impl<'a> ConstraintGenerator<'a> {
             interner,
             type_vars: TypeVarAllocator::new(),
             constraints: Vec::with_capacity(rir_capacity),
-            expr_types: std::collections::HashMap::new(),
+            expr_types: new_expr_types_map(),
             expr_continues: AHashMap::new(),
             functions: Some(functions),
             builtin_structs: Some(builtin_structs),
@@ -647,7 +716,7 @@ impl<'a> ConstraintGenerator<'a> {
             interner,
             type_vars: TypeVarAllocator::new(),
             constraints: Vec::with_capacity(rir_capacity),
-            expr_types: std::collections::HashMap::new(),
+            expr_types: new_expr_types_map(),
             expr_continues: AHashMap::new(),
             functions: None,
             builtin_structs: None,
@@ -1389,7 +1458,7 @@ impl<'a> ConstraintGenerator<'a> {
     }
 
     /// Get the expression type mapping.
-    pub fn expr_types(&self) -> &std::collections::HashMap<InstRef, InferType> {
+    pub fn expr_types(&self) -> &ahash::AHashMap<InstRef, InferType> {
         &self.expr_types
     }
 
@@ -1406,17 +1475,18 @@ impl<'a> ConstraintGenerator<'a> {
         Vec<TypeVarId>,
         Vec<TypeVarId>,
         Type,
-        std::collections::HashMap<InstRef, InferType>,
+        ahash::AHashMap<InstRef, InferType>,
         AHashMap<InstRef, bool>,
         u32,
         Vec<Type>,
     ) {
+        let expr_types = finalize_expr_types_map(self.expr_types);
         (
             self.constraints,
             self.int_literal_vars,
             self.string_literal_vars,
             self.string_literal_default,
-            self.expr_types,
+            expr_types,
             self.expr_continues,
             self.type_vars.count(),
             self.fixed_string_types,
