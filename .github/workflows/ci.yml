@@ -46,9 +46,11 @@ jobs:
             dotslash-linux-x64-
 
       - name: Check formatting
-        # Every crate emits its own `<name>-fmt-check` test from the
-        # rue_crate/rue_binary macros (RUE-1153), so coverage follows the
-        # build graph. The target list comes from a query over that graph
+        # Every crate package emits one directory-named `<crate>-fmt-check`
+        # test from the rue_crate/rue_binary macros (RUE-1153, RUE-1857), so
+        # coverage follows the build graph without repeating byte-identical
+        # work when a package declares several binary/library targets. The
+        # target list comes from a query over that graph
         # rather than filesystem discovery: the original `//:fmt-check` took
         # its list from a root-package `glob(["crates/**/*.rs"])`, and a Buck
         # glob does not descend into subpackages, so it checked 1 file of 281
@@ -62,6 +64,45 @@ jobs:
             echo "fmt: no -fmt-check targets found; the query or the macros are broken" >&2
             exit 1
           fi
+
+          # The package-directory owner rule must not fail open. Prove that
+          # every package using the crate macros has exactly one canonical
+          # formatting gate and sources filegroup, and that no secondary
+          # target in the package emitted a duplicate. This complements the
+          # root ASan exception above, which is deliberately outside crates/.
+          mapfile -t PACKAGE_BUCKS < <(grep -l -E '^[[:space:]]*rue_(crate|binary)\(' crates/*/BUCK | sort)
+          if [ "${#PACKAGE_BUCKS[@]}" -eq 0 ]; then
+            echo "fmt: no rue_crate/rue_binary packages found; package-gate discovery is broken" >&2
+            exit 1
+          fi
+          mapfile -t SOURCE_TARGETS < <(./buck2 uquery "kind('filegroup', 'root//crates/...')" | grep -- '-sources$')
+          FMT_TARGET_SET="$(printf '%s\n' "${TARGETS[@]}")"
+          SOURCE_TARGET_SET="$(printf '%s\n' "${SOURCE_TARGETS[@]}")"
+          for buck in "${PACKAGE_BUCKS[@]}"; do
+            package="${buck%/BUCK}"
+            crate="${package##*/}"
+            expected_fmt="root//$package:$crate-fmt-check"
+            expected_sources="root//$package:$crate-sources"
+            if ! grep -Fqx -- "$expected_fmt" <<<"$FMT_TARGET_SET"; then
+              echo "fmt: missing canonical package gate $expected_fmt" >&2
+              exit 1
+            fi
+            if ! grep -Fqx -- "$expected_sources" <<<"$SOURCE_TARGET_SET"; then
+              echo "fmt: missing canonical package sources $expected_sources" >&2
+              exit 1
+            fi
+          done
+          crate_fmt_count=0
+          for target in "${TARGETS[@]}"; do
+            case "$target" in
+              root//crates/*) crate_fmt_count=$((crate_fmt_count + 1)) ;;
+            esac
+          done
+          if [ "$crate_fmt_count" -ne "${#PACKAGE_BUCKS[@]}" ] || [ "${#SOURCE_TARGETS[@]}" -ne "${#PACKAGE_BUCKS[@]}" ]; then
+            echo "fmt: package gate inventory is not one-to-one (packages=${#PACKAGE_BUCKS[@]}, fmt=$crate_fmt_count, sources=${#SOURCE_TARGETS[@]})" >&2
+            exit 1
+          fi
+
           echo "Checking formatting across ${#TARGETS[@]} crates..."
           ./buck2 test "${TARGETS[@]}"
 

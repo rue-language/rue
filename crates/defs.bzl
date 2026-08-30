@@ -25,8 +25,12 @@ load("//:test_defs.bzl", "rue_test_labels")
 
 _RUSTFMT_CONFIG = "//:rustfmt-config"
 
+def _canonical_package_target_name():
+    """Returns the target name that owns package-wide structural gates."""
+    return package_name().split("/")[-1]
+
 def _sources_filegroup(name, srcs):
-    """Emits `<name>-sources`: this crate's compiled sources as a PUBLIC filegroup.
+    """Emits one `<package>-sources` PUBLIC filegroup for compiled sources.
 
     Structural gates that live outside this package (the root-BUCK inventory
     validators, RUE-1525) take a crate's sources as a `$(location ...)` input.
@@ -35,7 +39,13 @@ def _sources_filegroup(name, srcs):
     `glob(["src/**/*.rs"])` copy per gate per crate — with a single sources
     target that exists because the crate declares itself, and that new gates
     can reuse without touching the crate's BUCK file.
+
+    A package may declare several library or binary targets over the same
+    sources. The target matching the package directory owns this package-wide
+    filegroup, just as it owns the formatting and debug-assertion gates.
     """
+    if name != _canonical_package_target_name():
+        return
     native.filegroup(
         name = name + "-sources",
         srcs = srcs,
@@ -43,7 +53,7 @@ def _sources_filegroup(name, srcs):
     )
 
 def _fmt_check(name, srcs):
-    """Emits `<name>-fmt-check`: rustfmt --check over this crate's own sources.
+    """Emits one `<package>-fmt-check` over this package's compiled sources.
 
     Coverage is structural (RUE-1153). The gate this replaces took its file
     list from filesystem discovery — and before that from a root-package
@@ -56,8 +66,11 @@ def _fmt_check(name, srcs):
     sh_test runs from the project root, so each path is prefixed with the
     package to address the file from there. Declaring `srcs` as resources is
     what makes Buck re-run the check when a source changes rather than
-    serving a stale pass.
+    serving a stale pass. A package with several macro targets still emits one
+    byte-identical formatting action, owned by its directory-named target.
     """
+    if name != _canonical_package_target_name():
+        return
     native.sh_test(
         name = name + "-fmt-check",
         test = "toolchains//rust:rustfmt",
@@ -100,7 +113,7 @@ def _debug_assert_check(name, srcs):
     matches the directory. Orphaned ledger entries for a crate that stopped
     emitting a check entirely are caught by //:debug-assert-ledger-check.
     """
-    crate = package_name().split("/")[-1]
+    crate = _canonical_package_target_name()
     if name != crate:
         return
     native.sh_test(
