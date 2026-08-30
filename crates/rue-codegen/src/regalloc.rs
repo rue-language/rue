@@ -1257,9 +1257,15 @@ pub trait RegAllocBackend {
     fn instructions(mir: &Self::Mir) -> &[Self::Inst];
     fn defs(inst: &Self::Inst) -> crate::liveness::VRegList;
     fn rematerialization(inst: &Self::Inst) -> Option<(VReg, RematerializeOp)>;
-    fn analyze(mir: &Self::Mir) -> LivenessInfo<Self::Reg>;
-    fn analyze_with_debug(mir: &Self::Mir) -> (LivenessInfo<Self::Reg>, LivenessDebugInfo);
-    fn analyze_loops(mir: &Self::Mir) -> LoopInfo;
+    /// Allocator liveness and loop information from one walk of the MIR. Both
+    /// derive from the same label map and successor lists, so they are produced
+    /// together rather than by two hooks that each rebuild them (RUE-1846).
+    fn analyze_with_loops(mir: &Self::Mir) -> (LivenessInfo<Self::Reg>, LoopInfo);
+    /// As [`RegAllocBackend::analyze_with_loops`], additionally retaining the
+    /// diagnostic projection of the same dataflow.
+    fn analyze_with_debug_and_loops(
+        mir: &Self::Mir,
+    ) -> (LivenessInfo<Self::Reg>, LivenessDebugInfo, LoopInfo);
     fn coalesce_candidates(instructions: &[Self::Inst]) -> Vec<CoalesceCandidate>;
     /// The allocatable registers of every [`RegClass`], each split by who is
     /// responsible for preserving them. Allocation prefers the caller-saved
@@ -1487,11 +1493,12 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
     pub fn new_with_artifacts(mir: B::Mir, existing_locals: u32, capture_liveness: bool) -> Self {
         assert_no_allocatable_physical_operands::<B>(&mir);
         let vreg_count = B::vreg_count(&mir) as usize;
-        let (mut liveness, liveness_debug) = if capture_liveness {
-            let (liveness, debug) = B::analyze_with_debug(&mir);
-            (liveness, Some(debug))
+        let (mut liveness, liveness_debug, loop_info) = if capture_liveness {
+            let (liveness, debug, loops) = B::analyze_with_debug_and_loops(&mir);
+            (liveness, Some(debug), loops)
         } else {
-            (B::analyze(&mir), None)
+            let (liveness, loops) = B::analyze_with_loops(&mir);
+            (liveness, None, loops)
         };
         assert_eq!(
             liveness.vreg_classes.len(),
@@ -1499,7 +1506,6 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
             "the MIR's virtual-register class table does not cover its virtual registers; \
              a mint site skipped recording a register class"
         );
-        let loop_info = B::analyze_loops(&mir);
         let candidates = B::coalesce_candidates(B::instructions(&mir));
         let coalesce_result = coalesce(&candidates, &mut liveness);
         let vreg_info = rematerialization_info::<B>(&mir, &coalesce_result);
