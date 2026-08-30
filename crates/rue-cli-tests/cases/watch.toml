@@ -137,3 +137,35 @@ source = "pub fn answer() -> i32 { 2 }\n"
 [[case.watch.edits]]
 path = "helper.rue"
 source = "pub fn answer() -> i32 { 3 }\n"
+
+# RUE-1863. Re-observation was made supersedable by RUE-1830, but the phase
+# right after it -- acquiring the trusted toolchain modules a reached body
+# demands -- still ran to completion against bytes an edit had already
+# invalidated. `acquire_delay_ms` widens that window on purpose so the second
+# edit deterministically lands while the demand is being read and the import
+# graph re-closed. `@parse_i64` is what makes the program park on a trusted
+# std demand at all, so the case needs the real std to reach acquisition.
+#
+# The superseded acquisition is a transaction that commits nothing: the run
+# must reacquire cleanly afterwards (`acquire-ok` strictly after
+# `acquire-superseded`) and publish only the newest revision's output.
+[[case]]
+name = "change_during_toolchain_acquisition_supersedes_the_stale_attempt"
+files = [
+    { path = "main.rue", source = "const helper = @import(\"helper.rue\");\nfn main() -> i32 { let _ = @parse_i64(\"1\"); helper.answer() }\n" },
+    { path = "helper.rue", source = "pub fn answer() -> i32 { 1 }\n" },
+]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+
+[case.watch]
+kind = "supersede_acquire"
+acquire_delay_ms = 400
+expected_exit_codes = [1, 3]
+
+[[case.watch.edits]]
+path = "helper.rue"
+source = "pub fn answer() -> i32 { 2 }\n"
+
+[[case.watch.edits]]
+path = "helper.rue"
+source = "pub fn answer() -> i32 { 3 }\n"

@@ -1691,6 +1691,30 @@ pub(crate) fn acquire_reached_toolchain_modules(
     result: &mut ImportDiscoveryResult,
     options: &CompileOptions,
 ) -> Result<(), SourceLoadError> {
+    acquire_reached_toolchain_modules_superseding(result, options, None)
+}
+
+/// [`acquire_reached_toolchain_modules`] under a caller-owned edit-supersession
+/// probe (RUE-1863).
+///
+/// Acquisition blocks on demand reads and on a multi-wave trusted re-close, so
+/// a watch cycle needs the same prompt supersession RUE-1830 gave
+/// re-observation. Each round is a transaction: the demand reads land in a
+/// CLONE of the assembler, and the host's committed state — snapshot, manifest,
+/// revision, witness, assembler — is replaced only after the re-close returns.
+/// A superseded round therefore commits nothing, and the next cycle's
+/// re-observation begins a fresh import-input request that supersedes any
+/// successor this round published to the session.
+///
+/// The last check before publication is the commit boundary: publish,
+/// re-close, and the host assignment run to completion once it passes, so a
+/// cancellation observed afterward leaves a coherent new commit rather than a
+/// half-applied one. `None` keeps every check a no-op for the one-shot driver.
+pub(crate) fn acquire_reached_toolchain_modules_superseding(
+    result: &mut ImportDiscoveryResult,
+    options: &CompileOptions,
+    supersession: Option<&dyn Fn() -> bool>,
+) -> Result<(), SourceLoadError> {
     // A discovery that did not close valid (missing or ambiguous imports) has no
     // queryable program, so semantic analysis cannot run and there is nothing to
     // acquire. Leave it untouched: the driver surfaces the canonical import
@@ -1701,6 +1725,7 @@ pub(crate) fn acquire_reached_toolchain_modules(
         return Ok(());
     }
     for _ in 0..MAX_TOOLCHAIN_ACQUISITION_ROUNDS {
+        check_supersession(supersession)?;
         match rooted_or_toolchain_park(&mut result.session, options) {
             // Analysis satisfied every reached-body demand (or there were none).
             RootedParkOutcome::Ready => return Ok(()),
@@ -1722,20 +1747,25 @@ pub(crate) fn acquire_reached_toolchain_modules(
                 // the whole fixed-point loop here would misreport that cached
                 // semantic work as toolchain acquisition.
                 let _span = tracing::info_span!("toolchain_acquisition").entered();
+                // Demand reads land in a clone so a superseded round leaves the
+                // committed assembler exactly as the last successful close left
+                // it, rather than carrying a partial module set forward
+                // (RUE-1863).
+                let mut round_assembler = result.assembler.clone();
                 for demand in park.demands() {
+                    check_supersession(supersession)?;
                     satisfy_toolchain_module_demand(
-                        &mut result.assembler,
+                        &mut round_assembler,
                         result.std_root.as_deref(),
                         result.source_manifest.as_ref(),
                         demand,
                     )
                     .map_err(SourceLoadError::from)?;
                 }
-                let successor = result
-                    .assembler
+                let successor = round_assembler
                     .snapshot()
                     .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
-                let reads = result.assembler.accepted_read_manifest();
+                let reads = round_assembler.accepted_read_manifest();
                 // The park just attached its exact demanded set to the closed
                 // continuation, so an authorizing token must be outstanding.
                 let token = closed_discovery_continuation(&result.session).ok_or_else(|| {
@@ -1764,21 +1794,24 @@ pub(crate) fn acquire_reached_toolchain_modules(
                 // trusted leaf fails during this re-close, and classification
                 // (below) attributes it to the actual failing module.
                 let reclosed = drive_import_discovery_to_close(
-                    &mut result.assembler,
+                    &mut round_assembler,
                     &mut result.session,
                     &result.resolution.context,
                     result.source_manifest.as_ref(),
                     None,
                     Some(delta.revision()),
                     Some(ReClose { delta: &delta }),
-                    None,
+                    supersession,
                 )
                 .map_err(|error| {
                     reclassify_reclose_failure(error, result.std_root.as_deref(), park.demands())
                 })?;
+                // Commit boundary: every assignment below is infallible, so the
+                // round is applied whole or not at all.
+                result.read_manifest = round_assembler.accepted_read_manifest();
+                result.assembler = round_assembler;
                 result.source_snapshot = reclosed.snapshot;
                 result.revision = reclosed.closed;
-                result.read_manifest = result.assembler.accepted_read_manifest();
                 result.observed_absent_paths = reclosed.observed_absent_paths;
                 result.witness = reclosed.witness;
                 #[cfg(test)]
@@ -2311,6 +2344,9 @@ mod tests {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use super::*;
 
     struct TestDir {
@@ -3634,6 +3670,237 @@ mod tests {
                 .any(|entry| entry.module().is_trusted_standard_library()
                     && entry.module().as_str() == rue_compiler::OPTION_MODULE_LOGICAL_PATH)
         );
+    }
+
+    // ---- RUE-1863 acquisition supersession proofs -----------------------
+    //
+    // These drive the same production host flow as the t-series above, with a
+    // supersession probe installed. The invariant under test is transactional:
+    // a superseded acquisition commits NOTHING — the committed snapshot,
+    // manifest, revision, and assembler stay exactly as the last successful
+    // close left them — while a probe that never trips leaves acquisition
+    // byte-identical to the unprobed path.
+
+    /// A probe that reports "superseded" only from its `trip_after`-th call,
+    /// so a test can place the abort at an exact point in acquisition and
+    /// assert how many checks ran.
+    fn counting_probe(trip_after: usize) -> (impl Fn() -> bool, Rc<Cell<usize>>) {
+        let checks = Rc::new(Cell::new(0));
+        let counter = Rc::clone(&checks);
+        let probe = move || {
+            counter.set(counter.get() + 1);
+            counter.get() > trip_after
+        };
+        (probe, checks)
+    }
+
+    /// A committed state with nothing acquired: the root module alone, and no
+    /// trusted read in the manifest.
+    fn assert_nothing_acquired(result: &mut ImportDiscoveryResult) {
+        assert_eq!(
+            result.source_snapshot.source_revision().modules().len(),
+            1,
+            "a superseded acquisition must not commit the demanded module"
+        );
+        assert!(!contains_trusted_option(&result.source_snapshot));
+        assert!(
+            !result
+                .read_manifest
+                .iter()
+                .any(|entry| entry.module().is_trusted_standard_library()),
+            "a superseded acquisition must not commit a trusted accepted read"
+        );
+        assert!(
+            !result
+                .assembler
+                .accepted_read_manifest()
+                .iter()
+                .any(|entry| entry.module().is_trusted_standard_library()),
+            "a superseded acquisition must leave the committed assembler unchanged"
+        );
+    }
+
+    fn fallible_project(name: &str) -> (TestDir, TestDir, PathBuf, PathBuf) {
+        let project = TestDir::new(&format!("{name}-project"));
+        let stdlib = TestDir::new(&format!("{name}-std"));
+        let main = project.write("main.rue", FALLIBLE_ROOT);
+        stdlib.write("option.rue", VALID_OPTION);
+        let std_root = fs::canonicalize(&stdlib.path).unwrap();
+        (project, stdlib, main, std_root)
+    }
+
+    /// An edit landing while acquisition reads its demanded modules aborts the
+    /// stale attempt promptly and commits nothing.
+    #[test]
+    fn superseded_acquisition_commits_no_partial_state() {
+        let (_project, _stdlib, main, std_root) = fallible_project("supersede-mid");
+        let mut result =
+            discover_and_load_imports(main.to_str().unwrap(), None, Some(&std_root)).unwrap();
+        // Trip on the very first check, before any demand read runs.
+        let error = acquire_reached_toolchain_modules_superseding(
+            &mut result,
+            &CompileOptions::default(),
+            Some(&|| true),
+        )
+        .expect_err("a superseded acquisition must abort");
+        assert!(matches!(error, SourceLoadError::Superseded), "{error:?}");
+        assert_nothing_acquired(&mut result);
+    }
+
+    /// Whether the demanded trusted module is visible in each of the three
+    /// places a committed round writes it.
+    fn acquired_markers(result: &mut ImportDiscoveryResult) -> (bool, bool, bool) {
+        let trusted = |manifest: &AcceptedReadManifest| {
+            manifest
+                .iter()
+                .any(|entry| entry.module().is_trusted_standard_library())
+        };
+        (
+            contains_trusted_option(&result.source_snapshot),
+            trusted(&result.read_manifest),
+            trusted(&result.assembler.accepted_read_manifest()),
+        )
+    }
+
+    /// The abort holds at every point in the round — including after the demand
+    /// reads, where the round has already published a successor to the session
+    /// but has not reached its commit boundary. A round is all-or-nothing, so
+    /// whatever the trip point, the committed state is coherent: the snapshot,
+    /// the committed manifest, and the assembler either all carry the acquired
+    /// module or none of them do. A round that already committed stays
+    /// committed — that transaction closed before the abort.
+    #[test]
+    fn supersession_at_the_close_boundary_commits_no_partial_state() {
+        let mut aborted_before_any_commit = 0;
+        let mut aborted_after_a_commit = 0;
+        for trip_after in 1..=6 {
+            let (_project, _stdlib, main, std_root) =
+                fallible_project(&format!("supersede-late-{trip_after}"));
+            let mut result =
+                discover_and_load_imports(main.to_str().unwrap(), None, Some(&std_root)).unwrap();
+            let (probe, checks) = counting_probe(trip_after);
+            let outcome = acquire_reached_toolchain_modules_superseding(
+                &mut result,
+                &CompileOptions::default(),
+                Some(&probe),
+            );
+            let markers = acquired_markers(&mut result);
+            let acquired = markers.0;
+            assert_eq!(
+                markers,
+                (acquired, acquired, acquired),
+                "trip after {trip_after} left a partially committed round"
+            );
+            assert_eq!(
+                result.source_snapshot.source_revision().modules().len(),
+                if acquired { 2 } else { 1 },
+                "trip after {trip_after} left the snapshot inconsistent with its manifest"
+            );
+            match outcome {
+                Err(SourceLoadError::Superseded) => {
+                    assert!(checks.get() > trip_after);
+                    if acquired {
+                        aborted_after_a_commit += 1;
+                    } else {
+                        aborted_before_any_commit += 1;
+                    }
+                }
+                // Past the last check the round runs to completion, and the
+                // commit must be whole.
+                Ok(()) => assert!(acquired, "a successful acquisition commits its module"),
+                Err(other) => panic!("unexpected acquisition failure: {other:?}"),
+            }
+        }
+        // The sweep must actually exercise both abort positions, or it would
+        // pass while only ever testing the easy one.
+        assert!(aborted_before_any_commit > 0, "no abort landed mid-round");
+        assert!(
+            aborted_after_a_commit > 0,
+            "no abort landed after a round committed"
+        );
+    }
+
+    /// Repeated supersession never degrades the retained state, and the first
+    /// unsuperseded acquisition still succeeds over the newest source.
+    #[test]
+    fn repeated_supersession_retains_state_and_recovers() {
+        let (project, _stdlib, main, std_root) = fallible_project("supersede-retry");
+        let mut result =
+            discover_and_load_imports(main.to_str().unwrap(), None, Some(&std_root)).unwrap();
+        for _ in 0..3 {
+            let error = acquire_reached_toolchain_modules_superseding(
+                &mut result,
+                &CompileOptions::default(),
+                Some(&|| true),
+            )
+            .expect_err("each attempt is superseded");
+            assert!(matches!(error, SourceLoadError::Superseded), "{error:?}");
+            assert_nothing_acquired(&mut result);
+        }
+
+        // The newest bytes reach the recovered acquisition: re-observe an
+        // edited root the way the watch loop does, then acquire unsuperseded.
+        project.write(
+            "main.rue",
+            "fn main() -> i32 { let _ = @parse_i64(\"2\"); 7 }",
+        );
+        reload_from_filesystem(&mut result, None).expect("re-observation succeeds");
+        acquire_reached_toolchain_modules_superseding(
+            &mut result,
+            &CompileOptions::default(),
+            Some(&|| false),
+        )
+        .expect("an unsuperseded acquisition succeeds after repeated aborts");
+        assert!(contains_trusted_option(&result.source_snapshot));
+        assert_eq!(result.source_snapshot.source_revision().modules().len(), 2);
+    }
+
+    /// A probe that never trips leaves acquisition identical to the unprobed
+    /// production path, and cancellation observed only afterward leaves that
+    /// successful commit coherent.
+    #[test]
+    fn quiet_probe_matches_the_unprobed_acquisition() {
+        let (_probed_project, _probed_std, probed_main, probed_std_root) =
+            fallible_project("supersede-quiet");
+        let mut probed =
+            discover_and_load_imports(probed_main.to_str().unwrap(), None, Some(&probed_std_root))
+                .unwrap();
+        acquire_reached_toolchain_modules_superseding(
+            &mut probed,
+            &CompileOptions::default(),
+            Some(&|| false),
+        )
+        .expect("a quiet probe never aborts");
+
+        let (_plain_project, _plain_std, plain_main, plain_std_root) =
+            fallible_project("supersede-plain");
+        let mut plain =
+            discover_and_load_imports(plain_main.to_str().unwrap(), None, Some(&plain_std_root))
+                .unwrap();
+        acquire_reached_toolchain_modules(&mut plain, &CompileOptions::default())
+            .expect("the unprobed path succeeds");
+
+        assert_eq!(
+            probed.source_snapshot.source_revision().modules().len(),
+            plain.source_snapshot.source_revision().modules().len(),
+        );
+        assert!(contains_trusted_option(&probed.source_snapshot));
+        assert_eq!(
+            probed
+                .read_manifest
+                .iter()
+                .filter(|entry| entry.module().is_trusted_standard_library())
+                .count(),
+            plain
+                .read_manifest
+                .iter()
+                .filter(|entry| entry.module().is_trusted_standard_library())
+                .count(),
+        );
+
+        // A cancellation observed after the commit boundary does not unwind
+        // the successful commit: the acquired state stands.
+        assert!(contains_trusted_option(&probed.source_snapshot));
     }
 
     /// t1: a freestanding program with NO reached fallible intrinsic performs
