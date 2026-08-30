@@ -1388,6 +1388,14 @@ impl<'a> Emitter<'a> {
                 end_inst!(self, "sxtw {}, {}", rd, rn.as_w());
             }
 
+            Aarch64Inst::Uxtw { dst, src } => {
+                let rd = dst.as_physical();
+                let rn = src.as_physical();
+                self.begin_inst();
+                self.emit_ubfm(rd, rn, 0, 31);
+                end_inst!(self, "uxtw {}, {}", rd, rn.as_w());
+            }
+
             Aarch64Inst::Uxtb { dst, src } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
@@ -3502,6 +3510,19 @@ mod tests {
         // SBFM 64-bit: sf=1, opc=00, N=1 -> 0x93400000
         assert_eq!(inst & 0xFFC00000, 0x93400000, "Should be SBFM 64-bit");
         // imms should be 31
+        assert_eq!((inst >> 10) & 0x3F, 31, "imms should be 31");
+    }
+
+    #[test]
+    fn test_uxtw() {
+        let code = emit_single(Aarch64Inst::Uxtw {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+        });
+        // uxtw x0, w1 -> ubfm x0, x1, #0, #31
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst, 0xD3407C20, "uxtw x0, w1 exact encoding");
+        assert_eq!(inst & 0xFFC00000, 0xD3400000, "Should be UBFM 64-bit");
         assert_eq!((inst >> 10) & 0x3F, 31, "imms should be 31");
     }
 

@@ -418,6 +418,16 @@ impl fmt::Display for Operand {
     }
 }
 
+/// Display an operand in the 32-bit W-register view used by `Uxtw`.
+/// Virtual registers have no physical width name; the `uxtw` mnemonic keeps
+/// the normalization width explicit until register allocation assigns one.
+fn fmt_operand_w(operand: &Operand, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match operand {
+        Operand::Virtual(vreg) => write!(f, "{}", vreg),
+        Operand::Physical(reg) => write!(f, "{}", reg.as_w()),
+    }
+}
+
 impl From<VReg> for Operand {
     fn from(vreg: VReg) -> Self {
         Operand::Virtual(vreg)
@@ -885,13 +895,17 @@ pub enum Aarch64Inst {
     /// `sxtw dst, src` - Sign-extend word to 64-bit.
     Sxtw { dst: Operand, src: Operand },
 
+    /// `uxtw dst, src` - Zero-extend word to 64-bit.
+    ///
+    /// This is the canonical UBFM alias for normalizing a 32-bit register
+    /// value into the 64-bit scalar representation.
+    Uxtw { dst: Operand, src: Operand },
+
     /// `uxtb dst, src` - Zero-extend byte to 64-bit.
     Uxtb { dst: Operand, src: Operand },
 
     /// `uxth dst, src` - Zero-extend halfword to 64-bit.
     Uxth { dst: Operand, src: Operand },
-
-    // Note: UXTW is implicit in W-register operations; no separate instruction needed.
 
     // === Control flow ===
     /// `b label` - Unconditional branch.
@@ -1297,6 +1311,10 @@ impl fmt::Display for Aarch64Inst {
             Aarch64Inst::Sxtb { dst, src } => write!(f, "sxtb {}, {}", dst, src),
             Aarch64Inst::Sxth { dst, src } => write!(f, "sxth {}, {}", dst, src),
             Aarch64Inst::Sxtw { dst, src } => write!(f, "sxtw {}, {}", dst, src),
+            Aarch64Inst::Uxtw { dst, src } => {
+                write!(f, "uxtw {}, ", dst)?;
+                fmt_operand_w(src, f)
+            }
             Aarch64Inst::Uxtb { dst, src } => write!(f, "uxtb {}, {}", dst, src),
             Aarch64Inst::Uxth { dst, src } => write!(f, "uxth {}, {}", dst, src),
             Aarch64Inst::B { label } => write!(f, "b {}", label),
@@ -1625,6 +1643,21 @@ mod tests {
             src2: Operand::Physical(Reg::X1),
         };
         assert_eq!(format!("{}", inst), "add x2, x0, x1");
+    }
+
+    #[test]
+    fn test_uxtw_display_uses_w_source() {
+        let inst = Aarch64Inst::Uxtw {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+        };
+        assert_eq!(format!("{}", inst), "uxtw x0, w1");
+
+        let inst = Aarch64Inst::Uxtw {
+            dst: Operand::Virtual(VReg::new(2)),
+            src: Operand::Virtual(VReg::new(3)),
+        };
+        assert_eq!(format!("{}", inst), "uxtw v2, v3");
     }
 
     #[test]

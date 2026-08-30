@@ -1036,14 +1036,7 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(Aarch64Inst::Uxth { dst, src })
             }
             ScalarAbiExtension::Unsigned { from_bits: 32 } => {
-                // AAPCS64 has no single `uxtw` instruction; a 64-bit left/right
-                // logical-shift pair zero-extends the low 32 bits.
-                self.mir.push(Aarch64Inst::LslImm { dst, src, imm: 32 });
-                self.mir.push(Aarch64Inst::Lsr64Imm {
-                    dst,
-                    src: dst,
-                    imm: 32,
-                });
+                self.mir.push(Aarch64Inst::Uxtw { dst, src });
             }
             ScalarAbiExtension::Signed { from_bits }
             | ScalarAbiExtension::Unsigned { from_bits } => {
@@ -1820,18 +1813,10 @@ impl<'a> CfgLower<'a> {
                         dst: operand,
                         src: operand,
                     }),
-                    // The 64-bit shift pair clears bits 32..63 without needing a
-                    // `uxtw`-shaped instruction in this instruction set.
                     BitCastForm::Zero32 => {
-                        self.mir.push(Aarch64Inst::LslImm {
+                        self.mir.push(Aarch64Inst::Uxtw {
                             dst: operand,
                             src: operand,
-                            imm: 32,
-                        });
-                        self.mir.push(Aarch64Inst::Lsr64Imm {
-                            dst: operand,
-                            src: operand,
-                            imm: 32,
                         });
                     }
                 }
@@ -3832,6 +3817,31 @@ mod tests {
     };
     use rue_cfg::{CfgArgMode, CfgCallArg, CfgInst, CfgInstData, PlaceBase, Projection};
     use rue_span::{FileId, Span};
+
+    #[test]
+    fn zero32_consumers_use_canonical_uxtw_not_shift_pair() {
+        let source = include_str!("cfg_lower.rs");
+        let foreign = source
+            .split("ScalarAbiExtension::Unsigned { from_bits: 32 } => {")
+            .nth(1)
+            .expect("foreign u32 return extension must remain present")
+            .split("ScalarAbiExtension::Signed { from_bits }")
+            .next()
+            .expect("foreign extension match arm must have a following arm");
+        assert!(foreign.contains("Aarch64Inst::Uxtw"));
+        assert!(!foreign.contains("Aarch64Inst::LslImm"));
+        assert!(!foreign.contains("Aarch64Inst::Lsr64Imm"));
+        let bitcast = source
+            .split("BitCastForm::Zero32 => {")
+            .nth(1)
+            .expect("BitCastForm::Zero32 consumer must remain present")
+            .split("\n                    }\n                }")
+            .next()
+            .expect("BitCastForm::Zero32 arm must be bounded");
+        assert!(bitcast.contains("Aarch64Inst::Uxtw"));
+        assert!(!bitcast.contains("Aarch64Inst::LslImm"));
+        assert!(!bitcast.contains("Aarch64Inst::Lsr64Imm"));
+    }
 
     #[test]
     fn marshal_tag_cmp_imm_covers_aarch64_boundaries() {

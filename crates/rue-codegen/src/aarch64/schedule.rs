@@ -167,6 +167,7 @@ fn get_latency(inst: &Aarch64Inst) -> u32 {
         Aarch64Inst::Sxtb { .. }
         | Aarch64Inst::Sxth { .. }
         | Aarch64Inst::Sxtw { .. }
+        | Aarch64Inst::Uxtw { .. }
         | Aarch64Inst::Uxtb { .. }
         | Aarch64Inst::Uxth { .. } => 1,
 
@@ -317,6 +318,7 @@ pub(super) fn regs_read(inst: &Aarch64Inst) -> RegList<Reg> {
         | Aarch64Inst::Sxtb { src, .. }
         | Aarch64Inst::Sxth { src, .. }
         | Aarch64Inst::Sxtw { src, .. }
+        | Aarch64Inst::Uxtw { src, .. }
         | Aarch64Inst::Uxtb { src, .. }
         | Aarch64Inst::Uxth { src, .. } => {
             add_if_phys(src, &mut result);
@@ -430,6 +432,7 @@ pub(super) fn regs_written(inst: &Aarch64Inst) -> RegList<Reg> {
         | Aarch64Inst::Sxtb { dst, .. }
         | Aarch64Inst::Sxth { dst, .. }
         | Aarch64Inst::Sxtw { dst, .. }
+        | Aarch64Inst::Uxtw { dst, .. }
         | Aarch64Inst::Uxtb { dst, .. }
         | Aarch64Inst::Uxth { dst, .. }
         | Aarch64Inst::LdrIndexed { dst, .. }

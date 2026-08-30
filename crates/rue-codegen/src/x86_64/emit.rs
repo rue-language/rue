@@ -1159,6 +1159,16 @@ impl<'a> Emitter<'a> {
                 self.emit_movsxd(dst.as_physical(), src.as_physical());
                 end_inst!(self, "movsxd {}, {}", dst.as_physical(), src.as_physical());
             }
+            X86Inst::Movzx32To64 { dst, src } => {
+                self.begin_inst();
+                self.emit_movzx32_to64(dst.as_physical(), src.as_physical());
+                end_inst!(
+                    self,
+                    "mov {}, {}",
+                    dst.as_physical().name32(),
+                    src.as_physical().name32()
+                );
+            }
             X86Inst::Movzx8To64 { dst, src } => {
                 self.begin_inst();
                 self.emit_movzx8_to64(dst.as_physical(), src.as_physical());
@@ -2891,6 +2901,25 @@ impl<'a> Emitter<'a> {
         self.code.push(modrm);
     }
 
+    /// Emit a 32-bit register move whose architectural zero-extension clears
+    /// the destination's upper half in 64-bit mode.
+    fn emit_movzx32_to64(&mut self, dst: Reg, src: Reg) {
+        let dst_enc = dst.encoding();
+        let src_enc = src.encoding();
+
+        // No REX.W: this is the 32-bit MOV r/m32, r32 form. REX.R/B extend
+        // the register fields for r8d-r15d while retaining 32-bit width.
+        if dst.needs_rex() || src.needs_rex() {
+            let rex = 0x40
+                | if src.needs_rex() { 0x04 } else { 0x00 }
+                | if dst.needs_rex() { 0x01 } else { 0x00 };
+            self.code.push(rex);
+        }
+        self.code.push(0x89);
+        let modrm = 0xC0 | ((src_enc & 7) << 3) | (dst_enc & 7);
+        self.code.push(modrm);
+    }
+
     /// Emit `movzx r64, r8` - Zero-extend 8-bit to 64-bit.
     ///
     /// Encoding: REX.W 0F B6 /r (movzx r64, r/m8)
@@ -4087,6 +4116,46 @@ mod tests {
         });
         // movsxd rax, ecx -> 48 63 C1 (REX.W 63 /r)
         assert_eq!(code, vec![0x48, 0x63, 0xC1]);
+    }
+
+    #[test]
+    fn test_movzx32_to64() {
+        let code = emit_single(X86Inst::Movzx32To64 {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Physical(Reg::Rcx),
+        });
+        // mov eax, ecx -> 89 C8 (32-bit write zeroes rax's high half)
+        assert_eq!(code, vec![0x89, 0xC8]);
+    }
+
+    #[test]
+    fn test_movzx32_to64_high_registers() {
+        let code = emit_single(X86Inst::Movzx32To64 {
+            dst: Operand::Physical(Reg::R8),
+            src: Operand::Physical(Reg::R9),
+        });
+        // mov r8d, r9d -> 45 89 C8
+        assert_eq!(code, vec![0x45, 0x89, 0xC8]);
+    }
+
+    #[test]
+    fn test_movzx32_to64_high_destination_rex_b() {
+        let code = emit_single(X86Inst::Movzx32To64 {
+            dst: Operand::Physical(Reg::R8),
+            src: Operand::Physical(Reg::Rcx),
+        });
+        // mov r8d, ecx -> REX.B 89 /r
+        assert_eq!(code, vec![0x41, 0x89, 0xC8]);
+    }
+
+    #[test]
+    fn test_movzx32_to64_high_source_rex_r() {
+        let code = emit_single(X86Inst::Movzx32To64 {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Physical(Reg::R9),
+        });
+        // mov eax, r9d -> REX.R 89 /r
+        assert_eq!(code, vec![0x44, 0x89, 0xC8]);
     }
 
     #[test]

@@ -3166,6 +3166,72 @@ mod tests {
     }
 
     #[test]
+    fn both_target_adapters_lower_production_zero32_to_one_canonical_instruction() {
+        let pool = TypeInternPool::new().freeze();
+        let interner = ThreadedRodeo::new();
+        let bit_cast = interner.get_or_intern("bitCast");
+        let mut cfg = Cfg::new(Type::U32, 0, 0, "zero32_cross_target".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let input = cfg.append_inst(entry, inst(CfgInstData::Const(0xFFFF_FFFF), Type::U32));
+        let result = cfg
+            .append_intrinsic(entry, None, bit_cast, [input], Type::U32, Span::new(0, 0))
+            .expect("synthetic bitCast should append");
+        cfg.set_return(entry, Some(result));
+
+        let x86 = X86CfgLower::new_unchecked(&cfg, &pool, &interner)
+            .lower()
+            .expect("x86 production Zero32 fixture should lower");
+        let x86_zero32 = x86
+            .instructions()
+            .iter()
+            .find_map(|inst| match inst {
+                X86Inst::Movzx32To64 { dst, src } => Some((dst, src)),
+                _ => None,
+            })
+            .expect("x86 production Zero32 consumer should lower canonically");
+        assert_eq!(x86_zero32.0, x86_zero32.1);
+        assert_eq!(
+            x86.instructions()
+                .iter()
+                .filter(|inst| matches!(inst, X86Inst::Movzx32To64 { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            !x86.instructions()
+                .iter()
+                .any(|inst| { matches!(inst, X86Inst::ShlRI { .. } | X86Inst::ShrRI { .. }) })
+        );
+
+        let arm = Aarch64CfgLower::new_unchecked(&cfg, &pool, &interner, Target::Aarch64Linux)
+            .lower()
+            .expect("AArch64 production Zero32 fixture should lower");
+        let arm_zero32 = arm
+            .instructions()
+            .iter()
+            .find_map(|inst| match inst {
+                Aarch64Inst::Uxtw { dst, src } => Some((dst, src)),
+                _ => None,
+            })
+            .expect("AArch64 production Zero32 consumer should lower canonically");
+        assert_eq!(arm_zero32.0, arm_zero32.1);
+        assert_eq!(
+            arm.instructions()
+                .iter()
+                .filter(|inst| matches!(inst, Aarch64Inst::Uxtw { .. }))
+                .count(),
+            1
+        );
+        assert!(!arm.instructions().iter().any(|inst| {
+            matches!(
+                inst,
+                Aarch64Inst::LslImm { .. } | Aarch64Inst::Lsr64Imm { .. }
+            )
+        }));
+    }
+
+    #[test]
     fn zero_slot_aggregate_parameter_emits_no_frame_load_on_either_target() {
         let pool = TypeInternPool::new();
         let array_id = pool.intern_array_from_type(Type::UNIT, 2);

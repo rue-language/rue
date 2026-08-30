@@ -642,6 +642,22 @@ impl RegAlloc {
                 );
             }
 
+            X86Inst::Movzx32To64 { dst, src } => {
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
+                    emit |dst_op| {
+                        mir.push(X86Inst::Movzx32To64 { dst: dst_op, src: src_op });
+                    },
+                    store |offset| {
+                        mir.push_after(X86Inst::MovMR {
+                            base: Reg::Rbp,
+                            offset,
+                            src: Operand::Physical(SCRATCH_VALUE),
+                        });
+                    },
+                );
+            }
+
             X86Inst::Movzx8To64 { dst, src } => {
                 let src_op = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
                 alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
@@ -1447,7 +1463,7 @@ mod tests {
     use super::liveness;
     use super::{
         ALLOCATABLE_REGS, CALLEE_SAVED_REGS, CALLER_SAVED_REGS, COMPACT_CALLEE_SAVED_REGS, Operand,
-        Reg, RegAlloc, VReg, X86Inst, X86Mir,
+        Reg, RegAlloc, SCRATCH_VALUE, VReg, X86Inst, X86Mir,
     };
     use crate::reg_class::RegClass;
     use crate::regalloc::{Allocation, RegAllocBackend, RematerializeOp};
@@ -2676,6 +2692,169 @@ mod tests {
             .iter()
             .any(|inst| matches!(inst, X86Inst::AddRR { dst, src } if dst.is_physical() && src.is_physical()));
         assert!(has_add, "AddRR should be rewritten with physical registers");
+    }
+
+    #[test]
+    fn test_movzx32_to64_spilled_source_reloads_before_move() {
+        let mut mir = X86Mir::new();
+        let count = ALLOCATABLE_REGS.len() + 2;
+        let vregs: Vec<VReg> = (0..count).map(|_| mir.alloc_vreg()).collect();
+        define_loaded_values(&mut mir, &vregs);
+        mir.push(X86Inst::Movzx32To64 {
+            dst: Operand::Virtual(vregs[0]),
+            src: Operand::Virtual(vregs[count - 1]),
+        });
+        for &vreg in &vregs[1..] {
+            mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rdi),
+                src: Operand::Virtual(vreg),
+            });
+        }
+        let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
+        assert_eq!(num_spills, 2);
+        let index = mir
+            .instructions()
+            .iter()
+            .position(|inst| matches!(inst, X86Inst::Movzx32To64 { .. }))
+            .expect("rewritten Movzx32To64 should be present");
+        assert!(matches!(
+            mir.instructions().get(index.checked_sub(1).unwrap()),
+            Some(X86Inst::MovRM {
+                dst: Operand::Physical(dst),
+                base: Reg::Rbp,
+                ..
+            }) if *dst == SCRATCH_VALUE
+        ));
+        assert!(matches!(
+            mir.instructions().get(index),
+            Some(X86Inst::Movzx32To64 {
+                dst: Operand::Physical(dst),
+                src: Operand::Physical(src),
+            }) if *src == SCRATCH_VALUE && *dst != *src
+        ));
+        assert!(!matches!(
+            mir.instructions().get(index + 1),
+            Some(X86Inst::MovMR { .. })
+        ));
+    }
+
+    #[test]
+    fn test_movzx32_to64_spilled_destination_stores_after_move() {
+        let mut mir = X86Mir::new();
+        let count = ALLOCATABLE_REGS.len() + 2;
+        let vregs: Vec<VReg> = (0..count).map(|_| mir.alloc_vreg()).collect();
+        define_loaded_values(&mut mir, &vregs);
+        mir.push(X86Inst::Movzx32To64 {
+            dst: Operand::Virtual(vregs[count - 1]),
+            src: Operand::Virtual(vregs[count - 2]),
+        });
+        for &vreg in &vregs[1..] {
+            mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rdi),
+                src: Operand::Virtual(vreg),
+            });
+        }
+        let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
+        assert_eq!(num_spills, 1);
+        let index = mir
+            .instructions()
+            .iter()
+            .position(|inst| matches!(inst, X86Inst::Movzx32To64 { .. }))
+            .expect("rewritten Movzx32To64 should be present");
+        assert!(matches!(
+            mir.instructions().get(index),
+            Some(X86Inst::Movzx32To64 {
+                dst: Operand::Physical(dst),
+                src: Operand::Physical(src),
+            }) if *dst == SCRATCH_VALUE && *src != *dst
+        ));
+        assert!(matches!(
+            mir.instructions().get(index + 1),
+            Some(X86Inst::MovMR {
+                base: Reg::Rbp,
+                src: Operand::Physical(src),
+                ..
+            }) if *src == SCRATCH_VALUE
+        ));
+    }
+
+    #[test]
+    fn test_movzx32_to64_both_spilled_reloads_then_stores() {
+        let mut mir = X86Mir::new();
+        let count = ALLOCATABLE_REGS.len() + 3;
+        let vregs: Vec<VReg> = (0..count).map(|_| mir.alloc_vreg()).collect();
+        define_loaded_values(&mut mir, &vregs);
+        mir.push(X86Inst::Movzx32To64 {
+            dst: Operand::Virtual(vregs[count - 1]),
+            src: Operand::Virtual(vregs[count - 2]),
+        });
+        for &vreg in &vregs[1..] {
+            mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rdi),
+                src: Operand::Virtual(vreg),
+            });
+        }
+        let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
+        assert_eq!(num_spills, 2);
+        let index = mir
+            .instructions()
+            .iter()
+            .position(|inst| matches!(inst, X86Inst::Movzx32To64 { .. }))
+            .expect("rewritten Movzx32To64 should be present");
+        assert!(matches!(
+            mir.instructions().get(index.checked_sub(1).unwrap()),
+            Some(X86Inst::MovRM {
+                dst: Operand::Physical(dst),
+                base: Reg::Rbp,
+                ..
+            }) if *dst == SCRATCH_VALUE
+        ));
+        assert!(matches!(
+            mir.instructions().get(index),
+            Some(X86Inst::Movzx32To64 {
+                dst: Operand::Physical(dst),
+                src: Operand::Physical(src),
+            }) if *dst == SCRATCH_VALUE && *src == SCRATCH_VALUE
+        ));
+        assert!(matches!(
+            mir.instructions().get(index + 1),
+            Some(X86Inst::MovMR {
+                base: Reg::Rbp,
+                src: Operand::Physical(src),
+                ..
+            }) if *src == SCRATCH_VALUE
+        ));
+    }
+
+    #[test]
+    fn test_movzx32_to64_preserves_src_dst_identity() {
+        let mut mir = X86Mir::new();
+        let vreg = mir.alloc_vreg();
+        mir.push(X86Inst::MovRM {
+            dst: Operand::Virtual(vreg),
+            base: Reg::Rsi,
+            offset: 0,
+        });
+        mir.push(X86Inst::Movzx32To64 {
+            dst: Operand::Virtual(vreg),
+            src: Operand::Virtual(vreg),
+        });
+        mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rdi),
+            src: Operand::Virtual(vreg),
+        });
+        let mir = RegAlloc::new(mir, 0).allocate().unwrap();
+        let inst = mir
+            .instructions()
+            .iter()
+            .find_map(|inst| match inst {
+                X86Inst::Movzx32To64 { dst, src } => Some((dst, src)),
+                _ => None,
+            })
+            .expect("identity Movzx32To64 should be preserved");
+        assert!(
+            matches!((inst.0, inst.1), (Operand::Physical(dst), Operand::Physical(src)) if dst == src)
+        );
     }
 
     #[test]
