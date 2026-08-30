@@ -12,7 +12,8 @@ use rue_compiler::{
 
 use crate::source_loader::{
     ImportDiscoveryResult, SourceLoadError, SourceLoadRequest, WatchInput,
-    acquire_reached_toolchain_modules, load, reload_from_filesystem,
+    acquire_reached_toolchain_modules, acquire_reached_toolchain_modules_superseding, load,
+    reload_from_filesystem,
 };
 
 /// Immutable filesystem configuration captured when a retained host opens.
@@ -60,6 +61,18 @@ impl FilesystemCompilerHost {
         options: &CompileOptions,
     ) -> Result<(), SourceLoadError> {
         acquire_reached_toolchain_modules(&mut self.state, options)
+    }
+
+    /// Acquire like [`Self::acquire_reached_toolchain_modules`], aborting
+    /// promptly with [`SourceLoadError::Superseded`] once `supersession`
+    /// reports a newer source revision (RUE-1863). A superseded acquisition
+    /// commits no snapshot, manifest, graph, or assembler state.
+    pub fn acquire_reached_toolchain_modules_superseding(
+        &mut self,
+        options: &CompileOptions,
+        supersession: &dyn Fn() -> bool,
+    ) -> Result<(), SourceLoadError> {
+        acquire_reached_toolchain_modules_superseding(&mut self.state, options, Some(supersession))
     }
 
     pub fn source_snapshot(&self) -> &SourceSnapshot {

@@ -34,6 +34,7 @@ const FAILED_REOBSERVE_RETRY: Duration = Duration::from_millis(250);
 const TEST_PROTOCOL_ENV: &str = "RUE_WATCH_TEST_PROTOCOL";
 const TEST_COMPILE_DELAY_ENV: &str = "RUE_WATCH_TEST_COMPILE_DELAY_MS";
 const TEST_REOBSERVE_DELAY_ENV: &str = "RUE_WATCH_TEST_REOBSERVE_DELAY_MS";
+const TEST_ACQUIRE_DELAY_ENV: &str = "RUE_WATCH_TEST_ACQUIRE_DELAY_MS";
 const TEST_BOUNDARY_DELAY_ENV: &str = "RUE_WATCH_TEST_BOUNDARY_DELAY_MS";
 
 fn test_event(event: &str) {
@@ -71,6 +72,19 @@ fn test_reobserve_delay() {
     thread::sleep(Duration::from_millis(milliseconds.min(5_000)));
 }
 
+// Hold the cycle between re-observation and reached-toolchain acquisition, so
+// an edit can deterministically land while acquisition is reading demanded
+// modules or re-closing (RUE-1863). Test-only, like the delays above.
+fn test_acquire_delay() {
+    let Ok(delay) = std::env::var(TEST_ACQUIRE_DELAY_ENV) else {
+        return;
+    };
+    let Ok(milliseconds) = delay.parse::<u64>() else {
+        return;
+    };
+    thread::sleep(Duration::from_millis(milliseconds.min(5_000)));
+}
+
 // Widen the unobserved gap between the change monitor stopping and the
 // trailing input check. Test-only, like the compile delay above: it exists so
 // an edit can be made to land inside that window on purpose.
@@ -82,6 +96,31 @@ fn test_boundary_delay() {
         return;
     };
     thread::sleep(Duration::from_millis(milliseconds.min(5_000)));
+}
+
+/// Which half of a re-observation cycle is running. One `ChangeMonitor` spans
+/// both, so the phase — not the monitor — decides which protocol event a
+/// supersession or failure reports (RUE-1863).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ObservationPhase {
+    Reobserve,
+    Acquire,
+}
+
+impl ObservationPhase {
+    fn superseded_event(self) -> &'static str {
+        match self {
+            ObservationPhase::Reobserve => "reobserve-superseded",
+            ObservationPhase::Acquire => "acquire-superseded",
+        }
+    }
+
+    fn error_event(self) -> &'static str {
+        match self {
+            ObservationPhase::Reobserve => "reobserve-error",
+            ObservationPhase::Acquire => "acquire-error",
+        }
+    }
 }
 
 pub(crate) struct WatchRequest {
@@ -178,26 +217,35 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
     loop {
         let cycle_started = Instant::now();
         if needs_reobserve {
-            // Observe edits WHILE the import graph re-closes: discovery can
-            // block on filesystem reads across several waves, and an edit
-            // landing then must supersede the stale attempt promptly instead
-            // of waiting for compilation proper to notice it (RUE-1830).
+            // Observe edits WHILE the cycle re-observes AND acquires: both
+            // halves block on filesystem reads across several waves, and an
+            // edit landing in either must supersede the stale attempt promptly
+            // instead of waiting for compilation proper to notice it
+            // (RUE-1830, RUE-1863). One monitor spans both so the window has
+            // no unobserved seam between them.
             let stale_inputs = request.host.watch_inputs();
-            let reobserve_cancellation = CompilationCancellation::new();
-            let reobserve_monitor = ChangeMonitor::start_reobservation(
-                stale_inputs.clone(),
-                reobserve_cancellation.clone(),
-            );
+            let cancellation = CompilationCancellation::new();
+            let monitor =
+                ChangeMonitor::start_reobservation(stale_inputs.clone(), cancellation.clone());
+            let superseded = || cancellation.is_canceled();
             test_event("reobserve-started");
             test_reobserve_delay();
-            let reobserved = request
-                .host
-                .reobserve_superseding(&|| reobserve_cancellation.is_canceled());
-            reobserve_monitor.finish();
-            match reobserved {
-                Ok(()) => test_event("reobserve-ok"),
+            let mut phase = ObservationPhase::Reobserve;
+            let mut observed = request.host.reobserve_superseding(&superseded);
+            if observed.is_ok() {
+                test_event("reobserve-ok");
+                phase = ObservationPhase::Acquire;
+                test_acquire_delay();
+                observed = request.host.acquire_reached_toolchain_modules_superseding(
+                    &request.compile_options,
+                    &superseded,
+                );
+            }
+            monitor.finish();
+            match observed {
+                Ok(()) => test_event("acquire-ok"),
                 Err(SourceLoadError::Superseded) => {
-                    test_event("reobserve-superseded");
+                    test_event(phase.superseded_event());
                     print_watch_status(
                         request.error_format,
                         format!(
@@ -212,7 +260,7 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
                     continue;
                 }
                 Err(error) => {
-                    test_event("reobserve-error");
+                    test_event(phase.error_event());
                     print_source_load_error(error, request.error_format);
                     print_watch_status(
                         request.error_format,
@@ -225,23 +273,6 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
                     continue;
                 }
             }
-            if let Err(error) = request
-                .host
-                .acquire_reached_toolchain_modules(&request.compile_options)
-            {
-                test_event("acquire-error");
-                print_source_load_error(error, request.error_format);
-                print_watch_status(
-                    request.error_format,
-                    format!(
-                        "Watch cycle failed after {} ms; keeping the last successful executable",
-                        cycle_started.elapsed().as_millis()
-                    ),
-                );
-                thread::sleep(FAILED_REOBSERVE_RETRY);
-                continue;
-            }
-            test_event("acquire-ok");
         }
 
         let inputs = request.host.watch_inputs();

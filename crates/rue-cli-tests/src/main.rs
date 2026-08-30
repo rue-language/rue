@@ -1092,6 +1092,11 @@ struct WatchScenario {
     /// the import graph is being re-closed (RUE-1830).
     #[serde(default)]
     reobserve_delay_ms: Option<u64>,
+    /// Hold the watcher between re-observation and reached-toolchain
+    /// acquisition, so an edit can deterministically land while acquisition is
+    /// reading demanded modules or re-closing (RUE-1863).
+    #[serde(default)]
+    acquire_delay_ms: Option<u64>,
     edits: Vec<WatchEdit>,
     expected_exit_codes: Vec<i32>,
 }
@@ -1104,6 +1109,7 @@ enum WatchScenarioKind {
     Delete,
     SymlinkRetarget,
     SupersedeReobserve,
+    SupersedeAcquire,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2592,6 +2598,13 @@ fn run_watch_case(
             "supersede-reobserve watch scenario needs two edits and a re-observation delay",
         ));
     }
+    if scenario.kind == WatchScenarioKind::SupersedeAcquire
+        && (scenario.edits.len() != 2 || scenario.acquire_delay_ms.is_none())
+    {
+        return Err(TestFailure::fatal(
+            "supersede-acquire watch scenario needs two edits and an acquisition delay",
+        ));
+    }
     if scenario.kind == WatchScenarioKind::SymlinkRetarget && scenario.edits.len() != 1 {
         return Err(TestFailure::assertion(
             "symlink-retarget watch scenario requires exactly one edit",
@@ -2682,6 +2695,9 @@ fn run_watch_case(
     if let Some(delay) = scenario.reobserve_delay_ms {
         command.env("RUE_WATCH_TEST_REOBSERVE_DELAY_MS", delay.to_string());
     }
+    if let Some(delay) = scenario.acquire_delay_ms {
+        command.env("RUE_WATCH_TEST_ACQUIRE_DELAY_MS", delay.to_string());
+    }
     configure_process_group(&mut command);
     let mut child = command
         .spawn()
@@ -2766,6 +2782,32 @@ fn run_watch_case(
             WatchScenarioKind::SymlinkRetarget => {
                 wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
             }
+            WatchScenarioKind::SupersedeAcquire => {
+                // The first edit wakes the settled loop. Re-observation
+                // completes, and the widened acquisition window then lets the
+                // second edit land while the reached-body toolchain demand is
+                // being satisfied and re-closed — superseding the stale
+                // acquisition before compilation ever starts (RUE-1863).
+                wait_for_watch_event(&mut child, &protocol, "change-detected", 1, deadline)?;
+                wait_for_watch_event(&mut child, &protocol, "reobserve-ok", 1, deadline)?;
+                write_watch_edit(dir, &scenario.edits[1])?;
+                wait_for_watch_event(&mut child, &protocol, "acquire-superseded", 1, deadline)?;
+                wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
+                let events = watch_events(&protocol);
+                let superseded = events
+                    .iter()
+                    .position(|event| event == "acquire-superseded")
+                    .ok_or_else(|| "watch supersession anchor disappeared".to_string())?;
+                // A superseded acquisition commits nothing, so a later cycle
+                // must acquire cleanly over the newest bytes.
+                events
+                    .iter()
+                    .skip(superseded + 1)
+                    .position(|event| event == "acquire-ok")
+                    .ok_or_else(|| {
+                        "watch never reacquired after a superseded acquisition".to_string()
+                    })?;
+            }
             WatchScenarioKind::SupersedeReobserve => {
                 // The first edit wakes the settled loop; the widened
                 // re-observation window then lets the second edit land while
@@ -2797,7 +2839,9 @@ fn run_watch_case(
             .map_err(|error| error.to_string())?;
         if matches!(
             scenario.kind,
-            WatchScenarioKind::Cancel | WatchScenarioKind::SupersedeReobserve
+            WatchScenarioKind::Cancel
+                | WatchScenarioKind::SupersedeReobserve
+                | WatchScenarioKind::SupersedeAcquire
         ) && watch_event_count(&protocol, "published") != 2
         {
             return Err(format!(
