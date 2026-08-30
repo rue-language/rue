@@ -103,6 +103,10 @@ use crate::{BlockId, Cfg, CfgInstData, CfgValue, Terminator};
 pub struct Stats {
     /// Dominator-tree and loop-forest computations, including the initial one.
     pub forest_computations: u64,
+    /// Whole-function definition-block scans. One per sweep, not one per loop
+    /// analyzed (RUE-1843): hoisting only relocates instructions to a known
+    /// preheader, so the table is patched in place instead of rebuilt.
+    pub def_block_scans: u64,
     /// Per-loop invariance analyses performed (one per loop visited in a sweep).
     pub loops_analyzed: u64,
     /// Loop-body instructions tested for hoist eligibility.
@@ -155,10 +159,16 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, Cfg
         let mut order: Vec<LoopId> = (0..forest.len()).collect();
         order.sort_by_key(|&id| forest.get(id).body.len());
 
+        // One whole-function def-block scan per sweep. Instruction-only motion
+        // keeps it accurate as long as each hoist patches the entries it moved,
+        // and any sweep that materializes a preheader breaks out below and
+        // recomputes both the forest and this table (RUE-1843).
+        let mut def_block = compute_def_blocks(cfg, &mut stats);
+
         let mut cfg_changed = false;
         for id in order {
             stats.loops_analyzed += 1;
-            if hoist_loop(cfg, forest.get(id), type_pool, &mut stats)?.cfg_changed {
+            if hoist_loop(cfg, forest.get(id), type_pool, &mut def_block, &mut stats)?.cfg_changed {
                 // A dedicated preheader changed edges, so the forest is stale.
                 cfg_changed = true;
                 break;
@@ -209,9 +219,9 @@ fn hoist_loop(
     cfg: &mut Cfg,
     lp: &NaturalLoop,
     type_pool: &FrozenTypeInternPool,
+    def_block: &mut Vec<Option<BlockId>>,
     stats: &mut Stats,
 ) -> Result<HoistResult, CfgOptimizationError> {
-    let def_block = compute_def_blocks(cfg);
     // Phase-2 conservatism: any memory read is non-invariant when the loop body
     // contains any observable-effect op other than the storage markers.
     let body_has_effect = body_has_memory_effect(cfg, lp);
@@ -307,6 +317,9 @@ fn hoist_loop(
     }
     for &value in &order {
         cfg.get_block_mut(ph).insts.push(value);
+        // The shared table is now stale for exactly these values, and their new
+        // defining block is known: the preheader they just moved into.
+        def_block[value.as_u32() as usize] = Some(ph);
     }
 
     stats.invariants_hoisted += order.len() as u64;
@@ -367,7 +380,10 @@ fn body_has_memory_effect(cfg: &Cfg, lp: &NaturalLoop) -> bool {
 /// a block-attached instruction). Values with no defining block — detached or
 /// dead arena entries — map to `None` and are treated as available (outside the
 /// loop) by invariant discovery.
-fn compute_def_blocks(cfg: &Cfg) -> Vec<Option<BlockId>> {
+fn compute_def_blocks(cfg: &Cfg, stats: &mut Stats) -> Vec<Option<BlockId>> {
+    // Counted here rather than at the call site so the counter cannot drift
+    // from the number of scans actually performed (RUE-1843).
+    stats.def_block_scans += 1;
     let mut def = vec![None; cfg.value_count()];
     for i in 0..cfg.block_count() {
         let block_id = BlockId::from_raw(i as u32);
@@ -645,6 +661,25 @@ mod tests {
         let stats = run(&mut cfg, &test_type_pool()).unwrap();
         cfg.verify().unwrap();
         assert!(stats.invariants_hoisted >= 2);
+
+        // RUE-1843: the whole-function definition-block table is built once per
+        // sweep, not once per loop analyzed. This fixture has two nested loops,
+        // so it analyzes strictly more loops than it takes sweeps — which is
+        // what makes the second assertion bite: restoring the per-loop scan
+        // makes the scan count track `loops_analyzed` instead. The counter is
+        // incremented inside `compute_def_blocks` itself, so it cannot drift
+        // from the number of scans actually performed.
+        assert_eq!(
+            stats.def_block_scans, stats.forest_computations,
+            "one definition-block scan per sweep, alongside the forest"
+        );
+        assert!(
+            stats.loops_analyzed > stats.def_block_scans,
+            "fixture must analyze more loops ({}) than it takes scans ({}) for \
+             this to be a meaningful bound",
+            stats.loops_analyzed,
+            stats.def_block_scans,
+        );
 
         // `fully` must have left the inner body entirely and no longer live in
         // any loop body block (it reached an outer preheader).
