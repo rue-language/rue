@@ -10245,11 +10245,22 @@ fn failed_runtime_publication_releases_pending_input_stamp_leases() {
         published_leaves_before,
         "a rejected runtime publication is not counted as published work"
     );
+    let module_store = database
+        .module_store
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(module_store.by_revision.len(), module_store.revisions.len());
+    for view in &module_store.revisions {
+        assert!(Arc::ptr_eq(
+            view,
+            module_store
+                .by_revision
+                .get(&view.revision)
+                .expect("every committed module view keeps its exact index entry")
+        ));
+    }
     assert_eq!(
-        database
-            .module_store
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        module_store
             .revisions
             .back()
             .unwrap()
@@ -10257,6 +10268,7 @@ fn failed_runtime_publication_releases_pending_input_stamp_leases() {
             .source_revision(),
         snapshot.source_revision()
     );
+    drop(module_store);
     assert_eq!(reads, assembler.accepted_read_manifest());
 }
 

@@ -7539,6 +7539,94 @@ impl RevisionedQueryDatabase {
         self.current_import_revision
     }
 
+    /// Reselect the exact closed-valid import view after a filesystem host
+    /// abandons a partially published request. Immutable candidate revisions
+    /// remain retained normally, but none may stay selected after cancellation.
+    pub(crate) fn restore_import_revision_after_abort(
+        &mut self,
+        revision: Option<ImportInputRevision>,
+    ) -> CompileResult<()> {
+        if self.committed_import_revision != revision {
+            return Err(import_input_error(
+                "cannot restore an aborted import request: committed revision selection disagrees with the closed artifact",
+            ));
+        }
+        let reselected = self
+            .parse_selection
+            .reselect_last_good()
+            .map_err(|error| {
+                import_input_error(format!(
+                    "cannot restore an aborted import request: the committed parse terminal is unavailable: {error:?}"
+                ))
+            })?;
+        if revision.is_some() && !reselected {
+            return Err(import_input_error(
+                "cannot restore an aborted import request: the committed import view has no last-good parse terminal",
+            ));
+        }
+        let Some(revision) = revision else {
+            self.current_import_revision = None;
+            self.active_import_context = None;
+            self.lineage_additions.clear();
+            self.refresh_import_input_protected_revisions();
+            return Ok(());
+        };
+        let runtime_revision = Revision::new(revision.revision_id, revision.compatibility_token);
+        let context = {
+            let store = lock_import_store(&self.import_store);
+            let view = store
+                .revisions
+                .iter()
+                .find(|view| view.revision == runtime_revision)
+                .ok_or_else(|| {
+                    import_input_error(
+                        "cannot restore an aborted import request: the committed input view is no longer retained",
+                    )
+                })?;
+            if view.generation != revision.request_generation {
+                return Err(import_input_error(
+                    "cannot restore an aborted import request: the committed input generation does not match",
+                ));
+            }
+            view.context.clone()
+        };
+        let module_view_retained = {
+            let store = self
+                .module_store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            store.by_revision.contains_key(&runtime_revision)
+        };
+        if !module_view_retained {
+            return Err(import_input_error(
+                "cannot restore an aborted import request: the committed module input view is no longer retained",
+            ));
+        }
+        self.current_import_revision = Some(revision);
+        self.active_compatibility_token = revision.compatibility_token;
+        self.active_import_context = Some(context);
+        self.lineage_additions.clear();
+        self.refresh_import_input_protected_revisions();
+        Ok(())
+    }
+
+    /// Promote the request's selected input revision only after import close
+    /// and public parse adoption have both succeeded.
+    pub(crate) fn commit_import_request(&mut self) {
+        let committed = self.current_import_revision;
+        let pin = committed.map(|revision| {
+            self.parse.retain_revision(Revision::new(
+                revision.revision_id,
+                revision.compatibility_token,
+            ))
+        });
+        self.committed_import_revision = committed;
+        // Install the new runtime root before the old pin drops so a successful
+        // close never creates an eviction gap between committed revisions.
+        self.committed_import_revision_pin = pin;
+        self.refresh_import_input_protected_revisions();
+    }
+
     /// Cumulative import-occurrence roots dispatched by [`Self::import_frontier`].
     /// See the field docs on `import_frontier_roots_requested`.
     pub(crate) fn import_frontier_roots_requested(&self) -> u64 {
@@ -8212,6 +8300,7 @@ impl RevisionedQueryDatabase {
         leaves.extend(publish_module_inputs_delta(
             &self.module_store,
             revision,
+            parent_runtime,
             snapshot,
             &new_sources,
         ));
@@ -8838,19 +8927,54 @@ impl RevisionedQueryDatabase {
         &mut self,
         attempt: &QueryRequestAttempt<crate::session::ParseQueryRecord>,
     ) {
+        self.select_parse_inner(attempt, true);
+    }
+
+    /// Select a staging parse as request-current without promoting it across
+    /// the import-discovery commit boundary.
+    pub(crate) fn select_parse_candidate(
+        &mut self,
+        attempt: &QueryRequestAttempt<crate::session::ParseQueryRecord>,
+    ) {
+        self.select_parse_inner(attempt, false);
+    }
+
+    fn select_parse_inner(
+        &mut self,
+        attempt: &QueryRequestAttempt<crate::session::ParseQueryRecord>,
+        promote: bool,
+    ) {
         if attempt.execution() == RequestExecution::Aborted {
             self.parse_selection.clear_current();
         }
         if let Some(terminal) = attempt.terminal() {
-            self.parse_selection
-                .publish(terminal)
-                .expect("selected terminal belongs to the Parse family");
+            if promote {
+                self.parse_selection
+                    .publish(terminal)
+                    .expect("selected terminal belongs to the Parse family");
+            } else {
+                self.parse_selection
+                    .publish_candidate(terminal)
+                    .expect("candidate terminal belongs to the Parse family");
+            }
             // Publication establishes the runtime selection root before the
             // request bridge lease ends, so the terminal stays protected while
             // the diagnostic attempt index retains this request.
             attempt.release_result_lease();
         }
-        let protected_revisions = [
+        self.refresh_import_input_protected_revisions();
+        // Exact source stamps live exactly as long as a parse memo key (or the
+        // current request before selection). They are never independently FIFO
+        // evicted while a terminal can still observe the stamp.
+        self.source_stamps.retain(|(source, _)| {
+            self.parse
+                .any_retained_key(|key| key.key.pinned_source() == Some(source))
+        });
+        debug_assert!(self.source_stamps.len() <= self.parse.retention().memo_nodes);
+    }
+
+    fn refresh_import_input_protected_revisions(&mut self) {
+        let mut protected_revisions = [
             self.parse_selection.current(),
             self.parse_selection.last_good(),
         ]
@@ -8858,6 +8982,15 @@ impl RevisionedQueryDatabase {
         .flatten()
         .map(|terminal| terminal.revision())
         .collect::<BTreeSet<_>>();
+        for revision in [self.current_import_revision, self.committed_import_revision]
+            .into_iter()
+            .flatten()
+        {
+            protected_revisions.insert(Revision::new(
+                revision.revision_id,
+                revision.compatibility_token,
+            ));
+        }
         {
             let mut store = self
                 .module_store
@@ -8871,14 +9004,6 @@ impl RevisionedQueryDatabase {
             store.protected_revisions = protected_revisions;
             trim_import_input_views(&mut store);
         }
-        // Exact source stamps live exactly as long as a parse memo key (or the
-        // current request before selection). They are never independently FIFO
-        // evicted while a terminal can still observe the stamp.
-        self.source_stamps.retain(|(source, _)| {
-            self.parse
-                .any_retained_key(|key| key.key.pinned_source() == Some(source))
-        });
-        debug_assert!(self.source_stamps.len() <= self.parse.retention().memo_nodes);
     }
 
     pub(crate) fn parse_attempt_view(

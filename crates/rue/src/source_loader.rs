@@ -1,16 +1,16 @@
 use std::env;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use ahash::{AHashMap, AHashSet};
 use rue_compiler::unstable::{
     AcceptedImportSource, DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode,
     ImportDiscoveryPlan, ImportDiscoveryRequest, ImportDiscoveryWave, ImportInputRevision,
     ImportObservation, ImportObservationStatus, RootedParkOutcome, TrustedSuccessorDelta,
-    begin_import_input_request, begin_import_wave_with_accepted_reads,
+    abort_import_input_request, begin_import_input_request, begin_import_wave_with_accepted_reads,
     close_import_discovery_successor, close_import_input_request, closed_discovery_continuation,
     discovery_attempt, extend_import_wave, import_demand_frontier_for_roots,
     import_observation_ledger, plan_delta_roots, plan_round_roots,
@@ -19,14 +19,14 @@ use rue_compiler::unstable::{
 };
 #[cfg(test)]
 use rue_compiler::unstable::{
-    accepted_read_identity_lookups, accepted_read_identity_visits, committed_successor_sharing,
-    exact_import_groups_dispatched, handoff_observation_visits, handoff_observations,
-    import_close_records_reduced, import_frontier_roots_requested, import_plan_groups_constructed,
-    import_view_full_leaves_published, import_view_ledger_entries_cloned,
-    import_view_overlay_leaves_published, import_view_read_entries_compared,
-    import_view_source_entries_compared, parse_invalidation_entries_compared,
-    parse_key_entries_compared, parse_modules_dispatched, parse_sources_materialized,
-    snapshot_module_resolution_visits, snapshot_module_resolutions,
+    accepted_read_identity_lookups, accepted_read_identity_visits, committed_import_discovery,
+    committed_successor_sharing, exact_import_groups_dispatched, handoff_observation_visits,
+    handoff_observations, import_close_records_reduced, import_frontier_roots_requested,
+    import_plan_groups_constructed, import_view_full_leaves_published,
+    import_view_ledger_entries_cloned, import_view_overlay_leaves_published,
+    import_view_read_entries_compared, import_view_source_entries_compared,
+    parse_invalidation_entries_compared, parse_key_entries_compared, parse_modules_dispatched,
+    parse_sources_materialized, snapshot_module_resolution_visits, snapshot_module_resolutions,
 };
 #[cfg(test)]
 use rue_compiler::unstable::{frontend_query_invalidations, rooted_cfg};
@@ -70,6 +70,8 @@ pub struct WatchInput {
     requested_path: PathBuf,
     canonical_path: PathBuf,
     expected_fingerprint: Option<WatchFingerprint>,
+    symlink_boundary: Option<PathBuf>,
+    expected_symlink_route: Arc<[PhysicalFileIdentity]>,
 }
 
 impl WatchInput {
@@ -82,6 +84,24 @@ impl WatchInput {
             requested_path,
             canonical_path,
             expected_fingerprint: Some(fingerprint),
+            symlink_boundary: None,
+            expected_symlink_route: Arc::from([]),
+        }
+    }
+
+    fn new_with_symlink_route(
+        requested_path: PathBuf,
+        canonical_path: PathBuf,
+        fingerprint: WatchFingerprint,
+        symlink_boundary: PathBuf,
+        expected_symlink_route: Arc<[PhysicalFileIdentity]>,
+    ) -> Self {
+        Self {
+            requested_path,
+            canonical_path,
+            expected_fingerprint: Some(fingerprint),
+            symlink_boundary: Some(symlink_boundary),
+            expected_symlink_route,
         }
     }
 
@@ -93,6 +113,8 @@ impl WatchInput {
             canonical_path: path.clone(),
             requested_path: path,
             expected_fingerprint: None,
+            symlink_boundary: None,
+            expected_symlink_route: Arc::from([]),
         }
     }
 
@@ -106,6 +128,13 @@ impl WatchInput {
 
     pub fn expected_fingerprint(&self) -> Option<WatchFingerprint> {
         self.expected_fingerprint
+    }
+
+    fn symlink_route_changed(&self) -> bool {
+        self.symlink_boundary.as_ref().is_some_and(|boundary| {
+            symlink_route(&self.requested_path, boundary).as_ref()
+                != self.expected_symlink_route.as_ref()
+        })
     }
 }
 
@@ -126,6 +155,9 @@ where
     inputs.iter().any(|input| {
         let requested = input.requested_path();
         let canonical = input.canonical_path();
+        if input.symlink_route_changed() {
+            return true;
+        }
         if input.expected_fingerprint().is_none() {
             return !matches!(
                 fs::canonicalize(requested),
@@ -149,6 +181,9 @@ pub fn watch_input_fingerprints(inputs: &[WatchInput]) -> Vec<Option<WatchFinger
     inputs
         .iter()
         .map(|input| {
+            if input.symlink_route_changed() {
+                return None;
+            }
             if input.requested_path() != input.canonical_path()
                 && fs::canonicalize(input.requested_path()).ok().as_deref()
                     != Some(input.canonical_path())
@@ -523,10 +558,14 @@ fn reobserve_accepted_reads(
     manifest: &AcceptedReadManifest,
     source_manifest: Option<&SourceManifest>,
     context: &ImportDiscoveryContext,
+    control: DiscoveryControl<'_>,
 ) -> Result<AHashMap<String, AcceptedImportSource>, SourceLoadError> {
+    control.checkpoint()?;
     let now = SystemTime::now();
     let mut observed = AHashMap::with_capacity(manifest.len());
     for entry in manifest.iter() {
+        control.checkpoint()?;
+        test_reobserve_delay(control)?;
         let cached_source = snapshot
             .shared_source_for_module(entry.module())
             .ok_or_else(|| {
@@ -588,12 +627,27 @@ fn reobserve_accepted_reads(
                 &boundary,
             )?
         };
+        control.checkpoint()?;
         observed.insert(entry.requested_path().to_owned(), accepted);
     }
+    control.checkpoint()?;
     Ok(observed)
 }
 
 fn execute_import_request(
+    request: ImportDiscoveryRequest,
+    source_manifest: Option<&SourceManifest>,
+    reobserved_reads: Option<&AHashMap<String, AcceptedImportSource>>,
+    control: DiscoveryControl<'_>,
+) -> Result<ImportObservation, SourceLoadError> {
+    control.checkpoint()?;
+    let observation =
+        execute_import_request_uncancelled(request, source_manifest, reobserved_reads);
+    control.checkpoint()?;
+    Ok(observation)
+}
+
+fn execute_import_request_uncancelled(
     request: ImportDiscoveryRequest,
     source_manifest: Option<&SourceManifest>,
     reobserved_reads: Option<&AHashMap<String, AcceptedImportSource>>,
@@ -748,9 +802,10 @@ pub enum SourceLoadError {
     /// message.
     Toolchain(ToolchainIntegrityError),
     /// A caller-supplied supersession probe reported a newer source revision
-    /// while import discovery was still re-closing the graph (RUE-1830). The
-    /// superseded attempt committed no snapshot, manifest, or graph; the
-    /// caller restarts observation from the newest bytes.
+    /// while import discovery was re-closing the graph (RUE-1830). Before the
+    /// atomic close boundary the attempt is aborted and the prior committed
+    /// selection remains authoritative. A change observed just after that
+    /// boundary reports supersession while retaining the coherent new close.
     Superseded,
     /// A trusted toolchain module resolves to a path the hermetic build
     /// configuration forbids (RUE-1112). This is deterministically DISTINCT
@@ -759,6 +814,61 @@ pub enum SourceLoadError {
     /// toolchain. It carries its own outer classification and presentation, never
     /// the "toolchain integrity" / broken-installation framing.
     HermeticDenial(HermeticDenialError),
+}
+
+#[derive(Clone, Copy, Default)]
+struct DiscoveryControl<'a> {
+    supersession: Option<&'a dyn Fn() -> bool>,
+}
+
+impl<'a> DiscoveryControl<'a> {
+    fn superseding(supersession: Option<&'a dyn Fn() -> bool>) -> Self {
+        Self { supersession }
+    }
+
+    fn checkpoint(self) -> Result<(), SourceLoadError> {
+        check_supersession(self.supersession)
+    }
+}
+
+// Production-inert watch synchronization. The CLI integration harness uses
+// this only to hold a retained re-observation inside its first filesystem
+// boundary long enough to place an edit there deterministically. Unlike a
+// fixed sleep, the wait polls the real cycle supersession authority and exits
+// as soon as the change monitor observes newer bytes.
+const TEST_REOBSERVE_DELAY_ENV: &str = "RUE_WATCH_TEST_REOBSERVE_DELAY_MS";
+const TEST_WATCH_PROTOCOL_ENV: &str = "RUE_WATCH_TEST_PROTOCOL";
+static TEST_REOBSERVE_DELAY_USED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn test_reobserve_delay(control: DiscoveryControl<'_>) -> Result<(), SourceLoadError> {
+    if control.supersession.is_none() {
+        return Ok(());
+    }
+    if env::var_os(TEST_WATCH_PROTOCOL_ENV).is_none() {
+        return Ok(());
+    }
+    let Ok(delay) = env::var(TEST_REOBSERVE_DELAY_ENV) else {
+        return Ok(());
+    };
+    let Ok(milliseconds) = delay.parse::<u64>() else {
+        return Ok(());
+    };
+    if TEST_REOBSERVE_DELAY_USED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return Ok(());
+    }
+    if let Some(path) = env::var_os(TEST_WATCH_PROTOCOL_ENV)
+        && let Ok(mut protocol) = fs::OpenOptions::new().create(true).append(true).open(path)
+    {
+        let _ = writeln!(protocol, "reobserve-read-boundary");
+        let _ = protocol.flush();
+    }
+    let deadline = Instant::now() + Duration::from_millis(milliseconds.min(5_000));
+    while Instant::now() < deadline {
+        control.checkpoint()?;
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    control.checkpoint()
 }
 
 /// Turn a host-side contradiction into the canonical graceful ICE diagnostic.
@@ -850,10 +960,13 @@ impl ImportDiscoveryResult {
                 .shared_source_for_module(entry.module())
                 .expect("an accepted read has source bytes in the committed snapshot");
             let fingerprint = WatchFingerprint::from_bytes(source.as_bytes());
-            paths.push(WatchInput::new(
-                PathBuf::from(entry.requested_path()),
+            let requested = PathBuf::from(entry.requested_path());
+            paths.push(WatchInput::new_with_symlink_route(
+                requested.clone(),
                 PathBuf::from(entry.canonical_path()),
                 fingerprint,
+                spelling_boundary(&self.resolution.context, &requested),
+                Arc::from(entry.symlink_route().to_vec()),
             ));
         }
         paths.extend(
@@ -1026,6 +1139,23 @@ thread_local! {
     /// contract covers.
     static WAVE_PUBLISH_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
         const { std::cell::RefCell::new(None) };
+    /// Test hook fired after one import stage has selected its provisional
+    /// parse terminal, before any frontier or close may consume it.
+    static IMPORT_STAGE_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(ImportInputRevision)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Test hook fired after close has published a failed candidate attempt but
+    /// before the retained host decides whether that failure was superseded.
+    static IMPORT_FAILED_CLOSE_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Test hook fired after all import work is assembled but before the final
+    /// accepted-read route validation and close.
+    static IMPORT_PRE_CLOSE_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Test hook fired after a successful close has been copied into every
+    /// host-visible field, immediately before superseding callers observe the
+    /// commit boundary.
+    static IMPORT_COMMIT_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
     /// Waves discarded by that verification and re-run.
     static WAVE_STAMP_RERUNS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
@@ -1033,6 +1163,42 @@ thread_local! {
 #[cfg(test)]
 fn fire_wave_publish_hook() {
     WAVE_PUBLISH_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn fire_import_stage_hook(input_revision: ImportInputRevision) {
+    IMPORT_STAGE_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook(input_revision);
+        }
+    });
+}
+
+#[cfg(test)]
+fn fire_import_failed_close_hook() {
+    IMPORT_FAILED_CLOSE_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn fire_import_pre_close_hook() {
+    IMPORT_PRE_CLOSE_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn fire_import_commit_hook() {
+    IMPORT_COMMIT_HOOK.with(|hook| {
         if let Some(hook) = hook.borrow_mut().as_mut() {
             hook();
         }
@@ -1047,12 +1213,56 @@ fn fire_wave_publish_hook() {
 /// hop's. Verifying the whole batch here, fail-closed, is what makes that window
 /// safe: a revision can never mix a stale read with a fresh one, because a single
 /// disagreement discards the wave and re-runs it.
-fn wave_reads_are_stable(wave: &ImportDiscoveryWave) -> bool {
-    wave.accepted_reads().iter().all(|source| {
-        fs::metadata(Path::new(source.canonical_path())).is_ok_and(|metadata| {
-            physical_file_identity(&metadata) == source.metadata_identity()
-                && file_metadata_fingerprint(&metadata) == source.metadata_fingerprint()
+fn accepted_path_is_stable(
+    context: &ImportDiscoveryContext,
+    requested_path: &str,
+    canonical_path: &str,
+    expected_route: &[PhysicalFileIdentity],
+    expected_identity: PhysicalFileIdentity,
+    expected_fingerprint: FileMetadataFingerprint,
+) -> bool {
+    let requested = Path::new(requested_path);
+    let canonical = Path::new(canonical_path);
+    let boundary = spelling_boundary(context, requested);
+    let route_before = symlink_route(requested, &boundary);
+    let observed_canonical = fs::canonicalize(requested).ok();
+    let observed_metadata = fs::metadata(canonical).ok();
+    let route_after = symlink_route(requested, &boundary);
+    route_before.as_ref() == expected_route
+        && route_after.as_ref() == expected_route
+        && observed_canonical.as_deref() == Some(canonical)
+        && observed_metadata.is_some_and(|metadata| {
+            physical_file_identity(&metadata) == expected_identity
+                && file_metadata_fingerprint(&metadata) == expected_fingerprint
         })
+}
+
+fn wave_reads_are_stable(wave: &ImportDiscoveryWave, context: &ImportDiscoveryContext) -> bool {
+    wave.accepted_reads().iter().all(|source| {
+        accepted_path_is_stable(
+            context,
+            source.requested_path(),
+            source.canonical_path(),
+            source.symlink_route(),
+            source.metadata_identity(),
+            source.metadata_fingerprint(),
+        )
+    })
+}
+
+fn accepted_manifest_reads_are_stable(
+    manifest: &AcceptedReadManifest,
+    context: &ImportDiscoveryContext,
+) -> bool {
+    manifest.iter().all(|entry| {
+        accepted_path_is_stable(
+            context,
+            entry.requested_path(),
+            entry.canonical_path(),
+            entry.symlink_route(),
+            entry.metadata_identity(),
+            entry.metadata_fingerprint(),
+        )
     })
 }
 
@@ -1070,9 +1280,10 @@ fn run_import_wave(
     frontier: &ImportDemandFrontier,
     source_manifest: Option<&SourceManifest>,
     reobserved_reads: Option<&AHashMap<String, AcceptedImportSource>>,
-    supersession: Option<&dyn Fn() -> bool>,
+    control: DiscoveryControl<'_>,
 ) -> Result<(ImportInputRevision, ImportDemandFrontier), SourceLoadError> {
     for attempt in 0..=WAVE_STAMP_RETRIES {
+        control.checkpoint()?;
         let accepted_reads = assembler.accepted_read_manifest();
         let mut wave = begin_import_wave_with_accepted_reads(
             staging,
@@ -1083,19 +1294,38 @@ fn run_import_wave(
         )
         .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
         while !wave.is_complete() {
-            check_supersession(supersession)?;
+            control.checkpoint()?;
             let observations = wave
                 .requests()
                 .iter()
                 .cloned()
-                .map(|request| execute_import_request(request, source_manifest, reobserved_reads))
-                .collect::<Vec<_>>();
+                .map(|request| {
+                    execute_import_request(request, source_manifest, reobserved_reads, control)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             extend_import_wave(staging, &mut wave, observations)
                 .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+            control.checkpoint()?;
         }
         #[cfg(test)]
         fire_wave_publish_hook();
-        if !wave_reads_are_stable(&wave) {
+        control.checkpoint()?;
+        if !accepted_manifest_reads_are_stable(&accepted_reads, plan.context()) {
+            if reobserved_reads.is_some() || control.supersession.is_some() {
+                return Err(SourceLoadError::Superseded);
+            }
+            return Err(SourceLoadError::Message(
+                "Error: a previously accepted source route changed during import discovery"
+                    .to_owned(),
+            ));
+        }
+        if !wave_reads_are_stable(&wave, plan.context()) {
+            // A retained request's observations were captured before this wave.
+            // Retrying the same frozen map would only rediscover the obsolete
+            // route; abort the request so the next watch cycle re-observes it.
+            if reobserved_reads.is_some() {
+                return Err(SourceLoadError::Superseded);
+            }
             #[cfg(test)]
             WAVE_STAMP_RERUNS.with(|count| count.set(count.get() + 1));
             if attempt == WAVE_STAMP_RETRIES {
@@ -1111,9 +1341,11 @@ fn run_import_wave(
         assembler
             .add_wave_reads(&wave)
             .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        control.checkpoint()?;
         let successor_snapshot = assembler
             .snapshot()
             .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        control.checkpoint()?;
         return publish_import_wave(
             staging,
             wave,
@@ -1128,7 +1360,7 @@ fn run_import_wave(
 /// Fail promptly with [`SourceLoadError::Superseded`] once the caller's
 /// probe reports that a newer source revision replaced the bytes this
 /// discovery attempt is reading (RUE-1830). `None` keeps every check a no-op
-/// for one-shot loads and toolchain re-closes.
+/// for one-shot loads.
 fn check_supersession(supersession: Option<&dyn Fn() -> bool>) -> Result<(), SourceLoadError> {
     if supersession.is_some_and(|probe| probe()) {
         return Err(SourceLoadError::Superseded);
@@ -1144,8 +1376,9 @@ fn drive_import_discovery_to_close(
     reobserved_reads: Option<&AHashMap<String, AcceptedImportSource>>,
     continuation: Option<ImportInputRevision>,
     reclose: Option<ReClose<'_>>,
-    supersession: Option<&dyn Fn() -> bool>,
+    control: DiscoveryControl<'_>,
 ) -> Result<ClosedDiscovery, SourceLoadError> {
+    control.checkpoint()?;
     // Exactly one import-input request is opened per external request, here,
     // before the frontier loop below. Rounds inside that loop publish overlay
     // successors which inherit this request's compatibility token, so the whole
@@ -1168,6 +1401,7 @@ fn drive_import_discovery_to_close(
         }
     };
     let final_plan;
+    let final_ledger;
     let witness;
     // The previous round's frontier, once there is one. It names the exact
     // occurrences whose host answers arrive this round and which may therefore
@@ -1185,10 +1419,10 @@ fn drive_import_discovery_to_close(
     let mut cumulative_witness_closures = 0_u32;
     let mut reroot_witness_closures = 0_u32;
     loop {
-        // A newer revision supersedes this attempt between rounds; the
-        // per-hop check inside the ordinary wave bounds a superseded
-        // attempt's residual filesystem work to one hop (RUE-1830).
-        check_supersession(supersession)?;
+        // A newer revision supersedes this attempt between rounds. The same
+        // control is also checked around every accepted physical read and
+        // before publication, bounding stale work without publishing it.
+        control.checkpoint()?;
         // One frontier round: plan and frontier construction (which owns the
         // canonical parse of everything read so far), then the host reads that
         // answer the frontier's requests. Both halves are timed so a discovery
@@ -1215,6 +1449,9 @@ fn drive_import_discovery_to_close(
                 None => stage_import_input_request(staging, input_revision),
             }
         };
+        #[cfg(test)]
+        fire_import_stage_hook(input_revision);
+        control.checkpoint()?;
         let plan = match staged {
             Ok(plan) => plan,
             Err(_) => {
@@ -1301,9 +1538,11 @@ fn drive_import_discovery_to_close(
                 roots = whole_plan;
             }
         };
+        control.checkpoint()?;
         drop(plan_span);
         if frontier.requests().is_empty() {
             final_plan = plan;
+            final_ledger = ledger;
             witness = frontier;
             break;
         }
@@ -1320,9 +1559,10 @@ fn drive_import_discovery_to_close(
                     .iter()
                     .cloned()
                     .map(|request| {
-                        execute_import_request(request, source_manifest, reobserved_reads)
+                        execute_import_request(request, source_manifest, reobserved_reads, control)
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<Result<Vec<_>, _>>()?;
+                control.checkpoint()?;
                 // In a trusted-toolchain re-close every frontier request resolves
                 // an `@import` edge owned by an appended leaf or a leaf newly
                 // discovered from it (e.g. strbuf → arraybuf/rawbuf). These edges
@@ -1344,6 +1584,16 @@ fn drive_import_discovery_to_close(
                 assembler
                     .add_successor_plan_reads(&plan, &next_ledger)
                     .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+                if !accepted_manifest_reads_are_stable(&assembler.accepted_read_manifest(), context)
+                {
+                    if reobserved_reads.is_some() || control.supersession.is_some() {
+                        return Err(SourceLoadError::Superseded);
+                    }
+                    return Err(SourceLoadError::Message(
+                        "Error: a source route changed before trusted successor publication"
+                            .to_owned(),
+                    ));
+                }
                 let successor_snapshot = assembler
                     .snapshot()
                     .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
@@ -1373,7 +1623,7 @@ fn drive_import_discovery_to_close(
                     &frontier,
                     source_manifest,
                     reobserved_reads,
-                    supersession,
+                    control,
                 )?;
                 input_revision = revision;
                 previous_frontier = Some(published);
@@ -1381,10 +1631,22 @@ fn drive_import_discovery_to_close(
         }
     }
 
+    control.checkpoint()?;
+    #[cfg(test)]
+    fire_import_pre_close_hook();
     let _close_span = tracing::info_span!("import_discovery_close").entered();
     let snapshot = assembler
         .snapshot()
         .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+    if !accepted_manifest_reads_are_stable(&assembler.accepted_read_manifest(), context) {
+        if reobserved_reads.is_some() || control.supersession.is_some() {
+            return Err(SourceLoadError::Superseded);
+        }
+        return Err(SourceLoadError::Message(
+            "Error: a source route changed before import discovery could close".to_owned(),
+        ));
+    }
+    control.checkpoint()?;
     debug_assert_eq!(final_plan.source_revision(), snapshot.source_revision());
     // A trusted-toolchain successor closes over only the modules its opaque delta
     // capability authorizes, merging their topology into the committed
@@ -1396,6 +1658,13 @@ fn drive_import_discovery_to_close(
     let closed = match close_result {
         Ok(closed) => closed,
         Err(errors) => {
+            // A failed close is still pre-commit candidate state. If a newer
+            // filesystem revision arrived while close was computing, report
+            // supersession so the caller restores the exact committed request
+            // rather than selecting diagnostics from the obsolete failure.
+            #[cfg(test)]
+            fire_import_failed_close_hook();
+            control.checkpoint()?;
             let attempted = discovery_attempt(staging)
                 .expect("failed closure publishes an attempted import revision");
             if DependencyEnvelope::from_closed_revision(&attempted).is_some() {
@@ -1412,8 +1681,11 @@ fn drive_import_discovery_to_close(
             }
         }
     };
-    let observed_absent_paths = import_observation_ledger(staging, input_revision)
-        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?
+    // The exact ledger whose empty frontier authorized this close is already
+    // in hand. Project the host's negative observations from that immutable
+    // value before returning; no fallible session lookup may occur after the
+    // compiler has committed but before the host installs the same close.
+    let observed_absent_paths = final_ledger
         .iter()
         .filter(|observation| matches!(observation.status(), ImportObservationStatus::Absent))
         .map(|observation| PathBuf::from(observation.request().requested_path()))
@@ -1546,7 +1818,7 @@ pub(crate) fn discover_and_load_imports(
         None,
         None,
         None,
-        None,
+        DiscoveryControl::default(),
     )?;
 
     Ok(ImportDiscoveryResult {
@@ -1573,13 +1845,15 @@ pub(crate) fn reload_from_filesystem(
     result: &mut ImportDiscoveryResult,
     supersession: Option<&dyn Fn() -> bool>,
 ) -> Result<(), SourceLoadError> {
-    check_supersession(supersession)?;
+    let control = DiscoveryControl::superseding(supersession);
+    control.checkpoint()?;
     let source_manifest = result
         .source_manifest
         .as_ref()
         .map(|manifest| SourceManifest::load(manifest.path.to_string_lossy().as_ref()))
         .transpose()
         .map_err(SourceLoadError::Message)?;
+    control.checkpoint()?;
     validate_manifest_allows_source(
         source_manifest.as_ref(),
         result.resolution.root_path.to_string_lossy().as_ref(),
@@ -1602,6 +1876,7 @@ pub(crate) fn reload_from_filesystem(
         &result.read_manifest,
         source_manifest.as_ref(),
         &context,
+        control,
     )?;
     let root_module = result.source_snapshot.source_revision().root();
     let root_entry = result
@@ -1636,7 +1911,7 @@ pub(crate) fn reload_from_filesystem(
     // for requests the new rooted frontier actually issues; making every old
     // read explicit would keep modules that are no longer reachable after an
     // import-set edit and grow the retained snapshot monotonically.
-    let close = drive_import_discovery_to_close(
+    let close = match drive_import_discovery_to_close(
         &mut assembler,
         &mut result.session,
         &context,
@@ -1644,8 +1919,19 @@ pub(crate) fn reload_from_filesystem(
         Some(&reobserved),
         None,
         None,
-        supersession,
-    )?;
+        control,
+    ) {
+        Err(SourceLoadError::Superseded) => {
+            abort_import_input_request(&mut result.session).map_err(|errors| {
+                SourceLoadError::Compiler {
+                    snapshot: Some(result.source_snapshot.clone()),
+                    errors: errors.into(),
+                }
+            })?;
+            return Err(SourceLoadError::Superseded);
+        }
+        outcome => outcome?,
+    };
     result.source_snapshot = close.snapshot;
     result.read_manifest = assembler.accepted_read_manifest();
     result.observed_absent_paths = close.observed_absent_paths;
@@ -1662,7 +1948,14 @@ pub(crate) fn reload_from_filesystem(
             result.witness_discharge = close.witness_discharge;
         }
     }
-    Ok(())
+    // A successful close is an atomic commit boundary. Supersession observed
+    // here reports that the watch cycle should restart, but the fully installed
+    // host/session revision remains coherent and becomes the next cycle's
+    // re-observation baseline; rolling only the assembler back would splice two
+    // different committed revisions together.
+    #[cfg(test)]
+    fire_import_commit_hook();
+    control.checkpoint()
 }
 
 /// Bounded rounds for reached-body trusted-toolchain acquisition. Each satisfied
@@ -1702,19 +1995,20 @@ pub(crate) fn acquire_reached_toolchain_modules(
 /// re-observation. Each round is a transaction: the demand reads land in a
 /// CLONE of the assembler, and the host's committed state — snapshot, manifest,
 /// revision, witness, assembler — is replaced only after the re-close returns.
-/// A superseded round therefore commits nothing, and the next cycle's
-/// re-observation begins a fresh import-input request that supersedes any
-/// successor this round published to the session.
+/// The compiler may provisionally stage that successor while the re-close runs,
+/// but a supersession before close aborts the import-input request, restores the
+/// session's committed selectors, and leaves every host field unchanged.
 ///
-/// The last check before publication is the commit boundary: publish,
-/// re-close, and the host assignment run to completion once it passes, so a
-/// cancellation observed afterward leaves a coherent new commit rather than a
-/// half-applied one. `None` keeps every check a no-op for the one-shot driver.
+/// A successful close is the commit boundary. The infallible host assignments
+/// then run to completion, so supersession observed afterward keeps the new
+/// session and host close coherent rather than rolling either half back.
+/// `None` keeps every check a no-op for the one-shot driver.
 pub(crate) fn acquire_reached_toolchain_modules_superseding(
     result: &mut ImportDiscoveryResult,
     options: &CompileOptions,
     supersession: Option<&dyn Fn() -> bool>,
 ) -> Result<(), SourceLoadError> {
+    let control = DiscoveryControl::superseding(supersession);
     // A discovery that did not close valid (missing or ambiguous imports) has no
     // queryable program, so semantic analysis cannot run and there is nothing to
     // acquire. Leave it untouched: the driver surfaces the canonical import
@@ -1725,7 +2019,7 @@ pub(crate) fn acquire_reached_toolchain_modules_superseding(
         return Ok(());
     }
     for _ in 0..MAX_TOOLCHAIN_ACQUISITION_ROUNDS {
-        check_supersession(supersession)?;
+        control.checkpoint()?;
         match rooted_or_toolchain_park(&mut result.session, options) {
             // Analysis satisfied every reached-body demand (or there were none).
             RootedParkOutcome::Ready => return Ok(()),
@@ -1753,7 +2047,7 @@ pub(crate) fn acquire_reached_toolchain_modules_superseding(
                 // (RUE-1863).
                 let mut round_assembler = result.assembler.clone();
                 for demand in park.demands() {
-                    check_supersession(supersession)?;
+                    control.checkpoint()?;
                     satisfy_toolchain_module_demand(
                         &mut round_assembler,
                         result.std_root.as_deref(),
@@ -1793,7 +2087,7 @@ pub(crate) fn acquire_reached_toolchain_modules_superseding(
                 // closed and never re-rooted. A malformed or missing transitive
                 // trusted leaf fails during this re-close, and classification
                 // (below) attributes it to the actual failing module.
-                let reclosed = drive_import_discovery_to_close(
+                let reclosed = match drive_import_discovery_to_close(
                     &mut round_assembler,
                     &mut result.session,
                     &result.resolution.context,
@@ -1801,11 +2095,24 @@ pub(crate) fn acquire_reached_toolchain_modules_superseding(
                     None,
                     Some(delta.revision()),
                     Some(ReClose { delta: &delta }),
-                    supersession,
-                )
-                .map_err(|error| {
-                    reclassify_reclose_failure(error, result.std_root.as_deref(), park.demands())
-                })?;
+                    control,
+                ) {
+                    Ok(reclosed) => reclosed,
+                    Err(error) => {
+                        let error = reclassify_reclose_failure(
+                            error,
+                            result.std_root.as_deref(),
+                            park.demands(),
+                        );
+                        abort_import_input_request(&mut result.session).map_err(|errors| {
+                            SourceLoadError::Compiler {
+                                snapshot: Some(result.source_snapshot.clone()),
+                                errors: errors.into(),
+                            }
+                        })?;
+                        return Err(error);
+                    }
+                };
                 // Commit boundary: every assignment below is infallible, so the
                 // round is applied whole or not at all.
                 result.read_manifest = round_assembler.accepted_read_manifest();
@@ -2373,6 +2680,37 @@ mod tests {
             fs::write(&path, source).unwrap();
             path
         }
+    }
+
+    fn exact_snapshot_projection(
+        snapshot: &SourceSnapshot,
+    ) -> Vec<(u32, String, String, String, String, String)> {
+        snapshot
+            .files()
+            .map(|source| {
+                (
+                    source.file_id.index(),
+                    source.path.to_owned(),
+                    source.source.to_owned(),
+                    snapshot
+                        .module_id(source.file_id)
+                        .expect("snapshot file has a module identity")
+                        .as_str()
+                        .to_owned(),
+                    format!(
+                        "{:?}",
+                        snapshot
+                            .source_id(source.file_id)
+                            .expect("snapshot file has a source identity")
+                    ),
+                    snapshot
+                        .metadata()
+                        .logical_path(source.file_id)
+                        .expect("snapshot file has a logical path")
+                        .to_owned(),
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -3104,6 +3442,522 @@ mod tests {
         }
     }
 
+    #[test]
+    fn superseded_reobserve_after_partial_candidate_stage_preserves_committed_revision_and_recovers()
+     {
+        let dir = TestDir::new("superseded-reobserve-stage");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("leaf.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let leaf = dir.write("leaf.rue", "pub fn value() -> i32 { 1 }");
+        dir.write("next.rue", "pub fn value() -> i32 { 9 }");
+        let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        let committed_revision = result.revision.source_revision().clone();
+        let committed_snapshot = result.source_snapshot.clone();
+        let committed_reads = result.read_manifest.clone();
+        let committed_watch_inputs = result.watch_inputs();
+        let committed_assembler = result.assembler.snapshot().unwrap();
+        let committed_semantic =
+            rooted_cfg(&mut result.session, &CompileOptions::default()).unwrap();
+        let committed_invalidations = frontend_query_invalidations(&result.session);
+
+        fs::write(
+            &leaf,
+            r#"pub const next = @import("next.rue"); pub fn value() -> i32 { next.value() }"#,
+        )
+        .unwrap();
+        let superseded = std::rc::Rc::new(std::cell::Cell::new(false));
+        let supersede_from_hook = superseded.clone();
+        IMPORT_STAGE_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |revision| {
+                if revision.frontier_round() > 0 {
+                    supersede_from_hook.set(true);
+                }
+            }));
+        });
+        let probe = || superseded.get();
+        let outcome = reload_from_filesystem(&mut result, Some(&probe));
+        IMPORT_STAGE_HOOK.with(|hook| *hook.borrow_mut() = None);
+
+        assert!(matches!(outcome, Err(SourceLoadError::Superseded)));
+        assert_eq!(result.revision.source_revision(), &committed_revision);
+        assert_eq!(
+            exact_snapshot_projection(&result.source_snapshot),
+            exact_snapshot_projection(&committed_snapshot)
+        );
+        assert_eq!(result.read_manifest, committed_reads);
+        assert_eq!(result.watch_inputs(), committed_watch_inputs);
+        assert_eq!(
+            exact_snapshot_projection(&result.assembler.snapshot().unwrap()),
+            exact_snapshot_projection(&committed_assembler)
+        );
+        assert!(
+            result
+                .source_snapshot
+                .files()
+                .all(|source| !source.source.contains("next.value()")),
+            "a superseded candidate stage must not replace the host's committed source snapshot"
+        );
+        assert!(
+            result
+                .source_snapshot
+                .source_revision()
+                .modules()
+                .iter()
+                .all(|module| module.module.as_str() != "next.rue"),
+            "the source published by the partial wave must stay outside the committed snapshot"
+        );
+        let session_revision = committed_import_discovery(&result.session)
+            .expect("the retained session keeps its last good discovery");
+        assert_eq!(
+            session_revision.source_revision(),
+            &committed_revision,
+            "a superseded open attempt must not replace the session's committed graph"
+        );
+        let restored_semantic = rooted_cfg(&mut result.session, &CompileOptions::default())
+            .expect("public semantic queries continue serving the last closed revision");
+        assert_same_rooted_cfg_identity(&committed_semantic, &restored_semantic);
+        assert_eq!(
+            frontend_query_invalidations(&result.session),
+            committed_invalidations,
+            "rollback must reselect the committed terminal without invalidating its semantic cone"
+        );
+
+        reload_from_filesystem(&mut result, None)
+            .expect("the next observation recovers from the discarded attempt");
+        assert!(
+            result
+                .source_snapshot
+                .files()
+                .any(|source| source.source.contains("next.value()")),
+            "the recovery attempt must close against the newest source bytes"
+        );
+        assert!(
+            result
+                .source_snapshot
+                .source_revision()
+                .modules()
+                .iter()
+                .any(|module| module.module.as_str() == "next.rue"),
+            "recovery must publish the newly reached source"
+        );
+        rooted_cfg(&mut result.session, &CompileOptions::default())
+            .expect("the recovered graph must reach semantic analysis");
+    }
+
+    #[test]
+    fn supersession_after_wave_reads_aborts_before_publication() {
+        let dir = TestDir::new("superseded-reobserve-wave");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("leaf.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let leaf = dir.write("leaf.rue", "pub fn value() -> i32 { 1 }");
+        let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        let committed_revision = result.revision.source_revision().clone();
+        let committed_snapshot = result.source_snapshot.clone();
+        let committed_reads = result.read_manifest.clone();
+        let committed_watch_inputs = result.watch_inputs();
+        let committed_assembler = result.assembler.snapshot().unwrap();
+        let committed_semantic =
+            rooted_cfg(&mut result.session, &CompileOptions::default()).unwrap();
+
+        fs::write(&leaf, "pub fn value() -> i32 { 2 }").unwrap();
+        let superseded = std::rc::Rc::new(std::cell::Cell::new(false));
+        let supersede_from_hook = superseded.clone();
+        WAVE_PUBLISH_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || supersede_from_hook.set(true)));
+        });
+        let probe = || superseded.get();
+        let outcome = reload_from_filesystem(&mut result, Some(&probe));
+        WAVE_PUBLISH_HOOK.with(|hook| *hook.borrow_mut() = None);
+
+        assert!(matches!(outcome, Err(SourceLoadError::Superseded)));
+        assert_eq!(result.revision.source_revision(), &committed_revision);
+        assert_eq!(
+            exact_snapshot_projection(&result.source_snapshot),
+            exact_snapshot_projection(&committed_snapshot)
+        );
+        assert_eq!(result.read_manifest, committed_reads);
+        assert_eq!(result.watch_inputs(), committed_watch_inputs);
+        assert_eq!(
+            exact_snapshot_projection(&result.assembler.snapshot().unwrap()),
+            exact_snapshot_projection(&committed_assembler)
+        );
+        assert!(
+            result
+                .source_snapshot
+                .files()
+                .any(|source| source.source.contains("value() -> i32 { 1 }")),
+            "the fully read but unpublished wave must not replace committed bytes"
+        );
+        let session_revision = committed_import_discovery(&result.session)
+            .expect("the session restores its prior committed discovery");
+        assert_eq!(session_revision.source_revision(), &committed_revision);
+        let restored_semantic = rooted_cfg(&mut result.session, &CompileOptions::default())
+            .expect("an unpublished wave cannot poison the committed semantic root");
+        assert_same_rooted_cfg_identity(&committed_semantic, &restored_semantic);
+
+        reload_from_filesystem(&mut result, None)
+            .expect("a fresh observation publishes the newest complete wave");
+        assert!(
+            result
+                .source_snapshot
+                .files()
+                .any(|source| source.source.contains("value() -> i32 { 2 }"))
+        );
+    }
+
+    #[test]
+    fn superseded_failed_stage_restores_the_committed_discovery_selector() {
+        let dir = TestDir::new("superseded-failed-stage");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("leaf.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let leaf = dir.write("leaf.rue", "pub fn value() -> i32 { 1 }");
+        let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        let committed_revision = result.revision.source_revision().clone();
+        let committed_semantic =
+            rooted_cfg(&mut result.session, &CompileOptions::default()).unwrap();
+
+        fs::write(&leaf, "pub fn value( -> i32 { 2 }").unwrap();
+        let superseded = std::rc::Rc::new(std::cell::Cell::new(false));
+        let supersede_from_hook = superseded.clone();
+        IMPORT_STAGE_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |_| supersede_from_hook.set(true)));
+        });
+        let probe = || superseded.get();
+        let outcome = reload_from_filesystem(&mut result, Some(&probe));
+        IMPORT_STAGE_HOOK.with(|hook| *hook.borrow_mut() = None);
+
+        assert!(matches!(outcome, Err(SourceLoadError::Superseded)));
+        let committed = committed_import_discovery(&result.session)
+            .expect("the failed candidate selector is replaced by the committed discovery");
+        assert_eq!(committed.source_revision(), &committed_revision);
+        let restored = rooted_cfg(&mut result.session, &CompileOptions::default())
+            .expect("failed candidate diagnostics cannot shadow the committed semantic root");
+        assert_same_rooted_cfg_identity(&committed_semantic, &restored);
+    }
+
+    #[test]
+    fn supersession_during_failed_close_restores_the_committed_revision() {
+        let dir = TestDir::new("superseded-failed-close");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("leaf.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let leaf = dir.write("leaf.rue", "pub fn value() -> i32 { 1 }");
+        let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        let committed_revision = result.revision.source_revision().clone();
+        let committed_semantic =
+            rooted_cfg(&mut result.session, &CompileOptions::default()).unwrap();
+
+        fs::remove_file(&leaf).unwrap();
+        let superseded = std::rc::Rc::new(std::cell::Cell::new(false));
+        let supersede_from_hook = superseded.clone();
+        IMPORT_FAILED_CLOSE_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || supersede_from_hook.set(true)));
+        });
+        let probe = || superseded.get();
+        let outcome = reload_from_filesystem(&mut result, Some(&probe));
+        IMPORT_FAILED_CLOSE_HOOK.with(|hook| *hook.borrow_mut() = None);
+
+        assert!(matches!(outcome, Err(SourceLoadError::Superseded)));
+        let committed = committed_import_discovery(&result.session)
+            .expect("the obsolete failed close cannot replace the committed discovery");
+        assert_eq!(committed.source_revision(), &committed_revision);
+        let restored = rooted_cfg(&mut result.session, &CompileOptions::default())
+            .expect("failed-close supersession restores the committed semantic root");
+        assert_same_rooted_cfg_identity(&committed_semantic, &restored);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_retarget_between_wave_read_and_publication_is_superseded() {
+        let dir = TestDir::new("superseded-wave-symlink-route");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("alias.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let first = dir.write("first.rue", "pub fn value() -> i32 { 1 }");
+        let second = dir.write("second.rue", "pub fn value() -> i32 { 2 }");
+        let alias = dir.path.join("alias.rue");
+        std::os::unix::fs::symlink(&first, &alias).unwrap();
+        let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        let committed_revision = result.revision.source_revision().clone();
+
+        // Force a fresh wave while its requested alias still resolves to A.
+        fs::write(
+            &main,
+            "const leaf = @import(\"alias.rue\"); fn main() -> i32 { leaf.value() + 0 }",
+        )
+        .unwrap();
+        let superseded = std::rc::Rc::new(std::cell::Cell::new(false));
+        let supersede_from_hook = superseded.clone();
+        let alias_from_hook = alias.clone();
+        let second_from_hook = second.clone();
+        let fired = std::rc::Rc::new(std::cell::Cell::new(false));
+        let fired_from_hook = fired.clone();
+        WAVE_PUBLISH_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                if !fired_from_hook.replace(true) {
+                    fs::remove_file(&alias_from_hook).unwrap();
+                    std::os::unix::fs::symlink(&second_from_hook, &alias_from_hook).unwrap();
+                    supersede_from_hook.set(true);
+                }
+            }));
+        });
+        let probe = || superseded.get();
+        let outcome = reload_from_filesystem(&mut result, Some(&probe));
+        WAVE_PUBLISH_HOOK.with(|hook| *hook.borrow_mut() = None);
+
+        assert!(matches!(outcome, Err(SourceLoadError::Superseded)));
+        assert_eq!(result.revision.source_revision(), &committed_revision);
+        reload_from_filesystem(&mut result, None)
+            .expect("the next observation closes against the retargeted alias");
+        assert!(
+            result
+                .source_snapshot
+                .files()
+                .any(|source| { source.source.contains("value() -> i32 { 2 }") })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_root_route_swap_before_close_is_superseded_and_rolled_back() {
+        let dir = TestDir::new("superseded-pre-close-root-route");
+        let real_main = dir.write(
+            "real-main.rue",
+            r#"const leaf = @import("leaf.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let leaf = dir.write("leaf.rue", "pub fn value() -> i32 { 1 }");
+        let root = dir.path.join("main.rue");
+        std::os::unix::fs::symlink(&real_main, &root).unwrap();
+        let mut result = discover_and_load_imports(root.to_str().unwrap(), None, None).unwrap();
+        let committed_revision = result.revision.source_revision().clone();
+        let committed_snapshot = result.source_snapshot.clone();
+        let committed_reads = result.read_manifest.clone();
+        let committed_watch_inputs = result.watch_inputs();
+        let committed_assembler = result.assembler.snapshot().unwrap();
+        let committed_semantic =
+            rooted_cfg(&mut result.session, &CompileOptions::default()).unwrap();
+
+        fs::write(&leaf, "pub fn value() -> i32 { 2 }").unwrap();
+        let original_identity = physical_file_identity(&fs::symlink_metadata(&root).unwrap());
+        let replacement = dir.path.join("replacement-main");
+        std::os::unix::fs::symlink(&real_main, &replacement).unwrap();
+        let replacement_identity =
+            physical_file_identity(&fs::symlink_metadata(&replacement).unwrap());
+        assert_ne!(
+            original_identity, replacement_identity,
+            "the test must replace the root spelling with a distinct symlink inode"
+        );
+        let root_from_hook = root.clone();
+        let replacement_from_hook = replacement.clone();
+        IMPORT_PRE_CLOSE_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                fs::rename(&replacement_from_hook, &root_from_hook).unwrap();
+            }));
+        });
+        let outcome = reload_from_filesystem(&mut result, None);
+        IMPORT_PRE_CLOSE_HOOK.with(|hook| *hook.borrow_mut() = None);
+
+        assert!(matches!(outcome, Err(SourceLoadError::Superseded)));
+        assert_eq!(result.revision.source_revision(), &committed_revision);
+        assert_eq!(
+            exact_snapshot_projection(&result.source_snapshot),
+            exact_snapshot_projection(&committed_snapshot)
+        );
+        assert_eq!(result.read_manifest, committed_reads);
+        assert_eq!(result.watch_inputs(), committed_watch_inputs);
+        assert_eq!(
+            exact_snapshot_projection(&result.assembler.snapshot().unwrap()),
+            exact_snapshot_projection(&committed_assembler)
+        );
+        let restored_semantic = rooted_cfg(&mut result.session, &CompileOptions::default())
+            .expect("a pre-close route swap cannot poison the committed semantic root");
+        assert_same_rooted_cfg_identity(&committed_semantic, &restored_semantic);
+        assert_eq!(
+            fs::canonicalize(&root).unwrap(),
+            fs::canonicalize(&real_main).unwrap()
+        );
+        assert_eq!(fs::read(&root).unwrap(), fs::read(&real_main).unwrap());
+
+        reload_from_filesystem(&mut result, None)
+            .expect("the next retained observation closes over the settled replacement route");
+        assert!(
+            result
+                .source_snapshot
+                .files()
+                .any(|source| source.source.contains("value() -> i32 { 2 }"))
+        );
+    }
+
+    #[test]
+    fn superseded_reobserve_at_close_boundary_keeps_the_new_commit_coherent() {
+        let dir = TestDir::new("superseded-reobserve-close");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("leaf.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let leaf = dir.write("leaf.rue", "pub fn value() -> i32 { 1 }");
+        let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+
+        fs::write(&leaf, "pub fn value() -> i32 { 2 }").unwrap();
+        let superseded = std::rc::Rc::new(std::cell::Cell::new(false));
+        let supersede_from_hook = superseded.clone();
+        IMPORT_COMMIT_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || supersede_from_hook.set(true)));
+        });
+        let probe = || superseded.get();
+        let outcome = reload_from_filesystem(&mut result, Some(&probe));
+        IMPORT_COMMIT_HOOK.with(|hook| *hook.borrow_mut() = None);
+
+        assert!(matches!(outcome, Err(SourceLoadError::Superseded)));
+        assert!(
+            result
+                .source_snapshot
+                .files()
+                .any(|source| source.source.contains("value() -> i32 { 2 }")),
+            "supersession after close must keep the newly committed bytes"
+        );
+        let assembled = result.assembler.snapshot().unwrap();
+        assert_eq!(
+            assembled.source_revision(),
+            result.source_snapshot.source_revision(),
+            "host snapshot and assembler must name the same atomic close"
+        );
+        assert_eq!(
+            result.read_manifest,
+            result.assembler.accepted_read_manifest(),
+            "host and assembler provenance must advance together"
+        );
+        assert_eq!(
+            result.revision.source_revision(),
+            result.source_snapshot.source_revision(),
+            "the public discovery view must match the installed host snapshot"
+        );
+        let session_revision = committed_import_discovery(&result.session)
+            .expect("the successful close remains the session commit");
+        assert_eq!(
+            session_revision.source_revision(),
+            result.source_snapshot.source_revision(),
+            "session and host must agree after post-close supersession"
+        );
+
+        reload_from_filesystem(&mut result, None)
+            .expect("the next observation continues from the coherent commit");
+        rooted_cfg(&mut result.session, &CompileOptions::default())
+            .expect("the committed revision remains semantically usable");
+    }
+
+    #[test]
+    fn repeated_superseded_candidate_stages_keep_the_committed_import_view_pinned() {
+        const IMPORT_RETENTION_FLOOR: usize = 64;
+        const MODULE_RETENTION_FLOOR: usize = 4096;
+        // The bounded FIFO may retain one older selected root beyond its
+        // unprotected history floor; this is the same last-good overage the
+        // ordinary module-stamp retention contract permits.
+        const SELECTED_ROOT_OVERAGE: usize = 1;
+        const ABORTS: usize = 70;
+
+        let dir = TestDir::new("superseded-stage-retention");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("leaf.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let leaf = dir.write("leaf.rue", "pub fn value() -> i32 { 1 }");
+        let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        let committed_revision = result.revision.source_revision().clone();
+        let committed_snapshot = result.source_snapshot.clone();
+        let committed_reads = result.read_manifest.clone();
+        let committed_watch_inputs = result.watch_inputs();
+        let committed_assembler = result.assembler.snapshot().unwrap();
+        let committed_semantic =
+            rooted_cfg(&mut result.session, &CompileOptions::default()).unwrap();
+        let committed_invalidations = frontend_query_invalidations(&result.session);
+
+        for attempt in 0..ABORTS {
+            fs::write(
+                &leaf,
+                format!("pub fn value() -> i32 {{ {} }}", attempt + 2),
+            )
+            .unwrap();
+            let superseded = std::rc::Rc::new(std::cell::Cell::new(false));
+            let supersede_from_hook = superseded.clone();
+            IMPORT_STAGE_HOOK.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move |_| supersede_from_hook.set(true)));
+            });
+            let probe = || superseded.get();
+            let outcome = reload_from_filesystem(&mut result, Some(&probe));
+            IMPORT_STAGE_HOOK.with(|hook| *hook.borrow_mut() = None);
+
+            assert!(
+                matches!(outcome, Err(SourceLoadError::Superseded)),
+                "candidate attempt {attempt} must be superseded after staging"
+            );
+            assert_eq!(
+                result.revision.source_revision(),
+                &committed_revision,
+                "candidate attempt {attempt} must restore the committed revision"
+            );
+            assert_eq!(
+                exact_snapshot_projection(&result.source_snapshot),
+                exact_snapshot_projection(&committed_snapshot),
+                "candidate attempt {attempt} must preserve the exact host snapshot"
+            );
+            assert_eq!(
+                result.read_manifest, committed_reads,
+                "candidate attempt {attempt} must preserve accepted-read provenance"
+            );
+            assert_eq!(
+                result.watch_inputs(),
+                committed_watch_inputs,
+                "candidate attempt {attempt} must preserve the exact watch baseline"
+            );
+            assert_eq!(
+                exact_snapshot_projection(&result.assembler.snapshot().unwrap()),
+                exact_snapshot_projection(&committed_assembler),
+                "candidate attempt {attempt} must preserve assembler identity"
+            );
+        }
+
+        let restored_semantic = rooted_cfg(&mut result.session, &CompileOptions::default())
+            .expect("the committed view survives pressure beyond the 64-view retention cap");
+        assert_same_rooted_cfg_identity(&committed_semantic, &restored_semantic);
+        assert_eq!(
+            frontend_query_invalidations(&result.session),
+            committed_invalidations,
+            "repeated rollback must not invalidate the committed semantic cone"
+        );
+        let retention = result.session.unstable_metrics().retention();
+        assert!(
+            retention.retained_module_input_views <= MODULE_RETENTION_FLOOR + SELECTED_ROOT_OVERAGE,
+            "module-input history must remain within its floor plus selected root while the committed root is pinned; got {}",
+            retention.retained_module_input_views,
+        );
+        assert!(
+            retention.retained_import_input_views <= IMPORT_RETENTION_FLOOR + SELECTED_ROOT_OVERAGE,
+            "import-input history must remain within its floor plus selected root while the committed root is pinned; got {}",
+            retention.retained_import_input_views,
+        );
+
+        reload_from_filesystem(&mut result, None)
+            .expect("a fresh request still closes after repeated superseded stages");
+        assert!(
+            result
+                .source_snapshot
+                .files()
+                .any(|source| source.source.contains("value() -> i32 { 71 }")),
+            "recovery must publish the newest bytes after retention pressure"
+        );
+        rooted_cfg(&mut result.session, &CompileOptions::default())
+            .expect("the newest source must reach semantic analysis after retention pressure");
+    }
+
     /// ADR-0075 determinism: the ledger's read order and the revision's contents
     /// are properties of the compiler's candidate policy, not of how many query
     /// workers happen to be running. A wave dedupes host operations and derives
@@ -3180,6 +4034,33 @@ mod tests {
             .expect("test module is present")
             .source
             .clone()
+    }
+
+    fn assert_same_rooted_cfg_identity(
+        before: &rue_compiler::unstable::RootedCfgOutput,
+        after: &rue_compiler::unstable::RootedCfgOutput,
+    ) {
+        assert_eq!(before.functions().len(), after.functions().len());
+        for (before, after) in before.functions().iter().zip(after.functions()) {
+            assert_eq!(before.source_name(), after.source_name());
+            assert!(
+                std::ptr::eq(before.air(), after.air()),
+                "{} must reuse the exact committed AIR",
+                before.source_name()
+            );
+            assert!(
+                std::ptr::eq(before.cfg(), after.cfg()),
+                "{} must reuse the exact committed CFG",
+                before.source_name()
+            );
+            assert!(
+                std::ptr::eq(before.type_pool(), after.type_pool()),
+                "{} must reuse the exact committed type pool",
+                before.source_name()
+            );
+            assert!(Arc::ptr_eq(before.interner(), after.interner()));
+            assert!(Arc::ptr_eq(before.strings(), after.strings()));
+        }
     }
 
     #[test]
@@ -3353,6 +4234,47 @@ mod tests {
             entry.requested_path() == alias.to_string_lossy()
                 && entry.canonical_path() == canonical.to_string_lossy()
         }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn watch_inputs_detect_same_target_symlink_inode_replacement() {
+        let dir = TestDir::new("watch-same-target-symlink-replacement");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("alias/leaf.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let target_dir = dir.path.join("target");
+        let target = dir.write("target/leaf.rue", "pub fn value() -> i32 { 1 }");
+        let alias = dir.path.join("alias");
+        std::os::unix::fs::symlink(&target_dir, &alias).unwrap();
+        let result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        let inputs = result.watch_inputs();
+        assert!(!watch_inputs_changed(&inputs));
+
+        let original_identity = physical_file_identity(&fs::symlink_metadata(&alias).unwrap());
+        let replacement = dir.path.join("replacement-alias");
+        std::os::unix::fs::symlink(&target_dir, &replacement).unwrap();
+        let replacement_identity =
+            physical_file_identity(&fs::symlink_metadata(&replacement).unwrap());
+        assert_ne!(
+            original_identity, replacement_identity,
+            "the test must replace the directory symlink with a distinct inode"
+        );
+        fs::rename(&replacement, &alias).unwrap();
+
+        assert_eq!(
+            fs::canonicalize(alias.join("leaf.rue")).unwrap(),
+            fs::canonicalize(&target).unwrap()
+        );
+        assert_eq!(
+            fs::read(alias.join("leaf.rue")).unwrap(),
+            fs::read(&target).unwrap()
+        );
+        assert!(
+            watch_inputs_changed(&inputs),
+            "a new symlink inode is a route change even when target and bytes are identical"
+        );
     }
 
     #[cfg(unix)]
@@ -3773,7 +4695,8 @@ mod tests {
     fn supersession_at_the_close_boundary_commits_no_partial_state() {
         let mut aborted_before_any_commit = 0;
         let mut aborted_after_a_commit = 0;
-        for trip_after in 1..=6 {
+        let mut completed_past_last_check = false;
+        for trip_after in 1..=64 {
             let (_project, _stdlib, main, std_root) =
                 fallible_project(&format!("supersede-late-{trip_after}"));
             let mut result =
@@ -3807,8 +4730,17 @@ mod tests {
                 }
                 // Past the last check the round runs to completion, and the
                 // commit must be whole.
-                Ok(()) => assert!(acquired, "a successful acquisition commits its module"),
+                Ok(()) => {
+                    assert!(acquired, "a successful acquisition commits its module");
+                    completed_past_last_check = true;
+                }
                 Err(other) => panic!("unexpected acquisition failure: {other:?}"),
+            }
+            if aborted_before_any_commit > 0
+                && aborted_after_a_commit > 0
+                && completed_past_last_check
+            {
+                break;
             }
         }
         // The sweep must actually exercise both abort positions, or it would
@@ -3817,6 +4749,10 @@ mod tests {
         assert!(
             aborted_after_a_commit > 0,
             "no abort landed after a round committed"
+        );
+        assert!(
+            completed_past_last_check,
+            "the bounded sweep never passed the final supersession checkpoint"
         );
     }
 
@@ -3853,6 +4789,48 @@ mod tests {
         .expect("an unsuperseded acquisition succeeds after repeated aborts");
         assert!(contains_trusted_option(&result.source_snapshot));
         assert_eq!(result.source_snapshot.source_revision().modules().len(), 2);
+    }
+
+    /// Route drift in a newly reached trusted leaf is supersession, even when
+    /// the caller's explicit probe stays quiet. The acquisition must not
+    /// publish the stale environmental failure or any partial trusted state.
+    #[test]
+    fn superseding_acquisition_classifies_newly_reached_route_drift_as_superseded() {
+        let project = TestDir::new("supersede-new-trusted-route-project");
+        let stdlib = TestDir::new("supersede-new-trusted-route-std");
+        let main = project.write("main.rue", READ_LINE_ROOT);
+        let std_root = write_read_line_std(&stdlib);
+        let strbuf = std_root.join("strbuf.rue");
+        let mut result =
+            discover_and_load_imports(main.to_str().unwrap(), None, Some(&std_root)).unwrap();
+
+        let hook_fired = Rc::new(Cell::new(false));
+        let hook_fired_from_stage = Rc::clone(&hook_fired);
+        IMPORT_STAGE_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |_| {
+                if !hook_fired_from_stage.replace(true) {
+                    fs::write(&strbuf, format!("{VALID_STRBUF}\n")).unwrap();
+                }
+            }));
+        });
+        let outcome = acquire_reached_toolchain_modules_superseding(
+            &mut result,
+            &CompileOptions::default(),
+            Some(&|| false),
+        );
+        IMPORT_STAGE_HOOK.with(|hook| *hook.borrow_mut() = None);
+
+        assert!(hook_fired.get(), "the test must drift the reached route");
+        assert!(matches!(outcome, Err(SourceLoadError::Superseded)));
+        assert_nothing_acquired(&mut result);
+
+        acquire_reached_toolchain_modules_superseding(
+            &mut result,
+            &CompileOptions::default(),
+            Some(&|| false),
+        )
+        .expect("a fresh acquisition succeeds after the drift is reobserved");
+        assert_eq!(trusted_read_count(&result.read_manifest), 4);
     }
 
     /// A probe that never trips leaves acquisition identical to the unprobed

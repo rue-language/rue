@@ -637,6 +637,10 @@ pub(super) struct RetainedValueStamp {
 #[derive(Debug)]
 pub(super) struct ModuleInputStore {
     pub(super) revisions: VecDeque<Arc<ModuleInputView>>,
+    /// Exact revision lookup for every retained module view. Recency is not a
+    /// lineage authority: an aborted successor remains retained after the
+    /// session reselects its committed predecessor.
+    pub(super) by_revision: AHashMap<Revision, Arc<ModuleInputView>>,
     /// Runtime selection roots may outlive the ordinary recency window. At
     /// most current and last-good are protected, so retained views are bounded
     /// by the window plus two.
@@ -666,6 +670,7 @@ impl Default for ModuleInputStore {
     fn default() -> Self {
         Self {
             revisions: VecDeque::new(),
+            by_revision: AHashMap::new(),
             protected_revisions: BTreeSet::new(),
             retention_limit: MODULE_INPUT_REVISION_RETENTION,
             next_stamp: 1,
@@ -1487,8 +1492,19 @@ pub(super) fn release_stamp_value<T: Eq + Hash>(
     }
 }
 
+fn index_module_input_view(store: &mut ModuleInputStore, view: &Arc<ModuleInputView>) {
+    assert!(
+        store
+            .by_revision
+            .insert(view.revision, view.clone())
+            .is_none(),
+        "module input revisions are immutable and uniquely numbered"
+    );
+}
+
 #[cfg(test)]
 pub(super) fn retain_module_input_view(store: &mut ModuleInputStore, view: Arc<ModuleInputView>) {
+    index_module_input_view(store, &view);
     store.revisions.push_back(view);
     trim_module_input_views(store);
 }
@@ -1507,7 +1523,13 @@ pub(super) fn trim_module_input_views(store: &mut ModuleInputStore) {
             .revisions
             .remove(index)
             .expect("an evictable module input view has a valid index");
+        let indexed = store
+            .by_revision
+            .remove(&evicted.revision)
+            .expect("every retained module input view has an exact index entry");
+        assert!(Arc::ptr_eq(&evicted, &indexed));
         let lease = evicted.stamp_lease.clone();
+        drop(indexed);
         drop(evicted);
         release_orphaned_module_stamp_leases(store, lease);
     }
@@ -1546,6 +1568,13 @@ pub(super) fn discard_module_input_view(store: &Mutex<ModuleInputStore>, revisio
         .pop_back()
         .expect("a failed runtime publication has a pending module view");
     assert_eq!(view.revision, revision);
+    assert!(
+        store
+            .by_revision
+            .get(&revision)
+            .is_none_or(|indexed| !Arc::ptr_eq(&view, indexed)),
+        "a failed runtime publication never indexes its pending module view"
+    );
     let lease = view.stamp_lease.clone();
     drop(view);
     release_orphaned_module_stamp_leases(&mut store, lease);
@@ -1560,6 +1589,12 @@ pub(super) fn commit_module_input_view(store: &Mutex<ModuleInputStore>, revision
         Some(revision),
         "runtime publication commits the pending module view"
     );
+    let view = store
+        .revisions
+        .back()
+        .expect("a committed module input revision retains its view")
+        .clone();
+    index_module_input_view(&mut store, &view);
     trim_module_input_views(&mut store);
 }
 
@@ -1950,6 +1985,7 @@ pub(super) fn additive_diff<'a, T: Clone + PartialEq + 'a>(
 pub(super) fn publish_module_inputs_delta(
     store: &Mutex<ModuleInputStore>,
     revision: Revision,
+    parent_revision: Revision,
     snapshot: &SourceSnapshot,
     new_sources: &[ModuleRevision],
 ) -> Vec<(InputIdentity, u64)> {
@@ -1957,9 +1993,9 @@ pub(super) fn publish_module_inputs_delta(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let parent_view = store
-        .revisions
-        .back()
-        .expect("a module overlay extends a retained parent view")
+        .by_revision
+        .get(&parent_revision)
+        .expect("a module overlay extends its retained exact parent view")
         .clone();
     let parent_lease = parent_view.stamp_lease.clone();
     let mut leaves = Vec::new();

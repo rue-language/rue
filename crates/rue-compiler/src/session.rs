@@ -149,6 +149,9 @@ impl ImportDiscoveryRevisionArtifact {
     pub(crate) fn status(&self) -> ImportDiscoveryRevisionStatus {
         self.status
     }
+    fn input_revision(&self) -> Option<crate::ImportInputRevision> {
+        self.input_revision
+    }
     pub(crate) fn source_revision(&self) -> &SourceRevision {
         &self.source_revision
     }
@@ -262,6 +265,14 @@ pub struct CompilerSession {
     /// cleared by the successor close it authorizes (or by any new import-input
     /// request/source update, so a stale delta can neither stage nor close).
     successor_delta_nonce: Option<u64>,
+    /// Exact session-facing selectors that existed before the current rooted
+    /// import-input request began or before a trusted successor overlay was
+    /// published. Candidate parsing and import diagnostics may move these
+    /// selectors while the request is open; a superseded filesystem observation
+    /// restores this snapshot after the revisioned input database reselects its
+    /// committed root. Immutable terminals computed by the discarded request may
+    /// remain retained, but none stays selected.
+    import_request_checkpoint: Option<ImportRequestCheckpoint>,
     /// Monotonic nonce source for continuation tokens; a token is valid only
     /// while its nonce matches the outstanding state.
     next_continuation_nonce: u64,
@@ -744,6 +755,17 @@ impl CompilerSession {
         self.published.as_ref()
     }
 
+    fn capture_import_request_checkpoint(&self) -> ImportRequestCheckpoint {
+        ImportRequestCheckpoint {
+            validated_accepted_reads: self.validated_accepted_reads.clone(),
+            continuation: self.continuation.clone(),
+            discovery_attempt: self.queries.discovery_attempt.clone(),
+            prior_discovery: self.queries.prior_discovery.clone(),
+            batch_diagnostic_order: self.batch_diagnostic_order.clone(),
+            diagnostics: self.diagnostics.clone(),
+        }
+    }
+
     /// Begins one fresh rooted external-input request with granular immutable
     /// module source, accepted-read provenance, and observation leaves.
     /// Successor carry is available only through batch publication.
@@ -753,13 +775,29 @@ impl CompilerSession {
         context: crate::ImportDiscoveryContext,
         accepted_reads: crate::AcceptedReadManifest,
     ) -> crate::CompileResult<crate::ImportInputRevision> {
+        // Preserve the first uncommitted request boundary. A fresh observation
+        // may deliberately supersede a provisional trusted successor after its
+        // selectors have moved, but that successor is still part of the same
+        // transaction: replacing this checkpoint would make abort restore the
+        // provisional selectors and consumed continuation instead of the exact
+        // committed predecessor (RUE-1862).
+        if self.import_request_checkpoint.is_none() {
+            self.import_request_checkpoint = Some(self.capture_import_request_checkpoint());
+        }
         // A fresh observation generation invalidates any outstanding
         // trusted-toolchain continuation and successor-delta authority (RUE-1112).
         self.continuation = None;
         self.successor_delta_nonce = None;
-        self.queries
+        let begun = self
+            .queries
             .revisioned
-            .begin_import_inputs(snapshot, context, accepted_reads)
+            .begin_import_inputs(snapshot, context, accepted_reads);
+        if begun.is_err()
+            && let Err(rollback) = self.abort_import_input_request()
+        {
+            return Err(rollback);
+        }
+        begun
     }
 
     pub(crate) fn import_demand_frontier_for_roots(
@@ -947,8 +985,9 @@ impl CompilerSession {
                 };
                 Some(IncrementalImportStage {
                     revision: current,
-                    delta: added,
+                    plan_delta: added.clone(),
                     predecessor_plan,
+                    parse_delta: added,
                     predecessor_parse,
                     inherited_parse_work: predecessor.parse_work,
                 })
@@ -1374,7 +1413,7 @@ impl CompilerSession {
                 "the successor delta is stale (superseded by a newer publish, request, or close)",
             ));
         }
-        let Some((current, snapshot, context, accepted_reads, ledger, _)) =
+        let Some((current, snapshot, context, accepted_reads, ledger, transition)) =
             self.queries.revisioned.current_import_view_state()
         else {
             return Err(reject(
@@ -1414,6 +1453,7 @@ impl CompilerSession {
             accepted_reads,
             ledger,
             revision: current,
+            transition,
             delta: new_modules.into(),
         })
     }
@@ -1430,29 +1470,119 @@ impl CompilerSession {
         delta: &TrustedSuccessorDelta,
     ) -> Result<crate::ImportDiscoveryPlan, CompileErrors> {
         let state = self.derive_successor_state(delta)?;
-        let Some(predecessor) = self.last_good_discovery_artifact() else {
-            return Err(CompileErrors::from(CompileError::without_span(
-                ErrorKind::InvalidCompilerInput(
-                    "trusted-toolchain successor has no committed predecessor".into(),
-                ),
-            )));
-        };
-        let Some(predecessor_plan) = predecessor.plan.clone() else {
-            return Err(CompileErrors::from(CompileError::without_span(
-                ErrorKind::InvalidCompilerInput(
-                    "trusted-toolchain predecessor carries no import plan".into(),
-                ),
-            )));
-        };
-        let Some(predecessor_parse) = self.queries.revisioned.last_good_parse_terminal().cloned()
-        else {
-            return Err(CompileErrors::from(CompileError::without_span(
-                ErrorKind::InvalidCompilerInput(
-                    "trusted-toolchain predecessor carries no exact parse terminal".into(),
-                ),
-            )));
-        };
         let revision = state.revision;
+        let reject = |message: &str| {
+            CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                format!("trusted-toolchain successor staging rejected: {message}"),
+            )))
+        };
+
+        // The successor plan's delta means every module added since the
+        // committed close. Keep that plan anchored to the committed artifact so
+        // close-time graph reduction sees the complete cumulative delta even
+        // when the final staging round appends nothing.
+        let committed = self
+            .last_good_discovery_artifact()
+            .filter(|artifact| {
+                artifact.input_revision.is_some_and(|predecessor| {
+                    predecessor.request_generation == revision.request_generation
+                })
+            })
+            .ok_or_else(|| {
+                reject("the successor has no committed predecessor in its generation")
+            })?;
+        if let crate::revisioned_query_database::ImportInputTransition::TrustedSuccessor {
+            parent,
+            ..
+        } = &state.transition
+            && committed.input_revision != Some(*parent)
+        {
+            return Err(reject(
+                "the first trusted-successor step does not extend the committed predecessor",
+            ));
+        }
+        let predecessor_plan = committed
+            .plan
+            .clone()
+            .ok_or_else(|| reject("the committed predecessor has no import plan"))?;
+        let plan_delta = state.delta.clone();
+
+        // Parse staging has a deliberately narrower predecessor: the exact
+        // request-local candidate produced by the previous round. A request may
+        // also stage the same immutable input view again after its frontier
+        // becomes empty to prove the closing witness. Chain that zero-delta
+        // stage to the exact open artifact for this revision. Neither path
+        // promotes the provisional terminal across the commit boundary.
+        let same_revision = self.open_discovery.as_ref().filter(|artifact| {
+            artifact.status == ImportDiscoveryRevisionStatus::Open
+                && artifact.input_revision == Some(revision)
+                && continues_discovery_lifecycle(
+                    artifact,
+                    &state.snapshot,
+                    &state.context,
+                    &state.accepted_reads,
+                    &state.ledger,
+                )
+        });
+        let (parse_delta, predecessor_parse, inherited_parse_work) = if let Some(predecessor) =
+            same_revision
+        {
+            let parse = predecessor.staging_parse_terminal.clone().ok_or_else(|| {
+                reject("the open same-revision predecessor has no exact parse terminal")
+            })?;
+            (
+                Arc::<[crate::ModuleRevision]>::from([]),
+                parse,
+                predecessor.parse_work,
+            )
+        } else {
+            match &state.transition {
+                crate::revisioned_query_database::ImportInputTransition::HostBatch {
+                    parent,
+                    added,
+                } => {
+                    let predecessor = self
+                        .open_discovery
+                        .as_ref()
+                        .filter(|artifact| {
+                            artifact.status == ImportDiscoveryRevisionStatus::Open
+                                && artifact.input_revision == Some(*parent)
+                        })
+                        .ok_or_else(|| {
+                            reject("the host-batch parent has no exact open predecessor artifact")
+                        })?;
+                    let parse = predecessor.staging_parse_terminal.clone().ok_or_else(|| {
+                        reject("the open host-batch predecessor has no exact parse terminal")
+                    })?;
+                    (added.clone(), parse, predecessor.parse_work)
+                }
+                crate::revisioned_query_database::ImportInputTransition::TrustedSuccessor {
+                    parent,
+                    added,
+                } => {
+                    let predecessor = self
+                        .last_good_discovery_artifact()
+                        .filter(|artifact| artifact.input_revision == Some(*parent))
+                        .ok_or_else(|| {
+                            reject("the trusted successor has no exact committed predecessor")
+                        })?;
+                    let parse = self
+                        .queries
+                        .revisioned
+                        .last_good_parse_terminal()
+                        .cloned()
+                        .ok_or_else(|| {
+                            reject("the committed predecessor has no exact parse terminal")
+                        })?;
+                    (added.clone(), parse, predecessor.parse_work)
+                }
+                crate::revisioned_query_database::ImportInputTransition::Fresh => {
+                    return Err(reject(
+                        "a fresh import view cannot consume trusted-successor authority",
+                    ));
+                }
+            }
+        };
         self.stage_import_discovery_inner(
             &state.snapshot,
             state.context,
@@ -1461,10 +1591,11 @@ impl CompilerSession {
             Some(revision),
             Some(IncrementalImportStage {
                 revision,
-                delta: state.delta,
+                plan_delta,
                 predecessor_plan,
+                parse_delta,
                 predecessor_parse,
-                inherited_parse_work: predecessor.parse_work,
+                inherited_parse_work,
             }),
         )
     }
@@ -1520,7 +1651,7 @@ impl CompilerSession {
         incremental: Option<IncrementalImportStage>,
     ) -> Result<crate::ImportDiscoveryPlan, CompileErrors> {
         let new_module_ids: Option<Vec<crate::ModuleId>> = incremental.as_ref().map(|stage| {
-            let delta = &stage.delta;
+            let delta = &stage.plan_delta;
             delta
                 .iter()
                 .map(|revision| revision.module.clone())
@@ -1588,7 +1719,7 @@ impl CompilerSession {
                 incremental.as_ref().map(|stage| {
                     (
                         stage.revision,
-                        &stage.delta,
+                        &stage.parse_delta,
                         stage.predecessor_parse.clone(),
                     )
                 }),
@@ -2163,6 +2294,8 @@ impl CompilerSession {
                     attached_demands: None,
                 }
             });
+        self.queries.revisioned.commit_import_request();
+        self.import_request_checkpoint = None;
         Ok(artifact)
     }
 
@@ -2349,6 +2482,11 @@ impl CompilerSession {
         // topology are inherited unchanged, only the verified added leaves'
         // source/provenance leaves are published, and the overlay re-derives the
         // additions from the published parent view (they must equal `added`).
+        let checkpoint = self.capture_import_request_checkpoint();
+        assert!(
+            self.import_request_checkpoint.is_none(),
+            "a committed predecessor must clear its import-request checkpoint before successor publication"
+        );
         let published = self
             .queries
             .revisioned
@@ -2361,6 +2499,12 @@ impl CompilerSession {
                 state.revision.frontier_round + 1,
             )
             .map_err(CompileErrors::from)?;
+        // Successor publication mutates the selected import view before the
+        // host's trusted re-close can commit. Preserve the exact committed
+        // predecessor selectors so any failed or superseded re-close can roll
+        // the overlay back without letting a later request checkpoint it as
+        // committed state (RUE-1862/RUE-1863).
+        self.import_request_checkpoint = Some(checkpoint);
         // Consume the single-use continuation only on success.
         self.continuation = None;
         // Mint the opaque successor-delta authority from the VERIFIED `added`
@@ -2750,6 +2894,7 @@ impl CompilerSession {
         snapshot: &SourceSnapshot,
         presentation: DiagnosticAttemptProvenance,
         attempt_id: AttemptId,
+        promote_selection: bool,
     ) -> (
         ParseQueryRecord,
         Arc<dyn AttemptView>,
@@ -2859,7 +3004,11 @@ impl CompilerSession {
                         invalidation,
                     })
                 });
-        self.queries.revisioned.select_parse(&attempt);
+        if promote_selection {
+            self.queries.revisioned.select_parse(&attempt);
+        } else {
+            self.queries.revisioned.select_parse_candidate(&attempt);
+        }
         let terminal = attempt
             .terminal()
             .unwrap_or_else(|| panic!("parse query aborted: {:?}", attempt.abort()))
@@ -3140,7 +3289,7 @@ impl CompilerSession {
                 })
             },
         );
-        self.queries.revisioned.select_parse(&attempt);
+        self.queries.revisioned.select_parse_candidate(&attempt);
         let terminal = attempt
             .terminal()
             .unwrap_or_else(|| panic!("parse query aborted: {:?}", attempt.abort()))
@@ -3224,7 +3373,7 @@ impl CompilerSession {
                 let order = crate::shared_segments::SharedList::flat(order.into());
                 self.select_diagnostic_presentation(Some(order.clone()));
                 let presentation = DiagnosticAttemptProvenance::Presentation(order);
-                self.execute_parse_query(snapshot, presentation, attempt_id)
+                self.execute_parse_query(snapshot, presentation, attempt_id, false)
             }
         };
         guard.started();
@@ -3245,7 +3394,7 @@ impl CompilerSession {
         let mut guard = self.metrics.begin_unprojected("parse");
         let attempt_id = guard.id;
         let (record, view, execution, parse_work, invalidation, _) =
-            self.execute_parse_query(snapshot, presentation, attempt_id);
+            self.execute_parse_query(snapshot, presentation, attempt_id, true);
         guard.started();
         self.metrics.update(parse_work, invalidation.clone());
         let result = record.result.clone();
@@ -5571,6 +5720,61 @@ impl CompilerSession {
                 panic!("uncanceled rooted body-closure request aborted: {abort:?}")
             }
         }
+    }
+
+    /// Discard protocol-only state from a superseded filesystem observation.
+    /// Immutable query terminals may remain retained, but no open attempt is
+    /// allowed to shadow the last closed-valid discovery selected for public
+    /// semantic queries.
+    pub(crate) fn abort_import_input_request(&mut self) -> crate::CompileResult<()> {
+        let committed = self.last_good_discovery_artifact().map(|artifact| {
+            (
+                artifact.input_revision(),
+                artifact.snapshot().clone(),
+                artifact.accepted_read_manifest().clone(),
+                artifact.ledger().clone(),
+            )
+        });
+        self.open_discovery = None;
+        self.successor_delta_nonce = None;
+        self.queries
+            .revisioned
+            .restore_import_revision_after_abort(
+                committed.as_ref().and_then(|(revision, _, _, _)| *revision),
+            )?;
+        if let Some(checkpoint) = self.import_request_checkpoint.take() {
+            self.validated_accepted_reads = checkpoint.validated_accepted_reads;
+            self.continuation = checkpoint.continuation;
+            self.queries.discovery_attempt = checkpoint.discovery_attempt;
+            self.queries.prior_discovery = checkpoint.prior_discovery;
+            self.batch_diagnostic_order = checkpoint.batch_diagnostic_order;
+            self.diagnostics = checkpoint.diagnostics;
+            // A fresh rooted import request invalidates a provisional trusted
+            // successor delta permanently. Restoring only its nonce after the
+            // revisioned database has reselected the committed predecessor
+            // would manufacture a live-looking capability whose exact overlay
+            // revision and lineage no longer exist.
+            self.successor_delta_nonce = None;
+            self.refresh_retention_metrics();
+            return Ok(());
+        }
+        self.validated_accepted_reads = committed
+            .as_ref()
+            .map(|(_, snapshot, accepted_reads, _)| (snapshot.clone(), accepted_reads.clone()));
+        self.continuation = committed.and_then(|(revision, snapshot, accepted_reads, ledger)| {
+            revision.map(|revision| {
+                self.next_continuation_nonce += 1;
+                ContinuationState {
+                    nonce: self.next_continuation_nonce,
+                    revision,
+                    snapshot,
+                    accepted_reads,
+                    ledger,
+                    attached_demands: None,
+                }
+            })
+        });
+        Ok(())
     }
 
     fn attach_toolchain_park(&mut self, park: &crate::ParkedToolchainModules) {

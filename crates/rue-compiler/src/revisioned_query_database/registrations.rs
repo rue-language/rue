@@ -950,6 +950,8 @@ impl RevisionedQueryDatabase {
             body_closure_anonymous_digest_forcing,
             next_import_request: 0,
             current_import_revision: None,
+            committed_import_revision: None,
+            committed_import_revision_pin: None,
             active_compatibility_token: 1,
             ordinary_lineage_published: false,
             active_import_context: None,

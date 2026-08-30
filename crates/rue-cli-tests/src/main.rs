@@ -1087,9 +1087,8 @@ struct WatchScenario {
     /// was acted on but never announced on the protocol.
     #[serde(default)]
     boundary_delay_ms: Option<u64>,
-    /// Hold the watcher between starting its re-observation monitor and the
-    /// re-observation itself, so an edit can deterministically land while
-    /// the import graph is being re-closed (RUE-1830).
+    /// Hold retained re-observation inside its first physical-read boundary,
+    /// so an edit deterministically supersedes in-progress discovery.
     #[serde(default)]
     reobserve_delay_ms: Option<u64>,
     /// Hold the watcher between re-observation and reached-toolchain
@@ -2460,6 +2459,59 @@ fn watch_event_count(path: &Path, event: &str) -> usize {
         .count()
 }
 
+fn assert_fresh_cycle_after_supersession(
+    events: &[String],
+    superseded: usize,
+) -> Result<(), String> {
+    let fresh_reobserve_started = events
+        .iter()
+        .enumerate()
+        .skip(superseded + 1)
+        .find_map(|(index, event)| (event == "reobserve-started").then_some(index))
+        .ok_or_else(|| {
+            "watch never started a fresh re-observation after supersession".to_string()
+        })?;
+    let fresh_reobserve_ok = events
+        .iter()
+        .enumerate()
+        .skip(fresh_reobserve_started + 1)
+        .find_map(|(index, event)| (event == "reobserve-ok").then_some(index))
+        .ok_or_else(|| {
+            "watch never completed the fresh re-observation after supersession".to_string()
+        })?;
+    let fresh_acquire_ok = events
+        .iter()
+        .enumerate()
+        .skip(fresh_reobserve_ok + 1)
+        .find_map(|(index, event)| (event == "acquire-ok").then_some(index))
+        .ok_or_else(|| {
+            "watch never completed fresh toolchain acquisition after supersession".to_string()
+        })?;
+    let fresh_compile_started = events
+        .iter()
+        .enumerate()
+        .skip(fresh_acquire_ok + 1)
+        .find_map(|(index, event)| (event == "compile-started").then_some(index))
+        .ok_or_else(|| "watch never compiled the fresh revision after supersession".to_string())?;
+    let second_publication = events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| (event == "published").then_some(index))
+        .nth(1)
+        .ok_or_else(|| "watch never published the fresh revision".to_string())?;
+    if !(superseded < fresh_reobserve_started
+        && fresh_reobserve_started < fresh_reobserve_ok
+        && fresh_reobserve_ok < fresh_acquire_ok
+        && fresh_acquire_ok < fresh_compile_started
+        && fresh_compile_started < second_publication)
+    {
+        return Err(format!(
+            "watch fresh-cycle protocol order was invalid after supersession: {events:?}"
+        ));
+    }
+    Ok(())
+}
+
 fn finish_watch_child(
     mut child: std::process::Child,
     stdout: std::thread::JoinHandle<Vec<u8>>,
@@ -2798,15 +2850,22 @@ fn run_watch_case(
                     .iter()
                     .position(|event| event == "acquire-superseded")
                     .ok_or_else(|| "watch supersession anchor disappeared".to_string())?;
-                // A superseded acquisition commits nothing, so a later cycle
-                // must acquire cleanly over the newest bytes.
-                events
+                let reobserve_ok = events
                     .iter()
-                    .skip(superseded + 1)
-                    .position(|event| event == "acquire-ok")
-                    .ok_or_else(|| {
-                        "watch never reacquired after a superseded acquisition".to_string()
-                    })?;
+                    .position(|event| event == "reobserve-ok")
+                    .ok_or_else(|| "watch reobserve anchor disappeared".to_string())?;
+                if events[reobserve_ok..superseded]
+                    .iter()
+                    .any(|event| matches!(event.as_str(), "acquire-ok" | "compile-started"))
+                {
+                    return Err(format!(
+                        "watch compiled a stale partially acquired revision: {events:?}"
+                    ));
+                }
+                // A superseded acquisition commits nothing, so a later cycle
+                // must reobserve, acquire, compile, and publish over the newest
+                // bytes in that exact order.
+                assert_fresh_cycle_after_supersession(&events, superseded)?;
             }
             WatchScenarioKind::SupersedeReobserve => {
                 // The first edit wakes the settled loop; the widened
@@ -2815,6 +2874,13 @@ fn run_watch_case(
                 // attempt before compilation ever starts (RUE-1830).
                 wait_for_watch_event(&mut child, &protocol, "change-detected", 1, deadline)?;
                 wait_for_watch_event(&mut child, &protocol, "reobserve-started", 1, deadline)?;
+                wait_for_watch_event(
+                    &mut child,
+                    &protocol,
+                    "reobserve-read-boundary",
+                    1,
+                    deadline,
+                )?;
                 write_watch_edit(dir, &scenario.edits[1])?;
                 wait_for_watch_event(&mut child, &protocol, "reobserve-superseded", 1, deadline)?;
                 wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
@@ -2823,16 +2889,23 @@ fn run_watch_case(
                     .iter()
                     .position(|event| event == "reobserve-superseded")
                     .ok_or_else(|| "watch supersession anchor disappeared".to_string())?;
-                // The superseded attempt committed nothing: a fresh
-                // re-observation over the newest bytes follows it before the
-                // next compile can start.
-                events
+                let reobserve = events
                     .iter()
-                    .skip(superseded + 1)
-                    .position(|event| event == "reobserve-ok")
-                    .ok_or_else(|| {
-                        "watch never reobserved the newest revision after supersession".to_string()
-                    })?;
+                    .position(|event| event == "reobserve-started")
+                    .ok_or_else(|| "watch reobserve anchor disappeared".to_string())?;
+                if events[reobserve..superseded].iter().any(|event| {
+                    matches!(
+                        event.as_str(),
+                        "reobserve-ok" | "acquire-ok" | "compile-started"
+                    )
+                }) {
+                    return Err(format!(
+                        "watch compiled a stale partially reobserved revision: {events:?}"
+                    ));
+                }
+                // A fresh cycle must complete every host boundary over the
+                // newest bytes before compilation and the second publication.
+                assert_fresh_cycle_after_supersession(&events, superseded)?;
             }
         }
         assert_watch_program(contract, &program, scenario.expected_exit_codes[1])

@@ -536,6 +536,14 @@ pub fn rooted_or_toolchain_park(
     session.rooted_or_toolchain_park(options)
 }
 
+/// Discard protocol-only state from a superseded filesystem observation while
+/// retaining the session's last closed-valid discovery.
+pub fn abort_import_input_request(
+    session: &mut crate::CompilerSession,
+) -> crate::CompileResult<()> {
+    session.abort_import_input_request()
+}
+
 /// Mint the single-use trusted-toolchain continuation for the current successful
 /// import-discovery close, if one is outstanding (RUE-1112).
 pub fn closed_discovery_continuation(

@@ -46,8 +46,10 @@ impl FilesystemCompilerHost {
 
     /// Re-observe like [`Self::reobserve`], aborting promptly with
     /// [`SourceLoadError::Superseded`] once `supersession` reports a newer
-    /// source revision (RUE-1830). A superseded attempt commits no snapshot,
-    /// manifest, or graph; the caller restarts from the newest bytes.
+    /// source revision (RUE-1830). A superseded attempt never exposes partial
+    /// state: a pre-commit abort keeps the prior snapshot, manifest, and graph,
+    /// while a signal observed after close may retain that one coherent closed
+    /// successor. The caller restarts from the newest bytes either way.
     pub fn reobserve_superseding(
         &mut self,
         supersession: &dyn Fn() -> bool,
@@ -66,7 +68,9 @@ impl FilesystemCompilerHost {
     /// Acquire like [`Self::acquire_reached_toolchain_modules`], aborting
     /// promptly with [`SourceLoadError::Superseded`] once `supersession`
     /// reports a newer source revision (RUE-1863). A superseded acquisition
-    /// commits no snapshot, manifest, graph, or assembler state.
+    /// never exposes partial state: a pre-commit abort keeps the prior state,
+    /// while a signal observed after publication may retain that one coherent
+    /// committed acquisition round.
     pub fn acquire_reached_toolchain_modules_superseding(
         &mut self,
         options: &CompileOptions,
