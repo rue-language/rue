@@ -10876,6 +10876,66 @@ fn byte_pressure_evicts_in_stable_family_round_robin_order() {
 }
 
 #[test]
+fn aggregate_sweep_bookkeeping_does_not_scale_with_evictions() {
+    // RUE-1850: the sweep used to re-sum every registered family's charge
+    // before each single-terminal eviction attempt. Each sum acquires every
+    // family's retention mutex — the same lock publishers and evictors need —
+    // so a sweep evicting E terminals cost O(E x families) lock cycles purely
+    // for bookkeeping.
+    //
+    // Evictions now report the charge they reclaim, so the aggregate is
+    // decremented in place and summed once per round. A sweep therefore takes a
+    // fixed number of sums regardless of how many terminals it evicts: one on
+    // entry, one per round, and one to record the final retained figures. The
+    // pre-fix code took one more per eviction attempt on top of that, so a
+    // regression pushes the ratio past this bound.
+    const KEYS: [&str; 24] = [
+        "k00", "k01", "k02", "k03", "k04", "k05", "k06", "k07", "k08", "k09", "k10", "k11", "k12",
+        "k13", "k14", "k15", "k16", "k17", "k18", "k19", "k20", "k21", "k22", "k23",
+    ];
+    const MAX_SUMS_PER_SWEEP: u64 = 4;
+
+    let unit = budget_unit_charge(100);
+    let runtime = QueryRuntime::with_retention_budgets(
+        1,
+        RetentionBudgets {
+            retained_bytes: unit,
+            dependency_pins: u64::MAX,
+        },
+    );
+    let family = runtime
+        .family_with_equality_and_retained_charge::<Key, u64>("sweep", 64, PartialEq::eq, |_| 100)
+        .unwrap();
+    publish_empty(&runtime, [revision(1)]);
+    for (index, key) in KEYS.iter().enumerate() {
+        runtime
+            .query(
+                &family,
+                revision(1),
+                Key(key),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(index as u64)),
+            )
+            .unwrap();
+    }
+
+    let metrics = runtime.metrics();
+    assert!(
+        metrics.retained_byte_evictions > 0,
+        "fixture did not apply byte pressure"
+    );
+    assert!(
+        metrics.retention_charge_snapshots
+            <= metrics.aggregate_retention_probes * MAX_SUMS_PER_SWEEP,
+        "cross-family charge sums ({}) exceeded {MAX_SUMS_PER_SWEEP} per sweep \
+         ({} probes) while evicting {} terminals — the per-candidate re-sum is back",
+        metrics.retention_charge_snapshots,
+        metrics.aggregate_retention_probes,
+        metrics.retained_byte_evictions,
+    );
+}
+
+#[test]
 fn protected_byte_overflow_reclaims_when_request_bridge_releases() {
     let unit = budget_unit_charge(100);
     let runtime = QueryRuntime::with_retention_budgets(

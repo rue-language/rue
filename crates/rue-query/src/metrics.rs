@@ -77,6 +77,10 @@ pub struct RuntimeMetrics {
     pub dependency_pin_budget: u64,
     /// Cross-family charge aggregations triggered by family-local watermarks.
     pub aggregate_retention_probes: u64,
+    /// Cross-family retention charge sums taken by the aggregate sweep. Bounded
+    /// by sweep rounds, not by terminals evicted (RUE-1850); each sum acquires
+    /// every registered family's retention mutex.
+    pub retention_charge_snapshots: u64,
     /// Deterministic family-local byte/pin quanta between aggregate probes.
     pub retained_byte_probe_quantum: u64,
     pub dependency_pin_probe_quantum: u64,
@@ -236,6 +240,7 @@ pub(crate) struct Metrics {
     pub(crate) retained_byte_pressure_events: AtomicU64,
     pub(crate) dependency_pin_pressure_events: AtomicU64,
     pub(crate) aggregate_retention_probes: AtomicU64,
+    pub(crate) retention_charge_snapshots: AtomicU64,
     pub(crate) retained_byte_overflow_events: AtomicU64,
     pub(crate) dependency_pin_overflow_events: AtomicU64,
     pub(crate) peak_retained_byte_overage: AtomicU64,
@@ -310,6 +315,7 @@ impl Metrics {
             retained_byte_budget: budgets.retained_bytes,
             dependency_pin_budget: budgets.dependency_pins,
             aggregate_retention_probes: self.aggregate_retention_probes.load(Ordering::Relaxed),
+            retention_charge_snapshots: self.retention_charge_snapshots.load(Ordering::Relaxed),
             retained_byte_probe_quantum: retention_probe_quantum(
                 budgets.retained_bytes,
                 1024 * 1024,

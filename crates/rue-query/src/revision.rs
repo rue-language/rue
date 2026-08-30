@@ -160,9 +160,10 @@ pub(crate) struct RegisteredNode {
 /// One family-local FIFO exposed to the runtime only while aggregate retention
 /// is under pressure. Ordinary publication never consults this registry.
 pub(crate) trait RetentionFamily: fmt::Debug + Send + Sync {
-    /// Evicts the oldest currently unprotected terminal in this family. Stale
-    /// FIFO entries are discarded as they are encountered.
-    fn evict_one(&self) -> bool;
+    /// Evicts the oldest currently unprotected terminal in this family, and
+    /// reports the charge it reclaimed. Stale FIFO entries are discarded as they
+    /// are encountered. `None` means nothing was evictable.
+    fn evict_one(&self) -> Option<FamilyChargeSnapshot>;
 
     /// Exact family-local byte/pin gauges without walking terminal nodes.
     fn charge_snapshot(&self) -> FamilyChargeSnapshot;
@@ -170,7 +171,7 @@ pub(crate) trait RetentionFamily: fmt::Debug + Send + Sync {
 
 pub(crate) struct RetentionFamilyDriver {
     name: Arc<str>,
-    evict_one: Box<dyn Fn() -> bool + Send + Sync>,
+    evict_one: Box<dyn Fn() -> Option<FamilyChargeSnapshot> + Send + Sync>,
     charge_snapshot: Box<dyn Fn() -> FamilyChargeSnapshot + Send + Sync>,
 }
 
@@ -184,7 +185,7 @@ impl fmt::Debug for RetentionFamilyDriver {
 }
 
 impl RetentionFamily for RetentionFamilyDriver {
-    fn evict_one(&self) -> bool {
+    fn evict_one(&self) -> Option<FamilyChargeSnapshot> {
         (self.evict_one)()
     }
 
@@ -747,12 +748,8 @@ impl QueryRuntime {
         let retention_driver: Arc<dyn RetentionFamily> = Arc::new(RetentionFamilyDriver {
             name,
             evict_one: Box::new(move || {
-                let Some(core) = weak_core.upgrade() else {
-                    return false;
-                };
-                let Some(inner) = weak_inner.upgrade() else {
-                    return false;
-                };
+                let core = weak_core.upgrade()?;
+                let inner = weak_inner.upgrade()?;
                 evict_one_from_family(&core, &inner)
             }),
             charge_snapshot: Box::new(move || {
@@ -1381,6 +1378,19 @@ impl RuntimeCore {
         live
     }
 
+    /// [`Self::retention_charge_snapshot_from`], counting the sum. Every call
+    /// acquires each registered family's retention mutex, so the count is the
+    /// sweep's bookkeeping cost (RUE-1850).
+    fn counted_retention_charge_snapshot(
+        &self,
+        families: &[(u64, Arc<dyn RetentionFamily>)],
+    ) -> RuntimeRetentionSnapshot {
+        self.metrics
+            .retention_charge_snapshots
+            .fetch_add(1, Ordering::Relaxed);
+        Self::retention_charge_snapshot_from(families)
+    }
+
     fn retention_charge_snapshot_from(
         families: &[(u64, Arc<dyn RetentionFamily>)],
     ) -> RuntimeRetentionSnapshot {
@@ -1477,7 +1487,7 @@ impl RuntimeCore {
 
     fn run_runtime_retention_sweep(&self) {
         let families = self.live_retention_families();
-        let initial = Self::retention_charge_snapshot_from(&families);
+        let initial = self.counted_retention_charge_snapshot(&families);
         self.record_retention_peaks(initial);
         let (byte_pressure, pin_pressure) = self.runtime_retention_over_budget(initial);
         if !byte_pressure && !pin_pressure {
@@ -1504,26 +1514,37 @@ impl RuntimeCore {
             start = 0;
         }
         loop {
-            let snapshot = Self::retention_charge_snapshot_from(&families);
-            let (bytes_over, pins_over) = self.runtime_retention_over_budget(snapshot);
+            // One cross-family snapshot per round (RUE-1850). Each eviction
+            // reports the charge it reclaimed, so the aggregate is decremented in
+            // place rather than re-summed per candidate — that re-sum reacquired
+            // every family's retention mutex, the same lock publishers and
+            // evictors contend for, making a sweep of E terminals across F
+            // families cost O(E x F) lock cycles just for bookkeeping.
+            //
+            // A concurrent publisher growing a family mid-round is not observed
+            // until the next round re-snapshots. That direction is safe: the
+            // running total then under-counts, so the round stops evicting
+            // earlier than strictly needed rather than over-evicting.
+            let mut snapshot = self.counted_retention_charge_snapshot(&families);
+            let (mut bytes_over, mut pins_over) = self.runtime_retention_over_budget(snapshot);
             if !bytes_over && !pins_over {
                 break;
             }
             let mut progress = false;
             for offset in 0..families.len() {
-                let snapshot = Self::retention_charge_snapshot_from(&families);
-                let (bytes_over, pins_over) = self.runtime_retention_over_budget(snapshot);
                 if !bytes_over && !pins_over {
                     break;
                 }
                 let index = (start + offset) % families.len();
                 let (token, family) = &families[index];
-                if family.evict_one() {
+                if let Some(reclaimed) = family.evict_one() {
                     progress = true;
                     let next = families
                         .get((index + 1) % families.len())
                         .map_or(token.saturating_add(1), |(token, _)| *token);
                     self.retention_sweep_cursor.store(next, Ordering::Relaxed);
+                    // Attributed to the pressure that selected this eviction,
+                    // i.e. the state before it, as before.
                     if bytes_over {
                         self.metrics
                             .retained_byte_evictions
@@ -1534,6 +1555,13 @@ impl RuntimeCore {
                             .dependency_pin_evictions
                             .fetch_add(1, Ordering::Relaxed);
                     }
+                    snapshot.retained_bytes = snapshot
+                        .retained_bytes
+                        .saturating_sub(reclaimed.retained_bytes);
+                    snapshot.dependency_pins = snapshot
+                        .dependency_pins
+                        .saturating_sub(reclaimed.dependency_pins);
+                    (bytes_over, pins_over) = self.runtime_retention_over_budget(snapshot);
                 }
             }
             if !progress {
@@ -1542,7 +1570,7 @@ impl RuntimeCore {
             start = (start + 1) % families.len();
         }
 
-        let retained = Self::retention_charge_snapshot_from(&families);
+        let retained = self.counted_retention_charge_snapshot(&families);
         let retained_bytes = retained.retained_bytes;
         let retained_pins = retained.dependency_pins;
         let byte_overage = retained_bytes.saturating_sub(self.retention_budgets.retained_bytes);

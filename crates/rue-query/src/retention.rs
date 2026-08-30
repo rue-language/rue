@@ -138,10 +138,13 @@ pub(crate) fn retention_already_converged(
         && next_publish_sweep.load(Ordering::Acquire) <= retention_limit.saturating_add(1)
 }
 
+/// Evicts the oldest unprotected terminal, reporting the charge it reclaimed so
+/// callers can maintain a running aggregate instead of re-summing every family
+/// (RUE-1850). `None` means nothing was evictable.
 pub(crate) fn evict_one_from_family<K, V>(
     core: &Arc<RuntimeCore>,
     family: &Arc<FamilyInner<K, V>>,
-) -> bool
+) -> Option<crate::revision::FamilyChargeSnapshot>
 where
     K: QueryKey,
     V: Clone + Send + Sync + 'static,
@@ -194,6 +197,10 @@ where
         };
         let empty = state.attempts.is_empty();
         drop(state);
+        let reclaimed = crate::revision::FamilyChargeSnapshot {
+            retained_bytes: terminal.retained_charge,
+            dependency_pins: terminal.dependency_pin_charge,
+        };
         core.metrics.evictions.fetch_add(1, Ordering::Relaxed);
         core.metrics
             .retained_terminals
@@ -214,9 +221,9 @@ where
         }
         drop(retention);
         handoffs.abort();
-        return true;
+        return Some(reclaimed);
     }
-    false
+    None
 }
 
 pub(crate) fn family_charge_snapshot<K, V>(family: &FamilyInner<K, V>) -> FamilyChargeSnapshot

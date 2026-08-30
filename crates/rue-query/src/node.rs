@@ -2188,7 +2188,7 @@ where
             .retention_enforcements
             .fetch_add(1, Ordering::Relaxed);
         while self.inner.retained_count.load(Ordering::Relaxed) > self.inner.retention_limit
-            && evict_one_from_family(&self.core, &self.inner)
+            && evict_one_from_family(&self.core, &self.inner).is_some()
         {}
         // The pass could not reach the configured bound: every remaining
         // candidate was a protected root the live closure still needs. Grow and
