@@ -3506,6 +3506,50 @@ mod tests {
     }
 
     #[test]
+    fn comptime_body_warm_session_matches_fresh_artifacts_and_executable() {
+        let prior = SourceSnapshot::single("<comptime-warm>", "fn main() -> i32 { 0 }").unwrap();
+        let snapshot = SourceSnapshot::single(
+            "<comptime-warm>",
+            "fn recur(comptime n: i32) -> i32 { comptime { if n <= 0 { 1 } else { recur(n - 1) + recur(n - 1) } } } fn main() -> i32 { recur(8) }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+
+        let mut warm_session = CompilerSession::new();
+        warm_session
+            .update_for_presentation(&prior)
+            .into_result()
+            .unwrap();
+        warm_session.rooted_cfg(&options).unwrap();
+        warm_session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let warm = warm_session.rooted_cfg(&options).unwrap();
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let fresh = fresh_session.rooted_cfg(&options).unwrap();
+
+        crate::test_support::assert_rooted_cfg_value_parity(
+            "comptime body warm/fresh",
+            &warm,
+            &fresh,
+        );
+        assert_eq!(warm.warnings(), fresh.warnings());
+
+        let warm_output =
+            crate::queries::compile_with_session(&mut warm_session, &snapshot, &options).unwrap();
+        let fresh_output =
+            crate::queries::compile_with_session(&mut fresh_session, &snapshot, &options).unwrap();
+        assert_eq!(warm_output.warnings, fresh_output.warnings);
+        assert_eq!(warm_output.elf, fresh_output.elf);
+    }
+
+    #[test]
     fn phase2_free_function_inlining_is_structural_and_request_local() {
         let snapshot = SourceSnapshot::single(
             "<phase2-inline-structure>",

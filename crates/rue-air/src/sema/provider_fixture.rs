@@ -23,6 +23,8 @@
 //!   this path, fixture tests fail loudly instead of silently absorbing it.
 
 use ahash::AHashMap;
+#[cfg(test)]
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -39,15 +41,17 @@ use super::provider::{
 };
 use super::{
     BodyFactProvider, BodyRirBundle, DurableAnonymousShape, DurableAnonymousSource,
-    DurableBodyLookupSource, DurableCallableSource, DurableConst, DurableConstSource,
-    DurableFunction, DurableMethod, DurableNominal, DurableNominalBody, DurableNominalSource,
-    DurableSignatureParameter, ProviderOrdinaryBody, ProviderWellKnownOptionFacts,
-    analyze_provider_ordinary_body,
+    DurableBodyLookupSource, DurableCallableSource, DurableComptimeCallOutcome, DurableConst,
+    DurableConstSource, DurableFunction, DurableMethod, DurableNominal, DurableNominalBody,
+    DurableNominalSource, DurableReducedComptimeCall, DurableSignatureParameter,
+    ProviderOrdinaryBody, ProviderWellKnownOptionFacts, analyze_provider_ordinary_body,
+    analyze_provider_specialized_body,
 };
 use crate::types::LangItem;
 use crate::{
-    AnonymousNominalKey, SemanticImportConstValue, SemanticImportType, SemanticParameterMode,
-    StableDefinitionKind, stable_digest,
+    AnonymousNominalKey, CanonicalArgumentValue, CanonicalArguments, ProviderSpecializedBody,
+    SemanticComptimeCallResult, SemanticImportConstValue, SemanticImportType,
+    SemanticParameterMode, StableDefinitionKind, TypeInstanceKey, stable_digest,
 };
 
 /// The one durable definition key vocabulary of the fixture: a name, an
@@ -108,6 +112,7 @@ pub(crate) type FixtureModule = Arc<str>;
 pub(crate) type FixtureType = SemanticImportType<FixtureKey, FixtureModule>;
 pub(crate) type FixtureConstValue = SemanticImportConstValue<FixtureKey, FixtureModule>;
 pub(crate) type FixtureBody = ProviderOrdinaryBody<FixtureKey, FixtureModule>;
+pub(crate) type FixtureSpecializedBody = ProviderSpecializedBody<FixtureKey, FixtureModule>;
 
 /// Explicit in-memory declaration facts for one single-module program.
 #[derive(Clone, Default)]
@@ -277,6 +282,30 @@ impl DurableBodyLookupSource<FixtureKey, FixtureModule> for FixtureFactSource {
     fn definition_owner_name(&self, definition: &FixtureKey) -> Option<Arc<str>> {
         definition.owner.clone()
     }
+
+    #[cfg(test)]
+    fn reduce_comptime_call(
+        &self,
+        definition: &FixtureKey,
+        _type_arguments: &[(Arc<str>, FixtureType)],
+        _value_arguments: &[(Arc<str>, FixtureConstValue)],
+    ) -> DurableComptimeCallOutcome<FixtureKey, FixtureModule> {
+        FIXTURE_DURABLE_REDUCTION.with(|configured| {
+            let configured = configured.borrow();
+            let Some((expected, value)) = configured.as_ref() else {
+                return DurableComptimeCallOutcome::NotReduced;
+            };
+            if expected != definition {
+                return DurableComptimeCallOutcome::NotReduced;
+            }
+            FIXTURE_DURABLE_REDUCTION_CALLS.with(|calls| calls.set(calls.get() + 1));
+            DurableComptimeCallOutcome::Reduced(DurableReducedComptimeCall {
+                result: SemanticComptimeCallResult::Value(SemanticImportConstValue::Integer(
+                    *value,
+                )),
+            })
+        })
+    }
 }
 
 /// Guard stub for the exact-fact provider boundary. The ordinary provider body
@@ -285,6 +314,43 @@ impl DurableBodyLookupSource<FixtureKey, FixtureModule> for FixtureFactSource {
 /// fixture (and the production wiring in `revisioned_query_database.rs`) must
 /// learn about.
 pub(crate) struct UnconsultedFactProvider;
+
+#[cfg(test)]
+thread_local! {
+    static FIXTURE_CANCELLATION_AFTER: Cell<Option<usize>> = const { Cell::new(None) };
+    static FIXTURE_CANCELLATION_CHECKS: Cell<usize> = const { Cell::new(0) };
+    static FIXTURE_DURABLE_REDUCTION: RefCell<Option<(FixtureKey, i128)>> = const { RefCell::new(None) };
+    static FIXTURE_DURABLE_REDUCTION_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_fixture_durable_integer<R>(
+    function: &str,
+    value: i128,
+    action: impl FnOnce() -> R,
+) -> (R, usize) {
+    FIXTURE_DURABLE_REDUCTION.with(|configured| {
+        let previous = configured.replace(Some((FixtureKey::function(function), value)));
+        FIXTURE_DURABLE_REDUCTION_CALLS.with(|calls| calls.set(0));
+        let result = action();
+        let calls = FIXTURE_DURABLE_REDUCTION_CALLS.with(Cell::get);
+        configured.replace(previous);
+        FIXTURE_DURABLE_REDUCTION_CALLS.with(|count| count.set(0));
+        (result, calls)
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn with_fixture_cancellation_after<R>(checks: usize, action: impl FnOnce() -> R) -> R {
+    FIXTURE_CANCELLATION_AFTER.with(|configured| {
+        let previous = configured.replace(Some(checks));
+        FIXTURE_CANCELLATION_CHECKS.with(|count| count.set(0));
+        let result = action();
+        configured.set(previous);
+        FIXTURE_CANCELLATION_CHECKS.with(|count| count.set(0));
+        result
+    })
+}
 
 macro_rules! unconsulted {
     () => {
@@ -309,6 +375,17 @@ impl BodyFactProvider for UnconsultedFactProvider {
     type ToolchainFacts = ();
 
     fn is_canceled(&self) -> bool {
+        #[cfg(test)]
+        {
+            return FIXTURE_CANCELLATION_AFTER.with(|configured| {
+                FIXTURE_CANCELLATION_CHECKS.with(|count| {
+                    let checks = count.get() + 1;
+                    count.set(checks);
+                    configured.get().is_some_and(|after| checks >= after)
+                })
+            });
+        }
+        #[cfg(not(test))]
         false
     }
 
@@ -419,6 +496,29 @@ pub(crate) fn value_param(
         ty,
         mode: SemanticParameterMode::Value,
         is_comptime: false,
+    }
+}
+
+pub(crate) fn comptime_value_param(
+    name: &str,
+    ty: FixtureType,
+) -> DurableSignatureParameter<FixtureKey, FixtureModule> {
+    DurableSignatureParameter {
+        name: Arc::from(name),
+        ty,
+        mode: SemanticParameterMode::Value,
+        is_comptime: true,
+    }
+}
+
+pub(crate) fn comptime_type_param(
+    name: &str,
+) -> DurableSignatureParameter<FixtureKey, FixtureModule> {
+    DurableSignatureParameter {
+        name: Arc::from(name),
+        ty: SemanticImportType::ComptimeType,
+        mode: SemanticParameterMode::Value,
+        is_comptime: true,
     }
 }
 
@@ -655,6 +755,107 @@ impl ProviderFixture {
             StableDefinitionKind::Function,
             None,
             |_| {},
+        )
+    }
+
+    /// Run one exact comptime specialization through the production provider
+    /// body host. This is the fixture equivalent of the compiler's
+    /// specialization query and lets tests exercise recursive body evaluation
+    /// with concrete substitutions while retaining the real host boundary.
+    pub(crate) fn analyze_specialized(
+        &self,
+        source: &str,
+        function: &str,
+        values: &[i128],
+    ) -> CompileResult<FixtureSpecializedBody> {
+        self.analyze_specialized_arguments(
+            source,
+            function,
+            Arc::from([]),
+            values
+                .iter()
+                .copied()
+                .map(CanonicalArgumentValue::Integer)
+                .collect::<Vec<_>>()
+                .into(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn analyze_specialized_with_types(
+        &self,
+        source: &str,
+        function: &str,
+        types: &[FixtureType],
+        values: &[i128],
+    ) -> CompileResult<FixtureSpecializedBody> {
+        let types = types
+            .iter()
+            .map(|ty| match ty {
+                SemanticImportType::Nominal(key) => {
+                    TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(key.clone()))
+                }
+                other => panic!("fixture type specialization expects a nominal, got {other:?}"),
+            })
+            .collect::<Vec<_>>()
+            .into();
+        self.analyze_specialized_arguments(
+            source,
+            function,
+            types,
+            values
+                .iter()
+                .copied()
+                .map(CanonicalArgumentValue::Integer)
+                .collect::<Vec<_>>()
+                .into(),
+        )
+    }
+
+    fn analyze_specialized_arguments(
+        &self,
+        source: &str,
+        function: &str,
+        types: Arc<[TypeInstanceKey<FixtureKey, FixtureModule>]>,
+        values: Arc<[CanonicalArgumentValue<FixtureKey, FixtureModule>]>,
+    ) -> CompileResult<FixtureSpecializedBody> {
+        let (tokens, interner) = Lexer::new(source).tokenize().expect("fixture source lexes");
+        let (ast, interner) = Parser::new(tokens, interner)
+            .parse()
+            .expect("fixture source parses");
+        assert_eq!(
+            ast.items.len(),
+            1,
+            "the analyzed body plan carries exactly one declaration"
+        );
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let editor = astgen.finish_editor();
+        let source_lengths = [(self.facts.file, source.len() as u32)];
+        let rir = ValidatedRir::finish(
+            editor,
+            &RirValidationContext {
+                symbol_count: interner.len(),
+                source_lengths: &source_lengths,
+            },
+        )
+        .expect("fixture RIR validates");
+        let bundle = BodyRirBundle::new(
+            rir,
+            rue_rir::SharedSymbolSpace::adopt(std::sync::Arc::new(interner)),
+        );
+        let arguments = CanonicalArguments { types, values };
+        let facts = FixtureFactSource(Rc::new(self.facts.clone()));
+        analyze_provider_specialized_body(
+            &UnconsultedFactProvider,
+            facts,
+            &bundle,
+            FixtureKey::function(function),
+            function,
+            &arguments,
+            Target::host().expect("host target resolves"),
+            self.preview.clone(),
+            &self.well_known,
         )
     }
 
