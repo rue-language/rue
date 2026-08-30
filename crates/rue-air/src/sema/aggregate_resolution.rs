@@ -324,7 +324,7 @@ pub struct ProviderAggregateFacts<K, M, S> {
 impl<K, M, S> ProviderAggregateFacts<K, M, S>
 where
     K: Clone + Eq + Hash,
-    M: Eq + Hash,
+    M: Clone + Eq + Hash,
     S: DurableNominalSource<K, M>,
 {
     /// Construct the driver over a durable nominal source. The pool is built here
@@ -550,7 +550,7 @@ where
 impl<K, M, S> AggregateFacts for ProviderAggregateFacts<K, M, S>
 where
     K: Clone + Eq + Hash,
-    M: Eq + Hash,
+    M: Clone + Eq + Hash,
     S: DurableNominalSource<K, M>,
 {
     fn aggregate_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
