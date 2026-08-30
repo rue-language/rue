@@ -141,91 +141,111 @@ fn transform_single(instructions: &[Aarch64Inst], idx: usize) -> Option<Aarch64I
 /// - `sub r, r, #a` followed by `sub r, r, #b` → `sub r, r, #(a+b)`
 ///
 /// Returns the number of combinations made.
+/// Fold `later` into `earlier` when both are the same `op r, r, #imm` form on
+/// the same register and the combined immediate stays in the ordinary AArch64
+/// immediate range. Larger values use emitter materialization and must not be
+/// synthesized here.
+fn fold_pair(earlier: &Aarch64Inst, later: &Aarch64Inst) -> Option<Aarch64Inst> {
+    match (earlier, later) {
+        (
+            Aarch64Inst::AddImm {
+                dst: dst1,
+                src: src1,
+                imm: imm1,
+            },
+            Aarch64Inst::AddImm {
+                dst: dst2,
+                src: src2,
+                imm: imm2,
+            },
+        ) => {
+            // Only combine `add r, r, #imm` forms, both on the same register.
+            if !(operands_equal(dst1, src1)
+                && operands_equal(dst2, src2)
+                && operands_equal(dst1, dst2))
+            {
+                return None;
+            }
+            let combined = imm1.checked_add(*imm2).filter(|combined| {
+                (-MAX_ADD_SUB_IMMEDIATE..=MAX_ADD_SUB_IMMEDIATE).contains(combined)
+            })?;
+            Some(Aarch64Inst::AddImm {
+                dst: *dst1,
+                src: *src1,
+                imm: combined,
+            })
+        }
+        (
+            Aarch64Inst::SubImm {
+                dst: dst1,
+                src: src1,
+                imm: imm1,
+            },
+            Aarch64Inst::SubImm {
+                dst: dst2,
+                src: src2,
+                imm: imm2,
+            },
+        ) => {
+            if !(operands_equal(dst1, src1)
+                && operands_equal(dst2, src2)
+                && operands_equal(dst1, dst2))
+            {
+                return None;
+            }
+            let combined = imm1
+                .checked_add(*imm2)
+                .filter(|combined| (0..=MAX_ADD_SUB_IMMEDIATE).contains(combined))?;
+            Some(Aarch64Inst::SubImm {
+                dst: *dst1,
+                src: *src1,
+                imm: combined,
+            })
+        }
+        _ => None,
+    }
+}
+
 fn combine_adjacent(instructions: &mut Vec<Aarch64Inst>) -> usize {
     if instructions.len() < 2 {
         return 0;
     }
 
+    // Mark, then compact once (RUE-1847). Deleting in place with `Vec::remove`
+    // shifts the whole tail per removal, so a long add or sub chain cost
+    // O(chain × n); pass 3 below already compacts with `retain`.
+    let mut doomed = vec![false; instructions.len()];
     let mut changes = 0;
     let mut i = 0;
 
     while i + 1 < instructions.len() {
-        // Try to combine add chains: add r, r, #a; add r, r, #b → add r, r, #(a+b)
-        if let (
-            Aarch64Inst::AddImm {
-                dst: dst1,
-                src: src1,
-                imm: imm1,
-            },
-            Aarch64Inst::AddImm {
-                dst: dst2,
-                src: src2,
-                imm: imm2,
-            },
-        ) = (&instructions[i], &instructions[i + 1])
-        {
-            // Only combine if dst == src for both (i.e., add r, r, #imm pattern)
-            // and both operations are on the same register
-            if operands_equal(dst1, src1)
-                && operands_equal(dst2, src2)
-                && operands_equal(dst1, dst2)
-            {
-                // Keep the combined MIR immediate within the ordinary
-                // AArch64 immediate sequence; larger values use emitter
-                // materialization and should not be synthesized here.
-                if let Some(combined) = imm1.checked_add(*imm2).filter(|combined| {
-                    (-MAX_ADD_SUB_IMMEDIATE..=MAX_ADD_SUB_IMMEDIATE).contains(combined)
-                }) {
-                    // Replace first instruction with combined add
-                    instructions[i] = Aarch64Inst::AddImm {
-                        dst: *dst1,
-                        src: *src1,
-                        imm: combined,
-                    };
-                    // Remove second instruction
-                    instructions.remove(i + 1);
-                    changes += 1;
-                    // Don't increment i - there might be more adds to combine
-                    continue;
-                }
-            }
+        // Combine add chains (add r, r, #a; add r, r, #b → add r, r, #(a+b))
+        // and the matching sub chains. `i` is the accumulator; `j` walks the
+        // run folded into it, exactly as the previous
+        // `continue`-without-incrementing-`i` loop did.
+        let mut j = i + 1;
+        while j < instructions.len() {
+            let Some(folded) = fold_pair(&instructions[i], &instructions[j]) else {
+                break;
+            };
+            instructions[i] = folded;
+            doomed[j] = true;
+            changes += 1;
+            j += 1;
         }
+        // `j` is the first instruction not folded into the accumulator, i.e.
+        // the next survivor — what `i + 1` denoted after the old in-place
+        // removals.
+        i = j;
+    }
 
-        // Try to combine sub chains: sub r, r, #a; sub r, r, #b → sub r, r, #(a+b)
-        if let (
-            Aarch64Inst::SubImm {
-                dst: dst1,
-                src: src1,
-                imm: imm1,
-            },
-            Aarch64Inst::SubImm {
-                dst: dst2,
-                src: src2,
-                imm: imm2,
-            },
-        ) = (&instructions[i], &instructions[i + 1])
-        {
-            if operands_equal(dst1, src1)
-                && operands_equal(dst2, src2)
-                && operands_equal(dst1, dst2)
-            {
-                if let Some(combined) = imm1
-                    .checked_add(*imm2)
-                    .filter(|combined| (0..=MAX_ADD_SUB_IMMEDIATE).contains(combined))
-                {
-                    instructions[i] = Aarch64Inst::SubImm {
-                        dst: *dst1,
-                        src: *src1,
-                        imm: combined,
-                    };
-                    instructions.remove(i + 1);
-                    changes += 1;
-                    continue;
-                }
-            }
-        }
-
-        i += 1;
+    if changes > 0 {
+        let mut k = 0;
+        instructions.retain(|_| {
+            let keep = !doomed[k];
+            k += 1;
+            keep
+        });
     }
 
     changes
@@ -638,6 +658,51 @@ mod tests {
             instructions[0],
             Aarch64Inst::AddImm { imm: 35, .. }
         ));
+    }
+
+    #[test]
+    fn test_combine_two_separate_chains() {
+        // RUE-1847: after a chain ends, the accumulator must advance to the
+        // next *survivor*, not to the instruction just folded away. With the
+        // old in-place removals `i + 1` named that survivor implicitly; with
+        // mark-and-compact it is the index the inner walk stopped on.
+        let mut instructions = vec![
+            Aarch64Inst::AddImm {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Physical(Reg::X0),
+                imm: 10,
+            },
+            Aarch64Inst::AddImm {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Physical(Reg::X0),
+                imm: 20,
+            },
+            Aarch64Inst::AddImm {
+                dst: Operand::Physical(Reg::X1),
+                src: Operand::Physical(Reg::X1),
+                imm: 1,
+            },
+            Aarch64Inst::AddImm {
+                dst: Operand::Physical(Reg::X1),
+                src: Operand::Physical(Reg::X1),
+                imm: 2,
+            },
+            Aarch64Inst::Ret,
+        ];
+
+        let changes = optimize(&mut instructions);
+
+        assert_eq!(changes, 2);
+        assert_eq!(instructions.len(), 3);
+        assert!(matches!(
+            instructions[0],
+            Aarch64Inst::AddImm { imm: 30, .. }
+        ));
+        assert!(matches!(
+            instructions[1],
+            Aarch64Inst::AddImm { imm: 3, .. }
+        ));
+        assert!(matches!(instructions[2], Aarch64Inst::Ret));
     }
 
     #[test]

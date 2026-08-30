@@ -251,40 +251,59 @@ fn combine_adjacent(instructions: &mut Vec<X86Inst>) -> usize {
         return 0;
     }
 
+    // Mark, then compact once (RUE-1847). Deleting in place with `Vec::remove`
+    // shifts the whole tail per removal, so a long add chain cost
+    // O(chain × n) — the same pattern pass 3 above was already cured of.
+    //
+    // Leaving folded instructions in place until the final compaction is
+    // invisible to `flags_dead_after`: it scans strictly forward from the
+    // instruction being folded, while every index doomed so far lies behind it.
+    let mut doomed = vec![false; instructions.len()];
     let mut changes = 0;
     let mut i = 0;
 
     while i + 1 < instructions.len() {
-        // Try to combine add chains: add r, a; add r, b → add r, a+b
-        if let (
-            X86Inst::AddRI {
-                dst: dst1,
-                imm: imm1,
-            },
-            X86Inst::AddRI {
-                dst: dst2,
-                imm: imm2,
-            },
-        ) = (&instructions[i], &instructions[i + 1])
-        {
-            if operands_equal(dst1, dst2) && flags_dead_after(instructions, i + 1) {
-                // Check for overflow when combining immediates
-                if let Some(combined) = imm1.checked_add(*imm2) {
-                    // Replace first instruction with combined add
-                    instructions[i] = X86Inst::AddRI {
-                        dst: *dst1,
-                        imm: combined,
-                    };
-                    // Remove second instruction
-                    instructions.remove(i + 1);
-                    changes += 1;
-                    // Don't increment i - there might be more adds to combine
-                    continue;
-                }
+        // Combine add chains: add r, a; add r, b → add r, a+b. `i` is the
+        // accumulator; `j` walks the run of adds folded into it, exactly as
+        // the previous `continue`-without-incrementing-`i` loop did.
+        let mut j = i + 1;
+        while j < instructions.len() {
+            let (dst1, imm1) = match &instructions[i] {
+                X86Inst::AddRI { dst, imm } => (*dst, *imm),
+                _ => break,
+            };
+            let (dst2, imm2) = match &instructions[j] {
+                X86Inst::AddRI { dst, imm } => (*dst, *imm),
+                _ => break,
+            };
+            if !operands_equal(&dst1, &dst2) || !flags_dead_after(instructions, j) {
+                break;
             }
+            // Stop the run on overflow rather than dropping the instruction.
+            let Some(combined) = imm1.checked_add(imm2) else {
+                break;
+            };
+            instructions[i] = X86Inst::AddRI {
+                dst: dst1,
+                imm: combined,
+            };
+            doomed[j] = true;
+            changes += 1;
+            j += 1;
         }
+        // `j` is the first instruction not folded into the accumulator, i.e.
+        // the next survivor — what `i + 1` denoted after the old in-place
+        // removals.
+        i = j;
+    }
 
-        i += 1;
+    if changes > 0 {
+        let mut k = 0;
+        instructions.retain(|_| {
+            let keep = !doomed[k];
+            k += 1;
+            keep
+        });
     }
 
     changes
@@ -671,6 +690,41 @@ mod tests {
         assert_eq!(changes, 2);
         assert_eq!(instructions.len(), 2);
         assert!(matches!(instructions[0], X86Inst::AddRI { imm: 35, .. }));
+    }
+
+    #[test]
+    fn test_combine_two_separate_chains() {
+        // RUE-1847: after a chain ends, the accumulator must advance to the
+        // next *survivor*, not to the instruction just folded away. With the
+        // old in-place removals `i + 1` named that survivor implicitly; with
+        // mark-and-compact it is the index the inner walk stopped on.
+        let mut instructions = vec![
+            X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rax),
+                imm: 10,
+            },
+            X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rax),
+                imm: 20,
+            },
+            X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rbx),
+                imm: 1,
+            },
+            X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rbx),
+                imm: 2,
+            },
+            X86Inst::Ret,
+        ];
+
+        let changes = optimize(&mut instructions);
+
+        assert_eq!(changes, 2);
+        assert_eq!(instructions.len(), 3);
+        assert!(matches!(instructions[0], X86Inst::AddRI { imm: 30, .. }));
+        assert!(matches!(instructions[1], X86Inst::AddRI { imm: 3, .. }));
+        assert!(matches!(instructions[2], X86Inst::Ret));
     }
 
     #[test]
