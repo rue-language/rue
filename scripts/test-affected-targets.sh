@@ -24,6 +24,8 @@ GATE=(bash "$SCRIPTS_DIR/ci-corpus-selected")
 REPO_ROOT="$(cd "$SCRIPTS_DIR/.." && pwd)"
 DECISION=(bash "$SCRIPTS_DIR/ci-corpus-decision")
 PARSER=(python3 "$SCRIPTS_DIR/parse-btd-impacted.py")
+PAYLOAD=(python3 "$SCRIPTS_DIR/ci-affected-payload.py")
+CLIPPY=(bash "$SCRIPTS_DIR/ci-clippy")
 
 # Native lane membership is intentionally graph-derived. Keep these shell
 # tests hermetic by supplying a tiny live-graph stand-in for the representative
@@ -31,7 +33,15 @@ PARSER=(python3 "$SCRIPTS_DIR/parse-btd-impacted.py")
 native_graph_stub="$(mktemp)"
 cat >"$native_graph_stub" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' root//crates/rue-codegen:rue-codegen-test
+case "${2:-}" in
+  kind*)
+    printf '%s\n' \
+      root//crates/rue-codegen:rue-codegen-clippy \
+      root//crates/rue-codegen:rue-codegen-debug-assert-check ;;
+  *rue_ci_clippy_lane*)
+    printf '%s\n' root//crates/rue-codegen:rue-codegen-clippy ;;
+  *) printf '%s\n' root//crates/rue-codegen:rue-codegen-test ;;
+esac
 EOF
 chmod +x "$native_graph_stub"
 export RUE_AFFECTED_BUCK2="$native_graph_stub"
@@ -95,6 +105,8 @@ expect_full "test.sh"
 expect_full "scripts/ci-heavy-suite"
 expect_full "scripts/ci-timed"
 expect_full "scripts/ci-corpus-selected"
+expect_full "scripts/ci-affected-payload.py"
+expect_full "scripts/ci-clippy"
 expect_full "scripts/affected-targets"
 expect_full "btd"
 expect_full "scripts/provision-build-cache"
@@ -179,7 +191,7 @@ check_lane() { # check_lane <desc> <expected-status> <full> <lanes> <lane>
 # Every gated lane must be recognized; an unrecognized name would silently fall
 # through to the corpus path and be treated as an unknown target (fail-open),
 # which is safe but would make the lane permanently ungated.
-for lane in native-linux-arm64 native-macos-arm64 release valgrind asan compiler-reproducibility rue-program-digests; do
+for lane in clippy native-linux-arm64 native-macos-arm64 release valgrind asan compiler-reproducibility rue-program-digests; do
   TESTS=$((TESTS + 1))
   if "${AFFECTED[@]}" is-selectable-lane "$lane"; then
     pass "lane: $lane is selectable"
@@ -188,9 +200,26 @@ for lane in native-linux-arm64 native-macos-arm64 release valgrind asan compiler
   fi
 done
 
+TESTS=$((TESTS + 1))
+if [ "$("${AFFECTED[@]}" clippy-owned-targets)" = \
+    "//crates/rue-codegen:rue-codegen-clippy" ]; then
+  pass "clippy: owner-label query matches the canonical test in the stub graph"
+else
+  fail "clippy: owner-label query drifted from the canonical test in the stub graph"
+fi
+
+TESTS=$((TESTS + 1))
+usage_status=0
+usage_output="$("${AFFECTED[@]}" not-a-command 2>&1)" || usage_status=$?
+if [ "$usage_status" -eq 2 ] && grep -Fq 'clippy-owned-targets' <<<"$usage_output"; then
+  pass "affected-targets: catch-all usage lists clippy-owned-targets"
+else
+  fail "affected-targets: catch-all usage omits clippy-owned-targets"
+fi
+
 # Each lane must name at least one representative Buck target, or it could never
 # be selected and would be deselected on every selective run.
-for lane in native-linux-arm64 native-macos-arm64 release valgrind asan compiler-reproducibility rue-program-digests; do
+for lane in clippy native-linux-arm64 native-macos-arm64 release valgrind asan compiler-reproducibility rue-program-digests; do
   TESTS=$((TESTS + 1))
   if [ -n "$("${AFFECTED[@]}" lane-targets "$lane")" ]; then
     pass "lane: $lane declares representative targets"
@@ -205,6 +234,8 @@ check_lane "unselected lane deselected" 1 "false" "asan" "valgrind"
 check_lane "empty lane selection deselects" 1 "false" "" "valgrind"
 check_lane "unset full runs lane (fail-open)" 0 "" "" "valgrind"
 check_lane "malformed lane selection is an error" 2 "false" "not-a-lane" "valgrind"
+check_lane "selected clippy lane runs" 0 "false" "clippy" "clippy"
+check_lane "unselected clippy lane is intentionally deselected" 1 "false" "release" "clippy"
 # A lane name must not be satisfied by a corpus target list, and vice versa:
 # the two selections are read from different environment variables.
 check_lane "corpus selection does not select a lane" 1 "false" "" "release"
@@ -223,7 +254,7 @@ fi
 # view of what runs.
 TESTS=$((TESTS + 1))
 if [ "$("${AFFECTED[@]}" lanes | sort | tr '\n' ' ')" \
-    = "asan compiler-reproducibility native-linux-arm64 native-macos-arm64 release rue-program-digests valgrind " ]; then
+    = "asan clippy compiler-reproducibility native-linux-arm64 native-macos-arm64 release rue-program-digests valgrind " ]; then
   pass "lanes: the gated lane inventory is exposed in full"
 else
   fail "lanes: printed $("${AFFECTED[@]}" lanes | tr '\n' ' ')"
@@ -249,10 +280,30 @@ expect_full "crates/rue-runtime-asan/Cargo.toml"
 # The registry is the one source of truth for every narrowed-lane scope.
 TESTS=$((TESTS + 1))
 if [ "$(${AFFECTED[@]} scope-registry | tr '\n' ' ')" = \
-     "linux-premerge-build|pattern|//crates/... linux-premerge-tests|graph|rue_test_tier_premerge-minus-dedicated native-platforms-units|graph|rue_platform_native " ]; then
+     "clippy|graph|crates_sh_test_ending_-clippy linux-premerge-build|pattern|//crates/... linux-premerge-tests|graph|rue_test_tier_premerge-minus-dedicated-and-clippy native-platforms-units|graph|rue_platform_native " ]; then
   pass "narrow: scope registry declares every consumer"
 else
   fail "narrow: scope registry drifted"
+fi
+
+# The planner and every narrowing consumer read the same canonical threshold.
+TESTS=$((TESTS + 1))
+if [ "$("${AFFECTED[@]}" narrow-limit)" = "600" ]; then
+  pass "narrow: default canonical limit is exposed"
+else
+  fail "narrow: default canonical limit is unavailable"
+fi
+TESTS=$((TESTS + 1))
+if [ "$(RUE_AFFECTED_NARROW_LIMIT=7 "${AFFECTED[@]}" narrow-limit)" = "7" ]; then
+  pass "narrow: supported custom limit has one authority"
+else
+  fail "narrow: custom canonical limit was ignored"
+fi
+TESTS=$((TESTS + 1))
+if RUE_AFFECTED_NARROW_LIMIT=00 "${AFFECTED[@]}" narrow-limit >/dev/null 2>&1; then
+  fail "narrow: malformed canonical limit was accepted"
+else
+  pass "narrow: malformed canonical limit fails open"
 fi
 TESTS=$((TESTS + 1))
 if ! "${AFFECTED[@]}" scope-targets future-lane >/dev/null 2>&1; then
@@ -329,6 +380,127 @@ if ! GITHUB_STEP_SUMMARY="$degraded_scope_summary" RUE_AFFECTED_BUCK2="$narrow_r
   pass "narrow: degraded scope summary cannot masquerade as verified"
 else
   fail "narrow: degraded scope summary is missing or contradictory"
+fi
+
+# RUE-1855: lane selection and narrowing must consume the same complete live
+# set of crate-local sh_tests whose labels end exactly in `-clippy`.
+cat >"$narrow_root/clippy-buck" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" != "uquery" ] || [ "${2:-}" != "kind('sh_test', 'root//crates/...')" ]; then
+  echo "clippy-buck: unexpected query" >&2
+  exit 1
+fi
+printf '%s\n' \
+  root//crates/rue-alpha:rue-alpha-clippy \
+  root//crates/rue-alpha:rue-alpha-debug-assert-check \
+  root//crates/rue-beta:rue-beta-clippy
+EOF
+chmod +x "$narrow_root/clippy-buck"
+
+TESTS=$((TESTS + 1))
+clippy_lane="$(RUE_AFFECTED_BUCK2="$narrow_root/clippy-buck" "${AFFECTED[@]}" lane-targets clippy)"
+clippy_scope="$(RUE_AFFECTED_BUCK2="$narrow_root/clippy-buck" "${AFFECTED[@]}" scope-targets clippy)"
+if [ "$clippy_lane" = "$clippy_scope" ] && \
+    [ "$(tr '\n' ' ' <<<"$clippy_scope")" = \
+      "//crates/rue-alpha:rue-alpha-clippy //crates/rue-beta:rue-beta-clippy " ]; then
+  pass "clippy: lane proxy and runnable scope share the exact live inventory"
+else
+  fail "clippy: lane proxy and runnable scope drifted"
+fi
+
+printf '%s\n' \
+  //crates/rue-beta:rue-beta-clippy \
+  //crates/removed:removed-clippy \
+  //crates/rue-alpha:rue-alpha-debug-assert-check \
+  >"$narrow_root/clippy-impacted"
+TESTS=$((TESTS + 1))
+clippy_subset="$(RUE_AFFECTED_BUCK2="$narrow_root/clippy-buck" "${AFFECTED[@]}" \
+  narrow-scope clippy "$narrow_root/clippy-impacted")"
+if [ "$clippy_subset" = "//crates/rue-beta:rue-beta-clippy" ]; then
+  pass "clippy: narrowed scope keeps only live impacted -clippy targets"
+else
+  fail "clippy: narrowed scope retained a non-clippy or dead target"
+fi
+
+# A well-formed target removed from the live graph is safely absent, and an
+# impacted closure with no clippy intersection is a verified empty subset.
+printf '%s\n' //crates/removed:removed-clippy >"$narrow_root/clippy-stale-only"
+clippy_empty_summary="$narrow_root/clippy-empty-summary"
+TESTS=$((TESTS + 1))
+if [ -z "$(GITHUB_STEP_SUMMARY="$clippy_empty_summary" \
+    RUE_AFFECTED_BUCK2="$narrow_root/clippy-buck" "${AFFECTED[@]}" \
+    narrow-scope clippy "$narrow_root/clippy-stale-only")" ] && \
+    grep -Fq '**VERIFIED** subset; selected **0/2** targets; unweighted saved share **100.00%**' "$clippy_empty_summary"; then
+  pass "clippy: stale-only impact is a visible verified empty subset"
+else
+  fail "clippy: stale-only impact did not produce the verified no-op contract"
+fi
+
+# Empty or malformed planner output is corrupt state, not a verified no-op.
+TESTS=$((TESTS + 1))
+if ! RUE_AFFECTED_BUCK2="$narrow_root/clippy-buck" "${AFFECTED[@]}" \
+    narrow-scope clippy "$narrow_root/none" >/dev/null 2>&1; then
+  pass "clippy: empty impacted output degrades to the full scope"
+else
+  fail "clippy: empty impacted output masqueraded as a verified subset"
+fi
+printf '%s\n' not-a-target >"$narrow_root/clippy-malformed"
+TESTS=$((TESTS + 1))
+if ! RUE_AFFECTED_BUCK2="$narrow_root/clippy-buck" "${AFFECTED[@]}" \
+    narrow-scope clippy "$narrow_root/clippy-malformed" >/dev/null 2>&1; then
+  pass "clippy: malformed impacted output degrades to the full scope"
+else
+  fail "clippy: malformed impacted output masqueraded as a verified subset"
+fi
+
+cat >"$narrow_root/clippy-empty-buck" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' root//crates/rue-alpha:rue-alpha-debug-assert-check
+EOF
+chmod +x "$narrow_root/clippy-empty-buck"
+TESTS=$((TESTS + 1))
+clippy_hard_error_summary="$narrow_root/clippy-hard-error-summary"
+if GITHUB_STEP_SUMMARY="$clippy_hard_error_summary" \
+    RUE_AFFECTED_BUCK2="$narrow_root/clippy-empty-buck" "${AFFECTED[@]}" \
+    scope-targets clippy >/dev/null 2>&1; then
+  fail "clippy: empty successful live query was accepted"
+else
+  clippy_status=$?
+  if [ "$clippy_status" -eq 2 ]; then
+    pass "clippy: empty successful live query remains a distinct hard error"
+  else
+    fail "clippy: empty successful live query returned $clippy_status instead of 2"
+  fi
+fi
+
+TESTS=$((TESTS + 1))
+if GITHUB_STEP_SUMMARY="$clippy_hard_error_summary" \
+    RUE_AFFECTED_BUCK2="$narrow_root/clippy-empty-buck" "${AFFECTED[@]}" \
+    narrow-scope clippy "$narrow_root/clippy-impacted" >/dev/null 2>&1; then
+  fail "clippy: empty live inventory was accepted while narrowing"
+else
+  clippy_status=$?
+  if [ "$clippy_status" -eq 2 ] && \
+      grep -Fq '**FAILED**' "$clippy_hard_error_summary" && \
+      grep -Fq 'live scope inventory rejected; hard failure' "$clippy_hard_error_summary" && \
+      ! grep -Fq 'full scope used' "$clippy_hard_error_summary"; then
+    pass "clippy: empty live inventory reports its hard failure accurately"
+  else
+    fail "clippy: empty live inventory summary misreported a full-scope fallback"
+  fi
+fi
+
+TESTS=$((TESTS + 1))
+if RUE_AFFECTED_BUCK2="$narrow_root/absent" "${AFFECTED[@]}" \
+    scope-targets clippy >/dev/null 2>&1; then
+  fail "clippy: failed live query was accepted"
+else
+  clippy_status=$?
+  if [ "$clippy_status" -eq 1 ]; then
+    pass "clippy: failed live query remains a fail-open scope error"
+  else
+    fail "clippy: failed live query returned unexpected status $clippy_status"
+  fi
 fi
 
 # A missing file is an unavailable intersection, never a verified empty one.
@@ -739,21 +911,180 @@ decision_root="$(mktemp -d)"
 printf '#!/usr/bin/env bash\nexit 1\n' >"$decision_root/deselect"
 printf '#!/usr/bin/env bash\nexit 2\n' >"$decision_root/crash"
 chmod +x "$decision_root/deselect" "$decision_root/crash"
-check_decision() { # check_decision <description> <gate> <expected-output>
-  local desc="$1" gate="$2" expected="$3" output="$decision_root/output"
+check_decision() { # check_decision <description> <gate> <expected-output> <expected-status>
+  local desc="$1" gate="$2" expected="$3" expected_status="$4"
+  local output="$decision_root/output"
   TESTS=$((TESTS + 1))
   : >"$output"
   if RUE_AFFECTED_GATE="$gate" GITHUB_OUTPUT="$output" "${DECISION[@]}" "//:spec-tests" >/dev/null 2>&1 && \
-      grep -Fxq "run=$expected" "$output"; then
+      grep -Fxq "run=$expected" "$output" && \
+      grep -Fxq "gate_status=$expected_status" "$output"; then
     pass "decision: $desc"
   else
     fail "decision: $desc"
   fi
 }
-check_decision "exit 1 intentionally deselects" "$decision_root/deselect" false
-check_decision "crashing gate runs" "$decision_root/crash" true
-check_decision "missing gate runs" "$decision_root/missing" true
+check_decision "exit 1 intentionally deselects" "$decision_root/deselect" false DESELECTED
+check_decision "crashing gate runs" "$decision_root/crash" true DEGRADED
+check_decision "missing gate runs" "$decision_root/missing" true DEGRADED
 rm -rf "$decision_root"
+
+# The clippy adapter binds independently transported payloads to planner proofs.
+# These are runtime tests of the exact script the workflow invokes; structural
+# tests in test-validate-ci-gate.py separately prevent the workflow from
+# bypassing it.
+proof_parts() { # proof_parts <kind> <payload>
+  local kind="$1" payload="$2"
+  printf '%s' "$payload" | "${PAYLOAD[@]}" proof "$kind"
+}
+
+clippy_select_root="$(mktemp -d)"
+check_clippy_select() { # description expected-run expected-proof expected-gate payload proof narrowed status head closure live [limit]
+  local desc="$1" expected="$2"
+  local expected_proof="$3" expected_gate="$4" payload="$5" proof_value="$6"
+  local narrowed="$7" status="$8" head="$9" closure="${10}" live="${11}"
+  local narrow_limit="${12:-}"
+  local count="${proof_value%% *}" digest="${proof_value#* }"
+  local output="$clippy_select_root/output"
+  TESTS=$((TESTS + 1))
+  : >"$output"
+  if RUE_AFFECTED_NARROW_LIMIT="$narrow_limit" \
+      RUE_AFFECTED_FULL=false \
+      RUE_AFFECTED_LANES="$payload" \
+      RUE_AFFECTED_LANES_COUNT="$count" \
+      RUE_AFFECTED_LANES_DIGEST="$digest" \
+      RUE_AFFECTED_NARROWED="$narrowed" \
+      RUE_AFFECTED_NARROWING_STATUS="$status" \
+      RUE_AFFECTED_HEAD_TARGET_COUNT="$head" \
+      RUE_AFFECTED_IMPACTED_CLOSURE_COUNT="$closure" \
+      RUE_AFFECTED_IMPACTED_TARGET_COUNT="$live" \
+      GITHUB_OUTPUT="$output" \
+      "${CLIPPY[@]}" select >/dev/null 2>&1 && \
+      grep -Fxq "run=$expected" "$output" && \
+      grep -Fxq "proof_status=$expected_proof" "$output" && \
+      grep -Fxq "gate_status=$expected_gate" "$output"; then
+    pass "clippy selection proof: $desc"
+  else
+    fail "clippy selection proof: $desc"
+  fi
+}
+
+empty_lane_proof="$(proof_parts lanes "")"
+clippy_lane_proof="$(proof_parts lanes "clippy")"
+two_lane_proof="$(proof_parts lanes "clippy release")"
+invalid_lane_proof="$(proof_parts lanes "clippy not-a-lane")"
+check_clippy_select "missing lane payload fails open" true DEGRADED RUN "" "$clippy_lane_proof" false DECLINED 2 0 0
+check_clippy_select "valid-prefix lane truncation fails open" true DEGRADED RUN "clippy" "$two_lane_proof" true CANDIDATE 3 1 1
+check_clippy_select "lane payload mutation fails open" true DEGRADED RUN "release" "$clippy_lane_proof" true CANDIDATE 3 1 1
+check_clippy_select "leading-zero head metadata fails open" true DEGRADED RUN "" "$empty_lane_proof" false DECLINED 00 0 0
+check_clippy_select "zero-impact CANDIDATE metadata fails open" true DEGRADED RUN "clippy" "$clippy_lane_proof" true CANDIDATE 3 0 0
+check_clippy_select "legitimate empty lane set deselects" false SELECTIVE DESELECTED "" "$empty_lane_proof" false DECLINED 3 0 0
+check_clippy_select "valid selected clippy lane runs" true SELECTIVE RUN "clippy" "$clippy_lane_proof" true CANDIDATE 3 1 1
+check_clippy_select "gate rejection cannot authorize narrowing" true SELECTIVE DEGRADED "clippy not-a-lane" "$invalid_lane_proof" true CANDIDATE 3 1 1
+check_clippy_select "closure at the canonical limit with live impact is a candidate" true SELECTIVE RUN "clippy" "$clippy_lane_proof" true CANDIDATE 100 600 100
+check_clippy_select "oversized closure with a small live set rejects candidate" true DEGRADED RUN "clippy" "$clippy_lane_proof" true CANDIDATE 100 601 100
+check_clippy_select "oversized closure with a small live set accepts declined" true SELECTIVE RUN "clippy" "$clippy_lane_proof" false DECLINED 100 601 100
+check_clippy_select "bounded closure with no live targets accepts declined" true SELECTIVE RUN "clippy" "$clippy_lane_proof" false DECLINED 100 10 0
+check_clippy_select "bounded live closure cannot be falsely declined" true DEGRADED RUN "clippy" "$clippy_lane_proof" false DECLINED 100 600 100
+check_clippy_select "empty-live closure cannot be a candidate" true DEGRADED RUN "clippy" "$clippy_lane_proof" true CANDIDATE 100 10 0
+check_clippy_select "live count cannot exceed raw closure" true DEGRADED RUN "clippy" "$clippy_lane_proof" true CANDIDATE 3 1 2
+check_clippy_select "missing closure count fails open" true DEGRADED RUN "clippy" "$clippy_lane_proof" true CANDIDATE 3 "" 1
+check_clippy_select "malformed closure count fails open" true DEGRADED RUN "clippy" "$clippy_lane_proof" true CANDIDATE 3 01 1
+check_clippy_select "candidate exactly at a custom canonical limit remains selective" true SELECTIVE RUN "clippy" "$clippy_lane_proof" true CANDIDATE 2 2 2 2
+check_clippy_select "candidate above a custom canonical limit fails open" true DEGRADED RUN "clippy" "$clippy_lane_proof" true CANDIDATE 2 3 2 2
+check_clippy_select "malformed canonical limit fails open" true DEGRADED RUN "clippy" "$clippy_lane_proof" true CANDIDATE 3 1 1 00
+
+check_clippy_materialize() { # description expected-status payload proof expected-file [proof-status] [gate-status]
+  local desc="$1" expected_status="$2" payload="$3" proof_value="$4" expected_file="$5"
+  local proof_status="${6:-SELECTIVE}" gate_status="${7:-RUN}"
+  local count="${proof_value%% *}" digest="${proof_value#* }"
+  local output="$clippy_select_root/materialize-output"
+  local summary="$clippy_select_root/materialize-summary"
+  local file="$clippy_select_root/impacted-clippy-targets.txt"
+  TESTS=$((TESTS + 1))
+  : >"$output"
+  : >"$summary"
+  if RUNNER_TEMP="$clippy_select_root" \
+      GITHUB_OUTPUT="$output" \
+      GITHUB_STEP_SUMMARY="$summary" \
+      RUE_CLIPPY_PROOF_STATUS="$proof_status" \
+      RUE_CLIPPY_GATE_STATUS="$gate_status" \
+      RUE_AFFECTED_NARROWED=true \
+      RUE_AFFECTED_IMPACTED="$payload" \
+      RUE_AFFECTED_IMPACTED_TARGET_COUNT="$count" \
+      RUE_AFFECTED_IMPACTED_TARGETS_DIGEST="$digest" \
+      "${CLIPPY[@]}" materialize >/dev/null 2>&1 && \
+      grep -Fxq "status=$expected_status" "$output" && \
+      cmp -s "$file" "$expected_file"; then
+    pass "clippy impacted proof: $desc"
+  else
+    fail "clippy impacted proof: $desc"
+  fi
+}
+
+: >"$clippy_select_root/empty"
+clippy_first=$'//crates/one:one-clippy\n//crates/two:two-test'
+non_clippy_first=$'//crates/two:two-test\n//crates/one:one-clippy'
+clippy_first_proof="$(proof_parts targets "$clippy_first")"
+non_clippy_first_proof="$(proof_parts targets "$non_clippy_first")"
+printf '%s\n' "$clippy_first" >"$clippy_select_root/complete"
+check_clippy_materialize \
+  "clippy-retaining valid prefix degrades" DEGRADED \
+  "//crates/one:one-clippy" "$clippy_first_proof" "$clippy_select_root/empty"
+check_clippy_materialize \
+  "non-clippy-retaining valid prefix degrades" DEGRADED \
+  "//crates/two:two-test" "$non_clippy_first_proof" "$clippy_select_root/empty"
+check_clippy_materialize \
+  "complete canonical payload remains a candidate" CANDIDATE \
+  "$clippy_first" "$clippy_first_proof" "$clippy_select_root/complete"
+check_clippy_materialize \
+  "selection proof failure forces the full inventory" DEGRADED \
+  "$clippy_first" "$clippy_first_proof" "$clippy_select_root/empty" DEGRADED RUN
+check_clippy_materialize \
+  "gate failure forces the full inventory" DEGRADED \
+  "$clippy_first" "$clippy_first_proof" "$clippy_select_root/empty" SELECTIVE DEGRADED
+check_clippy_materialize \
+  "authoritative full selection cannot narrow" DECLINED \
+  "$clippy_first" "$clippy_first_proof" "$clippy_select_root/empty" FULL RUN
+
+# A successful-empty canonical query is a hard error on the first narrowed
+# attempt. It must not be retried as a full query that can fail and enter the
+# broad passing fallback.
+clippy_runner_root="$(mktemp -d)"
+mkdir -p "$clippy_runner_root/scripts"
+cp "$SCRIPTS_DIR/ci-clippy" "$clippy_runner_root/scripts/ci-clippy"
+chmod +x "$clippy_runner_root/scripts/ci-clippy"
+cat >"$clippy_runner_root/scripts/affected-targets" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >>"${CLIPPY_AFFECTED_LOG:?}"
+case "$1" in
+  narrow-scope) exit "${CLIPPY_NARROW_RC:-0}" ;;
+  scope-targets) exit "${CLIPPY_SCOPE_RC:-1}" ;;
+  *) exit 2 ;;
+esac
+EOF
+cat >"$clippy_runner_root/buck2" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${CLIPPY_BUCK_LOG:?}"
+EOF
+chmod +x "$clippy_runner_root/scripts/affected-targets" "$clippy_runner_root/buck2"
+TESTS=$((TESTS + 1))
+: >"$clippy_runner_root/affected.log"
+: >"$clippy_runner_root/buck.log"
+if ! NARROW_STATUS=CANDIDATE \
+    NARROW_FILE="$clippy_runner_root/impacted" \
+    CLIPPY_NARROW_RC=2 \
+    CLIPPY_SCOPE_RC=1 \
+    CLIPPY_AFFECTED_LOG="$clippy_runner_root/affected.log" \
+    CLIPPY_BUCK_LOG="$clippy_runner_root/buck.log" \
+    "$clippy_runner_root/scripts/ci-clippy" run >/dev/null 2>&1 && \
+    [ "$(tr '\n' ' ' <"$clippy_runner_root/affected.log")" = "narrow-scope " ] && \
+    [ ! -s "$clippy_runner_root/buck.log" ]; then
+  pass "clippy runner: first narrow-scope rc=2 is an immediate hard error"
+else
+  fail "clippy runner: first narrow-scope rc=2 was retried or fell back"
+fi
+rm -rf "$clippy_select_root" "$clippy_runner_root"
 
 # --- strict BTD JSON decoding -----------------------------------------------
 
@@ -806,14 +1137,23 @@ fi
 TESTS=$((TESTS + 1))
 integration_root="$(mktemp -d)"
 mkdir -p "$integration_root/scripts" "$integration_root/bin" "$integration_root/docs"
-cp "$SCRIPTS_DIR/affected-targets" "$SCRIPTS_DIR/parse-btd-impacted.py" "$integration_root/scripts/"
+cp "$SCRIPTS_DIR/affected-targets" \
+  "$SCRIPTS_DIR/ci-affected-payload.py" \
+  "$SCRIPTS_DIR/parse-btd-impacted.py" \
+  "$integration_root/scripts/"
 chmod +x "$integration_root/scripts/affected-targets"
 
 cat >"$integration_root/bin/fake-buck" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "uquery" ]; then
-  printf 'root//:spec-tests\n'
+  case "${2:-}" in
+    kind*)
+      printf 'root//crates/rue-span:rue-span-clippy\n' ;;
+    attrfilter*)
+      printf 'root//crates/rue-codegen:rue-codegen-test\n' ;;
+    *) exit 1 ;;
+  esac
   exit 0
 fi
 output=""
@@ -847,6 +1187,12 @@ git -C "$integration_root" add . && git -C "$integration_root" commit -qm base
 printf 'after\n' >"$integration_root/docs/input.txt"
 git -C "$integration_root" add docs/input.txt && git -C "$integration_root" commit -qm head
 printf 'M\tdocs/input.txt\n' >"$integration_root/expected-changes"
+integration_selected_lanes="native-linux-arm64 native-macos-arm64"
+integration_lane_proof="$(proof_parts lanes "$integration_selected_lanes")"
+integration_lane_count="${integration_lane_proof%% *}"
+integration_lane_digest="${integration_lane_proof#* }"
+integration_impacted_proof="$(proof_parts targets "//:spec-tests")"
+integration_impacted_digest="${integration_impacted_proof#* }"
 if (
   cd "$integration_root" &&
   RUE_AFFECTED_BASE_SHA=HEAD~1 \
@@ -860,9 +1206,14 @@ if (
   scripts/affected-targets decide >/dev/null
 ) && grep -Fxq 'full=false' "$integration_root/output" && \
     grep -Fxq 'selected=//:spec-tests' "$integration_root/output" && \
+    grep -Fxq "selected_lanes=$integration_selected_lanes" "$integration_root/output" && \
+    grep -Fxq "selected_lanes_count=$integration_lane_count" "$integration_root/output" && \
+    grep -Fxq "selected_lanes_digest=$integration_lane_digest" "$integration_root/output" && \
     grep -Fxq 'narrowing_status=CANDIDATE' "$integration_root/output" && \
     grep -Fxq 'head_target_count=2' "$integration_root/output" && \
+    grep -Fxq 'impacted_closure_count=2' "$integration_root/output" && \
     grep -Fxq 'impacted_target_count=1' "$integration_root/output" && \
+    grep -Fxq "impacted_targets_digest=$integration_impacted_digest" "$integration_root/output" && \
     ! grep -Fq '//crates/deleted:base-only' "$integration_root/output" && \
     grep -Fq 'Live impacted closure: **1** targets (**50.00%' "$integration_root/summary" && \
     grep -Fq 'exact saved share is reported after each registered lane scope' "$integration_root/summary" && \
@@ -873,12 +1224,12 @@ if (
     grep -Fxq -- "$integration_root/bin/fake-buck" "$integration_root/btd-args"; then
   pass "integration: BTD selects a corpus from Git status and receives pinned Buck wrapper"
 else
-  fail "integration: selective BTD decision contract"
+  fail "integration: selective BTD decision contract ($(tr '\n' ' ' <"$integration_root/output"))"
 fi
 
-# A native graph query is required only for selective lane planning. If it
-# fails, the planner must choose the safe full run rather than silently omit
-# both native lanes (RUE-1266).
+# Every graph-owned lane proxy is required for selective planning. If the
+# canonical clippy query fails, the planner must choose the safe full run
+# rather than silently omit the clippy lane.
 cat >"$integration_root/bin/failing-buck" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -910,9 +1261,9 @@ if (
 ) && grep -Fxq 'full=true' "$failure_output" && \
     grep -Fxq 'narrowing_status=DEGRADED' "$failure_output" && \
     grep -Fq 'Planner reach: **not applicable**' "$integration_root/degraded-summary"; then
-  pass "decision: native graph query failure runs full suite"
+  pass "decision: clippy graph query failure runs full suite"
 else
-  fail "decision: native graph query failure did not fail open to full suite"
+  fail "decision: clippy graph query failure did not fail open to full suite"
 fi
 
 cat >"$integration_root/bin/empty-head-buck" <<'EOF'
@@ -966,6 +1317,23 @@ if (
   pass "decision: authoritative full run reports no saved share"
 else
   fail "decision: authoritative full run fabricated a saved share"
+fi
+
+TESTS=$((TESTS + 1))
+dispatch_output="$integration_root/dispatch-output"
+dispatch_summary="$integration_root/dispatch-summary"
+if (
+  cd "$integration_root" &&
+  RUE_AFFECTED_EVENT=workflow_dispatch \
+  GITHUB_OUTPUT="$dispatch_output" \
+  GITHUB_STEP_SUMMARY="$dispatch_summary" \
+  scripts/affected-targets decide >/dev/null 2>&1
+) && grep -Fxq 'full=true' "$dispatch_output" && \
+    grep -Fxq 'narrowing_status=DECLINED' "$dispatch_output" && \
+    grep -Fq "authoritative full run for event 'workflow_dispatch'" "$dispatch_summary"; then
+  pass "decision: workflow_dispatch remains an authoritative full run"
+else
+  fail "decision: workflow_dispatch did not force the full suite"
 fi
 
 # ---------------------------------------------------------------------------

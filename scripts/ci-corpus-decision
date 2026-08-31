@@ -12,6 +12,7 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 gate="${RUE_AFFECTED_GATE:-$repo_root/scripts/ci-corpus-selected}"
 run=true
+gate_status=RUN
 
 if "$gate" "$1"; then
     :
@@ -19,13 +20,18 @@ else
     status=$?
     if [[ "$status" -eq 1 ]]; then
         run=false
+        gate_status=DESELECTED
     else
+        gate_status=DEGRADED
         echo "Corpus selection failed unexpectedly (exit $status); running full corpus." >&2
     fi
 fi
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    printf 'run=%s\n' "$run" >>"$GITHUB_OUTPUT"
+    {
+        printf 'run=%s\n' "$run"
+        printf 'gate_status=%s\n' "$gate_status"
+    } >>"$GITHUB_OUTPUT"
 else
     printf 'run=%s\n' "$run"
 fi
