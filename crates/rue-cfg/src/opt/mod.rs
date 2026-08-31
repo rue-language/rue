@@ -506,16 +506,20 @@ mod tests {
             0,
             "unroll reacquired a transactional whole-CFG clone"
         );
-        // The remaining whole-graph clone in `unroll_one` is a different thing
-        // and is deliberately still here: it is the pristine read snapshot the
-        // pass copies original blocks from while it appends new ones and
-        // rewires original terminators. Narrowing it to the loop subgraph is
-        // tracked on RUE-1842; this assertion pins that it is the only one left,
-        // so its removal or duplication has to be a deliberate edit.
+        // The pristine read snapshot `unroll_one` needs is now `LoopSource`,
+        // which copies the loop body rather than the function. Assert against
+        // the production half only — the pass's own tests clone graphs to
+        // compare them, and that is not what this watches.
+        // `unrolling_never_clones_the_whole_graph` is the behavioural half, and
+        // catches a clone spelled any other way.
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests {")
+            .map(|(before, _)| before)
+            .expect("unroll.rs keeps its tests in one trailing module");
         assert_eq!(
-            source.matches("let source = cfg.clone();").count(),
-            1,
-            "the pristine unroll snapshot moved; re-check what reads it"
+            production.matches("cfg.clone()").count(),
+            0,
+            "unroll reacquired a whole-CFG clone"
         );
     }
 

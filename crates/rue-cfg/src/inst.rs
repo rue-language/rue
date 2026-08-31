@@ -653,7 +653,7 @@ pub enum Terminator {
 }
 
 impl Terminator {
-    fn duplicate_with_owner(&self) -> Self {
+    pub(crate) fn duplicate_with_owner(&self) -> Self {
         match self {
             Self::Goto { target, args } => Self::Goto {
                 target: *target,
