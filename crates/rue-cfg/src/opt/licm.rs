@@ -30,21 +30,17 @@
 //! propagates availability through a worklist, so dependency order in the CFG's
 //! block numbering cannot turn the analysis into repeated full-body scans.
 //!
-//! ### Memory reads — phase-2 conservatism
+//! ### Memory reads
 //!
 //! A direct, non-indexed `Load`/`PlaceRead` is speculatable per the classifier,
-//! but its *result* is only invariant if no store inside the loop can change the
-//! memory it reads. Indirect `PlaceRead`s remain non-speculatable because the
-//! dereference can fault. Rue has no memory-versioning / alias analysis today,
-//! so this phase is maximally conservative: a memory read is treated as
-//! **non-invariant whenever the loop body contains any instruction with an
-//! observable side effect** (`Call`, `Intrinsic`, `Store`, `ParamStore`,
-//! `PlaceWrite`, `Alloc`, `Drop`) — everything
-//! `classify::has_observable_side_effect` reports *except* the
-//! `StorageLive`/`StorageDead` storage markers, which move no memory. When the
-//! body is free of such effects, a memory read genuinely yields the same value
-//! every iteration and may hoist. This is relaxable later with memory versioning
-//! (RUE-914 territory); until then the whole-body effect gate is the safe rule.
+//! but its result is invariant only when its storage is unchanged by the loop.
+//! [`super::slot_facts`] classifies direct local and parameter roots per loop.
+//! A read may move only when its exact slot is not written or reached in the
+//! reachable loop body and its address has not escaped. Thus an allocation or
+//! write of slot B does not kill a read of slot A. Calls, intrinsics, drops, and
+//! indirect writes still block memory-read motion because their targets cannot
+//! be bounded without general alias analysis. Indirect and indexed reads remain
+//! non-speculatable because they can fault.
 //!
 //! ## Why hoisting is verifier-clean
 //!
@@ -90,15 +86,17 @@ use rue_air::FrozenTypeInternPool;
 use super::CfgOptimizationError;
 use super::classify;
 use super::loops::{LoopId, NaturalLoop, ensure_preheader, loops};
+use super::slot_facts::{self, LoopSlotFacts};
 use crate::dominators::DominatorTree;
 use crate::{BlockId, Cfg, CfgInstData, CfgValue, Terminator};
 
 /// Bounded-work counters for one LICM run (RUE-794 discipline).
 ///
 /// Every field is monotone and structurally bounded. One forest computation
-/// visits each loop until a dedicated preheader changes CFG edges. Within a loop,
-/// each instruction is classified once, each candidate dependency is recorded
-/// once, and each discovered invariant leaves the worklist once.
+/// visits each loop until a dedicated preheader changes CFG edges. Within a
+/// loop, each instruction is scanned once for slot facts and once for hoist
+/// eligibility, each candidate dependency is recorded once, and each
+/// discovered invariant leaves the worklist once.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Stats {
     /// Dominator-tree and loop-forest computations, including the initial one.
@@ -111,6 +109,18 @@ pub struct Stats {
     pub loops_analyzed: u64,
     /// Loop-body instructions tested for hoist eligibility.
     pub instructions_examined: u64,
+    /// Loop-body instructions scanned by the shared slot-fact classifier.
+    /// This is a separate physical scan from hoist eligibility and therefore
+    /// stays separately visible even though both have the same structural
+    /// bound.
+    pub slot_fact_instructions_scanned: u64,
+    /// Local/parameter generation-stamp entries initialized while growing (or
+    /// after the theoretical generation-counter wrap). In the steady state
+    /// this is at most the function's slot count, not slots times loops.
+    pub slot_fact_entries_initialized: u64,
+    /// Times the reusable slot-fact workspace grew. One initial growth covers
+    /// every loop unless the CFG's slot domain itself grows.
+    pub slot_fact_workspace_growths: u64,
     /// Def-use edges between hoist candidates in the same loop body.
     pub candidate_dependencies: u64,
     /// Invariant candidates removed from the discovery worklist.
@@ -165,6 +175,11 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, Cfg
         // sweeps.
         let mut order: Vec<LoopId> = (0..forest.len()).collect();
         order.sort_by_key(|&id| forest.get(id).body.len());
+        // The forest contains only reachable natural loops. Keep an explicit
+        // shared reachability set for slot-fact scans so disconnected
+        // counterfeit blocks can never become memory barriers, and compute it
+        // once per sweep rather than once per loop.
+        let reachable = super::dce::compute_reachable_blocks(cfg);
 
         // One whole-function def-block scan per sweep. Instruction-only motion
         // keeps it accurate as long as each hoist patches the entries it moved,
@@ -180,6 +195,7 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, Cfg
                 forest.get(id),
                 type_pool,
                 &mut def_block,
+                &reachable,
                 &mut workspace,
                 &mut stats,
             )?
@@ -243,6 +259,7 @@ fn may_have_cycle_by_block_order(cfg: &Cfg) -> bool {
 /// not just candidates, so a stale `true` would delete a live instruction.
 #[derive(Default)]
 struct HoistWorkspace {
+    slot_facts: slot_facts::LoopSlotFactsWorkspace,
     in_loop: Vec<bool>,
     /// Blocks currently set in `in_loop`.
     in_loop_blocks: Vec<BlockId>,
@@ -320,18 +337,16 @@ fn hoist_loop(
     lp: &NaturalLoop,
     type_pool: &FrozenTypeInternPool,
     def_block: &mut Vec<Option<BlockId>>,
+    reachable: &super::dce::BitSet,
     workspace: &mut HoistWorkspace,
     stats: &mut Stats,
 ) -> Result<HoistResult, CfgOptimizationError> {
-    // Phase-2 conservatism: any memory read is non-invariant when the loop body
-    // contains any observable-effect op other than the storage markers.
-    let body_has_effect = body_has_memory_effect(cfg, lp);
-
     // Classify each body instruction once. The classifier remains the sole
     // authority for trap/effect eligibility; the worklist below only answers
     // whether eligible operands become available at the preheader.
     workspace.prepare(cfg, &lp.body, stats);
     let HoistWorkspace {
+        slot_facts: slot_fact_workspace,
         in_loop,
         in_loop_blocks: _,
         candidate,
@@ -343,10 +358,19 @@ fn hoist_loop(
         order,
         worklist,
     } = workspace;
+
+    // Slot writes and escape channels are classified once by the shared
+    // RUE-521/RUE-1869 authority. Its generation-stamped storage is reused by
+    // this run workspace, and every scan/growth cost is published in Stats.
+    let (slot_facts, slot_work) =
+        slot_fact_workspace.classify_loop_slot_invariance(cfg, &lp.body, reachable);
+    stats.slot_fact_instructions_scanned += slot_work.instructions_scanned;
+    stats.slot_fact_entries_initialized += slot_work.entries_initialized;
+    stats.slot_fact_workspace_growths += slot_work.workspace_growths;
     for &block in &lp.body {
         for &value in &cfg.get_block(block).insts {
             stats.instructions_examined += 1;
-            if is_hoist_candidate(cfg, value, body_has_effect) {
+            if is_hoist_candidate(cfg, value, &slot_facts) {
                 candidate[value.as_u32() as usize] = true;
                 candidate_values.push(value);
             }
@@ -431,52 +455,29 @@ fn hoist_loop(
 
 /// Whether `value` is eligible to hoist on its own merits, independent of its
 /// operands: speculatable (never traps, no observable effect), not a block
-/// parameter, and — for a memory read — only when the loop body is effect-free.
-fn is_hoist_candidate(cfg: &Cfg, value: CfgValue, body_has_effect: bool) -> bool {
+/// parameter, and — for a memory read — only when its direct root is invariant.
+fn is_hoist_candidate(cfg: &Cfg, value: CfgValue, slot_facts: &LoopSlotFacts) -> bool {
     // Trapping or observable ops never move (ADR-0054 §2). This already excludes
     // arithmetic, IntCast, indirect/indexed PlaceRead, calls, stores, allocs,
     // drops, and the storage markers.
     if !classify::is_speculatable(cfg, value) {
         return false;
     }
-    match cfg.get_inst(value).data {
+    match &cfg.get_inst(value).data {
         // Block parameters vary per iteration; they are not instructions in the
         // body's `insts` list, but guard defensively.
         CfgInstData::BlockParam { .. } => false,
-        // Memory reads yield the same value each iteration only when nothing in
-        // the loop writes memory (phase-2 conservatism; see the module docs).
-        CfgInstData::PlaceRead { .. } | CfgInstData::Load { .. } => !body_has_effect,
-        // A `Param` re-reads its parameter slot; it has no operands, so the
-        // operand walk trivially reports it invariant — but its *value* is only
-        // stable across iterations when the parameter cannot be mutated inside
-        // the loop. A writable (`inout`) or address-taken parameter can be
-        // written by a body `ParamStore` or a raw-pointer `@ptr_write`, so its
-        // read is invariant only when the body has no observable effect, exactly
-        // like a memory read. A by-value, non-address-taken parameter never
-        // changes and hoists freely. (Mirrors CSE's `never_written_params`
-        // guard, RUE-914 — without this a hoisted `inout` read would freeze the
-        // parameter at its entry value and miscompile the loop.)
-        CfgInstData::Param { index } => {
-            !body_has_effect
-                || (!cfg.is_param_writable(index) && !cfg.is_param_address_taken(index))
-        }
+        CfgInstData::Load { slot } => slot_facts.local_is_invariant(*slot),
+        CfgInstData::PlaceRead { place } => match place.base {
+            crate::PlaceBase::Local(slot) => slot_facts.local_is_invariant(slot),
+            crate::PlaceBase::Param(slot) => slot_facts.param_is_invariant(slot),
+            crate::PlaceBase::Accessor(_) | crate::PlaceBase::Indirect(_) => false,
+        },
+        // A `Param` re-reads its ABI slot and has no operands, so its memory
+        // root must be checked explicitly just like a local Load.
+        CfgInstData::Param { index } => slot_facts.param_is_invariant(*index),
         _ => true,
     }
-}
-
-/// Whether the loop body contains any observable-effect instruction other than
-/// the `StorageLive`/`StorageDead` markers — the gate that makes memory reads
-/// non-invariant this phase (ADR-0054 §3 conservatism).
-fn body_has_memory_effect(cfg: &Cfg, lp: &NaturalLoop) -> bool {
-    lp.body.iter().any(|&block| {
-        cfg.get_block(block).insts.iter().any(|&value| {
-            classify::has_observable_side_effect(cfg, value)
-                && !matches!(
-                    cfg.get_inst(value).data,
-                    CfgInstData::StorageLive { .. } | CfgInstData::StorageDead { .. }
-                )
-        })
-    })
 }
 
 /// Map each `CfgValue` to the block that defines it (as a block parameter or as
@@ -504,7 +505,8 @@ fn compute_def_blocks(cfg: &Cfg, stats: &mut Stats) -> Vec<Option<BlockId>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CfgInst, Terminator, Type};
+    use crate::{CfgArgMode, CfgCallArg, CfgInst, Terminator, Type};
+    use lasso::{Key, Spur};
     use rue_span::Span;
 
     // Two local slots so the memory-read and indexed-place tests are
@@ -740,6 +742,12 @@ mod tests {
         // so the loop bodies contain only the test ops.
         let cond_o = bool_const(&mut cfg, entry);
         let cond_i = bool_const(&mut cfg, entry);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc { slot: 0, init: a },
+            Type::UNIT,
+        );
         let op = cfg.add_block_param(o, Type::I32); // outer induction param
         let args = cfg.push_goto_args([o_init]).unwrap();
         cfg.set_terminator(entry, Terminator::Goto { target: o, args });
@@ -753,9 +761,18 @@ mod tests {
         // Depends on the outer loop param: invariant for the INNER loop only, so
         // it lands in the inner preheader and stays there.
         let inner_only = push(&mut cfg, i_body, CfgInstData::BitOr(op, a), Type::I32);
+        // Slot 0 is unchanged in the inner loop, so this read may leave it. The
+        // outer loop writes slot 0 below, so it must stop in the inner preheader.
+        let inner_slot_read = push(&mut cfg, i_body, CfgInstData::Load { slot: 0 }, Type::I32);
         cfg.set_terminator(i_body, goto(i));
 
         let next_o = push(&mut cfg, o_body, CfgInstData::BitAnd(op, b), Type::I32);
+        push(
+            &mut cfg,
+            o_body,
+            CfgInstData::Store { slot: 0, value: b },
+            Type::UNIT,
+        );
         let args = cfg.push_goto_args([next_o]).unwrap();
         cfg.set_terminator(o_body, Terminator::Goto { target: o, args });
         cfg.set_terminator(exit, Terminator::Return { value: None });
@@ -820,6 +837,12 @@ mod tests {
             inner_block != i_body,
             "inner-only invariant op should leave the inner body"
         );
+        let read_block = block_of(&cfg, inner_slot_read).unwrap();
+        assert_ne!(read_block, i_body, "slot read should leave the inner loop");
+        assert_ne!(
+            read_block, entry,
+            "outer same-slot write must stop the read"
+        );
 
         // Reachable-value invariant: every operand use is still dominated by its
         // definition (verify() enforces this).
@@ -852,10 +875,9 @@ mod tests {
     }
 
     #[test]
-    fn memory_read_hoisted_only_when_body_effect_free() {
-        // A non-indexed Load is speculatable. With no store/call in the loop it
-        // is invariant and hoists; add an observable effect (a Store) to the
-        // body and the same Load must stay put (phase-2 conservatism).
+    fn local_load_uses_per_slot_loop_invariance() {
+        // A non-indexed Load is speculatable. With no write to its slot it is
+        // invariant and hoists.
         let mut s = single_loop();
         push(
             &mut s.cfg,
@@ -869,7 +891,31 @@ mod tests {
         assert_eq!(stats.invariants_hoisted, 1, "effect-free body: Load hoists");
         assert_eq!(block_of(&s.cfg, load), Some(s.entry));
 
-        // Now a body with a store: the Load must not move.
+        // A store to the same slot makes the Load variant.
+        let mut s = single_loop();
+        push(
+            &mut s.cfg,
+            s.entry,
+            CfgInstData::Alloc { slot: 0, init: s.a },
+            Type::UNIT,
+        );
+        let load = push(&mut s.cfg, s.body, CfgInstData::Load { slot: 0 }, Type::I32);
+        push(
+            &mut s.cfg,
+            s.body,
+            CfgInstData::Store {
+                slot: 0,
+                value: s.a,
+            },
+            Type::UNIT,
+        );
+        s.cfg.verify().unwrap();
+        let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.invariants_hoisted, 0, "same-slot store: Load stays");
+        assert_eq!(block_of(&s.cfg, load), Some(s.body));
+
+        // A store to slot B cannot change slot A and must not retain the old
+        // loop-wide memory-effect veto.
         let mut s = single_loop();
         push(
             &mut s.cfg,
@@ -889,7 +935,160 @@ mod tests {
         );
         s.cfg.verify().unwrap();
         let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
-        assert_eq!(stats.invariants_hoisted, 0, "body has a store: Load stays");
+        assert_eq!(stats.invariants_hoisted, 1, "unrelated store: Load hoists");
+        assert_eq!(stats.instructions_examined, 2);
+        assert_eq!(stats.worklist_pops, 1);
+        assert_eq!(block_of(&s.cfg, load), Some(s.entry));
+
+        // Allocation is a write too, but only to the allocated root.
+        let mut s = single_loop();
+        push(
+            &mut s.cfg,
+            s.entry,
+            CfgInstData::Alloc { slot: 0, init: s.a },
+            Type::UNIT,
+        );
+        let load = push(&mut s.cfg, s.body, CfgInstData::Load { slot: 0 }, Type::I32);
+        push(
+            &mut s.cfg,
+            s.body,
+            CfgInstData::Alloc { slot: 1, init: s.b },
+            Type::UNIT,
+        );
+        let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.invariants_hoisted, 1, "unrelated alloc: Load hoists");
+        assert_eq!(block_of(&s.cfg, load), Some(s.entry));
+    }
+
+    #[test]
+    fn opaque_effects_and_by_ref_calls_block_loads() {
+        // Calls remain an unknown-memory barrier even when their explicit
+        // arguments do not identify the loaded root.
+        let mut s = single_loop();
+        push(
+            &mut s.cfg,
+            s.entry,
+            CfgInstData::Alloc { slot: 0, init: s.a },
+            Type::UNIT,
+        );
+        let load = push(&mut s.cfg, s.body, CfgInstData::Load { slot: 0 }, Type::I32);
+        let args = s.cfg.push_call_args(std::iter::empty()).unwrap();
+        push(
+            &mut s.cfg,
+            s.body,
+            CfgInstData::Call {
+                runtime: None,
+                name: Spur::try_from_usize(0).unwrap(),
+                args,
+            },
+            Type::UNIT,
+        );
+        let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.invariants_hoisted, 0);
+        assert_eq!(block_of(&s.cfg, load), Some(s.body));
+
+        // A by-ref argument explicitly reaches its root and is also an opaque
+        // call boundary.
+        let mut s = single_loop();
+        push(
+            &mut s.cfg,
+            s.entry,
+            CfgInstData::Alloc { slot: 0, init: s.a },
+            Type::UNIT,
+        );
+        let load = push(&mut s.cfg, s.body, CfgInstData::Load { slot: 0 }, Type::I32);
+        let args = s
+            .cfg
+            .push_call_args([CfgCallArg {
+                value: load,
+                mode: CfgArgMode::Inout,
+            }])
+            .unwrap();
+        push(
+            &mut s.cfg,
+            s.body,
+            CfgInstData::Call {
+                runtime: None,
+                name: Spur::try_from_usize(0).unwrap(),
+                args,
+            },
+            Type::UNIT,
+        );
+        let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.invariants_hoisted, 0);
+        assert_eq!(block_of(&s.cfg, load), Some(s.body));
+
+        // Intrinsics likewise retain the conservative barrier.
+        let mut s = single_loop();
+        push(
+            &mut s.cfg,
+            s.entry,
+            CfgInstData::Alloc { slot: 0, init: s.a },
+            Type::UNIT,
+        );
+        let load = push(&mut s.cfg, s.body, CfgInstData::Load { slot: 0 }, Type::I32);
+        let args = s.cfg.push_intrinsic_args(std::iter::empty()).unwrap();
+        push(
+            &mut s.cfg,
+            s.body,
+            CfgInstData::Intrinsic {
+                operation: rue_air::IntrinsicOperation::PanicNoMessage,
+                name: Spur::try_from_usize(0).unwrap(),
+                args,
+            },
+            Type::UNIT,
+        );
+        let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.invariants_hoisted, 0);
+        assert_eq!(block_of(&s.cfg, load), Some(s.body));
+    }
+
+    #[test]
+    fn escaped_slot_and_indirect_write_block_loads() {
+        let mut s = single_loop();
+        push(
+            &mut s.cfg,
+            s.entry,
+            CfgInstData::Alloc { slot: 0, init: s.a },
+            Type::UNIT,
+        );
+        s.cfg.mark_address_taken(0);
+        let load = push(&mut s.cfg, s.body, CfgInstData::Load { slot: 0 }, Type::I32);
+        let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.invariants_hoisted, 0);
+        assert_eq!(block_of(&s.cfg, load), Some(s.body));
+
+        let mut s = single_loop();
+        push(
+            &mut s.cfg,
+            s.entry,
+            CfgInstData::Alloc { slot: 0, init: s.a },
+            Type::UNIT,
+        );
+        let load = push(&mut s.cfg, s.body, CfgInstData::Load { slot: 0 }, Type::I32);
+        let pool = rue_air::TypeInternPool::new();
+        let pointer = push(
+            &mut s.cfg,
+            s.entry,
+            CfgInstData::Const(0),
+            Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::I32)),
+        );
+        let place = s
+            .cfg
+            .make_place(
+                crate::PlaceBase::Indirect(pointer),
+                Type::I32,
+                std::iter::empty(),
+            )
+            .unwrap();
+        push(
+            &mut s.cfg,
+            s.body,
+            CfgInstData::PlaceWrite { place, value: s.b },
+            Type::UNIT,
+        );
+        let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.invariants_hoisted, 0);
         assert_eq!(block_of(&s.cfg, load), Some(s.body));
     }
 
@@ -945,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn mutable_param_read_hoisted_only_when_body_effect_free() {
+    fn param_read_uses_per_slot_loop_invariance() {
         // A `Param` read re-reads its parameter slot and has no operands, so the
         // operand walk trivially calls it invariant. But a writable (`inout`)
         // parameter that the loop body mutates (a `ParamStore`) varies per
@@ -992,9 +1191,7 @@ mod tests {
         assert_eq!(block_of(&cfg, read), Some(body), "the inout read stays");
         cfg.verify().unwrap();
 
-        // A by-value, non-address-taken parameter (slot 1) never changes, so its
-        // read hoists even when the body has an unrelated effect (a Store to a
-        // local): the refinement must not over-restrict.
+        // A write to parameter slot 0 cannot change parameter slot 1.
         let mut cfg = Cfg::new(
             Type::UNIT,
             1,
@@ -1014,12 +1211,11 @@ mod tests {
         cfg.set_terminator(header, branch(cond, body, exit));
 
         let pure_read = push(&mut cfg, body, CfgInstData::Param { index: 1 }, Type::I32);
-        // An unrelated observable effect in the body (a local store).
         push(
             &mut cfg,
             body,
-            CfgInstData::Store {
-                slot: 0,
+            CfgInstData::ParamStore {
+                param_slot: 0,
                 value: zero,
             },
             Type::UNIT,
@@ -1039,6 +1235,30 @@ mod tests {
             "the pure read moved"
         );
         cfg.verify().unwrap();
+
+        // Writability is a permission, not itself a loop write: an inout read
+        // with no reachable writer in the loop is invariant.
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            0,
+            1,
+            "test".to_string(),
+            rue_air::ParamSlotModes::new(vec![true], vec![true]),
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let header = cfg.new_block();
+        let body = cfg.new_block();
+        let exit = cfg.new_block();
+        let cond = bool_const(&mut cfg, entry);
+        cfg.set_terminator(entry, goto(header));
+        cfg.set_terminator(header, branch(cond, body, exit));
+        let read = push(&mut cfg, body, CfgInstData::Param { index: 0 }, Type::I32);
+        cfg.set_terminator(body, goto(header));
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+        let stats = run(&mut cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.invariants_hoisted, 1);
+        assert_eq!(block_of(&cfg, read), Some(entry));
     }
 
     #[test]
@@ -1162,6 +1382,9 @@ mod tests {
             assert_eq!(stats.forest_computations, 1);
             assert_eq!(stats.loops_analyzed, 1);
             assert_eq!(stats.instructions_examined, len as u64);
+            assert_eq!(stats.slot_fact_instructions_scanned, len as u64);
+            assert_eq!(stats.slot_fact_entries_initialized, 2);
+            assert_eq!(stats.slot_fact_workspace_growths, 1);
             assert_eq!(stats.candidate_dependencies, len as u64 - 1);
             assert_eq!(stats.worklist_pops, len as u64);
             assert_eq!(stats.invariants_hoisted, len as u64);
@@ -1186,11 +1409,98 @@ mod tests {
             assert_eq!(stats.forest_computations, 1);
             assert_eq!(stats.loops_analyzed, 1);
             assert_eq!(stats.instructions_examined, len as u64);
+            assert_eq!(stats.slot_fact_instructions_scanned, len as u64);
+            assert_eq!(stats.slot_fact_entries_initialized, 2);
+            assert_eq!(stats.slot_fact_workspace_growths, 1);
             assert_eq!(stats.candidate_dependencies, 0);
             assert_eq!(stats.worklist_pops, len as u64);
             assert_eq!(stats.invariants_hoisted, len as u64);
             s.cfg.verify().unwrap();
         }
+    }
+
+    #[test]
+    fn many_small_loops_reuse_large_slot_fact_tables() {
+        const LOOP_COUNT: usize = 24;
+        const LOCAL_COUNT: usize = 4096;
+        const PARAM_COUNT: usize = 2048;
+
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            LOCAL_COUNT as u32,
+            PARAM_COUNT as u32,
+            "test".to_string(),
+            rue_air::ParamSlotModes::new(vec![false; PARAM_COUNT], vec![false; PARAM_COUNT]),
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let cond = bool_const(&mut cfg, entry);
+        let init = push(&mut cfg, entry, CfgInstData::Const(7), Type::I32);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc { slot: 0, init },
+            Type::UNIT,
+        );
+
+        let mut predecessor = entry;
+        let mut loads = Vec::with_capacity(LOOP_COUNT);
+        let mut bodies = Vec::with_capacity(LOOP_COUNT);
+        for _ in 0..LOOP_COUNT {
+            let header = cfg.new_block();
+            let body = cfg.new_block();
+            let next = cfg.new_block();
+            bodies.push(body);
+            cfg.set_terminator(predecessor, goto(header));
+            cfg.set_terminator(header, branch(cond, body, next));
+            loads.push(push(
+                &mut cfg,
+                body,
+                CfgInstData::Load { slot: 0 },
+                Type::I32,
+            ));
+            push(
+                &mut cfg,
+                body,
+                CfgInstData::Store {
+                    slot: 1,
+                    value: init,
+                },
+                Type::UNIT,
+            );
+            cfg.set_terminator(body, goto(header));
+            predecessor = next;
+        }
+        cfg.set_terminator(predecessor, Terminator::Return { value: None });
+        cfg.verify().unwrap();
+
+        let stats = run(&mut cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.forest_computations, 1);
+        assert_eq!(stats.def_block_scans, 1);
+        assert_eq!(stats.loops_analyzed, LOOP_COUNT as u64);
+        assert_eq!(stats.instructions_examined, (LOOP_COUNT * 2) as u64);
+        assert_eq!(
+            stats.slot_fact_instructions_scanned,
+            (LOOP_COUNT * 2) as u64
+        );
+        assert_eq!(
+            stats.slot_fact_entries_initialized,
+            (LOCAL_COUNT + PARAM_COUNT) as u64,
+            "generation tables initialize once, not once per loop"
+        );
+        assert_eq!(stats.slot_fact_workspace_growths, 1);
+        assert_eq!(stats.hoist_workspace_growths, 1);
+        assert_eq!(stats.candidate_dependencies, 0);
+        assert_eq!(stats.worklist_pops, LOOP_COUNT as u64);
+        assert_eq!(stats.invariants_hoisted, LOOP_COUNT as u64);
+        assert_eq!(stats.preheaders_materialized, 0);
+        assert!(
+            loads
+                .iter()
+                .zip(&bodies)
+                .all(|(&load, &body)| block_of(&cfg, load).is_some_and(|block| block != body))
+        );
+        cfg.verify().unwrap();
     }
 
     #[test]

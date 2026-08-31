@@ -126,14 +126,25 @@ fn cfg_abi_width_checks_have_one_frozen_pool_authority() {
 
 #[test]
 fn slot_write_classification_has_one_owner() {
-    // The RUE-521 knowledge of which local slots may be store-to-load
-    // forwarded (write counting, address escapes, by-ref call arguments,
-    // projected writes, the RUE-194 out-of-range skip) is owned by
-    // opt/slot_facts.rs. Its consumers must go through the shared
-    // classifier, not restate the scan.
+    // The RUE-521/RUE-1869 knowledge of which local or parameter slots can be
+    // read across memory effects (write counting, address escapes, by-ref call
+    // arguments, projected writes, reachability, and the RUE-194 out-of-range
+    // skip) is owned by opt/slot_facts.rs. Consumers must go through the shared
+    // classifiers, not restate their scans.
     let owner = include_str!("opt/slot_facts.rs");
     assert!(owner.contains("pub(super) fn classify_slot_writes("));
     assert!(owner.contains("enum SlotWrites"));
+    assert!(owner.contains("struct LoopSlotFactsWorkspace"));
+    assert!(owner.contains("fn classify_loop_slot_invariance"));
+    assert!(owner.contains("local_generation: Vec<u64>"));
+    assert!(owner.contains("param_generation: Vec<u64>"));
+
+    let licm = include_str!("opt/licm.rs");
+    assert!(licm.contains(".classify_loop_slot_invariance("));
+    assert!(licm.contains("slot_fact_instructions_scanned"));
+    assert!(licm.contains("slot_fact_entries_initialized"));
+    assert!(licm.contains("slot_fact_workspace_growths"));
+    assert!(!licm.contains("fn body_has_memory_effect("));
 
     for (name, source) in [
         ("opt/constopt.rs", include_str!("opt/constopt.rs")),
