@@ -213,10 +213,34 @@ const REVISIONED_DATABASE_PHASES: &[(&str, &str)] = &[
         include_str!("revisioned_query_database/parse_import.rs"),
     ),
     (
+        "parse_import_program_assembly",
+        include_str!("revisioned_query_database/parse_import/program_assembly.rs"),
+    ),
+    (
         "semantic",
         include_str!("revisioned_query_database/semantic.rs"),
     ),
     ("body", include_str!("revisioned_query_database/body.rs")),
+    (
+        "body_closure_nucleus",
+        include_str!("revisioned_query_database/body/closure_nucleus.rs"),
+    ),
+    (
+        "body_durable_comptime_adapters",
+        include_str!("revisioned_query_database/body/durable_comptime_adapters.rs"),
+    ),
+    (
+        "body_provider_body",
+        include_str!("revisioned_query_database/body/provider_body.rs"),
+    ),
+    (
+        "body_revision_symbol_space",
+        include_str!("revisioned_query_database/body/revision_symbol_space.rs"),
+    ),
+    (
+        "body_transactions",
+        include_str!("revisioned_query_database/body/transactions.rs"),
+    ),
     (
         "registrations",
         include_str!("revisioned_query_database/registrations.rs"),
@@ -229,6 +253,1744 @@ const REVISIONED_DATABASE_PHASES: &[(&str, &str)] = &[
         "test_support",
         include_str!("revisioned_query_database/test_support.rs"),
     ),
+];
+
+const REVISIONED_DATABASE_REGISTRATION_MODULES: &[(&str, &str)] = &[
+    (
+        "registrations_backend",
+        include_str!("revisioned_query_database/registrations/backend.rs"),
+    ),
+    (
+        "registrations_body",
+        include_str!("revisioned_query_database/registrations/body.rs"),
+    ),
+    (
+        "registrations_parse_import",
+        include_str!("revisioned_query_database/registrations/parse_import.rs"),
+    ),
+    (
+        "registrations_provider",
+        include_str!("revisioned_query_database/registrations/provider.rs"),
+    ),
+    (
+        "registrations_semantic",
+        include_str!("revisioned_query_database/registrations/semantic.rs"),
+    ),
+];
+
+fn rust_char_literal_end(source: &str, start: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    assert_eq!(bytes.get(start), Some(&b'\''));
+    let mut cursor = start + 1;
+    while cursor < bytes.len() && !matches!(bytes[cursor], b'\n' | b'\r') {
+        match bytes[cursor] {
+            b'\\' => cursor = (cursor + 2).min(bytes.len()),
+            b'\'' => {
+                let contents = &source[start + 1..cursor];
+                let is_character = contents.starts_with('\\') || contents.chars().count() == 1;
+                return is_character.then_some(cursor + 1);
+            }
+            _ => cursor += 1,
+        }
+    }
+    None
+}
+
+/// Preserve code tokens while masking comments, strings, and character
+/// literals. Source authority inventories use this instead of raw substring
+/// counts so a test fixture, diagnostic, or ownership comment cannot
+/// impersonate production runtime construction.
+fn rust_code_only(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut code = bytes.to_vec();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index..].starts_with(b"//") {
+            let start = index;
+            index += 2;
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            code[start..index].fill(b' ');
+            continue;
+        }
+        if bytes[index..].starts_with(b"/*") {
+            let start = index;
+            let mut depth = 1usize;
+            index += 2;
+            while index < bytes.len() && depth > 0 {
+                if bytes[index..].starts_with(b"/*") {
+                    depth += 1;
+                    index += 2;
+                } else if bytes[index..].starts_with(b"*/") {
+                    depth -= 1;
+                    index += 2;
+                } else {
+                    index += 1;
+                }
+            }
+            code[start..index].fill(b' ');
+            continue;
+        }
+        if bytes[index] == b'\''
+            && let Some(end) = rust_char_literal_end(source, index)
+        {
+            code[index..end].fill(b' ');
+            index = end;
+            continue;
+        }
+        if bytes[index] == b'r' {
+            let mut quote = index + 1;
+            while quote < bytes.len() && bytes[quote] == b'#' {
+                quote += 1;
+            }
+            if quote < bytes.len() && bytes[quote] == b'"' {
+                let hashes = quote - index - 1;
+                let start = index;
+                index = quote + 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'"'
+                        && bytes
+                            .get(index + 1..index + 1 + hashes)
+                            .is_some_and(|tail| tail.iter().all(|byte| *byte == b'#'))
+                    {
+                        index += 1 + hashes;
+                        break;
+                    }
+                    index += 1;
+                }
+                code[start..index].fill(b' ');
+                continue;
+            }
+        }
+        if bytes[index] == b'"' {
+            let start = index;
+            index += 1;
+            while index < bytes.len() {
+                match bytes[index] {
+                    b'\\' => index = (index + 2).min(bytes.len()),
+                    b'"' => {
+                        index += 1;
+                        break;
+                    }
+                    _ => index += 1,
+                }
+            }
+            code[start..index].fill(b' ');
+            continue;
+        }
+        index += 1;
+    }
+    String::from_utf8(code).expect("masking preserves UTF-8 byte boundaries")
+}
+
+fn code_identifier_count(source: &str, expected: &str) -> usize {
+    let code = rust_code_only(source);
+    code_identifiers(&code)
+        .into_iter()
+        .filter(|identifier| *identifier == expected)
+        .count()
+}
+
+/// Count one exact function identifier as `(definitions, calls, references)`.
+/// References include function-item/turbofish spellings, so converting a
+/// reviewed direct call into an alias cannot disappear from the inventory.
+fn function_identifier_usage(source: &str, expected: &str) -> (usize, usize, usize) {
+    let code = rust_code_only(source);
+    let bytes = code.as_bytes();
+    let is_identifier_byte = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let mut definitions = 0;
+    let mut calls = 0;
+    let mut references = 0;
+    for (start, _) in code.match_indices(expected) {
+        let identifier_start = if start >= 2 && bytes.get(start - 2..start) == Some(b"r#") {
+            start - 2
+        } else {
+            start
+        };
+        let end = start + expected.len();
+        if identifier_start
+            .checked_sub(1)
+            .and_then(|before| bytes.get(before))
+            .is_some_and(|byte| is_identifier_byte(*byte))
+            || bytes.get(end).is_some_and(|byte| is_identifier_byte(*byte))
+        {
+            continue;
+        }
+
+        let mut previous_end = identifier_start;
+        while previous_end > 0 && bytes[previous_end - 1].is_ascii_whitespace() {
+            previous_end -= 1;
+        }
+        let mut previous_start = previous_end;
+        while previous_start > 0 && is_identifier_byte(bytes[previous_start - 1]) {
+            previous_start -= 1;
+        }
+        if &code[previous_start..previous_end] == "fn" {
+            definitions += 1;
+            continue;
+        }
+
+        let mut next = end;
+        while bytes.get(next).is_some_and(u8::is_ascii_whitespace) {
+            next += 1;
+        }
+        if bytes.get(next) == Some(&b'(') {
+            calls += 1;
+        } else {
+            references += 1;
+        }
+    }
+    (definitions, calls, references)
+}
+
+/// Tokenize masked Rust code while retaining path and mutation punctuation.
+/// Raw identifiers are normalized to their ordinary spelling.
+fn rust_code_tokens(source: &str) -> Vec<String> {
+    let code = rust_code_only(source);
+    let bytes = code.as_bytes();
+    let mut tokens = Vec::new();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        if bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+            continue;
+        }
+        let raw_identifier = bytes[cursor..].starts_with(b"r#")
+            && bytes
+                .get(cursor + 2)
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_');
+        if raw_identifier {
+            cursor += 2;
+        }
+        if bytes[cursor].is_ascii_alphabetic() || bytes[cursor] == b'_' {
+            let start = cursor;
+            cursor += 1;
+            while bytes
+                .get(cursor)
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+            {
+                cursor += 1;
+            }
+            tokens.push(code[start..cursor].to_owned());
+            continue;
+        }
+        if let Some(operator) = [
+            "<<=", ">>=", "::", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "==", "!=", "=>",
+            "->", "..",
+        ]
+        .into_iter()
+        .find(|operator| code[cursor..].starts_with(operator))
+        {
+            tokens.push(operator.to_owned());
+            cursor += operator.len();
+            continue;
+        }
+        tokens.push(char::from(bytes[cursor]).to_string());
+        cursor += 1;
+    }
+    tokens
+}
+
+fn rust_alias_closure(
+    tokens: &[String],
+    root: &str,
+    include_type_aliases: bool,
+) -> std::collections::BTreeSet<String> {
+    let mut aliases = std::collections::BTreeSet::from([root.to_owned()]);
+    loop {
+        let mut changed = false;
+        for (use_index, token) in tokens.iter().enumerate() {
+            if token != "use" {
+                continue;
+            }
+            let end = tokens[use_index + 1..]
+                .iter()
+                .position(|token| token == ";")
+                .map_or(tokens.len(), |offset| use_index + 1 + offset);
+            for as_index in use_index + 1..end {
+                if tokens[as_index] != "as" {
+                    continue;
+                }
+                let Some(target) = tokens.get(as_index + 1) else {
+                    continue;
+                };
+                let source = tokens[use_index + 1..as_index]
+                    .iter()
+                    .rev()
+                    .find(|candidate| {
+                        candidate
+                            .as_bytes()
+                            .first()
+                            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+                    });
+                if source.is_some_and(|source| aliases.contains(source))
+                    && target != "_"
+                    && aliases.insert(target.clone())
+                {
+                    changed = true;
+                }
+            }
+        }
+        if include_type_aliases {
+            for (type_index, token) in tokens.iter().enumerate() {
+                if token != "type" {
+                    continue;
+                }
+                let Some(target) = tokens.get(type_index + 1) else {
+                    continue;
+                };
+                let Some(equal) = (type_index + 2..tokens.len())
+                    .find(|index| matches!(tokens[*index].as_str(), "=" | ";"))
+                    .filter(|index| tokens[*index] == "=")
+                else {
+                    continue;
+                };
+                let end = tokens[equal + 1..]
+                    .iter()
+                    .position(|token| token == ";")
+                    .map_or(tokens.len(), |offset| equal + 1 + offset);
+                if tokens[equal + 1..end]
+                    .iter()
+                    .any(|source| aliases.contains(source))
+                    && aliases.insert(target.clone())
+                {
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return aliases;
+        }
+    }
+}
+
+fn revisioned_database_aliases(tokens: &[String]) -> std::collections::BTreeSet<String> {
+    rust_alias_closure(tokens, "RevisionedQueryDatabase", true)
+}
+
+fn default_trait_aliases(tokens: &[String]) -> std::collections::BTreeSet<String> {
+    rust_alias_closure(tokens, "Default", false)
+}
+
+fn revisioned_database_impl_ranges(
+    tokens: &[String],
+    aliases: &std::collections::BTreeSet<String>,
+) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    for (impl_index, token) in tokens.iter().enumerate() {
+        if token != "impl" {
+            continue;
+        }
+        let Some(open) = (impl_index + 1..tokens.len())
+            .find(|index| matches!(tokens[*index].as_str(), "{" | ";"))
+            .filter(|index| tokens[*index] == "{")
+        else {
+            continue;
+        };
+        let header = &tokens[impl_index + 1..open];
+        let owner_start = header
+            .iter()
+            .rposition(|token| token == "for")
+            .map_or(0, |index| index + 1);
+        if !header[owner_start..]
+            .iter()
+            .any(|token| aliases.contains(token))
+        {
+            continue;
+        }
+        ranges.push((open, matching_token_delimiter(tokens, open, "{", "}")));
+    }
+    ranges
+}
+
+fn inherent_type_impl_ranges(
+    tokens: &[String],
+    aliases: &std::collections::BTreeSet<String>,
+) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    for (impl_index, token) in tokens.iter().enumerate() {
+        if token != "impl" {
+            continue;
+        }
+        let Some(open) = (impl_index + 1..tokens.len())
+            .find(|index| matches!(tokens[*index].as_str(), "{" | ";"))
+            .filter(|index| tokens[*index] == "{")
+        else {
+            continue;
+        };
+        let header = &tokens[impl_index + 1..open];
+        let trait_impl = header
+            .iter()
+            .take_while(|token| token.as_str() != "where")
+            .any(|token| token == "for");
+        if trait_impl || !header.iter().any(|token| aliases.contains(token)) {
+            continue;
+        }
+        ranges.push((open, matching_token_delimiter(tokens, open, "{", "}")));
+    }
+    ranges
+}
+
+/// Inventory explicit database Default references. In revisioned database
+/// implementation sources, `include_short_forms` additionally treats
+/// `Self::default` and `Default::default` as database construction authority.
+fn revisioned_database_default_references(source: &str, include_short_forms: bool) -> Vec<String> {
+    let tokens = rust_code_tokens(source);
+    let aliases = revisioned_database_aliases(&tokens);
+    let default_aliases = default_trait_aliases(&tokens);
+    let database_impl_ranges = revisioned_database_impl_ranges(&tokens, &aliases);
+    let mut references = Vec::new();
+    for index in 2..tokens.len() {
+        if tokens[index] != "default" || tokens[index - 1] != "::" {
+            continue;
+        }
+        let owner = &tokens[index - 2];
+        let in_database_impl = database_impl_ranges
+            .iter()
+            .any(|(open, close)| *open < index && index < *close);
+        let qualified_owners = if owner == ">" {
+            let mut depth = 0usize;
+            let mut angle = None;
+            for candidate in (0..index - 2).rev() {
+                match tokens[candidate].as_str() {
+                    ">" => depth += 1,
+                    "<" if depth == 0 => {
+                        angle = Some(candidate);
+                        break;
+                    }
+                    "<" => depth -= 1,
+                    _ => {}
+                }
+            }
+            angle.map(|angle| {
+                let qualification = &tokens[angle + 1..index - 2];
+                let has_default_trait = qualification.iter().any(|token| token == "as")
+                    && qualification
+                        .iter()
+                        .any(|token| default_aliases.contains(token));
+                let names_revisioned_database = has_default_trait
+                    && (qualification.iter().any(|token| aliases.contains(token))
+                        || (in_database_impl && qualification.iter().any(|token| token == "Self")));
+                let names_short_self = has_default_trait
+                    && include_short_forms
+                    && qualification.iter().any(|token| token == "Self");
+                (names_revisioned_database, names_short_self)
+            })
+        } else {
+            None
+        };
+        let normalized_owner = if aliases.contains(owner)
+            || qualified_owners.is_some_and(|(revisioned, _)| revisioned)
+        {
+            "RevisionedQueryDatabase"
+        } else if in_database_impl && default_aliases.contains(owner) {
+            "RevisionedQueryDatabase"
+        } else if qualified_owners.is_some_and(|(_, short_self)| short_self) {
+            "Self"
+        } else if include_short_forms && owner == "Self" {
+            owner
+        } else if include_short_forms && default_aliases.contains(owner) {
+            "Default"
+        } else {
+            continue;
+        };
+        let use_kind = if tokens.get(index + 1).is_some_and(|token| token == "(") {
+            "call"
+        } else {
+            "reference"
+        };
+        references.push(format!("{normalized_owner}:{use_kind}"));
+    }
+    references
+}
+
+fn database_construction_owner_inventory(
+    sources: &[(String, &str)],
+    include_short_forms: bool,
+) -> Vec<(String, String, usize)> {
+    let mut occurrences = sources
+        .iter()
+        .flat_map(|(owner, source)| {
+            revisioned_database_default_references(source, include_short_forms)
+                .into_iter()
+                .map(move |reference| (owner.clone(), reference))
+        })
+        .collect::<Vec<_>>();
+    occurrences.sort();
+    let mut inventory: Vec<(String, String, usize)> = Vec::new();
+    for (owner, reference) in occurrences {
+        if let Some((last_owner, last_reference, count)) = inventory.last_mut()
+            && *last_owner == owner
+            && *last_reference == reference
+        {
+            *count += 1;
+        } else {
+            inventory.push((owner, reference, 1));
+        }
+    }
+    inventory
+}
+
+/// Inventory explicit references to one type-owned method. Raw identifiers,
+/// qualified paths, type/use aliases, `Self` within an impl, and function-item
+/// references all retain authority.
+fn type_method_references(source: &str, type_name: &str, method: &str) -> Vec<String> {
+    let tokens = rust_code_tokens(source);
+    let aliases = rust_alias_closure(&tokens, type_name, true);
+    let type_impl_ranges = revisioned_database_impl_ranges(&tokens, &aliases);
+    let mut references = Vec::new();
+    for index in 2..tokens.len() {
+        if tokens[index] != method || tokens[index - 1] != "::" {
+            continue;
+        }
+        let owner = &tokens[index - 2];
+        let in_type_impl = type_impl_ranges
+            .iter()
+            .any(|(open, close)| *open < index && index < *close);
+        let qualified_type = if owner == ">" {
+            let mut depth = 0usize;
+            let mut angle = None;
+            for candidate in (0..index - 2).rev() {
+                match tokens[candidate].as_str() {
+                    ">" => depth += 1,
+                    "<" if depth == 0 => {
+                        angle = Some(candidate);
+                        break;
+                    }
+                    "<" => depth -= 1,
+                    _ => {}
+                }
+            }
+            angle.is_some_and(|angle| {
+                let qualification = &tokens[angle + 1..index - 2];
+                qualification.iter().any(|token| aliases.contains(token))
+                    || (in_type_impl && qualification.iter().any(|token| token == "Self"))
+            })
+        } else {
+            false
+        };
+        if !aliases.contains(owner) && !(in_type_impl && owner == "Self") && !qualified_type {
+            continue;
+        }
+        let use_kind = if tokens.get(index + 1).is_some_and(|token| token == "(") {
+            "call"
+        } else {
+            "reference"
+        };
+        references.push(format!("{type_name}:{use_kind}"));
+    }
+    references
+}
+
+fn revisioned_database_new_references(source: &str) -> Vec<String> {
+    type_method_references(source, "RevisionedQueryDatabase", "new")
+}
+
+fn construction_token_new_references(source: &str) -> Vec<String> {
+    type_method_references(source, "RevisionedQueryDatabaseConstructionToken", "new")
+}
+
+fn type_method_definitions(source: &str, type_name: &str, method: &str) -> Vec<String> {
+    let tokens = rust_code_tokens(source);
+    let aliases = rust_alias_closure(&tokens, type_name, true);
+    let mut definitions = Vec::new();
+    for (open, close) in inherent_type_impl_ranges(&tokens, &aliases) {
+        let mut nested_braces = 0usize;
+        for index in open + 1..close {
+            match tokens[index].as_str() {
+                "{" => nested_braces += 1,
+                "}" => nested_braces = nested_braces.saturating_sub(1),
+                "fn" if nested_braces == 0
+                    && tokens.get(index + 1).is_some_and(|name| name == method) =>
+                {
+                    let public = tokens
+                        .get(index.wrapping_sub(1))
+                        .is_some_and(|token| token == "pub")
+                        || (index >= 4
+                            && tokens[index - 4] == "pub"
+                            && tokens[index - 3] == "("
+                            && tokens[index - 1] == ")");
+                    definitions.push(if public { "public" } else { "private" }.to_owned());
+                }
+                _ => {}
+            }
+        }
+    }
+    definitions
+}
+
+fn type_method_definition_owner_inventory(
+    sources: &[(String, &str)],
+    type_name: &str,
+    method: &str,
+) -> Vec<(String, String, usize)> {
+    let mut occurrences = sources
+        .iter()
+        .flat_map(|(owner, source)| {
+            type_method_definitions(source, type_name, method)
+                .into_iter()
+                .map(move |visibility| (owner.clone(), visibility))
+        })
+        .collect::<Vec<_>>();
+    occurrences.sort();
+    let mut inventory: Vec<(String, String, usize)> = Vec::new();
+    for (owner, visibility) in occurrences {
+        if let Some((last_owner, last_visibility, count)) = inventory.last_mut()
+            && *last_owner == owner
+            && *last_visibility == visibility
+        {
+            *count += 1;
+        } else {
+            inventory.push((owner, visibility, 1));
+        }
+    }
+    inventory
+}
+
+fn type_method_reference_owner_inventory(
+    sources: &[(String, &str)],
+    type_name: &str,
+    method: &str,
+) -> Vec<(String, String, usize)> {
+    let mut occurrences = sources
+        .iter()
+        .flat_map(|(owner, source)| {
+            type_method_references(source, type_name, method)
+                .into_iter()
+                .map(move |reference| (owner.clone(), reference))
+        })
+        .collect::<Vec<_>>();
+    occurrences.sort();
+    let mut inventory: Vec<(String, String, usize)> = Vec::new();
+    for (owner, reference) in occurrences {
+        if let Some((last_owner, last_reference, count)) = inventory.last_mut()
+            && *last_owner == owner
+            && *last_reference == reference
+        {
+            *count += 1;
+        } else {
+            inventory.push((owner, reference, 1));
+        }
+    }
+    inventory
+}
+
+fn database_new_reference_owner_inventory(
+    sources: &[(String, &str)],
+) -> Vec<(String, String, usize)> {
+    type_method_reference_owner_inventory(sources, "RevisionedQueryDatabase", "new")
+}
+
+fn construction_token_new_reference_owner_inventory(
+    sources: &[(String, &str)],
+) -> Vec<(String, String, usize)> {
+    type_method_reference_owner_inventory(
+        sources,
+        "RevisionedQueryDatabaseConstructionToken",
+        "new",
+    )
+}
+
+fn revisioned_database_new_definitions(source: &str) -> usize {
+    let tokens = rust_code_tokens(source);
+    let aliases = revisioned_database_aliases(&tokens);
+    revisioned_database_impl_ranges(&tokens, &aliases)
+        .into_iter()
+        .map(|(open, close)| {
+            let mut nested_braces = 0usize;
+            let mut definitions = 0usize;
+            for index in open + 1..close {
+                match tokens[index].as_str() {
+                    "{" => nested_braces += 1,
+                    "}" => nested_braces = nested_braces.saturating_sub(1),
+                    "fn" if nested_braces == 0
+                        && tokens.get(index + 1).is_some_and(|name| name == "new") =>
+                    {
+                        definitions += 1;
+                    }
+                    _ => {}
+                }
+            }
+            definitions
+        })
+        .sum()
+}
+
+fn database_new_definition_owner_inventory(sources: &[(String, &str)]) -> Vec<(String, usize)> {
+    sources
+        .iter()
+        .filter_map(|(owner, source)| {
+            let definitions = revisioned_database_new_definitions(source);
+            (definitions != 0).then(|| (owner.clone(), definitions))
+        })
+        .collect()
+}
+
+fn type_trait_impl_count(source: &str, type_name: &str, trait_name: &str) -> usize {
+    let tokens = rust_code_tokens(source);
+    let type_aliases = rust_alias_closure(&tokens, type_name, true);
+    let trait_aliases = rust_alias_closure(&tokens, trait_name, false);
+    tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| *token == "impl")
+        .filter(|(impl_index, _)| {
+            let Some(open) = (*impl_index + 1..tokens.len())
+                .find(|index| matches!(tokens[*index].as_str(), "{" | ";"))
+                .filter(|index| tokens[*index] == "{")
+            else {
+                return false;
+            };
+            let header = &tokens[*impl_index + 1..open];
+            let Some(for_index) = header.iter().rposition(|token| token == "for") else {
+                return false;
+            };
+            header[..for_index]
+                .iter()
+                .any(|token| trait_aliases.contains(token))
+                && header[for_index + 1..]
+                    .iter()
+                    .any(|token| type_aliases.contains(token))
+        })
+        .count()
+}
+
+fn revisioned_database_default_impl_count(source: &str) -> usize {
+    type_trait_impl_count(source, "RevisionedQueryDatabase", "Default")
+}
+
+fn source_without_exact_item(source: &str, item: &str) -> String {
+    let offsets = source
+        .match_indices(item)
+        .map(|(offset, _)| offset)
+        .collect::<Vec<_>>();
+    assert_eq!(offsets.len(), 1, "exact source item must occur once");
+    let offset = offsets[0];
+    format!("{}{}", &source[..offset], &source[offset + item.len()..])
+}
+
+fn matching_token_delimiter(tokens: &[String], open: usize, left: &str, right: &str) -> usize {
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(open) {
+        if token == left {
+            depth += 1;
+        } else if token == right {
+            depth = depth
+                .checked_sub(1)
+                .unwrap_or_else(|| panic!("token delimiter {right:?} closes before {left:?}"));
+            if depth == 0 {
+                return index;
+            }
+        }
+    }
+    panic!("token delimiter {left:?} has no matching {right:?}")
+}
+
+/// Return source-level authorities that can initialize, replace, or mutably
+/// expose the revisioned database runtime field. This guards safe Rust source;
+/// arbitrary unsafe pointer arithmetic or proc-macro-generated code remains a
+/// separate review boundary.
+fn database_runtime_field_authorities(
+    source: &str,
+    reject_bare_runtime_macro_arguments: bool,
+) -> Vec<String> {
+    let tokens = rust_code_tokens(source);
+    let aliases = revisioned_database_aliases(&tokens);
+    let mut authorities = Vec::new();
+
+    // A runtime place passed through a local declarative macro is mutation
+    // authority even when the macro body mentions only a metavariable. This
+    // also closes nested forwarding. A bare `runtime` identifier is authority
+    // too because a separate field metavariable can combine it with a receiver
+    // inside the macro. The live owner inventory permits only the sealed
+    // composer's exact registration stream.
+    for bang in 1..tokens.len().saturating_sub(1) {
+        if tokens[bang] != "!" || !matches!(tokens[bang + 1].as_str(), "(" | "[" | "{") {
+            continue;
+        }
+        let (left, right) = match tokens[bang + 1].as_str() {
+            "(" => ("(", ")"),
+            "[" => ("[", "]"),
+            "{" => ("{", "}"),
+            _ => unreachable!(),
+        };
+        let close = matching_token_delimiter(&tokens, bang + 1, left, right);
+        let arguments = &tokens[bang + 2..close];
+        if arguments
+            .windows(2)
+            .any(|window| window == [".", "runtime"])
+        {
+            authorities.push("runtime-field-macro-argument".to_owned());
+        } else if reject_bare_runtime_macro_arguments
+            && arguments.iter().any(|token| token == "runtime")
+        {
+            authorities.push("runtime-field-macro-bare-identifier".to_owned());
+        }
+    }
+
+    // A database struct form containing `runtime` is either the sealed
+    // initializer or a destructuring/reconstruction attempt. Owner inventory
+    // below permits exactly one, inside the composer.
+    for index in 0..tokens.len().saturating_sub(1) {
+        if !(tokens[index] == "Self" || aliases.contains(&tokens[index]))
+            || tokens[index + 1] != "{"
+            || index.checked_sub(1).is_some_and(|previous| {
+                matches!(
+                    tokens[previous].as_str(),
+                    "impl" | "for" | "struct" | "enum" | "union" | "->"
+                )
+            })
+        {
+            continue;
+        }
+        let close = matching_token_delimiter(&tokens, index + 1, "{", "}");
+        if tokens[index + 2..close]
+            .iter()
+            .any(|token| token == "runtime")
+        {
+            authorities.push("database-runtime-struct-form".to_owned());
+        }
+    }
+
+    for index in 1..tokens.len() {
+        if tokens[index] != "runtime" || tokens[index - 1] != "." {
+            continue;
+        }
+        let mut after_place = index + 1;
+        while tokens.get(after_place).is_some_and(|token| token == ")") {
+            after_place += 1;
+        }
+        let next = tokens.get(after_place).map(String::as_str);
+        if next.is_some_and(|token| {
+            matches!(
+                token,
+                "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>="
+            )
+        }) {
+            authorities.push("runtime-field-assignment".to_owned());
+        }
+        if next == Some(".")
+            && tokens.get(after_place + 1).is_some_and(|method| {
+                matches!(
+                    method.as_str(),
+                    "clone_from" | "replace" | "swap" | "take" | "write" | "write_volatile"
+                )
+            })
+        {
+            authorities.push("runtime-field-mutating-method".to_owned());
+        }
+
+        let statement_start = (0..index - 1)
+            .rev()
+            .find(|candidate| matches!(tokens[*candidate].as_str(), ";" | "," | "{" | "}" | "=>"))
+            .map_or(0, |delimiter| delimiter + 1);
+        let statement_end = (index + 1..tokens.len())
+            .find(|candidate| matches!(tokens[*candidate].as_str(), ";" | "}" | "=>"))
+            .unwrap_or(tokens.len());
+        if tokens[statement_start..index]
+            .windows(2)
+            .any(|window| window == ["&", "mut"])
+            || tokens[statement_start..index]
+                .windows(3)
+                .any(|window| window == ["&", "raw", "mut"])
+            || tokens[statement_start..index]
+                .iter()
+                .any(|token| token == "addr_of_mut")
+        {
+            authorities.push("runtime-field-mutable-borrow".to_owned());
+        }
+        let statement = &tokens[statement_start..statement_end];
+        if statement.iter().any(|token| token == "ptr")
+            && statement.iter().any(|token| token == "write")
+        {
+            authorities.push("runtime-field-pointer-write".to_owned());
+        }
+    }
+    authorities
+}
+
+fn database_runtime_authority_inventory(
+    sources: &[(String, &str)],
+) -> Vec<(String, String, usize)> {
+    let mut occurrences = sources
+        .iter()
+        .flat_map(|(owner, source)| {
+            database_runtime_field_authorities(source, true)
+                .into_iter()
+                .map(move |authority| (owner.clone(), authority))
+        })
+        .collect::<Vec<_>>();
+    occurrences.sort();
+    let mut inventory: Vec<(String, String, usize)> = Vec::new();
+    for (owner, authority) in occurrences {
+        if let Some((last_owner, last_authority, count)) = inventory.last_mut()
+            && *last_owner == owner
+            && *last_authority == authority
+        {
+            *count += 1;
+        } else {
+            inventory.push((owner, authority, 1));
+        }
+    }
+    inventory
+}
+
+fn identifier_owner_inventory(sources: &[(String, &str)], expected: &str) -> Vec<(String, usize)> {
+    let mut inventory = sources
+        .iter()
+        .filter_map(|(owner, source)| {
+            let count = code_identifier_count(source, expected);
+            (count != 0).then(|| (owner.clone(), count))
+        })
+        .collect::<Vec<_>>();
+    inventory.sort();
+    inventory
+}
+
+fn type_alias_owner_inventory(
+    sources: &[(String, &str)],
+    root: &str,
+) -> Vec<(String, Vec<String>)> {
+    let mut inventory = sources
+        .iter()
+        .filter_map(|(owner, source)| {
+            let mut aliases = rust_alias_closure(&rust_code_tokens(source), root, true);
+            aliases.remove(root);
+            (!aliases.is_empty()).then(|| (owner.clone(), aliases.into_iter().collect()))
+        })
+        .collect::<Vec<_>>();
+    inventory.sort();
+    inventory
+}
+
+/// Close aliases and local wrapper types around one root type. This is used
+/// for derived-Default field review: a tuple struct, named wrapper, `Option`,
+/// tuple, or alias can otherwise conceal another recursively defaulted value.
+fn type_carrier_closure(source: &str, root: &str) -> std::collections::BTreeSet<String> {
+    let tokens = rust_code_tokens(source);
+    let mut carriers = std::collections::BTreeSet::from([root.to_owned()]);
+    loop {
+        let mut changed = false;
+        for (use_index, token) in tokens.iter().enumerate() {
+            if token != "use" {
+                continue;
+            }
+            let end = tokens[use_index + 1..]
+                .iter()
+                .position(|token| token == ";")
+                .map_or(tokens.len(), |offset| use_index + 1 + offset);
+            for as_index in use_index + 1..end {
+                if tokens[as_index] != "as" {
+                    continue;
+                }
+                let Some(target) = tokens.get(as_index + 1) else {
+                    continue;
+                };
+                if tokens[use_index + 1..as_index]
+                    .iter()
+                    .any(|source| carriers.contains(source))
+                    && target != "_"
+                    && carriers.insert(target.clone())
+                {
+                    changed = true;
+                }
+            }
+        }
+        for (type_index, token) in tokens.iter().enumerate() {
+            if token != "type" {
+                continue;
+            }
+            let Some(target) = tokens.get(type_index + 1) else {
+                continue;
+            };
+            let Some(equal) = (type_index + 2..tokens.len())
+                .find(|index| matches!(tokens[*index].as_str(), "=" | ";"))
+                .filter(|index| tokens[*index] == "=")
+            else {
+                continue;
+            };
+            let end = tokens[equal + 1..]
+                .iter()
+                .position(|token| token == ";")
+                .map_or(tokens.len(), |offset| equal + 1 + offset);
+            if tokens[equal + 1..end]
+                .iter()
+                .any(|source| carriers.contains(source))
+                && carriers.insert(target.clone())
+            {
+                changed = true;
+            }
+        }
+        for (item_index, token) in tokens.iter().enumerate() {
+            if !matches!(token.as_str(), "struct" | "enum") {
+                continue;
+            }
+            let Some(target) = tokens.get(item_index + 1) else {
+                continue;
+            };
+            let Some(open) = (item_index + 2..tokens.len())
+                .find(|index| matches!(tokens[*index].as_str(), "{" | "(" | ";"))
+                .filter(|index| tokens[*index] != ";")
+            else {
+                continue;
+            };
+            let close = matching_token_delimiter(
+                &tokens,
+                open,
+                &tokens[open],
+                if tokens[open] == "{" { "}" } else { ")" },
+            );
+            if tokens[open + 1..close]
+                .iter()
+                .any(|source| carriers.contains(source))
+                && carriers.insert(target.clone())
+            {
+                changed = true;
+            }
+        }
+        if !changed {
+            return carriers;
+        }
+    }
+}
+
+fn struct_fields_with_type_carrier(source: &str, item: &str, root: &str) -> Vec<String> {
+    let carriers = type_carrier_closure(source, root);
+    let tokens = rust_code_tokens(item);
+    let open = tokens
+        .iter()
+        .position(|token| token == "{")
+        .expect("reviewed struct has a field body");
+    let close = matching_token_delimiter(&tokens, open, "{", "}");
+    let mut fields = Vec::new();
+    let mut start = open + 1;
+    let mut parens = 0usize;
+    let mut brackets = 0usize;
+    let mut braces = 0usize;
+    let mut angles = 0usize;
+    for index in open + 1..=close {
+        let token = &tokens[index];
+        if (token == "," || index == close)
+            && parens == 0
+            && brackets == 0
+            && braces == 0
+            && angles == 0
+        {
+            let field = &tokens[start..index];
+            let mut field_parens = 0usize;
+            let mut field_brackets = 0usize;
+            let mut field_braces = 0usize;
+            let mut field_angles = 0usize;
+            let colon = field.iter().enumerate().find_map(|(index, token)| {
+                let at_field_level = field_parens == 0
+                    && field_brackets == 0
+                    && field_braces == 0
+                    && field_angles == 0;
+                let colon = (token == ":" && at_field_level).then_some(index);
+                match token.as_str() {
+                    "(" => field_parens += 1,
+                    ")" => field_parens = field_parens.saturating_sub(1),
+                    "[" => field_brackets += 1,
+                    "]" => field_brackets = field_brackets.saturating_sub(1),
+                    "{" => field_braces += 1,
+                    "}" => field_braces = field_braces.saturating_sub(1),
+                    "<" => field_angles += 1,
+                    ">" => field_angles = field_angles.saturating_sub(1),
+                    _ => {}
+                }
+                colon
+            });
+            if let Some(colon) = colon
+                && field[colon + 1..]
+                    .iter()
+                    .any(|token| carriers.contains(token))
+            {
+                let name = field[..colon]
+                    .iter()
+                    .rev()
+                    .find(|token| {
+                        token
+                            .as_bytes()
+                            .first()
+                            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+                    })
+                    .expect("reviewed field has a name");
+                let cfg = field[..colon]
+                    .windows(3)
+                    .any(|tokens| tokens == ["#", "[", "cfg"]);
+                fields.push(format!("{name}|cfg={cfg}|{}", field[colon + 1..].join("")));
+            }
+            start = index + 1;
+        }
+        match token.as_str() {
+            "(" => parens += 1,
+            ")" => parens = parens.saturating_sub(1),
+            "[" => brackets += 1,
+            "]" => brackets = brackets.saturating_sub(1),
+            "{" => braces += 1,
+            "}" if index != close => braces = braces.saturating_sub(1),
+            "<" => angles += 1,
+            ">" => angles = angles.saturating_sub(1),
+            _ => {}
+        }
+    }
+    fields
+}
+
+fn include_literal_path(source: &str, start: usize) -> Option<String> {
+    let bytes = source.as_bytes();
+    if bytes.get(start) == Some(&b'"') {
+        let contents = start + 1;
+        let mut cursor = contents;
+        let mut escaped = false;
+        while cursor < bytes.len() {
+            match bytes[cursor] {
+                b'\\' => {
+                    escaped = true;
+                    cursor = (cursor + 2).min(bytes.len());
+                }
+                b'"' => {
+                    let path = &source[contents..cursor];
+                    return Some(if escaped {
+                        format!("<escaped include path:{path}>")
+                    } else {
+                        path.to_owned()
+                    });
+                }
+                _ => cursor += 1,
+            }
+        }
+        return None;
+    }
+    if bytes.get(start) == Some(&b'r') {
+        let mut quote = start + 1;
+        while bytes.get(quote) == Some(&b'#') {
+            quote += 1;
+        }
+        if bytes.get(quote) != Some(&b'"') {
+            return None;
+        }
+        let hashes = quote - start - 1;
+        let contents = quote + 1;
+        let mut cursor = contents;
+        while cursor < bytes.len() {
+            if bytes[cursor] == b'"'
+                && bytes
+                    .get(cursor + 1..cursor + 1 + hashes)
+                    .is_some_and(|tail| tail.iter().all(|byte| *byte == b'#'))
+            {
+                return Some(source[contents..cursor].to_owned());
+            }
+            cursor += 1;
+        }
+    }
+    None
+}
+
+/// Inventory literal paths from code-level `include!` invocations. An include
+/// whose argument is not one reviewed string literal is retained as a sentinel
+/// entry so an alternate spelling cannot disappear from the closed edge set.
+fn include_macro_paths(source: &str) -> Vec<String> {
+    let code = rust_code_only(source);
+    let bytes = code.as_bytes();
+    let original = source.as_bytes();
+    let mut paths = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !bytes[index..].starts_with(b"include")
+            || index
+                .checked_sub(1)
+                .and_then(|before| bytes.get(before))
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+            || bytes
+                .get(index + "include".len())
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        {
+            index += 1;
+            continue;
+        }
+        let mut cursor = index + "include".len();
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        if bytes.get(cursor) != Some(&b'!') {
+            index += 1;
+            continue;
+        }
+        cursor += 1;
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        if !bytes
+            .get(cursor)
+            .is_some_and(|delimiter| matches!(*delimiter, b'(' | b'[' | b'{'))
+        {
+            index += 1;
+            continue;
+        }
+        cursor += 1;
+        while original.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        paths.push(
+            include_literal_path(source, cursor)
+                .unwrap_or_else(|| "<non-literal include path>".to_owned()),
+        );
+        index = cursor.max(index + 1);
+    }
+    paths
+}
+
+fn module_declarations(source: &str) -> Vec<String> {
+    let code = rust_code_only(source);
+    code_identifiers(&code)
+        .windows(2)
+        .filter_map(|identifiers| (identifiers[0] == "mod").then(|| identifiers[1].to_owned()))
+        .collect()
+}
+
+fn root_item_semicolon(tokens: &[String], start: usize) -> usize {
+    let mut parens = 0usize;
+    let mut brackets = 0usize;
+    let mut braces = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(start) {
+        if token == ";" && parens == 0 && brackets == 0 && braces == 0 {
+            return index;
+        }
+        match token.as_str() {
+            "(" => parens += 1,
+            ")" => parens = parens.saturating_sub(1),
+            "[" => brackets += 1,
+            "]" => brackets = brackets.saturating_sub(1),
+            "{" => braces += 1,
+            "}" => braces = braces.saturating_sub(1),
+            _ => {}
+        }
+    }
+    panic!("crate-root namespace item at token {start} has no terminating semicolon")
+}
+
+fn collect_use_tree_bindings(
+    tokens: &[String],
+    inherited_last: Option<&str>,
+    bindings: &mut Vec<String>,
+) {
+    let mut start = 0usize;
+    while tokens.get(start).is_some_and(|token| token == "::") {
+        start += 1;
+    }
+    let Some(first) = tokens.get(start) else {
+        return;
+    };
+    if first == "{" {
+        let close = matching_token_delimiter(tokens, start, "{", "}");
+        let mut item_start = start + 1;
+        let mut parens = 0usize;
+        let mut brackets = 0usize;
+        let mut braces = 0usize;
+        for index in start + 1..=close {
+            let at_item_boundary = index == close
+                || (tokens[index] == "," && parens == 0 && brackets == 0 && braces == 0);
+            if at_item_boundary {
+                collect_use_tree_bindings(&tokens[item_start..index], inherited_last, bindings);
+                item_start = index + 1;
+                continue;
+            }
+            match tokens[index].as_str() {
+                "(" => parens += 1,
+                ")" => parens = parens.saturating_sub(1),
+                "[" => brackets += 1,
+                "]" => brackets = brackets.saturating_sub(1),
+                "{" => braces += 1,
+                "}" => braces = braces.saturating_sub(1),
+                _ => {}
+            }
+        }
+        return;
+    }
+    if first == "*" {
+        bindings.push(format!("*:{}", inherited_last.unwrap_or("<root>")));
+        return;
+    }
+
+    let segment = first.as_str();
+    let next = start + 1;
+    if tokens.get(next).is_some_and(|token| token == "as") {
+        if let Some(alias) = tokens.get(next + 1)
+            && alias != "_"
+        {
+            bindings.push(alias.clone());
+        }
+        return;
+    }
+    if tokens.get(next).is_some_and(|token| token == "::") {
+        let path_last = if segment == "self" {
+            inherited_last
+        } else {
+            Some(segment)
+        };
+        collect_use_tree_bindings(&tokens[next + 1..], path_last, bindings);
+        return;
+    }
+    if segment == "self" {
+        if let Some(inherited_last) = inherited_last {
+            bindings.push(inherited_last.to_owned());
+        }
+    } else {
+        bindings.push(segment.to_owned());
+    }
+}
+
+/// Return complete normalized root namespace declarations and every concrete
+/// local name they bind. Glob imports retain an explicit source sentinel.
+fn crate_root_namespace_inventory(source: &str) -> (Vec<String>, Vec<String>) {
+    let tokens = rust_code_tokens(source);
+    let mut declarations = Vec::new();
+    let mut bindings = Vec::new();
+    let mut parens = 0usize;
+    let mut brackets = 0usize;
+    let mut braces = 0usize;
+    let mut index = 0usize;
+    while index < tokens.len() {
+        let at_root = parens == 0 && brackets == 0 && braces == 0;
+        if at_root && tokens[index] == "mod" {
+            if let Some(name) = tokens.get(index + 1) {
+                declarations.push(format!("mod:{name}"));
+                bindings.push(format!("mod:{name}"));
+            }
+        } else if at_root && tokens[index] == "use" {
+            let end = root_item_semicolon(&tokens, index + 1);
+            declarations.push(format!("use:{}", tokens[index + 1..end].join("")));
+            let mut use_bindings = Vec::new();
+            collect_use_tree_bindings(&tokens[index + 1..end], None, &mut use_bindings);
+            bindings.extend(
+                use_bindings
+                    .into_iter()
+                    .map(|binding| format!("use:{binding}")),
+            );
+            index = end + 1;
+            continue;
+        } else if at_root
+            && tokens[index] == "extern"
+            && tokens.get(index + 1).is_some_and(|token| token == "crate")
+        {
+            let end = root_item_semicolon(&tokens, index + 2);
+            let declaration = &tokens[index + 2..end];
+            declarations.push(format!("extern:crate{}", declaration.join("")));
+            let alias = declaration
+                .windows(2)
+                .find_map(|tokens| (tokens[0] == "as").then(|| tokens[1].clone()))
+                .or_else(|| declaration.first().cloned());
+            if let Some(alias) = alias
+                && alias != "_"
+            {
+                bindings.push(format!("extern:{alias}"));
+            }
+            index = end + 1;
+            continue;
+        }
+
+        match tokens[index].as_str() {
+            "(" => parens += 1,
+            ")" => parens = parens.saturating_sub(1),
+            "[" => brackets += 1,
+            "]" => brackets = brackets.saturating_sub(1),
+            "{" => braces += 1,
+            "}" => braces = braces.saturating_sub(1),
+            _ => {}
+        }
+        index += 1;
+    }
+    declarations.sort();
+    bindings.sort();
+    (declarations, bindings)
+}
+
+fn crate_root_macro_binding_arguments(source: &str) -> Vec<String> {
+    let tokens = rust_code_tokens(source);
+    let forbidden = ["core", "default", "std"];
+    let mut arguments = Vec::new();
+    let mut parens = 0usize;
+    let mut brackets = 0usize;
+    let mut braces = 0usize;
+    for index in 0..tokens.len() {
+        let at_root = parens == 0 && brackets == 0 && braces == 0;
+        if at_root
+            && tokens[index] == "!"
+            && tokens
+                .get(index.wrapping_sub(1))
+                .is_some_and(|token| token != "macro_rules" && token != "#")
+            && let Some(open) = tokens.get(index + 1)
+            && matches!(open.as_str(), "(" | "[" | "{")
+        {
+            let close_token = match open.as_str() {
+                "(" => ")",
+                "[" => "]",
+                "{" => "}",
+                _ => unreachable!(),
+            };
+            let close = matching_token_delimiter(&tokens, index + 1, open, close_token);
+            for name in forbidden {
+                arguments.extend(
+                    tokens[index + 2..close]
+                        .iter()
+                        .filter(|token| token.as_str() == name)
+                        .map(|_| format!("macro-argument:{name}")),
+                );
+            }
+        }
+        match tokens[index].as_str() {
+            "(" => parens += 1,
+            ")" => parens = parens.saturating_sub(1),
+            "[" => brackets += 1,
+            "]" => brackets = brackets.saturating_sub(1),
+            "{" => braces += 1,
+            "}" => braces = braces.saturating_sub(1),
+            _ => {}
+        }
+    }
+    arguments.sort();
+    arguments
+}
+
+fn forbidden_crate_root_resolution_bindings(source: &str) -> Vec<String> {
+    let (_, bindings) = crate_root_namespace_inventory(source);
+    let mut forbidden = bindings
+        .into_iter()
+        .filter(|binding| {
+            binding
+                .split_once(':')
+                .is_some_and(|(_, name)| matches!(name, "core" | "default" | "std"))
+        })
+        .collect::<Vec<_>>();
+    forbidden.extend(crate_root_macro_binding_arguments(source));
+    forbidden.sort();
+    forbidden
+}
+
+fn module_owner_inventory(sources: &[(String, &str)]) -> Vec<String> {
+    let mut inventory = sources
+        .iter()
+        .flat_map(|(owner, source)| {
+            module_declarations(source)
+                .into_iter()
+                .map(move |module| format!("{owner}:{module}"))
+        })
+        .collect::<Vec<_>>();
+    inventory.sort();
+    inventory
+}
+
+fn source_inventory_fingerprint(inventory: &[String]) -> u64 {
+    inventory
+        .iter()
+        .fold(0xcbf29ce484222325_u64, |hash, entry| {
+            entry
+                .bytes()
+                .chain(std::iter::once(b'\n'))
+                .fold(hash, |hash, byte| {
+                    (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+                })
+        })
+}
+
+/// Extract one complete braced code item beginning at `marker`. Braces inside
+/// comments and literals are masked before balancing, while the returned slice
+/// retains the exact original source for an executable-shape identity.
+fn exact_balanced_code_item<'a>(source: &'a str, marker: &str) -> &'a str {
+    let code = rust_code_only(source);
+    let matches = code
+        .match_indices(marker)
+        .map(|(start, _)| start)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one balanced code item marker {marker:?}, found {}",
+        matches.len(),
+    );
+    let start = matches[0];
+    let open = code[start..]
+        .find('{')
+        .map(|offset| start + offset)
+        .unwrap_or_else(|| panic!("balanced code item marker {marker:?} has no opening brace"));
+    let mut depth = 0usize;
+    for (offset, byte) in code.as_bytes()[open..].iter().copied().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.checked_sub(1).unwrap_or_else(|| {
+                    panic!("balanced code item marker {marker:?} closes before it opens")
+                });
+                if depth == 0 {
+                    return &source[start..open + offset + 1];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("balanced code item marker {marker:?} has no closing brace");
+}
+
+/// Return every runtime family-constructor reference. Named family-constructor
+/// methods are authorities even when used as function items. The base `family`
+/// method counts through UFCS, turbofish, or a nonempty method call; ordinary
+/// zero-argument `node.family()` observations are deliberately excluded.
+fn family_constructor_calls(source: &str) -> Vec<String> {
+    let code = rust_code_only(source);
+    let bytes = code.as_bytes();
+    let mut calls = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let separator_len = if bytes[index] == b'.' {
+            1
+        } else if bytes[index..].starts_with(b"::") {
+            2
+        } else {
+            index += 1;
+            continue;
+        };
+        let mut cursor = index + separator_len;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if bytes.get(cursor..cursor + 2) == Some(b"r#") {
+            cursor += 2;
+        }
+        let name_start = cursor;
+        while cursor < bytes.len()
+            && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
+        {
+            cursor += 1;
+        }
+        let name = &code[name_start..cursor];
+        let named_constructor =
+            name.starts_with("family_with_") || name.starts_with("content_addressed_family_with_");
+        let constructor = name == "family" || named_constructor;
+        if !constructor {
+            index += separator_len;
+            continue;
+        }
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        let turbofish = bytes.get(cursor..cursor + 3) == Some(b"::<");
+        if named_constructor || separator_len == 2 || turbofish {
+            calls.push(name.to_owned());
+            index = cursor.max(index + separator_len);
+            continue;
+        }
+        if bytes.get(cursor) != Some(&b'(') {
+            index += separator_len;
+            continue;
+        }
+        cursor += 1;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if bytes.get(cursor) != Some(&b')') {
+            calls.push(name.to_owned());
+        }
+        index = cursor;
+    }
+    calls
+}
+
+/// Conservatively inventory the complete family-constructor vocabulary. This
+/// deliberately includes zero-argument `family` observations: a bare
+/// identifier used as a local macro argument must still perturb the reviewed
+/// owner/count baseline. `code_identifiers` normalizes `r#name` to `name`.
+fn family_authority_identifiers(source: &str) -> Vec<String> {
+    let code = rust_code_only(source);
+    code_identifiers(&code)
+        .into_iter()
+        .filter(|identifier| {
+            *identifier == "family"
+                || identifier.starts_with("family_with_")
+                || identifier.starts_with("content_addressed_family_with_")
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+fn family_identifier_owner_inventory(sources: &[(String, &str)]) -> Vec<(String, String, usize)> {
+    let mut occurrences = sources
+        .iter()
+        .flat_map(|(owner, source)| {
+            family_authority_identifiers(source)
+                .into_iter()
+                .map(move |identifier| (owner.clone(), identifier))
+        })
+        .collect::<Vec<_>>();
+    occurrences.sort();
+    let mut inventory: Vec<(String, String, usize)> = Vec::new();
+    for (owner, identifier) in occurrences {
+        if let Some((last_owner, last_identifier, count)) = inventory.last_mut()
+            && *last_owner == owner
+            && *last_identifier == identifier
+        {
+            *count += 1;
+        } else {
+            inventory.push((owner, identifier, 1));
+        }
+    }
+    inventory
+}
+
+fn expected_registration_family_constructor(family: &str) -> &'static str {
+    match family {
+        "compiler.resolve-import" => "family_with_evaluator",
+        "compiler.declaration-body-plan-artifacts" => {
+            "family_with_equality_and_evaluator_and_retained_charge"
+        }
+        "compiler.parse" => "content_addressed_family_with_equality",
+        "compiler.body-fact-provider-probe" => "family_with_equality",
+        _ => "family_with_equality_and_evaluator",
+    }
+}
+
+fn registration_include_path(owner: &str, macro_name: &str) -> String {
+    if macro_name == "register_provider_probe" {
+        return "provider_probe.rs".to_owned();
+    }
+    let leaf = macro_name
+        .strip_prefix(&format!("register_{owner}_"))
+        .expect("registration macro name records its owner");
+    format!("{owner}/{leaf}.rs")
+}
+
+/// Exact raw-source identity for executable authority. Preserving one
+/// constructor token while placing it under a loop, iterator, closure, helper,
+/// or other repeated-execution wrapper must require an explicit review.
+fn executable_source_shape_identity(source: &str) -> (usize, u64) {
+    (
+        source.len(),
+        source.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+        }),
+    )
+}
+
+fn registration_macro_invocations(source: &str) -> Vec<String> {
+    let code = rust_code_only(source);
+    code.match_indices("register_")
+        .filter_map(|(start, _)| {
+            let tail = &code[start..];
+            let end = tail.find('!')?;
+            let name = &tail[..end];
+            name.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                .then(|| name.to_owned())
+        })
+        .collect()
+}
+
+fn glob_import_paths(source: &str) -> Vec<String> {
+    let tokens = rust_code_tokens(source);
+    let mut paths = Vec::new();
+    for (use_index, token) in tokens.iter().enumerate() {
+        if token != "use" {
+            continue;
+        }
+        let end = tokens[use_index + 1..]
+            .iter()
+            .position(|token| token == ";")
+            .map_or(tokens.len(), |offset| use_index + 1 + offset);
+        let import = &tokens[use_index + 1..end];
+        if import.last().is_some_and(|token| token == "*") {
+            paths.push(import.join(""));
+        }
+    }
+    paths
+}
+
+// Manifest order is already pinned to the constructor invocation stream. Each
+// entry adds the exact raw source identity of that leaf, making the reviewed
+// registration operation one-shot rather than merely one syntactic call.
+const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 44] = [
+    (1_608, 9_349_892_297_056_354_958),
+    (2_319, 162_635_033_840_982_550),
+    (2_335, 11_401_802_782_486_455_398),
+    (2_512, 6_814_382_478_423_834_202),
+    (2_172, 10_084_900_447_980_393_497),
+    (1_922, 13_163_199_842_675_560_730),
+    (4_646, 13_986_428_999_966_792_987),
+    (9_466, 873_764_896_819_683_713),
+    (7_490, 12_196_017_486_031_950_345),
+    (1_701, 16_025_502_829_918_190_611),
+    (3_763, 1_124_858_669_055_323_594),
+    (6_997, 6_265_749_180_761_052_443),
+    (18_210, 5_072_850_203_005_355_192),
+    (4_414, 16_575_646_427_208_173_073),
+    (723, 13_306_205_946_719_141_945),
+    (2_722, 5_872_377_445_300_688_460),
+    (8_143, 86_253_652_908_143_842),
+    (8_573, 4_124_823_810_140_583_654),
+    (753, 3_150_885_663_910_159_936),
+    (2_598, 10_270_973_964_375_394_836),
+    (11_514, 1_556_117_829_400_373_530),
+    (103_771, 11_567_462_448_468_948_481),
+    (1_955, 14_719_450_878_729_356_170),
+    (5_205, 1_989_823_130_239_107_246),
+    (872, 14_092_162_116_261_787_003),
+    (1_269, 5_659_334_597_769_566_021),
+    (937, 12_382_607_771_958_723_582),
+    (1_118, 11_609_591_179_459_560_863),
+    (654, 537_683_909_027_197_867),
+    (853, 11_600_476_735_713_182_533),
+    (3_251, 12_606_285_774_366_104_328),
+    (601, 9_799_119_223_937_523_553),
+    (4_771, 3_658_938_349_782_706_550),
+    (1_634, 1_948_857_066_780_783_651),
+    (3_484, 10_178_552_526_305_850_966),
+    (767, 4_982_863_983_734_830_002),
+    (3_611, 15_282_171_189_445_768_455),
+    (4_802, 13_585_732_442_571_114_436),
+    (2_906, 14_218_343_244_686_701_314),
+    (51_712, 9_461_444_034_308_602_479),
+    (8_705, 12_932_725_391_049_087_488),
+    (14_038, 8_977_560_222_769_304_814),
+    (380, 6_623_933_847_739_557_204),
+    (421, 8_838_427_880_540_066_171),
+];
+
+// Construction and registration execution is sealed end to end:
+// `CompilerSession::new` enters its derived Default once, the sole frontend
+// field creates its private capability, the token-gated database constructor
+// enters the private canonical constructor and ordered composer, and one shared
+// forwarding authority reaches one manifested leaf. Tests retain a separately
+// cfg-gated Default adapter into the private canonical entry. Any control-flow
+// or multiplicity change at a layer changes its exact executable source
+// identity even when constructor, caller, and macro token counts do not.
+const CONSTRUCTION_TOKEN_STRUCT_IDENTITY: (usize, u64) = (80, 5_227_448_979_315_228_973);
+const CONSTRUCTION_TOKEN_IMPL_IDENTITY: (usize, u64) = (108, 2_765_439_612_714_245_239);
+const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10_358, 1_319_503_141_837_805_034);
+const COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY: (usize, u64, usize, u64) = (
+    107,
+    16_471_930_814_342_494_057,
+    219,
+    9_233_980_844_921_801_843,
+);
+const COMPILER_SESSION_ROOT_IDENTITY: (usize, u64) = (6_132, 17_077_621_338_947_793_483);
+const COMPILER_SESSION_CONSTRUCTOR_IDENTITY: (usize, u64) = (82, 10_721_269_354_679_246_675);
+const FRONTEND_DATABASE_CONSTRUCTION_IDENTITY: (usize, u64) = (462, 5_707_410_129_141_731_665);
+const DATABASE_INHERENT_CONSTRUCTOR_IDENTITY: (usize, u64) = (148, 15_840_470_727_822_522_148);
+const DATABASE_CANONICAL_CONSTRUCTOR_IDENTITY: (usize, u64) = (224, 1_314_571_707_455_964_487);
+const TEST_DEFAULT_DATABASE_ADAPTER_IDENTITY: (usize, u64) = (120, 3_163_599_038_660_274_771);
+const REGISTRATION_DATABASE_IMPL_IDENTITY: (usize, u64) = (34_847, 17_578_195_062_279_132_179);
+const SHARED_FAMILY_FORWARDING_IDENTITY: (usize, u64) = (2_609, 9_595_658_320_490_175_466);
+const ORDERED_REGISTRATION_COMPOSER_IDENTITY: (usize, u64) = (33_364, 10_468_265_158_692_030_241);
+// Macro imports, definitions, re-exports, and lexical ordering participate in
+// macro resolution. Seal the complete registrations authority and each wrapper
+// aggregate in addition to the executable identities inside them.
+const REGISTRATION_AUTHORITY_MODULE_IDENTITY: (usize, u64) = (44_597, 17_681_835_659_194_060_194);
+const REGISTRATION_WRAPPER_MODULE_IDENTITIES: [(usize, u64); 5] = [
+    (842, 17_134_465_730_999_135_202),
+    (1_146, 9_973_452_843_887_101_603),
+    (1_118, 3_506_955_039_267_909_738),
+    (85, 9_154_658_544_330_042_432),
+    (1_096, 1_461_060_759_810_744_828),
 ];
 
 fn registered_revisioned_database_families() -> Vec<(&'static str, &'static str)> {
@@ -248,33 +2010,516 @@ fn registered_family_source(family: &str) -> &'static str {
 #[test]
 fn revisioned_database_hub_and_registered_family_authority_are_structural() {
     let hub = include_str!("revisioned_query_database.rs");
-    for module in [
-        "shared",
-        "backend",
-        "parse_import",
-        "semantic",
-        "body",
-        "registrations",
-        "provider",
-    ] {
-        assert!(
-            hub.contains(&format!("mod {module};")),
-            "revisioned query database hub lost phase module {module}"
-        );
-    }
+    let production_hub = hub
+        .split("\n#[cfg(test)]\npub(crate) const REVISIONED_DATABASE_SOURCE")
+        .next()
+        .expect("revisioned database production hub");
+    assert_eq!(
+        module_declarations(production_hub),
+        [
+            "backend",
+            "body",
+            "parse_import",
+            "provider",
+            "registrations",
+            "semantic",
+            "shared",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+        "the production hub module set must exactly match the source inventory",
+    );
+    let mut phase_submodules = REVISIONED_DATABASE_PHASES
+        .iter()
+        .filter(|(owner, _)| *owner != "test_support")
+        .flat_map(|(owner, source)| {
+            module_declarations(source)
+                .into_iter()
+                .map(move |module| format!("{owner}:{module}"))
+        })
+        .collect::<Vec<_>>();
+    phase_submodules.sort();
+    assert_eq!(
+        phase_submodules,
+        [
+            "body:closure_nucleus",
+            "body:durable_comptime_adapters",
+            "body:provider_body",
+            "body:revision_symbol_space",
+            "body:transactions",
+            "parse_import:program_assembly",
+            "registrations:backend",
+            "registrations:body",
+            "registrations:parse_import",
+            "registrations:provider",
+            "registrations:semantic",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+        "every production child module must have an inventoried source owner",
+    );
     assert!(
-        hub.lines().count() < 140,
+        hub.lines().count() < 150,
         "revisioned query database hub regrew into a phase implementation"
     );
+    let session_source = include_str!("session.rs");
+    let session_code = rust_code_only(session_source);
+    let token_marker = "pub(crate) struct RevisionedQueryDatabaseConstructionToken {";
+    let token_start = session_code
+        .find(token_marker)
+        .expect("session construction token declaration");
+    assert_eq!(
+        session_code[..token_start]
+            .bytes()
+            .rfind(|byte| !byte.is_ascii_whitespace()),
+        Some(b';'),
+        "the construction token cannot gain derive or cfg attributes",
+    );
+    let construction_token_struct = exact_balanced_code_item(session_source, token_marker);
+    assert_eq!(
+        executable_source_shape_identity(construction_token_struct),
+        CONSTRUCTION_TOKEN_STRUCT_IDENTITY,
+        "the construction token declaration changed source shape",
+    );
+    assert_eq!(
+        rust_code_tokens(construction_token_struct),
+        rust_code_tokens(
+            "pub(crate) struct RevisionedQueryDatabaseConstructionToken { _private: (), }",
+        ),
+        "the construction token must retain one private field and no derivable public state",
+    );
+    let construction_token_impl = exact_balanced_code_item(
+        session_source,
+        "impl RevisionedQueryDatabaseConstructionToken {",
+    );
+    assert_eq!(
+        executable_source_shape_identity(construction_token_impl),
+        CONSTRUCTION_TOKEN_IMPL_IDENTITY,
+        "the private construction-token authority changed source shape",
+    );
+    assert_eq!(
+        rust_code_tokens(construction_token_impl),
+        rust_code_tokens(
+            "impl RevisionedQueryDatabaseConstructionToken { fn new() -> Self { Self { _private: () } } }",
+        ),
+        "the token constructor must remain private and one-shot",
+    );
+    let compiler_session_marker = "#[derive(Debug, Default)]\npub struct CompilerSession {";
+    let compiler_session_start = session_code
+        .find(compiler_session_marker)
+        .expect("canonical CompilerSession declaration");
+    assert_eq!(
+        session_code[..compiler_session_start]
+            .bytes()
+            .rfind(|byte| !byte.is_ascii_whitespace()),
+        Some(b'}'),
+        "CompilerSession cannot gain an outer derive or cfg attribute",
+    );
+    let compiler_session_root = exact_balanced_code_item(session_source, compiler_session_marker);
+    assert_eq!(
+        executable_source_shape_identity(compiler_session_root),
+        COMPILER_SESSION_ROOT_IDENTITY,
+        "CompilerSession's complete derived-Default field shape changed",
+    );
+    let compiler_session_tokens = rust_code_tokens(compiler_session_root);
+    let compiler_session_open = compiler_session_tokens
+        .iter()
+        .position(|token| token == "{")
+        .expect("CompilerSession has a field body");
+    assert_eq!(
+        &compiler_session_tokens[..compiler_session_open],
+        [
+            "#",
+            "[",
+            "derive",
+            "(",
+            "Debug",
+            ",",
+            "Default",
+            ")",
+            "]",
+            "pub",
+            "struct",
+            "CompilerSession",
+        ],
+        "CompilerSession must derive exactly Debug and Default in that reviewed order",
+    );
+    assert_eq!(
+        struct_fields_with_type_carrier(
+            session_source,
+            compiler_session_root,
+            "FrontendQueryDatabase",
+        ),
+        ["queries|cfg=false|FrontendQueryDatabase"],
+        "derived Default must construct exactly one non-cfg frontend database field named queries",
+    );
+    let compiler_session_constructor_marker = "pub fn new() -> Self {";
+    let compiler_session_constructor_start = session_code
+        .find(compiler_session_constructor_marker)
+        .expect("canonical CompilerSession constructor");
+    assert_eq!(
+        session_code[..compiler_session_constructor_start]
+            .bytes()
+            .rfind(|byte| !byte.is_ascii_whitespace()),
+        Some(b'}'),
+        "CompilerSession::new cannot gain an outer cfg or other attribute",
+    );
+    let compiler_session_constructor =
+        exact_balanced_code_item(session_source, compiler_session_constructor_marker);
+    assert_eq!(
+        executable_source_shape_identity(compiler_session_constructor),
+        COMPILER_SESSION_CONSTRUCTOR_IDENTITY,
+        "the outermost CompilerSession construction entry changed executable shape",
+    );
+    assert_eq!(
+        rust_code_tokens(compiler_session_constructor),
+        rust_code_tokens("pub fn new() -> Self { <Self as ::core::default::Default>::default() }",),
+        "CompilerSession::new must return exactly one absolute derived-Default UFCS call",
+    );
+    assert_eq!(
+        type_method_definitions(session_source, "CompilerSession", "new"),
+        ["public"],
+        "CompilerSession must own exactly one public inherent new method",
+    );
+    assert!(
+        type_method_definitions(session_source, "CompilerSession", "default").is_empty(),
+        "CompilerSession cannot own an inherent default method that shadows the derived trait",
+    );
+    let compiler_session_default_references =
+        revisioned_database_default_references(compiler_session_constructor, true);
+    assert_eq!(
+        compiler_session_default_references,
+        ["Self:call"],
+        "CompilerSession::new must contain one absolute derived-Default reference",
+    );
+    #[derive(Default)]
+    struct InherentDefaultResolutionProbe {
+        inherent: bool,
+    }
+    impl InherentDefaultResolutionProbe {
+        fn default() -> Self {
+            Self { inherent: true }
+        }
+    }
+    assert!(
+        InherentDefaultResolutionProbe::default().inherent,
+        "the former Self::default spelling resolves to a shadowing inherent method",
+    );
+    assert!(
+        !<InherentDefaultResolutionProbe as ::core::default::Default>::default().inherent,
+        "absolute UFCS must continue to resolve the derived trait despite an inherent method",
+    );
+    let compiler_session_inherent_default_fixture = r#"
+impl CompilerSession {
+    fn default() -> Self {
+        <Self as ::core::default::Default>::default()
+    }
+}
+"#;
+    assert_eq!(
+        type_method_definitions(
+            compiler_session_inherent_default_fixture,
+            "CompilerSession",
+            "default",
+        ),
+        ["private"],
+        "the inherent-default fixture must perturb the live method-owner inventory",
+    );
+    let absolute_session_default = "<Self as ::core::default::Default>::default()";
+    let repeated_session_default_fixtures = [
+        (
+            "eager map",
+            r#"[(), ()]
+            .map(|()| <Self as ::core::default::Default>::default())
+            .into_iter()
+            .next()
+            .expect("the expected session is first")"#,
+        ),
+        (
+            "loop",
+            r#"{
+            let mut expected = None;
+            let mut iterations = 0;
+            loop {
+                let value = <Self as ::core::default::Default>::default();
+                if expected.is_none() {
+                    expected = Some(value);
+                }
+                iterations += 1;
+                if iterations == 2 {
+                    break;
+                }
+            }
+            expected.expect("the expected session is first")
+        }"#,
+        ),
+        (
+            "local closure called twice",
+            r#"{
+            let construct = || <Self as ::core::default::Default>::default();
+            let expected = construct();
+            let _peer = construct();
+            expected
+        }"#,
+        ),
+    ];
+    for (label, repeated_default) in repeated_session_default_fixtures {
+        let adversarial_constructor =
+            compiler_session_constructor.replacen(absolute_session_default, repeated_default, 1);
+        let adversarial_constructor = exact_balanced_code_item(
+            &adversarial_constructor,
+            compiler_session_constructor_marker,
+        );
+        assert_eq!(
+            revisioned_database_default_references(adversarial_constructor, true),
+            compiler_session_default_references,
+            "the {label} fixture must preserve the weaker Default-reference inventory",
+        );
+        assert_eq!(
+            function_identifier_usage(adversarial_constructor, "default"),
+            function_identifier_usage(compiler_session_constructor, "default"),
+            "the {label} fixture must preserve the weaker Default call-expression count",
+        );
+        assert_ne!(
+            executable_source_shape_identity(adversarial_constructor),
+            COMPILER_SESSION_CONSTRUCTOR_IDENTITY,
+            "the {label} fixture must fail the live outer-constructor identity",
+        );
+    }
+    let _token_gated_constructor: fn(
+        crate::session::RevisionedQueryDatabaseConstructionToken,
+    )
+        -> crate::revisioned_query_database::RevisionedQueryDatabase =
+        crate::revisioned_query_database::RevisionedQueryDatabase::new;
+
     let registration_composer = include_str!("revisioned_query_database/registrations.rs");
+    assert_eq!(
+        executable_source_shape_identity(registration_composer),
+        REGISTRATION_AUTHORITY_MODULE_IDENTITY,
+        "the complete registration module changed macro-resolution or construction authority",
+    );
+    let actual_wrapper_identities = REVISIONED_DATABASE_REGISTRATION_MODULES
+        .iter()
+        .map(|(_, source)| executable_source_shape_identity(source))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual_wrapper_identities, REGISTRATION_WRAPPER_MODULE_IDENTITIES,
+        "a registration wrapper changed its include/re-export resolution shape",
+    );
+    assert_eq!(
+        glob_import_paths(registration_composer),
+        [
+            "super::body::*",
+            "super::semantic::*",
+            "super::*",
+            "backend::*",
+            "body::*",
+            "parse_import::*",
+            "semantic::*",
+        ],
+        "registration glob resolution must remain pinned to the reviewed parent imports and four production wrappers; provider is an explicit cfg(test) import",
+    );
+    for (wrapper_owner, source) in REVISIONED_DATABASE_REGISTRATION_MODULES {
+        let phase = wrapper_owner
+            .strip_prefix("registrations_")
+            .expect("registration wrapper owner prefix");
+        let mut actual_macros = rust_code_tokens(source)
+            .into_iter()
+            .filter(|identifier| identifier.starts_with("register_"))
+            .collect::<Vec<_>>();
+        actual_macros.sort();
+        let mut expected_macros = REGISTRATION_MANIFEST
+            .iter()
+            .filter(|(owner, _, macro_name, _)| {
+                if *macro_name == "register_provider_probe" {
+                    phase == "provider"
+                } else {
+                    *owner == phase
+                }
+            })
+            .map(|(_, _, macro_name, _)| (*macro_name).to_owned())
+            .collect::<Vec<_>>();
+        expected_macros.sort();
+        assert_eq!(
+            actual_macros, expected_macros,
+            "wrapper {wrapper_owner} must re-export exactly its manifested leaf macros once each",
+        );
+    }
+    let registration_code = rust_code_only(registration_composer);
+    let previous_code_byte = |marker: &str| {
+        let start = registration_code
+            .find(marker)
+            .unwrap_or_else(|| panic!("missing registration construction item {marker:?}"));
+        registration_code[..start]
+            .bytes()
+            .rfind(|byte| !byte.is_ascii_whitespace())
+    };
+    let test_default_database_adapter = exact_balanced_code_item(
+        registration_composer,
+        "#[cfg(test)]\nimpl Default for RevisionedQueryDatabase {",
+    );
+    assert_eq!(
+        executable_source_shape_identity(test_default_database_adapter),
+        TEST_DEFAULT_DATABASE_ADAPTER_IDENTITY,
+        "the cfg(test) Default adapter changed executable shape",
+    );
+    assert_eq!(
+        revisioned_database_default_impl_count(registration_composer),
+        1,
+        "the database must have exactly one raw-source Default impl",
+    );
+    let production_registration_composer =
+        source_without_exact_item(registration_composer, test_default_database_adapter);
+    assert_eq!(
+        revisioned_database_default_impl_count(&production_registration_composer),
+        0,
+        "production source must not implement Default for RevisionedQueryDatabase",
+    );
+    assert!(
+        revisioned_database_new_references(test_default_database_adapter).is_empty(),
+        "the cfg(test) Default adapter cannot forge the production capability",
+    );
+    assert_eq!(
+        function_identifier_usage(test_default_database_adapter, "new_canonical"),
+        (0, 1, 0),
+        "the cfg(test) Default adapter must delegate exactly once to the private canonical constructor",
+    );
+    let registration_database_impl =
+        exact_balanced_code_item(registration_composer, "impl RevisionedQueryDatabase {");
+    assert_eq!(
+        previous_code_byte("impl RevisionedQueryDatabase {"),
+        Some(b'}'),
+        "the registration-owned database authority cannot gain an outer cfg attribute",
+    );
+    assert_eq!(
+        executable_source_shape_identity(registration_database_impl),
+        REGISTRATION_DATABASE_IMPL_IDENTITY,
+        "the complete registration-owned database authority changed executable shape",
+    );
+    let inherent_database_constructor =
+        exact_balanced_code_item(registration_database_impl, "pub(crate) fn new(");
+    assert_eq!(
+        executable_source_shape_identity(inherent_database_constructor),
+        DATABASE_INHERENT_CONSTRUCTOR_IDENTITY,
+        "the production inherent database constructor changed executable shape",
+    );
+    let expected_inherent_constructor = r#"pub(crate) fn new(
+        _authority: crate::session::RevisionedQueryDatabaseConstructionToken,
+    ) -> Self {
+        Self::new_canonical()
+    }"#;
+    assert_eq!(
+        rust_code_tokens(inherent_database_constructor),
+        rust_code_tokens(expected_inherent_constructor),
+        "the production constructor must consume the exact session capability and delegate once",
+    );
+    let canonical_database_constructor =
+        exact_balanced_code_item(registration_database_impl, "fn new_canonical() -> Self {");
+    assert_eq!(
+        executable_source_shape_identity(canonical_database_constructor),
+        DATABASE_CANONICAL_CONSTRUCTOR_IDENTITY,
+        "the private canonical database constructor changed executable shape",
+    );
+    let expected_canonical_constructor = r#"fn new_canonical() -> Self {
+        Self::with_declaration_memo_retention_and_concurrency(
+            DECLARATION_QUERY_MEMO_RETENTION,
+            crate::query_concurrency(),
+            u32::MAX as usize,
+        )
+    }"#;
+    assert_eq!(
+        rust_code_tokens(canonical_database_constructor),
+        rust_code_tokens(expected_canonical_constructor),
+        "the private canonical constructor must preserve the former Default body's exact composer arguments and order",
+    );
+    let composer_constructor = "with_declaration_memo_retention_and_concurrency";
+    assert_eq!(
+        function_identifier_usage(canonical_database_constructor, composer_constructor),
+        (0, 1, 0),
+        "the private canonical constructor must make one direct composer call",
+    );
+    assert_eq!(
+        function_identifier_usage(inherent_database_constructor, "new_canonical"),
+        (0, 1, 0),
+        "the token-gated constructor must make one direct canonical-constructor call",
+    );
+    assert_eq!(
+        function_identifier_usage(registration_database_impl, "new_canonical"),
+        (1, 1, 0),
+        "the registration impl must own one private canonical definition and the production delegation",
+    );
+    assert_eq!(
+        function_identifier_usage(registration_database_impl, composer_constructor),
+        (1, 4, 0),
+        "the registration impl must own one definition, the private canonical entry, and three reviewed test-factory calls",
+    );
+    for factory_marker in [
+        "#[cfg(test)]\n    pub(crate) fn with_declaration_memo_retention(",
+        "#[cfg(test)]\n    pub(crate) fn with_query_concurrency(",
+        "#[cfg(test)]\n    pub(crate) fn with_interner_limit(",
+    ] {
+        let test_factory = exact_balanced_code_item(registration_database_impl, factory_marker);
+        assert_eq!(
+            function_identifier_usage(test_factory, composer_constructor),
+            (0, 1, 0),
+            "each reviewed cfg(test) factory must make one direct composer call: {factory_marker:?}",
+        );
+    }
+    let frontend_queries = include_str!("session/frontend_queries.rs");
+    let frontend_database_construction =
+        exact_balanced_code_item(frontend_queries, "impl Default for FrontendQueryDatabase {");
+    assert_eq!(
+        executable_source_shape_identity(frontend_database_construction),
+        FRONTEND_DATABASE_CONSTRUCTION_IDENTITY,
+        "the complete production frontend database construction entry changed executable shape",
+    );
+    assert_eq!(
+        revisioned_database_new_references(frontend_database_construction),
+        ["RevisionedQueryDatabase:call"],
+        "the frontend database entry must call the inherent revisioned constructor exactly once",
+    );
+    assert_eq!(
+        construction_token_new_references(frontend_database_construction),
+        ["RevisionedQueryDatabaseConstructionToken:call"],
+        "the frontend database entry must create the private construction capability exactly once",
+    );
+    let shared = include_str!("revisioned_query_database/shared.rs");
+    let shared_family_forwarding = exact_balanced_code_item(shared, "impl CompilerQueryRuntime {");
+    assert_eq!(
+        executable_source_shape_identity(shared_family_forwarding),
+        SHARED_FAMILY_FORWARDING_IDENTITY,
+        "the complete CompilerQueryRuntime forwarding authority changed executable shape",
+    );
+    let ordered_registration_composer = exact_balanced_code_item(
+        registration_composer,
+        "fn with_declaration_memo_retention_and_concurrency(",
+    );
+    assert_eq!(
+        rust_code_tokens(ordered_registration_composer)
+            .first()
+            .map(String::as_str),
+        Some("fn"),
+        "the ordered composer must remain private to registrations",
+    );
+    assert_eq!(
+        executable_source_shape_identity(ordered_registration_composer),
+        ORDERED_REGISTRATION_COMPOSER_IDENTITY,
+        "the complete private ordered registration composer changed executable shape",
+    );
+    let sealed_database_initializer =
+        exact_balanced_code_item(ordered_registration_composer, "Self {\n            parse,");
+    assert_eq!(
+        database_runtime_field_authorities(sealed_database_initializer, false),
+        ["database-runtime-struct-form"],
+        "the sealed composer must initialize the database runtime field exactly once",
+    );
     assert!(
         registration_composer.lines().count() < 1200,
         "registration composer regrew into a family-registration monolith"
     );
     assert!(
-        !registration_composer.contains(".family_with")
-            && !registration_composer.contains(".content_addressed_family_with"),
-        "family registrations must remain owned by their phase fragments"
+        family_constructor_calls(registration_composer).is_empty(),
+        "family references must remain owned by their phase fragments"
     );
     assert_eq!(
         hub.matches("include_str!(\"revisioned_query_database/test_support.rs\")")
@@ -299,26 +2544,730 @@ fn revisioned_database_hub_and_registered_family_authority_are_structural() {
         44,
         "the registered-family manifest is complete"
     );
-    let invocations = registration_composer
-        .match_indices("register_")
-        .filter_map(|(start, _)| {
-            let tail = &registration_composer[start..];
-            let end = tail.find('!')?;
-            let name = &tail[..end];
-            name.chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-                .then_some(name)
-        })
-        .collect::<Vec<_>>();
+    let invocations = registration_macro_invocations(registration_composer);
     let manifest_macros = REGISTRATION_MANIFEST
         .iter()
-        .map(|(_, _, macro_name, _)| *macro_name)
+        .map(|(_, _, macro_name, _)| (*macro_name).to_owned())
         .collect::<Vec<_>>();
     assert_eq!(
         invocations, manifest_macros,
         "constructor order or family ownership changed"
     );
-    for (owner, family, macro_name, source) in REGISTRATION_MANIFEST {
+    assert_eq!(
+        registration_macro_invocations(ordered_registration_composer),
+        manifest_macros,
+        "the sealed composer function must own the complete ordered manifest stream",
+    );
+
+    // Eager array mapping can preserve one syntactic composer call while
+    // invoking it twice and discarding the peer database. The complete
+    // private-canonical-constructor identity rejects that multiplicity.
+    let constructor_one_shot = r#"        Self::with_declaration_memo_retention_and_concurrency(
+            DECLARATION_QUERY_MEMO_RETENTION,
+            crate::query_concurrency(),
+            u32::MAX as usize,
+        )"#;
+    let constructor_repeated = r#"        [(), ()]
+            .map(|()| {
+                Self::with_declaration_memo_retention_and_concurrency(
+                    DECLARATION_QUERY_MEMO_RETENTION,
+                    crate::query_concurrency(),
+                    u32::MAX as usize,
+                )
+            })
+            .into_iter()
+            .next()
+            .expect("the expected database is first")"#;
+    assert_eq!(
+        canonical_database_constructor
+            .matches(constructor_one_shot)
+            .count(),
+        1,
+        "the canonical-constructor fixture must replace the real composer call",
+    );
+    let adversarial_constructor =
+        canonical_database_constructor.replacen(constructor_one_shot, constructor_repeated, 1);
+    let adversarial_constructor =
+        exact_balanced_code_item(&adversarial_constructor, "fn new_canonical() -> Self {");
+    assert_eq!(
+        code_identifier_count(adversarial_constructor, composer_constructor),
+        code_identifier_count(canonical_database_constructor, composer_constructor),
+        "the canonical-constructor fixture must preserve the weak composer identifier count",
+    );
+    assert_eq!(
+        function_identifier_usage(adversarial_constructor, composer_constructor),
+        function_identifier_usage(canonical_database_constructor, composer_constructor),
+        "the canonical-constructor fixture must preserve the weak direct-call inventory",
+    );
+    assert_ne!(
+        executable_source_shape_identity(adversarial_constructor),
+        DATABASE_CANONICAL_CONSTRUCTOR_IDENTITY,
+        "the complete canonical-constructor identity must reject repeated construction",
+    );
+
+    // Repetition at the session entry can likewise preserve one syntactic
+    // `RevisionedQueryDatabase::new` call. Seal that caller independently of
+    // the inherent constructor so two complete runtime graphs cannot be made.
+    let frontend_one_shot = r#"revisioned: crate::revisioned_query_database::RevisionedQueryDatabase::new(
+                RevisionedQueryDatabaseConstructionToken::new(),
+            ),"#;
+    let frontend_repeated = r#"revisioned: [(), ()]
+                .map(|()| {
+                    crate::revisioned_query_database::RevisionedQueryDatabase::new(
+                        RevisionedQueryDatabaseConstructionToken::new(),
+                    )
+                })
+                .into_iter()
+                .next()
+                .expect("the expected database is first"),"#;
+    assert_eq!(
+        frontend_database_construction
+            .matches(frontend_one_shot)
+            .count(),
+        1,
+        "the session multiplicity fixture must replace the real database construction",
+    );
+    let adversarial_frontend =
+        frontend_database_construction.replacen(frontend_one_shot, frontend_repeated, 1);
+    let adversarial_frontend = exact_balanced_code_item(
+        &adversarial_frontend,
+        "impl Default for FrontendQueryDatabase {",
+    );
+    assert_eq!(
+        revisioned_database_new_references(adversarial_frontend),
+        revisioned_database_new_references(frontend_database_construction),
+        "the session fixture must preserve the weaker constructor-reference inventory",
+    );
+    assert_eq!(
+        construction_token_new_references(adversarial_frontend),
+        construction_token_new_references(frontend_database_construction),
+        "the session fixture must preserve the weaker capability-reference inventory",
+    );
+    assert_ne!(
+        executable_source_shape_identity(adversarial_frontend),
+        FRONTEND_DATABASE_CONSTRUCTION_IDENTITY,
+        "the complete session construction identity must reject repeated construction",
+    );
+
+    for (label, fixture, include_short_forms, expected) in [
+        (
+            "qualified call",
+            "crate::revisioned_query_database::RevisionedQueryDatabase::default()",
+            false,
+            "RevisionedQueryDatabase:call",
+        ),
+        (
+            "raw qualified function item",
+            "crate::revisioned_query_database::r#RevisionedQueryDatabase::r#default",
+            false,
+            "RevisionedQueryDatabase:reference",
+        ),
+        (
+            "type alias call",
+            "type Db = crate::revisioned_query_database::RevisionedQueryDatabase; Db::default()",
+            false,
+            "RevisionedQueryDatabase:call",
+        ),
+        (
+            "use alias function item",
+            "use crate::revisioned_query_database::RevisionedQueryDatabase as Db; let make = Db::default;",
+            false,
+            "RevisionedQueryDatabase:reference",
+        ),
+        (
+            "qualified Default call",
+            "<RevisionedQueryDatabase as Default>::default()",
+            false,
+            "RevisionedQueryDatabase:call",
+        ),
+        (
+            "Self function item",
+            "let make = Self::r#default;",
+            true,
+            "Self:reference",
+        ),
+        (
+            "enclosing database impl Self UFCS call",
+            r#"impl RevisionedQueryDatabase {
+    fn peer() -> Self { <Self as std::default::Default>::r#default() }
+}"#,
+            true,
+            "RevisionedQueryDatabase:call",
+        ),
+        (
+            "enclosing database impl Self UFCS function item",
+            r#"impl RevisionedQueryDatabase {
+    fn constructor() { let make = <Self as Default>::default; }
+}"#,
+            true,
+            "RevisionedQueryDatabase:reference",
+        ),
+        (
+            "Default trait alias call",
+            r#"use std::default::Default as Construct;
+impl RevisionedQueryDatabase {
+    fn peer() -> Self { Construct::default() }
+}"#,
+            true,
+            "RevisionedQueryDatabase:call",
+        ),
+        (
+            "raw Default trait alias function item",
+            r#"use core::default::Default as r#Construct;
+impl RevisionedQueryDatabase {
+    fn constructor() { let make = Construct::r#default; }
+}"#,
+            true,
+            "RevisionedQueryDatabase:reference",
+        ),
+        (
+            "transitive Default trait alias call",
+            r#"use std::default::Default as Construct;
+use self::Construct as Build;
+impl RevisionedQueryDatabase {
+    fn peer() -> Self { Build::default() }
+}"#,
+            true,
+            "RevisionedQueryDatabase:call",
+        ),
+        (
+            "composed database and Default aliases",
+            r#"use crate::revisioned_query_database::RevisionedQueryDatabase as Db;
+use self::Db as Store;
+use core::default::Default as Construct;
+use self::Construct as Build;
+fn peer() -> Store { <Store as Build>::default() }"#,
+            false,
+            "RevisionedQueryDatabase:call",
+        ),
+        (
+            "composed database type and transitive Default aliases",
+            r#"type Store = crate::revisioned_query_database::RevisionedQueryDatabase;
+use core::default::Default as Construct;
+use self::Construct as Build;
+fn constructor() { let make = <Store as Build>::r#default; }"#,
+            false,
+            "RevisionedQueryDatabase:reference",
+        ),
+        (
+            "inferred Default call",
+            "let peer: Self = Default::default();",
+            true,
+            "Default:call",
+        ),
+    ] {
+        assert_eq!(
+            revisioned_database_default_references(fixture, include_short_forms),
+            [expected],
+            "the {label} spelling must retain database-construction authority",
+        );
+    }
+    for (label, fixture, expected) in [
+        (
+            "qualified inherent call",
+            "crate::revisioned_query_database::RevisionedQueryDatabase::new(authority)",
+            "RevisionedQueryDatabase:call",
+        ),
+        (
+            "raw inherent function item",
+            "let make = crate::revisioned_query_database::r#RevisionedQueryDatabase::r#new;",
+            "RevisionedQueryDatabase:reference",
+        ),
+        (
+            "type-aliased inherent call",
+            "type Db = crate::revisioned_query_database::RevisionedQueryDatabase; Db::new(authority)",
+            "RevisionedQueryDatabase:call",
+        ),
+        (
+            "use-aliased inherent function item",
+            "use crate::revisioned_query_database::RevisionedQueryDatabase as Db; let make = Db::new;",
+            "RevisionedQueryDatabase:reference",
+        ),
+        (
+            "angle-qualified inherent call",
+            "<crate::revisioned_query_database::RevisionedQueryDatabase>::new(authority)",
+            "RevisionedQueryDatabase:call",
+        ),
+        (
+            "enclosing database impl Self call",
+            r#"impl RevisionedQueryDatabase {
+    fn peer(authority: RevisionedQueryDatabaseConstructionToken) -> Self { Self::r#new(authority) }
+}"#,
+            "RevisionedQueryDatabase:call",
+        ),
+    ] {
+        assert_eq!(
+            revisioned_database_new_references(fixture),
+            [expected],
+            "the {label} spelling must retain inherent-construction authority",
+        );
+    }
+    for (label, fixture, expected) in [
+        (
+            "qualified capability call",
+            "crate::session::RevisionedQueryDatabaseConstructionToken::new()",
+            "RevisionedQueryDatabaseConstructionToken:call",
+        ),
+        (
+            "raw capability function item",
+            "let make = crate::session::r#RevisionedQueryDatabaseConstructionToken::r#new;",
+            "RevisionedQueryDatabaseConstructionToken:reference",
+        ),
+        (
+            "aliased capability call",
+            "use crate::session::RevisionedQueryDatabaseConstructionToken as Authority; Authority::new()",
+            "RevisionedQueryDatabaseConstructionToken:call",
+        ),
+    ] {
+        assert_eq!(
+            construction_token_new_references(fixture),
+            [expected],
+            "the {label} spelling must retain capability-construction authority",
+        );
+    }
+    for (label, fixture) in [
+        (
+            "qualified Default impl",
+            "impl core::default::Default for RevisionedQueryDatabase { fn default() -> Self { todo!() } }",
+        ),
+        (
+            "raw aliased Default impl",
+            r#"use core::default::Default as r#Construct;
+use crate::revisioned_query_database::RevisionedQueryDatabase as r#Store;
+impl Construct for Store { fn default() -> Self { todo!() } }"#,
+        ),
+    ] {
+        assert_eq!(
+            revisioned_database_default_impl_count(fixture),
+            1,
+            "the {label} must retain type-level construction authority",
+        );
+    }
+
+    // A declarative macro can hide a generated `Default` impl and its call to
+    // `Self::new` from lexical type-owner scanners. The production type
+    // boundary does not depend on seeing that expansion: the generated call
+    // has no session capability to pass, and the private canonical/composer
+    // entries cannot be named outside their registrations owner.
+    let generated_default_macro = r#"macro_rules! synthesize_default {
+    ($database:ty) => {
+        impl Default for $database {
+            fn default() -> Self { Self::new() }
+        }
+    };
+}
+synthesize_default!(RevisionedQueryDatabase);"#;
+    let indented_generated_default_macro = r#"macro_rules! synthesize_default {
+    ($database:ty) => {
+        impl Default for $database {
+            fn default() -> Self { Self::new() }
+        }
+    };
+}
+    synthesize_default!(RevisionedQueryDatabase);"#;
+    for fixture in [generated_default_macro, indented_generated_default_macro] {
+        assert_eq!(
+            revisioned_database_default_impl_count(fixture),
+            0,
+            "the lexical impl scanner deliberately cannot resolve a macro type metavariable",
+        );
+        assert!(
+            revisioned_database_new_references(fixture).is_empty(),
+            "the lexical constructor scanner deliberately cannot resolve macro-generated Self",
+        );
+        assert!(
+            construction_token_new_references(fixture).is_empty(),
+            "the adversarial macro has no capability construction authority",
+        );
+    }
+    assert!(
+        unsupported_api_layout(generated_default_macro, false).is_some(),
+        "an unindented root macro invocation remains rejected lexically",
+    );
+    assert!(
+        unsupported_api_layout(indented_generated_default_macro, false).is_none(),
+        "the indented fixture records why the capability boundary, not indentation, is authoritative",
+    );
+    let unwrap_or_default_fixture = r#"fn peer() -> RevisionedQueryDatabase {
+    Option::<RevisionedQueryDatabase>::None.unwrap_or_default()
+}"#;
+    assert_eq!(
+        code_identifier_count(unwrap_or_default_fixture, "unwrap_or_default"),
+        1,
+        "the trait-derived construction fixture must remain valid Rust source",
+    );
+    assert!(
+        revisioned_database_default_references(unwrap_or_default_fixture, true).is_empty(),
+        "method syntax does not expose the inferred Default target to the lexical scanner",
+    );
+
+    let split_core_fixture = r#"
+impl RevisionedQueryDatabase {
+    fn replace_runtime_from_peer(&mut self) {
+        let peer = Self::default();
+        self.runtime = peer.runtime;
+    }
+}
+"#;
+    assert_eq!(
+        revisioned_database_default_references(split_core_fixture, true),
+        ["Self:call"],
+        "the reviewer split-core fixture must expose its peer construction",
+    );
+    assert!(
+        database_runtime_field_authorities(split_core_fixture, true)
+            .contains(&"runtime-field-assignment".to_owned()),
+        "the reviewer split-core fixture must expose runtime replacement",
+    );
+    let runtime_mutation_fixtures = [
+        (
+            "replace",
+            r#"impl RevisionedQueryDatabase {
+    fn replace_runtime(&mut self, peer: Self) {
+        let _old = std::mem::replace(&mut self.runtime, peer.runtime);
+    }
+}"#,
+        ),
+        (
+            "swap",
+            r#"impl RevisionedQueryDatabase {
+    fn swap_runtime(&mut self, mut peer: Self) {
+        std::mem::swap(&mut self.runtime, &mut peer.runtime);
+    }
+}"#,
+        ),
+        (
+            "clone_from",
+            r#"impl RevisionedQueryDatabase {
+    fn clone_runtime(&mut self, peer: &Self) {
+        self.runtime.clone_from(&peer.runtime);
+    }
+}"#,
+        ),
+        (
+            "mutable destructure",
+            r#"impl RevisionedQueryDatabase {
+    fn alias_runtime(&mut self, peer: &Self) {
+        let Self { runtime: core, .. } = self;
+        core.clone_from(&peer.runtime);
+    }
+}"#,
+        ),
+        (
+            "pointer write",
+            r#"impl RevisionedQueryDatabase {
+    unsafe fn write_runtime(&mut self, peer: Self) {
+        unsafe { std::ptr::write(&mut self.runtime, peer.runtime) };
+    }
+}"#,
+        ),
+        (
+            "parenthesized assignment",
+            r#"impl RevisionedQueryDatabase {
+    fn replace_grouped_runtime(&mut self, peer: Self) {
+        (self.runtime) = peer.runtime;
+    }
+}"#,
+        ),
+        (
+            "nested raw assignment",
+            r#"impl RevisionedQueryDatabase {
+    fn replace_nested_runtime(&mut self, peer: Self) {
+        (((self.r#runtime))) = peer.runtime;
+    }
+}"#,
+        ),
+        (
+            "parenthesized mutator",
+            r#"impl RevisionedQueryDatabase {
+    fn clone_grouped_runtime(&mut self, peer: &Self) {
+        ((self.runtime)).clone_from(&peer.runtime);
+    }
+}"#,
+        ),
+    ];
+    for (label, fixture) in runtime_mutation_fixtures.iter().copied() {
+        assert!(
+            !database_runtime_field_authorities(fixture, true).is_empty(),
+            "the {label} fixture must expose runtime mutation authority",
+        );
+    }
+    let runtime_macro_mutation_fixtures = [
+        (
+            "macro assignment",
+            r#"macro_rules! replace_core {
+    ($place:expr, $value:expr) => {{ $place = $value; }};
+}
+impl RevisionedQueryDatabase {
+    fn replace_core(&mut self) {
+        let peer = <Self as Default>::default();
+        replace_core!(self.runtime, peer.runtime);
+    }
+}"#,
+        ),
+        (
+            "macro replace",
+            r#"macro_rules! replace_core {
+    ($place:expr, $value:expr) => {{
+        let _old = std::mem::replace(&mut $place, $value);
+    }};
+}
+impl RevisionedQueryDatabase {
+    fn replace_core(&mut self) {
+        let peer = <Self as Default>::default();
+        replace_core!(self.runtime, peer.runtime);
+    }
+}"#,
+        ),
+        (
+            "macro swap",
+            r#"macro_rules! swap_core {
+    ($left:expr, $right:expr) => {{ std::mem::swap(&mut $left, &mut $right); }};
+}
+impl RevisionedQueryDatabase {
+    fn swap_core(&mut self) {
+        let mut peer = <Self as Default>::default();
+        swap_core!(self.runtime, peer.runtime);
+    }
+}"#,
+        ),
+        (
+            "nested forwarding macro",
+            r#"macro_rules! replace_core {
+    ($place:expr, $value:expr) => {{ $place = $value; }};
+}
+macro_rules! forward_core {
+    ($place:expr, $value:expr) => {{ replace_core!($place, $value); }};
+}
+impl RevisionedQueryDatabase {
+    fn replace_core(&mut self) {
+        let peer = <Self as Default>::default();
+        forward_core!(self.runtime, peer.runtime);
+    }
+}"#,
+        ),
+    ];
+    for (label, fixture) in runtime_macro_mutation_fixtures.iter().copied() {
+        assert!(
+            database_runtime_field_authorities(fixture, true)
+                .contains(&"runtime-field-macro-argument".to_owned()),
+            "the {label} fixture must expose its concrete runtime macro argument",
+        );
+        assert_eq!(
+            revisioned_database_default_references(fixture, true),
+            ["RevisionedQueryDatabase:call"],
+            "the {label} fixture must expose its UFCS Self peer construction",
+        );
+    }
+    let runtime_field_ident_macro_fixtures = [
+        (
+            "split receiver and field assignment",
+            r#"use std::default::Default as Construct;
+macro_rules! replace_field {
+    ($target:expr, $field:ident, $source:expr) => {{
+        ($target).$field = ($source).$field;
+    }};
+}
+impl RevisionedQueryDatabase {
+    fn replace_core(&mut self) {
+        let peer: Self = Construct::default();
+        replace_field!(self, runtime, peer);
+    }
+}"#,
+        ),
+        (
+            "raw split field assignment",
+            r#"use core::default::Default as r#Construct;
+macro_rules! replace_field {
+    ($target:expr, $field:ident, $source:expr) => {{
+        ($target).$field = ($source).$field;
+    }};
+}
+impl RevisionedQueryDatabase {
+    fn replace_core(&mut self) {
+        let peer: Self = Construct::default();
+        replace_field!(self, r#runtime, peer);
+    }
+}"#,
+        ),
+        (
+            "split field replace",
+            r#"use std::default::Default as Construct;
+macro_rules! replace_field {
+    ($target:expr, $field:ident, $source:expr) => {{
+        let _old = std::mem::replace(&mut ($target).$field, ($source).$field);
+    }};
+}
+impl RevisionedQueryDatabase {
+    fn replace_core(&mut self) {
+        let peer: Self = Construct::default();
+        replace_field!(self, runtime, peer);
+    }
+}"#,
+        ),
+        (
+            "split field swap",
+            r#"use std::default::Default as Construct;
+macro_rules! swap_field {
+    ($left:expr, $field:ident, $right:expr) => {{
+        std::mem::swap(&mut ($left).$field, &mut ($right).$field);
+    }};
+}
+impl RevisionedQueryDatabase {
+    fn swap_core(&mut self) {
+        let mut peer: Self = Construct::default();
+        swap_field!(self, runtime, peer);
+    }
+}"#,
+        ),
+        (
+            "nested split-field forwarding",
+            r#"use std::default::Default as Construct;
+macro_rules! replace_field {
+    ($target:expr, $field:ident, $source:expr) => {{
+        ($target).$field = ($source).$field;
+    }};
+}
+macro_rules! forward_field {
+    ($target:expr, $field:ident, $source:expr) => {{
+        replace_field!($target, $field, $source);
+    }};
+}
+impl RevisionedQueryDatabase {
+    fn replace_core(&mut self) {
+        let peer: Self = Construct::default();
+        forward_field!(self, runtime, peer);
+    }
+}"#,
+        ),
+    ];
+    for (label, fixture) in runtime_field_ident_macro_fixtures.iter().copied() {
+        assert!(
+            database_runtime_field_authorities(fixture, true)
+                .contains(&"runtime-field-macro-bare-identifier".to_owned()),
+            "the {label} fixture must expose its bare runtime field macro argument",
+        );
+        assert_eq!(
+            revisioned_database_default_references(fixture, true),
+            ["RevisionedQueryDatabase:call"],
+            "the {label} fixture must expose its aliased Default peer construction",
+        );
+    }
+
+    // A single underlying constructor expression can still execute twice when
+    // wrapped in an eager map. This valid-Rust model preserves the forwarding
+    // signatures and every weaker family identifier/call count, but the live
+    // balanced identity of the complete impl rejects the multiplicity change.
+    let shared_single_forward = r#"        self.0
+            .content_addressed_family_with_equality_and_retained_charge(
+                stable_name,
+                retention_limit,
+                value_equal,
+                RetainedCharge::retained_charge,
+            )"#;
+    let shared_repeated_forward = r#"        [stable_name.into(), Arc::<str>::from("compiler.peer")]
+            .map(|name| {
+                self.0
+                    .content_addressed_family_with_equality_and_retained_charge(
+                        name,
+                        retention_limit,
+                        value_equal,
+                        RetainedCharge::retained_charge,
+                    )
+            })
+            .into_iter()
+            .next()
+            .expect("the expected forwarding result is first")"#;
+    assert_eq!(
+        shared_family_forwarding
+            .matches(shared_single_forward)
+            .count(),
+        1,
+        "the shared-helper multiplicity fixture must replace one real forwarding body",
+    );
+    let adversarial_shared =
+        shared_family_forwarding.replacen(shared_single_forward, shared_repeated_forward, 1);
+    let adversarial_shared =
+        exact_balanced_code_item(&adversarial_shared, "impl CompilerQueryRuntime {");
+    assert_eq!(
+        family_constructor_calls(adversarial_shared),
+        family_constructor_calls(shared_family_forwarding),
+        "the shared-helper fixture must preserve weaker constructor-expression counts",
+    );
+    assert_eq!(
+        family_authority_identifiers(adversarial_shared),
+        family_authority_identifiers(shared_family_forwarding),
+        "the shared-helper fixture must preserve weaker family identifier counts",
+    );
+    assert_ne!(
+        executable_source_shape_identity(adversarial_shared),
+        SHARED_FAMILY_FORWARDING_IDENTITY,
+        "the complete forwarding identity must reject repeated execution",
+    );
+
+    // The ordered composer has the same multiplicity risk one layer higher: a
+    // local closure can retain one syntactic macro invocation while executing
+    // it twice. Build the model by replacing the current production statement
+    // so the balanced extractor and live identity are exercised directly.
+    let composer_one_shot = r#"        let parse_modules_for_batch = parse_modules.clone();
+        let parse_module_batches =
+            register_parse_import_parse_module_batches!(parse_modules_for_batch, runtime);"#;
+    let composer_repeated = r#"        let build_parse_module_batches = || {
+            let parse_modules_for_batch = parse_modules.clone();
+            register_parse_import_parse_module_batches!(parse_modules_for_batch, runtime)
+        };
+        let parse_module_batches = build_parse_module_batches();
+        let _peer_parse_module_batches = build_parse_module_batches();"#;
+    assert_eq!(
+        ordered_registration_composer
+            .matches(composer_one_shot)
+            .count(),
+        1,
+        "the composer multiplicity fixture must replace one real registration statement",
+    );
+    let adversarial_composer =
+        ordered_registration_composer.replacen(composer_one_shot, composer_repeated, 1);
+    let adversarial_composer = exact_balanced_code_item(
+        &adversarial_composer,
+        "fn with_declaration_memo_retention_and_concurrency(",
+    );
+    assert_eq!(
+        registration_macro_invocations(adversarial_composer),
+        registration_macro_invocations(ordered_registration_composer),
+        "the composer fixture must preserve the complete macro invocation stream",
+    );
+    assert_eq!(
+        family_constructor_calls(adversarial_composer),
+        family_constructor_calls(ordered_registration_composer),
+        "the composer fixture must preserve weaker constructor-expression counts",
+    );
+    assert_eq!(
+        code_identifier_count(
+            adversarial_composer,
+            "with_declaration_memo_retention_and_concurrency",
+        ),
+        code_identifier_count(
+            ordered_registration_composer,
+            "with_declaration_memo_retention_and_concurrency",
+        ),
+        "the composer fixture must preserve the complete function signature owner",
+    );
+    assert_ne!(
+        executable_source_shape_identity(adversarial_composer),
+        ORDERED_REGISTRATION_COMPOSER_IDENTITY,
+        "the complete composer identity must reject repeated execution",
+    );
+
+    assert_eq!(
+        REGISTRATION_LEAF_ONE_SHOT_IDENTITIES.len(),
+        REGISTRATION_MANIFEST.len(),
+    );
+    for (index, (owner, family, macro_name, source)) in REGISTRATION_MANIFEST.iter().enumerate() {
+        assert_eq!(
+            executable_source_shape_identity(source),
+            REGISTRATION_LEAF_ONE_SHOT_IDENTITIES[index],
+            "manifested family {family} in {macro_name} changed its reviewed one-shot registration shape",
+        );
         assert_eq!(
             REGISTRATION_MANIFEST
                 .iter()
@@ -334,11 +3283,1455 @@ fn revisioned_database_hub_and_registered_family_authority_are_structural() {
             1
         );
         assert_eq!(source.matches(&format!("\"{family}\"")).count(), 1);
+        let expected_constructor = expected_registration_family_constructor(family);
+        assert_eq!(
+            family_constructor_calls(source),
+            vec![expected_constructor.to_owned()],
+            "registered family {family} must have one exact constructor in {macro_name}",
+        );
         assert!(
             macro_name.starts_with(&format!("register_{owner}_"))
                 || *macro_name == "register_provider_probe"
         );
     }
+
+    let (provider_index, provider_source) = REGISTRATION_MANIFEST
+        .iter()
+        .enumerate()
+        .find_map(|(index, (_, family, _, source))| {
+            (*family == "compiler.body-fact-provider-probe").then_some((index, *source))
+        })
+        .expect("provider probe manifested registration leaf");
+    let provider_identity = REGISTRATION_LEAF_ONE_SHOT_IDENTITIES[provider_index];
+    assert_eq!(
+        executable_source_shape_identity(provider_source),
+        provider_identity,
+    );
+    let provider_fixture = |body: &str| {
+        format!(
+            r#"#[allow(unused_macros)]
+macro_rules! register_provider_probe {{
+    ($runtime:ident) => {{{{
+{body}
+    }}}};
+}}
+"#,
+        )
+    };
+    let provider_constructor = |name: &str| {
+        format!(
+            r#"$runtime
+    .family_with_equality(
+        {name},
+        BODY_QUERY_MEMO_RETENTION,
+        |left: &ProviderProbeValue, right: &ProviderProbeValue| left == right,
+    )
+    .expect("the provider-probe family has one canonical name")"#,
+        )
+    };
+    let literal_constructor = provider_constructor("\"compiler.body-fact-provider-probe\"");
+    let variable_constructor = provider_constructor("name");
+    let multiplicity_fixtures = [
+        (
+            "array map",
+            provider_fixture(
+                &r#"[
+    "compiler.body-fact-provider-probe",
+    "compiler.peer",
+]
+.map(|name| VARIABLE_REGISTER)
+.into_iter()
+.next()
+.expect("the expected family is first")"#
+                    .replace("VARIABLE_REGISTER", &variable_constructor),
+            ),
+        ),
+        (
+            "for loop",
+            provider_fixture(
+                &r#"let mut expected = None;
+for _ in 0..2 {
+    let registered = REGISTER;
+    if expected.is_none() {
+        expected = Some(registered);
+    }
+}
+expected.expect("the loop registered a family")"#
+                    .replace("REGISTER", &literal_constructor),
+            ),
+        ),
+        (
+            "while loop",
+            provider_fixture(
+                &r#"let mut attempt = 0;
+let mut expected = None;
+while attempt < 2 {
+    let registered = REGISTER;
+    if expected.is_none() {
+        expected = Some(registered);
+    }
+    attempt += 1;
+}
+expected.expect("the loop registered a family")"#
+                    .replace("REGISTER", &literal_constructor),
+            ),
+        ),
+        (
+            "loop expression",
+            provider_fixture(
+                &r#"let mut remaining = 2;
+let mut expected = None;
+loop {
+    let registered = REGISTER;
+    if expected.is_none() {
+        expected = Some(registered);
+    }
+    remaining -= 1;
+    if remaining == 0 {
+        break;
+    }
+}
+expected.expect("the loop registered a family")"#
+                    .replace("REGISTER", &literal_constructor),
+            ),
+        ),
+        (
+            "iterator closure",
+            provider_fixture(
+                &r#"(0..2)
+    .map(|_| REGISTER)
+    .collect::<Vec<_>>()
+    .into_iter()
+    .next()
+    .expect("the iterator registered a family")"#
+                    .replace("REGISTER", &literal_constructor),
+            ),
+        ),
+        (
+            "local closure called twice",
+            provider_fixture(
+                &r#"let register = || REGISTER;
+let expected = register();
+let _peer = register();
+expected"#
+                    .replace("REGISTER", &literal_constructor),
+            ),
+        ),
+    ];
+    for (label, fixture) in multiplicity_fixtures {
+        assert_eq!(
+            fixture
+                .matches("macro_rules! register_provider_probe")
+                .count(),
+            1,
+        );
+        assert_eq!(
+            fixture
+                .matches("\"compiler.body-fact-provider-probe\"")
+                .count(),
+            1,
+            "the {label} fixture must preserve the weak literal-count invariant",
+        );
+        assert_eq!(
+            family_constructor_calls(&fixture),
+            ["family_with_equality"],
+            "the {label} fixture must preserve the weak constructor-expression invariant",
+        );
+        assert_ne!(
+            executable_source_shape_identity(&fixture),
+            provider_identity,
+            "the {label} fixture must fail the live one-shot leaf identity",
+        );
+    }
+
+    let peer_authority_fixture = r#"
+struct BodyPeer { runtime: QueryRuntime }
+fn peer() {
+    let runtime = QueryRuntime::with_retention_budgets(1, RetentionBudgets::default());
+    let _peer = runtime.family("compiler.peer", 1);
+    let _observed = node.family();
+}
+"#;
+    assert_eq!(
+        code_identifier_count(peer_authority_fixture, "QueryRuntime"),
+        2
+    );
+    assert_eq!(
+        family_constructor_calls(peer_authority_fixture),
+        vec!["family".to_owned()],
+        "the constructor scanner must include base family calls but not observations",
+    );
+    let function_item_fixture = r#"
+let _family = CompilerQueryRuntime::family_with_evaluator::<K, V, _>;
+let _content = CompilerQueryRuntime::content_addressed_family_with_equality::<K, V>;
+let _base = QueryRuntime::family::<K, V>;
+let _observed = node.family();
+"#;
+    assert_eq!(
+        family_constructor_calls(function_item_fixture),
+        [
+            "family_with_evaluator",
+            "content_addressed_family_with_equality",
+            "family",
+        ]
+        .map(str::to_owned),
+        "UFCS and turbofish function-item aliases must remain family authorities",
+    );
+    let raw_family_fixture = r#"
+let _method = runtime.r#family("compiler.peer", 1);
+let _base = QueryRuntime::r#family::<K, V>;
+let _named = CompilerQueryRuntime::r#family_with_evaluator;
+let _content = CompilerQueryRuntime::r#content_addressed_family_with_equality::<K, V>;
+let _observed = node.r#family();
+"#;
+    assert_eq!(
+        family_constructor_calls(raw_family_fixture),
+        [
+            "family",
+            "family",
+            "family_with_evaluator",
+            "content_addressed_family_with_equality",
+        ]
+        .map(str::to_owned),
+        "raw method and UFCS identifiers must retain ordinary family authority",
+    );
+    let macro_indirection_fixtures = [
+        r#"
+fn peer(runtime: &CompilerQueryRuntime) {
+    macro_rules! invoke { ($r:expr, $m:ident) => { $r.$m("compiler.peer", 1) } }
+    invoke!(runtime, family);
+}
+"#,
+        r#"
+fn peer(runtime: &CompilerQueryRuntime) {
+    macro_rules! invoke { ($r:expr, $m:ident) => { $r.$m("compiler.peer", 1) } }
+    invoke!(runtime, r#family);
+}
+"#,
+        r#"
+fn peer(runtime: &CompilerQueryRuntime) {
+    macro_rules! invoke { ($r:expr, $m:ident) => { $r.$m("compiler.peer", 1) } }
+    macro_rules! forward { ($r:expr, $m:ident) => { invoke!($r, $m) } }
+    forward!(runtime, family);
+}
+"#,
+    ];
+    for macro_indirection_fixture in macro_indirection_fixtures.iter().copied() {
+        assert!(
+            family_constructor_calls(macro_indirection_fixture).is_empty(),
+            "receiver/method syntax alone cannot see a macro ident argument",
+        );
+        assert_eq!(
+            family_authority_identifiers(macro_indirection_fixture),
+            ["family"],
+            "ordinary, raw, and forwarded macro ident arguments must retain family authority",
+        );
+    }
+    let literal_masking_fixture = r###"
+fn peer() {
+    let quote = '"';
+    let escaped_quote = '\'';
+    let byte_quote = b'"';
+    let byte_escaped_quote = b'\'';
+    let masked = br#"QueryRuntime::new(1); include!(\"masked.rs\");"#;
+    let runtime = QueryRuntime::with_retention_budgets(1, RetentionBudgets::default());
+}
+"###;
+    assert_eq!(
+        code_identifier_count(literal_masking_fixture, "QueryRuntime"),
+        1,
+        "character, byte-character, and raw-byte-string literals must not mask later code",
+    );
+    assert!(include_macro_paths(literal_masking_fixture).is_empty());
+    assert_eq!(
+        code_identifier_count(
+            "use rue_query::QueryRuntime as R; let runtime = R::with_retention_budgets(1, RetentionBudgets::default());",
+            "QueryRuntime",
+        ),
+        1,
+        "a runtime alias must retain its inventoried QueryRuntime identifier",
+    );
+
+    // Replace the revisioned database's test-bearing aggregate with every
+    // production owner and registration leaf. The exact module and include
+    // inventories below establish that this expansion is complete.
+    let mut revisioned_production_sources =
+        vec![("revisioned_database::hub".to_owned(), production_hub)];
+    revisioned_production_sources.extend(
+        REVISIONED_DATABASE_PHASES
+            .iter()
+            .copied()
+            .filter(|(owner, _)| *owner != "test_support")
+            .map(|(owner, source)| (format!("revisioned_database::{owner}"), source)),
+    );
+    revisioned_production_sources.extend(
+        REVISIONED_DATABASE_REGISTRATION_MODULES
+            .iter()
+            .copied()
+            .map(|(owner, source)| (format!("revisioned_database::{owner}"), source)),
+    );
+    revisioned_production_sources.extend(
+        REGISTRATION_MANIFEST
+            .iter()
+            .map(|(_, _, macro_name, source)| {
+                (format!("revisioned_database::{macro_name}"), *source)
+            }),
+    );
+    let crate_root = include_str!("lib.rs");
+    let (crate_root_namespace_declarations, crate_root_namespace_bindings) =
+        crate_root_namespace_inventory(crate_root);
+    assert_eq!(
+        executable_source_shape_identity(crate_root),
+        COMPILER_CRATE_ROOT_IDENTITY,
+        "the complete crate root changed absolute-path name-resolution authority",
+    );
+    assert_eq!(
+        (
+            crate_root_namespace_declarations.len(),
+            source_inventory_fingerprint(&crate_root_namespace_declarations),
+            crate_root_namespace_bindings.len(),
+            source_inventory_fingerprint(&crate_root_namespace_bindings),
+        ),
+        COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY,
+        "the exact crate-root module/import/extern-crate binding inventory changed",
+    );
+    assert!(
+        forbidden_crate_root_resolution_bindings(crate_root).is_empty(),
+        "the crate root cannot bind core, std, or default and redirect an absolute constructor path",
+    );
+
+    // `::core` is absolute only after crate-root resolution. Seal the raw root
+    // plus every direct namespace binding, and conservatively retain
+    // identifiable local macro arguments that could generate such a binding.
+    // Bindings generated by external procedural macros remain an expansion-
+    // review boundary rather than a claim this source scanner can prove.
+    let crate_root_rebinding_fixtures: [(&str, &str, &[&str], bool); 7] = [
+        (
+            "reviewer core/default aliases",
+            "extern crate self as core; use content_digest as default;",
+            &["extern:core", "use:default"],
+            true,
+        ),
+        (
+            "raw core/default aliases",
+            "extern crate self as r#core; use content_digest as r#default;",
+            &["extern:core", "use:default"],
+            true,
+        ),
+        (
+            "std/default aliases",
+            "extern crate self as std; use content_digest as default;",
+            &["extern:std", "use:default"],
+            true,
+        ),
+        (
+            "raw module bindings",
+            "mod r#core {} mod r#default {}",
+            &["mod:core", "mod:default"],
+            true,
+        ),
+        (
+            "use aliases",
+            "use content_digest as core; use content_digest as std; use content_digest as default;",
+            &["use:core", "use:default", "use:std"],
+            true,
+        ),
+        (
+            "local macro core/default arguments",
+            r#"macro_rules! bind_root_names {
+    ($prelude:ident, $fallback:ident) => {
+        extern crate self as $prelude;
+        use content_digest as $fallback;
+    };
+}
+bind_root_names!(core, default);"#,
+            &["macro-argument:core", "macro-argument:default"],
+            false,
+        ),
+        (
+            "raw local macro std/default arguments",
+            r#"macro_rules! bind_root_names {
+    ($prelude:ident, $fallback:ident) => {
+        extern crate self as $prelude;
+        use content_digest as $fallback;
+    };
+}
+bind_root_names!(r#std, r#default);"#,
+            &["macro-argument:default", "macro-argument:std"],
+            false,
+        ),
+    ];
+    for (label, fixture, expected_forbidden, direct_namespace_change) in
+        crate_root_rebinding_fixtures
+    {
+        let adversarial_root = format!("{crate_root}\n{fixture}\n");
+        let constructor_model = format!("{adversarial_root}\n{compiler_session_constructor}");
+        let preserved_constructor =
+            exact_balanced_code_item(&constructor_model, compiler_session_constructor_marker);
+        assert_eq!(
+            executable_source_shape_identity(preserved_constructor),
+            COMPILER_SESSION_CONSTRUCTOR_IDENTITY,
+            "the {label} fixture must preserve the weaker constructor-byte identity",
+        );
+        assert_eq!(
+            function_identifier_usage(preserved_constructor, "default"),
+            function_identifier_usage(compiler_session_constructor, "default"),
+            "the {label} fixture must preserve the weaker Default call-expression count",
+        );
+        assert_ne!(
+            executable_source_shape_identity(&adversarial_root),
+            COMPILER_CRATE_ROOT_IDENTITY,
+            "the {label} fixture must fail the complete crate-root identity",
+        );
+        let (adversarial_declarations, adversarial_bindings) =
+            crate_root_namespace_inventory(&adversarial_root);
+        if direct_namespace_change {
+            assert_ne!(
+                (
+                    adversarial_declarations.len(),
+                    source_inventory_fingerprint(&adversarial_declarations),
+                    adversarial_bindings.len(),
+                    source_inventory_fingerprint(&adversarial_bindings),
+                ),
+                COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY,
+                "the {label} fixture must fail the direct namespace inventory",
+            );
+        }
+        assert_eq!(
+            forbidden_crate_root_resolution_bindings(&adversarial_root),
+            expected_forbidden
+                .iter()
+                .map(|binding| (*binding).to_owned())
+                .collect::<Vec<_>>(),
+            "the {label} fixture must fail the live forbidden-binding gate",
+        );
+    }
+
+    let mut compiler_production_sources = vec![("crate_root".to_owned(), crate_root)];
+    compiler_production_sources.extend(
+        PRODUCTION_MODULES
+            .iter()
+            .copied()
+            .filter(|(owner, _)| *owner != "revisioned_query_database")
+            .map(|(owner, source)| (owner.to_owned(), source)),
+    );
+    compiler_production_sources.extend(revisioned_production_sources.iter().cloned());
+
+    // Every manifested macro name has exactly three resolution owners: its
+    // leaf definition, its pinned wrapper re-export, and its composer call.
+    // The cfg(test) provider probe additionally has the composer's explicit
+    // import. Identifier inventory is deliberately broader than `name!(...)`:
+    // aliases, raw spellings, shadow definitions, and macro-name forwarding
+    // all retain the normalized identifier and therefore require review.
+    for (owner, _, macro_name, _) in REGISTRATION_MANIFEST {
+        assert_eq!(
+            REGISTRATION_MANIFEST
+                .iter()
+                .filter(|(_, _, candidate, _)| candidate == macro_name)
+                .count(),
+            1,
+            "registration macro names must be unique: {macro_name}",
+        );
+        let wrapper = if *macro_name == "register_provider_probe" {
+            "provider"
+        } else {
+            owner
+        };
+        let mut expected = vec![
+            (
+                "revisioned_database::registrations".to_owned(),
+                if *macro_name == "register_provider_probe" {
+                    2
+                } else {
+                    1
+                },
+            ),
+            (format!("revisioned_database::registrations_{wrapper}"), 1),
+            (format!("revisioned_database::{macro_name}"), 1),
+        ];
+        expected.sort();
+        assert_eq!(
+            identifier_owner_inventory(&compiler_production_sources, macro_name),
+            expected,
+            "manifested registration macro {macro_name} gained an alias, shadow, forwarded name, or unreviewed resolution owner",
+        );
+    }
+
+    let parse_macro = "register_parse_import_parse";
+    let parse_macro_identifier_inventory =
+        identifier_owner_inventory(&compiler_production_sources, parse_macro);
+    let shadow_injection_marker = "impl RevisionedQueryDatabase {";
+    let composer_shadow_fixtures = [
+        (
+            "alias and local shadow",
+            r#"use parse_import::register_parse_import_parse as original_parse;
+macro_rules! register_parse_import_parse {
+    ($runtime:ident) => {{
+        let primary = original_parse!($runtime);
+        let _peer = original_parse!($runtime);
+        primary
+    }};
+}"#,
+        ),
+        (
+            "raw alias and shadow",
+            r#"use parse_import::r#register_parse_import_parse as r#original_parse;
+macro_rules! r#register_parse_import_parse {
+    ($runtime:ident) => {{
+        let primary = r#original_parse!($runtime);
+        let _peer = r#original_parse!($runtime);
+        primary
+    }};
+}"#,
+        ),
+        (
+            "macro-generated shadow name",
+            r#"use parse_import::register_parse_import_parse as original_parse;
+macro_rules! define_registration_shadow {
+    ($name:ident, $original:ident, $dollar:tt) => {
+        macro_rules! $name {
+            ($dollar runtime:ident) => {{
+                let primary = $original!($dollar runtime);
+                let _peer = $original!($dollar runtime);
+                primary
+            }};
+        }
+    };
+}
+define_registration_shadow!(register_parse_import_parse, original_parse, $);"#,
+        ),
+    ];
+    for (label, shadow) in composer_shadow_fixtures {
+        let adversarial_registration_composer = registration_composer.replacen(
+            shadow_injection_marker,
+            &format!("{shadow}\n\n{shadow_injection_marker}"),
+            1,
+        );
+        assert_eq!(
+            registration_macro_invocations(&adversarial_registration_composer),
+            invocations,
+            "the {label} fixture must preserve the weaker registration invocation stream",
+        );
+        assert_eq!(
+            code_identifier_count(&adversarial_registration_composer, "QueryRuntime"),
+            code_identifier_count(registration_composer, "QueryRuntime"),
+            "the {label} fixture must preserve the weaker runtime identifier count",
+        );
+        assert_eq!(
+            family_constructor_calls(&adversarial_registration_composer),
+            family_constructor_calls(registration_composer),
+            "the {label} fixture must preserve the weaker family-constructor count",
+        );
+        assert_eq!(
+            executable_source_shape_identity(exact_balanced_code_item(
+                &adversarial_registration_composer,
+                "fn with_declaration_memo_retention_and_concurrency(",
+            )),
+            ORDERED_REGISTRATION_COMPOSER_IDENTITY,
+            "the {label} fixture models a shadow outside the previously sealed composer body",
+        );
+        assert_ne!(
+            executable_source_shape_identity(&adversarial_registration_composer),
+            REGISTRATION_AUTHORITY_MODULE_IDENTITY,
+            "the {label} fixture must fail the complete registration-module identity",
+        );
+        let adversarial_sources = compiler_production_sources
+            .iter()
+            .map(|(owner, source)| {
+                if owner == "revisioned_database::registrations" {
+                    (owner.clone(), adversarial_registration_composer.as_str())
+                } else {
+                    (owner.clone(), *source)
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_ne!(
+            identifier_owner_inventory(&adversarial_sources, parse_macro),
+            parse_macro_identifier_inventory,
+            "the {label} fixture must fail the live registration-macro identifier inventory",
+        );
+    }
+
+    let parse_wrapper_owner = "revisioned_database::registrations_parse_import";
+    let parse_wrapper = revisioned_production_sources
+        .iter()
+        .find_map(|(owner, source)| (owner == parse_wrapper_owner).then_some(*source))
+        .expect("parse/import registration wrapper source");
+    let wrapper_reexport = "pub(super) use register_parse_import_parse;";
+    let wrapper_shadow = r#"pub(super) use register_parse_import_parse as original_parse;
+macro_rules! register_parse_import_parse {
+    ($runtime:ident) => {{
+        let primary = parse_import::original_parse!($runtime);
+        let _peer = parse_import::original_parse!($runtime);
+        primary
+    }};
+}
+pub(super) use register_parse_import_parse;"#;
+    let adversarial_parse_wrapper = parse_wrapper.replacen(wrapper_reexport, wrapper_shadow, 1);
+    assert_eq!(
+        include_macro_paths(&adversarial_parse_wrapper),
+        include_macro_paths(parse_wrapper),
+        "the wrapper shadow fixture must preserve the weaker leaf-include inventory",
+    );
+    assert_eq!(
+        registration_macro_invocations(&adversarial_parse_wrapper),
+        registration_macro_invocations(parse_wrapper),
+        "the wrapper shadow fixture must preserve the weaker registration invocation count",
+    );
+    assert_eq!(
+        code_identifier_count(&adversarial_parse_wrapper, "QueryRuntime"),
+        code_identifier_count(parse_wrapper, "QueryRuntime"),
+        "the wrapper shadow fixture must preserve the weaker runtime identifier count",
+    );
+    assert_eq!(
+        family_constructor_calls(&adversarial_parse_wrapper),
+        family_constructor_calls(parse_wrapper),
+        "the wrapper shadow fixture must preserve the weaker family-constructor count",
+    );
+    assert_ne!(
+        executable_source_shape_identity(&adversarial_parse_wrapper),
+        REGISTRATION_WRAPPER_MODULE_IDENTITIES[2],
+        "the wrapper shadow fixture must fail the pinned parse/import wrapper identity",
+    );
+    let adversarial_wrapper_sources = compiler_production_sources
+        .iter()
+        .map(|(owner, source)| {
+            if owner == parse_wrapper_owner {
+                (owner.clone(), adversarial_parse_wrapper.as_str())
+            } else {
+                (owner.clone(), *source)
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_ne!(
+        identifier_owner_inventory(&adversarial_wrapper_sources, parse_macro),
+        parse_macro_identifier_inventory,
+        "the wrapper shadow fixture must fail the live registration-macro identifier inventory",
+    );
+
+    // The raw registrations source intentionally retains a cfg(test) Default
+    // adapter for the existing unit corpus. Remove that exact, identity-pinned
+    // item for production construction inventories. With no production
+    // `Default` impl, `Default::default`, `unwrap_or_default`, generic
+    // `T: Default`, and aliases of those routes cannot produce this database;
+    // Rust's trait solver rejects them before runtime authority is reachable.
+    let revisioned_construction_sources = revisioned_production_sources
+        .iter()
+        .map(|(owner, source)| {
+            if owner == "revisioned_database::registrations" {
+                (owner.clone(), production_registration_composer.as_str())
+            } else {
+                (owner.clone(), *source)
+            }
+        })
+        .collect::<Vec<_>>();
+    let production_session_source = SESSION_SOURCE
+        .split("\n#[cfg(test)]\nmod tests {")
+        .next()
+        .expect("session production source precedes its test module");
+    let compiler_construction_sources = compiler_production_sources
+        .iter()
+        .map(|(owner, source)| {
+            if owner == "revisioned_database::registrations" {
+                (owner.clone(), production_registration_composer.as_str())
+            } else if owner == "session" {
+                (owner.clone(), production_session_source)
+            } else {
+                (owner.clone(), *source)
+            }
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        database_new_reference_owner_inventory(&compiler_construction_sources),
+        [(
+            "session".to_owned(),
+            "RevisionedQueryDatabase:call".to_owned(),
+            1,
+        )],
+        "the frontend session must remain the sole production inherent-constructor caller; aliases and function items are forbidden",
+    );
+    assert_eq!(
+        database_new_definition_owner_inventory(&compiler_construction_sources),
+        [("revisioned_database::registrations".to_owned(), 1)],
+        "registrations must own the sole production inherent database constructor",
+    );
+    assert_eq!(
+        construction_token_new_reference_owner_inventory(&compiler_construction_sources),
+        [(
+            "session".to_owned(),
+            "RevisionedQueryDatabaseConstructionToken:call".to_owned(),
+            1,
+        )],
+        "the frontend session must remain the sole production capability constructor; aliases and function items are forbidden",
+    );
+    assert_eq!(
+        identifier_owner_inventory(
+            &compiler_construction_sources,
+            "RevisionedQueryDatabaseConstructionToken",
+        ),
+        [
+            ("revisioned_database::registrations".to_owned(), 1),
+            ("session".to_owned(), 3),
+        ],
+        "the capability type may appear only in its session declaration/private constructor, the frontend call, and the token-gated database signature",
+    );
+    let expected_frontend_database_identifiers = [("session".to_owned(), 4)];
+    assert_eq!(
+        identifier_owner_inventory(&compiler_construction_sources, "FrontendQueryDatabase",),
+        expected_frontend_database_identifiers,
+        "the frontend database type must have exactly its declaration, two impl owners, and the canonical CompilerSession field",
+    );
+    assert_eq!(
+        type_method_definition_owner_inventory(
+            &compiler_construction_sources,
+            "CompilerSession",
+            "new",
+        ),
+        [("session".to_owned(), "public".to_owned(), 1)],
+        "the compiler must have exactly one public CompilerSession::new owner",
+    );
+    assert!(
+        type_method_definition_owner_inventory(
+            &compiler_construction_sources,
+            "CompilerSession",
+            "default",
+        )
+        .is_empty(),
+        "no compiler production owner may define an inherent CompilerSession::default",
+    );
+    let adversarial_session_with_inherent_default =
+        format!("{production_session_source}\n{compiler_session_inherent_default_fixture}");
+    let adversarial_inherent_default_sources = compiler_construction_sources
+        .iter()
+        .map(|(owner, source)| {
+            if owner == "session" {
+                (
+                    owner.clone(),
+                    adversarial_session_with_inherent_default.as_str(),
+                )
+            } else {
+                (owner.clone(), *source)
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        type_method_definition_owner_inventory(
+            &adversarial_inherent_default_sources,
+            "CompilerSession",
+            "default",
+        ),
+        [("session".to_owned(), "private".to_owned(), 1)],
+        "the private inherent-default fixture must fail the live compiler-wide owner inventory",
+    );
+    assert!(
+        type_alias_owner_inventory(&compiler_construction_sources, "FrontendQueryDatabase",)
+            .is_empty(),
+        "production compiler source cannot alias the frontend database type",
+    );
+    for trait_name in ["Clone", "Copy", "Default"] {
+        assert!(
+            compiler_construction_sources.iter().all(|(_, source)| {
+                type_trait_impl_count(
+                    source,
+                    "RevisionedQueryDatabaseConstructionToken",
+                    trait_name,
+                ) == 0
+            }),
+            "the construction capability cannot implement {trait_name}",
+        );
+    }
+
+    // `CompilerSession` derives `Default`, so every one of its private fields
+    // is part of the runtime-construction authority. These valid-Rust models
+    // preserve the sole explicit token/database calls but make the derived
+    // constructor create a second frontend database. The exact root identity,
+    // semantic carrier-field check, and compiler-wide identifier/alias
+    // inventories independently reject the change.
+    let add_compiler_session_field = |field: &str| {
+        let body = compiler_session_root
+            .strip_suffix('}')
+            .expect("CompilerSession exact item closes with one brace");
+        format!("{body}    {field}\n}}")
+    };
+    let compiler_session_multiplicity_fixtures = [
+        (
+            "direct duplicate",
+            "",
+            "_peer_queries: FrontendQueryDatabase,",
+        ),
+        (
+            "type alias duplicate",
+            "type PeerFrontendQueryDatabase = FrontendQueryDatabase;\n",
+            "_peer_queries: PeerFrontendQueryDatabase,",
+        ),
+        (
+            "tuple duplicate",
+            "",
+            "_peer_queries: (FrontendQueryDatabase,),",
+        ),
+        (
+            "Option duplicate",
+            "",
+            "_peer_queries: Option<FrontendQueryDatabase>,",
+        ),
+        (
+            "local wrapper duplicate",
+            "#[derive(Default)]\nstruct PeerFrontendQueryDatabase(FrontendQueryDatabase);\n",
+            "_peer_queries: PeerFrontendQueryDatabase,",
+        ),
+    ];
+    for (label, companion, field) in compiler_session_multiplicity_fixtures {
+        let adversarial_root = add_compiler_session_field(field);
+        assert_ne!(
+            executable_source_shape_identity(&adversarial_root),
+            COMPILER_SESSION_ROOT_IDENTITY,
+            "the {label} must fail the live CompilerSession root identity",
+        );
+        let adversarial_session = format!(
+            "{}\n{companion}",
+            production_session_source.replacen(compiler_session_root, &adversarial_root, 1)
+        );
+        assert_ne!(
+            struct_fields_with_type_carrier(
+                &adversarial_session,
+                &adversarial_root,
+                "FrontendQueryDatabase",
+            ),
+            ["queries|cfg=false|FrontendQueryDatabase"],
+            "the {label} must fail the semantic derived-Default field inventory",
+        );
+        let adversarial_sources = compiler_construction_sources
+            .iter()
+            .map(|(owner, source)| {
+                if owner == "session" {
+                    (owner.clone(), adversarial_session.as_str())
+                } else {
+                    (owner.clone(), *source)
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            database_new_reference_owner_inventory(&adversarial_sources),
+            database_new_reference_owner_inventory(&compiler_construction_sources),
+            "the {label} must preserve the weaker explicit database-new inventory",
+        );
+        assert_eq!(
+            construction_token_new_reference_owner_inventory(&adversarial_sources),
+            construction_token_new_reference_owner_inventory(&compiler_construction_sources),
+            "the {label} must preserve the weaker explicit capability-new inventory",
+        );
+        assert_ne!(
+            identifier_owner_inventory(&adversarial_sources, "FrontendQueryDatabase"),
+            expected_frontend_database_identifiers,
+            "the {label} must fail the live compiler-wide frontend database identifier inventory",
+        );
+    }
+    let non_frontend_session_sources = [
+        include_str!("session/metrics.rs"),
+        include_str!("session/rooted_artifacts.rs"),
+        include_str!("session/discovery_continuation.rs"),
+        include_str!("session.rs"),
+    ];
+    assert!(
+        non_frontend_session_sources
+            .iter()
+            .all(|source| revisioned_database_new_references(source).is_empty()),
+        "session/frontend_queries.rs must remain the exact session construction owner",
+    );
+    assert!(
+        non_frontend_session_sources
+            .iter()
+            .all(|source| construction_token_new_references(source).is_empty()),
+        "session/frontend_queries.rs must remain the exact capability-construction owner",
+    );
+    assert!(
+        database_construction_owner_inventory(&compiler_construction_sources, false).is_empty(),
+        "production compiler source cannot construct RevisionedQueryDatabase through Default",
+    );
+    assert!(
+        compiler_construction_sources
+            .iter()
+            .all(|(_, source)| revisioned_database_default_impl_count(source) == 0),
+        "production compiler source cannot restore a Default impl for RevisionedQueryDatabase",
+    );
+    let compiler_default_reference_inventory =
+        database_construction_owner_inventory(&compiler_construction_sources, true);
+    assert_eq!(
+        compiler_default_reference_inventory,
+        [
+            ("backend".to_owned(), "Default:call".to_owned(), 3),
+            ("codegen_query".to_owned(), "Default:call".to_owned(), 3),
+            ("durable_comptime".to_owned(), "Default:call".to_owned(), 2),
+            (
+                "local_semantic_materialization".to_owned(),
+                "Self:call".to_owned(),
+                1,
+            ),
+            ("parsed_modules".to_owned(), "Default:call".to_owned(), 1),
+            ("queries".to_owned(), "Default:call".to_owned(), 2),
+            ("session".to_owned(), "Self:call".to_owned(), 5),
+            ("unstable".to_owned(), "Default:call".to_owned(), 10),
+            ("unstable".to_owned(), "Self:call".to_owned(), 1),
+        ],
+        "all compiler Default::default and Self::default spellings need exact owners because source scanning cannot infer an unannotated target type",
+    );
+    assert!(
+        database_construction_owner_inventory(&revisioned_construction_sources, true).is_empty(),
+        "revisioned production children cannot construct a peer database through explicit, Self, Default, raw, qualified, alias, or function-item spellings",
+    );
+    assert!(
+        database_new_reference_owner_inventory(&revisioned_construction_sources).is_empty(),
+        "revisioned production children cannot re-enter the inherent database constructor",
+    );
+    let test_construction_sources = [
+        (
+            "revisioned_database::test_support".to_owned(),
+            include_str!("revisioned_query_database/test_support.rs"),
+        ),
+        (
+            "revisioned_database::tests".to_owned(),
+            include_str!("revisioned_query_database/tests.rs"),
+        ),
+    ];
+    assert_eq!(
+        database_construction_owner_inventory(&test_construction_sources, false),
+        [
+            (
+                "revisioned_database::test_support".to_owned(),
+                "RevisionedQueryDatabase:call".to_owned(),
+                1,
+            ),
+            (
+                "revisioned_database::tests".to_owned(),
+                "RevisionedQueryDatabase:call".to_owned(),
+                180,
+            ),
+        ],
+        "independent test databases have a separate exact construction inventory",
+    );
+
+    // The complete registration impl and composer identities seal these 44
+    // manifested invocations plus the existing cfg(test) provider probe. Keep
+    // their bare local `runtime` arguments inventoried so adding a forwarding
+    // macro anywhere in the same owner cannot hide behind an owner exemption.
+    let expected_runtime_authorities = [
+        (
+            "revisioned_database::registrations".to_owned(),
+            "database-runtime-struct-form".to_owned(),
+            1,
+        ),
+        (
+            "revisioned_database::registrations".to_owned(),
+            "runtime-field-macro-bare-identifier".to_owned(),
+            45,
+        ),
+    ];
+    assert_eq!(
+        database_runtime_authority_inventory(&revisioned_production_sources),
+        expected_runtime_authorities,
+        "the runtime field must be initialized once by the sealed composer and never replaced or mutably exposed",
+    );
+    let child_owner = "revisioned_database::body_closure_nucleus";
+    let child_source = revisioned_production_sources
+        .iter()
+        .find_map(|(owner, source)| (owner == child_owner).then_some(*source))
+        .expect("reviewed revisioned child source");
+    let split_core_child = format!("{child_source}\n{split_core_fixture}");
+    let split_core_sources = revisioned_production_sources
+        .iter()
+        .map(|(owner, source)| {
+            if owner == child_owner {
+                (owner.clone(), split_core_child.as_str())
+            } else {
+                (owner.clone(), *source)
+            }
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !database_construction_owner_inventory(&split_core_sources, true).is_empty(),
+        "the reviewer child peer construction must fail the live construction inventory",
+    );
+    assert_ne!(
+        database_runtime_authority_inventory(&split_core_sources),
+        expected_runtime_authorities,
+        "the reviewer child runtime assignment must fail the live runtime inventory",
+    );
+    for (label, fixture) in runtime_mutation_fixtures.iter().copied() {
+        let adversarial_child = format!("{child_source}\n{fixture}");
+        let adversarial_sources = revisioned_production_sources
+            .iter()
+            .map(|(owner, source)| {
+                if owner == child_owner {
+                    (owner.clone(), adversarial_child.as_str())
+                } else {
+                    (owner.clone(), *source)
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_ne!(
+            database_runtime_authority_inventory(&adversarial_sources),
+            expected_runtime_authorities,
+            "the {label} fixture must fail the live runtime authority inventory",
+        );
+    }
+    for (label, fixture) in runtime_macro_mutation_fixtures.iter().copied() {
+        let adversarial_child = format!("{child_source}\n{fixture}");
+        let adversarial_sources = revisioned_production_sources
+            .iter()
+            .map(|(owner, source)| {
+                if owner == child_owner {
+                    (owner.clone(), adversarial_child.as_str())
+                } else {
+                    (owner.clone(), *source)
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_ne!(
+            database_runtime_authority_inventory(&adversarial_sources),
+            expected_runtime_authorities,
+            "the {label} fixture must fail the live runtime authority inventory",
+        );
+        assert!(
+            !database_construction_owner_inventory(&adversarial_sources, true).is_empty(),
+            "the {label} fixture must fail the live peer-construction inventory",
+        );
+    }
+    for (label, fixture) in runtime_field_ident_macro_fixtures.iter().copied() {
+        let adversarial_child = format!("{child_source}\n{fixture}");
+        let adversarial_sources = revisioned_production_sources
+            .iter()
+            .map(|(owner, source)| {
+                if owner == child_owner {
+                    (owner.clone(), adversarial_child.as_str())
+                } else {
+                    (owner.clone(), *source)
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_ne!(
+            database_runtime_authority_inventory(&adversarial_sources),
+            expected_runtime_authorities,
+            "the {label} fixture must fail the live runtime authority inventory",
+        );
+        assert!(
+            !database_construction_owner_inventory(&adversarial_sources, true).is_empty(),
+            "the {label} fixture must fail the live aliased-construction inventory",
+        );
+    }
+
+    let composer_constructor_owners = compiler_production_sources
+        .iter()
+        .filter_map(|(owner, source)| {
+            let identifiers = code_identifier_count(source, composer_constructor);
+            (identifiers != 0).then(|| {
+                let (definitions, calls, references) =
+                    function_identifier_usage(source, composer_constructor);
+                (owner.clone(), definitions, calls, references, identifiers)
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        composer_constructor_owners,
+        [("revisioned_database::registrations".to_owned(), 1, 4, 0, 5,)],
+        "the private composer must have one definition plus the canonical entry and three cfg(test) factory calls, all registrations-owned",
+    );
+    let canonical_constructor_owners = compiler_construction_sources
+        .iter()
+        .filter_map(|(owner, source)| {
+            let identifiers = code_identifier_count(source, "new_canonical");
+            (identifiers != 0).then(|| {
+                let (definitions, calls, references) =
+                    function_identifier_usage(source, "new_canonical");
+                (owner.clone(), definitions, calls, references, identifiers)
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        canonical_constructor_owners,
+        [("revisioned_database::registrations".to_owned(), 1, 1, 0, 2)],
+        "the private canonical constructor must remain registrations-owned with one token-gated production caller",
+    );
+
+    let revisioned_aggregate = PRODUCTION_MODULES
+        .iter()
+        .find_map(|(owner, source)| (*owner == "revisioned_query_database").then_some(*source))
+        .expect("revisioned database aggregate source");
+    let mut compiler_module_sources = compiler_production_sources.clone();
+    compiler_module_sources.push((
+        "revisioned_database::test_bearing_aggregate".to_owned(),
+        revisioned_aggregate,
+    ));
+    let nested_module_owners = module_owner_inventory(&compiler_module_sources);
+    let nested_module_fingerprint = source_inventory_fingerprint(&nested_module_owners);
+    let expected_nested_module_identity = (138, 6_140_959_844_248_313_380);
+    assert_eq!(
+        (nested_module_owners.len(), nested_module_fingerprint),
+        expected_nested_module_identity,
+        "every nested compiler module edge must have an exact reviewed source owner",
+    );
+    for nested_module_fixture in ["mod peer { fn nested() {} }", "pub(crate) mod peer;"] {
+        assert_eq!(
+            module_declarations(nested_module_fixture),
+            ["peer"],
+            "inline and semicolon module edges must both be detected",
+        );
+        let adversarial_root = format!("{crate_root}\n{nested_module_fixture}");
+        let adversarial_sources = compiler_module_sources
+            .iter()
+            .map(|(owner, source)| {
+                if owner == "crate_root" {
+                    (owner.clone(), adversarial_root.as_str())
+                } else {
+                    (owner.clone(), *source)
+                }
+            })
+            .collect::<Vec<_>>();
+        let adversarial_modules = module_owner_inventory(&adversarial_sources);
+        assert_ne!(
+            (
+                adversarial_modules.len(),
+                source_inventory_fingerprint(&adversarial_modules),
+            ),
+            expected_nested_module_identity,
+            "a crate-root module edge must perturb the live owner inventory",
+        );
+    }
+
+    let mut actual_include_sites = compiler_production_sources
+        .iter()
+        .flat_map(|(owner, source)| {
+            include_macro_paths(source)
+                .into_iter()
+                .map(move |path| (owner.clone(), path))
+        })
+        .collect::<Vec<_>>();
+    actual_include_sites.sort();
+    let mut expected_include_sites = REGISTRATION_MANIFEST
+        .iter()
+        .map(|(owner, _, macro_name, _)| {
+            let include_owner = if *macro_name == "register_provider_probe" {
+                "provider"
+            } else {
+                owner
+            };
+            (
+                format!("revisioned_database::registrations_{include_owner}"),
+                registration_include_path(owner, macro_name),
+            )
+        })
+        .collect::<Vec<_>>();
+    expected_include_sites.sort();
+    assert_eq!(
+        actual_include_sites, expected_include_sites,
+        "compiler production include! edges must correspond one-for-one to the registration manifest",
+    );
+    let mut expected_include_owner_names = expected_include_sites
+        .iter()
+        .map(|(owner, _)| owner.clone())
+        .collect::<Vec<_>>();
+    expected_include_owner_names.sort();
+    let mut expected_include_identifier_owners: Vec<(String, usize)> = Vec::new();
+    for owner in expected_include_owner_names {
+        if let Some((last_owner, count)) = expected_include_identifier_owners.last_mut()
+            && *last_owner == owner
+        {
+            *count += 1;
+        } else {
+            expected_include_identifier_owners.push((owner, 1));
+        }
+    }
+    assert_eq!(
+        expected_include_identifier_owners
+            .iter()
+            .map(|(_, count)| count)
+            .sum::<usize>(),
+        44,
+        "the identifier inventory must derive from every manifested include leaf",
+    );
+    assert_eq!(
+        identifier_owner_inventory(&compiler_production_sources, "include"),
+        expected_include_identifier_owners,
+        "every compiler include identifier must be one canonical direct manifest include",
+    );
+    let include_alias_fixture = "use std::include as inc; inc!(\"body/peer_alias.rs\");";
+    assert!(
+        include_macro_paths(include_alias_fixture).is_empty(),
+        "the direct include parser deliberately does not mistake an alias for include!",
+    );
+    assert_eq!(
+        code_identifier_count(include_alias_fixture, "include"),
+        1,
+        "the identifier inventory must retain an aliased include import",
+    );
+    assert_eq!(
+        code_identifier_count("use std::r#include as inc;", "include"),
+        1,
+        "raw include identifiers must normalize to the reviewed spelling",
+    );
+    let mut aliased_include_sources = compiler_production_sources.clone();
+    aliased_include_sources.push(("include_alias_fixture".to_owned(), include_alias_fixture));
+    assert_ne!(
+        identifier_owner_inventory(&aliased_include_sources, "include"),
+        expected_include_identifier_owners,
+        "an aliased include must perturb the live compiler-wide identifier inventory",
+    );
+    for (extra_include_fixture, extra_path) in [
+        (
+            "let quote = '\"'; include ! (\"body/peer_paren.rs\");",
+            "body/peer_paren.rs",
+        ),
+        (
+            "include ! [ \"body/peer_bracket.rs\" ];",
+            "body/peer_bracket.rs",
+        ),
+        (
+            "include ! { \"body/peer_brace.rs\" };",
+            "body/peer_brace.rs",
+        ),
+    ] {
+        assert_eq!(
+            include_macro_paths(extra_include_fixture),
+            [extra_path],
+            "every valid include! delimiter must expose its source edge",
+        );
+        assert!(
+            !expected_include_sites
+                .iter()
+                .any(|(_, path)| path == extra_path),
+            "an adversarial include must remain outside the manifest: {extra_path}",
+        );
+    }
+
+    let query_runtime_identifier_owners = compiler_production_sources
+        .iter()
+        .filter_map(|(owner, source)| {
+            let count = code_identifier_count(source, "QueryRuntime");
+            (count != 0).then(|| (owner.clone(), count))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        query_runtime_identifier_owners,
+        [
+            ("object_query".to_owned(), 1),
+            ("revisioned_database::hub".to_owned(), 1),
+            ("revisioned_database::shared".to_owned(), 3),
+            ("revisioned_database::backend".to_owned(), 3),
+            ("revisioned_database::body_transactions".to_owned(), 1),
+            ("revisioned_database::registrations".to_owned(), 1),
+        ],
+        "every compiler QueryRuntime identifier must have an exact reviewed owner",
+    );
+    let object_query = PRODUCTION_MODULES
+        .iter()
+        .find_map(|(owner, source)| (*owner == "object_query").then_some(*source))
+        .expect("object query production inventory entry");
+    let (object_query_production, object_query_tests) = object_query
+        .split_once("\n#[cfg(test)]\nmod tests {")
+        .expect("object query inline test boundary");
+    assert_eq!(
+        code_identifier_count(object_query_production, "QueryRuntime"),
+        0,
+        "object query production code cannot own a QueryRuntime",
+    );
+    assert!(
+        family_constructor_calls(object_query_production).is_empty(),
+        "object query production code cannot construct runtime families",
+    );
+    assert_eq!(
+        object_query_tests
+            .matches("let runtime = rue_query::QueryRuntime::new(1);")
+            .count(),
+        1,
+        "the sole non-revisioned QueryRuntime identifier is an inline cfg(test) runtime",
+    );
+    let registrations = REVISIONED_DATABASE_PHASES
+        .iter()
+        .find_map(|(owner, source)| (*owner == "registrations").then_some(*source))
+        .expect("registration composer source");
+    let compact_registrations = rust_code_only(registrations)
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        std::str::from_utf8(&compact_registrations)
+            .expect("whitespace removal preserves UTF-8")
+            .matches("CompilerQueryRuntime(QueryRuntime::new(query_concurrency))")
+            .count(),
+        1,
+        "the sole production runtime construction must remain registrations-owned",
+    );
+
+    let actual_family_constructor_owners = compiler_production_sources
+        .iter()
+        .filter_map(|(owner, source)| {
+            let constructors = family_constructor_calls(source);
+            (!constructors.is_empty()).then(|| (owner.clone(), constructors))
+        })
+        .collect::<Vec<_>>();
+    let actual_family_identifier_owners =
+        family_identifier_owner_inventory(&compiler_production_sources);
+    let mut expected_family_identifier_owners = vec![
+        ("canonical_lower".to_owned(), "family".to_owned(), 13),
+        ("durable_comptime".to_owned(), "family".to_owned(), 1),
+        ("object_query".to_owned(), "family".to_owned(), 2),
+        (
+            "object_query".to_owned(),
+            "family_with_equality_and_evaluator".to_owned(),
+            1,
+        ),
+        (
+            "revisioned_database::backend".to_owned(),
+            "family".to_owned(),
+            2,
+        ),
+        (
+            "revisioned_database::body_closure_nucleus".to_owned(),
+            "family".to_owned(),
+            8,
+        ),
+        (
+            "revisioned_database::body_provider_body".to_owned(),
+            "family".to_owned(),
+            2,
+        ),
+        (
+            "revisioned_database::parse_import".to_owned(),
+            "family".to_owned(),
+            3,
+        ),
+        (
+            "revisioned_database::parse_import_program_assembly".to_owned(),
+            "family".to_owned(),
+            1,
+        ),
+        (
+            "revisioned_database::register_semantic_semantic_nucleus".to_owned(),
+            "family".to_owned(),
+            18,
+        ),
+        (
+            "revisioned_database::semantic".to_owned(),
+            "family".to_owned(),
+            13,
+        ),
+        (
+            "revisioned_database::shared".to_owned(),
+            "content_addressed_family_with_equality".to_owned(),
+            1,
+        ),
+        (
+            "revisioned_database::shared".to_owned(),
+            "content_addressed_family_with_equality_and_retained_charge".to_owned(),
+            1,
+        ),
+        (
+            "revisioned_database::shared".to_owned(),
+            "family_with_equality".to_owned(),
+            1,
+        ),
+        (
+            "revisioned_database::shared".to_owned(),
+            "family_with_equality_and_evaluator".to_owned(),
+            2,
+        ),
+        (
+            "revisioned_database::shared".to_owned(),
+            "family_with_equality_and_evaluator_and_retained_charge".to_owned(),
+            1,
+        ),
+        (
+            "revisioned_database::shared".to_owned(),
+            "family_with_equality_and_retained_charge".to_owned(),
+            1,
+        ),
+        (
+            "revisioned_database::shared".to_owned(),
+            "family_with_evaluator".to_owned(),
+            1,
+        ),
+        ("session".to_owned(), "family".to_owned(), 23),
+    ];
+    expected_family_identifier_owners.extend(REGISTRATION_MANIFEST.iter().map(
+        |(_, family, macro_name, _)| {
+            (
+                format!("revisioned_database::{macro_name}"),
+                expected_registration_family_constructor(family).to_owned(),
+                1,
+            )
+        },
+    ));
+    expected_family_identifier_owners.sort();
+    assert_eq!(
+        actual_family_identifier_owners, expected_family_identifier_owners,
+        "every compiler family identifier spelling must have an exact reviewed owner and count",
+    );
+    let registrations_source = compiler_production_sources
+        .iter()
+        .find_map(|(owner, source)| {
+            (owner == "revisioned_database::registrations").then_some(*source)
+        })
+        .expect("registration composer compiler source entry");
+    for macro_indirection_fixture in macro_indirection_fixtures.iter().copied() {
+        let adversarial_registrations =
+            format!("{registrations_source}\n{macro_indirection_fixture}");
+        let adversarial_sources = compiler_production_sources
+            .iter()
+            .map(|(owner, source)| {
+                if owner == "revisioned_database::registrations" {
+                    (owner.clone(), adversarial_registrations.as_str())
+                } else {
+                    (owner.clone(), *source)
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_ne!(
+            family_identifier_owner_inventory(&adversarial_sources),
+            expected_family_identifier_owners,
+            "macro family indirection in an existing allowed owner must perturb the live inventory",
+        );
+    }
+    let mut expected_family_constructor_owners = vec![
+        (
+            "object_query".to_owned(),
+            vec!["family_with_equality_and_evaluator".to_owned()],
+        ),
+        (
+            "revisioned_database::shared".to_owned(),
+            [
+                "family_with_equality_and_evaluator_and_retained_charge",
+                "family_with_equality_and_evaluator",
+                "family_with_equality_and_retained_charge",
+                "content_addressed_family_with_equality_and_retained_charge",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+        ),
+    ];
+    expected_family_constructor_owners.extend(REGISTRATION_MANIFEST.iter().map(
+        |(_, family, macro_name, _)| {
+            (
+                format!("revisioned_database::{macro_name}"),
+                vec![expected_registration_family_constructor(family).to_owned()],
+            )
+        },
+    ));
+    assert_eq!(
+        actual_family_constructor_owners, expected_family_constructor_owners,
+        "every compiler family constructor must be a reviewed forwarding helper, inline test, or manifested registration",
+    );
+    let manifested_constructor_owners = REGISTRATION_MANIFEST
+        .iter()
+        .map(|(_, _, macro_name, _)| format!("revisioned_database::{macro_name}"))
+        .collect::<Vec<_>>();
+    assert!(
+        actual_family_constructor_owners
+            .iter()
+            .all(|(owner, _)| owner == "object_query"
+                || owner == "revisioned_database::shared"
+                || manifested_constructor_owners.contains(owner)),
+        "direct family construction is sealed to the shared forwarding impl and manifested leaves; object_query is the explicitly pinned cfg(test) runtime",
+    );
     assert_eq!(
         REVISIONED_DATABASE_PHASES
             .iter()
@@ -397,7 +4790,7 @@ fn revisioned_database_hub_and_registered_family_authority_are_structural() {
         });
     assert_eq!(
         (declarations.len(), fingerprint),
-        (205, 12_983_246_186_944_960_561),
+        (210, 13_505_876_172_349_810_937),
         "crate-visible declaration names, signatures, fields, or phase owners changed"
     );
 
@@ -424,6 +4817,260 @@ fn revisioned_database_hub_and_registered_family_authority_are_structural() {
     );
 }
 
+#[test]
+fn revisioned_body_and_program_assembly_have_exact_source_owners() {
+    let source = |owner: &str| {
+        REVISIONED_DATABASE_PHASES
+            .iter()
+            .find_map(|(candidate, source)| (*candidate == owner).then_some(*source))
+            .unwrap_or_else(|| panic!("missing revisioned database source owner {owner}"))
+    };
+
+    let body_facade = source("body");
+    let body_modules = body_facade
+        .lines()
+        .filter_map(|line| line.strip_prefix("mod "))
+        .filter_map(|line| line.strip_suffix(';'))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        body_modules,
+        [
+            "closure_nucleus",
+            "durable_comptime_adapters",
+            "provider_body",
+            "revision_symbol_space",
+            "transactions",
+        ],
+        "body.rs must remain the exact ownership facade"
+    );
+    assert!(body_facade.lines().count() < 40);
+    for forbidden in [
+        "impl RevisionedQueryDatabase",
+        "pub(crate) fn ",
+        "pub(crate) struct ",
+        "pub(crate) enum ",
+        "pub(in crate::revisioned_query_database) fn ",
+        "pub(in crate::revisioned_query_database) struct ",
+        "pub(in crate::revisioned_query_database) enum ",
+    ] {
+        assert!(
+            !body_facade.contains(forbidden),
+            "body.rs regained catch-all implementation authority through {forbidden}"
+        );
+    }
+
+    let parse_import = source("parse_import");
+    assert_eq!(
+        parse_import.matches("mod program_assembly;").count(),
+        1,
+        "parse/import must declare exactly one program-assembly owner"
+    );
+
+    for (definition, owner) in [
+        (
+            "pub(crate) struct BodyClosureRequest",
+            "body_closure_nucleus",
+        ),
+        (
+            "pub(in crate::revisioned_query_database) fn instance_producer_closure(",
+            "body_closure_nucleus",
+        ),
+        (
+            "pub(in crate::revisioned_query_database) fn visit_instance_anonymous_nominals",
+            "body_closure_nucleus",
+        ),
+        (
+            "pub(crate) fn collect_instance_anonymous_nominals(",
+            "body_closure_nucleus",
+        ),
+        ("pub(crate) fn body_closure(", "body_closure_nucleus"),
+        (
+            "pub(crate) fn projected_declaration_semantics_for_modules(",
+            "body_closure_nucleus",
+        ),
+        (
+            "pub(crate) fn durable_type_from_instance_key(",
+            "body_durable_comptime_adapters",
+        ),
+        (
+            "pub(crate) fn durable_value_from_argument(",
+            "body_durable_comptime_adapters",
+        ),
+        (
+            "pub(in crate::revisioned_query_database) fn collect_durable_anonymous_nominal_dependencies(",
+            "body_durable_comptime_adapters",
+        ),
+        (
+            "pub(in crate::revisioned_query_database) struct DurableComptimeRootAuthority",
+            "body_durable_comptime_adapters",
+        ),
+        ("fn body_type_instance(", "body_provider_body"),
+        (
+            "pub(in crate::revisioned_query_database) fn collect_published_body_references(",
+            "body_provider_body",
+        ),
+        (
+            "pub(crate) fn semantic_candidate_import_occurrences(",
+            "body_provider_body",
+        ),
+        ("impl SemanticNucleusTypeProvider<'_>", "body_provider_body"),
+        (
+            "pub(in crate::revisioned_query_database) struct BodyInputResolver",
+            "body_provider_body",
+        ),
+        (
+            "pub(in crate::revisioned_query_database) struct RevisionSymbolSpace",
+            "body_revision_symbol_space",
+        ),
+        (
+            "pub(crate) enum BodyTransactionRequestFailure",
+            "body_transactions",
+        ),
+        (
+            "pub(in crate::revisioned_query_database) struct BodyTransactionEvaluator",
+            "body_transactions",
+        ),
+        ("pub(crate) fn body_transaction(", "body_transactions"),
+        ("fn parse_module_frontier(", "parse_import_program_assembly"),
+        (
+            "pub(crate) fn parse_program_extension(",
+            "parse_import_program_assembly",
+        ),
+        (
+            "pub(crate) fn parse_program(",
+            "parse_import_program_assembly",
+        ),
+        ("pub(crate) fn runtime_retention_metrics(", "shared"),
+        (
+            "pub(crate) fn body_reachability_metrics(",
+            "body_closure_nucleus",
+        ),
+        (
+            "pub(crate) fn input_stamp_retention_metrics(",
+            "parse_import_program_assembly",
+        ),
+    ] {
+        assert!(
+            source(owner).contains(definition),
+            "{owner} lost exact authority {definition}"
+        );
+        assert_eq!(
+            REVISIONED_DATABASE_PHASES
+                .iter()
+                .map(|(_, source)| source.matches(definition).count())
+                .sum::<usize>(),
+            1,
+            "{definition} must have exactly one revisioned-database owner ({owner})"
+        );
+    }
+
+    let durable_adapters = source("body_durable_comptime_adapters");
+    let durable_code = rust_code_only(durable_adapters);
+    let durable_identifiers = code_identifiers(&durable_code)
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    for forbidden in [
+        "RevisionedQueryDatabase",
+        "QueryRuntime",
+        "CompilerQueryRuntime",
+        "runtime",
+        "family",
+        "body_transaction",
+        "body_transactions",
+        "body_closure_root",
+        "body_reachability_root",
+        "lookup_root_lease",
+        "PublishedLookupRootHandoff",
+    ] {
+        assert!(
+            !durable_identifiers.contains(forbidden),
+            "durable comptime adapters gained database/runtime/body authority through {forbidden}"
+        );
+    }
+    for forbidden_prefix in ["BodyTransaction", "PublishedBody"] {
+        assert!(
+            durable_identifiers
+                .iter()
+                .all(|identifier| !identifier.starts_with(forbidden_prefix)),
+            "durable comptime adapters gained body publication/control authority through {forbidden_prefix}*",
+        );
+    }
+    assert!(
+        family_constructor_calls(durable_adapters).is_empty(),
+        "durable comptime adapters gained family-construction authority",
+    );
+
+    let program_assembly = source("parse_import_program_assembly");
+    let program_code = rust_code_only(program_assembly);
+    let program_identifiers = code_identifiers(&program_code)
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    for forbidden in [
+        "body_transaction",
+        "body_transactions",
+        "body_closure_root",
+        "body_reachability_root",
+        "lookup_root_lease",
+        "PublishedLookupRootHandoff",
+        "SemanticNucleusTypeProvider",
+        "ComptimeEngine",
+    ] {
+        assert!(
+            !program_identifiers.contains(forbidden),
+            "parse/import program assembly gained unrelated body authority through {forbidden}"
+        );
+    }
+    for forbidden_prefix in [
+        "BodyTransaction",
+        "BodyClosure",
+        "BodyReachability",
+        "PublishedBody",
+    ] {
+        assert!(
+            program_identifiers
+                .iter()
+                .all(|identifier| !identifier.starts_with(forbidden_prefix)),
+            "parse/import program assembly gained body publication/control authority through {forbidden_prefix}*",
+        );
+    }
+
+    // Every deliberately shared child entry is inventoried after translating
+    // its database-tree visibility to the scanner's ordinary `pub` spelling.
+    // File-local helpers are absent by construction, so widening one creates a
+    // reviewed count/fingerprint change even when its name already exists in a
+    // sibling owner.
+    let mut shared_declarations = REVISIONED_DATABASE_PHASES
+        .iter()
+        .filter(|(owner, _)| {
+            owner.starts_with("body_") || *owner == "parse_import_program_assembly"
+        })
+        .flat_map(|(owner, source)| {
+            let normalized = source.replace("pub(in crate::revisioned_query_database)", "pub");
+            public_declarations(&normalized)
+                .into_iter()
+                .map(|declaration| format!("{owner}|{}", canonical_signature(&declaration)))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    shared_declarations.sort();
+    let shared_fingerprint =
+        shared_declarations
+            .iter()
+            .fold(0xcbf29ce484222325_u64, |hash, declaration| {
+                declaration
+                    .bytes()
+                    .chain(std::iter::once(b'\n'))
+                    .fold(hash, |hash, byte| {
+                        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+                    })
+            });
+    assert_eq!(
+        (shared_declarations.len(), shared_fingerprint),
+        (54, 18_319_594_177_463_541_342),
+        "database-tree shared body/program API changed"
+    );
+}
+
 const ORIGINAL_REVISIONED_DATABASE_CRATE_SURFACE: &str = r#"
 struct:TestBodyTransactionFailureGuard
 struct:FrontierRendezvous
@@ -437,6 +5084,7 @@ struct:FrontierRendezvousGuard
 struct:TestConstraintGenerationCancellationGuard
 struct:CompatibilityKey
 struct:RevisionedQueryDatabase
+fn:new
 struct:TestCodegenEvaluatorGate
 fn:wait_until_entered
 fn:release
@@ -488,6 +5136,10 @@ fn:was_retained
 fn:accrue_reachability_work
 fn:accrue_candidate_body_plan_work
 use:crate
+use:closure_nucleus
+use:durable_comptime_adapters
+use:provider_body
+use:transactions
 fn:semantic_nucleus_failure_is_internal_error
 fn:collect_instance_anonymous_nominals
 fn:durable_type_from_instance_key
@@ -660,7 +5312,7 @@ const DURABLE_COMPTIME_SERVICES_SOURCE: &str = include_str!("durable_comptime/se
 const DURABLE_COMPTIME_STRUCTURED_SOURCE: &str = include_str!("durable_comptime/structured.rs");
 const DURABLE_COMPTIME_TARGET_SOURCE: &str = include_str!("durable_comptime/target.rs");
 const DURABLE_COMPTIME_ENGINE_ENTRY_SOURCE: &str =
-    include_str!("revisioned_query_database/body.rs");
+    include_str!("revisioned_query_database/body/durable_comptime_adapters.rs");
 const DURABLE_COMPTIME_SOURCE: &str = concat!(
     include_str!("durable_comptime.rs"),
     include_str!("durable_comptime/diagnostics.rs"),
@@ -1189,12 +5841,12 @@ fn semantic_signatures_preserve_parser_type_structure_without_a_text_grammar() {
     }
     let semantic_phase = REVISIONED_DATABASE_PHASES
         .iter()
-        .find_map(|(name, source)| (*name == "body").then_some(*source))
-        .expect("body phase source");
+        .find_map(|(name, source)| (*name == "body_provider_body").then_some(*source))
+        .expect("provider-body phase source");
     let resolver = source_between_exact_boundaries(
         semantic_phase,
         "fn resolve_parsed_semantic_signature(",
-        "\n/// The revision-scoped owner of the shared symbol equality space",
+        "\n#[derive(Clone)]\npub(in crate::revisioned_query_database) struct BodyInputResolver",
     );
     assert!(resolver.contains("resolve_structured_semantic_type_syntax"));
     for forbidden in [

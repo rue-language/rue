@@ -28,6 +28,19 @@ use crate::typed_query_store::{
     QUERY_TERMINAL_RETENTION_LIMIT, TerminalKind, TypedQueryFamily,
 };
 
+/// Capability for constructing the session's canonical revisioned query
+/// database. Its private field and constructor keep safe construction inside
+/// this module tree; source inventory pins the sole use to `frontend_queries`.
+pub(crate) struct RevisionedQueryDatabaseConstructionToken {
+    _private: (),
+}
+
+impl RevisionedQueryDatabaseConstructionToken {
+    fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
 // Source-level partitions of this one owner (RUE-1852), following the RUE-1673
 // playbook: `CompilerSession` and its orchestration stay here, and the support
 // machinery that merely accumulated around them moves out. The glob re-exports
@@ -695,7 +708,7 @@ impl CompilerSession {
     }
 
     pub fn new() -> Self {
-        Self::default()
+        <Self as ::core::default::Default>::default()
     }
 
     fn resume_canceled_query(

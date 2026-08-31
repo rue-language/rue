@@ -63,7 +63,7 @@ ALLOWANCES = {
     ),
     "crates/rue-compiler/src/diagnostic_attempt_store.rs": Allowance(2, "redundant diagnostic retention accounting"),
     "crates/rue-compiler/src/parsed_modules.rs": Allowance(1, "redundant source ownership check"),
-    "crates/rue-compiler/src/revisioned_query_database/body.rs": Allowance(
+    "crates/rue-compiler/src/revisioned_query_database/parse_import/program_assembly.rs": Allowance(
         1, "redundant source-stamp retention accounting check"
     ),
     "crates/rue-compiler/src/revisioned_query_database/registrations/body/body_reachability.rs": Allowance(
