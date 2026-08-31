@@ -690,13 +690,15 @@ stdout = """21
 """
 exit_code = 42
 
-# Block-local CSE (RUE-913): a repeated pure subexpression's shared operand is
-# value-numbered once and reused, so the three separate `const 100`
+# Dominator-scoped CSE (RUE-913, RUE-1874): a repeated pure subexpression's
+# shared operand is value-numbered once and reused, so the three separate `const 100`
 # materializations in `weighted` collapse to a single instruction at -O2. The
 # helper's params keep the surrounding multiplies opaque to constopt, so they
 # survive to CSE instead of folding away. `safe_div` is a repeated division that
 # does NOT trap for these inputs — CSE must leave its observable result
-# unchanged. -O0/-O1 (no CSE) must agree byte-for-byte with -O2/-O3.
+# unchanged. `branch_reuse` forces the same expression to be reused from a
+# dominating entry block in either arm of a dynamic branch. -O0/-O1 (no CSE)
+# must agree byte-for-byte with -O2/-O3.
 [[case]]
 name = "cse_shared_subexpressions_across_opt_levels"
 differential_opt = true
@@ -709,24 +711,39 @@ fn safe_div(a: i32, b: i32) -> i32 {
     (a / b) + (a / b)
 }
 
+fn branch_reuse(a: i32, b: i32, take_sum: bool) -> i32 {
+    let sum = a + b;
+    if take_sum {
+        sum + (a + b)
+    } else {
+        sum - (a + b)
+    }
+}
+
 fn main() -> i32 {
     let w: i32 = weighted(2, 3);
     let d: i32 = safe_div(30, 3);
+    let taken: i32 = branch_reuse(7, 5, true);
+    let untaken: i32 = branch_reuse(7, 5, false);
     @dbg(w);
     @dbg(d);
-    w + d
+    @dbg(taken);
+    @dbg(untaken);
+    w + d + taken + untaken
 }
 """ }]
 stdout = """600
 20
+24
+0
 """
-exit_code = 108
+exit_code = 132
 
-# Block-local CSE on a TRAPPING expression (RUE-913): constopt propagates the
+# CSE on a TRAPPING expression (RUE-913): constopt propagates the
 # constant `z = 0` into both divisors, so the two `100 / z` divisions become
 # identical `100 / 0` operations and -O2 CSE merges them into one. Eliminating
-# the SECOND occurrence is trap-exact — the first division executes earlier in
-# the same block, dominates, and still divides by zero — so every level aborts
+# the SECOND occurrence is trap-exact — the first division dominates and still
+# divides by zero — so every level aborts
 # with the same "division by zero" and exit status. This is the RUE-57
 # obligation the pass must honor: CSE may drop a redundant trap but never a
 # reachable one, and the differential net proves -O2 did not change behavior.

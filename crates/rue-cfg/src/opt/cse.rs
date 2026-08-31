@@ -1,19 +1,23 @@
-//! Block-local value numbering / common-subexpression elimination (RUE-913).
+//! Dominator-scoped value numbering / common-subexpression elimination
+//! (RUE-913, RUE-1874).
 //!
-//! Within a single basic block, two pure instructions that compute the same
-//! value from the same operands are redundant: the second can be replaced by
-//! the first. This pass runs only at `-O2`/`-O3` (ADR-0044 places CSE at the
-//! release-default level), after [`super::simplify`] — merged straight-line
-//! blocks expose more intra-block duplicates — and before [`super::dce`], which
-//! sweeps the placeholders this pass leaves behind.
+//! Two pure instructions that compute the same value from the same operands are
+//! redundant when the first dominates the second. This pass runs only at
+//! `-O2`/`-O3` (ADR-0044 places CSE at the release-default level), after
+//! [`super::simplify`] and before [`super::dce`], which sweeps the placeholders
+//! this pass leaves behind.
 //!
 //! ## Algorithm
 //!
-//! One forward walk of each block's instructions, with a value-number table
-//! (`key -> first value that computed it`) reset per block. The walk is strictly
-//! block-local: it never numbers a value against one from another block, so no
-//! dominance analysis is needed — the first occurrence always precedes the
-//! duplicate in the same block and therefore dominates it.
+//! Reachable blocks are walked in dominator-tree preorder. The value-number
+//! table (`key -> first value that computed it`) contains exactly the entries
+//! introduced by the current block and its dominator ancestors: entering a
+//! block adds its new keys, and exiting its subtree removes them. Thus siblings
+//! never see each other's values, while every table hit is a dominating
+//! definition. Instructions within a block are still scanned in program order.
+//! Unreachable blocks are absent from the dominator tree and are each scanned
+//! with an isolated table, preserving block-local cleanup without inventing a
+//! cross-block dominance relation for dead code.
 //!
 //! ### What is keyed
 //!
@@ -77,14 +81,15 @@
 //! DCE deliberately preserves possibly-trapping arithmetic (RUE-57), so simply
 //! orphaning a duplicate `Add`/`Div`/… would leave it in the emitted code.
 //! Replacing the SECOND occurrence is trap-exact: the first occurrence has
-//! identical operands and executes earlier in the same block, so it dominates
-//! the duplicate and traps if and only if the duplicate would have — the
+//! identical operands and dominates the duplicate, so it executes on every path
+//! to the duplicate and traps if and only if the duplicate would have — the
 //! duplicate's trap is fully redundant. The FIRST occurrence is never touched.
 //!
-//! After every block, if anything was substituted, all uses are re-pointed at
-//! the surviving first values in ONE [`Cfg::rewrite_value_uses_in_place`] sweep (the same
-//! batched work discipline as [`super::peephole`] and [`super::simplify`],
-//! RUE-794). DCE then removes the now-unused `Const(0)` placeholders.
+//! After the walk, if anything was substituted, all uses are re-pointed at the
+//! surviving first values in ONE [`Cfg::rewrite_value_uses_in_place`] sweep (the
+//! same batched work discipline as [`super::peephole`] and
+//! [`super::simplify`], RUE-794). DCE then removes the now-unused `Const(0)`
+//! placeholders.
 
 use crate::{BlockId, Cfg, CfgInstData, CfgValue, Type};
 use ahash::AHashMap;
@@ -97,12 +102,16 @@ pub struct Stats {
     pub insts_scanned: u64,
     /// Duplicate pure instructions replaced by their first occurrence.
     pub duplicates_replaced: u64,
+    /// Maximum number of simultaneously available value-number entries.
+    /// Bounded by the keyed instructions on one dominator-tree root-to-leaf
+    /// path (or one unreachable block), not by the whole CFG.
+    pub max_table_entries: u64,
 }
 
 /// Value-number key for a pure-by-value instruction. Constants carry their
 /// literal; other ops carry their resolved operand ids. The result [`Type`] is
 /// part of every variant so differently typed results never share a number.
-#[derive(PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum VnKey {
     Const(u64, Type),
     BoolConst(bool, Type),
@@ -238,43 +247,118 @@ fn never_written_params(cfg: &Cfg) -> Vec<bool> {
     never_written
 }
 
-/// Run block-local CSE. Call at `-O2`/`-O3` after simplification (more
-/// duplicates are exposed once blocks are merged) and before DCE (which sweeps
-/// the dead placeholders).
+/// Scan one block in program order. Returns the keys introduced by this block,
+/// which the dominator-tree walk removes when it exits the block's subtree.
+fn scan_block(
+    cfg: &mut Cfg,
+    block_id: BlockId,
+    never_written_param: &[bool],
+    subst: &mut [Option<CfgValue>],
+    table: &mut AHashMap<VnKey, CfgValue>,
+    stats: &mut Stats,
+) -> Vec<VnKey> {
+    let mut introduced = Vec::new();
+    for i in 0..cfg.get_block(block_id).insts.len() {
+        let value = cfg.get_block(block_id).insts[i];
+        stats.insts_scanned += 1;
+
+        let Some(key) = key_of(cfg, value, never_written_param, |v| resolve(subst, v)) else {
+            continue;
+        };
+
+        match table.get(&key) {
+            Some(&first) => {
+                // Every available entry was introduced earlier in this block or
+                // by a dominator ancestor, so its computation subsumes this one.
+                subst[value.as_u32() as usize] = Some(first);
+                cfg.get_inst_mut(value).data = CfgInstData::Const(0);
+                stats.duplicates_replaced += 1;
+            }
+            None => {
+                introduced.push(key.clone());
+                table.insert(key, value);
+                stats.max_table_entries = stats.max_table_entries.max(table.len() as u64);
+            }
+        }
+    }
+    introduced
+}
+
+/// Run dominator-scoped CSE. Call at `-O2`/`-O3` after simplification and
+/// before DCE (which sweeps the dead placeholders).
 pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     let mut stats = Stats::default();
-    // `subst[dup] = first` for every replaced duplicate. Persists across blocks
-    // (each entry points earlier within its own block, so global resolution
-    // stays correct), while the value-number table is per-block.
+    // `subst[dup] = first` for every replaced duplicate. Each entry points to a
+    // definition that dominates it, so global chain resolution stays valid.
     let mut subst: Vec<Option<CfgValue>> = vec![None; cfg.value_count()];
-
     let never_written_param = never_written_params(cfg);
 
+    let dominators = crate::dominators::DominatorTree::compute(cfg);
+    // Invert the public idom relation in ascending block-id order. This is the
+    // same canonical child order used to number DominatorTree's preorder.
+    let mut children = vec![Vec::new(); cfg.block_count()];
     for block_idx in 0..cfg.block_count() {
-        let block_id = BlockId::from_raw(block_idx as u32);
-        let mut table: AHashMap<VnKey, CfgValue> = AHashMap::new();
+        let block = BlockId::from_raw(block_idx as u32);
+        if let Some(parent) = dominators.idom(block) {
+            children[parent.as_u32() as usize].push(block);
+        }
+    }
 
-        for i in 0..cfg.get_block(block_id).insts.len() {
-            let value = cfg.get_block(block_id).insts[i];
-            stats.insts_scanned += 1;
+    enum Event {
+        Enter(BlockId),
+        Exit(Vec<VnKey>),
+    }
 
-            let Some(key) = key_of(cfg, value, &never_written_param, |v| resolve(&subst, v)) else {
-                continue;
-            };
-
-            match table.get(&key) {
-                Some(&first) => {
-                    // Redundant with an earlier, dominating computation. Record
-                    // the substitution and neutralize the duplicate; its trap
-                    // (if any) is subsumed by the first occurrence's.
-                    subst[value.as_u32() as usize] = Some(first);
-                    cfg.get_inst_mut(value).data = CfgInstData::Const(0);
-                    stats.duplicates_replaced += 1;
-                }
-                None => {
-                    table.insert(key, value);
+    let mut table: AHashMap<VnKey, CfgValue> = AHashMap::new();
+    let mut stack = Vec::with_capacity(cfg.block_count() * 2);
+    if dominators.is_reachable(cfg.entry) {
+        stack.push(Event::Enter(cfg.entry));
+    }
+    while let Some(event) = stack.pop() {
+        match event {
+            Event::Enter(block) => {
+                let introduced = scan_block(
+                    cfg,
+                    block,
+                    &never_written_param,
+                    &mut subst,
+                    &mut table,
+                    &mut stats,
+                );
+                stack.push(Event::Exit(introduced));
+                for &child in children[block.as_u32() as usize].iter().rev() {
+                    stack.push(Event::Enter(child));
                 }
             }
+            Event::Exit(introduced) => {
+                for key in introduced {
+                    table.remove(&key);
+                }
+            }
+        }
+    }
+    assert!(
+        table.is_empty(),
+        "dominator-scoped CSE must pop every reachable availability scope"
+    );
+
+    // Unreachable blocks have no dominator-tree parent. Scan each in its own
+    // scope so their former block-local simplifications remain available.
+    for block_idx in 0..cfg.block_count() {
+        let block = BlockId::from_raw(block_idx as u32);
+        if dominators.is_reachable(block) {
+            continue;
+        }
+        let introduced = scan_block(
+            cfg,
+            block,
+            &never_written_param,
+            &mut subst,
+            &mut table,
+            &mut stats,
+        );
+        for key in introduced {
+            table.remove(&key);
         }
     }
 
@@ -319,6 +403,23 @@ mod tests {
                 span: Span::new(0, 0),
             },
         )
+    }
+
+    fn goto(target: BlockId) -> Terminator {
+        Terminator::Goto {
+            target,
+            args: crate::payload::CfgGotoArgs::EMPTY,
+        }
+    }
+
+    fn branch(cond: CfgValue, then_block: BlockId, else_block: BlockId) -> Terminator {
+        Terminator::Branch {
+            cond,
+            then_block,
+            then_args: crate::payload::CfgThenArgs::EMPTY,
+            else_block,
+            else_args: crate::payload::CfgElseArgs::EMPTY,
+        }
     }
 
     #[test]
@@ -486,27 +587,244 @@ mod tests {
     }
 
     #[test]
-    fn test_cross_block_not_deduped() {
-        // The same expression in two blocks stays: numbering is block-local.
+    fn test_dominating_block_expression_is_reused() {
+        // The entry dominates block2, so its expression is available there.
         let mut cfg = make_cfg();
         let a = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
         let b = push(&mut cfg, CfgInstData::Param { index: 1 }, Type::I32);
         let add1 = push(&mut cfg, CfgInstData::Add(a, b), Type::I32);
         let block2 = cfg.new_block();
-        cfg.set_terminator(
-            cfg.entry,
-            Terminator::Goto {
-                target: block2,
-                args: crate::payload::CfgGotoArgs::EMPTY,
-            },
-        );
+        cfg.set_terminator(cfg.entry, goto(block2));
         let add2 = push_in(&mut cfg, block2, CfgInstData::Add(a, b), Type::I32);
         cfg.set_terminator(block2, Terminator::Return { value: Some(add2) });
 
         let stats = run(&mut cfg).unwrap();
-        assert_eq!(stats.duplicates_replaced, 0);
+        assert_eq!(stats.duplicates_replaced, 1);
         assert!(matches!(cfg.get_inst(add1).data, CfgInstData::Add(..)));
-        assert!(matches!(cfg.get_inst(add2).data, CfgInstData::Add(..)));
+        assert!(matches!(cfg.get_inst(add2).data, CfgInstData::Const(0)));
+        assert!(matches!(
+            cfg.get_block(block2).terminator,
+            Terminator::Return { value: Some(v) } if v == add1
+        ));
+    }
+
+    #[test]
+    fn test_dominating_trapping_division_is_reused() {
+        // Cross-block reuse remains trap-exact: the first division dominates
+        // the second, so every execution reaching the duplicate has already
+        // executed the identical potentially-trapping operation.
+        let mut cfg = make_cfg();
+        let a = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let b = push(&mut cfg, CfgInstData::Param { index: 1 }, Type::I32);
+        let div1 = push(&mut cfg, CfgInstData::Div(a, b), Type::I32);
+        let block2 = cfg.new_block();
+        cfg.set_terminator(cfg.entry, goto(block2));
+        let div2 = push_in(&mut cfg, block2, CfgInstData::Div(a, b), Type::I32);
+        cfg.set_terminator(block2, Terminator::Return { value: Some(div2) });
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.duplicates_replaced, 1);
+        assert!(matches!(cfg.get_inst(div1).data, CfgInstData::Div(..)));
+        assert!(matches!(cfg.get_inst(div2).data, CfgInstData::Const(0)));
+        assert!(matches!(
+            cfg.get_block(block2).terminator,
+            Terminator::Return { value: Some(v) } if v == div1
+        ));
+    }
+
+    #[test]
+    fn test_multi_level_dominator_expression_is_reused() {
+        // entry -> middle -> leaf: availability survives more than one level.
+        let mut cfg = make_cfg();
+        let a = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let one = push(&mut cfg, CfgInstData::Const(1), Type::I32);
+        let first = push(&mut cfg, CfgInstData::Add(a, one), Type::I32);
+        let middle = cfg.new_block();
+        let leaf = cfg.new_block();
+        cfg.set_terminator(cfg.entry, goto(middle));
+        cfg.set_terminator(middle, goto(leaf));
+        let duplicate = push_in(&mut cfg, leaf, CfgInstData::Add(a, one), Type::I32);
+        cfg.set_terminator(
+            leaf,
+            Terminator::Return {
+                value: Some(duplicate),
+            },
+        );
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.duplicates_replaced, 1);
+        assert!(matches!(
+            cfg.get_inst(duplicate).data,
+            CfgInstData::Const(0)
+        ));
+        assert!(matches!(
+            cfg.get_block(leaf).terminator,
+            Terminator::Return { value: Some(v) } if v == first
+        ));
+    }
+
+    #[test]
+    fn test_diamond_siblings_do_not_share_availability() {
+        let mut cfg = make_cfg();
+        let cond = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::BOOL);
+        let a = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let b = push(&mut cfg, CfgInstData::Param { index: 1 }, Type::I32);
+        let then_block = cfg.new_block();
+        let else_block = cfg.new_block();
+        cfg.set_terminator(cfg.entry, branch(cond, then_block, else_block));
+        let then_add = push_in(&mut cfg, then_block, CfgInstData::Add(a, b), Type::I32);
+        let else_add = push_in(&mut cfg, else_block, CfgInstData::Add(a, b), Type::I32);
+        cfg.set_terminator(
+            then_block,
+            Terminator::Return {
+                value: Some(then_add),
+            },
+        );
+        cfg.set_terminator(
+            else_block,
+            Terminator::Return {
+                value: Some(else_add),
+            },
+        );
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.duplicates_replaced, 0);
+        assert!(matches!(cfg.get_inst(then_add).data, CfgInstData::Add(..)));
+        assert!(matches!(cfg.get_inst(else_add).data, CfgInstData::Add(..)));
+    }
+
+    #[test]
+    fn test_join_does_not_reuse_expression_from_either_arm() {
+        let mut cfg = make_cfg();
+        let cond = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::BOOL);
+        let a = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let b = push(&mut cfg, CfgInstData::Param { index: 1 }, Type::I32);
+        let then_block = cfg.new_block();
+        let else_block = cfg.new_block();
+        let join = cfg.new_block();
+        cfg.set_terminator(cfg.entry, branch(cond, then_block, else_block));
+        let then_add = push_in(&mut cfg, then_block, CfgInstData::Add(a, b), Type::I32);
+        let else_add = push_in(&mut cfg, else_block, CfgInstData::Add(a, b), Type::I32);
+        cfg.set_terminator(then_block, goto(join));
+        cfg.set_terminator(else_block, goto(join));
+        let join_add = push_in(&mut cfg, join, CfgInstData::Add(a, b), Type::I32);
+        cfg.set_terminator(
+            join,
+            Terminator::Return {
+                value: Some(join_add),
+            },
+        );
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.duplicates_replaced, 0);
+        assert!(matches!(cfg.get_inst(then_add).data, CfgInstData::Add(..)));
+        assert!(matches!(cfg.get_inst(else_add).data, CfgInstData::Add(..)));
+        assert!(matches!(cfg.get_inst(join_add).data, CfgInstData::Add(..)));
+    }
+
+    #[test]
+    fn test_loop_backedge_does_not_repeat_walk_and_header_dominates_body() {
+        let mut cfg = make_cfg();
+        let header = cfg.new_block();
+        let body = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.set_terminator(cfg.entry, goto(header));
+        let a = push_in(&mut cfg, header, CfgInstData::Param { index: 0 }, Type::I32);
+        let b = push_in(&mut cfg, header, CfgInstData::Param { index: 1 }, Type::I32);
+        let first = push_in(&mut cfg, header, CfgInstData::Add(a, b), Type::I32);
+        let cond = push_in(&mut cfg, header, CfgInstData::Load { slot: 0 }, Type::BOOL);
+        cfg.set_terminator(header, branch(cond, body, exit));
+        let duplicate = push_in(&mut cfg, body, CfgInstData::Add(a, b), Type::I32);
+        cfg.set_terminator(body, goto(header));
+        cfg.set_terminator(exit, Terminator::Return { value: Some(first) });
+
+        let total_insts: usize = (0..cfg.block_count())
+            .map(|i| cfg.get_block(BlockId::from_raw(i as u32)).insts.len())
+            .sum();
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.insts_scanned, total_insts as u64);
+        assert_eq!(stats.duplicates_replaced, 1);
+        assert!(matches!(
+            cfg.get_inst(duplicate).data,
+            CfgInstData::Const(0)
+        ));
+    }
+
+    #[test]
+    fn test_unreachable_blocks_are_independent_block_local_scopes() {
+        let mut cfg = make_cfg();
+        let reachable = push(&mut cfg, CfgInstData::Const(7), Type::I32);
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Return {
+                value: Some(reachable),
+            },
+        );
+        let dead_a = cfg.new_block();
+        let dead_b = cfg.new_block();
+        let a1 = push_in(&mut cfg, dead_a, CfgInstData::Const(7), Type::I32);
+        let a2 = push_in(&mut cfg, dead_a, CfgInstData::Const(7), Type::I32);
+        let b1 = push_in(&mut cfg, dead_b, CfgInstData::Const(7), Type::I32);
+        cfg.set_terminator(dead_a, Terminator::Return { value: Some(a2) });
+        cfg.set_terminator(dead_b, Terminator::Return { value: Some(b1) });
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.duplicates_replaced, 1);
+        assert!(matches!(
+            cfg.get_inst(reachable).data,
+            CfgInstData::Const(7)
+        ));
+        assert!(matches!(cfg.get_inst(a1).data, CfgInstData::Const(7)));
+        assert!(matches!(cfg.get_inst(a2).data, CfgInstData::Const(0)));
+        assert!(matches!(cfg.get_inst(b1).data, CfgInstData::Const(7)));
+    }
+
+    #[test]
+    fn test_value_and_type_are_both_part_of_identity() {
+        let mut cfg = make_cfg();
+        let a = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let b = push(&mut cfg, CfgInstData::Param { index: 1 }, Type::I32);
+        let neg_a = push(&mut cfg, CfgInstData::Neg(a), Type::I32);
+        let neg_b = push(&mut cfg, CfgInstData::Neg(b), Type::I32);
+        let signed = push(&mut cfg, CfgInstData::Const(9), Type::I32);
+        let unsigned = push(&mut cfg, CfgInstData::Const(9), Type::U32);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(neg_b) });
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.duplicates_replaced, 0);
+        assert!(matches!(cfg.get_inst(neg_a).data, CfgInstData::Neg(v) if v == a));
+        assert!(matches!(cfg.get_inst(neg_b).data, CfgInstData::Neg(v) if v == b));
+        assert!(matches!(cfg.get_inst(signed).data, CfgInstData::Const(9)));
+        assert!(matches!(cfg.get_inst(unsigned).data, CfgInstData::Const(9)));
+    }
+
+    #[test]
+    fn test_table_growth_is_bounded_by_one_dominator_path() {
+        let mut cfg = make_cfg();
+        let cond = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::BOOL);
+        push(&mut cfg, CfgInstData::Const(0), Type::I32);
+        let left = cfg.new_block();
+        let right = cfg.new_block();
+        cfg.set_terminator(cfg.entry, branch(cond, left, right));
+        let left_value = push_in(&mut cfg, left, CfgInstData::Const(1), Type::I32);
+        let right_value = push_in(&mut cfg, right, CfgInstData::Const(2), Type::I32);
+        cfg.set_terminator(
+            left,
+            Terminator::Return {
+                value: Some(left_value),
+            },
+        );
+        cfg.set_terminator(
+            right,
+            Terminator::Return {
+                value: Some(right_value),
+            },
+        );
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.insts_scanned, 4);
+        assert_eq!(stats.duplicates_replaced, 0);
+        assert_eq!(stats.max_table_entries, 2);
     }
 
     #[test]
