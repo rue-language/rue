@@ -1127,7 +1127,7 @@ fn clear_type_intrinsic_observations() {
     TYPE_INTRINSIC_NAME.with(|name| *name.borrow_mut() = None);
 }
 
-impl ComptimeHost for FakeHost {
+impl ComptimeDomain for FakeHost {
     type Type = FakeType;
     type Value = FakeValue;
     type Name = FakeName;
@@ -1141,6 +1141,9 @@ impl ComptimeHost for FakeHost {
     type BoundCall = FakeBoundCall;
     type CompletionTicket = usize;
     type StructuredTypeSuspension = FakeStructuredSuspension;
+}
+
+impl ComptimeInterrupts for FakeHost {
     fn check_canceled(&self) -> ComptimeHostResult<(), Self::Failure> {
         let checkpoint = CHECKPOINTS.with(|count| {
             let next = count.get() + 1;
@@ -1152,6 +1155,9 @@ impl ComptimeHost for FakeHost {
         }
         Ok(())
     }
+}
+
+impl ComptimeProgramFacts for FakeHost {
     fn program_rir(&self, program: &Self::ProgramKey) -> &Rir {
         &self.programs[*program]
     }
@@ -1202,132 +1208,9 @@ impl ComptimeHost for FakeHost {
             index: span.file_id.index(),
         }
     }
-    fn resolve_comptime_named_value(
-        &mut self,
-        file: Self::File,
-        name: Self::Name,
-        span: Span,
-    ) -> ComptimeHostResult<ComptimeNamedValueResolution<Self::Value>, Self::Failure> {
-        NAMED_VALUE_CALLS.with(|count| count.set(count.get() + 1));
-        if EVALUATED_METHOD_RECEIVER_MODE.with(|mode| mode.get() != 0) {
-            EVALUATED_METHOD_EVENTS.with(|events| events.borrow_mut().push("receiver_eval"));
-        }
-        let info = self
-            .constant
-            .as_ref()
-            .filter(|(constant_file, constant_name, _)| {
-                *constant_file == file && *constant_name == name
-            })
-            .map(|(_, _, info)| info.clone());
-        if let Some(info) = info {
-            let defining_file = FakeFile {
-                index: info.span.file_id.index(),
-            };
-            self.dependencies
-                .push((defining_file.clone(), name.clone()));
-            if REJECT_VISIBILITY.with(Cell::get) {
-                return Err(FAKE_FAILURE.into());
-            }
-            return Ok(match info.value {
-                Some(value) => ComptimeNamedValueResolution::Known(value),
-                None => ComptimeNamedValueResolution::RuntimeDependent,
-            });
-        }
-        let resolved = self.resolve_named_type_value(&0, name, span)?;
-        Ok(match resolved {
-            Some(ty) => ComptimeNamedValueResolution::Known(FakeValue::Type(ty)),
-            None => ComptimeNamedValueResolution::Missing,
-        })
-    }
-    fn match_pattern(
-        &self,
-        pattern: &ComptimeMatchPattern<Self::Name>,
-        _value: &Self::Value,
-    ) -> Option<bool> {
-        if !MATCH_PATTERN_MATCHES.with(Cell::get) {
-            return None;
-        }
-        MATCH_PATTERN_EVENTS.with(|events| events.borrow_mut().push(pattern.clone()));
-        Some(!MATCH_PATTERN_FORCE_FALSE.with(Cell::get))
-    }
-    fn match_no_selected_arm(
-        &self,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        MATCH_NO_SELECTED_SITES.with(|sites| {
-            sites
-                .borrow_mut()
-                .push((*site.program(), site.span().start, site.span().end));
-        });
-        if MATCH_NO_SELECTED_FAILURE.with(Cell::get) {
-            ComptimeOutcome::HostFailure(FAKE_FAILURE)
-        } else {
-            ComptimeOutcome::RuntimeDependent
-        }
-    }
-    fn reject_comptime_expression(
-        &self,
-        rejection: ComptimeSemanticRejection<Self::Value>,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        REJECTION_EVENTS.with(|events| events.borrow_mut().push(rejection));
-        REJECTION_SITES.with(|sites| {
-            sites
-                .borrow_mut()
-                .push((*site.program(), site.span().start, site.span().end));
-        });
-        ComptimeOutcome::RuntimeDependent
-    }
-    fn evaluate_binary_rhs_after_rejection(&self) -> bool {
-        EVALUATE_RHS_AFTER_REJECTION.with(Cell::get)
-    }
-    fn require_preview(
-        &self,
-        _feature: rue_error::PreviewFeature,
-        _what: &str,
-        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeHostResult<(), Self::Failure> {
-        Ok(())
-    }
-    fn depth_exceeded(
-        &self,
-        _name: &Self::Name,
-        _depth: usize,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        DIAGNOSTIC_SITES.with(|sites| {
-            sites
-                .borrow_mut()
-                .push((*site.program(), site.span().start, site.span().end))
-        });
-        if DEPTH_FAILURE_VARIANT.with(Cell::get) {
-            FakeFailure::DepthExceeded
-        } else {
-            FAKE_FAILURE
-        }
-    }
-    fn literal_out_of_range(
-        &self,
-        _value: u64,
-        _ty: &Self::Type,
-        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        FAKE_FAILURE
-    }
-    fn float_not_implemented(
-        &self,
-        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        self.float_evaluations.set(self.float_evaluations.get() + 1);
-        FAKE_FAILURE
-    }
-    fn cannot_negate(
-        &self,
-        _ty: &Self::Type,
-        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        FAKE_FAILURE
-    }
+}
+
+impl ComptimeTypeAlgebra for FakeHost {
     fn unsupported_anon_method_type_param(
         &self,
         _method_name: &str,
@@ -1452,50 +1335,6 @@ impl ComptimeHost for FakeHost {
     ) -> ComptimeHostResult<(), Self::Failure> {
         Ok(())
     }
-    fn const_expr_type(
-        &self,
-        _program: &Self::ProgramKey,
-        _env: &ComptimeEnv<'_, Self::Value, Self::Type, Self::Name, Self::File, FakeIdentity>,
-        inst_ref: InstRef,
-    ) -> Option<Self::Type> {
-        (inst_ref.as_u32() == 2).then_some(FakeType(8))
-    }
-    fn integer_operation_type(
-        &self,
-        resolved_type: Option<&Self::Type>,
-        lhs: &Self::Value,
-        rhs: &Self::Value,
-        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
-        INTEGER_HINTS.with(|hints| hints.borrow_mut().push(resolved_type.copied()));
-        if let (Some(lhs), Some(rhs)) = (lhs.as_integer_type(), rhs.as_integer_type()) {
-            if lhs != rhs {
-                return Err(FAKE_FAILURE.into());
-            }
-        }
-        Ok(resolved_type
-            .cloned()
-            .or_else(|| lhs.as_integer_type())
-            .or_else(|| rhs.as_integer_type()))
-    }
-    fn finish_arith(
-        &self,
-        result: CheckedIntegerResult,
-        _ty: Option<Self::Type>,
-        op: &str,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
-        FINISH_ARITH_OPERATIONS.with(|operations| operations.borrow_mut().push(op.to_owned()));
-        DIAGNOSTIC_SITES.with(|sites| {
-            sites
-                .borrow_mut()
-                .push((*site.program(), site.span().start, site.span().end))
-        });
-        if matches!(self.finish_outcome, FakeFinishOutcome::AbortFromArithmetic) {
-            return Err(ComptimeHostError::Abort(FAKE_FAILURE));
-        }
-        Ok(result.checked().map(FakeValue::integer))
-    }
     fn type_name(&self, ty: &Self::Type) -> String {
         format!("fake-type-{}", ty.0)
     }
@@ -1529,6 +1368,32 @@ impl ComptimeHost for FakeHost {
             | ComptimeTypeIntrinsic::RequireTriviallyDroppable => FakeValue::Unit,
         }))
     }
+    fn const_expr_type(
+        &self,
+        _program: &Self::ProgramKey,
+        _env: &ComptimeEnv<'_, Self::Value, Self::Type, Self::Name, Self::File, FakeIdentity>,
+        inst_ref: InstRef,
+    ) -> Option<Self::Type> {
+        (inst_ref.as_u32() == 2).then_some(FakeType(8))
+    }
+    fn integer_operation_type(
+        &self,
+        resolved_type: Option<&Self::Type>,
+        lhs: &Self::Value,
+        rhs: &Self::Value,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        INTEGER_HINTS.with(|hints| hints.borrow_mut().push(resolved_type.copied()));
+        if let (Some(lhs), Some(rhs)) = (lhs.as_integer_type(), rhs.as_integer_type()) {
+            if lhs != rhs {
+                return Err(FAKE_FAILURE.into());
+            }
+        }
+        Ok(resolved_type
+            .cloned()
+            .or_else(|| lhs.as_integer_type())
+            .or_else(|| rhs.as_integer_type()))
+    }
     fn resolve_named_type_value(
         &mut self,
         program: &Self::ProgramKey,
@@ -1546,6 +1411,223 @@ impl ComptimeHost for FakeHost {
     ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
         Ok(None)
     }
+    fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+        &mut self,
+        _program: &Self::ProgramKey,
+        _syntax: rue_rir::RirTypeSyntaxRef,
+        _types: &AHashMap<Self::Name, Self::Type>,
+        _values: &AHashMap<Self::Name, Self::Value>,
+        _span: Span,
+    ) -> Option<Self::Type> {
+        TYPE_RESOLUTION_CALLS.with(|calls| calls.set(calls.get() + 1));
+        TYPE_INTRINSIC_NAME
+            .with(|configured| configured.borrow().is_some())
+            .then_some(FakeType(7))
+    }
+}
+
+impl ComptimeValueAlgebra for FakeHost {
+    fn resolve_comptime_named_value(
+        &mut self,
+        file: Self::File,
+        name: Self::Name,
+        span: Span,
+    ) -> ComptimeHostResult<ComptimeNamedValueResolution<Self::Value>, Self::Failure> {
+        NAMED_VALUE_CALLS.with(|count| count.set(count.get() + 1));
+        if EVALUATED_METHOD_RECEIVER_MODE.with(|mode| mode.get() != 0) {
+            EVALUATED_METHOD_EVENTS.with(|events| events.borrow_mut().push("receiver_eval"));
+        }
+        let info = self
+            .constant
+            .as_ref()
+            .filter(|(constant_file, constant_name, _)| {
+                *constant_file == file && *constant_name == name
+            })
+            .map(|(_, _, info)| info.clone());
+        if let Some(info) = info {
+            let defining_file = FakeFile {
+                index: info.span.file_id.index(),
+            };
+            self.dependencies
+                .push((defining_file.clone(), name.clone()));
+            if REJECT_VISIBILITY.with(Cell::get) {
+                return Err(FAKE_FAILURE.into());
+            }
+            return Ok(match info.value {
+                Some(value) => ComptimeNamedValueResolution::Known(value),
+                None => ComptimeNamedValueResolution::RuntimeDependent,
+            });
+        }
+        let resolved = self.resolve_named_type_value(&0, name, span)?;
+        Ok(match resolved {
+            Some(ty) => ComptimeNamedValueResolution::Known(FakeValue::Type(ty)),
+            None => ComptimeNamedValueResolution::Missing,
+        })
+    }
+    fn match_pattern(
+        &self,
+        pattern: &ComptimeMatchPattern<Self::Name>,
+        _value: &Self::Value,
+    ) -> Option<bool> {
+        if !MATCH_PATTERN_MATCHES.with(Cell::get) {
+            return None;
+        }
+        MATCH_PATTERN_EVENTS.with(|events| events.borrow_mut().push(pattern.clone()));
+        Some(!MATCH_PATTERN_FORCE_FALSE.with(Cell::get))
+    }
+    fn match_no_selected_arm(
+        &self,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        MATCH_NO_SELECTED_SITES.with(|sites| {
+            sites
+                .borrow_mut()
+                .push((*site.program(), site.span().start, site.span().end));
+        });
+        if MATCH_NO_SELECTED_FAILURE.with(Cell::get) {
+            ComptimeOutcome::HostFailure(FAKE_FAILURE)
+        } else {
+            ComptimeOutcome::RuntimeDependent
+        }
+    }
+    fn evaluate_binary_rhs_after_rejection(&self) -> bool {
+        EVALUATE_RHS_AFTER_REJECTION.with(Cell::get)
+    }
+
+    fn compare_comptime_values(
+        &mut self,
+        lhs: &Self::Value,
+        rhs: &Self::Value,
+        equal: bool,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        let (Some(lhs), Some(rhs)) = (lhs.as_type(), rhs.as_type()) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        ComptimeOutcome::Known(FakeValue::boolean(if equal {
+            lhs == rhs
+        } else {
+            lhs != rhs
+        }))
+    }
+    fn finish_arith(
+        &self,
+        result: CheckedIntegerResult,
+        _ty: Option<Self::Type>,
+        op: &str,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
+        FINISH_ARITH_OPERATIONS.with(|operations| operations.borrow_mut().push(op.to_owned()));
+        DIAGNOSTIC_SITES.with(|sites| {
+            sites
+                .borrow_mut()
+                .push((*site.program(), site.span().start, site.span().end))
+        });
+        if matches!(self.finish_outcome, FakeFinishOutcome::AbortFromArithmetic) {
+            return Err(ComptimeHostError::Abort(FAKE_FAILURE));
+        }
+        Ok(result.checked().map(FakeValue::integer))
+    }
+    fn resolve_string_const(
+        &mut self,
+        content: Self::Name,
+        _span: Span,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        self.dependencies
+            .push((FakeFile { index: u32::MAX }, content));
+        ComptimeOutcome::Known(FakeValue::Integer(17))
+    }
+
+    fn resolve_comptime_expression_intrinsic(
+        &mut self,
+        request: ComptimeExpressionIntrinsicRequest<Self::Name>,
+        site: &ComptimeSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        if let ComptimeExpressionIntrinsicRequest::Import {
+            sole_string_literal: Some(_),
+            ..
+        } = &request
+        {
+            self.dependencies.push((
+                FakeFile {
+                    index: 0xFFFF_FFFE - (*site.program() as u32),
+                },
+                FakeName {
+                    ordinal: site.occurrence(),
+                },
+            ));
+        }
+        EXPRESSION_INTRINSIC_REQUESTS.with(|requests| requests.borrow_mut().push(request));
+        match EXPRESSION_INTRINSIC_OUTCOME.with(Cell::get) {
+            FakeExpressionIntrinsicOutcome::Known => ComptimeOutcome::Known(FakeValue::Integer(99)),
+            FakeExpressionIntrinsicOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
+            FakeExpressionIntrinsicOutcome::NotReady => ComptimeOutcome::NotReady,
+            FakeExpressionIntrinsicOutcome::UnsupportedContext => {
+                ComptimeOutcome::UnsupportedContext
+            }
+            FakeExpressionIntrinsicOutcome::Trap => ComptimeOutcome::Trap(ComptimeTrap {
+                operation: "fake intrinsic trap",
+                span: site.span(),
+            }),
+            FakeExpressionIntrinsicOutcome::HostFailure => {
+                ComptimeOutcome::HostFailure(FAKE_FAILURE)
+            }
+            FakeExpressionIntrinsicOutcome::Abort => ComptimeOutcome::Abort(FAKE_FAILURE),
+        }
+    }
+
+    fn resolve_comptime_enum_variant(
+        &mut self,
+        module: Option<Self::Value>,
+        type_name: Self::Name,
+        variant: Self::Name,
+        _site: &ComptimeSite<Self::ProgramKey>,
+        _span: Span,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        self.dependencies.push((
+            FakeFile {
+                index: module.map_or(0xFFFF_FFFD, |_| 0xFFFF_FFFC),
+            },
+            FakeName {
+                ordinal: type_name.ordinal ^ variant.ordinal,
+            },
+        ));
+        ComptimeOutcome::Known(FakeValue::Integer(23))
+    }
+
+    fn admit_comptime_enum_variant(
+        &mut self,
+        _type_name: Self::Name,
+        _variant: Self::Name,
+        has_module: bool,
+        _site: &ComptimeSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<bool, Self::Failure> {
+        if has_module && REJECT_QUALIFIED_ENUM.with(Cell::get) {
+            return Err(ComptimeHostError::HostFailure(FAKE_FAILURE));
+        }
+        Ok(self.admits_durable_forms())
+    }
+
+    fn admit_comptime_member(
+        &mut self,
+        _field: Self::Name,
+        _site: &ComptimeSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<bool, Self::Failure> {
+        Ok(self.admits_durable_forms())
+    }
+
+    fn resolve_comptime_member(
+        &mut self,
+        _base: Self::Value,
+        _field: Self::Name,
+        _site: &ComptimeSite<Self::ProgramKey>,
+        _span: Span,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        ComptimeOutcome::Known(FakeValue::Integer(31))
+    }
+}
+
+impl ComptimeCallProtocol for FakeHost {
     fn resolve_module_comptime_callable(
         &mut self,
         _file_id: Self::File,
@@ -1829,10 +1911,6 @@ impl ComptimeHost for FakeHost {
         });
         Ok(())
     }
-    fn label_ctor_instantiation_site(error: Self::Failure, _call_span: Span) -> Self::Failure {
-        LABEL_CALLS.with(|calls| calls.set(calls.get() + 1));
-        error
-    }
     fn canonical_function_producer(
         &self,
         program: &Self::ProgramKey,
@@ -1864,158 +1942,9 @@ impl ComptimeHost for FakeHost {
     ) -> Self::AnonymousIdentity {
         producer.clone()
     }
-    fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-        &mut self,
-        _program: &Self::ProgramKey,
-        _syntax: rue_rir::RirTypeSyntaxRef,
-        _types: &AHashMap<Self::Name, Self::Type>,
-        _values: &AHashMap<Self::Name, Self::Value>,
-        _span: Span,
-    ) -> Option<Self::Type> {
-        TYPE_RESOLUTION_CALLS.with(|calls| calls.set(calls.get() + 1));
-        TYPE_INTRINSIC_NAME
-            .with(|configured| configured.borrow().is_some())
-            .then_some(FakeType(7))
-    }
-    fn resolve_string_const(
-        &mut self,
-        content: Self::Name,
-        _span: Span,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        self.dependencies
-            .push((FakeFile { index: u32::MAX }, content));
-        ComptimeOutcome::Known(FakeValue::Integer(17))
-    }
+}
 
-    fn resolve_comptime_expression_intrinsic(
-        &mut self,
-        request: ComptimeExpressionIntrinsicRequest<Self::Name>,
-        site: &ComptimeSite<Self::ProgramKey>,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        if let ComptimeExpressionIntrinsicRequest::Import {
-            sole_string_literal: Some(_),
-            ..
-        } = &request
-        {
-            self.dependencies.push((
-                FakeFile {
-                    index: 0xFFFF_FFFE - (*site.program() as u32),
-                },
-                FakeName {
-                    ordinal: site.occurrence(),
-                },
-            ));
-        }
-        EXPRESSION_INTRINSIC_REQUESTS.with(|requests| requests.borrow_mut().push(request));
-        match EXPRESSION_INTRINSIC_OUTCOME.with(Cell::get) {
-            FakeExpressionIntrinsicOutcome::Known => ComptimeOutcome::Known(FakeValue::Integer(99)),
-            FakeExpressionIntrinsicOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
-            FakeExpressionIntrinsicOutcome::NotReady => ComptimeOutcome::NotReady,
-            FakeExpressionIntrinsicOutcome::UnsupportedContext => {
-                ComptimeOutcome::UnsupportedContext
-            }
-            FakeExpressionIntrinsicOutcome::Trap => ComptimeOutcome::Trap(ComptimeTrap {
-                operation: "fake intrinsic trap",
-                span: site.span(),
-            }),
-            FakeExpressionIntrinsicOutcome::HostFailure => {
-                ComptimeOutcome::HostFailure(FAKE_FAILURE)
-            }
-            FakeExpressionIntrinsicOutcome::Abort => ComptimeOutcome::Abort(FAKE_FAILURE),
-        }
-    }
-
-    fn resolve_comptime_enum_variant(
-        &mut self,
-        module: Option<Self::Value>,
-        type_name: Self::Name,
-        variant: Self::Name,
-        _site: &ComptimeSite<Self::ProgramKey>,
-        _span: Span,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        self.dependencies.push((
-            FakeFile {
-                index: module.map_or(0xFFFF_FFFD, |_| 0xFFFF_FFFC),
-            },
-            FakeName {
-                ordinal: type_name.ordinal ^ variant.ordinal,
-            },
-        ));
-        ComptimeOutcome::Known(FakeValue::Integer(23))
-    }
-
-    fn finish_checked(
-        &mut self,
-        value: Self::Value,
-        _span: Span,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        self.dependencies
-            .push((FakeFile { index: 0xFFFF_FFFB }, FakeName { ordinal: 0 }));
-        ComptimeOutcome::Known(value)
-    }
-
-    fn admit_comptime_enum_variant(
-        &mut self,
-        _type_name: Self::Name,
-        _variant: Self::Name,
-        has_module: bool,
-        _site: &ComptimeSite<Self::ProgramKey>,
-    ) -> ComptimeHostResult<bool, Self::Failure> {
-        if has_module && REJECT_QUALIFIED_ENUM.with(Cell::get) {
-            return Err(ComptimeHostError::HostFailure(FAKE_FAILURE));
-        }
-        Ok(self.admits_durable_forms())
-    }
-
-    fn admit_comptime_member(
-        &mut self,
-        _field: Self::Name,
-        _site: &ComptimeSite<Self::ProgramKey>,
-    ) -> ComptimeHostResult<bool, Self::Failure> {
-        Ok(self.admits_durable_forms())
-    }
-
-    fn resolve_comptime_member(
-        &mut self,
-        _base: Self::Value,
-        _field: Self::Name,
-        _site: &ComptimeSite<Self::ProgramKey>,
-        _span: Span,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        ComptimeOutcome::Known(FakeValue::Integer(31))
-    }
-
-    fn reject_non_type_array_repeat(
-        &mut self,
-        _value: Self::Value,
-        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        self.dependencies
-            .push((FakeFile { index: 0xFFFF_FFFA }, FakeName { ordinal: 0 }));
-        ComptimeOutcome::RuntimeDependent
-    }
-
-    fn allow_checked_comptime(&self) -> bool {
-        self.admits_durable_forms()
-    }
-
-    fn compare_comptime_values(
-        &mut self,
-        lhs: &Self::Value,
-        rhs: &Self::Value,
-        equal: bool,
-        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        let (Some(lhs), Some(rhs)) = (lhs.as_type(), rhs.as_type()) else {
-            return ComptimeOutcome::RuntimeDependent;
-        };
-        ComptimeOutcome::Known(FakeValue::boolean(if equal {
-            lhs == rhs
-        } else {
-            lhs != rhs
-        }))
-    }
-
+impl ComptimeStructuredTypes for FakeHost {
     fn begin_comptime_type_syntax(
         &mut self,
         _program: &Self::ProgramKey,
@@ -2131,6 +2060,99 @@ impl ComptimeHost for FakeHost {
         }
     }
 }
+
+impl ComptimeRejections for FakeHost {
+    fn reject_comptime_expression(
+        &self,
+        rejection: ComptimeSemanticRejection<Self::Value>,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        REJECTION_EVENTS.with(|events| events.borrow_mut().push(rejection));
+        REJECTION_SITES.with(|sites| {
+            sites
+                .borrow_mut()
+                .push((*site.program(), site.span().start, site.span().end));
+        });
+        ComptimeOutcome::RuntimeDependent
+    }
+    fn require_preview(
+        &self,
+        _feature: rue_error::PreviewFeature,
+        _what: &str,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        Ok(())
+    }
+    fn depth_exceeded(
+        &self,
+        _name: &Self::Name,
+        _depth: usize,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        DIAGNOSTIC_SITES.with(|sites| {
+            sites
+                .borrow_mut()
+                .push((*site.program(), site.span().start, site.span().end))
+        });
+        if DEPTH_FAILURE_VARIANT.with(Cell::get) {
+            FakeFailure::DepthExceeded
+        } else {
+            FAKE_FAILURE
+        }
+    }
+    fn literal_out_of_range(
+        &self,
+        _value: u64,
+        _ty: &Self::Type,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        FAKE_FAILURE
+    }
+    fn float_not_implemented(
+        &self,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        self.float_evaluations.set(self.float_evaluations.get() + 1);
+        FAKE_FAILURE
+    }
+    fn cannot_negate(
+        &self,
+        _ty: &Self::Type,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        FAKE_FAILURE
+    }
+    fn label_ctor_instantiation_site(error: Self::Failure, _call_span: Span) -> Self::Failure {
+        LABEL_CALLS.with(|calls| calls.set(calls.get() + 1));
+        error
+    }
+
+    fn finish_checked(
+        &mut self,
+        value: Self::Value,
+        _span: Span,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        self.dependencies
+            .push((FakeFile { index: 0xFFFF_FFFB }, FakeName { ordinal: 0 }));
+        ComptimeOutcome::Known(value)
+    }
+
+    fn reject_non_type_array_repeat(
+        &mut self,
+        _value: Self::Value,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        self.dependencies
+            .push((FakeFile { index: 0xFFFF_FFFA }, FakeName { ordinal: 0 }));
+        ComptimeOutcome::RuntimeDependent
+    }
+
+    fn allow_checked_comptime(&self) -> bool {
+        self.admits_durable_forms()
+    }
+}
+
+impl ComptimeHost for FakeHost {}
 
 #[test]
 fn structured_type_engine_uses_one_existing_call_stack() {

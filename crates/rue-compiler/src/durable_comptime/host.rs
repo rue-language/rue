@@ -147,7 +147,7 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
     }
 }
 
-impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeDomain
     for DurableComptimeHost<'_, A>
 {
     type Type = DurableComptimeType;
@@ -163,13 +163,21 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
     type BoundCall = DurableComptimeBoundCall;
     type CompletionTicket = Box<DurableComptimeCallTicket>;
     type StructuredTypeSuspension = DurableStructuredTypeJob;
+}
 
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeInterrupts
+    for DurableComptimeHost<'_, A>
+{
     fn check_canceled(&self) -> rue_air::ComptimeHostResult<(), Self::Failure> {
         self.services.check_canceled().map_err(|abort| {
             rue_air::ComptimeHostError::Abort(DurableComptimeHostFailure::query_abort(abort))
         })
     }
+}
 
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeProgramFacts
+    for DurableComptimeHost<'_, A>
+{
     fn program_rir(&self, program: &Self::ProgramKey) -> &rue_rir::Rir {
         self.program_rir(program)
     }
@@ -193,151 +201,11 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
     ) -> Self::File {
         self.file_for_program_span(program, span)
     }
+}
 
-    fn resolve_comptime_named_value(
-        &mut self,
-        file: Self::File,
-        name: Self::Name,
-        _span: rue_span::Span,
-    ) -> rue_air::ComptimeHostResult<
-        rue_air::ComptimeNamedValueResolution<Self::Value>,
-        Self::Failure,
-    > {
-        let program = file.program().clone();
-        let projection = self
-            .services
-            .resolve_named_value(
-                &program.declaration,
-                program.declaration.module(),
-                name.as_str(),
-            )
-            .map_err(durable_provider_error)?;
-        let Some(projection) = projection else {
-            return Err(rue_air::ComptimeHostError::HostFailure(
-                DurableComptimeHostFailure::semantic(Box::new(SemanticNucleusFailure::Resolution(
-                    Arc::from(format!("undefined constant `{}`", name.as_str())),
-                ))),
-            ));
-        };
-        let (value, dependency, anonymous_nominals) = projection.into_parts();
-        self.services
-            .durable_session_mut()
-            .observe_dependency(dependency);
-        for nominal in anonymous_nominals.iter().cloned() {
-            self.services
-                .durable_session_mut()
-                .observe_anonymous_nominal(nominal);
-        }
-        Ok(rue_air::ComptimeNamedValueResolution::Known(value))
-    }
-
-    fn match_pattern(
-        &self,
-        pattern: &rue_air::ComptimeMatchPattern<Self::Name>,
-        value: &Self::Value,
-    ) -> Option<bool> {
-        Some(durable_match_pattern_matches(pattern, value))
-    }
-
-    fn match_no_selected_arm(
-        &self,
-        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
-        match durable_host_error(DurableComptimeFailure::comptime_match_no_selected_arm()) {
-            rue_air::ComptimeHostError::HostFailure(error) => {
-                rue_air::ComptimeOutcome::HostFailure(error)
-            }
-            rue_air::ComptimeHostError::Abort(error) => rue_air::ComptimeOutcome::Abort(error),
-        }
-    }
-
-    fn reject_comptime_expression(
-        &self,
-        rejection: rue_air::ComptimeSemanticRejection<Self::Value>,
-        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
-        match durable_host_error(DurableComptimeFailure::comptime_rejection(rejection)) {
-            rue_air::ComptimeHostError::HostFailure(error) => {
-                rue_air::ComptimeOutcome::HostFailure(error)
-            }
-            rue_air::ComptimeHostError::Abort(error) => rue_air::ComptimeOutcome::Abort(error),
-        }
-    }
-
-    fn evaluate_binary_rhs_after_rejection(&self) -> bool {
-        true
-    }
-
-    fn require_preview(
-        &self,
-        feature: rue_error::PreviewFeature,
-        what: &str,
-        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> rue_air::ComptimeHostResult<(), Self::Failure> {
-        if site
-            .program()
-            .configuration
-            .preview_features
-            .contains(feature)
-        {
-            return Ok(());
-        }
-        Err(rue_air::ComptimeHostError::HostFailure(
-            durable_diagnostic_failure(
-                &self.diagnostic_site(site),
-                rue_error::ErrorKind::PreviewFeatureRequired {
-                    feature,
-                    what: what.to_owned(),
-                },
-            ),
-        ))
-    }
-
-    fn depth_exceeded(
-        &self,
-        name: &Self::Name,
-        depth: usize,
-        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        durable_host_failure(DurableComptimeFailure::maximum_depth(name.as_str(), depth))
-    }
-
-    fn literal_out_of_range(
-        &self,
-        value: u64,
-        ty: &Self::Type,
-        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        durable_diagnostic_failure(
-            &self.diagnostic_site(site),
-            rue_error::ErrorKind::LiteralOutOfRange {
-                value,
-                ty: DurableComptimeScalarPolicy::type_name(ty.as_ref()),
-            },
-        )
-    }
-
-    fn float_not_implemented(
-        &self,
-        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        durable_diagnostic_failure(
-            &self.diagnostic_site(site),
-            rue_error::ErrorKind::FloatNotYetImplemented,
-        )
-    }
-
-    fn cannot_negate(
-        &self,
-        ty: &Self::Type,
-        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        durable_diagnostic_failure(
-            &self.diagnostic_site(site),
-            rue_error::ErrorKind::CannotNegate(DurableComptimeScalarPolicy::type_name(ty.as_ref())),
-        )
-    }
-
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
+    for DurableComptimeHost<'_, A>
+{
     fn unsupported_anon_method_type_param(
         &self,
         method_name: &str,
@@ -692,16 +560,6 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
         DurableComptimeScalarPolicy::type_is_unsigned(ty.as_ref())
     }
 
-    fn reject_unsigned_negation(
-        &self,
-        _ty: &Self::Type,
-        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Option<Self::Failure> {
-        // Declaration-time evaluation reports the checked integer overflow
-        // from `finish_arith`, rather than AIR's ordinary CannotNegate policy.
-        None
-    }
-
     fn type_integer_semantics(
         &self,
         ty: &Self::Type,
@@ -748,23 +606,6 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
         None
     }
 
-    fn finish_arith(
-        &self,
-        result: rue_air::integer_semantics::CheckedIntegerResult,
-        ty: Option<Self::Type>,
-        op: &str,
-        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> rue_air::ComptimeHostResult<Option<Self::Value>, Self::Failure> {
-        let ty = ty.unwrap_or(DurableComptimeType(DurableType::I32));
-        let value = DurableComptimeScalarPolicy::checked_integer_result(
-            ty.as_ref(),
-            result,
-            durable_arithmetic_operation_name(op),
-        )
-        .map_err(durable_host_error)?;
-        Ok(Some(EvaluatedSemanticConst::integer_typed(value, Some(ty))))
-    }
-
     fn integer_operation_type(
         &self,
         resolved_type: Option<&Self::Type>,
@@ -806,33 +647,6 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
         .map_err(durable_host_error)
     }
 
-    fn compare_comptime_values(
-        &mut self,
-        lhs: &Self::Value,
-        rhs: &Self::Value,
-        equal: bool,
-        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
-        if let (EvaluatedSemanticConst::TargetEnum(lhs), EvaluatedSemanticConst::TargetEnum(rhs)) =
-            (lhs, rhs)
-        {
-            return rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::boolean(if equal {
-                lhs == rhs
-            } else {
-                lhs != rhs
-            }));
-        }
-        durable_host_error_outcome(durable_host_error(
-            DurableComptimeFailure::comptime_rejection(
-                rue_air::ComptimeSemanticRejection::ArithmeticOperandNotInteger {
-                    operation: rue_air::ComptimeIntegerOperation::Add,
-                    lhs: lhs.clone(),
-                    rhs: Some(rhs.clone()),
-                },
-            ),
-        ))
-    }
-
     fn resolve_named_type_value(
         &mut self,
         _program: &Self::ProgramKey,
@@ -868,6 +682,336 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
         }
     }
 
+    fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+        &mut self,
+        program: &Self::ProgramKey,
+        syntax: rue_rir::RirTypeSyntaxRef,
+        types: &AHashMap<Self::Name, Self::Type>,
+        values: &AHashMap<Self::Name, Self::Value>,
+        _span: rue_span::Span,
+    ) -> Option<Self::Type> {
+        let mut type_substitutions = types
+            .iter()
+            .map(|(name, ty)| (name.0.clone(), ty.0.clone()))
+            .collect::<Vec<_>>();
+        type_substitutions.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut value_substitutions = Vec::with_capacity(values.len());
+        for (name, value) in values {
+            let EvaluatedSemanticConst::Value(value) = value else {
+                return None;
+            };
+            value_substitutions.push((name.0.clone(), value.value.clone()));
+        }
+        value_substitutions.sort_by(|left, right| left.0.cmp(&right.0));
+        self.services
+            .resolve_type_syntax_with_substitutions(
+                program,
+                syntax,
+                &type_substitutions,
+                &value_substitutions,
+            )
+            .ok()
+            .map(DurableComptimeType)
+    }
+}
+
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
+    for DurableComptimeHost<'_, A>
+{
+    fn resolve_comptime_named_value(
+        &mut self,
+        file: Self::File,
+        name: Self::Name,
+        _span: rue_span::Span,
+    ) -> rue_air::ComptimeHostResult<
+        rue_air::ComptimeNamedValueResolution<Self::Value>,
+        Self::Failure,
+    > {
+        let program = file.program().clone();
+        let projection = self
+            .services
+            .resolve_named_value(
+                &program.declaration,
+                program.declaration.module(),
+                name.as_str(),
+            )
+            .map_err(durable_provider_error)?;
+        let Some(projection) = projection else {
+            return Err(rue_air::ComptimeHostError::HostFailure(
+                DurableComptimeHostFailure::semantic(Box::new(SemanticNucleusFailure::Resolution(
+                    Arc::from(format!("undefined constant `{}`", name.as_str())),
+                ))),
+            ));
+        };
+        let (value, dependency, anonymous_nominals) = projection.into_parts();
+        self.services
+            .durable_session_mut()
+            .observe_dependency(dependency);
+        for nominal in anonymous_nominals.iter().cloned() {
+            self.services
+                .durable_session_mut()
+                .observe_anonymous_nominal(nominal);
+        }
+        Ok(rue_air::ComptimeNamedValueResolution::Known(value))
+    }
+
+    fn match_pattern(
+        &self,
+        pattern: &rue_air::ComptimeMatchPattern<Self::Name>,
+        value: &Self::Value,
+    ) -> Option<bool> {
+        Some(durable_match_pattern_matches(pattern, value))
+    }
+
+    fn match_no_selected_arm(
+        &self,
+        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
+        match durable_host_error(DurableComptimeFailure::comptime_match_no_selected_arm()) {
+            rue_air::ComptimeHostError::HostFailure(error) => {
+                rue_air::ComptimeOutcome::HostFailure(error)
+            }
+            rue_air::ComptimeHostError::Abort(error) => rue_air::ComptimeOutcome::Abort(error),
+        }
+    }
+
+    fn evaluate_binary_rhs_after_rejection(&self) -> bool {
+        true
+    }
+
+    fn compare_comptime_values(
+        &mut self,
+        lhs: &Self::Value,
+        rhs: &Self::Value,
+        equal: bool,
+        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
+        if let (EvaluatedSemanticConst::TargetEnum(lhs), EvaluatedSemanticConst::TargetEnum(rhs)) =
+            (lhs, rhs)
+        {
+            return rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::boolean(if equal {
+                lhs == rhs
+            } else {
+                lhs != rhs
+            }));
+        }
+        durable_host_error_outcome(durable_host_error(
+            DurableComptimeFailure::comptime_rejection(
+                rue_air::ComptimeSemanticRejection::ArithmeticOperandNotInteger {
+                    operation: rue_air::ComptimeIntegerOperation::Add,
+                    lhs: lhs.clone(),
+                    rhs: Some(rhs.clone()),
+                },
+            ),
+        ))
+    }
+
+    fn finish_arith(
+        &self,
+        result: rue_air::integer_semantics::CheckedIntegerResult,
+        ty: Option<Self::Type>,
+        op: &str,
+        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<Option<Self::Value>, Self::Failure> {
+        let ty = ty.unwrap_or(DurableComptimeType(DurableType::I32));
+        let value = DurableComptimeScalarPolicy::checked_integer_result(
+            ty.as_ref(),
+            result,
+            durable_arithmetic_operation_name(op),
+        )
+        .map_err(durable_host_error)?;
+        Ok(Some(EvaluatedSemanticConst::integer_typed(value, Some(ty))))
+    }
+
+    fn resolve_string_const(
+        &mut self,
+        content: Self::Name,
+        _span: rue_span::Span,
+    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
+        rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::Value(Arc::new(
+            TypedSemanticConst {
+                value: DurableConstValue::String(content.0),
+                ty: None,
+            },
+        )))
+    }
+
+    fn resolve_comptime_expression_intrinsic(
+        &mut self,
+        request: rue_air::ComptimeExpressionIntrinsicRequest<Self::Name>,
+        site: &rue_air::ComptimeSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
+        match request {
+            rue_air::ComptimeExpressionIntrinsicRequest::Import {
+                argument_count: 1,
+                sole_string_literal: Some(specifier),
+            } => {
+                let resolution = self.services.resolve_keyed_import(site, specifier.as_str());
+                let resolution = match resolution {
+                    Ok(resolution) => resolution,
+                    Err(DurableComptimeKeyedImportError::ProviderAbort(abort)) => {
+                        return rue_air::ComptimeOutcome::Abort(
+                            DurableComptimeHostFailure::query_abort(abort),
+                        );
+                    }
+                    Err(_) => {
+                        return rue_air::ComptimeOutcome::HostFailure(durable_host_failure(
+                            DurableComptimeFailure::resolution(
+                                "exact const import is absent from its candidate RIR occurrence index",
+                            ),
+                        ));
+                    }
+                };
+                match resolution {
+                    DurableImportResolution::Resolved(module) => {
+                        rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::Module(module))
+                    }
+                    DurableImportResolution::Missing => rue_air::ComptimeOutcome::HostFailure(
+                        durable_host_failure(DurableComptimeFailure::resolution(format!(
+                            "cannot find module `{}`",
+                            specifier.as_str()
+                        ))),
+                    ),
+                    DurableImportResolution::Failure(
+                        DeclarationImportFailure::ResolutionUnavailable(key),
+                    ) => rue_air::ComptimeOutcome::Abort(DurableComptimeHostFailure::query_abort(
+                        QueryAbort::MissingInput(rue_query::InputIdentity::new(
+                            "declaration-import-resolution",
+                            format!(
+                                "{}:{}:{}",
+                                key.declaration.stable_identity(),
+                                key.occurrence,
+                                key.specifier
+                            ),
+                        )),
+                    )),
+                    DurableImportResolution::Failure(failure) => {
+                        rue_air::ComptimeOutcome::HostFailure(durable_host_failure(
+                            DurableComptimeFailure::resolution(format!("{failure:?}")),
+                        ))
+                    }
+                }
+            }
+            rue_air::ComptimeExpressionIntrinsicRequest::Import { .. } => {
+                rue_air::ComptimeOutcome::HostFailure(durable_host_failure(
+                    DurableComptimeFailure::resolution(
+                        "exact const import is absent from its candidate RIR occurrence index",
+                    ),
+                ))
+            }
+            rue_air::ComptimeExpressionIntrinsicRequest::Target {
+                intrinsic,
+                argument_count,
+            } => match self
+                .services
+                .resolve_target_intrinsic(intrinsic, argument_count)
+            {
+                Ok(value) => {
+                    rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::TargetEnum(value))
+                }
+                Err(error) => durable_host_error_outcome(durable_provider_error(error)),
+            },
+        }
+    }
+
+    fn resolve_comptime_enum_variant(
+        &mut self,
+        module: Option<Self::Value>,
+        type_name: Self::Name,
+        variant: Self::Name,
+        _site: &rue_air::ComptimeSite<Self::ProgramKey>,
+        _span: rue_span::Span,
+    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
+        if module.is_some() {
+            return rue_air::ComptimeOutcome::HostFailure(durable_host_failure(
+                DurableComptimeFailure::comptime_rejection(
+                    rue_air::ComptimeSemanticRejection::UnsupportedExpression,
+                ),
+            ));
+        }
+        if !matches!(type_name.as_str(), "Arch" | "Os" | "DataModel") {
+            return rue_air::ComptimeOutcome::HostFailure(durable_host_failure(
+                DurableComptimeFailure::resolution(
+                    "path expression is not supported in declaration-time comptime",
+                ),
+            ));
+        }
+        match self
+            .services
+            .resolve_target_enum_variant(type_name.as_str(), variant.as_str())
+        {
+            Ok(value) => rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::TargetEnum(value)),
+            Err(error) => durable_host_error_outcome(durable_provider_error(error)),
+        }
+    }
+
+    fn admit_comptime_enum_variant(
+        &mut self,
+        _type_name: Self::Name,
+        _variant: Self::Name,
+        has_module: bool,
+        _site: &rue_air::ComptimeSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<bool, Self::Failure> {
+        // A qualified enum path is not a durable target descriptor. Reject
+        // it before AIR evaluates the optional module child, preserving the
+        // established pre-child policy and avoiding an ambient module lookup.
+        if has_module {
+            #[cfg(test)]
+            arm_enum_variant_child_tripwire();
+            return Err(durable_host_error(
+                DurableComptimeFailure::comptime_rejection(
+                    ComptimeSemanticRejection::UnsupportedExpression,
+                ),
+            ));
+        }
+        Ok(true)
+    }
+
+    fn admit_comptime_member(
+        &mut self,
+        _field: Self::Name,
+        _site: &rue_air::ComptimeSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<bool, Self::Failure> {
+        Ok(true)
+    }
+
+    fn resolve_comptime_member(
+        &mut self,
+        base: Self::Value,
+        field: Self::Name,
+        site: &rue_air::ComptimeSite<Self::ProgramKey>,
+        _span: rue_span::Span,
+    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
+        let EvaluatedSemanticConst::Module(module) = base else {
+            return rue_air::ComptimeOutcome::HostFailure(durable_host_failure(
+                DurableComptimeFailure::resolution("member access on a non-module const value"),
+            ));
+        };
+        let projection = self.services.resolve_module_member(
+            &site.program().declaration,
+            &module,
+            field.as_str(),
+        );
+        let projection = match projection {
+            Ok(projection) => projection,
+            Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
+        };
+        let (value, dependency, anonymous_nominals) = projection.into_parts();
+        self.services
+            .durable_session_mut()
+            .observe_dependency(dependency);
+        for nominal in anonymous_nominals.iter().cloned() {
+            self.services
+                .durable_session_mut()
+                .observe_anonymous_nominal(nominal);
+        }
+        rue_air::ComptimeOutcome::Known(value)
+    }
+}
+
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeCallProtocol
+    for DurableComptimeHost<'_, A>
+{
     fn resolve_module_comptime_callable(
         &mut self,
         _file_id: Self::File,
@@ -1170,13 +1314,6 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
             })
     }
 
-    fn label_ctor_instantiation_site(
-        error: Self::Failure,
-        _call_span: rue_span::Span,
-    ) -> Self::Failure {
-        error
-    }
-
     fn canonical_function_producer(
         &self,
         program: &Self::ProgramKey,
@@ -1216,39 +1353,11 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
             .into_owned(),
         )
     }
+}
 
-    fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-        &mut self,
-        program: &Self::ProgramKey,
-        syntax: rue_rir::RirTypeSyntaxRef,
-        types: &AHashMap<Self::Name, Self::Type>,
-        values: &AHashMap<Self::Name, Self::Value>,
-        _span: rue_span::Span,
-    ) -> Option<Self::Type> {
-        let mut type_substitutions = types
-            .iter()
-            .map(|(name, ty)| (name.0.clone(), ty.0.clone()))
-            .collect::<Vec<_>>();
-        type_substitutions.sort_by(|left, right| left.0.cmp(&right.0));
-        let mut value_substitutions = Vec::with_capacity(values.len());
-        for (name, value) in values {
-            let EvaluatedSemanticConst::Value(value) = value else {
-                return None;
-            };
-            value_substitutions.push((name.0.clone(), value.value.clone()));
-        }
-        value_substitutions.sort_by(|left, right| left.0.cmp(&right.0));
-        self.services
-            .resolve_type_syntax_with_substitutions(
-                program,
-                syntax,
-                &type_substitutions,
-                &value_substitutions,
-            )
-            .ok()
-            .map(DurableComptimeType)
-    }
-
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeStructuredTypes
+    for DurableComptimeHost<'_, A>
+{
     fn begin_comptime_type_syntax(
         &mut self,
         program: &Self::ProgramKey,
@@ -1482,190 +1591,109 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
             Err(error) => durable_host_error_outcome(durable_type_syntax_error(error)),
         }
     }
+}
 
-    fn resolve_string_const(
-        &mut self,
-        content: Self::Name,
-        _span: rue_span::Span,
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
+    for DurableComptimeHost<'_, A>
+{
+    fn reject_comptime_expression(
+        &self,
+        rejection: rue_air::ComptimeSemanticRejection<Self::Value>,
+        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
-        rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::Value(Arc::new(
-            TypedSemanticConst {
-                value: DurableConstValue::String(content.0),
-                ty: None,
-            },
-        )))
-    }
-
-    fn resolve_comptime_expression_intrinsic(
-        &mut self,
-        request: rue_air::ComptimeExpressionIntrinsicRequest<Self::Name>,
-        site: &rue_air::ComptimeSite<Self::ProgramKey>,
-    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
-        match request {
-            rue_air::ComptimeExpressionIntrinsicRequest::Import {
-                argument_count: 1,
-                sole_string_literal: Some(specifier),
-            } => {
-                let resolution = self.services.resolve_keyed_import(site, specifier.as_str());
-                let resolution = match resolution {
-                    Ok(resolution) => resolution,
-                    Err(DurableComptimeKeyedImportError::ProviderAbort(abort)) => {
-                        return rue_air::ComptimeOutcome::Abort(
-                            DurableComptimeHostFailure::query_abort(abort),
-                        );
-                    }
-                    Err(_) => {
-                        return rue_air::ComptimeOutcome::HostFailure(durable_host_failure(
-                            DurableComptimeFailure::resolution(
-                                "exact const import is absent from its candidate RIR occurrence index",
-                            ),
-                        ));
-                    }
-                };
-                match resolution {
-                    DurableImportResolution::Resolved(module) => {
-                        rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::Module(module))
-                    }
-                    DurableImportResolution::Missing => rue_air::ComptimeOutcome::HostFailure(
-                        durable_host_failure(DurableComptimeFailure::resolution(format!(
-                            "cannot find module `{}`",
-                            specifier.as_str()
-                        ))),
-                    ),
-                    DurableImportResolution::Failure(
-                        DeclarationImportFailure::ResolutionUnavailable(key),
-                    ) => rue_air::ComptimeOutcome::Abort(DurableComptimeHostFailure::query_abort(
-                        QueryAbort::MissingInput(rue_query::InputIdentity::new(
-                            "declaration-import-resolution",
-                            format!(
-                                "{}:{}:{}",
-                                key.declaration.stable_identity(),
-                                key.occurrence,
-                                key.specifier
-                            ),
-                        )),
-                    )),
-                    DurableImportResolution::Failure(failure) => {
-                        rue_air::ComptimeOutcome::HostFailure(durable_host_failure(
-                            DurableComptimeFailure::resolution(format!("{failure:?}")),
-                        ))
-                    }
-                }
+        match durable_host_error(DurableComptimeFailure::comptime_rejection(rejection)) {
+            rue_air::ComptimeHostError::HostFailure(error) => {
+                rue_air::ComptimeOutcome::HostFailure(error)
             }
-            rue_air::ComptimeExpressionIntrinsicRequest::Import { .. } => {
-                rue_air::ComptimeOutcome::HostFailure(durable_host_failure(
-                    DurableComptimeFailure::resolution(
-                        "exact const import is absent from its candidate RIR occurrence index",
-                    ),
-                ))
-            }
-            rue_air::ComptimeExpressionIntrinsicRequest::Target {
-                intrinsic,
-                argument_count,
-            } => match self
-                .services
-                .resolve_target_intrinsic(intrinsic, argument_count)
-            {
-                Ok(value) => {
-                    rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::TargetEnum(value))
-                }
-                Err(error) => durable_host_error_outcome(durable_provider_error(error)),
-            },
+            rue_air::ComptimeHostError::Abort(error) => rue_air::ComptimeOutcome::Abort(error),
         }
     }
 
-    fn admit_comptime_enum_variant(
-        &mut self,
-        _type_name: Self::Name,
-        _variant: Self::Name,
-        has_module: bool,
-        _site: &rue_air::ComptimeSite<Self::ProgramKey>,
-    ) -> rue_air::ComptimeHostResult<bool, Self::Failure> {
-        // A qualified enum path is not a durable target descriptor. Reject
-        // it before AIR evaluates the optional module child, preserving the
-        // established pre-child policy and avoiding an ambient module lookup.
-        if has_module {
-            #[cfg(test)]
-            arm_enum_variant_child_tripwire();
-            return Err(durable_host_error(
-                DurableComptimeFailure::comptime_rejection(
-                    ComptimeSemanticRejection::UnsupportedExpression,
-                ),
-            ));
-        }
-        Ok(true)
-    }
-
-    fn resolve_comptime_enum_variant(
-        &mut self,
-        module: Option<Self::Value>,
-        type_name: Self::Name,
-        variant: Self::Name,
-        _site: &rue_air::ComptimeSite<Self::ProgramKey>,
-        _span: rue_span::Span,
-    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
-        if module.is_some() {
-            return rue_air::ComptimeOutcome::HostFailure(durable_host_failure(
-                DurableComptimeFailure::comptime_rejection(
-                    rue_air::ComptimeSemanticRejection::UnsupportedExpression,
-                ),
-            ));
-        }
-        if !matches!(type_name.as_str(), "Arch" | "Os" | "DataModel") {
-            return rue_air::ComptimeOutcome::HostFailure(durable_host_failure(
-                DurableComptimeFailure::resolution(
-                    "path expression is not supported in declaration-time comptime",
-                ),
-            ));
-        }
-        match self
-            .services
-            .resolve_target_enum_variant(type_name.as_str(), variant.as_str())
+    fn require_preview(
+        &self,
+        feature: rue_error::PreviewFeature,
+        what: &str,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<(), Self::Failure> {
+        if site
+            .program()
+            .configuration
+            .preview_features
+            .contains(feature)
         {
-            Ok(value) => rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::TargetEnum(value)),
-            Err(error) => durable_host_error_outcome(durable_provider_error(error)),
+            return Ok(());
         }
+        Err(rue_air::ComptimeHostError::HostFailure(
+            durable_diagnostic_failure(
+                &self.diagnostic_site(site),
+                rue_error::ErrorKind::PreviewFeatureRequired {
+                    feature,
+                    what: what.to_owned(),
+                },
+            ),
+        ))
     }
 
-    fn admit_comptime_member(
-        &mut self,
-        _field: Self::Name,
-        _site: &rue_air::ComptimeSite<Self::ProgramKey>,
-    ) -> rue_air::ComptimeHostResult<bool, Self::Failure> {
-        Ok(true)
+    fn depth_exceeded(
+        &self,
+        name: &Self::Name,
+        depth: usize,
+        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        durable_host_failure(DurableComptimeFailure::maximum_depth(name.as_str(), depth))
     }
 
-    fn resolve_comptime_member(
-        &mut self,
-        base: Self::Value,
-        field: Self::Name,
-        site: &rue_air::ComptimeSite<Self::ProgramKey>,
-        _span: rue_span::Span,
-    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
-        let EvaluatedSemanticConst::Module(module) = base else {
-            return rue_air::ComptimeOutcome::HostFailure(durable_host_failure(
-                DurableComptimeFailure::resolution("member access on a non-module const value"),
-            ));
-        };
-        let projection = self.services.resolve_module_member(
-            &site.program().declaration,
-            &module,
-            field.as_str(),
-        );
-        let projection = match projection {
-            Ok(projection) => projection,
-            Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
-        };
-        let (value, dependency, anonymous_nominals) = projection.into_parts();
-        self.services
-            .durable_session_mut()
-            .observe_dependency(dependency);
-        for nominal in anonymous_nominals.iter().cloned() {
-            self.services
-                .durable_session_mut()
-                .observe_anonymous_nominal(nominal);
-        }
-        rue_air::ComptimeOutcome::Known(value)
+    fn literal_out_of_range(
+        &self,
+        value: u64,
+        ty: &Self::Type,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        durable_diagnostic_failure(
+            &self.diagnostic_site(site),
+            rue_error::ErrorKind::LiteralOutOfRange {
+                value,
+                ty: DurableComptimeScalarPolicy::type_name(ty.as_ref()),
+            },
+        )
+    }
+
+    fn float_not_implemented(
+        &self,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        durable_diagnostic_failure(
+            &self.diagnostic_site(site),
+            rue_error::ErrorKind::FloatNotYetImplemented,
+        )
+    }
+
+    fn cannot_negate(
+        &self,
+        ty: &Self::Type,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        durable_diagnostic_failure(
+            &self.diagnostic_site(site),
+            rue_error::ErrorKind::CannotNegate(DurableComptimeScalarPolicy::type_name(ty.as_ref())),
+        )
+    }
+
+    fn reject_unsigned_negation(
+        &self,
+        _ty: &Self::Type,
+        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Option<Self::Failure> {
+        // Declaration-time evaluation reports the checked integer overflow
+        // from `finish_arith`, rather than AIR's ordinary CannotNegate policy.
+        None
+    }
+
+    fn label_ctor_instantiation_site(
+        error: Self::Failure,
+        _call_span: rue_span::Span,
+    ) -> Self::Failure {
+        error
     }
 
     fn finish_checked(
@@ -1691,6 +1719,11 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
     fn allow_checked_comptime(&self) -> bool {
         true
     }
+}
+
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
+    for DurableComptimeHost<'_, A>
+{
 }
 
 /// The compiler's ticket-free declaration-root frame. `StableProducerId`

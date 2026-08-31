@@ -56,12 +56,14 @@ use rue_span::{FileId, Span};
 
 use super::comptime::{
     ComptimeAnonymousKind, ComptimeArgMode, ComptimeArrayLengthBinding, ComptimeCallAdmission,
-    ComptimeCallArgument, ComptimeCallKey, ComptimeCallPreparation, ComptimeDiagnosticSite,
-    ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile, ComptimeFrame, ComptimeHost,
-    ComptimeHostError, ComptimeHostResult, ComptimeIdentity, ComptimeMatchPattern,
-    ComptimeMethodDescriptor, ComptimeName, ComptimeNamedValueResolution, ComptimeOutcome,
-    ComptimeSelection, ComptimeSemanticRejection, ComptimeStructuredTypeResolution, ComptimeTrap,
-    ComptimeType,
+    ComptimeCallArgument, ComptimeCallKey, ComptimeCallPreparation, ComptimeCallProtocol,
+    ComptimeDiagnosticSite, ComptimeDomain, ComptimeEngine, ComptimeEnv as GenericComptimeEnv,
+    ComptimeFile, ComptimeFrame, ComptimeHost, ComptimeHostError, ComptimeHostResult,
+    ComptimeIdentity, ComptimeInterrupts, ComptimeMatchPattern, ComptimeMethodDescriptor,
+    ComptimeName, ComptimeNamedValueResolution, ComptimeOutcome, ComptimeProgramFacts,
+    ComptimeRejections, ComptimeSelection, ComptimeSemanticRejection,
+    ComptimeStructuredTypeResolution, ComptimeStructuredTypes, ComptimeTrap, ComptimeType,
+    ComptimeTypeAlgebra, ComptimeValueAlgebra,
 };
 use super::context::{AnalysisContext, ConstValue};
 use super::info::FunctionCallInfo;
@@ -1326,7 +1328,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             callee_values: callee_values.clone(),
         };
         let preparation =
-            <Self as ComptimeHost>::prepare_comptime_call(self, admission, bound, span)
+            <Self as ComptimeCallProtocol>::prepare_comptime_call(self, admission, bound, span)
                 .map_err(super::comptime::ComptimeHostError::into_failure)?;
         let Some(preparation) = preparation else {
             return Ok(None);
@@ -1973,7 +1975,7 @@ where
 /// Local semantic adapter for the separated compile-time engine. The adapter only
 /// exposes facts and named semantic hooks; recursive instruction traversal
 /// remains in `comptime::ComptimeEngine`.
-impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H> {
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeDomain for OrdinaryBodyEngine<'h, H> {
     type Type = Type;
     type Value = ConstValue;
     type Name = Spur;
@@ -1997,40 +1999,15 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         Spur,
         std::sync::Arc<[std::sync::Arc<str>]>,
     >;
-    fn prepare_structured_type_call(
-        &mut self,
-        _suspension: &Self::StructuredTypeSuspension,
-        _span: Span,
-    ) -> ComptimeOutcome<
-        Option<
-            ComptimeCallPreparation<
-                Self::Value,
-                Self::Type,
-                Self::Name,
-                Self::File,
-                Self::ProgramKey,
-                Self::CanonicalIdentity,
-                Self::Failure,
-                (),
-            >,
-        >,
-        Self::Failure,
-    > {
-        unreachable!("ordinary comptime type resolution is synchronous")
-    }
-    fn resume_structured_type_call(
-        &mut self,
-        _suspension: Self::StructuredTypeSuspension,
-        _result: ComptimeOutcome<Self::Value, Self::Failure>,
-    ) -> ComptimeOutcome<
-        ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
-        Self::Failure,
-    > {
-        unreachable!("ordinary comptime type resolution is synchronous")
-    }
+}
+
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeInterrupts for OrdinaryBodyEngine<'h, H> {
     fn check_canceled(&self) -> ComptimeHostResult<(), Self::Failure> {
         OrdinaryBodyEngine::check_canceled(self).map_err(ComptimeHostError::HostFailure)
     }
+}
+
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeProgramFacts for OrdinaryBodyEngine<'h, H> {
     fn program_rir(&self, _program: &Self::ProgramKey) -> &rue_rir::Rir {
         OrdinaryBodyEngine::body_rir_ref(self)
     }
@@ -2047,157 +2024,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     fn file_for_program_span(&self, _program: &Self::ProgramKey, span: &Span) -> Self::File {
         span.file_id
     }
-    fn resolve_comptime_named_value(
-        &mut self,
-        file: Self::File,
-        name: Self::Name,
-        span: Span,
-    ) -> ComptimeHostResult<ComptimeNamedValueResolution<Self::Value>, Self::Failure> {
-        let Some(info) = OrdinaryBodyEngine::value_const(self, &(file, name)) else {
-            let resolved = OrdinaryBodyEngine::resolve_named_type_value(self, name, span)
-                .map_err(ComptimeHostError::HostFailure)?;
-            if let Some(ty) = resolved {
-                let dependency = match ty.kind() {
-                    TypeKind::Struct(id) => {
-                        let def = self
-                            .body_type_pool()
-                            .struct_metadata(id)
-                            .expect("struct type must have declaration metadata");
-                        Some(super::NamedConstDependencyTargetEvent::NamedType {
-                            file: def.file_id.index(),
-                            name: def.name.to_string(),
-                            kind: super::DeclarationTypeDependencyTargetKind::Struct,
-                        })
-                    }
-                    TypeKind::Enum(id) => {
-                        let def = self
-                            .body_type_pool()
-                            .enum_metadata(id)
-                            .expect("enum type must have declaration metadata");
-                        Some(super::NamedConstDependencyTargetEvent::NamedType {
-                            file: def.file_id.index(),
-                            name: def.name.to_string(),
-                            kind: super::DeclarationTypeDependencyTargetKind::Enum,
-                        })
-                    }
-                    _ => None,
-                };
-                if let Some(dependency) = dependency {
-                    self.record_body_named_dependency(dependency);
-                }
-                return Ok(ComptimeNamedValueResolution::Known(ConstValue::Type(ty)));
-            }
-            return Ok(ComptimeNamedValueResolution::Missing);
-        };
-        let defining_file = info.span.file_id;
-        let name_text = self.body_interner().resolve(&name).to_owned();
-        self.record_body_named_dependency(super::NamedConstDependencyTargetEvent::ValueConst {
-            file: defining_file.index(),
-            name: name_text.clone(),
-        });
-        OrdinaryBodyEngine::check_unqualified_visibility(
-            self,
-            "constant",
-            &name_text,
-            defining_file,
-            info.is_pub,
-            span,
-        )?;
-        let value = match info.value {
-            ConstValue::Integer(value) => Some(ConstValue::Integer(value)),
-            ConstValue::Bool(value) => Some(ConstValue::Bool(value)),
-            ConstValue::Unit => Some(ConstValue::Unit),
-            ConstValue::Type(value) => Some(ConstValue::Type(value)),
-            _ => None,
-        };
-        Ok(match value {
-            Some(value) => ComptimeNamedValueResolution::Known(value),
-            None => ComptimeNamedValueResolution::RuntimeDependent,
-        })
-    }
-    fn match_pattern(
-        &self,
-        pattern: &ComptimeMatchPattern<Spur>,
-        value: &ConstValue,
-    ) -> Option<bool> {
-        const_pattern_matches(pattern, value.clone())
-    }
-    fn match_no_selected_arm(
-        &self,
-        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        ComptimeOutcome::RuntimeDependent
-    }
-    fn reject_comptime_expression(
-        &self,
-        rejection: ComptimeSemanticRejection<Self::Value>,
-        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        match rejection {
-            // Empty ordinary blocks historically reduce to unit; preserve
-            // that body-domain behavior while durable hosts may reject them.
-            ComptimeSemanticRejection::EmptyBlock => ComptimeOutcome::Known(ConstValue::Unit),
-            _ => ComptimeOutcome::RuntimeDependent,
-        }
-    }
-    fn evaluate_binary_rhs_after_rejection(&self) -> bool {
-        false
-    }
-    fn require_preview(
-        &self,
-        feature: rue_error::PreviewFeature,
-        what: &str,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeHostResult<(), Self::Failure> {
-        OrdinaryBodyEngine::require_preview(self, feature, what, site.span()).map_err(Into::into)
-    }
-    fn depth_exceeded(
-        &self,
-        name: &Spur,
-        depth: usize,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        CompileError::new(
-            ErrorKind::ComptimeEvaluationFailed {
-                reason: format!(
-                    "specialization of '{}' exceeded the maximum nesting depth ({}); \
-                     is a comptime-recursive function missing a compile-time-known \
-                     base case, or a generic function recursively instantiating \
-                     itself with new types?",
-                    self.body_interner().resolve(name),
-                    depth
-                ),
-            },
-            site.span(),
-        )
-    }
-    fn literal_out_of_range(
-        &self,
-        value: u64,
-        ty: &Type,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        CompileError::new(
-            ErrorKind::LiteralOutOfRange {
-                value,
-                ty: self.type_name(ty),
-            },
-            site.span(),
-        )
-    }
-    fn float_not_implemented(
-        &self,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        CompileError::new(ErrorKind::FloatNotYetImplemented, site.span())
-    }
-    fn cannot_negate(
-        &self,
-        ty: &Type,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        CompileError::new(ErrorKind::CannotNegate(self.type_name(ty)), site.span())
-    }
+}
+
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine<'h, H> {
     fn unsupported_anon_method_type_param(
         &self,
         method_name: &str,
@@ -2350,14 +2179,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     ) -> ComptimeHostResult<(), Self::Failure> {
         OrdinaryBodyEngine::check_trivially_droppable(self, ty, site.span()).map_err(Into::into)
     }
-    fn const_expr_type(
-        &self,
-        _program: &Self::ProgramKey,
-        env: &ComptimeEnv<'_>,
-        inst_ref: InstRef,
-    ) -> Option<Type> {
-        OrdinaryBodyEngine::const_expr_type(self, env, inst_ref)
-    }
     fn type_name(&self, ty: &Type) -> String {
         self.format_type_name(*ty)
     }
@@ -2366,6 +2187,130 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn type_integer_semantics(&self, ty: &Type) -> Option<crate::integer_semantics::IntegerType> {
         ty.integer_semantics()
+    }
+    fn const_expr_type(
+        &self,
+        _program: &Self::ProgramKey,
+        env: &ComptimeEnv<'_>,
+        inst_ref: InstRef,
+    ) -> Option<Type> {
+        OrdinaryBodyEngine::const_expr_type(self, env, inst_ref)
+    }
+    fn resolve_named_type_value(
+        &mut self,
+        _program: &Self::ProgramKey,
+        name: Spur,
+        span: Span,
+    ) -> ComptimeHostResult<Option<Type>, Self::Failure> {
+        OrdinaryBodyEngine::resolve_named_type_value(self, name, span).map_err(Into::into)
+    }
+    fn resolve_comptime_type_path(
+        &mut self,
+        file: FileId,
+        segments: &[Spur],
+        span: Span,
+    ) -> ComptimeHostResult<Option<ConstValue>, Self::Failure> {
+        OrdinaryBodyEngine::resolve_comptime_type_path(self, file, segments, span)
+            .map_err(Into::into)
+    }
+    fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+        &mut self,
+        _program: &Self::ProgramKey,
+        syntax: rue_rir::RirTypeSyntaxRef,
+        types: &AHashMap<Spur, Type>,
+        values: &AHashMap<Spur, ConstValue>,
+        span: Span,
+    ) -> Option<Type> {
+        OrdinaryBodyEngine::resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+            self, syntax, types, values, span,
+        )
+    }
+}
+
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueAlgebra for OrdinaryBodyEngine<'h, H> {
+    fn resolve_comptime_named_value(
+        &mut self,
+        file: Self::File,
+        name: Self::Name,
+        span: Span,
+    ) -> ComptimeHostResult<ComptimeNamedValueResolution<Self::Value>, Self::Failure> {
+        let Some(info) = OrdinaryBodyEngine::value_const(self, &(file, name)) else {
+            let resolved = OrdinaryBodyEngine::resolve_named_type_value(self, name, span)
+                .map_err(ComptimeHostError::HostFailure)?;
+            if let Some(ty) = resolved {
+                let dependency = match ty.kind() {
+                    TypeKind::Struct(id) => {
+                        let def = self
+                            .body_type_pool()
+                            .struct_metadata(id)
+                            .expect("struct type must have declaration metadata");
+                        Some(super::NamedConstDependencyTargetEvent::NamedType {
+                            file: def.file_id.index(),
+                            name: def.name.to_string(),
+                            kind: super::DeclarationTypeDependencyTargetKind::Struct,
+                        })
+                    }
+                    TypeKind::Enum(id) => {
+                        let def = self
+                            .body_type_pool()
+                            .enum_metadata(id)
+                            .expect("enum type must have declaration metadata");
+                        Some(super::NamedConstDependencyTargetEvent::NamedType {
+                            file: def.file_id.index(),
+                            name: def.name.to_string(),
+                            kind: super::DeclarationTypeDependencyTargetKind::Enum,
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some(dependency) = dependency {
+                    self.record_body_named_dependency(dependency);
+                }
+                return Ok(ComptimeNamedValueResolution::Known(ConstValue::Type(ty)));
+            }
+            return Ok(ComptimeNamedValueResolution::Missing);
+        };
+        let defining_file = info.span.file_id;
+        let name_text = self.body_interner().resolve(&name).to_owned();
+        self.record_body_named_dependency(super::NamedConstDependencyTargetEvent::ValueConst {
+            file: defining_file.index(),
+            name: name_text.clone(),
+        });
+        OrdinaryBodyEngine::check_unqualified_visibility(
+            self,
+            "constant",
+            &name_text,
+            defining_file,
+            info.is_pub,
+            span,
+        )?;
+        let value = match info.value {
+            ConstValue::Integer(value) => Some(ConstValue::Integer(value)),
+            ConstValue::Bool(value) => Some(ConstValue::Bool(value)),
+            ConstValue::Unit => Some(ConstValue::Unit),
+            ConstValue::Type(value) => Some(ConstValue::Type(value)),
+            _ => None,
+        };
+        Ok(match value {
+            Some(value) => ComptimeNamedValueResolution::Known(value),
+            None => ComptimeNamedValueResolution::RuntimeDependent,
+        })
+    }
+    fn match_pattern(
+        &self,
+        pattern: &ComptimeMatchPattern<Spur>,
+        value: &ConstValue,
+    ) -> Option<bool> {
+        const_pattern_matches(pattern, value.clone())
+    }
+    fn match_no_selected_arm(
+        &self,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        ComptimeOutcome::RuntimeDependent
+    }
+    fn evaluate_binary_rhs_after_rejection(&self) -> bool {
+        false
     }
     fn finish_arith(
         &self,
@@ -2386,23 +2331,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         )
         .map_err(Into::into)
     }
-    fn resolve_named_type_value(
-        &mut self,
-        _program: &Self::ProgramKey,
-        name: Spur,
-        span: Span,
-    ) -> ComptimeHostResult<Option<Type>, Self::Failure> {
-        OrdinaryBodyEngine::resolve_named_type_value(self, name, span).map_err(Into::into)
-    }
-    fn resolve_comptime_type_path(
-        &mut self,
-        file: FileId,
-        segments: &[Spur],
-        span: Span,
-    ) -> ComptimeHostResult<Option<ConstValue>, Self::Failure> {
-        OrdinaryBodyEngine::resolve_comptime_type_path(self, file, segments, span)
-            .map_err(Into::into)
-    }
+}
+
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeCallProtocol for OrdinaryBodyEngine<'h, H> {
     fn resolve_module_comptime_callable(
         &mut self,
         file: FileId,
@@ -2563,9 +2494,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     ) -> ComptimeHostResult<(), CompileError> {
         Ok(())
     }
-    fn label_ctor_instantiation_site(error: CompileError, span: Span) -> CompileError {
-        OrdinaryBodyEngine::<H>::label_ctor_instantiation_site(error, span)
-    }
     fn canonical_function_producer(
         &self,
         _program: &Self::ProgramKey,
@@ -2602,19 +2530,116 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
             anchor: anchor.clone(),
         }
     }
-    fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+}
+
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeStructuredTypes for OrdinaryBodyEngine<'h, H> {
+    fn prepare_structured_type_call(
         &mut self,
-        _program: &Self::ProgramKey,
-        syntax: rue_rir::RirTypeSyntaxRef,
-        types: &AHashMap<Spur, Type>,
-        values: &AHashMap<Spur, ConstValue>,
-        span: Span,
-    ) -> Option<Type> {
-        OrdinaryBodyEngine::resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-            self, syntax, types, values, span,
-        )
+        _suspension: &Self::StructuredTypeSuspension,
+        _span: Span,
+    ) -> ComptimeOutcome<
+        Option<
+            ComptimeCallPreparation<
+                Self::Value,
+                Self::Type,
+                Self::Name,
+                Self::File,
+                Self::ProgramKey,
+                Self::CanonicalIdentity,
+                Self::Failure,
+                (),
+            >,
+        >,
+        Self::Failure,
+    > {
+        unreachable!("ordinary comptime type resolution is synchronous")
+    }
+    fn resume_structured_type_call(
+        &mut self,
+        _suspension: Self::StructuredTypeSuspension,
+        _result: ComptimeOutcome<Self::Value, Self::Failure>,
+    ) -> ComptimeOutcome<
+        ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
+        Self::Failure,
+    > {
+        unreachable!("ordinary comptime type resolution is synchronous")
     }
 }
+
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeRejections for OrdinaryBodyEngine<'h, H> {
+    fn reject_comptime_expression(
+        &self,
+        rejection: ComptimeSemanticRejection<Self::Value>,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        match rejection {
+            // Empty ordinary blocks historically reduce to unit; preserve
+            // that body-domain behavior while durable hosts may reject them.
+            ComptimeSemanticRejection::EmptyBlock => ComptimeOutcome::Known(ConstValue::Unit),
+            _ => ComptimeOutcome::RuntimeDependent,
+        }
+    }
+    fn require_preview(
+        &self,
+        feature: rue_error::PreviewFeature,
+        what: &str,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        OrdinaryBodyEngine::require_preview(self, feature, what, site.span()).map_err(Into::into)
+    }
+    fn depth_exceeded(
+        &self,
+        name: &Spur,
+        depth: usize,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: format!(
+                    "specialization of '{}' exceeded the maximum nesting depth ({}); \
+                     is a comptime-recursive function missing a compile-time-known \
+                     base case, or a generic function recursively instantiating \
+                     itself with new types?",
+                    self.body_interner().resolve(name),
+                    depth
+                ),
+            },
+            site.span(),
+        )
+    }
+    fn literal_out_of_range(
+        &self,
+        value: u64,
+        ty: &Type,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        CompileError::new(
+            ErrorKind::LiteralOutOfRange {
+                value,
+                ty: self.type_name(ty),
+            },
+            site.span(),
+        )
+    }
+    fn float_not_implemented(
+        &self,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        CompileError::new(ErrorKind::FloatNotYetImplemented, site.span())
+    }
+    fn cannot_negate(
+        &self,
+        ty: &Type,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure {
+        CompileError::new(ErrorKind::CannotNegate(self.type_name(ty)), site.span())
+    }
+    fn label_ctor_instantiation_site(error: CompileError, span: Span) -> CompileError {
+        OrdinaryBodyEngine::<H>::label_ctor_instantiation_site(error, span)
+    }
+}
+
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H> {}
 
 #[cfg(test)]
 mod binding_tests {
