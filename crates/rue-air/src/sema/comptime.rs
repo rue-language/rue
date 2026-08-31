@@ -145,7 +145,13 @@ impl<F> ComptimeHostError<F> {
 
 /// Semantic host boundary for the canonical dispatcher. No method accepts an
 /// instruction callback or a child RIR reference for evaluation.
-pub trait ComptimeHost {
+/// The associated types every comptime capability speaks in terms of.
+///
+/// Split out so the capability traits below can each carry only their own
+/// methods while still naming `Self::Value`, `Self::Type`, and the rest. The
+/// engine's bounds resolve through `ComptimeHost`, so this is a regrouping of
+/// one contract rather than a new authority.
+pub trait ComptimeDomain {
     type Type: ComptimeType;
     type Value: ComptimeValue<Type = Self::Type>;
     type Name: ComptimeName;
@@ -168,81 +174,27 @@ pub trait ComptimeHost {
     /// structured type reduction. This is sealed below to prevent a peer
     /// resolver state machine from being hidden behind the host boundary.
     type StructuredTypeSuspension: ComptimeStructuredTypeSuspension;
+}
+
+/// Cancellation, checked once at the entry to `eval`.
+pub trait ComptimeInterrupts: ComptimeDomain {
     /// Check the owning query's cancellation state before reading any RIR for
     /// an evaluation node. This is deliberately required so every host makes
     /// abort semantics explicit; the engine performs the checkpoint exactly
     /// once at the entry to `eval`.
     fn check_canceled(&self) -> ComptimeHostResult<(), Self::Failure>;
+}
+
+/// Durable lookups against the owning program: its RIR, names, and files.
+pub trait ComptimeProgramFacts: ComptimeDomain {
     fn program_rir(&self, program: &Self::ProgramKey) -> &Rir;
     fn name_from_symbol(&self, program: &Self::ProgramKey, symbol: SymbolHandle) -> Self::Name;
     fn display_name(&self, name: &Self::Name) -> String;
     fn file_for_program_span(&self, program: &Self::ProgramKey, span: &Span) -> Self::File;
-    fn resolve_comptime_named_value(
-        &mut self,
-        file: Self::File,
-        name: Self::Name,
-        span: Span,
-    ) -> ComptimeHostResult<ComptimeNamedValueResolution<Self::Value>, Self::Failure>;
-    fn match_pattern(
-        &self,
-        pattern: &ComptimeMatchPattern<Self::Name>,
-        value: &Self::Value,
-    ) -> Option<bool>;
-    /// Resolve the terminal policy when every reached match arm declined.
-    /// Ordinary body evaluation remains runtime-dependent; durable hosts may
-    /// preserve a declaration-time failure through this semantic hook.
-    fn match_no_selected_arm(
-        &self,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure>;
-    fn reject_comptime_expression(
-        &self,
-        rejection: ComptimeSemanticRejection<Self::Value>,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure>;
-    /// Whether a durable semantic host needs both source-order operands before
-    /// validating an integer operation. Ordinary body evaluation short-circuits
-    /// after a known invalid lhs; durable declaration evaluation preserves its
-    /// historical evaluate-both-before-validation order.
-    fn evaluate_binary_rhs_after_rejection(&self) -> bool;
-    fn require_preview(
-        &self,
-        feature: rue_error::PreviewFeature,
-        what: &str,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeHostResult<(), Self::Failure>;
-    fn depth_exceeded(
-        &self,
-        name: &Self::Name,
-        depth: usize,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure;
-    fn literal_out_of_range(
-        &self,
-        value: u64,
-        ty: &Self::Type,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure;
-    fn float_not_implemented(
-        &self,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure;
-    fn cannot_negate(
-        &self,
-        ty: &Self::Type,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure;
-    /// Give a semantic host a chance to preserve a checked-negation policy
-    /// after the operand has been reduced. Ordinary hosts retain the
-    /// historical immediate `CannotNegate` terminal; durable hosts may defer
-    /// to their checked integer-result policy.
-    fn reject_unsigned_negation(
-        &self,
-        ty: &Self::Type,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Option<Self::Failure> {
-        Some(self.cannot_negate(ty, site))
-    }
+}
+
+/// Type construction, inspection, and resolution.
+pub trait ComptimeTypeAlgebra: ComptimeDomain {
     fn unsupported_anon_method_type_param(
         &self,
         method_name: &str,
@@ -349,7 +301,6 @@ pub trait ComptimeHost {
         >,
         inst_ref: InstRef,
     ) -> Option<Self::Type>;
-
     /// Select the integer type for a binary operation. The default preserves
     /// the existing resolved-type lookup; durable hosts can fall back to the
     /// typed metadata carried by the reduced operands without inspecting RIR.
@@ -365,7 +316,6 @@ pub trait ComptimeHost {
             .or_else(|| lhs.as_integer_type())
             .or_else(|| rhs.as_integer_type()))
     }
-
     /// Select the integer type for a unary operation. A durable host can
     /// preserve the operand's type metadata after the child has been reduced,
     /// while the default retains the ordinary resolved-type lookup.
@@ -377,7 +327,53 @@ pub trait ComptimeHost {
     ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
         Ok(resolved_type.cloned().or_else(|| operand.as_integer_type()))
     }
+    fn resolve_named_type_value(
+        &mut self,
+        program: &Self::ProgramKey,
+        _name: Self::Name,
+        span: Span,
+    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure>;
+    fn resolve_comptime_type_path(
+        &mut self,
+        file: Self::File,
+        segments: &[Self::Name],
+        span: Span,
+    ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure>;
+    fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+        &mut self,
+        program: &Self::ProgramKey,
+        syntax: rue_rir::RirTypeSyntaxRef,
+        types: &AHashMap<Self::Name, Self::Type>,
+        values: &AHashMap<Self::Name, Self::Value>,
+        span: Span,
+    ) -> Option<Self::Type>;
+}
 
+/// Value resolution, arithmetic, comparison, and member/pattern selection.
+pub trait ComptimeValueAlgebra: ComptimeDomain {
+    fn resolve_comptime_named_value(
+        &mut self,
+        file: Self::File,
+        name: Self::Name,
+        span: Span,
+    ) -> ComptimeHostResult<ComptimeNamedValueResolution<Self::Value>, Self::Failure>;
+    fn match_pattern(
+        &self,
+        pattern: &ComptimeMatchPattern<Self::Name>,
+        value: &Self::Value,
+    ) -> Option<bool>;
+    /// Resolve the terminal policy when every reached match arm declined.
+    /// Ordinary body evaluation remains runtime-dependent; durable hosts may
+    /// preserve a declaration-time failure through this semantic hook.
+    fn match_no_selected_arm(
+        &self,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure>;
+    /// Whether a durable semantic host needs both source-order operands before
+    /// validating an integer operation. Ordinary body evaluation short-circuits
+    /// after a known invalid lhs; durable declaration evaluation preserves its
+    /// historical evaluate-both-before-validation order.
+    fn evaluate_binary_rhs_after_rejection(&self) -> bool;
     /// Compare values that are not represented by the generic integer/bool
     /// algebra (for example target descriptors). The ordinary body domain
     /// keeps those comparisons runtime-dependent.
@@ -397,18 +393,69 @@ pub trait ComptimeHost {
         op: &str,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure>;
-    fn resolve_named_type_value(
+    /// Resolve a string literal in a semantic context. The ordinary body
+    /// value domain has no compile-time string value, so the default keeps
+    /// string expressions runtime-dependent. Durable hosts may use this hook
+    /// for controls such as `@import` without inspecting the instruction.
+    fn resolve_string_const(
         &mut self,
-        program: &Self::ProgramKey,
-        _name: Self::Name,
-        span: Span,
-    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure>;
-    fn resolve_comptime_type_path(
+        _content: Self::Name,
+        _span: Span,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        ComptimeOutcome::RuntimeDependent
+    }
+    /// Resolve a classified expression intrinsic after AIR has decoded its
+    /// exact argument shape. No child argument is evaluated for this finite
+    /// family; durable hosts can perform the keyed semantic operation directly.
+    fn resolve_comptime_expression_intrinsic(
         &mut self,
-        file: Self::File,
-        segments: &[Self::Name],
-        span: Span,
-    ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure>;
+        _request: ComptimeExpressionIntrinsicRequest<Self::Name>,
+        _site: &ComptimeSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        ComptimeOutcome::RuntimeDependent
+    }
+    /// Resolve a discriminant-only or payload-bearing enum variant after the
+    /// optional module expression has been reduced by the engine. The default
+    /// preserves ordinary body behavior, where enum values are runtime data.
+    fn resolve_comptime_enum_variant(
+        &mut self,
+        _module: Option<Self::Value>,
+        _type_name: Self::Name,
+        _variant: Self::Name,
+        _site: &ComptimeSite<Self::ProgramKey>,
+        _span: Span,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        ComptimeOutcome::RuntimeDependent
+    }
+    fn admit_comptime_enum_variant(
+        &mut self,
+        _type_name: Self::Name,
+        _variant: Self::Name,
+        _has_module: bool,
+        _site: &ComptimeSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<bool, Self::Failure> {
+        Ok(false)
+    }
+    fn admit_comptime_member(
+        &mut self,
+        _field: Self::Name,
+        _site: &ComptimeSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<bool, Self::Failure> {
+        Ok(false)
+    }
+    fn resolve_comptime_member(
+        &mut self,
+        _base: Self::Value,
+        _field: Self::Name,
+        _site: &ComptimeSite<Self::ProgramKey>,
+        _span: Span,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        ComptimeOutcome::RuntimeDependent
+    }
+}
+
+/// The ordered call lifecycle: admission, binding, preparation, completion.
+pub trait ComptimeCallProtocol: ComptimeDomain {
     fn resolve_module_comptime_callable(
         &mut self,
         file_id: Self::File,
@@ -550,7 +597,6 @@ pub trait ComptimeHost {
         >,
         _ticket: &Self::CompletionTicket,
     ) -> ComptimeHostResult<(), Self::Failure>;
-    fn label_ctor_instantiation_site(error: Self::Failure, call_span: Span) -> Self::Failure;
     fn canonical_function_producer(
         &self,
         program: &Self::ProgramKey,
@@ -567,15 +613,10 @@ pub trait ComptimeHost {
         producer: &Self::CanonicalIdentity,
         anchor: &rue_rir::RirStructuralAnchor,
     ) -> Self::AnonymousIdentity;
-    fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
-        &mut self,
-        program: &Self::ProgramKey,
-        syntax: rue_rir::RirTypeSyntaxRef,
-        types: &AHashMap<Self::Name, Self::Type>,
-        values: &AHashMap<Self::Name, Self::Value>,
-        span: Span,
-    ) -> Option<Self::Type>;
+}
 
+/// Beginning, preparing, and resuming a structured-type reduction.
+pub trait ComptimeStructuredTypes: ComptimeDomain + ComptimeTypeAlgebra {
     /// Begin a structured type reduction. The default is the staged
     /// synchronous adapter; an admitted keyed host may return a canonical
     /// suspension here.
@@ -597,7 +638,6 @@ pub trait ComptimeHost {
             ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Ready(value))
         })
     }
-
     fn prepare_structured_type_call(
         &mut self,
         suspension: &Self::StructuredTypeSuspension,
@@ -617,7 +657,6 @@ pub trait ComptimeHost {
         >,
         Self::Failure,
     >;
-
     fn resume_structured_type_call(
         &mut self,
         suspension: Self::StructuredTypeSuspension,
@@ -626,71 +665,54 @@ pub trait ComptimeHost {
         ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
         Self::Failure,
     >;
-    /// Resolve a string literal in a semantic context. The ordinary body
-    /// value domain has no compile-time string value, so the default keeps
-    /// string expressions runtime-dependent. Durable hosts may use this hook
-    /// for controls such as `@import` without inspecting the instruction.
-    fn resolve_string_const(
-        &mut self,
-        _content: Self::Name,
-        _span: Span,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        ComptimeOutcome::RuntimeDependent
-    }
+}
 
-    /// Resolve a classified expression intrinsic after AIR has decoded its
-    /// exact argument shape. No child argument is evaluated for this finite
-    /// family; durable hosts can perform the keyed semantic operation directly.
-    fn resolve_comptime_expression_intrinsic(
-        &mut self,
-        _request: ComptimeExpressionIntrinsicRequest<Self::Name>,
-        _site: &ComptimeSite<Self::ProgramKey>,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        ComptimeOutcome::RuntimeDependent
+/// Diagnostic terminals and the policy switches that choose between them.
+pub trait ComptimeRejections: ComptimeDomain {
+    fn reject_comptime_expression(
+        &self,
+        rejection: ComptimeSemanticRejection<Self::Value>,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure>;
+    fn require_preview(
+        &self,
+        feature: rue_error::PreviewFeature,
+        what: &str,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<(), Self::Failure>;
+    fn depth_exceeded(
+        &self,
+        name: &Self::Name,
+        depth: usize,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure;
+    fn literal_out_of_range(
+        &self,
+        value: u64,
+        ty: &Self::Type,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure;
+    fn float_not_implemented(
+        &self,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure;
+    fn cannot_negate(
+        &self,
+        ty: &Self::Type,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Self::Failure;
+    /// Give a semantic host a chance to preserve a checked-negation policy
+    /// after the operand has been reduced. Ordinary hosts retain the
+    /// historical immediate `CannotNegate` terminal; durable hosts may defer
+    /// to their checked integer-result policy.
+    fn reject_unsigned_negation(
+        &self,
+        ty: &Self::Type,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Option<Self::Failure> {
+        Some(self.cannot_negate(ty, site))
     }
-
-    /// Resolve a discriminant-only or payload-bearing enum variant after the
-    /// optional module expression has been reduced by the engine. The default
-    /// preserves ordinary body behavior, where enum values are runtime data.
-    fn resolve_comptime_enum_variant(
-        &mut self,
-        _module: Option<Self::Value>,
-        _type_name: Self::Name,
-        _variant: Self::Name,
-        _site: &ComptimeSite<Self::ProgramKey>,
-        _span: Span,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        ComptimeOutcome::RuntimeDependent
-    }
-
-    fn admit_comptime_enum_variant(
-        &mut self,
-        _type_name: Self::Name,
-        _variant: Self::Name,
-        _has_module: bool,
-        _site: &ComptimeSite<Self::ProgramKey>,
-    ) -> ComptimeHostResult<bool, Self::Failure> {
-        Ok(false)
-    }
-
-    fn admit_comptime_member(
-        &mut self,
-        _field: Self::Name,
-        _site: &ComptimeSite<Self::ProgramKey>,
-    ) -> ComptimeHostResult<bool, Self::Failure> {
-        Ok(false)
-    }
-
-    fn resolve_comptime_member(
-        &mut self,
-        _base: Self::Value,
-        _field: Self::Name,
-        _site: &ComptimeSite<Self::ProgramKey>,
-        _span: Span,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        ComptimeOutcome::RuntimeDependent
-    }
-
+    fn label_ctor_instantiation_site(error: Self::Failure, call_span: Span) -> Self::Failure;
     /// Preserve checked-block semantics after the child has been evaluated by
     /// the engine. A durable host can attach its own context observation while
     /// the default remains a transparent wrapper.
@@ -701,7 +723,6 @@ pub trait ComptimeHost {
     ) -> ComptimeOutcome<Self::Value, Self::Failure> {
         ComptimeOutcome::Known(value)
     }
-
     /// Give a durable host a typed rejection point for a non-type array
     /// repeat. The existing engine only folds repeats whose element is a type;
     /// ordinary body evaluation therefore remains runtime-dependent by
@@ -713,13 +734,30 @@ pub trait ComptimeHost {
     ) -> ComptimeOutcome<Self::Value, Self::Failure> {
         ComptimeOutcome::RuntimeDependent
     }
-
     /// Ordinary body analysis has historically treated `checked { ... }` as
     /// runtime-only during comptime probing. Durable declaration hosts opt in
     /// once they can preserve the checked-context observation.
     fn allow_checked_comptime(&self) -> bool {
         false
     }
+}
+
+/// Semantic host boundary for the canonical dispatcher. No method accepts an
+/// instruction callback or a child RIR reference for evaluation.
+///
+/// Empty on purpose: the contract is the capability traits above, and this
+/// umbrella keeps `ComptimeHost` the single name the engine and every consumer
+/// bound against before the split (RUE-1831, after RUE-1802).
+pub trait ComptimeHost:
+    ComptimeDomain
+    + ComptimeInterrupts
+    + ComptimeProgramFacts
+    + ComptimeTypeAlgebra
+    + ComptimeValueAlgebra
+    + ComptimeCallProtocol
+    + ComptimeStructuredTypes
+    + ComptimeRejections
+{
 }
 
 pub struct ComptimeEngine<'e, H: ComptimeHost> {

@@ -2088,6 +2088,22 @@ fn structured_registry_authority_keeps_storage_keyed_and_identity_rich() {
     assert!(!richer.contains("program.symbols"));
 }
 
+/// The whole comptime host contract: the domain supertrait, every capability
+/// trait, and the umbrella that re-forms them into `ComptimeHost`.
+///
+/// RUE-1831 Stage 2 split the contract across those traits, so a guard can no
+/// longer find it by slicing from `pub trait ComptimeHost {` -- the umbrella is
+/// empty now. The region is contiguous and ends where the engine begins.
+fn comptime_host_contract(source: &str) -> &str {
+    let start = source
+        .find("pub trait ComptimeDomain {")
+        .expect("comptime host contract starts at the domain supertrait");
+    let end = source[start..]
+        .find("pub struct ComptimeEngine")
+        .expect("comptime host contract ends where the engine begins");
+    &source[start..start + end]
+}
+
 #[test]
 fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
     let comptime = crate::sema::COMPTIME_SOURCE;
@@ -2123,11 +2139,7 @@ fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
         "AIR must have one production pattern decoder"
     );
 
-    let host = comptime
-        .split("pub trait ComptimeHost {")
-        .nth(1)
-        .and_then(|source| source.split("/// Opaque structured continuations").next())
-        .expect("bounded ComptimeHost trait");
+    let host = comptime_host_contract(comptime);
     let match_hook = host
         .split("fn match_pattern(")
         .nth(1)
@@ -2153,14 +2165,74 @@ fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
     assert!(!engine_match.contains("RirPatternView::"));
 }
 
+// RUE-1831 Stage 2. The 64-method `ComptimeHost` is now a domain supertrait
+// plus seven capability traits under an empty umbrella. Two ways that decays
+// silently, neither of which fails to compile: a new method lands on the
+// umbrella instead of a capability, reassembling the god object one signature
+// at a time; or a capability is dropped from the umbrella's bound list, which
+// quietly narrows the contract for every consumer that bounds on
+// `ComptimeHost`.
+#[test]
+fn comptime_host_is_an_empty_umbrella_over_its_capabilities() {
+    let contract = comptime_host_contract(crate::sema::COMPTIME_PRODUCTION_SOURCE);
+
+    let capabilities = [
+        "ComptimeInterrupts",
+        "ComptimeProgramFacts",
+        "ComptimeTypeAlgebra",
+        "ComptimeValueAlgebra",
+        "ComptimeCallProtocol",
+        "ComptimeStructuredTypes",
+        "ComptimeRejections",
+    ];
+
+    let umbrella = contract
+        .split("pub trait ComptimeHost:")
+        .nth(1)
+        .expect("umbrella declaration");
+    let (bounds, body) = umbrella.split_once('{').expect("umbrella body");
+    assert_eq!(
+        body.trim(),
+        "}",
+        "ComptimeHost must stay empty; a method belongs on a capability trait"
+    );
+    assert!(bounds.contains("ComptimeDomain"));
+    for capability in capabilities {
+        assert!(
+            bounds.contains(capability),
+            "{capability} dropped from the ComptimeHost bound would narrow the contract silently"
+        );
+    }
+
+    // Every method sits in exactly one capability, and the total is unchanged
+    // from the single trait this replaced.
+    let mut owner: Vec<(&str, &str)> = Vec::new();
+    let mut current = "";
+    for line in contract.lines() {
+        if let Some(rest) = line.strip_prefix("pub trait ") {
+            current = rest.split([':', ' ']).next().unwrap_or_default();
+        } else if let Some(rest) = line.strip_prefix("    fn ") {
+            owner.push((rest.split('(').next().unwrap_or_default(), current));
+        }
+    }
+    assert_eq!(owner.len(), 64, "the host contract lost or gained a method");
+    for (method, trait_name) in &owner {
+        assert!(
+            capabilities.contains(trait_name),
+            "{method} is declared on {trait_name}, not a capability trait"
+        );
+        assert_eq!(
+            owner.iter().filter(|(name, _)| name == method).count(),
+            1,
+            "{method} is declared on more than one capability trait"
+        );
+    }
+}
+
 #[test]
 fn diagnostic_hooks_are_keyed_by_the_engine_program() {
     let comptime = crate::sema::COMPTIME_SOURCE;
-    let host = comptime
-        .split("pub trait ComptimeHost {")
-        .nth(1)
-        .and_then(|source| source.split("/// Opaque structured continuations").next())
-        .expect("bounded ComptimeHost trait");
+    let host = comptime_host_contract(comptime);
     for hook in [
         "fn match_no_selected_arm(",
         "fn require_preview(",
@@ -2605,7 +2677,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     assert_eq!(production.matches("struct PreparedComptimeCall").count(), 0);
 
     let host_start = production
-        .find("pub trait ComptimeHost")
+        .find("pub trait ComptimeDomain")
         .expect("canonical host contract");
     let host_contract = &production[host_start..engine_start];
     assert!(host_contract.contains("fn program_rir(&self, program:"));
@@ -2957,7 +3029,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .nth(1)
         .and_then(|source| {
             source
-                .split("impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost")
+                .split("impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeDomain")
                 .next()
         })
         .expect("ordinary binding state");
