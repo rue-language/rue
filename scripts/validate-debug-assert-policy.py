@@ -73,7 +73,12 @@ ALLOWANCES = {
         1, "redundant declaration publication state check"
     ),
     "crates/rue-compiler/src/semantic_query_nucleus.rs": Allowance(1, "redundant semantic query category check"),
-    "crates/rue-compiler/src/session.rs": Allowance(3, "redundant rooted-session phase and provenance checks"),
+    "crates/rue-compiler/src/session/import_discovery_owner.rs": Allowance(
+        1, "redundant import-discovery revision-state check"
+    ),
+    "crates/rue-compiler/src/session/program_artifacts.rs": Allowance(
+        2, "redundant rooted-session phase and provenance checks"
+    ),
     "crates/rue-compiler/src/source_identity.rs": Allowance(4, "redundant normalized-path representation checks"),
     "crates/rue-compiler/src/source_snapshot.rs": Allowance(1, "redundant source arena identity check"),
     "crates/rue-error/src/lib.rs": Allowance(1, "redundant diagnostic rendering bounds check"),

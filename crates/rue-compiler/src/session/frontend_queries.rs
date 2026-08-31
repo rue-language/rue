@@ -10,11 +10,6 @@ use super::*;
 #[derive(Debug)]
 pub(super) struct FrontendQueryDatabase {
     pub(super) revisioned: crate::revisioned_query_database::RevisionedQueryDatabase,
-    pub(super) discovery_attempt: Option<Arc<ImportDiscoveryRevisionArtifact>>,
-    pub(super) last_good_discovery: Option<Arc<ImportDiscoveryRevisionArtifact>>,
-    pub(super) prior_discovery: Option<Arc<ImportDiscoveryRevisionArtifact>>,
-    pub(super) oracle_import_fault: Option<Arc<ImportDiscoveryRevisionArtifact>>,
-    pub(super) direct_import_diagnostic: Option<Arc<FrontendDiagnosticSnapshot>>,
 }
 
 impl Default for FrontendQueryDatabase {
@@ -23,27 +18,6 @@ impl Default for FrontendQueryDatabase {
             revisioned: crate::revisioned_query_database::RevisionedQueryDatabase::new(
                 RevisionedQueryDatabaseConstructionToken::new(),
             ),
-            discovery_attempt: None,
-            last_good_discovery: None,
-            prior_discovery: None,
-            oracle_import_fault: None,
-            direct_import_diagnostic: None,
-        }
-    }
-}
-
-impl FrontendQueryDatabase {
-    pub(super) fn record_discovery_attempt(
-        &mut self,
-        artifact: Arc<ImportDiscoveryRevisionArtifact>,
-    ) {
-        if let Some(previous) = self.discovery_attempt.replace(artifact.clone()) {
-            if previous.source_revision() != artifact.source_revision() {
-                self.prior_discovery = Some(previous);
-            }
-        }
-        if artifact.status == ImportDiscoveryRevisionStatus::ClosedValid {
-            self.last_good_discovery = Some(artifact);
         }
     }
 }

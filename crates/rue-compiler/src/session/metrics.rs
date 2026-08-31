@@ -1,6 +1,7 @@
 //! Query instrumentation and session work accounting.
 
 use super::*;
+use crate::typed_query_store::AttemptView;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrontendQueryWork {
