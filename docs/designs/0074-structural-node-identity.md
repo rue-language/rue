@@ -109,7 +109,7 @@ The implementation must land with tests that fail if any of these break:
 - **Presentation identity**: diagnostic, cycle-render, and abort text is
   byte-identical to today's (the pinned cycle-render test from 2026-08-16
   must pass unchanged); `Debug` formatting still materializes
-  (`session.rs` pins `format!("{:?}", dependency.node)`).
+  (`session/tests.rs` pins `format!("{:?}", dependency.node)`).
 - **Emitted bytes**: compiled executables are byte-identical on the
   ADR-0071 reference workloads and the chain fixtures.
 - **Retention neutrality**: median peak RSS on Lattice within ±2% of
