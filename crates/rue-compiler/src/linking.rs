@@ -917,6 +917,61 @@ fn validate_runtime_archive_only_with_cancellation(
     validate_runtime_archive_with_cancellation(runtime_bytes, target, cancellation).map(|_| ())
 }
 
+/// Index the runtime archive for linking, decoding only what selection reads.
+///
+/// Two costs used to be paid on every link, both proportional to the whole
+/// archive rather than to what the link takes from it (RUE-1845). The embedded
+/// x86-64 runtime is 297 members and 4.2 MB, of which a typical link extracts
+/// one 45 KB member.
+///
+/// **The parse.** Selection asks only which members define which symbols, so
+/// members are indexed rather than decoded, and only the selected ones are
+/// parsed in full. `ArchiveIndex` documents what that narrows: a member whose
+/// section or relocation contents are malformed now fails when it is linked
+/// rather than when the archive is read, and a member that is never linked
+/// cannot affect the output.
+///
+/// **The ABI check.** `validate_runtime_inventory` is a conformance check over
+/// the whole archive — every required runtime helper present exactly once,
+/// reserved export IDs, the ABI version symbol — and it reads section flags and
+/// bytes, so it needs every member decoded. For the *embedded* archive it is
+/// also redundant: `pipeline_tests::test_embedded_runtimes_are_valid` runs
+/// exactly this validation over all three embedded runtimes, and the archive is
+/// `include_bytes!` data, so the bytes that test checks are the bytes every
+/// compile links. Re-deriving the verdict per process moved a build-time
+/// guarantee into every user's compile. A caller-supplied archive is not
+/// covered by that test and still takes the full parse and the full check.
+fn validated_runtime_index_with_cancellation<'a>(
+    runtime_bytes: &'a [u8],
+    target: Target,
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableLinkResult<rue_linker::ArchiveIndex<'a>> {
+    check_cancellation(cancellation)?;
+    if !std::ptr::eq(runtime_bytes, runtime_for_target(target)) {
+        validate_runtime_archive_with_cancellation(runtime_bytes, target, cancellation)?;
+    }
+    check_cancellation(cancellation)?;
+    let index =
+        rue_linker::ArchiveIndex::parse_strict_objects_with_cancellation(runtime_bytes, || {
+            cancellation.is_canceled()
+        })
+        .map_err(|error| {
+            if matches!(error, rue_linker::ArchiveError::Canceled) {
+                crate::session::PipelineRequestControl::Abort(rue_query::QueryAbort::Canceled)
+            } else {
+                compile_control(link_error(format!(
+                    "embedded rue-runtime archive is invalid: {error}"
+                )))
+            }
+        })?;
+    if index.is_empty() {
+        return Err(compile_control(link_error(
+            "embedded rue-runtime archive contains no object files",
+        )));
+    }
+    Ok(index)
+}
+
 fn validate_runtime_archive_with_cancellation(
     runtime_bytes: &[u8],
     target: Target,
@@ -1087,13 +1142,10 @@ fn finish_internal_link_with_cancellation(
                 .map_err(map_linker_control)?;
         }
         check_cancellation(cancellation)?;
-        let runtime = validate_runtime_archive_with_cancellation(
-            runtime_bytes,
-            options.target,
-            cancellation,
-        )?;
+        let runtime =
+            validated_runtime_index_with_cancellation(runtime_bytes, options.target, cancellation)?;
         linker
-            .add_archive_with_cancellation(runtime, &mut || cancellation.is_canceled())
+            .add_archive_index_with_cancellation(&runtime, &mut || cancellation.is_canceled())
             .map_err(map_linker_control)?;
     }
     let executable = linker
@@ -1814,6 +1866,114 @@ mod runtime_archive_validation_tests {
             Target::X86_64Linux => Target::Aarch64Linux,
             Target::Aarch64Linux | Target::Aarch64Macos => Target::X86_64Linux,
         }
+    }
+
+    #[test]
+    fn indexing_an_archive_yields_the_symbols_a_full_parse_yields() {
+        // RUE-1845: archive member selection reads only symbols, so members are
+        // indexed rather than decoded and only the selected ones are parsed in
+        // full. That is only sound if indexing produces the *same* symbols —
+        // selection is first-eligible in member order, so a divergence in
+        // either the member list or a member's symbols silently extracts a
+        // different member.
+        for &target in Target::all() {
+            let bytes = runtime_for_target(target);
+            let full = Archive::parse_strict_objects(bytes)
+                .unwrap_or_else(|error| panic!("{target} full parse: {error}"));
+            let index = rue_linker::ArchiveIndex::parse_strict_objects(bytes)
+                .unwrap_or_else(|error| panic!("{target} index parse: {error}"));
+
+            assert_eq!(
+                full.objects.len(),
+                index.len(),
+                "{target}: indexing found a different number of members"
+            );
+            for (position, (object, member)) in full.objects.iter().zip(index.members()).enumerate()
+            {
+                assert_eq!(
+                    object.machine, member.parsed.machine,
+                    "{target} member {position}: machine differs"
+                );
+                assert_eq!(
+                    object.format, member.parsed.format,
+                    "{target} member {position}: format differs"
+                );
+                assert_eq!(
+                    object.symbols.len(),
+                    member.parsed.symbols.len(),
+                    "{target} member {position}: symbol count differs"
+                );
+                for (a, b) in object.symbols.iter().zip(&member.parsed.symbols) {
+                    assert_eq!(a.name, b.name, "{target} member {position}: name");
+                    assert_eq!(
+                        a.section_index, b.section_index,
+                        "{target} member {position}: section index for `{}`",
+                        a.name
+                    );
+                    assert_eq!(
+                        a.value, b.value,
+                        "{target} member {position}: value for `{}`",
+                        a.name
+                    );
+                    assert_eq!(
+                        a.size, b.size,
+                        "{target} member {position}: size for `{}`",
+                        a.name
+                    );
+                    assert_eq!(
+                        a.binding, b.binding,
+                        "{target} member {position}: binding for `{}`",
+                        a.name
+                    );
+                    assert_eq!(
+                        a.sym_type, b.sym_type,
+                        "{target} member {position}: type for `{}`",
+                        a.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn indexing_the_embedded_runtime_does_not_parse_every_member() {
+        // The point of the index (RUE-1845): a fresh compile stops decoding the
+        // whole archive. `RUNTIME_ARCHIVE_PARSES` counts the whole-archive
+        // decode, so the embedded path must not reach it — its ABI conformance
+        // is established by `test_embedded_runtimes_are_valid` at build time,
+        // over the same `include_bytes!` bytes every compile links.
+        let target = Target::X86_64Linux;
+        let before = RUNTIME_ARCHIVE_PARSES.load(std::sync::atomic::Ordering::Relaxed);
+        let index = validated_runtime_index_with_cancellation(
+            runtime_for_target(target),
+            target,
+            &rue_query::CancellationToken::default(),
+        )
+        .expect("the embedded runtime indexes");
+        let after = RUNTIME_ARCHIVE_PARSES.load(std::sync::atomic::Ordering::Relaxed);
+
+        assert!(!index.is_empty(), "the embedded runtime has members");
+        assert_eq!(
+            before, after,
+            "indexing the embedded runtime fell back to a whole-archive parse"
+        );
+
+        // A caller-supplied archive is not covered by that build-time test, so
+        // it still takes the full parse and the full ABI check.
+        let supplied = runtime_for_target(target).to_vec();
+        let before = RUNTIME_ARCHIVE_PARSES.load(std::sync::atomic::Ordering::Relaxed);
+        validated_runtime_index_with_cancellation(
+            &supplied,
+            target,
+            &rue_query::CancellationToken::default(),
+        )
+        .expect("a copy of the embedded runtime is still a valid runtime");
+        let after = RUNTIME_ARCHIVE_PARSES.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            before + 1,
+            after,
+            "a caller-supplied archive must still be fully validated"
+        );
     }
 
     #[test]

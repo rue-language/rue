@@ -6,7 +6,7 @@ use ahash::{AHashMap, AHashSet};
 use rue_target::Target;
 use tracing::info_span;
 
-use crate::archive::Archive;
+use crate::archive::{Archive, ArchiveIndex};
 use crate::constants::{
     ELF_MAGIC, ELF64_EHDR_SIZE, ELF64_PHDR_SIZE, ELFCLASS64, ELFDATA2LSB, ET_EXEC, EV_CURRENT,
     PF_R, PF_W, PF_X, PT_LOAD,
@@ -880,6 +880,12 @@ pub enum LinkError {
         symbol_index: usize,
         symbol_count: usize,
     },
+    /// An archive member the link selected failed to decode.
+    ///
+    /// Selection reads only symbols, so a member whose section or relocation
+    /// contents are malformed surfaces here — when the link needs it — rather
+    /// than when the archive was read (RUE-1845).
+    ArchiveMemberParse { member: String, source: String },
     /// Feature not yet implemented.
     NotImplemented(&'static str),
 }
@@ -971,6 +977,9 @@ impl std::fmt::Display for LinkError {
                     "relocation references invalid symbol index {} (object has {} symbols)",
                     symbol_index, symbol_count
                 )
+            }
+            LinkError::ArchiveMemberParse { member, source } => {
+                write!(f, "failed to parse archive member '{member}': {source}")
             }
             LinkError::NotImplemented(feature) => {
                 write!(f, "{} not yet implemented", feature)
@@ -1313,13 +1322,78 @@ impl Linker {
         cancellation: &mut impl FnMut() -> bool,
     ) -> Result<(), LinkError> {
         check_cancellation(cancellation)?;
-        // Convert to a Vec we can index into
-        let archive_objects: Vec<ObjectFile> = archive.objects.into_iter().collect();
+        let archive_objects: Vec<ObjectFile> = archive.objects;
+        let selected = {
+            let member_symbols: Vec<&[Symbol]> = archive_objects
+                .iter()
+                .map(|object| object.symbols.as_slice())
+                .collect();
+            self.select_archive_members(&member_symbols, cancellation)?
+        };
 
-        // Decide which members are needed. Every name below is borrowed from
-        // `self` or from `archive_objects` — both outlive this block — so
-        // resolution copies no symbol names; scoping the borrows here lets the
-        // selected members move into `self` afterwards.
+        // Now actually add the selected objects
+        for (idx, object) in archive_objects.into_iter().enumerate() {
+            check_cancellation(cancellation)?;
+            if selected[idx] {
+                self.add_object_with_cancellation(object, cancellation)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Add the members of an indexed archive that this link needs.
+    ///
+    /// The counterpart of [`Linker::add_archive_with_cancellation`] for an
+    /// archive that was indexed rather than fully parsed: selection reads the
+    /// indexed symbols, and only the selected members are decoded (RUE-1845).
+    /// A member whose contents are malformed therefore fails here, at the point
+    /// the link needs it, rather than when the archive was read.
+    pub fn add_archive_index_with_cancellation(
+        &mut self,
+        index: &ArchiveIndex<'_>,
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<(), LinkError> {
+        check_cancellation(cancellation)?;
+        let selected = {
+            let member_symbols: Vec<&[Symbol]> = index
+                .members()
+                .iter()
+                .map(|member| member.parsed.symbols.as_slice())
+                .collect();
+            self.select_archive_members(&member_symbols, cancellation)?
+        };
+
+        for (member, take) in index.members().iter().zip(selected) {
+            check_cancellation(cancellation)?;
+            if !take {
+                continue;
+            }
+            let object = ObjectFile::parse_with_cancellation(member.data, &mut *cancellation)
+                .map_err(|source| match source {
+                    crate::elf::ParseError::Canceled => LinkError::Canceled,
+                    source => LinkError::ArchiveMemberParse {
+                        member: member.name.clone(),
+                        source: source.to_string(),
+                    },
+                })?;
+            self.add_object_with_cancellation(object, cancellation)?;
+        }
+
+        Ok(())
+    }
+
+    /// Decide which archive members this link needs, reading only their symbols.
+    ///
+    /// Shared by both archive entry points so an owned archive and an indexed
+    /// one make identical choices. Every name below is borrowed from `self` or
+    /// from `member_symbols` — both outlive this call — so resolution copies no
+    /// symbol names.
+    fn select_archive_members(
+        &self,
+        member_symbols: &[&[Symbol]],
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<Vec<bool>, LinkError> {
         let selected: Vec<bool> = {
             // Map each symbol to every member that defines it, in archive member
             // order. A last-writer-wins `AHashMap::insert` index would instead bind
@@ -1329,9 +1403,9 @@ impl Linker {
             // Retaining the ordered provider list keeps selection first-eligible and
             // independent of hash iteration order.
             let mut symbol_providers: AHashMap<&str, Vec<usize>> = AHashMap::new();
-            for (obj_idx, obj) in archive_objects.iter().enumerate() {
+            for (obj_idx, symbols) in member_symbols.iter().enumerate() {
                 check_cancellation(cancellation)?;
-                for sym in &obj.symbols {
+                for sym in symbols.iter() {
                     check_cancellation(cancellation)?;
                     if provides_definition(sym) {
                         symbol_providers.entry(&sym.name).or_default().push(obj_idx);
@@ -1340,7 +1414,7 @@ impl Linker {
             }
 
             // Track which archive objects we've selected and which symbols are defined
-            let mut selected: Vec<bool> = vec![false; archive_objects.len()];
+            let mut selected: Vec<bool> = vec![false; member_symbols.len()];
             let mut defined: AHashSet<&str> =
                 self.global_symbols.keys().map(String::as_str).collect();
 
@@ -1395,7 +1469,7 @@ impl Linker {
                 // The member's own definitions satisfy later references, and its
                 // own references join the worklist — the transitive step the
                 // fixed-point rescan used to perform.
-                for sym in &archive_objects[obj_idx].symbols {
+                for sym in member_symbols[obj_idx].iter() {
                     check_cancellation(cancellation)?;
                     if provides_definition(sym) {
                         defined.insert(&sym.name);
@@ -1408,16 +1482,7 @@ impl Linker {
 
             selected
         };
-
-        // Now actually add the selected objects
-        for (idx, obj) in archive_objects.into_iter().enumerate() {
-            check_cancellation(cancellation)?;
-            if selected[idx] {
-                self.add_object_with_cancellation(obj, cancellation)?;
-            }
-        }
-
-        Ok(())
+        Ok(selected)
     }
 
     /// Link all objects and produce an executable.

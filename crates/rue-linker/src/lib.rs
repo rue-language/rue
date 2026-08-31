@@ -18,10 +18,10 @@ mod linker;
 pub mod macho;
 mod util;
 
-pub use archive::{Archive, ArchiveError};
+pub use archive::{Archive, ArchiveError, ArchiveIndex, ArchiveMember};
 pub use elf::{
-    ElfMachine, ObjectFile, ObjectFormat, Relocation, RelocationType, Section, SectionFlags,
-    StructuredObject, StructuredRelocation, Symbol, SymbolBinding, SymbolType,
+    ElfMachine, ObjectFile, ObjectFormat, ObjectSymbols, Relocation, RelocationType, Section,
+    SectionFlags, StructuredObject, StructuredRelocation, Symbol, SymbolBinding, SymbolType,
 };
 pub use emit::{CodeRelocation, ObjectBuilder};
 pub use linker::{LinkError, Linker};

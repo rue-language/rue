@@ -3,7 +3,7 @@
 //! This module parses Unix ar archives, which are used for static libraries.
 //! Rust's `crate-type = "staticlib"` produces these.
 
-use crate::elf::{ObjectFile, ParseError};
+use crate::elf::{ObjectFile, ObjectSymbols, ParseError};
 
 /// AR archive magic bytes.
 const AR_MAGIC: &[u8] = b"!<arch>\n";
@@ -105,142 +105,241 @@ impl Archive {
         strict_objects: bool,
         cancellation: &mut impl FnMut() -> bool,
     ) -> Result<Self, ArchiveError> {
+        let members = collect_members(data, strict_objects, cancellation, |member, cancel| {
+            ObjectFile::parse_with_cancellation(member, cancel)
+        })?;
+        Ok(Archive {
+            objects: members.into_iter().map(|member| member.parsed).collect(),
+        })
+    }
+}
+
+/// One object member of an archive, with whatever was decoded from it.
+#[derive(Debug)]
+pub struct ArchiveMember<'a, T> {
+    /// The member's name as recorded in the archive.
+    pub name: String,
+    /// The member's bytes, borrowed from the archive.
+    pub data: &'a [u8],
+    /// What `collect_members` decoded from `data`.
+    pub parsed: T,
+}
+
+/// Walk an archive's members in order, decoding each with `parse_member`.
+///
+/// The member filtering is here and nowhere else, so every view of an archive
+/// agrees on which members exist and in what order — which archive member
+/// selection depends on, since it extracts the first eligible provider in
+/// member order.
+fn collect_members<'a, T>(
+    data: &'a [u8],
+    strict_objects: bool,
+    cancellation: &mut impl FnMut() -> bool,
+    mut parse_member: impl FnMut(&'a [u8], &mut dyn FnMut() -> bool) -> Result<T, ParseError>,
+) -> Result<Vec<ArchiveMember<'a, T>>, ArchiveError> {
+    if cancellation() {
+        return Err(ArchiveError::Canceled);
+    }
+    // Check magic
+    if data.len() < AR_MAGIC.len() {
+        return Err(ArchiveError::TooShort);
+    }
+    if &data[..AR_MAGIC.len()] != AR_MAGIC {
+        return Err(ArchiveError::InvalidMagic);
+    }
+
+    let mut members = Vec::new();
+    let mut offset = AR_MAGIC.len();
+
+    loop {
         if cancellation() {
             return Err(ArchiveError::Canceled);
         }
-        // Check magic
-        if data.len() < AR_MAGIC.len() {
-            return Err(ArchiveError::TooShort);
-        }
-        if &data[..AR_MAGIC.len()] != AR_MAGIC {
-            return Err(ArchiveError::InvalidMagic);
-        }
-
-        let mut objects = Vec::new();
-        let mut offset = AR_MAGIC.len();
-
-        loop {
-            if cancellation() {
-                return Err(ArchiveError::Canceled);
-            }
-            let header_end = checked_offset_add(offset, HEADER_SIZE)?;
-            if header_end > data.len() {
-                if strict_objects && offset != data.len() {
-                    return Err(ArchiveError::TooShort);
-                }
-                break;
-            }
-
-            // Parse header (60 bytes):
-            // - Name:      16 bytes (space-padded, may end with '/')
-            // - Timestamp: 12 bytes (decimal ASCII)
-            // - Owner ID:   6 bytes (decimal ASCII)
-            // - Group ID:   6 bytes (decimal ASCII)
-            // - Mode:       8 bytes (octal ASCII)
-            // - Size:      10 bytes (decimal ASCII)
-            // - Terminator: 2 bytes ("`\n")
-            let header = &data[offset..header_end];
-
-            // Name: first 16 bytes
-            let name = std::str::from_utf8(&header[0..16])
-                .map_err(|_| ArchiveError::InvalidHeader("invalid name encoding".into()))?
-                .trim();
-
-            // Size: bytes 48-58 (10 bytes), decimal ASCII
-            let size_str = std::str::from_utf8(&header[48..58])
-                .map_err(|_| ArchiveError::InvalidHeader("invalid size encoding".into()))?
-                .trim();
-            let size: usize = size_str.parse().map_err(|_| {
-                ArchiveError::InvalidHeader(format!("invalid size: '{}'", size_str))
-            })?;
-
-            // Header terminator should be "`\n"
-            if &header[58..60] != b"`\n" {
-                return Err(ArchiveError::InvalidHeader("invalid terminator".into()));
-            }
-
-            offset = header_end;
-
-            // Handle BSD long filename format (#1/N where N is the name length)
-            // The real filename is embedded at the start of the member data.
-            let (actual_name, name_len) = if name.starts_with("#1/") {
-                let name_len: usize = name[3..].trim().parse().map_err(|_| {
-                    ArchiveError::InvalidHeader(format!(
-                        "invalid BSD name length: '{}'",
-                        &name[3..]
-                    ))
-                })?;
-                // The actual name is at the start of the member data
-                let name_end = checked_offset_add(offset, name_len)?;
-                if name_end > data.len() {
-                    return Err(ArchiveError::TooShort);
-                }
-                let actual_name = std::str::from_utf8(&data[offset..name_end])
-                    .map_err(|_| ArchiveError::InvalidHeader("invalid BSD name encoding".into()))?
-                    .trim_end_matches('\0')
-                    .to_string();
-                (actual_name, name_len)
-            } else {
-                (name.to_string(), 0)
-            };
-
-            // Skip special entries:
-            // - "/" or "/SYM64/" : Symbol table (GNU/LLVM style)
-            // - "//" : Long filename table (GNU style)
-            // - "__.SYMDEF" or "__.SYMDEF SORTED" : Symbol table (BSD style)
-            let is_special = actual_name == "/"
-                || actual_name == "//"
-                || actual_name == "/SYM64/"
-                || actual_name.starts_with("__.SYMDEF");
-
-            if is_special {
-                offset = checked_offset_add(offset, size)?;
-                // Pad to even boundary
-                if offset % 2 == 1 {
-                    offset = checked_offset_add(offset, 1)?;
-                }
-                continue;
-            }
-
-            // Read member data (skip over BSD long filename if present)
-            let member_start = checked_offset_add(offset, name_len)?;
-            let member_size = size.checked_sub(name_len).ok_or(ArchiveError::Overflow)?;
-            let end_offset = checked_offset_add(member_start, member_size)?;
-            if end_offset > data.len() {
+        let header_end = checked_offset_add(offset, HEADER_SIZE)?;
+        if header_end > data.len() {
+            if strict_objects && offset != data.len() {
                 return Err(ArchiveError::TooShort);
             }
-            let member_data = &data[member_start..end_offset];
+            break;
+        }
 
-            // Try to parse as object file (ELF or Mach-O).
-            // Non-object members (e.g., LLVM bitcode files from LTO builds) are skipped.
-            match ObjectFile::parse_with_cancellation(member_data, &mut *cancellation) {
-                Ok(obj) => objects.push(obj),
-                Err(crate::elf::ParseError::Canceled) => return Err(ArchiveError::Canceled),
-                Err(source) if strict_objects && looks_like_native_object(member_data) => {
-                    return Err(ArchiveError::ObjectMemberParse {
-                        member: actual_name,
-                        source,
-                    });
-                }
-                Err(_) => {
-                    // Member is not a valid object file. This is common for:
-                    // - LLVM bitcode files (.bc) in LTO-enabled builds
-                    // - Rust metadata files
-                    // - Other non-object archive members
-                    // We silently skip these since we only need object files.
-                }
+        // Parse header (60 bytes):
+        // - Name:      16 bytes (space-padded, may end with '/')
+        // - Timestamp: 12 bytes (decimal ASCII)
+        // - Owner ID:   6 bytes (decimal ASCII)
+        // - Group ID:   6 bytes (decimal ASCII)
+        // - Mode:       8 bytes (octal ASCII)
+        // - Size:      10 bytes (decimal ASCII)
+        // - Terminator: 2 bytes ("`\n")
+        let header = &data[offset..header_end];
+
+        // Name: first 16 bytes
+        let name = std::str::from_utf8(&header[0..16])
+            .map_err(|_| ArchiveError::InvalidHeader("invalid name encoding".into()))?
+            .trim();
+
+        // Size: bytes 48-58 (10 bytes), decimal ASCII
+        let size_str = std::str::from_utf8(&header[48..58])
+            .map_err(|_| ArchiveError::InvalidHeader("invalid size encoding".into()))?
+            .trim();
+        let size: usize = size_str
+            .parse()
+            .map_err(|_| ArchiveError::InvalidHeader(format!("invalid size: '{}'", size_str)))?;
+
+        // Header terminator should be "`\n"
+        if &header[58..60] != b"`\n" {
+            return Err(ArchiveError::InvalidHeader("invalid terminator".into()));
+        }
+
+        offset = header_end;
+
+        // Handle BSD long filename format (#1/N where N is the name length)
+        // The real filename is embedded at the start of the member data.
+        let (actual_name, name_len) = if name.starts_with("#1/") {
+            let name_len: usize = name[3..].trim().parse().map_err(|_| {
+                ArchiveError::InvalidHeader(format!("invalid BSD name length: '{}'", &name[3..]))
+            })?;
+            // The actual name is at the start of the member data
+            let name_end = checked_offset_add(offset, name_len)?;
+            if name_end > data.len() {
+                return Err(ArchiveError::TooShort);
             }
+            let actual_name = std::str::from_utf8(&data[offset..name_end])
+                .map_err(|_| ArchiveError::InvalidHeader("invalid BSD name encoding".into()))?
+                .trim_end_matches('\0')
+                .to_string();
+            (actual_name, name_len)
+        } else {
+            (name.to_string(), 0)
+        };
 
+        // Skip special entries:
+        // - "/" or "/SYM64/" : Symbol table (GNU/LLVM style)
+        // - "//" : Long filename table (GNU style)
+        // - "__.SYMDEF" or "__.SYMDEF SORTED" : Symbol table (BSD style)
+        let is_special = actual_name == "/"
+            || actual_name == "//"
+            || actual_name == "/SYM64/"
+            || actual_name.starts_with("__.SYMDEF");
+
+        if is_special {
             offset = checked_offset_add(offset, size)?;
             // Pad to even boundary
             if offset % 2 == 1 {
                 offset = checked_offset_add(offset, 1)?;
             }
+            continue;
         }
 
-        Ok(Archive { objects })
+        // Read member data (skip over BSD long filename if present)
+        let member_start = checked_offset_add(offset, name_len)?;
+        let member_size = size.checked_sub(name_len).ok_or(ArchiveError::Overflow)?;
+        let end_offset = checked_offset_add(member_start, member_size)?;
+        if end_offset > data.len() {
+            return Err(ArchiveError::TooShort);
+        }
+        let member_data = &data[member_start..end_offset];
+
+        // Try to parse as object file (ELF or Mach-O).
+        // Non-object members (e.g., LLVM bitcode files from LTO builds) are skipped.
+        match parse_member(member_data, &mut *cancellation) {
+            Ok(parsed) => members.push(ArchiveMember {
+                name: actual_name,
+                data: member_data,
+                parsed,
+            }),
+            Err(crate::elf::ParseError::Canceled) => return Err(ArchiveError::Canceled),
+            Err(source) if strict_objects && looks_like_native_object(member_data) => {
+                return Err(ArchiveError::ObjectMemberParse {
+                    member: actual_name,
+                    source,
+                });
+            }
+            Err(_) => {
+                // Member is not a valid object file. This is common for:
+                // - LLVM bitcode files (.bc) in LTO-enabled builds
+                // - Rust metadata files
+                // - Other non-object archive members
+                // We silently skip these since we only need object files.
+            }
+        }
+
+        offset = checked_offset_add(offset, size)?;
+        // Pad to even boundary
+        if offset % 2 == 1 {
+            offset = checked_offset_add(offset, 1)?;
+        }
     }
 
+    Ok(members)
+}
+
+/// An archive indexed for member selection: every member's symbols, plus the
+/// bytes needed to decode that member in full once it is actually selected.
+///
+/// Selection asks only which members define which symbols, and that answer
+/// never depends on section contents or relocations — so decoding those for the
+/// members a link discards is pure waste. The embedded runtime archive is 297
+/// members, of which a typical link extracts one (RUE-1845).
+///
+/// The validation this performs is correspondingly narrower than
+/// [`Archive::parse_strict_objects`]: every member's headers and symbol table
+/// must parse, but a member whose *section or relocation contents* are
+/// malformed is caught when it is linked rather than when the archive is read.
+/// A member that is never selected never reaches the linker, so its contents
+/// cannot affect the output.
+#[derive(Debug)]
+pub struct ArchiveIndex<'a> {
+    members: Vec<ArchiveMember<'a, ObjectSymbols>>,
+}
+
+impl<'a> ArchiveIndex<'a> {
+    /// Index an archive, rejecting members that advertise a supported native
+    /// object magic but whose headers or symbol table do not parse.
+    #[must_use = "parsing returns a Result that must be checked"]
+    pub fn parse_strict_objects(data: &'a [u8]) -> Result<Self, ArchiveError> {
+        Self::parse_impl(data, true, &mut || false)
+    }
+
+    /// Index a strict archive with bounded caller-owned cancellation checks.
+    pub fn parse_strict_objects_with_cancellation(
+        data: &'a [u8],
+        mut cancellation: impl FnMut() -> bool,
+    ) -> Result<Self, ArchiveError> {
+        Self::parse_impl(data, true, &mut cancellation)
+    }
+
+    fn parse_impl(
+        data: &'a [u8],
+        strict_objects: bool,
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<Self, ArchiveError> {
+        let members = collect_members(data, strict_objects, cancellation, |member, cancel| {
+            ObjectFile::parse_symbols_with_cancellation(member, cancel)
+        })?;
+        Ok(Self { members })
+    }
+
+    /// The indexed members, in archive order.
+    #[must_use]
+    pub fn members(&self) -> &[ArchiveMember<'a, ObjectSymbols>] {
+        &self.members
+    }
+
+    /// Returns the number of object members.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.members.len()
+    }
+
+    /// Returns true if the archive contains no object members.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+}
+
+impl Archive {
     /// Returns true if the archive contains no object files.
     #[must_use]
     pub fn is_empty(&self) -> bool {
