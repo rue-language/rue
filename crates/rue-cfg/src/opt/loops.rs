@@ -392,7 +392,7 @@ pub(crate) fn ensure_preheader(
     lp: &NaturalLoop,
     type_pool: &FrozenTypeInternPool,
 ) -> Result<BlockId, CfgOptimizationError> {
-    ensure_preheader_transaction(cfg, lp, type_pool, PayloadFailureInjection::default())
+    ensure_preheader_with_injection(cfg, lp, type_pool, PayloadFailureInjection::default())
 }
 
 #[derive(Default)]
@@ -424,7 +424,7 @@ impl PayloadFailureInjection {
             let stage = self.next;
             self.next += 1;
             if self.fail_at == Some(stage) {
-                // Deterministic corruption of the private candidate.
+                // Deterministic corruption of the private optimizer editor.
                 // Verification must reject it before owner publication.
                 cfg.get_block_mut(ph).terminator = Terminator::None;
             }
@@ -434,29 +434,31 @@ impl PayloadFailureInjection {
     }
 }
 
-fn ensure_preheader_transaction(
+fn ensure_preheader_with_injection(
     cfg: &mut Cfg,
     lp: &NaturalLoop,
     type_pool: &FrozenTypeInternPool,
     mut injection: PayloadFailureInjection,
 ) -> Result<BlockId, CfgOptimizationError> {
     // Reusing an existing unconditional outside predecessor is a proof about
-    // the owner we were given, not an edit. Do it before creating the private
-    // transaction: the caller keeps the same owner and no validation or test
-    // injection work is needed on this no-mutation path.
+    // the owner we were given, not an edit. Do it before entering the
+    // materialization path: no validation or test injection work is needed on
+    // this no-mutation path.
     let classification = classify_preheader(cfg, lp);
     if let Some(ph) = classification.reusable {
         return Ok(ph);
     }
 
-    let mut editor = cfg.clone();
-    let ph = ensure_preheader_in(&mut editor, lp, &classification.outside, &mut injection)?;
-    injection.before_validation(&mut editor, ph);
+    // `cfg` is the optimizer's private editor. A failed edit can leave it
+    // poisoned, but the error propagates to `publish_optimization`, whose
+    // `pass_result?` discards the editor before it can become a `ValidatedCfg`.
+    let ph = ensure_preheader_in(cfg, lp, &classification.outside, &mut injection)?;
+    injection.before_validation(cfg, ph);
     // Validate the materialized preheader with the materialization verifier, NOT
     // the strict `verify_with_type_pool`. Preheader materialization runs
     // mid-pipeline during LICM (RUE-927), between `simplify` and the pipeline's
     // final DCE, so the CFG legitimately carries two kinds of transient debris
-    // that DCE has not swept yet and that this transaction did not introduce:
+    // that DCE has not swept yet and that this edit did not introduce:
     //   * detached-but-in-arena dead values left by `forward`/`cse` — tolerated
     //     because the check does not require complete attachment; and
     //   * pre-DCE husks — unreachable blocks whose stale terminators still pass
@@ -469,10 +471,8 @@ fn ensure_preheader_transaction(
     // missing terminator) is still rejected before the owner is published. The
     // pipeline's final `finish_after_optimization` re-verifies the whole graph
     // strictly once DCE has removed the husks.
-    editor
-        .verify_materialization_with_type_pool(type_pool)
+    cfg.verify_materialization_with_type_pool(type_pool)
         .map_err(CfgOptimizationError::Verification)?;
-    *cfg = editor;
     Ok(ph)
 }
 
@@ -492,9 +492,9 @@ fn test_preheader_pred_scan_count() -> usize {
 }
 
 /// Classify a loop's header predecessors once, retaining the outside set for
-/// the materialization edit. Reuse is proved against the original owner before
-/// any transaction clone; materialization receives this same classification so
-/// it does not rescan the owner or its clone.
+/// the materialization edit. Reuse is proved before materialization; the
+/// in-place edit receives this same classification so it does not rescan the
+/// owner.
 fn classify_preheader(cfg: &Cfg, lp: &NaturalLoop) -> PreheaderClassification {
     let header = lp.header;
     #[cfg(test)]
@@ -1007,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn preheader_reuse_is_a_noop_before_transaction_and_verification() {
+    fn preheader_reuse_is_a_noop_before_materialization_and_verification() {
         let (mut cfg, entry, header, _body, _exit) = single_loop_goto_entry();
         let dom = DominatorTree::compute(&cfg);
         let forest = loops(&cfg, &dom);
@@ -1020,11 +1020,11 @@ mod tests {
         let block_address = cfg.get_block(entry) as *const _;
         let value_address = cfg.get_inst(cfg.get_block(header).insts[0]) as *const _;
 
-        // A stage-zero injection would corrupt the private candidate if the
-        // transaction or its verifier were entered. Reuse must return before
-        // either one is touched.
+        // A stage-zero injection would poison the private editor if the
+        // materialization path or its verifier were entered. Reuse must return
+        // before either one is touched.
         Cfg::reset_test_clone_count();
-        let ph = ensure_preheader_transaction(
+        let ph = ensure_preheader_with_injection(
             &mut cfg,
             lp,
             &test_type_pool(),
@@ -1158,14 +1158,13 @@ mod tests {
     }
 
     #[test]
-    fn preheader_failure_at_every_payload_stage_leaves_owner_unchanged() {
+    fn preheader_failure_at_every_payload_stage_is_not_published() {
         // Three fallible payload stages are exercised: the preheader's Goto
         // arguments and one rewritten switch-case payload for each outside
-        // predecessor. The fourth stage forces publication-time verification
-        // to reject the finished private candidate. The transaction must
-        // discard its complete private owner at every boundary, including
-        // blocks, parameters, values, terminators, and payload side tables
-        // already changed by earlier stages.
+        // predecessor. The fourth stage forces materialization verification to
+        // reject the finished edit. Failures poison this private optimizer
+        // editor; `publish_optimization` must propagate the exact failure before
+        // publishing any of that partial state.
         let mut original = make_cfg();
         let entry = original.new_block();
         original.entry = entry;
@@ -1195,8 +1194,6 @@ mod tests {
 
         let forest = analyze(&original);
         let lp = loop_of(&forest, header);
-        let before_debug = format!("{original:?}");
-        let before_display = original.to_string();
         let before_shape = (
             original.block_count(),
             original.value_count(),
@@ -1206,7 +1203,7 @@ mod tests {
 
         for fail_at in 0..4 {
             let mut cfg = original.clone();
-            let error = ensure_preheader_transaction(
+            let error = ensure_preheader_with_injection(
                 &mut cfg,
                 lp,
                 &test_type_pool(),
@@ -1216,25 +1213,7 @@ mod tests {
                 },
             )
             .unwrap_err();
-            if fail_at < 3 {
-                assert!(matches!(
-                    error,
-                    CfgOptimizationError::Edit(CfgEditError::CapacityFailure { .. })
-                ));
-            } else {
-                assert!(matches!(error, CfgOptimizationError::Verification(_)));
-            }
-            assert_eq!(
-                format!("{cfg:?}"),
-                before_debug,
-                "debug owner at stage {fail_at}"
-            );
-            assert_eq!(
-                cfg.to_string(),
-                before_display,
-                "display at stage {fail_at}"
-            );
-            assert_eq!(
+            assert_ne!(
                 (
                     cfg.block_count(),
                     cfg.value_count(),
@@ -1242,8 +1221,44 @@ mod tests {
                     successors_of(&cfg, p2),
                 ),
                 before_shape,
-                "structural equality at stage {fail_at}"
+                "the private editor must retain partial state at stage {fail_at}"
             );
+
+            match (&error, fail_at) {
+                (
+                    CfgOptimizationError::Edit(CfgEditError::CapacityFailure {
+                        family: "goto args",
+                    }),
+                    0,
+                )
+                | (
+                    CfgOptimizationError::Edit(CfgEditError::CapacityFailure {
+                        family: "switch cases",
+                    }),
+                    1 | 2,
+                )
+                | (CfgOptimizationError::Verification(_), 3) => {}
+                (error, stage) => panic!("wrong failure at stage {stage}: {error:?}"),
+            }
+
+            let published =
+                crate::opt::publish_optimization(cfg, Err(error), &test_type_pool()).unwrap_err();
+            match (published, fail_at) {
+                (
+                    CfgOptimizationError::Edit(CfgEditError::CapacityFailure {
+                        family: "goto args",
+                    }),
+                    0,
+                )
+                | (
+                    CfgOptimizationError::Edit(CfgEditError::CapacityFailure {
+                        family: "switch cases",
+                    }),
+                    1 | 2,
+                )
+                | (CfgOptimizationError::Verification(_), 3) => {}
+                (error, stage) => panic!("publication changed stage {stage}: {error:?}"),
+            }
         }
     }
 
@@ -1545,9 +1560,8 @@ mod tests {
     #[test]
     fn many_materialized_preheaders_classify_once_per_loop() {
         // Each loop has two outside entries, forcing materialization. The
-        // classification carries that already-computed set into the private
-        // candidate, so one loop means one predecessor scan—not a scan for
-        // classification plus another scan in the owner and clone.
+        // classification carries that already-computed set into the in-place
+        // edit, so one loop means one predecessor scan.
         let mut cfg = make_cfg();
         let entry = cfg.new_block();
         cfg.entry = entry;
@@ -1577,7 +1591,7 @@ mod tests {
             ensure_preheader(&mut cfg, lp, &test_type_pool()).unwrap();
         }
         assert_eq!(cfg.block_count(), blocks_before + LOOPS);
-        assert_eq!(Cfg::test_clone_count(), LOOPS);
+        assert_eq!(Cfg::test_clone_count(), 0);
         assert_eq!(test_preheader_pred_scan_count(), LOOPS);
     }
 
