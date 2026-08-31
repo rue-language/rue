@@ -1374,7 +1374,7 @@ fn peer_one_body_authority_cannot_return() {
 fn integer_consumers_use_one_representation_independent_kernel() {
     let semantics = include_str!("integer_semantics.rs");
     let types = include_str!("types.rs");
-    let comptime = include_str!("sema/comptime.rs");
+    let comptime = crate::sema::COMPTIME_SOURCE;
 
     assert!(types.contains("pub fn integer_semantics(&self) -> Option<IntegerType>"));
     assert!(comptime.contains("integer.shift_i128"));
@@ -1395,7 +1395,7 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
     let type_inference = include_str!("sema/analysis/type_inference.rs");
     let control_flow = include_str!("sema/control_flow.rs");
     let comptime_adapter = include_str!("sema/comptime_eval.rs");
-    let canonical = include_str!("sema/comptime.rs");
+    let canonical = crate::sema::COMPTIME_SOURCE;
     for (name, source) in [
         ("inference", inference),
         ("type inference", type_inference),
@@ -1509,6 +1509,34 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
             include_str!("sema/call_resolution.rs"),
         ),
         ("sema/comptime", include_str!("sema/comptime.rs")),
+        (
+            "sema/comptime/frames",
+            include_str!("sema/comptime/frames.rs"),
+        ),
+        (
+            "sema/comptime/intrinsics",
+            include_str!("sema/comptime/intrinsics.rs"),
+        ),
+        (
+            "sema/comptime/model",
+            include_str!("sema/comptime/model.rs"),
+        ),
+        (
+            "sema/comptime/registry",
+            include_str!("sema/comptime/registry.rs"),
+        ),
+        (
+            "sema/comptime/sites",
+            include_str!("sema/comptime/sites.rs"),
+        ),
+        (
+            "sema/comptime/structured_type",
+            include_str!("sema/comptime/structured_type.rs"),
+        ),
+        (
+            "sema/comptime/value_domain_tests",
+            include_str!("sema/comptime/value_domain_tests.rs"),
+        ),
         ("sema/comptime_eval", include_str!("sema/comptime_eval.rs")),
         (
             "sema/consistency_tests",
@@ -2029,7 +2057,7 @@ fn structural_guard_enforces_thin_adapter_mutations() {
 
 #[test]
 fn structured_registry_authority_keeps_storage_keyed_and_identity_rich() {
-    let comptime = include_str!("sema/comptime.rs");
+    let comptime = crate::sema::COMPTIME_SOURCE;
     let stable = comptime
         .split("pub fn structured_type_authority<")
         .nth(1)
@@ -2061,7 +2089,7 @@ fn structured_registry_authority_keeps_storage_keyed_and_identity_rich() {
 
 #[test]
 fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
-    let comptime = include_str!("sema/comptime.rs");
+    let comptime = crate::sema::COMPTIME_SOURCE;
     let production = comptime
         .split("#[derive(Debug)]\npub struct ComptimeFrame")
         .nth(1)
@@ -2126,7 +2154,7 @@ fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
 
 #[test]
 fn diagnostic_hooks_are_keyed_by_the_engine_program() {
-    let comptime = include_str!("sema/comptime.rs");
+    let comptime = crate::sema::COMPTIME_SOURCE;
     let host = comptime
         .split("pub trait ComptimeHost {")
         .nth(1)
@@ -2189,7 +2217,7 @@ fn diagnostic_hooks_are_keyed_by_the_engine_program() {
 
 #[test]
 fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
-    let comptime = include_str!("sema/comptime.rs");
+    let comptime = crate::sema::COMPTIME_SOURCE;
     let ordinary = include_str!("sema/comptime_eval.rs");
     let facade = include_str!("lib.rs");
     for export in [
@@ -2329,15 +2357,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         !comptime.contains("resolve_comptime_integer_bound("),
         "integer bounds must not grow a competing host override seam"
     );
-    let test_start = comptime
-        .find("#[cfg(test)]\nmod value_domain_tests")
-        .expect("value-domain test module boundary");
-    let test_end = test_start
-        + comptime[test_start..]
-            .find("\n}\n\n#[derive(Debug)]")
-            .map(|offset| offset + 3)
-            .expect("value-domain test module end");
-    let production = format!("{}{}", &comptime[..test_start], &comptime[test_end..]);
+    let production = crate::sema::COMPTIME_PRODUCTION_SOURCE;
     let production_forbidden = [
         "LocalVar",
         "ParamInfo",
@@ -2962,7 +2982,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "frame cleanup must follow entry"
     );
 
-    let env_source = include_str!("sema/comptime.rs");
+    let env_source = crate::sema::COMPTIME_SOURCE;
     let env_start = env_source
         .find("pub struct ComptimeEnv")
         .expect("generic comptime environment declaration");
@@ -3005,7 +3025,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
 
 #[test]
 fn comptime_depth_has_one_canonical_authority() {
-    let comptime = include_str!("sema/comptime.rs");
+    let comptime = crate::sema::COMPTIME_SOURCE;
     let sema = include_str!("sema/mod.rs");
     let specialize = include_str!("specialize.rs");
     assert_eq!(
@@ -3685,6 +3705,34 @@ fn sema_diagnostics_use_the_friendly_type_display_authority() {
             include_str!("sema/call_resolution.rs"),
         ),
         ("sema/comptime", include_str!("sema/comptime.rs")),
+        (
+            "sema/comptime/frames",
+            include_str!("sema/comptime/frames.rs"),
+        ),
+        (
+            "sema/comptime/intrinsics",
+            include_str!("sema/comptime/intrinsics.rs"),
+        ),
+        (
+            "sema/comptime/model",
+            include_str!("sema/comptime/model.rs"),
+        ),
+        (
+            "sema/comptime/registry",
+            include_str!("sema/comptime/registry.rs"),
+        ),
+        (
+            "sema/comptime/sites",
+            include_str!("sema/comptime/sites.rs"),
+        ),
+        (
+            "sema/comptime/structured_type",
+            include_str!("sema/comptime/structured_type.rs"),
+        ),
+        (
+            "sema/comptime/value_domain_tests",
+            include_str!("sema/comptime/value_domain_tests.rs"),
+        ),
         ("sema/comptime_eval", include_str!("sema/comptime_eval.rs")),
         ("sema/context", include_str!("sema/context.rs")),
         ("sema/control_flow", include_str!("sema/control_flow.rs")),

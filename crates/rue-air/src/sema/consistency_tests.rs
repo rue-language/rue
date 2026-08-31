@@ -119,7 +119,7 @@ mod tests {
     const INTRINSICS_SOURCE: &str = include_str!("analysis/intrinsics.rs");
     const ORDINARY_ENGINE_SOURCE: &str = include_str!("ordinary_engine.rs");
     const COMPTIME_EVAL_SOURCE: &str = include_str!("comptime_eval.rs");
-    const COMPTIME_ENGINE_SOURCE: &str = include_str!("comptime.rs");
+    const COMPTIME_ENGINE_SOURCE: &str = crate::sema::COMPTIME_PRODUCTION_SOURCE;
     const SEMA_ROOT_SOURCE: &str = include_str!("mod.rs");
     const ANALYSIS_ROOT_SOURCE: &str = include_str!("analysis.rs");
     const INSTRUCTIONS_SOURCE: &str = include_str!("analysis/instructions.rs");
@@ -1456,7 +1456,7 @@ mod tests {
             ("ordinary_engine.rs", ORDINARY_ENGINE_SOURCE),
             ("fact_mode.rs", include_str!("fact_mode.rs")),
             ("comptime_eval.rs", include_str!("comptime_eval.rs")),
-            ("comptime.rs", include_str!("comptime.rs")),
+            ("comptime.rs", crate::sema::COMPTIME_SOURCE),
             ("declarations.rs", include_str!("declarations.rs")),
             (
                 "provider_body_host.rs",

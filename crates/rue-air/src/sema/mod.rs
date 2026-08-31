@@ -60,7 +60,12 @@ pub use binding_manifest::{
     SemanticDeclarationShell, SemanticDeclarationShellIdentity, SemanticDefinitionIdentity,
     SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
 };
+// RUE-1831: the comptime module tree as one string, for the structural
+// guards in `api_inventory` and `consistency_tests`. `comptime` itself
+// stays private; only the guard source crosses this boundary.
 pub use comptime::ComptimeMethodReceiverPolicy;
+#[cfg(test)]
+pub(crate) use comptime::{COMPTIME_PRODUCTION_SOURCE, COMPTIME_SOURCE};
 pub use comptime::{
     ComptimeAnonymousKind, ComptimeArgMode, ComptimeArrayLengthBinding, ComptimeCallAdmission,
     ComptimeCallArgument, ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCallPreparation,
