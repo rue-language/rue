@@ -531,6 +531,9 @@ pub(crate) struct CompilerBodyDurableSource<'a> {
     pub(super) dynamic_anonymous: Rc<std::cell::RefCell<CanonicalAnonymousNominalRegistry>>,
     pub(super) durable_payloads: Rc<std::cell::RefCell<BodyDurablePayloadCache>>,
     pub(super) source_paths: Rc<std::cell::RefCell<AHashMap<crate::FileId, Arc<str>>>>,
+    /// Visibility domains derived from `source_paths`, memoized per file
+    /// (RUE-1840). Lives and dies with the path table it is derived from.
+    pub(super) visibility_domains: Rc<rue_air::SemanticVisibilityDomainCache<crate::FileId>>,
     pub(crate) source_locators:
         Rc<std::cell::RefCell<AHashMap<ModuleId, rue_air::DurableBodySourceLocator>>>,
 }
@@ -560,6 +563,7 @@ impl<'a> CompilerBodyDurableSource<'a> {
             dynamic_anonymous: Rc::new(std::cell::RefCell::new(dynamic_anonymous)),
             durable_payloads: Rc::new(std::cell::RefCell::new(BodyDurablePayloadCache::default())),
             source_paths: Rc::new(std::cell::RefCell::new(source_paths)),
+            visibility_domains: Rc::new(rue_air::SemanticVisibilityDomainCache::default()),
             source_locators: Rc::new(std::cell::RefCell::new(source_locators)),
         }
     }
@@ -1064,6 +1068,14 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
 
     fn source_path(&self, file: crate::FileId) -> Option<Arc<str>> {
         self.source_paths.borrow().get(&file).cloned()
+    }
+
+    /// Memoized override of the deriving default: `from_file_path` is a path
+    /// parse and an `Arc<str>` allocation, and the resolver asks for the same
+    /// few files once per named-type resolution (RUE-1840).
+    fn visibility_domain(&self, file: crate::FileId) -> Option<rue_air::SemanticVisibilityDomain> {
+        self.visibility_domains
+            .domain(file, || self.source_path(file))
     }
 
     fn out_of_scope_integer_const_paths(

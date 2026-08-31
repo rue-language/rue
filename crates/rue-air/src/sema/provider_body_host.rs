@@ -914,6 +914,17 @@ pub trait DurableBodyLookupSource<K, M>: Clone {
     fn source_path(&self, _file: FileId) -> Option<Arc<str>> {
         None
     }
+    /// The visibility domain of a file, derived from its source path.
+    ///
+    /// `None` means the source has no path for the file at all, which callers
+    /// distinguish from a path that yields no domain. Implementors backed by a
+    /// path table should override this to memoize per file (RUE-1840): the
+    /// default derivation is a path parse plus an `Arc<str>` allocation, and
+    /// the same few files are asked for repeatedly.
+    fn visibility_domain(&self, file: FileId) -> Option<crate::SemanticVisibilityDomain> {
+        self.source_path(file)
+            .map(|path| crate::SemanticVisibilityDomain::from_file_path(Some(&path)))
+    }
     fn out_of_scope_integer_const_paths(&self, _current: &K, _name: &str) -> Vec<Arc<str>> {
         Vec::new()
     }
@@ -3521,10 +3532,9 @@ where
         AggregateFactsTrait::aggregate_source_path(&self.aggregate, span)
     }
     fn aggregate_visibility_domain(&self, file: FileId) -> crate::SemanticVisibilityDomain {
-        self.source.source_path(file).map_or_else(
-            || AggregateFactsTrait::aggregate_visibility_domain(&self.aggregate, file),
-            |path| crate::SemanticVisibilityDomain::from_file_path(Some(&path)),
-        )
+        self.source.visibility_domain(file).unwrap_or_else(|| {
+            AggregateFactsTrait::aggregate_visibility_domain(&self.aggregate, file)
+        })
     }
 }
 
@@ -3739,8 +3749,9 @@ where
         &self,
         authority: TypeRootAuthority,
     ) -> crate::SemanticVisibilityDomain {
-        let path = self.source.source_path(authority.file());
-        crate::SemanticVisibilityDomain::from_file_path(path.as_deref())
+        self.source
+            .visibility_domain(authority.file())
+            .unwrap_or_else(|| crate::SemanticVisibilityDomain::from_file_path(None))
     }
 
     fn type_syntax_named_type(
