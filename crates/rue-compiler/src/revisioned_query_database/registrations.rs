@@ -287,17 +287,28 @@ pub(crate) const REGISTRATION_MANIFEST: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
+#[cfg(test)]
 impl Default for RevisionedQueryDatabase {
     fn default() -> Self {
+        Self::new_canonical()
+    }
+}
+
+impl RevisionedQueryDatabase {
+    pub(crate) fn new(
+        _authority: crate::session::RevisionedQueryDatabaseConstructionToken,
+    ) -> Self {
+        Self::new_canonical()
+    }
+
+    fn new_canonical() -> Self {
         Self::with_declaration_memo_retention_and_concurrency(
             DECLARATION_QUERY_MEMO_RETENTION,
             crate::query_concurrency(),
             u32::MAX as usize,
         )
     }
-}
 
-impl RevisionedQueryDatabase {
     /// Construct the database with an explicit declaration-keyed memo
     /// retention. Production uses [`DECLARATION_QUERY_MEMO_RETENTION`];
     /// eviction-lifecycle tests pass a small cap so exceeding it stays cheap.
@@ -328,7 +339,7 @@ impl RevisionedQueryDatabase {
         )
     }
 
-    pub(super) fn with_declaration_memo_retention_and_concurrency(
+    fn with_declaration_memo_retention_and_concurrency(
         declaration_memo_retention: usize,
         query_concurrency: usize,
         max_interner_entries: usize,

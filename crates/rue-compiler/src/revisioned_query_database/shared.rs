@@ -796,3 +796,12 @@ pub(crate) struct RevisionedQueryDatabase {
         crate::session::ParseQueryRecord,
     >,
 }
+
+impl RevisionedQueryDatabase {
+    /// Runtime-wide retention belongs to the shared database owner rather than
+    /// any compiler phase. This is a read-only projection of the one canonical
+    /// `rue-query` runtime.
+    pub(crate) fn runtime_retention_metrics(&self) -> rue_query::RuntimeMetrics {
+        self.runtime.metrics()
+    }
+}

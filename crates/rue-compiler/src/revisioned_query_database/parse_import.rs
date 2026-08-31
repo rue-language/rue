@@ -1,4 +1,11 @@
 use super::*;
+
+// Program assembly is part of the parse/import authority: it publishes the
+// exact input views consumed by registered parse families and assembles their
+// retained terminals. Keeping it below this module does not add a query family
+// or a second runtime.
+mod program_assembly;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct ModuleQueryKey(pub(super) ModuleId);
 

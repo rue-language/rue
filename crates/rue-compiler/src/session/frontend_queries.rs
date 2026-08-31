@@ -20,7 +20,9 @@ pub(super) struct FrontendQueryDatabase {
 impl Default for FrontendQueryDatabase {
     fn default() -> Self {
         Self {
-            revisioned: crate::revisioned_query_database::RevisionedQueryDatabase::default(),
+            revisioned: crate::revisioned_query_database::RevisionedQueryDatabase::new(
+                RevisionedQueryDatabaseConstructionToken::new(),
+            ),
             discovery_attempt: None,
             last_good_discovery: None,
             prior_discovery: None,
