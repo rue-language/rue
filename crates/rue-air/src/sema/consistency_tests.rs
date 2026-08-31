@@ -119,7 +119,8 @@ mod tests {
     const INTRINSICS_SOURCE: &str = include_str!("analysis/intrinsics.rs");
     const ORDINARY_ENGINE_SOURCE: &str = include_str!("ordinary_engine.rs");
     const COMPTIME_EVAL_SOURCE: &str = include_str!("comptime_eval.rs");
-    const COMPTIME_ENGINE_SOURCE: &str = crate::sema::COMPTIME_PRODUCTION_SOURCE;
+    const COMPTIME_ENGINE_SOURCE: &str = include_str!("comptime/execution.rs");
+    const COMPTIME_STRUCTURED_TYPE_SOURCE: &str = include_str!("comptime/structured_type.rs");
     const SEMA_ROOT_SOURCE: &str = include_str!("mod.rs");
     const ANALYSIS_ROOT_SOURCE: &str = include_str!("analysis.rs");
     const INSTRUCTIONS_SOURCE: &str = include_str!("analysis/instructions.rs");
@@ -1149,7 +1150,7 @@ mod tests {
             "structured continuation driving must remain engine-private"
         );
         assert_eq!(
-            COMPTIME_ENGINE_SOURCE
+            COMPTIME_STRUCTURED_TYPE_SOURCE
                 .matches("impl<P, S, C, N, A, T, V, Sym, R> ComptimeStructuredTypeSuspension")
                 .count(),
             1,

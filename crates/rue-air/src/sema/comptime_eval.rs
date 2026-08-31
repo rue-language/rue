@@ -56,12 +56,13 @@ use rue_span::{FileId, Span};
 
 use super::comptime::{
     ComptimeAnonymousKind, ComptimeArgMode, ComptimeArrayLengthBinding, ComptimeCallAdmission,
-    ComptimeCallArgument, ComptimeCallKey, ComptimeCallPreparation, ComptimeDiagnosticSite,
-    ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile, ComptimeFrame, ComptimeHost,
-    ComptimeHostError, ComptimeHostResult, ComptimeIdentity, ComptimeMatchPattern,
-    ComptimeMethodDescriptor, ComptimeName, ComptimeNamedValueResolution, ComptimeOutcome,
-    ComptimeSelection, ComptimeSemanticRejection, ComptimeStructuredTypeResolution, ComptimeTrap,
-    ComptimeType,
+    ComptimeCallArgument, ComptimeCallHost, ComptimeCallKey, ComptimeCallPreparation,
+    ComptimeDiagnosticSite, ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile,
+    ComptimeFrame, ComptimeHostError, ComptimeHostResult, ComptimeHostTypes, ComptimeIdentity,
+    ComptimeIntrinsicHost, ComptimeMatchPattern, ComptimeMethodDescriptor, ComptimeName,
+    ComptimeNamedValueResolution, ComptimeOutcome, ComptimeProgramHost, ComptimeSelection,
+    ComptimeSemanticRejection, ComptimeStructuredTypeHost, ComptimeStructuredTypeResolution,
+    ComptimeTrap, ComptimeType, ComptimeTypeHost, ComptimeValueHost,
 };
 use super::context::{AnalysisContext, ConstValue};
 use super::info::FunctionCallInfo;
@@ -1326,7 +1327,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             callee_values: callee_values.clone(),
         };
         let preparation =
-            <Self as ComptimeHost>::prepare_comptime_call(self, admission, bound, span)
+            <Self as ComptimeCallHost>::prepare_comptime_call(self, admission, bound, span)
                 .map_err(super::comptime::ComptimeHostError::into_failure)?;
         let Some(preparation) = preparation else {
             return Ok(None);
@@ -1973,7 +1974,7 @@ where
 /// Local semantic adapter for the separated compile-time engine. The adapter only
 /// exposes facts and named semantic hooks; recursive instruction traversal
 /// remains in `comptime::ComptimeEngine`.
-impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H> {
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHostTypes for OrdinaryBodyEngine<'h, H> {
     type Type = Type;
     type Value = ConstValue;
     type Name = Spur;
@@ -1997,37 +1998,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         Spur,
         std::sync::Arc<[std::sync::Arc<str>]>,
     >;
-    fn prepare_structured_type_call(
-        &mut self,
-        _suspension: &Self::StructuredTypeSuspension,
-        _span: Span,
-    ) -> ComptimeOutcome<
-        Option<
-            ComptimeCallPreparation<
-                Self::Value,
-                Self::Type,
-                Self::Name,
-                Self::File,
-                Self::ProgramKey,
-                Self::CanonicalIdentity,
-                Self::Failure,
-                (),
-            >,
-        >,
-        Self::Failure,
-    > {
-        unreachable!("ordinary comptime type resolution is synchronous")
-    }
-    fn resume_structured_type_call(
-        &mut self,
-        _suspension: Self::StructuredTypeSuspension,
-        _result: ComptimeOutcome<Self::Value, Self::Failure>,
-    ) -> ComptimeOutcome<
-        ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
-        Self::Failure,
-    > {
-        unreachable!("ordinary comptime type resolution is synchronous")
-    }
+}
+
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeProgramHost for OrdinaryBodyEngine<'h, H> {
     fn check_canceled(&self) -> ComptimeHostResult<(), Self::Failure> {
         OrdinaryBodyEngine::check_canceled(self).map_err(ComptimeHostError::HostFailure)
     }
@@ -2115,6 +2088,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
             None => ComptimeNamedValueResolution::RuntimeDependent,
         })
     }
+}
+
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueHost for OrdinaryBodyEngine<'h, H> {
     fn match_pattern(
         &self,
         pattern: &ComptimeMatchPattern<Spur>,
@@ -2228,6 +2204,36 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
             site.span(),
         )
     }
+    fn const_expr_type(
+        &self,
+        _program: &Self::ProgramKey,
+        env: &ComptimeEnv<'_>,
+        inst_ref: InstRef,
+    ) -> Option<Type> {
+        OrdinaryBodyEngine::const_expr_type(self, env, inst_ref)
+    }
+    fn finish_arith(
+        &self,
+        result: CheckedIntegerResult,
+        ty: Option<Type>,
+        op: &str,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<Option<ConstValue>, Self::Failure> {
+        // The engine uses a distinct semantic token for unary negation so
+        // durable hosts can preserve its operation-specific wording. The
+        // ordinary body diagnostic remains the historical `-` spelling.
+        OrdinaryBodyEngine::finish_arith(
+            self,
+            result,
+            ty,
+            if op == "negation" { "-" } else { op },
+            site.span(),
+        )
+        .map_err(Into::into)
+    }
+}
+
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeHost for OrdinaryBodyEngine<'h, H> {
     fn resolve_named_array_length(
         &mut self,
         name: &Spur,
@@ -2350,14 +2356,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     ) -> ComptimeHostResult<(), Self::Failure> {
         OrdinaryBodyEngine::check_trivially_droppable(self, ty, site.span()).map_err(Into::into)
     }
-    fn const_expr_type(
-        &self,
-        _program: &Self::ProgramKey,
-        env: &ComptimeEnv<'_>,
-        inst_ref: InstRef,
-    ) -> Option<Type> {
-        OrdinaryBodyEngine::const_expr_type(self, env, inst_ref)
-    }
     fn type_name(&self, ty: &Type) -> String {
         self.format_type_name(*ty)
     }
@@ -2366,25 +2364,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
     }
     fn type_integer_semantics(&self, ty: &Type) -> Option<crate::integer_semantics::IntegerType> {
         ty.integer_semantics()
-    }
-    fn finish_arith(
-        &self,
-        result: CheckedIntegerResult,
-        ty: Option<Type>,
-        op: &str,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeHostResult<Option<ConstValue>, Self::Failure> {
-        // The engine uses a distinct semantic token for unary negation so
-        // durable hosts can preserve its operation-specific wording. The
-        // ordinary body diagnostic remains the historical `-` spelling.
-        OrdinaryBodyEngine::finish_arith(
-            self,
-            result,
-            ty,
-            if op == "negation" { "-" } else { op },
-            site.span(),
-        )
-        .map_err(Into::into)
     }
     fn resolve_named_type_value(
         &mut self,
@@ -2403,6 +2382,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         OrdinaryBodyEngine::resolve_comptime_type_path(self, file, segments, span)
             .map_err(Into::into)
     }
+}
+
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeCallHost for OrdinaryBodyEngine<'h, H> {
     fn resolve_module_comptime_callable(
         &mut self,
         file: FileId,
@@ -2602,6 +2584,40 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
             anchor: anchor.clone(),
         }
     }
+}
+
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeStructuredTypeHost for OrdinaryBodyEngine<'h, H> {
+    fn prepare_structured_type_call(
+        &mut self,
+        _suspension: &Self::StructuredTypeSuspension,
+        _span: Span,
+    ) -> ComptimeOutcome<
+        Option<
+            ComptimeCallPreparation<
+                Self::Value,
+                Self::Type,
+                Self::Name,
+                Self::File,
+                Self::ProgramKey,
+                Self::CanonicalIdentity,
+                Self::Failure,
+                (),
+            >,
+        >,
+        Self::Failure,
+    > {
+        unreachable!("ordinary comptime type resolution is synchronous")
+    }
+    fn resume_structured_type_call(
+        &mut self,
+        _suspension: Self::StructuredTypeSuspension,
+        _result: ComptimeOutcome<Self::Value, Self::Failure>,
+    ) -> ComptimeOutcome<
+        ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
+        Self::Failure,
+    > {
+        unreachable!("ordinary comptime type resolution is synchronous")
+    }
     fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
         &mut self,
         _program: &Self::ProgramKey,
@@ -2615,6 +2631,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
         )
     }
 }
+
+impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeIntrinsicHost for OrdinaryBodyEngine<'h, H> {}
 
 #[cfg(test)]
 mod binding_tests {

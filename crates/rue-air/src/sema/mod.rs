@@ -65,19 +65,21 @@ pub use binding_manifest::{
 // stays private; only the guard source crosses this boundary.
 pub use comptime::ComptimeMethodReceiverPolicy;
 #[cfg(test)]
-pub(crate) use comptime::{COMPTIME_PRODUCTION_SOURCE, COMPTIME_SOURCE};
+pub(crate) use comptime::COMPTIME_SOURCE;
 pub use comptime::{
     ComptimeAnonymousKind, ComptimeArgMode, ComptimeArrayLengthBinding, ComptimeCallAdmission,
-    ComptimeCallArgument, ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCallPreparation,
-    ComptimeCompletedCallMemo, ComptimeEngine, ComptimeEnv, ComptimeExpressionIntrinsic,
-    ComptimeExpressionIntrinsicRequest, ComptimeField, ComptimeFile, ComptimeFrame, ComptimeHost,
-    ComptimeHostError, ComptimeHostResult, ComptimeIdentity, ComptimeIntegerBound,
-    ComptimeIntegerOperation, ComptimeMemoInsertError, ComptimeMemoizedOutcome,
-    ComptimeMethodDescriptor, ComptimeMethodParameter, ComptimeMethodType, ComptimeName,
-    ComptimeNamedValueResolution, ComptimeOutcome, ComptimeProgram, ComptimeProgramKey,
+    ComptimeCallArgument, ComptimeCallHost, ComptimeCallKey, ComptimeCallMemoLookup,
+    ComptimeCallPreparation, ComptimeCompletedCallMemo, ComptimeEngine, ComptimeEnv,
+    ComptimeExpressionIntrinsic, ComptimeExpressionIntrinsicRequest, ComptimeField, ComptimeFile,
+    ComptimeFrame, ComptimeHost, ComptimeHostError, ComptimeHostResult, ComptimeHostTypes,
+    ComptimeIdentity, ComptimeIntegerBound, ComptimeIntegerOperation, ComptimeIntrinsicHost,
+    ComptimeMemoInsertError, ComptimeMemoizedOutcome, ComptimeMethodDescriptor,
+    ComptimeMethodParameter, ComptimeMethodType, ComptimeName, ComptimeNamedValueResolution,
+    ComptimeOutcome, ComptimeProgram, ComptimeProgramHost, ComptimeProgramKey,
     ComptimeProgramRegistrationError, ComptimeProgramRegistry, ComptimeSelection, ComptimeSite,
-    ComptimeSiteKind, ComptimeStructuredTypeResolution, ComptimeStructuredTypeSuspension,
-    ComptimeTargetIntrinsic, ComptimeTrap, ComptimeType, ComptimeTypeIntrinsic, ComptimeValue,
+    ComptimeSiteKind, ComptimeStructuredTypeHost, ComptimeStructuredTypeResolution,
+    ComptimeStructuredTypeSuspension, ComptimeTargetIntrinsic, ComptimeTrap, ComptimeType,
+    ComptimeTypeHost, ComptimeTypeIntrinsic, ComptimeValue, ComptimeValueHost,
     MAX_COMPTIME_CALL_DEPTH, comptime_depth_over_limit, next_comptime_depth,
 };
 pub use comptime::{

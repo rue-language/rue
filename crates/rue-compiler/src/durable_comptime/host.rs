@@ -147,7 +147,7 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
     }
 }
 
-impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHostTypes
     for DurableComptimeHost<'_, A>
 {
     type Type = DurableComptimeType;
@@ -163,7 +163,11 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
     type BoundCall = DurableComptimeBoundCall;
     type CompletionTicket = Box<DurableComptimeCallTicket>;
     type StructuredTypeSuspension = DurableStructuredTypeJob;
+}
 
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeProgramHost
+    for DurableComptimeHost<'_, A>
+{
     fn check_canceled(&self) -> rue_air::ComptimeHostResult<(), Self::Failure> {
         self.services.check_canceled().map_err(|abort| {
             rue_air::ComptimeHostError::Abort(DurableComptimeHostFailure::query_abort(abort))
@@ -230,7 +234,11 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
         }
         Ok(rue_air::ComptimeNamedValueResolution::Known(value))
     }
+}
 
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueHost
+    for DurableComptimeHost<'_, A>
+{
     fn match_pattern(
         &self,
         pattern: &rue_air::ComptimeMatchPattern<Self::Name>,
@@ -360,6 +368,121 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
         ))
     }
 
+    fn reject_unsigned_negation(
+        &self,
+        _ty: &Self::Type,
+        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> Option<Self::Failure> {
+        // Declaration-time evaluation reports the checked integer overflow
+        // from `finish_arith`, rather than AIR's ordinary CannotNegate policy.
+        None
+    }
+
+    fn const_expr_type(
+        &self,
+        _program: &Self::ProgramKey,
+        _env: &rue_air::ComptimeEnv<
+            '_,
+            Self::Value,
+            Self::Type,
+            Self::Name,
+            Self::File,
+            Self::CanonicalIdentity,
+        >,
+        _inst_ref: rue_rir::InstRef,
+    ) -> Option<Self::Type> {
+        None
+    }
+
+    fn finish_arith(
+        &self,
+        result: rue_air::integer_semantics::CheckedIntegerResult,
+        ty: Option<Self::Type>,
+        op: &str,
+        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<Option<Self::Value>, Self::Failure> {
+        let ty = ty.unwrap_or(DurableComptimeType(DurableType::I32));
+        let value = DurableComptimeScalarPolicy::checked_integer_result(
+            ty.as_ref(),
+            result,
+            durable_arithmetic_operation_name(op),
+        )
+        .map_err(durable_host_error)?;
+        Ok(Some(EvaluatedSemanticConst::integer_typed(value, Some(ty))))
+    }
+
+    fn integer_operation_type(
+        &self,
+        resolved_type: Option<&Self::Type>,
+        lhs: &Self::Value,
+        rhs: &Self::Value,
+        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        let lhs_type = lhs.as_integer_type();
+        let rhs_type = rhs.as_integer_type();
+        let ty = DurableComptimeScalarPolicy::integer_operation_type(
+            resolved_type.map(AsRef::as_ref),
+            lhs_type.as_ref().map(AsRef::as_ref),
+            rhs_type.as_ref().map(AsRef::as_ref),
+        )
+        .map_err(durable_host_error)?;
+        if let Some(value) = lhs.as_integer() {
+            DurableComptimeScalarPolicy::require_integer_fits(&ty, value)
+                .map_err(durable_host_error)?;
+        }
+        if let Some(value) = rhs.as_integer() {
+            DurableComptimeScalarPolicy::require_integer_fits(&ty, value)
+                .map_err(durable_host_error)?;
+        }
+        Ok(Some(DurableComptimeType(ty)))
+    }
+
+    fn unary_integer_type(
+        &self,
+        resolved_type: Option<&Self::Type>,
+        operand: &Self::Value,
+        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        let operand = operand.as_integer_type();
+        DurableComptimeScalarPolicy::unary_integer_type(
+            resolved_type.map(AsRef::as_ref),
+            operand.as_ref().map(AsRef::as_ref),
+        )
+        .map(|ty| Some(DurableComptimeType(ty)))
+        .map_err(durable_host_error)
+    }
+
+    fn compare_comptime_values(
+        &mut self,
+        lhs: &Self::Value,
+        rhs: &Self::Value,
+        equal: bool,
+        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
+        if let (EvaluatedSemanticConst::TargetEnum(lhs), EvaluatedSemanticConst::TargetEnum(rhs)) =
+            (lhs, rhs)
+        {
+            return rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::boolean(if equal {
+                lhs == rhs
+            } else {
+                lhs != rhs
+            }));
+        }
+        durable_host_error_outcome(durable_host_error(
+            DurableComptimeFailure::comptime_rejection(
+                rue_air::ComptimeSemanticRejection::ArithmeticOperandNotInteger {
+                    operation: rue_air::ComptimeIntegerOperation::Add,
+                    lhs: lhs.clone(),
+                    rhs: Some(rhs.clone()),
+                },
+            ),
+        ))
+    }
+}
+
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeHost
+    for DurableComptimeHost<'_, A>
+{
     fn resolve_named_array_length(
         &mut self,
         name: &Self::Name,
@@ -692,16 +815,6 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
         DurableComptimeScalarPolicy::type_is_unsigned(ty.as_ref())
     }
 
-    fn reject_unsigned_negation(
-        &self,
-        _ty: &Self::Type,
-        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Option<Self::Failure> {
-        // Declaration-time evaluation reports the checked integer overflow
-        // from `finish_arith`, rather than AIR's ordinary CannotNegate policy.
-        None
-    }
-
     fn type_integer_semantics(
         &self,
         ty: &Self::Type,
@@ -730,107 +843,6 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
                 Ok(Some(EvaluatedSemanticConst::integer_typed(value, Some(ty))))
             }
         }
-    }
-
-    fn const_expr_type(
-        &self,
-        _program: &Self::ProgramKey,
-        _env: &rue_air::ComptimeEnv<
-            '_,
-            Self::Value,
-            Self::Type,
-            Self::Name,
-            Self::File,
-            Self::CanonicalIdentity,
-        >,
-        _inst_ref: rue_rir::InstRef,
-    ) -> Option<Self::Type> {
-        None
-    }
-
-    fn finish_arith(
-        &self,
-        result: rue_air::integer_semantics::CheckedIntegerResult,
-        ty: Option<Self::Type>,
-        op: &str,
-        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> rue_air::ComptimeHostResult<Option<Self::Value>, Self::Failure> {
-        let ty = ty.unwrap_or(DurableComptimeType(DurableType::I32));
-        let value = DurableComptimeScalarPolicy::checked_integer_result(
-            ty.as_ref(),
-            result,
-            durable_arithmetic_operation_name(op),
-        )
-        .map_err(durable_host_error)?;
-        Ok(Some(EvaluatedSemanticConst::integer_typed(value, Some(ty))))
-    }
-
-    fn integer_operation_type(
-        &self,
-        resolved_type: Option<&Self::Type>,
-        lhs: &Self::Value,
-        rhs: &Self::Value,
-        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> rue_air::ComptimeHostResult<Option<Self::Type>, Self::Failure> {
-        let lhs_type = lhs.as_integer_type();
-        let rhs_type = rhs.as_integer_type();
-        let ty = DurableComptimeScalarPolicy::integer_operation_type(
-            resolved_type.map(AsRef::as_ref),
-            lhs_type.as_ref().map(AsRef::as_ref),
-            rhs_type.as_ref().map(AsRef::as_ref),
-        )
-        .map_err(durable_host_error)?;
-        if let Some(value) = lhs.as_integer() {
-            DurableComptimeScalarPolicy::require_integer_fits(&ty, value)
-                .map_err(durable_host_error)?;
-        }
-        if let Some(value) = rhs.as_integer() {
-            DurableComptimeScalarPolicy::require_integer_fits(&ty, value)
-                .map_err(durable_host_error)?;
-        }
-        Ok(Some(DurableComptimeType(ty)))
-    }
-
-    fn unary_integer_type(
-        &self,
-        resolved_type: Option<&Self::Type>,
-        operand: &Self::Value,
-        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> rue_air::ComptimeHostResult<Option<Self::Type>, Self::Failure> {
-        let operand = operand.as_integer_type();
-        DurableComptimeScalarPolicy::unary_integer_type(
-            resolved_type.map(AsRef::as_ref),
-            operand.as_ref().map(AsRef::as_ref),
-        )
-        .map(|ty| Some(DurableComptimeType(ty)))
-        .map_err(durable_host_error)
-    }
-
-    fn compare_comptime_values(
-        &mut self,
-        lhs: &Self::Value,
-        rhs: &Self::Value,
-        equal: bool,
-        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
-        if let (EvaluatedSemanticConst::TargetEnum(lhs), EvaluatedSemanticConst::TargetEnum(rhs)) =
-            (lhs, rhs)
-        {
-            return rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::boolean(if equal {
-                lhs == rhs
-            } else {
-                lhs != rhs
-            }));
-        }
-        durable_host_error_outcome(durable_host_error(
-            DurableComptimeFailure::comptime_rejection(
-                rue_air::ComptimeSemanticRejection::ArithmeticOperandNotInteger {
-                    operation: rue_air::ComptimeIntegerOperation::Add,
-                    lhs: lhs.clone(),
-                    rhs: Some(rhs.clone()),
-                },
-            ),
-        ))
     }
 
     fn resolve_named_type_value(
@@ -867,7 +879,11 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
             Err(error) => Err(durable_provider_error(error)),
         }
     }
+}
 
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeCallHost
+    for DurableComptimeHost<'_, A>
+{
     fn resolve_module_comptime_callable(
         &mut self,
         _file_id: Self::File,
@@ -1216,7 +1232,11 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
             .into_owned(),
         )
     }
+}
 
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeStructuredTypeHost
+    for DurableComptimeHost<'_, A>
+{
     fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
         &mut self,
         program: &Self::ProgramKey,
@@ -1482,7 +1502,11 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeHost
             Err(error) => durable_host_error_outcome(durable_type_syntax_error(error)),
         }
     }
+}
 
+impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeIntrinsicHost
+    for DurableComptimeHost<'_, A>
+{
     fn resolve_string_const(
         &mut self,
         content: Self::Name,

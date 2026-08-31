@@ -97,3 +97,51 @@ pub(super) struct DecodedComptimeExpressionIntrinsic<N> {
     pub(super) request: ComptimeExpressionIntrinsicRequest<N>,
     pub(super) site_kind: ComptimeSiteKind,
 }
+
+impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
+    /// Decode the finite expression-intrinsic family before execution touches
+    /// any child. This is the sole spelling and argument-shape authority.
+    pub(super) fn decode_expression_intrinsic(
+        &self,
+        name: H::Name,
+        args: &RirIntrinsicArgsRange,
+    ) -> Result<DecodedComptimeExpressionIntrinsic<H::Name>, String> {
+        let program = self.program_key();
+        let arguments = self.program_rir().intrinsic_args(args).to_vec();
+        let display_name = self.host.display_name(&name);
+        let Some(intrinsic) = ComptimeExpressionIntrinsic::from_name(&display_name) else {
+            return Err(display_name);
+        };
+        let request = match intrinsic {
+            ComptimeExpressionIntrinsic::Import => {
+                let sole_string_literal = (arguments.len() == 1)
+                    .then(|| match self.program_rir().get(arguments[0]).data {
+                        InstData::StringConst { content, .. } => {
+                            Some(self.host.name_from_symbol(&program, content.into()))
+                        }
+                        _ => None,
+                    })
+                    .flatten();
+                ComptimeExpressionIntrinsicRequest::Import {
+                    argument_count: arguments.len(),
+                    sole_string_literal,
+                }
+            }
+            ComptimeExpressionIntrinsic::Target(target) => {
+                ComptimeExpressionIntrinsicRequest::Target {
+                    intrinsic: target,
+                    argument_count: arguments.len(),
+                }
+            }
+        };
+        let site_kind = match &request {
+            ComptimeExpressionIntrinsicRequest::Import {
+                sole_string_literal: Some(_),
+                ..
+            } => ComptimeSiteKind::Import,
+            ComptimeExpressionIntrinsicRequest::Import { .. }
+            | ComptimeExpressionIntrinsicRequest::Target { .. } => ComptimeSiteKind::Intrinsic,
+        };
+        Ok(DecodedComptimeExpressionIntrinsic { request, site_kind })
+    }
+}

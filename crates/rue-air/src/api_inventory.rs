@@ -10,6 +10,23 @@ use syn::{
     visit::{self, Visit},
 };
 
+/// Complete production source for the canonical comptime module tree.
+///
+/// Architectural guards must inspect every module so moving an evaluator,
+/// decoder, or storage path cannot make it disappear from the inventory.
+const COMPTIME_SOURCE: &str = concat!(
+    include_str!("sema/comptime.rs"),
+    include_str!("sema/comptime/frames.rs"),
+    include_str!("sema/comptime/registry.rs"),
+    include_str!("sema/comptime/model.rs"),
+    include_str!("sema/comptime/intrinsics.rs"),
+    include_str!("sema/comptime/host.rs"),
+    include_str!("sema/comptime/sites.rs"),
+    include_str!("sema/comptime/structured_type.rs"),
+    include_str!("sema/comptime/execution.rs"),
+);
+const COMPTIME_TEST_SOURCE: &str = include_str!("sema/comptime/value_domain_tests.rs");
+
 #[derive(Clone, Debug)]
 struct AstFunction {
     module: String,
@@ -570,6 +587,69 @@ fn ast_functions(module: &str, source: &str) -> Option<Vec<AstFunction>> {
     let mut collector = AstCollector::new(&normalize_manifest_module(module));
     collector.visit_items(&file.items, false);
     Some(collector.functions)
+}
+
+fn struct_field_inventory(
+    module: &str,
+    source: &str,
+) -> Option<Vec<(String, String, String, BTreeSet<String>)>> {
+    fn collect(
+        module: &mut String,
+        items: &[Item],
+        fields: &mut Vec<(String, String, String, BTreeSet<String>)>,
+    ) {
+        for item in items {
+            match item {
+                Item::Struct(item) => {
+                    for field in &item.fields {
+                        struct TypeNames(BTreeSet<String>);
+                        impl<'ast> Visit<'ast> for TypeNames {
+                            fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
+                                self.0.extend(
+                                    ty.path
+                                        .segments
+                                        .iter()
+                                        .map(|segment| segment.ident.to_string()),
+                                );
+                                visit::visit_type_path(self, ty);
+                            }
+                        }
+
+                        let mut names = TypeNames(BTreeSet::new());
+                        names.visit_type(&field.ty);
+                        fields.push((
+                            module.clone(),
+                            item.ident.to_string(),
+                            field
+                                .ident
+                                .as_ref()
+                                .map(ToString::to_string)
+                                .unwrap_or_default(),
+                            names.0,
+                        ));
+                    }
+                }
+                Item::Mod(ItemMod {
+                    content: Some((_, nested)),
+                    ident,
+                    ..
+                }) => {
+                    let parent = module.clone();
+                    module.push('/');
+                    module.push_str(&ident.to_string());
+                    collect(module, nested, fields);
+                    *module = parent;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let file: File = syn::parse_file(source).ok()?;
+    let mut module = normalize_manifest_module(module);
+    let mut fields = Vec::new();
+    collect(&mut module, &file.items, &mut fields);
+    Some(fields)
 }
 
 fn is_test_only_attrs(attrs: &[syn::Attribute]) -> bool {
@@ -1163,7 +1243,10 @@ fn has_peer_comptime_evaluator_in_sources(sources: &[(&str, &str)]) -> bool {
         }
     }
     let canonical = |function: &AstFunction| {
-        function.module == "sema/comptime" && function.owner.as_deref() == Some("ComptimeEngine")
+        matches!(
+            function.module.as_str(),
+            "sema/comptime" | "sema/comptime/execution"
+        ) && function.owner.as_deref() == Some("ComptimeEngine")
     };
     // These are individually identified lowering adapters. They consume a
     // canonical fact and hand it to the ordinary analyzer; unlike the engine
@@ -1374,7 +1457,7 @@ fn peer_one_body_authority_cannot_return() {
 fn integer_consumers_use_one_representation_independent_kernel() {
     let semantics = include_str!("integer_semantics.rs");
     let types = include_str!("types.rs");
-    let comptime = crate::sema::COMPTIME_SOURCE;
+    let comptime = COMPTIME_SOURCE;
 
     assert!(types.contains("pub fn integer_semantics(&self) -> Option<IntegerType>"));
     assert!(comptime.contains("integer.shift_i128"));
@@ -1395,7 +1478,7 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
     let type_inference = include_str!("sema/analysis/type_inference.rs");
     let control_flow = include_str!("sema/control_flow.rs");
     let comptime_adapter = include_str!("sema/comptime_eval.rs");
-    let canonical = crate::sema::COMPTIME_SOURCE;
+    let canonical = COMPTIME_SOURCE;
     for (name, source) in [
         ("inference", inference),
         ("type inference", type_inference),
@@ -1511,6 +1594,11 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
         ),
         ("sema/comptime", include_str!("sema/comptime.rs")),
         (
+            "sema/comptime/execution",
+            include_str!("sema/comptime/execution.rs"),
+        ),
+        ("sema/comptime/host", include_str!("sema/comptime/host.rs")),
+        (
             "sema/comptime/frames",
             include_str!("sema/comptime/frames.rs"),
         ),
@@ -1534,10 +1622,7 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
             "sema/comptime/structured_type",
             include_str!("sema/comptime/structured_type.rs"),
         ),
-        (
-            "sema/comptime/value_domain_tests",
-            include_str!("sema/comptime/value_domain_tests.rs"),
-        ),
+        ("sema/comptime/value_domain_tests", COMPTIME_TEST_SOURCE),
         ("sema/comptime_eval", include_str!("sema/comptime_eval.rs")),
         (
             "sema/consistency_tests",
@@ -2058,7 +2143,7 @@ fn structural_guard_enforces_thin_adapter_mutations() {
 
 #[test]
 fn structured_registry_authority_keeps_storage_keyed_and_identity_rich() {
-    let comptime = crate::sema::COMPTIME_SOURCE;
+    let comptime = COMPTIME_SOURCE;
     let stable = comptime
         .split("pub fn structured_type_authority<")
         .nth(1)
@@ -2090,7 +2175,7 @@ fn structured_registry_authority_keeps_storage_keyed_and_identity_rich() {
 
 #[test]
 fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
-    let comptime = crate::sema::COMPTIME_SOURCE;
+    let comptime = COMPTIME_SOURCE;
     let production = comptime
         .split("#[derive(Debug)]\npub struct ComptimeFrame")
         .nth(1)
@@ -2124,10 +2209,10 @@ fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
     );
 
     let host = comptime
-        .split("pub trait ComptimeHost {")
+        .split("pub trait ComptimeHostTypes {")
         .nth(1)
-        .and_then(|source| source.split("/// Opaque structured continuations").next())
-        .expect("bounded ComptimeHost trait");
+        .and_then(|source| source.split("/// Empty umbrella preserving").next())
+        .expect("bounded comptime host capability traits");
     let match_hook = host
         .split("fn match_pattern(")
         .nth(1)
@@ -2155,12 +2240,12 @@ fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
 
 #[test]
 fn diagnostic_hooks_are_keyed_by_the_engine_program() {
-    let comptime = crate::sema::COMPTIME_SOURCE;
+    let comptime = COMPTIME_SOURCE;
     let host = comptime
-        .split("pub trait ComptimeHost {")
+        .split("pub trait ComptimeHostTypes {")
         .nth(1)
-        .and_then(|source| source.split("/// Opaque structured continuations").next())
-        .expect("bounded ComptimeHost trait");
+        .and_then(|source| source.split("/// Empty umbrella preserving").next())
+        .expect("bounded comptime host capability traits");
     for hook in [
         "fn match_no_selected_arm(",
         "fn require_preview(",
@@ -2218,7 +2303,7 @@ fn diagnostic_hooks_are_keyed_by_the_engine_program() {
 
 #[test]
 fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
-    let comptime = crate::sema::COMPTIME_SOURCE;
+    let comptime = COMPTIME_SOURCE;
     let ordinary = include_str!("sema/comptime_eval.rs");
     let facade = include_str!("lib.rs");
     for export in [
@@ -2243,6 +2328,13 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "ComptimeMethodParameter",
         "ComptimeMethodType",
         "ComptimeHost",
+        "ComptimeHostTypes",
+        "ComptimeProgramHost",
+        "ComptimeValueHost",
+        "ComptimeTypeHost",
+        "ComptimeCallHost",
+        "ComptimeStructuredTypeHost",
+        "ComptimeIntrinsicHost",
         "ComptimeHostError",
         "ComptimeHostResult",
         "ComptimeExpressionIntrinsic",
@@ -2350,7 +2442,10 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     assert_eq!(
         comptime
             .matches("fn resolve_comptime_type_intrinsic(")
-            .count(),
+            .count()
+            + COMPTIME_TEST_SOURCE
+                .matches("fn resolve_comptime_type_intrinsic(")
+                .count(),
         2,
         "one trait seam and one fake-host override must cover type intrinsics"
     );
@@ -2358,7 +2453,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         !comptime.contains("resolve_comptime_integer_bound("),
         "integer bounds must not grow a competing host override seam"
     );
-    let production = crate::sema::COMPTIME_PRODUCTION_SOURCE;
+    let production = comptime;
     let production_forbidden = [
         "LocalVar",
         "ParamInfo",
@@ -2593,8 +2688,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .expect("canonical host-value funnel");
     let macro_end = macro_start
         + production[macro_start..]
-            .find("\n}\n\n/// Error classification")
-            .map(|offset| offset + 2)
+            .find("pub struct ComptimeEngine")
             .expect("canonical host-value funnel end");
     let production_outside_host_value =
         format!("{}{}", &production[..macro_start], &production[macro_end..]);
@@ -2983,7 +3077,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "frame cleanup must follow entry"
     );
 
-    let env_source = crate::sema::COMPTIME_SOURCE;
+    let env_source = COMPTIME_SOURCE;
     let env_start = env_source
         .find("pub struct ComptimeEnv")
         .expect("generic comptime environment declaration");
@@ -3025,8 +3119,160 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
 }
 
 #[test]
+fn comptime_module_boundaries_keep_one_authority_and_host_owned_storage() {
+    let production = [
+        ("sema/comptime", include_str!("sema/comptime.rs")),
+        (
+            "sema/comptime/registry",
+            include_str!("sema/comptime/registry.rs"),
+        ),
+        (
+            "sema/comptime/model",
+            include_str!("sema/comptime/model.rs"),
+        ),
+        (
+            "sema/comptime/frames",
+            include_str!("sema/comptime/frames.rs"),
+        ),
+        (
+            "sema/comptime/intrinsics",
+            include_str!("sema/comptime/intrinsics.rs"),
+        ),
+        ("sema/comptime/host", include_str!("sema/comptime/host.rs")),
+        (
+            "sema/comptime/sites",
+            include_str!("sema/comptime/sites.rs"),
+        ),
+        (
+            "sema/comptime/structured_type",
+            include_str!("sema/comptime/structured_type.rs"),
+        ),
+        (
+            "sema/comptime/execution",
+            include_str!("sema/comptime/execution.rs"),
+        ),
+    ];
+    let host = include_str!("sema/comptime/host.rs");
+    let ordinary = include_str!("sema/comptime_eval.rs");
+
+    let mut dispatchers = production
+        .iter()
+        .flat_map(|(module, source)| ast_functions(module, source).expect("valid comptime source"))
+        .filter(|function| !function.test_only && function.dispatch)
+        .map(|function| (function.module, function.owner, function.name))
+        .collect::<Vec<_>>();
+    dispatchers.sort();
+    assert_eq!(
+        dispatchers,
+        vec![
+            (
+                "sema/comptime/execution".to_owned(),
+                Some("ComptimeEngine".to_owned()),
+                "eval".to_owned(),
+            ),
+            (
+                "sema/comptime/execution".to_owned(),
+                Some("ComptimeEngine".to_owned()),
+                "eval_dispatch".to_owned(),
+            ),
+            (
+                "sema/comptime/execution".to_owned(),
+                Some("ComptimeEngine".to_owned()),
+                "evaluate_call_arguments".to_owned(),
+            ),
+            (
+                "sema/comptime/intrinsics".to_owned(),
+                Some("ComptimeEngine".to_owned()),
+                "decode_expression_intrinsic".to_owned(),
+            ),
+        ],
+        "the comptime instruction dispatcher must retain one exact production identity"
+    );
+
+    let mut keyed_storage = production
+        .iter()
+        .flat_map(|(module, source)| {
+            struct_field_inventory(module, source).expect("valid comptime source")
+        })
+        .filter(|(_, _, _, types)| {
+            types.contains("AHashMap")
+                && (types.contains("ComptimeProgramKey") || types.contains("ComptimeCallKey"))
+        })
+        .map(|(module, owner, field, _)| (module, owner, field))
+        .collect::<Vec<_>>();
+    keyed_storage.sort();
+    assert_eq!(
+        keyed_storage,
+        vec![
+            (
+                "sema/comptime/registry".to_owned(),
+                "ComptimeCompletedCallMemo".to_owned(),
+                "outcomes".to_owned(),
+            ),
+            (
+                "sema/comptime/registry".to_owned(),
+                "ComptimeProgramRegistry".to_owned(),
+                "programs".to_owned(),
+            ),
+        ],
+        "program registry and completed-call memo storage must stay registry-owned"
+    );
+
+    let mut engine_fields = production
+        .iter()
+        .flat_map(|(module, source)| {
+            struct_field_inventory(module, source).expect("valid comptime source")
+        })
+        .filter(|(_, owner, _, _)| owner == "ComptimeEngine")
+        .map(|(module, _, field, _)| (module, field))
+        .collect::<Vec<_>>();
+    engine_fields.sort();
+    assert_eq!(
+        engine_fields,
+        vec![
+            ("sema/comptime/execution".to_owned(), "frames".to_owned()),
+            ("sema/comptime/execution".to_owned(), "host".to_owned()),
+            (
+                "sema/comptime/execution".to_owned(),
+                "provenance_classifications".to_owned(),
+            ),
+        ],
+        "the execution engine may own only its host, active frames, and test counter"
+    );
+
+    let functions = production
+        .iter()
+        .flat_map(|(module, source)| ast_functions(module, source).expect("valid comptime source"))
+        .filter(|function| !function.test_only)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        functions
+            .iter()
+            .filter(|function| function.name == "decode_expression_intrinsic")
+            .map(|function| (function.module.as_str(), function.owner.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![("sema/comptime/intrinsics", Some("ComptimeEngine"))],
+        "intrinsic decoding must retain one exact production identity"
+    );
+
+    for capability in [
+        "ComptimeProgramHost",
+        "ComptimeValueHost",
+        "ComptimeTypeHost",
+        "ComptimeCallHost",
+        "ComptimeStructuredTypeHost",
+        "ComptimeIntrinsicHost",
+    ] {
+        assert!(host.contains(&format!("pub trait {capability}")));
+        assert!(ordinary.contains(&format!("{capability} for OrdinaryBodyEngine")));
+    }
+    assert!(host.contains("pub trait ComptimeHost:"));
+    assert!(host.contains("impl<T> ComptimeHost for T where"));
+}
+
+#[test]
 fn comptime_depth_has_one_canonical_authority() {
-    let comptime = crate::sema::COMPTIME_SOURCE;
+    let comptime = COMPTIME_SOURCE;
     let sema = include_str!("sema/mod.rs");
     let specialize = include_str!("specialize.rs");
     assert_eq!(
@@ -3707,6 +3953,11 @@ fn sema_diagnostics_use_the_friendly_type_display_authority() {
         ),
         ("sema/comptime", include_str!("sema/comptime.rs")),
         (
+            "sema/comptime/execution",
+            include_str!("sema/comptime/execution.rs"),
+        ),
+        ("sema/comptime/host", include_str!("sema/comptime/host.rs")),
+        (
             "sema/comptime/frames",
             include_str!("sema/comptime/frames.rs"),
         ),
@@ -3729,10 +3980,6 @@ fn sema_diagnostics_use_the_friendly_type_display_authority() {
         (
             "sema/comptime/structured_type",
             include_str!("sema/comptime/structured_type.rs"),
-        ),
-        (
-            "sema/comptime/value_domain_tests",
-            include_str!("sema/comptime/value_domain_tests.rs"),
         ),
         ("sema/comptime_eval", include_str!("sema/comptime_eval.rs")),
         ("sema/context", include_str!("sema/context.rs")),
@@ -3774,6 +4021,7 @@ fn sema_diagnostics_use_the_friendly_type_display_authority() {
     ];
     let manifest = include_str!("rue_air_source_manifest.txt");
     let test_only_sema_modules = [
+        "sema/comptime/value_domain_tests",
         "sema/consistency_tests",
         "sema/provider_accessor_tests",
         "sema/provider_fixture",

@@ -74,7 +74,7 @@ thread_local! {
 
 #[test]
 fn entered_frame_runner_remains_engine_private() {
-    let source = super::COMPTIME_SOURCE;
+    let source = include_str!("execution.rs");
     assert!(source.contains("pub(crate) fn evaluate_entered_frame("));
     let public_signature = ["pub", " fn evaluate_entered_frame("].concat();
     assert!(!source.contains(&public_signature));
@@ -775,7 +775,7 @@ struct FakeBoundCall {
     arguments: Vec<(FakeValue, bool)>,
 }
 
-impl super::structured_type::structured_type_seal::Sealed for FakeStructuredSuspension {}
+impl super::structured_type_seal::Sealed for FakeStructuredSuspension {}
 impl ComptimeStructuredTypeSuspension for FakeStructuredSuspension {}
 
 struct FakeHost {
@@ -1127,7 +1127,7 @@ fn clear_type_intrinsic_observations() {
     TYPE_INTRINSIC_NAME.with(|name| *name.borrow_mut() = None);
 }
 
-impl ComptimeHost for FakeHost {
+impl ComptimeHostTypes for FakeHost {
     type Type = FakeType;
     type Value = FakeValue;
     type Name = FakeName;
@@ -1141,6 +1141,9 @@ impl ComptimeHost for FakeHost {
     type BoundCall = FakeBoundCall;
     type CompletionTicket = usize;
     type StructuredTypeSuspension = FakeStructuredSuspension;
+}
+
+impl ComptimeProgramHost for FakeHost {
     fn check_canceled(&self) -> ComptimeHostResult<(), Self::Failure> {
         let checkpoint = CHECKPOINTS.with(|count| {
             let next = count.get() + 1;
@@ -1239,6 +1242,9 @@ impl ComptimeHost for FakeHost {
             None => ComptimeNamedValueResolution::Missing,
         })
     }
+}
+
+impl ComptimeValueHost for FakeHost {
     fn match_pattern(
         &self,
         pattern: &ComptimeMatchPattern<Self::Name>,
@@ -1343,6 +1349,70 @@ impl ComptimeHost for FakeHost {
         METHOD_FAILURES.with(|failures| failures.borrow_mut().push("non_function"));
         FakeFailure::NonFunctionMethod
     }
+    fn const_expr_type(
+        &self,
+        _program: &Self::ProgramKey,
+        _env: &ComptimeEnv<'_, Self::Value, Self::Type, Self::Name, Self::File, FakeIdentity>,
+        inst_ref: InstRef,
+    ) -> Option<Self::Type> {
+        (inst_ref.as_u32() == 2).then_some(FakeType(8))
+    }
+    fn integer_operation_type(
+        &self,
+        resolved_type: Option<&Self::Type>,
+        lhs: &Self::Value,
+        rhs: &Self::Value,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        INTEGER_HINTS.with(|hints| hints.borrow_mut().push(resolved_type.copied()));
+        if let (Some(lhs), Some(rhs)) = (lhs.as_integer_type(), rhs.as_integer_type()) {
+            if lhs != rhs {
+                return Err(FAKE_FAILURE.into());
+            }
+        }
+        Ok(resolved_type
+            .cloned()
+            .or_else(|| lhs.as_integer_type())
+            .or_else(|| rhs.as_integer_type()))
+    }
+    fn finish_arith(
+        &self,
+        result: CheckedIntegerResult,
+        _ty: Option<Self::Type>,
+        op: &str,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
+        FINISH_ARITH_OPERATIONS.with(|operations| operations.borrow_mut().push(op.to_owned()));
+        DIAGNOSTIC_SITES.with(|sites| {
+            sites
+                .borrow_mut()
+                .push((*site.program(), site.span().start, site.span().end))
+        });
+        if matches!(self.finish_outcome, FakeFinishOutcome::AbortFromArithmetic) {
+            return Err(ComptimeHostError::Abort(FAKE_FAILURE));
+        }
+        Ok(result.checked().map(FakeValue::integer))
+    }
+
+    fn compare_comptime_values(
+        &mut self,
+        lhs: &Self::Value,
+        rhs: &Self::Value,
+        equal: bool,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        let (Some(lhs), Some(rhs)) = (lhs.as_type(), rhs.as_type()) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        ComptimeOutcome::Known(FakeValue::boolean(if equal {
+            lhs == rhs
+        } else {
+            lhs != rhs
+        }))
+    }
+}
+
+impl ComptimeTypeHost for FakeHost {
     fn resolve_named_array_length(
         &mut self,
         _name: &Self::Name,
@@ -1452,50 +1522,6 @@ impl ComptimeHost for FakeHost {
     ) -> ComptimeHostResult<(), Self::Failure> {
         Ok(())
     }
-    fn const_expr_type(
-        &self,
-        _program: &Self::ProgramKey,
-        _env: &ComptimeEnv<'_, Self::Value, Self::Type, Self::Name, Self::File, FakeIdentity>,
-        inst_ref: InstRef,
-    ) -> Option<Self::Type> {
-        (inst_ref.as_u32() == 2).then_some(FakeType(8))
-    }
-    fn integer_operation_type(
-        &self,
-        resolved_type: Option<&Self::Type>,
-        lhs: &Self::Value,
-        rhs: &Self::Value,
-        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
-        INTEGER_HINTS.with(|hints| hints.borrow_mut().push(resolved_type.copied()));
-        if let (Some(lhs), Some(rhs)) = (lhs.as_integer_type(), rhs.as_integer_type()) {
-            if lhs != rhs {
-                return Err(FAKE_FAILURE.into());
-            }
-        }
-        Ok(resolved_type
-            .cloned()
-            .or_else(|| lhs.as_integer_type())
-            .or_else(|| rhs.as_integer_type()))
-    }
-    fn finish_arith(
-        &self,
-        result: CheckedIntegerResult,
-        _ty: Option<Self::Type>,
-        op: &str,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
-        FINISH_ARITH_OPERATIONS.with(|operations| operations.borrow_mut().push(op.to_owned()));
-        DIAGNOSTIC_SITES.with(|sites| {
-            sites
-                .borrow_mut()
-                .push((*site.program(), site.span().start, site.span().end))
-        });
-        if matches!(self.finish_outcome, FakeFinishOutcome::AbortFromArithmetic) {
-            return Err(ComptimeHostError::Abort(FAKE_FAILURE));
-        }
-        Ok(result.checked().map(FakeValue::integer))
-    }
     fn type_name(&self, ty: &Self::Type) -> String {
         format!("fake-type-{}", ty.0)
     }
@@ -1546,6 +1572,9 @@ impl ComptimeHost for FakeHost {
     ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
         Ok(None)
     }
+}
+
+impl ComptimeCallHost for FakeHost {
     fn resolve_module_comptime_callable(
         &mut self,
         _file_id: Self::File,
@@ -1864,6 +1893,9 @@ impl ComptimeHost for FakeHost {
     ) -> Self::AnonymousIdentity {
         producer.clone()
     }
+}
+
+impl ComptimeStructuredTypeHost for FakeHost {
     fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
         &mut self,
         _program: &Self::ProgramKey,
@@ -1877,6 +1909,124 @@ impl ComptimeHost for FakeHost {
             .with(|configured| configured.borrow().is_some())
             .then_some(FakeType(7))
     }
+
+    fn begin_comptime_type_syntax(
+        &mut self,
+        _program: &Self::ProgramKey,
+        _syntax: rue_rir::RirTypeSyntaxRef,
+        _types: &AHashMap<Self::Name, Self::Type>,
+        _values: &AHashMap<Self::Name, Self::Value>,
+        _span: Span,
+    ) -> ComptimeOutcome<
+        ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
+        Self::Failure,
+    > {
+        if TYPE_INTRINSIC_NAME.with(|configured| configured.borrow().is_some()) {
+            return ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Ready(FakeType(7)));
+        }
+        let FakeFinishOutcome::Structured(preparations) =
+            std::mem::replace(&mut self.finish_outcome, FakeFinishOutcome::Identity)
+        else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Suspended(
+            FakeStructuredSuspension {
+                preparations,
+                index: 0,
+            },
+        ))
+    }
+
+    fn prepare_structured_type_call(
+        &mut self,
+        suspension: &Self::StructuredTypeSuspension,
+        span: Span,
+    ) -> ComptimeOutcome<
+        Option<
+            ComptimeCallPreparation<
+                Self::Value,
+                Self::Type,
+                Self::Name,
+                Self::File,
+                Self::ProgramKey,
+                Self::CanonicalIdentity,
+                Self::Failure,
+                Self::CompletionTicket,
+            >,
+        >,
+        Self::Failure,
+    > {
+        STRUCTURED_PREPARE_SPANS.with(|spans| spans.borrow_mut().push(span));
+        match suspension.preparations[suspension.index] {
+            FakeStructuredPreparation::Enter => {
+                ComptimeOutcome::Known(Some(ComptimeCallPreparation::Enter {
+                    frame: ComptimeFrame {
+                        program: 1,
+                        body: InstRef::from_raw(0),
+                        name: Some(FakeName { ordinal: 1 }),
+                        context: Some(FakeFile { index: 0 }),
+                        span: Span::new(0, 0),
+                        function_span: Span::new(0, 0),
+                        type_bindings: AHashMap::new(),
+                        value_bindings: AHashMap::new(),
+                        name_bindings: AHashMap::new(),
+                        call_identity: None,
+                        expected_result: None,
+                    },
+                    ticket: 0,
+                }))
+            }
+            FakeStructuredPreparation::Memoized => ComptimeOutcome::Known(Some(
+                ComptimeCallPreparation::Memoized(ComptimeOutcome::Known(FakeValue::Integer(1))),
+            )),
+            FakeStructuredPreparation::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
+            FakeStructuredPreparation::NotReady => ComptimeOutcome::NotReady,
+            FakeStructuredPreparation::UnsupportedContext => ComptimeOutcome::UnsupportedContext,
+            FakeStructuredPreparation::Trap => ComptimeOutcome::Trap(ComptimeTrap {
+                operation: "structured fake trap",
+                span: Span::new(0, 0),
+            }),
+            FakeStructuredPreparation::HostFailure => ComptimeOutcome::HostFailure(FAKE_FAILURE),
+            FakeStructuredPreparation::Abort => ComptimeOutcome::Abort(FAKE_FAILURE),
+        }
+    }
+
+    fn resume_structured_type_call(
+        &mut self,
+        suspension: Self::StructuredTypeSuspension,
+        result: ComptimeOutcome<Self::Value, Self::Failure>,
+    ) -> ComptimeOutcome<
+        ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
+        Self::Failure,
+    > {
+        if !matches!(&result, ComptimeOutcome::Known(_)) {
+            // The sentinel makes the outcome-funnel test observe that
+            // every terminal reduction was handed back to the host.
+            self.finished.push((usize::MAX, None));
+        }
+        match result {
+            ComptimeOutcome::Known(_) if suspension.index + 1 < suspension.preparations.len() => {
+                ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Suspended(
+                    FakeStructuredSuspension {
+                        preparations: suspension.preparations,
+                        index: suspension.index + 1,
+                    },
+                ))
+            }
+            ComptimeOutcome::Known(_) => {
+                ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Ready(FakeType(9)))
+            }
+            ComptimeOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
+            ComptimeOutcome::NotReady => ComptimeOutcome::NotReady,
+            ComptimeOutcome::UnsupportedContext => ComptimeOutcome::UnsupportedContext,
+            ComptimeOutcome::Trap(trap) => ComptimeOutcome::Trap(trap),
+            ComptimeOutcome::HostFailure(error) => ComptimeOutcome::HostFailure(error),
+            ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
+        }
+    }
+}
+
+impl ComptimeIntrinsicHost for FakeHost {
     fn resolve_string_const(
         &mut self,
         content: Self::Name,
@@ -1997,138 +2147,6 @@ impl ComptimeHost for FakeHost {
 
     fn allow_checked_comptime(&self) -> bool {
         self.admits_durable_forms()
-    }
-
-    fn compare_comptime_values(
-        &mut self,
-        lhs: &Self::Value,
-        rhs: &Self::Value,
-        equal: bool,
-        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        let (Some(lhs), Some(rhs)) = (lhs.as_type(), rhs.as_type()) else {
-            return ComptimeOutcome::RuntimeDependent;
-        };
-        ComptimeOutcome::Known(FakeValue::boolean(if equal {
-            lhs == rhs
-        } else {
-            lhs != rhs
-        }))
-    }
-
-    fn begin_comptime_type_syntax(
-        &mut self,
-        _program: &Self::ProgramKey,
-        _syntax: rue_rir::RirTypeSyntaxRef,
-        _types: &AHashMap<Self::Name, Self::Type>,
-        _values: &AHashMap<Self::Name, Self::Value>,
-        _span: Span,
-    ) -> ComptimeOutcome<
-        ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
-        Self::Failure,
-    > {
-        if TYPE_INTRINSIC_NAME.with(|configured| configured.borrow().is_some()) {
-            return ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Ready(FakeType(7)));
-        }
-        let FakeFinishOutcome::Structured(preparations) =
-            std::mem::replace(&mut self.finish_outcome, FakeFinishOutcome::Identity)
-        else {
-            return ComptimeOutcome::RuntimeDependent;
-        };
-        ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Suspended(
-            FakeStructuredSuspension {
-                preparations,
-                index: 0,
-            },
-        ))
-    }
-
-    fn prepare_structured_type_call(
-        &mut self,
-        suspension: &Self::StructuredTypeSuspension,
-        span: Span,
-    ) -> ComptimeOutcome<
-        Option<
-            ComptimeCallPreparation<
-                Self::Value,
-                Self::Type,
-                Self::Name,
-                Self::File,
-                Self::ProgramKey,
-                Self::CanonicalIdentity,
-                Self::Failure,
-                Self::CompletionTicket,
-            >,
-        >,
-        Self::Failure,
-    > {
-        STRUCTURED_PREPARE_SPANS.with(|spans| spans.borrow_mut().push(span));
-        match suspension.preparations[suspension.index] {
-            FakeStructuredPreparation::Enter => {
-                ComptimeOutcome::Known(Some(ComptimeCallPreparation::Enter {
-                    frame: ComptimeFrame {
-                        program: 1,
-                        body: InstRef::from_raw(0),
-                        name: Some(FakeName { ordinal: 1 }),
-                        context: Some(FakeFile { index: 0 }),
-                        span: Span::new(0, 0),
-                        function_span: Span::new(0, 0),
-                        type_bindings: AHashMap::new(),
-                        value_bindings: AHashMap::new(),
-                        name_bindings: AHashMap::new(),
-                        call_identity: None,
-                        expected_result: None,
-                    },
-                    ticket: 0,
-                }))
-            }
-            FakeStructuredPreparation::Memoized => ComptimeOutcome::Known(Some(
-                ComptimeCallPreparation::Memoized(ComptimeOutcome::Known(FakeValue::Integer(1))),
-            )),
-            FakeStructuredPreparation::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
-            FakeStructuredPreparation::NotReady => ComptimeOutcome::NotReady,
-            FakeStructuredPreparation::UnsupportedContext => ComptimeOutcome::UnsupportedContext,
-            FakeStructuredPreparation::Trap => ComptimeOutcome::Trap(ComptimeTrap {
-                operation: "structured fake trap",
-                span: Span::new(0, 0),
-            }),
-            FakeStructuredPreparation::HostFailure => ComptimeOutcome::HostFailure(FAKE_FAILURE),
-            FakeStructuredPreparation::Abort => ComptimeOutcome::Abort(FAKE_FAILURE),
-        }
-    }
-
-    fn resume_structured_type_call(
-        &mut self,
-        suspension: Self::StructuredTypeSuspension,
-        result: ComptimeOutcome<Self::Value, Self::Failure>,
-    ) -> ComptimeOutcome<
-        ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
-        Self::Failure,
-    > {
-        if !matches!(&result, ComptimeOutcome::Known(_)) {
-            // The sentinel makes the outcome-funnel test observe that
-            // every terminal reduction was handed back to the host.
-            self.finished.push((usize::MAX, None));
-        }
-        match result {
-            ComptimeOutcome::Known(_) if suspension.index + 1 < suspension.preparations.len() => {
-                ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Suspended(
-                    FakeStructuredSuspension {
-                        preparations: suspension.preparations,
-                        index: suspension.index + 1,
-                    },
-                ))
-            }
-            ComptimeOutcome::Known(_) => {
-                ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Ready(FakeType(9)))
-            }
-            ComptimeOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
-            ComptimeOutcome::NotReady => ComptimeOutcome::NotReady,
-            ComptimeOutcome::UnsupportedContext => ComptimeOutcome::UnsupportedContext,
-            ComptimeOutcome::Trap(trap) => ComptimeOutcome::Trap(trap),
-            ComptimeOutcome::HostFailure(error) => ComptimeOutcome::HostFailure(error),
-            ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
-        }
     }
 }
 

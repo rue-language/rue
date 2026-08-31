@@ -5,12 +5,17 @@
 /// The suspension is opaque to the engine. A host may use the keyed
 /// structured-type job from `semantic_type_resolution`, but the engine never
 /// receives a program, scope, arena, or syntax reference while resuming it.
+///
+/// State invariant: `Suspended` owns the only live continuation for a
+/// structured-type reduction. The execution core may prepare at most one
+/// child call from it, and must feed that child's terminal outcome back to
+/// `resume_structured_type_call` before inspecting another syntax node.
 pub enum ComptimeStructuredTypeResolution<V, S> {
     Ready(V),
     Suspended(S),
 }
 
-pub(crate) mod structured_type_seal {
+pub(super) mod structured_type_seal {
     pub(crate) trait Sealed {}
 }
 
